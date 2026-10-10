@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Child frame</title>
+<style>
+  body { margin: 0; }
+  #inner { position: absolute; left: 30px; top: 40px; width: 120px; height: 40px; }
+</style>
+</head>
+<body>
+<button id="inner">Inner</button>
+<script>
+  window.innerClicks = 0;
+  document.getElementById("inner").addEventListener("click", event => {
+    innerClicks++;
+    event.target.textContent = "Inner " + innerClicks;
+  });
+</script>
+</body>
+</html>

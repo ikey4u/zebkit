@@ -1,0 +1,44 @@
+Bug fix: every page that started at about:blank left a web process behind.
+
+WebKit keeps one spare, "prewarmed" web process ready for the next page.
+When a page needs a process and has no site yet (a new view loading
+about:blank or a string, which is how every tab a CDP client opens starts),
+WebProcessPool::tryTakePrewarmedProcess() picks the spare, removes it from
+the pool's set of spares, and only then checks whether the sandbox is on, in
+which case it returns nothing and the page gets a new process instead. The
+sandbox setting is on by default in this API whether or not Bubblewrap is
+compiled in. The spare was then in no set and attached to no page, so
+nothing ever shut it down, and the pool started another spare to replace it.
+One process of 100 MiB and more leaked for each such page; 300 pages opened
+and closed over CDP left 300 processes.
+
+Make the check before the spare is removed. It is also only meaningful when
+the processes really run under Bubblewrap, where a spare is tied to the
+primary data store; in a build without Bubblewrap the spare is now used, as
+on other platforms, so new pages also start faster.
+
+--- a/Source/WebKit/UIProcess/WebProcessPool.cpp
++++ b/Source/WebKit/UIProcess/WebProcessPool.cpp
+@@ -882,16 +882,18 @@
+ 
+     WTFEmitSignpost(this, ProcessPrewarming, "Using prewarmed process with pid %d", prewarmedProcess->processID());
+ 
+-    bool didRemove = m_prewarmedProcesses.remove(*prewarmedProcess);
+-    ASSERT_UNUSED(didRemove, didRemove);
+-
+-#if PLATFORM(GTK) || PLATFORM(WPE)
++#if (PLATFORM(GTK) || PLATFORM(WPE)) && ENABLE(BUBBLEWRAP_SANDBOX)
+     // In platforms using Bubblewrap for sandboxing, prewarmed process is launched using the WebProcessPool primary WebsiteDataStore,
+     // so we don't use it in case of using a different WebsiteDataStore.
++    // zebkit: decided before the process is taken out of the pool's set, not after, which left it
++    // running with nothing that would ever shut it down.
+     if (m_sandboxEnabled)
+         return nullptr;
+ #endif
+ 
++    bool didRemove = m_prewarmedProcesses.remove(*prewarmedProcess);
++    ASSERT_UNUSED(didRemove, didRemove);
++
+     ASSERT(prewarmedProcess->isPrewarmed());
+     prewarmedProcess->setWebsiteDataStore(websiteDataStore);
+     prewarmedProcess->markIsNoLongerInPrewarmedPool();

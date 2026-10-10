@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>bench</title><div id=o></div>
+<script>
+function t(f){ const a = performance.now(); f(); return Math.round(performance.now() - a); }
+const r = {};
+r.loop = t(() => { let s = 0; for (let i = 0; i < 3e7; i++) s += i % 7; return s; });
+r.objects = t(() => { const a = []; for (let i = 0; i < 4e5; i++) a.push({ id: i, name: 'n' + i, v: i * 1.5 }); return a.filter(o => o.id % 3).map(o => o.v).reduce((x, y) => x + y, 0); });
+r.strings = t(() => { let s = ''; for (let i = 0; i < 3e5; i++) s += i.toString(36); return s.split('a').join('b').length; });
+r.json = t(() => { const o = []; for (let i = 0; i < 1e5; i++) o.push({ a: i, b: [i, i + 1], c: 'x' + i }); for (let k = 0; k < 5; k++) JSON.parse(JSON.stringify(o)); });
+r.regex = t(() => { const s = 'the quick brown fox jumps over the lazy dog '.repeat(2e4); let n = 0; for (let k = 0; k < 5; k++) n += s.replace(/\b(\w)(\w*)\b/g, (m, a, b) => a.toUpperCase() + b).length; return n; });
+r.sort = t(() => { const a = Array.from({ length: 3e5 }, (_, i) => (i * 2654435761) % 1000003); a.sort((x, y) => x - y); });
+r.dom = t(() => { const o = document.getElementById('o'); for (let i = 0; i < 2e4; i++) { const d = document.createElement('div'); d.textContent = 'row ' + i; d.style.padding = (i % 5) + 'px'; o.appendChild(d); } return o.offsetHeight; });
+fetch('/result?profile=' + new URLSearchParams(location.search).get('profile') + '&' + Object.entries(r).map(([k, v]) => k + '=' + v).join('&'));
+</script>

@@ -1,0 +1,758 @@
+{
+  "description": "The 100 most-visited websites worldwide, used as the compatibility test set for zebkit (see docs/COMPAT.md).",
+  "compiled": "2026-10-10",
+  "method": "Semrush's ranking in order, minus the exclusions below; then filled to 100 from Similarweb's ranking, then Ahrefs', each in order, skipping sites already present. 'rank' is the position in this file; 'source_rank' is the position in the named source. 'url' is https://<domain>/ unless the bare domain does not serve the site, in which case it is the address the site redirects visitors to.",
+  "sources": {
+    "semrush": {
+      "name": "Semrush, Most Visited Websites in the World, August 2026",
+      "url": "https://www.semrush.com/website/top/",
+      "entries_available": 92
+    },
+    "similarweb": {
+      "name": "Similarweb, Top Websites Ranking",
+      "url": "https://www.similarweb.com/top-websites/",
+      "entries_available": 51
+    },
+    "ahrefs": {
+      "name": "Ahrefs, Top Websites",
+      "url": "https://ahrefs.com/top",
+      "entries_available": "first 32 read"
+    }
+  },
+  "excluded": [
+    {
+      "domain": "pornhub.com",
+      "reason": "adult content"
+    },
+    {
+      "domain": "xvideos.com",
+      "reason": "adult content"
+    },
+    {
+      "domain": "xhamster.com",
+      "reason": "adult content"
+    },
+    {
+      "domain": "onlyfans.com",
+      "reason": "adult content"
+    },
+    {
+      "domain": "stripchat.com",
+      "reason": "adult content"
+    },
+    {
+      "domain": "twitter.com",
+      "reason": "redirects to x.com, which is already listed"
+    },
+    {
+      "domain": "hai8g.com",
+      "reason": "serves only a domain placeholder page"
+    },
+    {
+      "domain": "bet.br",
+      "reason": "not one site: a second-level domain shared by many Brazilian betting sites; it does not resolve"
+    }
+  ],
+  "sites": [
+    {
+      "rank": 1,
+      "domain": "google.com",
+      "url": "https://google.com/",
+      "source": "semrush",
+      "source_rank": 1
+    },
+    {
+      "rank": 2,
+      "domain": "youtube.com",
+      "url": "https://youtube.com/",
+      "source": "semrush",
+      "source_rank": 2
+    },
+    {
+      "rank": 3,
+      "domain": "facebook.com",
+      "url": "https://facebook.com/",
+      "source": "semrush",
+      "source_rank": 3
+    },
+    {
+      "rank": 4,
+      "domain": "chatgpt.com",
+      "url": "https://chatgpt.com/",
+      "source": "semrush",
+      "source_rank": 4
+    },
+    {
+      "rank": 5,
+      "domain": "instagram.com",
+      "url": "https://instagram.com/",
+      "source": "semrush",
+      "source_rank": 5
+    },
+    {
+      "rank": 6,
+      "domain": "reddit.com",
+      "url": "https://reddit.com/",
+      "source": "semrush",
+      "source_rank": 6
+    },
+    {
+      "rank": 7,
+      "domain": "wikipedia.org",
+      "url": "https://wikipedia.org/",
+      "source": "semrush",
+      "source_rank": 7
+    },
+    {
+      "rank": 8,
+      "domain": "x.com",
+      "url": "https://x.com/",
+      "source": "semrush",
+      "source_rank": 8
+    },
+    {
+      "rank": 9,
+      "domain": "whatsapp.com",
+      "url": "https://whatsapp.com/",
+      "source": "semrush",
+      "source_rank": 10
+    },
+    {
+      "rank": 10,
+      "domain": "tiktok.com",
+      "url": "https://tiktok.com/",
+      "source": "semrush",
+      "source_rank": 11
+    },
+    {
+      "rank": 11,
+      "domain": "amazon.com",
+      "url": "https://www.amazon.com/",
+      "source": "semrush",
+      "source_rank": 13
+    },
+    {
+      "rank": 12,
+      "domain": "yahoo.com",
+      "url": "https://yahoo.com/",
+      "source": "semrush",
+      "source_rank": 14
+    },
+    {
+      "rank": 13,
+      "domain": "duckduckgo.com",
+      "url": "https://duckduckgo.com/",
+      "source": "semrush",
+      "source_rank": 15
+    },
+    {
+      "rank": 14,
+      "domain": "bing.com",
+      "url": "https://bing.com/",
+      "source": "semrush",
+      "source_rank": 16
+    },
+    {
+      "rank": 15,
+      "domain": "yahoo.co.jp",
+      "url": "https://yahoo.co.jp/",
+      "source": "semrush",
+      "source_rank": 17
+    },
+    {
+      "rank": 16,
+      "domain": "linkedin.com",
+      "url": "https://linkedin.com/",
+      "source": "semrush",
+      "source_rank": 18
+    },
+    {
+      "rank": 17,
+      "domain": "weather.com",
+      "url": "https://weather.com/",
+      "source": "semrush",
+      "source_rank": 19
+    },
+    {
+      "rank": 18,
+      "domain": "msn.com",
+      "url": "https://msn.com/",
+      "source": "semrush",
+      "source_rank": 21
+    },
+    {
+      "rank": 19,
+      "domain": "netflix.com",
+      "url": "https://netflix.com/",
+      "source": "semrush",
+      "source_rank": 22
+    },
+    {
+      "rank": 20,
+      "domain": "pinterest.com",
+      "url": "https://pinterest.com/",
+      "source": "semrush",
+      "source_rank": 23
+    },
+    {
+      "rank": 21,
+      "domain": "twitch.tv",
+      "url": "https://twitch.tv/",
+      "source": "semrush",
+      "source_rank": 24
+    },
+    {
+      "rank": 22,
+      "domain": "microsoft.com",
+      "url": "https://microsoft.com/",
+      "source": "semrush",
+      "source_rank": 25
+    },
+    {
+      "rank": 23,
+      "domain": "github.com",
+      "url": "https://github.com/",
+      "source": "semrush",
+      "source_rank": 26
+    },
+    {
+      "rank": 24,
+      "domain": "temu.com",
+      "url": "https://temu.com/",
+      "source": "semrush",
+      "source_rank": 27
+    },
+    {
+      "rank": 25,
+      "domain": "claude.ai",
+      "url": "https://claude.ai/",
+      "source": "semrush",
+      "source_rank": 28
+    },
+    {
+      "rank": 26,
+      "domain": "live.com",
+      "url": "https://outlook.live.com/",
+      "source": "semrush",
+      "source_rank": 29
+    },
+    {
+      "rank": 27,
+      "domain": "yandex.ru",
+      "url": "https://yandex.ru/",
+      "source": "semrush",
+      "source_rank": 30
+    },
+    {
+      "rank": 28,
+      "domain": "discord.com",
+      "url": "https://discord.com/",
+      "source": "semrush",
+      "source_rank": 31
+    },
+    {
+      "rank": 29,
+      "domain": "naver.com",
+      "url": "https://naver.com/",
+      "source": "semrush",
+      "source_rank": 32
+    },
+    {
+      "rank": 30,
+      "domain": "spotify.com",
+      "url": "https://spotify.com/",
+      "source": "semrush",
+      "source_rank": 33
+    },
+    {
+      "rank": 31,
+      "domain": "canva.com",
+      "url": "https://canva.com/",
+      "source": "semrush",
+      "source_rank": 34
+    },
+    {
+      "rank": 32,
+      "domain": "imdb.com",
+      "url": "https://imdb.com/",
+      "source": "semrush",
+      "source_rank": 35
+    },
+    {
+      "rank": 33,
+      "domain": "apple.com",
+      "url": "https://apple.com/",
+      "source": "semrush",
+      "source_rank": 36
+    },
+    {
+      "rank": 34,
+      "domain": "paypal.com",
+      "url": "https://paypal.com/",
+      "source": "semrush",
+      "source_rank": 37
+    },
+    {
+      "rank": 35,
+      "domain": "aliexpress.com",
+      "url": "https://aliexpress.com/",
+      "source": "semrush",
+      "source_rank": 38
+    },
+    {
+      "rank": 36,
+      "domain": "roblox.com",
+      "url": "https://roblox.com/",
+      "source": "semrush",
+      "source_rank": 39
+    },
+    {
+      "rank": 37,
+      "domain": "globo.com",
+      "url": "https://globo.com/",
+      "source": "semrush",
+      "source_rank": 40
+    },
+    {
+      "rank": 38,
+      "domain": "telegram.org",
+      "url": "https://telegram.org/",
+      "source": "semrush",
+      "source_rank": 41
+    },
+    {
+      "rank": 39,
+      "domain": "openai.com",
+      "url": "https://openai.com/",
+      "source": "semrush",
+      "source_rank": 42
+    },
+    {
+      "rank": 40,
+      "domain": "booking.com",
+      "url": "https://booking.com/",
+      "source": "semrush",
+      "source_rank": 43
+    },
+    {
+      "rank": 41,
+      "domain": "dailymotion.com",
+      "url": "https://dailymotion.com/",
+      "source": "semrush",
+      "source_rank": 45
+    },
+    {
+      "rank": 42,
+      "domain": "ebay.com",
+      "url": "https://www.ebay.com/",
+      "source": "semrush",
+      "source_rank": 46
+    },
+    {
+      "rank": 43,
+      "domain": "vk.ru",
+      "url": "https://vk.ru/",
+      "source": "semrush",
+      "source_rank": 47
+    },
+    {
+      "rank": 44,
+      "domain": "walmart.com",
+      "url": "https://walmart.com/",
+      "source": "semrush",
+      "source_rank": 48
+    },
+    {
+      "rank": 45,
+      "domain": "adobe.com",
+      "url": "https://adobe.com/",
+      "source": "semrush",
+      "source_rank": 49
+    },
+    {
+      "rank": 46,
+      "domain": "amazon.de",
+      "url": "https://www.amazon.de/",
+      "source": "semrush",
+      "source_rank": 50
+    },
+    {
+      "rank": 47,
+      "domain": "nytimes.com",
+      "url": "https://nytimes.com/",
+      "source": "semrush",
+      "source_rank": 51
+    },
+    {
+      "rank": 48,
+      "domain": "indeed.com",
+      "url": "https://indeed.com/",
+      "source": "semrush",
+      "source_rank": 52
+    },
+    {
+      "rank": 49,
+      "domain": "shopify.com",
+      "url": "https://shopify.com/",
+      "source": "semrush",
+      "source_rank": 53
+    },
+    {
+      "rank": 50,
+      "domain": "usps.com",
+      "url": "https://usps.com/",
+      "source": "semrush",
+      "source_rank": 54
+    },
+    {
+      "rank": 51,
+      "domain": "zoom.us",
+      "url": "https://zoom.us/",
+      "source": "semrush",
+      "source_rank": 55
+    },
+    {
+      "rank": 52,
+      "domain": "samsung.com",
+      "url": "https://samsung.com/",
+      "source": "semrush",
+      "source_rank": 56
+    },
+    {
+      "rank": 53,
+      "domain": "office.com",
+      "url": "https://office.com/",
+      "source": "semrush",
+      "source_rank": 57
+    },
+    {
+      "rank": 54,
+      "domain": "uol.com.br",
+      "url": "https://uol.com.br/",
+      "source": "semrush",
+      "source_rank": 58
+    },
+    {
+      "rank": 55,
+      "domain": "amazon.co.jp",
+      "url": "https://www.amazon.co.jp/",
+      "source": "semrush",
+      "source_rank": 60
+    },
+    {
+      "rank": 56,
+      "domain": "ecosia.org",
+      "url": "https://ecosia.org/",
+      "source": "semrush",
+      "source_rank": 61
+    },
+    {
+      "rank": 57,
+      "domain": "disneyplus.com",
+      "url": "https://disneyplus.com/",
+      "source": "semrush",
+      "source_rank": 62
+    },
+    {
+      "rank": 58,
+      "domain": "espn.com",
+      "url": "https://www.espn.com/",
+      "source": "semrush",
+      "source_rank": 63
+    },
+    {
+      "rank": 59,
+      "domain": "etsy.com",
+      "url": "https://etsy.com/",
+      "source": "semrush",
+      "source_rank": 64
+    },
+    {
+      "rank": 60,
+      "domain": "bbc.co.uk",
+      "url": "https://bbc.co.uk/",
+      "source": "semrush",
+      "source_rank": 65
+    },
+    {
+      "rank": 61,
+      "domain": "bbc.com",
+      "url": "https://bbc.com/",
+      "source": "semrush",
+      "source_rank": 66
+    },
+    {
+      "rank": 62,
+      "domain": "rakuten.co.jp",
+      "url": "https://rakuten.co.jp/",
+      "source": "semrush",
+      "source_rank": 67
+    },
+    {
+      "rank": 63,
+      "domain": "deepseek.com",
+      "url": "https://deepseek.com/",
+      "source": "semrush",
+      "source_rank": 68
+    },
+    {
+      "rank": 64,
+      "domain": "primevideo.com",
+      "url": "https://primevideo.com/",
+      "source": "semrush",
+      "source_rank": 69
+    },
+    {
+      "rank": 65,
+      "domain": "threads.com",
+      "url": "https://threads.com/",
+      "source": "semrush",
+      "source_rank": 70
+    },
+    {
+      "rank": 66,
+      "domain": "accuweather.com",
+      "url": "https://accuweather.com/",
+      "source": "semrush",
+      "source_rank": 71
+    },
+    {
+      "rank": 67,
+      "domain": "scribd.com",
+      "url": "https://scribd.com/",
+      "source": "semrush",
+      "source_rank": 72
+    },
+    {
+      "rank": 68,
+      "domain": "quora.com",
+      "url": "https://quora.com/",
+      "source": "semrush",
+      "source_rank": 73
+    },
+    {
+      "rank": 69,
+      "domain": "mail.ru",
+      "url": "https://mail.ru/",
+      "source": "semrush",
+      "source_rank": 74
+    },
+    {
+      "rank": 70,
+      "domain": "yandex.com",
+      "url": "https://yandex.com/",
+      "source": "semrush",
+      "source_rank": 75
+    },
+    {
+      "rank": 71,
+      "domain": "shein.com",
+      "url": "https://shein.com/",
+      "source": "semrush",
+      "source_rank": 76
+    },
+    {
+      "rank": 72,
+      "domain": "amazon.in",
+      "url": "https://www.amazon.in/",
+      "source": "semrush",
+      "source_rank": 77
+    },
+    {
+      "rank": 73,
+      "domain": "amazon.co.uk",
+      "url": "https://www.amazon.co.uk/",
+      "source": "semrush",
+      "source_rank": 78
+    },
+    {
+      "rank": 74,
+      "domain": "cnn.com",
+      "url": "https://cnn.com/",
+      "source": "semrush",
+      "source_rank": 79
+    },
+    {
+      "rank": 75,
+      "domain": "ozon.ru",
+      "url": "https://ozon.ru/",
+      "source": "semrush",
+      "source_rank": 80
+    },
+    {
+      "rank": 76,
+      "domain": "vkvideo.ru",
+      "url": "https://vkvideo.ru/",
+      "source": "semrush",
+      "source_rank": 81
+    },
+    {
+      "rank": 77,
+      "domain": "marca.com",
+      "url": "https://marca.com/",
+      "source": "semrush",
+      "source_rank": 82
+    },
+    {
+      "rank": 78,
+      "domain": "zillow.com",
+      "url": "https://zillow.com/",
+      "source": "semrush",
+      "source_rank": 83
+    },
+    {
+      "rank": 79,
+      "domain": "ikea.com",
+      "url": "https://ikea.com/",
+      "source": "semrush",
+      "source_rank": 84
+    },
+    {
+      "rank": 80,
+      "domain": "labs.google",
+      "url": "https://labs.google/",
+      "source": "semrush",
+      "source_rank": 85
+    },
+    {
+      "rank": 81,
+      "domain": "opera.com",
+      "url": "https://opera.com/",
+      "source": "semrush",
+      "source_rank": 86
+    },
+    {
+      "rank": 82,
+      "domain": "instructure.com",
+      "url": "https://instructure.com/",
+      "source": "semrush",
+      "source_rank": 87
+    },
+    {
+      "rank": 83,
+      "domain": "hbomax.com",
+      "url": "https://hbomax.com/",
+      "source": "semrush",
+      "source_rank": 89
+    },
+    {
+      "rank": 84,
+      "domain": "archive.org",
+      "url": "https://archive.org/",
+      "source": "semrush",
+      "source_rank": 90
+    },
+    {
+      "rank": 85,
+      "domain": "theguardian.com",
+      "url": "https://theguardian.com/",
+      "source": "semrush",
+      "source_rank": 91
+    },
+    {
+      "rank": 86,
+      "domain": "grok.com",
+      "url": "https://grok.com/",
+      "source": "semrush",
+      "source_rank": 92
+    },
+    {
+      "rank": 87,
+      "domain": "gemini.google.com",
+      "url": "https://gemini.google.com/",
+      "source": "similarweb",
+      "source_rank": 13
+    },
+    {
+      "rank": 88,
+      "domain": "cloud.microsoft",
+      "url": "https://cloud.microsoft/",
+      "source": "similarweb",
+      "source_rank": 18
+    },
+    {
+      "rank": 89,
+      "domain": "baidu.com",
+      "url": "https://baidu.com/",
+      "source": "similarweb",
+      "source_rank": 19
+    },
+    {
+      "rank": 90,
+      "domain": "bilibili.com",
+      "url": "https://bilibili.com/",
+      "source": "similarweb",
+      "source_rank": 24
+    },
+    {
+      "rank": 91,
+      "domain": "dzen.ru",
+      "url": "https://dzen.ru/",
+      "source": "similarweb",
+      "source_rank": 30
+    },
+    {
+      "rank": 92,
+      "domain": "news.yahoo.co.jp",
+      "url": "https://news.yahoo.co.jp/",
+      "source": "similarweb",
+      "source_rank": 37
+    },
+    {
+      "rank": 93,
+      "domain": "fandom.com",
+      "url": "https://fandom.com/",
+      "source": "similarweb",
+      "source_rank": 40
+    },
+    {
+      "rank": 94,
+      "domain": "brave.com",
+      "url": "https://brave.com/",
+      "source": "similarweb",
+      "source_rank": 46
+    },
+    {
+      "rank": 95,
+      "domain": "t.me",
+      "url": "https://t.me/",
+      "source": "similarweb",
+      "source_rank": 48
+    },
+    {
+      "rank": 96,
+      "domain": "realtor.com",
+      "url": "https://realtor.com/",
+      "source": "similarweb",
+      "source_rank": 51
+    },
+    {
+      "rank": 97,
+      "domain": "fifa.com",
+      "url": "https://fifa.com/",
+      "source": "ahrefs",
+      "source_rank": 21
+    },
+    {
+      "rank": 98,
+      "domain": "mashable.com",
+      "url": "https://mashable.com/",
+      "source": "ahrefs",
+      "source_rank": 24
+    },
+    {
+      "rank": 99,
+      "domain": "flipkart.com",
+      "url": "https://flipkart.com/",
+      "source": "ahrefs",
+      "source_rank": 31
+    },
+    {
+      "rank": 100,
+      "domain": "xsmn.mobi",
+      "url": "https://xsmn.mobi/",
+      "source": "ahrefs",
+      "source_rank": 32
+    }
+  ]
+}

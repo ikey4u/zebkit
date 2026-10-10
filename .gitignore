@@ -1,0 +1,6 @@
+# Fetched upstream source, downloads and build trees are reproducible from
+# upstream.lock + patches/ + profiles/, so none of them are tracked.
+/upstream/
+/out/
+/.cache/
+__pycache__/

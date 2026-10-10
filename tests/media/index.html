@@ -1,0 +1,48 @@
+<!doctype html><meta charset=utf-8><title>media</title>
+<body>
+<script>
+// Plays each sample muted and records whether time actually advances and
+// frames decode. scripts/media.sh reads window.__media once it settles.
+const samples = [
+  ['mp4-h264-aac', 'video', 'sample-h264-aac.mp4', 'video/mp4; codecs="avc1.4d401e, mp4a.40.2"'],
+  ['webm-vp9-opus', 'video', 'sample-vp9-opus.webm', 'video/webm; codecs="vp9, opus"'],
+  // Non-square pixels: 320x240 coded, shown as 480x240. The software upload
+  // path once read the shown size out of the coded buffer and crashed.
+  ['mp4-h264-anamorphic', 'video', 'sample-h264-anamorphic.mp4', 'video/mp4; codecs="avc1.4d401e"'],
+  ['mp3', 'audio', 'sample.mp3', 'audio/mpeg'],
+];
+const results = window.__media = { done: false, api: {
+  MediaSource: typeof MediaSource, AudioContext: typeof AudioContext, mediaSession: typeof navigator.mediaSession,
+  mseH264: typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/mp4; codecs="avc1.4d401e"'),
+  mseVP9: typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/webm; codecs="vp9"'),
+}, samples: {} };
+
+function play([name, tag, src, type]) {
+  return new Promise(resolve => {
+    const el = document.createElement(tag);
+    const r = results.samples[name] = { canPlayType: el.canPlayType(type), events: [] };
+    const finish = () => {
+      r.currentTime = +el.currentTime.toFixed(2); r.duration = +(el.duration || 0).toFixed(2);
+      r.readyState = el.readyState; r.error = el.error ? el.error.code + ' ' + el.error.message : null;
+      if (tag === 'video') { r.videoWidth = el.videoWidth; r.videoHeight = el.videoHeight; }
+      el.pause(); resolve();
+    };
+    for (const e of ['loadedmetadata', 'canplay', 'playing', 'ended', 'error', 'stalled'])
+      el.addEventListener(e, () => { r.events.push(e); if (e === 'error' || e === 'ended') finish(); });
+    el.muted = true; el.src = src; document.body.appendChild(el);
+    el.play().then(() => r.play = 'resolved', e => r.play = 'rejected: ' + e.message);
+    setTimeout(finish, 6000);
+  });
+}
+
+(async () => {
+  for (const s of samples) await play(s);
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator(); osc.connect(ctx.destination); osc.start();
+    await new Promise(r => setTimeout(r, 500));
+    results.webAudio = { state: ctx.state, time: +ctx.currentTime.toFixed(2), sampleRate: ctx.sampleRate };
+  } catch (e) { results.webAudio = 'error: ' + e.message; }
+  results.done = true;
+})();
+</script>

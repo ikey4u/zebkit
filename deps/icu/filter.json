@@ -1,0 +1,45 @@
+{
+  "localeFilter": {
+    "filterType": "language",
+    "includelist": [
+      "en",
+      "zh",
+      "ja",
+      "ko"
+    ]
+  },
+  "collationUCAData": "implicithan",
+  "featureFilters": {
+    "translit": "exclude",
+    "rbnf_tree": "exclude",
+    "stringprep": "exclude",
+    "unames": "exclude",
+    "brkitr_lstm": "exclude",
+    "conversion_mappings": {
+      "includelist": [
+        "ibm-912_P100-1995",
+        "ibm-914_P100-1995",
+        "ibm-915_P100-1995",
+        "iso-8859_10-1998",
+        "ibm-921_P100-1995",
+        "iso-8859_14-1998",
+        "ibm-923_P100-1998",
+        "ibm-878_P100-1996",
+        "macos-0_2-10.2",
+        "ibm-5346_P100-1998",
+        "ibm-5347_P100-1998",
+        "ibm-5350_P100-1998",
+        "ibm-9448_X100-2005",
+        "ibm-5354_P100-1998",
+        "macos-7_3-10.2",
+        "macos-6_2-10.4",
+        "macos-29-10.2",
+        "macos-35-10.2",
+        "euc-jp-2007",
+        "windows-950-2000",
+        "windows-949-2000",
+        "gb18030-2022"
+      ]
+    }
+  }
+}

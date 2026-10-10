@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CDP test page</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #box { position: absolute; left: 100px; top: 80px; width: 200px; height: 50px; background: rgb(0, 128, 255); }
+  #name { position: absolute; left: 100px; top: 160px; width: 300px; }
+  #area { position: absolute; left: 100px; top: 200px; width: 300px; height: 60px; }
+  #link { position: absolute; left: 100px; top: 290px; }
+  #file { position: absolute; left: 100px; top: 330px; }
+  #child { position: absolute; left: 500px; top: 80px; width: 320px; height: 200px; border: 4px solid black; padding: 6px; }
+  #far { position: absolute; left: 100px; top: 3000px; width: 120px; height: 40px; }
+  #log { position: absolute; left: 100px; top: 380px; white-space: pre; }
+</style>
+</head>
+<body>
+<button id="box">Click me</button>
+<input id="name" type="text" placeholder="name">
+<textarea id="area"></textarea>
+<a id="link" href="second.html?from=link">Second page</a>
+<input id="file" type="file" multiple>
+<iframe id="child" name="child" src="frame.html"></iframe>
+<button id="far">Far away</button>
+<div id="log"></div>
+<script>
+  window.events = [];
+  window.clicks = 0;
+  function record(event) {
+    events.push(event.type + (event.key !== undefined ? ":" + event.key + ":" + event.code : "")
+      + (event.button !== undefined && event.type !== "wheel" ? ":" + event.button + "@" + event.clientX + "," + event.clientY : "")
+      + (event.isTrusted ? "" : ":untrusted"));
+  }
+  const box = document.getElementById("box");
+  for (const type of ["mousedown", "mouseup", "click", "dblclick", "contextmenu"])
+    box.addEventListener(type, record);
+  box.addEventListener("click", () => { clicks++; box.textContent = "Clicked " + clicks; });
+  const name = document.getElementById("name");
+  for (const type of ["keydown", "keyup", "input"])
+    name.addEventListener(type, record);
+  document.getElementById("far").addEventListener("click", () => { window.farClicked = true; });
+  document.getElementById("file").addEventListener("change", event => {
+    window.files = Array.from(event.target.files).map(file => file.name + ":" + file.size);
+  });
+  addEventListener("wheel", record, { passive: true });
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# Pinned cross toolchain. Sourced by scripts/lib.sh.
+#
+# Zig ships clang, lld, libc++ and glibc headers and link stubs for every
+# glibc release, so "zig cc -target x86_64-linux-gnu.2.17" produces binaries
+# that run on glibc 2.17 and newer no matter how new the build host is.
+TOOLCHAIN_VERSION=0.16.0
+TOOLCHAIN_URL=https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+TOOLCHAIN_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+# The oldest glibc the package must run on.
+TOOLCHAIN_TARGET=x86_64-linux-gnu.2.17
