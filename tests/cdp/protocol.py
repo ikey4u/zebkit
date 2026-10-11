@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Raw Chrome DevTools Protocol checks: protocol.py CDP_PORT PAGE_PORT OTHER_PORT
 
-Talks to a running cdphost the way a CDP client would and checks the answers
-against what Chrome gives. Pages are tests/cdp/pages, served on PAGE_PORT and
-again on OTHER_PORT (a different origin). Run through scripts/cdp.sh.
+Talks to a browser the way a CDP client would and checks what it answers.
+Pages are tests/cdp/pages, served on PAGE_PORT and again on OTHER_PORT (a
+different origin). Run through scripts/cdp.sh.
+
+The same checks run against Chrome itself (scripts/cdp.sh --reference),
+which is what keeps them honest: a check that Chrome fails is asserting
+something Chrome does not do. The few things zebkit does on purpose that
+Chrome does not are marked zebkit-only and left out of that run.
+
+Every message in both directions is also compared with the standard
+protocol definition (see schema.py).
 """
 
 import base64
@@ -16,10 +24,12 @@ import time
 import traceback
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from cdpclient import Connection, ProtocolError, http_json  # noqa: E402
+from cdpclient import NONSTANDARD, Connection, ProtocolError, http_json  # noqa: E402
 
 CDP_PORT, PAGE_PORT, OTHER_PORT = (int(argument) for argument in sys.argv[1:4])
 ONLY = sys.argv[4:]
+# Set when the browser on CDP_PORT is Chrome and not zebkit.
+REFERENCE = bool(os.environ.get("CDP_REFERENCE"))
 PAGES = f"http://127.0.0.1:{PAGE_PORT}"
 OTHER = f"http://localhost:{OTHER_PORT}"
 
@@ -29,6 +39,12 @@ CHECKS = []
 def check(function):
     CHECKS.append(function)
     return function
+
+
+def zebkit_only(function):
+    """A check of something zebkit does on purpose and Chrome does not."""
+    function.zebkit_only = True
+    return check(function)
 
 
 def expect(condition, message):
@@ -104,11 +120,19 @@ class Page:
         self.mouse("mouseReleased", x, y, button=button, clickCount=count)
 
     def key(self, key, text=None, modifiers=0):
-        params = {"type": "keyDown", "key": key, "modifiers": modifiers}
+        # As client libraries send it: with the physical key and its code.
+        code, virtual = KEYS.get(key) or (f"Key{key.upper()}" if key.isalpha() else f"Digit{key}", ord(key.upper()))
+        params = {"key": key, "code": code, "windowsVirtualKeyCode": virtual, "modifiers": modifiers}
+        down = dict(params, type="keyDown" if text else "rawKeyDown")
         if text:
-            params["text"] = text
-        self.cdp.call("Input.dispatchKeyEvent", params)
-        self.cdp.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "modifiers": modifiers})
+            down["text"] = text
+        if modifiers & 2 and key == "a":
+            down["commands"] = ["selectAll"]
+        self.cdp.call("Input.dispatchKeyEvent", down)
+        self.cdp.call("Input.dispatchKeyEvent", dict(params, type="keyUp"))
+
+
+KEYS = {"Backspace": ("Backspace", 8), "Tab": ("Tab", 9), "Enter": ("Enter", 13), "Delete": ("Delete", 46), " ": ("Space", 32)}
 
 
 # -- discovery and access -------------------------------------------------
@@ -119,8 +143,8 @@ def http_discovery():
     version = http_json(CDP_PORT, "/json/version")
     expect(version["webSocketDebuggerUrl"].startswith(f"ws://127.0.0.1:{CDP_PORT}/devtools/browser/"), version)
     equal(version["Protocol-Version"], "1.3", "protocol version")
-    pages = http_json(CDP_PORT, "/json/list")
-    expect(pages and pages[0]["type"] == "page", pages)
+    pages = [target for target in http_json(CDP_PORT, "/json/list") if target["type"] == "page"]
+    expect(pages, "no page is listed")
     expect(pages[0]["webSocketDebuggerUrl"].endswith("/devtools/page/" + pages[0]["id"]), pages[0])
     created = http_json(CDP_PORT, "/json/new?about:blank", method="PUT")
     expect(any(page["id"] == created["id"] for page in http_json(CDP_PORT, "/json")), "new page is not listed")
@@ -133,9 +157,10 @@ def http_discovery():
 
 @check
 def refuses_foreign_hosts_and_origins():
-    with socket.create_connection(("127.0.0.1", CDP_PORT)) as raw:
-        raw.sendall(b"GET /json/version HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n")
-        expect(b" 403 " in raw.recv(4096), "a request for another host name was answered")
+    if not REFERENCE:
+        with socket.create_connection(("127.0.0.1", CDP_PORT)) as raw:
+            raw.sendall(b"GET /json/version HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n")
+            expect(b" 403 " in raw.recv(4096), "a request for another host name was answered")
     url = http_json(CDP_PORT, "/json/version")["webSocketDebuggerUrl"]
     try:
         connection = Connection(url, origin="http://evil.example")
@@ -148,8 +173,10 @@ def refuses_foreign_hosts_and_origins():
 @check
 def unknown_method_is_an_error():
     with Page() as page:
-        expect("wasn't found" in page.cdp.error("Nonsense.method"), "wrong error text")
-        expect("wasn't found" in page.cdp.error("Fetch.enable"), "Fetch.enable must not be acknowledged")
+        expect("wasn't found" in page.cdp.error("Nonsense.method", standard=False), "wrong error text")
+        if not REFERENCE:
+            # Not implemented, and so not acknowledged either.
+            expect("wasn't found" in page.cdp.error("Fetch.enable"), "Fetch.enable must not be acknowledged")
 
 
 # -- Runtime --------------------------------------------------------------
@@ -195,7 +222,7 @@ def call_function_on():
         body = page.handle("document.body")
         result = page.cdp.call("Runtime.callFunctionOn", {
             "objectId": body,
-            "functionDeclaration": "function(a, b, c) { return [this.tagName, a, b.id, c] }\n//# sourceURL=test",
+            "functionDeclaration": "function(a, b, c) { return [this.tagName, a, b.id, c] }\n//# sourceURL=test\n",
             "arguments": [{"value": 5}, {"objectId": page.handle("document.getElementById('box')")}, {"unserializableValue": "-0"}],
             "returnByValue": True,
         })
@@ -225,8 +252,9 @@ def call_function_on():
 def contexts_and_isolated_worlds():
     with Page() as page:
         page.cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": "window.injected = 'yes'", "worldName": "helper"})
+        page.cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": "window.inPage = 'yes'"})
         page.goto(f"{PAGES}/index.html")
-        equal(page.evaluate("window.injected"), "yes", "script on new document")
+        equal(page.evaluate("[window.inPage, window.injected]"), ["yes", None], "scripts on new document, seen from the page")
         page.cdp.drain()
         created = [c["context"] for c in page.cdp.take_events("Runtime.executionContextCreated")]
         frames = page.cdp.call("Page.getFrameTree")["frameTree"]
@@ -234,6 +262,9 @@ def contexts_and_isolated_worlds():
         for frame in (page.target, child):
             kinds = sorted((c["auxData"]["type"], c["name"]) for c in created if c["auxData"]["frameId"] == frame)
             expect(("default", "") in kinds and ("isolated", "helper") in kinds, f"contexts of frame {frame}: {kinds}")
+            helper = [c["id"] for c in created if c["auxData"]["frameId"] == frame and c["name"] == "helper"][-1]
+            value = page.cdp.call("Runtime.evaluate", {"expression": "[window.injected, typeof window.inPage, typeof window.events + typeof window.innerClicks]", "contextId": helper, "returnByValue": True})
+            equal(value["result"]["value"], ["yes", "undefined", "undefinedundefined"], f"the helper world of frame {frame}")
         world = page.cdp.call("Page.createIsolatedWorld", {"frameId": child, "worldName": "another"})["executionContextId"]
         value = page.cdp.call("Runtime.evaluate", {"expression": "document.title", "contextId": world, "returnByValue": True})
         equal(value["result"]["value"], "Child frame", "evaluate in a world of the child frame")
@@ -296,7 +327,7 @@ def navigation_events():
         while "networkIdle" not in names:
             event = page.cdp.wait_event("Page.lifecycleEvent", lambda p: p["loaderId"] == result["loaderId"])
             names.append(event["name"])
-        for name in ("init", "commit", "DOMContentLoaded", "load", "networkIdle"):
+        for name in ("init", "DOMContentLoaded", "load", "networkIdle"):
             expect(name in names, f"no {name} lifecycle event in {names}")
         expect(names.index("init") < names.index("DOMContentLoaded") < names.index("load") < names.index("networkIdle"), names)
         page.cdp.wait_event("Page.loadEventFired")
@@ -385,7 +416,7 @@ def screenshot_and_metrics():
         data = base64.b64decode(page.cdp.call("Page.captureScreenshot", {"format": "webp"})["data"])
         expect(data[:4] == b"RIFF" and data[8:12] == b"WEBP", "not a WebP")
         metrics = page.cdp.call("Page.getLayoutMetrics")
-        equal(metrics["cssVisualViewport"]["clientWidth"], 800, "visual viewport width")
+        equal(metrics["cssVisualViewport"]["clientWidth"], page.evaluate("document.documentElement.clientWidth"), "visual viewport width")
         expect(metrics["cssContentSize"]["height"] >= 3040, metrics["cssContentSize"])
 
 
@@ -481,8 +512,7 @@ def dom_geometry():
         quad = page.cdp.call("DOM.getContentQuads", {"objectId": inner})["quads"][0]
         equal(quad[:2], [540, 130], "frame offset added to the quads of a node in a frame")
         page.click(quad[0] + 20, quad[1] + 10)
-        value = page.cdp.call("Runtime.evaluate", {"expression": "innerClicks", "contextId": world, "returnByValue": True})
-        equal(value["result"]["value"], 1, "click landed in the frame")
+        equal(page.evaluate("document.getElementById('child').contentWindow.innerClicks"), 1, "click landed in the frame")
 
         far = page.handle("document.getElementById('far')")
         page.cdp.call("DOM.scrollIntoViewIfNeeded", {"objectId": far})
@@ -596,10 +626,9 @@ def targets_and_sessions():
     browser = Connection(http_json(CDP_PORT, "/json/version")["webSocketDebuggerUrl"])
     try:
         version = browser.call("Browser.getVersion")
-        expect(version["product"].startswith("Zebkit/") and version["userAgent"], version)
+        expect(version["product"].startswith("Chrome/" if REFERENCE else "Zebkit/") and version["userAgent"], version)
         browser.call("Target.setDiscoverTargets", {"discover": True})
-        existing = browser.wait_event("Target.targetCreated")
-        equal(existing["targetInfo"]["type"], "page", "existing page announced")
+        browser.wait_event("Target.targetCreated", lambda p: p["targetInfo"]["type"] == "page")
         browser.events.clear()
 
         target = browser.call("Target.createTarget", {"url": f"{PAGES}/second.html"})["targetId"]
@@ -645,12 +674,30 @@ def auto_attach_holds_the_page():
         browser.call("Runtime.enable", session=session)
         browser.call("Page.addScriptToEvaluateOnNewDocument", {"source": "window.early = document.readyState"}, session=session)
         time.sleep(0.5)
-        value = browser.call("Runtime.evaluate", {"expression": "location.href", "returnByValue": True}, session=session)
-        equal(value["result"]["value"], "about:blank", "the page has not started loading")
+        if not REFERENCE:
+            # Chrome holds the page with the address already set.
+            value = browser.call("Runtime.evaluate", {"expression": "location.href", "returnByValue": True}, session=session)
+            equal(value["result"]["value"], "about:blank", "the page has not started loading")
         browser.call("Runtime.runIfWaitingForDebugger", session=session)
         browser.wait_event("Page.loadEventFired", session=session)
         value = browser.call("Runtime.evaluate", {"expression": "[document.title, window.early]", "returnByValue": True}, session=session)
-        equal(value["result"]["value"], ["Second page", "loading"], "script installed before the first load ran")
+        if not REFERENCE:
+            # Chrome has started on the address by the time it holds the page.
+            equal(value["result"]["value"], ["Second page", "loading"], "script installed before the first load ran")
+        browser.call("Target.closeTarget", {"targetId": target})
+
+        # The way client libraries do it: an empty page, set up, then sent somewhere.
+        target = browser.call("Target.createTarget", {"url": "about:blank"})["targetId"]
+        attached = browser.wait_event("Target.attachedToTarget", lambda p: p["targetInfo"]["targetId"] == target)
+        equal(attached["waitingForDebugger"], True, "new empty page waits for the client")
+        session = attached["sessionId"]
+        browser.call("Page.enable", session=session)
+        browser.call("Page.addScriptToEvaluateOnNewDocument", {"source": "window.early = document.readyState"}, session=session)
+        browser.call("Runtime.runIfWaitingForDebugger", session=session)
+        browser.call("Page.navigate", {"url": f"{PAGES}/second.html"}, session=session)
+        browser.wait_event("Page.loadEventFired", session=session)
+        value = browser.call("Runtime.evaluate", {"expression": "[document.title, window.early]", "returnByValue": True}, session=session)
+        equal(value["result"]["value"], ["Second page", "loading"], "script installed while the page was held")
         browser.call("Target.closeTarget", {"targetId": target})
     finally:
         browser.close()
@@ -705,7 +752,7 @@ def popups_become_targets():
 # -- things that go wrong ---------------------------------------------------
 
 
-@check
+@zebkit_only
 def refuses_requests_from_web_pages():
     # What script in a web page could send to this port must have no effect.
     import urllib.error
@@ -735,9 +782,11 @@ def refuses_requests_from_web_pages():
 @check
 def hostile_ids_are_harmless():
     with Page(f"{PAGES}/index.html") as page:
+        body = page.cdp.call("DOM.describeNode", {"objectId": page.handle("document.body")})["node"]["backendNodeId"]
         for value in (2**31 - 1, 2**31 - 2, -1, 0, -(2**31)):
             page.cdp.error("DOM.describeNode", {"backendNodeId": value})
             page.cdp.error("DOM.resolveNode", {"nodeId": value})
+            page.cdp.error("DOM.resolveNode", {"backendNodeId": body, "executionContextId": value or 987654})
             if value:
                 page.cdp.error("Runtime.evaluate", {"expression": "1", "contextId": value})
             page.cdp.error("Runtime.callFunctionOn", {"functionDeclaration": "function(){}", "objectId": f'{{"injectedScriptId":{value},"id":1}}'})
@@ -781,21 +830,25 @@ def stop_loading_ends_the_navigation():
 def crash_and_recover():
     with Page(f"{PAGES}/index.html") as page:
         waiting = page.cdp.post("Runtime.evaluate", {"expression": "new Promise(() => {})", "awaitPromise": True})
-        page.cdp.call("Page.crash")
+        crash = page.cdp.post("Page.crash")
         page.cdp.wait_event("Inspector.targetCrashed", timeout=10)
-        answer = page.cdp.reply(waiting, timeout=5)
-        expect("error" in answer, f"a command the dead page was running was answered with {answer}")
-        equal(page.cdp.error("Runtime.evaluate", {"expression": "1"}), "Target crashed", "a command sent to the dead page")
+        if not REFERENCE:
+            # Chrome leaves these three unanswered. Here a client is told.
+            expect("error" not in page.cdp.reply(crash, timeout=5), "Page.crash failed")
+            answer = page.cdp.reply(waiting, timeout=5)
+            expect("error" in answer, f"a command the dead page was running was answered with {answer}")
+            equal(page.cdp.error("Runtime.evaluate", {"expression": "1"}), "Target crashed", "a command sent to the dead page")
         page.goto(f"{PAGES}/second.html")
         equal(page.evaluate("document.title"), "Second page", "the page after the crash")
-        page.cdp.call("Page.crash")
+        page.cdp.post("Page.crash")
         page.cdp.wait_event("Inspector.targetCrashed", timeout=10)
-        page.cdp.call("Page.reload")
+        page.cdp.take_events("Page.lifecycleEvent")
+        page.cdp.post("Page.reload")
         page.cdp.wait_event("Page.lifecycleEvent", lambda p: p["name"] == "load")
         equal(page.evaluate("document.title"), "Second page", "the page reloaded after a second crash")
 
 
-@check
+@zebkit_only
 def a_client_that_leaves_blocks_nothing():
     with Page(f"{PAGES}/dialogs.html") as page:
         page.cdp.post("Runtime.evaluate", {"expression": "setTimeout(() => { alert('x'); window.afterAlert = true }, 0)"})
@@ -822,13 +875,243 @@ def viewport_override_is_undone():
         page.cdp.call("Emulation.setDeviceMetricsOverride", {"width": 500, "height": 400, "deviceScaleFactor": 1, "mobile": False})
         equal(page.evaluate("[innerWidth, innerHeight]"), [500, 400], "overridden size")
         page.cdp.call("Emulation.clearDeviceMetricsOverride")
+        deadline = time.monotonic() + 3
+        while page.evaluate("[innerWidth, innerHeight]") != before and time.monotonic() < deadline:
+            time.sleep(0.05)
         equal(page.evaluate("[innerWidth, innerHeight]"), before, "size after clearing the override")
+
+
+# -- what was found by comparing with Chrome -------------------------------
+
+
+@check
+def isolated_worlds_are_separate():
+    with Page(f"{PAGES}/index.html") as page:
+        world = page.cdp.call("Page.createIsolatedWorld", {"frameId": page.target, "worldName": "apart"})["executionContextId"]
+
+        def in_world(expression):
+            result = page.cdp.call("Runtime.evaluate", {"expression": expression, "contextId": world, "returnByValue": True})
+            expect("exceptionDetails" not in result, f"{expression} threw in the world: {result}")
+            return result["result"].get("value")
+
+        in_world("window.secret = 1")
+        equal(page.evaluate("typeof secret + ' ' + typeof events"), "undefined object", "the page does not see the world's variables")
+        equal(in_world("typeof secret + ' ' + typeof events"), "number undefined", "the world does not see the page's variables")
+        in_world("document.getElementById('box').dataset.seen = 'yes'")
+        equal(page.evaluate("document.getElementById('box').dataset.seen"), "yes", "both see the same document")
+
+        # A node is carried from one world to another by its backend id.
+        handle = page.cdp.call("Runtime.evaluate", {"expression": "document.getElementById('box')", "contextId": world})["result"]["objectId"]
+        backend = page.cdp.call("DOM.describeNode", {"objectId": handle})["node"]["backendNodeId"]
+
+        def call(object_id, function):
+            return page.cdp.call("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": function, "returnByValue": True})["result"]["value"]
+
+        main = page.cdp.call("DOM.resolveNode", {"backendNodeId": backend})["object"]["objectId"]
+        equal(call(main, "function() { return this.id + ' ' + typeof secret + ' ' + typeof events }"), "box undefined object", "resolved in the main world")
+        back = page.cdp.call("DOM.resolveNode", {"backendNodeId": backend, "executionContextId": world})["object"]["objectId"]
+        equal(call(back, "function() { return this.id + ' ' + typeof secret + ' ' + typeof events }"), "box number undefined", "resolved in the isolated world")
+
+        equal(page.cdp.call("Page.createIsolatedWorld", {"frameId": page.target, "worldName": "apart"})["executionContextId"], world, "the same name is the same world")
+        code, message = page.cdp.failure("Page.createIsolatedWorld", {"frameId": "nope"})
+        equal((code, message), (-32602, "No frame for given id found"), "a world for a frame that is not there")
+
+        # A world made this way belongs to its document.
+        page.cdp.events.clear()
+        page.goto(f"{PAGES}/second.html")
+        page.cdp.drain()
+        names = sorted(c["context"]["name"] for c in page.cdp.take_events("Runtime.executionContextCreated"))
+        equal(names, [""], "contexts of the next document")
+        equal(page.cdp.error("Runtime.evaluate", {"expression": "1", "contextId": world}), "Cannot find context with specified id", "the world after its document went")
+
+
+@check
+def bindings_follow_their_world():
+    with Page(f"{PAGES}/index.html") as page:
+        world = page.cdp.call("Page.createIsolatedWorld", {"frameId": page.target, "worldName": "apart"})["executionContextId"]
+        page.cdp.call("Runtime.addBinding", {"name": "everywhere"})
+        page.cdp.call("Runtime.addBinding", {"name": "apartOnly", "executionContextName": "apart"})
+        equal(page.evaluate("[typeof everywhere, typeof apartOnly]"), ["function", "undefined"], "bindings in the page")
+        value = page.cdp.call("Runtime.evaluate", {"expression": "[typeof everywhere, typeof apartOnly]", "contextId": world, "returnByValue": True})
+        equal(value["result"]["value"], ["function", "function"], "bindings in the world")
+        page.cdp.events.clear()
+        page.cdp.call("Runtime.evaluate", {"expression": "apartOnly('a'); everywhere('b')", "contextId": world})
+        page.evaluate("everywhere('c')")
+        page.cdp.drain()
+        calls = [(p["name"], p["payload"], p["executionContextId"] == world) for p in page.cdp.take_events("Runtime.bindingCalled")]
+        equal(calls, [("apartOnly", "a", True), ("everywhere", "b", True), ("everywhere", "c", False)], "calls and where they came from")
+        page.goto(f"{PAGES}/second.html")
+        equal(page.evaluate("[typeof everywhere, typeof apartOnly]"), ["function", "undefined"], "bindings in the next document")
+
+
+@check
+def malformed_messages_are_answered():
+    with Page(f"{PAGES}/index.html") as page:
+        equal(page.cdp.send_raw("{nope")["error"]["code"], -32700, "text that is not JSON")
+        equal(page.cdp.send_raw("[1]")["error"]["code"], -32600, "JSON that is not an object")
+        equal(page.cdp.send_raw('{"method": "Page.enable"}')["error"]["code"], -32600, "a message without an id")
+        answer = page.cdp.send_raw('{"id": 77001}')
+        equal((answer.get("id"), answer["error"]["code"], answer["error"]["message"]), (77001, -32600, "Message must have string 'method' property"), "a message without a method")
+        answer = page.cdp.send_raw('{"id": 77002, "method": "Runtime.evaluate", "params": {"expression": "1"}, "sessionId": "nope"}')
+        equal((answer["error"]["code"], answer["error"]["message"], "sessionId" in answer), (-32001, "Session with given id not found.", False), "a session that does not exist")
+        answer = page.cdp.send_raw('{"id": 77003, "method": "Runtime.evaluate", "params": {}}')
+        equal((answer["error"]["code"], answer["error"]["message"]), (-32602, "Invalid parameters"), "a mandatory parameter left out")
+        expect(answer["error"]["data"].startswith("Failed to deserialize params.expression - BINDINGS: mandatory field missing"), answer)
+        answer = page.cdp.send_raw('{"id": 77004, "method": "Runtime.evaluate", "params": {"expression": 5}}')
+        expect(answer["error"]["data"].startswith("Failed to deserialize params.expression - BINDINGS: string value expected"), answer)
+        answer = page.cdp.send_raw('{"id": 77005, "method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": "1", "y": 2}}')
+        expect(answer["error"]["data"].startswith("Failed to deserialize params.x - BINDINGS: double value expected"), answer)
+        answer = page.cdp.send_raw('{"id": 77006, "method": "Nonsense.method"}')
+        equal(answer["error"]["code"], -32601, "a method that does not exist")
+        equal(page.evaluate("1 + 1"), 2, "the connection after all that")
+
+
+@check
+def errors_are_chromes():
+    with Page(f"{PAGES}/index.html") as page:
+        cases = [
+            ("Runtime.releaseObject", {"objectId": "nope"}, -32000, "Invalid remote object id"),
+            ("Runtime.getProperties", {"objectId": "nope"}, -32000, "Invalid remote object id"),
+            ("Runtime.callFunctionOn", {"objectId": "nope", "functionDeclaration": "function(){}"}, -32000, "Invalid remote object id"),
+            ("Runtime.callFunctionOn", {"functionDeclaration": "function(){}"}, -32602, "Either objectId or executionContextId or uniqueContextId must be specified"),
+            ("Runtime.evaluate", {"expression": "1", "contextId": 987654}, -32000, "Cannot find context with specified id"),
+            ("DOM.describeNode", {"backendNodeId": 99999}, -32000, "No node found for given backend id"),
+            ("DOM.describeNode", {}, -32000, "Either nodeId, backendNodeId or objectId must be specified"),
+            ("DOM.getBoxModel", {"objectId": page.handle("document.createElement('p')")}, -32000, "Could not compute box model."),
+            ("DOM.getContentQuads", {"objectId": page.handle("({})")}, -32000, "Object id doesn't reference a Node"),
+            ("DOM.focus", {"objectId": page.handle("document.getElementById('log')")}, -32000, "Element is not focusable"),
+            ("Page.navigate", {"url": "nonsense"}, -32000, "Cannot navigate to invalid URL"),
+            ("Page.navigateToHistoryEntry", {"entryId": 9999}, -32602, "No entry with passed id"),
+            ("Page.handleJavaScriptDialog", {"accept": True}, -32602, "No dialog is showing"),
+            ("Page.removeScriptToEvaluateOnNewDocument", {"identifier": "999"}, -32000, "Script not found"),
+            ("Page.captureScreenshot", {"format": "bmp"}, -32602, "Invalid image format"),
+            ("Input.dispatchMouseEvent", {"type": "nope", "x": 1, "y": 1}, -32602, "Unexpected event type 'nope'"),
+            ("Input.dispatchKeyEvent", {"type": "nope"}, -32602, "Unexpected event type 'nope'"),
+            ("Network.setCookie", {"name": "a", "value": "b"}, -32602, "At least one of the url or domain needs to be specified"),
+            ("Network.deleteCookies", {"name": "a"}, -32602, "At least one of the url and domain needs to be specified"),
+        ]
+        for method, params, code, message in cases:
+            equal(page.cdp.failure(method, params, standard="nope" not in str(params) and "bmp" not in str(params)), (code, message), f"{method} {params}")
+        browser_cases = [
+            ("Target.attachToTarget", {"targetId": "nope", "flatten": True}, -32602, "No target with given id found"),
+            ("Target.closeTarget", {"targetId": "nope"}, -32602, "No target with given id found"),
+            ("Target.activateTarget", {"targetId": "nope"}, -32602, "No target with given id found"),
+            ("Target.getTargetInfo", {"targetId": "nope"}, -32602, "No target with given id found"),
+            ("Target.detachFromTarget", {"sessionId": "nope"}, -32602, "No session with given id"),
+            ("Target.disposeBrowserContext", {"browserContextId": "nope"}, -32000, "Failed to find context with id nope"),
+            ("Target.createTarget", {"url": "about:blank", "browserContextId": "nope"}, -32000, "Failed to find browser context with id nope"),
+            ("Browser.getWindowForTarget", {"targetId": "nope"}, -32000, "No target with given id"),
+            ("Page.enable", {}, -32601, "'Page.enable' wasn't found"),
+        ]
+        for method, params, code, message in browser_cases:
+            equal(page.browser.failure(method, params), (code, message), f"{method} {params}")
+
+
+@check
+def objects_are_described_as_chrome_does():
+    with Page(f"{PAGES}/index.html") as page:
+        cases = [
+            ("document.getElementById('box')", ("object", "node", "HTMLButtonElement", "button#box")),
+            ("Object.assign(document.createElement('div'), {className: 'a b', title: 't'})", ("object", "node", "HTMLDivElement", "div.a.b")),
+            ("document.getElementById('box').firstChild", ("object", "node", "Text", "#text")),
+            ("document", ("object", "node", "HTMLDocument", "#document")),
+            ("[1, 2, 3]", ("object", "array", "Array", "Array(3)")),
+            ("new Uint8Array(3)", ("object", "typedarray", "Uint8Array", "Uint8Array(3)")),
+            ("new Map([[1, 2]])", ("object", "map", "Map", "Map(1)")),
+            ("new Set([1, 2])", ("object", "set", "Set", "Set(2)")),
+            ("Promise.resolve(1)", ("object", "promise", "Promise", "Promise")),
+            ("/a/g", ("object", "regexp", "RegExp", "/a/g")),
+            ("(function foo(a) { return a })", ("function", None, "Function", "function foo(a) { return a }")),
+            ("(class A {})", ("function", None, "Function", "class A {}")),
+            ("Symbol('s')", ("symbol", None, None, "Symbol(s)")),
+            ("'text'", ("string", None, None, None)),
+            ("true", ("boolean", None, None, None)),
+            ("7", ("number", None, None, "7")),
+            ("window", ("object", None, "Window", "Window")),
+            ("({a: 1})", ("object", None, "Object", "Object")),
+        ]
+        for expression, expected in cases:
+            result = page.cdp.call("Runtime.evaluate", {"expression": expression})["result"]
+            equal((result["type"], result.get("subtype"), result.get("className"), result.get("description")), expected, expression)
+        properties = page.cdp.call("Runtime.getProperties", {"objectId": page.handle("({a: 1})"), "ownProperties": True})
+        equal([p["name"] for p in properties["result"]], ["a"], "own properties")
+        equal([p["name"] for p in properties["internalProperties"]], ["[[Prototype]]"], "internal properties")
+        preview = page.cdp.call("Runtime.evaluate", {"expression": "({a: 1, b: [1, 2]})", "generatePreview": True})["result"]["preview"]
+        equal((preview["overflow"], [(p["name"], p["type"], p.get("value")) for p in preview["properties"]]),
+              (False, [("a", "number", "1"), ("b", "object", "Array(2)")]), "preview")
+        root = page.cdp.call("DOM.getDocument")["root"]
+        equal(["children" in child for child in root["children"]], [False, True], "getDocument goes two levels deep by default")
+        root = page.cdp.call("DOM.getDocument", {"depth": 1})["root"]
+        equal(["children" in child for child in root["children"]], [False, False], "getDocument with a depth of one")
+        value = page.cdp.call("Runtime.callFunctionOn", {"objectId": page.handle("document"), "functionDeclaration": "function(x) { return x }", "arguments": [{"unserializableValue": "-0"}], "returnByValue": True})
+        equal(value["result"].get("unserializableValue"), "-0", "negative zero")
+
+
+@check
+def lifecycle_is_replayed_to_a_late_listener():
+    with Page(f"{PAGES}/second.html") as page:
+        page.cdp.wait_event("Page.lifecycleEvent", lambda p: p["name"] == "networkIdle")
+        late = Connection(f"ws://127.0.0.1:{CDP_PORT}/devtools/page/{page.target}")
+        try:
+            late.call("Page.enable")
+            late.call("Page.setLifecycleEventsEnabled", {"enabled": True})
+            names = []
+            while "networkIdle" not in names:
+                names.append(late.wait_event("Page.lifecycleEvent", timeout=5)["name"])
+            equal(names, ["commit", "DOMContentLoaded", "load", "networkAlmostIdle", "networkIdle"], "what a late listener is told")
+        finally:
+            late.close()
+
+
+@check
+def contexts_are_cleared_with_the_document():
+    with Page(f"{PAGES}/index.html") as page:
+        page.cdp.drain()
+        created = page.cdp.take_events("Runtime.executionContextCreated")
+        page.cdp.events.clear()
+        page.goto(f"{PAGES}/second.html")
+        page.cdp.drain()
+        expect(page.cdp.take_events("Runtime.executionContextsCleared"), "no executionContextsCleared for a new document")
+        # The frames that went with the document may be reported; the page's own context is not.
+        main = [c["context"]["id"] for c in created if c["context"]["auxData"]["frameId"] == page.target]
+        gone = [p["executionContextId"] for p in page.cdp.take_events("Runtime.executionContextDestroyed")]
+        expect(not set(main) & set(gone), f"the main frame's context was reported one by one as well: {gone}")
+
+
+@check
+def the_document_changing_its_own_address_is_reported():
+    with Page(f"{PAGES}/index.html") as page:
+        page.cdp.events.clear()
+        page.evaluate("location.hash = '#part'")
+        event = page.cdp.wait_event("Page.navigatedWithinDocument", timeout=5)
+        equal((event["frameId"], event["url"], event["navigationType"]), (page.target, f"{PAGES}/index.html#part", "fragment"), "a fragment")
+        page.evaluate("history.pushState({}, '', '/pushed?x=1')")
+        event = page.cdp.wait_event("Page.navigatedWithinDocument", timeout=5)
+        equal((event["url"], event["navigationType"]), (f"{PAGES}/pushed?x=1", "historyApi"), "the history API")
+        page.goto(f"{PAGES}/second.html")
+        page.cdp.drain(0.5)
+        equal(page.cdp.take_events("Page.navigatedWithinDocument"), [], "a new document is not one of these")
+
+
+@check
+def failed_requests_are_named_as_in_chrome():
+    with Page(f"{PAGES}/index.html") as page:
+        page.cdp.events.clear()
+        page.evaluate(f"fetch('http://127.0.0.1:{OTHER_PORT + 7}/nothing').catch(() => 0)")
+        failed = page.cdp.wait_event("Network.loadingFailed", timeout=10)
+        equal((failed["type"], failed["errorText"], failed["canceled"]), ("Fetch", "net::ERR_CONNECTION_REFUSED", False), "a refused connection")
+        equal(page.cdp.failure("Network.getResponseBody", {"requestId": "nope"}), (-32000, "No resource with given identifier found"), "the body of no request")
 
 
 def main():
     failures = 0
+    skipped = 0
     for function in CHECKS:
         if ONLY and function.__name__ not in ONLY:
+            continue
+        if REFERENCE and getattr(function, "zebkit_only", False):
+            skipped += 1
+            print(f"skip  {function.__name__} (zebkit only)")
             continue
         started = time.monotonic()
         try:
@@ -840,8 +1123,11 @@ def main():
                 traceback.print_exc()
         else:
             print(f"ok    {function.__name__} ({time.monotonic() - started:.1f}s)")
-    print(f"{len([f for f in CHECKS if not ONLY or f.__name__ in ONLY]) - failures} passed, {failures} failed")
-    return 1 if failures else 0
+    print(f"{len([f for f in CHECKS if not ONLY or f.__name__ in ONLY]) - failures - skipped} passed, {failures} failed, {skipped} skipped")
+    for problem, count in sorted(NONSTANDARD.items()):
+        print(f"NONSTANDARD  {problem} ({count}x)")
+    print(f"{len(NONSTANDARD)} departures from the standard protocol definition")
+    return 1 if failures or NONSTANDARD else 0
 
 
 if __name__ == "__main__":

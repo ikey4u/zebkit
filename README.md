@@ -18,6 +18,7 @@ upstream release plus what turns it into zebkit:
 | `patches/` | Source changes on top of upstream, applied in `series` order |
 | `deps/` | Recipes for third-party libraries built from source for size |
 | `src/` | Our own engine code: `cdp/`, the Chrome DevTools Protocol endpoint |
+| `third_party/` | Reference material copied unchanged: `devtools-protocol/`, Chrome's definition of the protocol, which the endpoint is generated from and tested against |
 | `scripts/` | Fetch, build, test and measure; every step is one script |
 | `tests/` | Smoke, media, display and benchmark pages; `cdp/`, the protocol and client tests |
 | `tools/` | Small programs the scripts build: `pageprobe` loads a URL headlessly and reports on it, `cdphost` is a minimal embedding application, `crashsite` locates a crash, `syslib-stubs` makes the stand-ins for optional system libraries |

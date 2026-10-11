@@ -49,7 +49,9 @@ Ref<JSON::Object> PageTarget::targetInfo() const
     info->setString("targetId"_s, m_targetID);
     info->setString("type"_s, "page"_s);
     info->setString("title"_s, m_view ? str(webkit_web_view_get_title(m_view)) : emptyString());
-    info->setString("url"_s, m_view ? str(webkit_web_view_get_uri(m_view)) : emptyString());
+    // A view that has loaded nothing has no address; in Chrome it is at about:blank.
+    auto url = m_view ? str(webkit_web_view_get_uri(m_view)) : emptyString();
+    info->setString("url"_s, url.isEmpty() ? "about:blank"_s : url);
     info->setBoolean("attached"_s, !m_sessions.isEmpty());
     info->setBoolean("canAccessOpener"_s, false);
     if (!openerID.isEmpty())
@@ -116,10 +118,8 @@ void PageTarget::connectInspector()
         return;
     m_inspectorConnected = true;
     m_state.clear();
-    m_state.append({ "Page.enable"_s, nullptr });
-    m_state.append({ "Runtime.enable"_s, nullptr });
-    m_state.append({ "Network.enable"_s, nullptr });
-    m_state.append({ "Console.enable"_s, nullptr });
+    for (auto method : { "Page.enable"_s, "Runtime.enable"_s, "Network.enable"_s, "Console.enable"_s })
+        m_state.append({ method, method, nullptr });
     updateBootstrapScript();
 
     setPageCacheSuspended(true);
@@ -280,21 +280,24 @@ void PageTarget::wip(ASCIILiteral method, RefPtr<JSON::Object>&& params, WIPRepl
 }
 
 // Settings that every inner target must be given: they are sent now and
-// again to each inner target that appears later.
-void PageTarget::setState(ASCIILiteral method, RefPtr<JSON::Object>&& params)
+// again to each inner target that appears later. A method that is called
+// with several sets of parameters has a key for each.
+void PageTarget::setState(ASCIILiteral method, RefPtr<JSON::Object>&& params, const String& key)
 {
+    String stateKey = key.isNull() ? String(method) : key;
     bool found = false;
     for (auto& entry : m_state) {
-        if (entry.first == method) {
-            entry.second = params;
+        if (entry.key == stateKey) {
+            entry.params = params;
             found = true;
         }
     }
     if (!found)
-        m_state.append({ method, params });
-    // A target that is not ready yet gets the whole state when it is set up.
-    auto current = m_innerTargets.find(m_innerTargetID);
-    if (m_inspectorConnected && current != m_innerTargets.end() && current->value.ready)
+        m_state.append({ stateKey, method, params });
+    // The whole state goes to a target when it is set up. One that is being
+    // set up now has been sent it already, without this; then this waits in
+    // the queue with everything else until the target answers.
+    if (m_inspectorConnected && m_innerTargets.contains(m_innerTargetID))
         wip(method, WTF::move(params));
 }
 
@@ -335,6 +338,9 @@ void PageTarget::initializeInnerTarget(const String& innerTargetID)
             iterator->value.frameTree = WTF::move(tree);
         }
         if (innerTargetID == m_innerTargetID) {
+            // The frames that were there before anything was reported.
+            if (iterator->value.frameTree)
+                frameTreeToCDP(*iterator->value.frameTree);
             flushQueuedCommands();
             flushBufferedEvents();
         }
@@ -342,7 +348,7 @@ void PageTarget::initializeInnerTarget(const String& innerTargetID)
     sendToInner(innerTargetID, id, "Page.getResourceTree"_s, nullptr);
 
     for (auto& entry : m_state)
-        sendToInner(innerTargetID, m_nextCommandID++, entry.first, entry.second.get());
+        sendToInner(innerTargetID, m_nextCommandID++, entry.method, entry.params.get());
 
     // A view that has just been created has no process yet, and what is
     // sent to it, including the inspector connection itself, is lost. Until
@@ -596,7 +602,9 @@ Ref<JSON::Object> PageTarget::frameToCDP(JSON::Object& innerFrame) const
     frame->setString("domainAndRegistry"_s, emptyString());
     frame->setString("securityOrigin"_s, originOf(url));
     frame->setString("mimeType"_s, innerFrame.getString("mimeType"_s));
-    frame->setString("secureContextType"_s, url.startsWith("http:"_s) ? "InsecureScheme"_s : "Secure"_s);
+    auto origin = originOf(url);
+    bool isLocal = origin.startsWith("http://localhost"_s) || origin.startsWith("http://127."_s) || origin.startsWith("http://[::1]"_s) || origin.contains(".localhost"_s);
+    frame->setString("secureContextType"_s, !url.startsWith("http:"_s) ? "Secure"_s : isLocal ? "SecureLocalhost"_s : "InsecureScheme"_s);
     frame->setString("crossOriginIsolatedContextType"_s, "NotIsolated"_s);
     frame->setArray("gatedAPIFeatures"_s, JSON::Array::create());
     return frame;
@@ -620,41 +628,28 @@ Ref<JSON::Object> PageTarget::frameTreeToCDP(JSON::Object& innerTree)
     return tree;
 }
 
-// Isolated worlds are emulated: each one a client asks for is announced as
-// a second context of every frame, with its own id, and commands sent to it
-// run in the frame's main world. Client libraries only need their helper
-// world to exist; they do not rely on it being separate.
-int PageTarget::worldContextID(int innerContextID, unsigned worldIndex) const
-{
-    return worldContextBase + innerContextID * maxWorlds + worldIndex;
-}
-
-int PageTarget::toInnerContextID(int cdpContextID) const
-{
-    return cdpContextID >= worldContextBase ? (cdpContextID - worldContextBase) / maxWorlds : cdpContextID;
-}
-
+// Isolated worlds are WebKit user worlds, made by the inspector's page
+// agent in every frame (patches/2006). WebKit announces a context for each
+// world of each frame; those of worlds a client asked for are passed on.
 int PageTarget::defaultContextID() const
 {
-    auto mainFrame = mainFrameID();
-    for (auto& entry : m_contexts) {
-        if (entry.value.frameID == mainFrame)
-            return entry.key;
-    }
-    return 0;
+    return contextForFrame(mainFrameID());
 }
 
-int PageTarget::contextForFrame(const String& innerFrameID) const
+int PageTarget::contextForFrame(const String& innerFrameID, const String& world) const
 {
+    // A frame can briefly have two: the newest is the one in use.
+    int found = 0;
     for (auto& entry : m_contexts) {
-        if (entry.value.frameID == innerFrameID)
-            return entry.key;
+        if (entry.value.frameID == innerFrameID && entry.value.world == world && entry.value.world.isNull() == world.isNull())
+            found = std::max<int>(found, entry.key);
     }
-    return 0;
+    return found;
 }
 
-static Ref<JSON::Object> contextDescription(int id, const String& name, const String& origin, const String& frameID, bool isDefault)
+static Ref<JSON::Object> contextDescription(int id, const String& world, const String& origin, const String& frameID)
 {
+    bool isDefault = world.isNull();
     auto auxData = JSON::Object::create();
     auxData->setBoolean("isDefault"_s, isDefault);
     auxData->setString("type"_s, isDefault ? "default"_s : "isolated"_s);
@@ -662,7 +657,7 @@ static Ref<JSON::Object> contextDescription(int id, const String& name, const St
     auto context = JSON::Object::create();
     context->setInteger("id"_s, id);
     context->setString("origin"_s, origin);
-    context->setString("name"_s, name);
+    context->setString("name"_s, isDefault ? emptyString() : world);
     context->setString("uniqueId"_s, String::number(id));
     context->setObject("auxData"_s, WTF::move(auxData));
     auto params = JSON::Object::create();
@@ -670,34 +665,76 @@ static Ref<JSON::Object> contextDescription(int id, const String& name, const St
     return params;
 }
 
-void PageTarget::announceContext(Session& session, int innerContextID)
+bool PageTarget::isKnownContext(int contextID) const
 {
-    auto iterator = m_contexts.find(innerContextID);
-    if (!session.runtimeEnabled || iterator == m_contexts.end())
-        return;
-    auto frameID = toCDPFrameID(iterator->value.frameID);
-    auto& origin = iterator->value.origin;
-    session.event("Runtime.executionContextCreated"_s, contextDescription(innerContextID, emptyString(), origin, frameID, true));
-    for (unsigned index = 0; index < m_worlds.size(); ++index)
-        session.event("Runtime.executionContextCreated"_s, contextDescription(worldContextID(innerContextID, index), m_worlds[index], origin, frameID, false));
+    if (contextID <= 0)
+        return false;
+    auto iterator = m_contexts.find(contextID);
+    return iterator != m_contexts.end() && iterator->value.announced;
 }
 
-unsigned PageTarget::ensureWorld(const String& name)
+void PageTarget::announceContextToAll(int contextID)
 {
-    auto index = m_worlds.find(name);
-    if (index != notFound)
-        return index;
-    if (m_worlds.size() == maxWorlds)
-        return maxWorlds - 1;
-    m_worlds.append(name);
-    index = m_worlds.size() - 1;
+    auto iterator = m_contexts.find(contextID);
+    if (iterator == m_contexts.end() || iterator->value.announced)
+        return;
+    iterator->value.announced = true;
+    forEachSession([&](Session& session) {
+        announceContext(session, contextID);
+    });
+}
+
+void PageTarget::forgetContext(int contextID)
+{
+    auto iterator = m_contexts.find(contextID);
+    if (iterator == m_contexts.end())
+        return;
+    bool announced = iterator->value.announced;
+    m_contexts.remove(iterator);
+    m_globalObjects.remove(contextID);
+    if (!announced)
+        return;
     forEachSession([&](Session& session) {
         if (!session.runtimeEnabled)
             return;
-        for (auto& entry : m_contexts)
-            session.event("Runtime.executionContextCreated"_s, contextDescription(worldContextID(entry.key, index), name, entry.value.origin, toCDPFrameID(entry.value.frameID), false));
+        auto params = JSON::Object::create();
+        params->setInteger("executionContextId"_s, contextID);
+        params->setString("executionContextUniqueId"_s, String::number(contextID));
+        session.event("Runtime.executionContextDestroyed"_s, WTF::move(params));
     });
-    return index;
+}
+
+void PageTarget::clearContexts()
+{
+    if (m_contexts.isEmpty())
+        return;
+    m_contexts.clear();
+    m_globalObjects.clear();
+    forEachSession([&](Session& session) {
+        if (session.runtimeEnabled)
+            session.event("Runtime.executionContextsCleared"_s, JSON::Object::create());
+    });
+}
+
+void PageTarget::announceContext(Session& session, int contextID)
+{
+    auto iterator = m_contexts.find(contextID);
+    if (!session.runtimeEnabled || iterator == m_contexts.end() || !iterator->value.announced)
+        return;
+    session.event("Runtime.executionContextCreated"_s, contextDescription(contextID, iterator->value.world, iterator->value.origin, toCDPFrameID(iterator->value.frameID)));
+}
+
+// True if the world is there or has been asked for. WebKit creates it in
+// every frame and says so before it answers anything sent after this.
+bool PageTarget::ensureWorld(const String& name)
+{
+    if (m_worlds.contains(name))
+        return true;
+    if (m_worlds.size() == maxWorlds)
+        return false;
+    m_worlds.append(name);
+    updateBootstrapScript();
+    return true;
 }
 
 void PageTarget::destroyContextsOfFrame(const String& innerFrameID)
@@ -707,23 +744,8 @@ void PageTarget::destroyContextsOfFrame(const String& innerFrameID)
         if (entry.value.frameID == innerFrameID)
             ids.append(entry.key);
     }
-    for (int id : ids) {
-        m_contexts.remove(id);
-        m_globalObjects.remove(id);
-        forEachSession([&](Session& session) {
-            if (!session.runtimeEnabled)
-                return;
-            auto announce = [&](int contextID) {
-                auto params = JSON::Object::create();
-                params->setInteger("executionContextId"_s, contextID);
-                params->setString("executionContextUniqueId"_s, String::number(contextID));
-                session.event("Runtime.executionContextDestroyed"_s, WTF::move(params));
-            };
-            announce(id);
-            for (unsigned index = 0; index < m_worlds.size(); ++index)
-                announce(worldContextID(id, index));
-        });
-    }
+    for (int id : ids)
+        forgetContext(id);
 }
 
 void PageTarget::removeFrame(const String& innerFrameID, bool announce)
@@ -834,7 +856,10 @@ static Ref<JSON::Object> responseToCDP(JSON::Object& inner)
     response->setBoolean("fromServiceWorker"_s, source == "service-worker"_s);
     response->setInteger("encodedDataLength"_s, 0);
     response->setString("protocol"_s, "http/1.1"_s);
-    response->setString("securityState"_s, url.startsWith("https:"_s) ? "secure"_s : "insecure"_s);
+    // As in Chrome, this machine counts as secure whatever the scheme.
+    auto origin = originOf(url);
+    bool isLocal = origin.startsWith("http://localhost"_s) || origin.startsWith("http://127."_s) || origin.startsWith("http://[::1]"_s) || origin.contains(".localhost"_s);
+    response->setString("securityState"_s, url.startsWith("https:"_s) || isLocal ? "secure"_s : "insecure"_s);
     return response;
 }
 
@@ -854,6 +879,32 @@ String PageTarget::toInnerRequestID(const String& cdpRequestID) const
     return requestID;
 }
 
+// WebKit describes a failure in words; clients written for Chrome look at
+// its error names.
+static ASCIILiteral netErrorName(const String& text, bool canceled)
+{
+    auto has = [&](ASCIILiteral words) {
+        return text.containsIgnoringASCIICase(words);
+    };
+    if (canceled || has("cancel"_s))
+        return "net::ERR_ABORTED"_s;
+    if (has("refused"_s))
+        return "net::ERR_CONNECTION_REFUSED"_s;
+    if (has("resolv"_s) || has("name or service not known"_s) || has("hostname"_s))
+        return "net::ERR_NAME_NOT_RESOLVED"_s;
+    if (has("timed out"_s) || has("timeout"_s))
+        return "net::ERR_TIMED_OUT"_s;
+    if (has("unreachable"_s))
+        return "net::ERR_ADDRESS_UNREACHABLE"_s;
+    if (has("certificate"_s))
+        return "net::ERR_CERT_AUTHORITY_INVALID"_s;
+    if (has("TLS"_s) || has("handshake"_s))
+        return "net::ERR_SSL_PROTOCOL_ERROR"_s;
+    if (has("reset"_s) || has("closed"_s) || has("terminated"_s))
+        return "net::ERR_CONNECTION_CLOSED"_s;
+    return "net::ERR_FAILED"_s;
+}
+
 void PageTarget::handleRequestWillBeSent(JSON::Object& params)
 {
     auto innerRequestID = params.getString("requestId"_s);
@@ -865,7 +916,7 @@ void PageTarget::handleRequestWillBeSent(JSON::Object& params)
     // clients find the response of a navigation that way.
     if (type == "Document"_s && !loaderID.isEmpty())
         m_requestIDs.set(innerRequestID, loaderID);
-    m_inflightRequests.add(innerRequestID);
+    m_inflightRequests.set(innerRequestID, resourceTypeToCDP(type));
     scheduleNetworkIdle();
 
     RefPtr innerRequest = params.getObject("request"_s);
@@ -888,7 +939,8 @@ void PageTarget::handleRequestWillBeSent(JSON::Object& params)
             auto postData = innerRequest->getString("postData"_s);
             if (!postData.isNull())
                 request->setString("postData"_s, postData);
-            request->setBoolean("hasPostData"_s, !postData.isNull());
+            if (!postData.isNull())
+                request->setBoolean("hasPostData"_s, true);
         }
         request->setString("initialPriority"_s, "Medium"_s);
         request->setString("referrerPolicy"_s, "strict-origin-when-cross-origin"_s);
@@ -953,24 +1005,23 @@ void PageTarget::handleConsoleMessage(JSON::Object& message)
                 RefPtr nameObject = parameters->get(1)->asObject();
                 RefPtr payloadObject = parameters->get(2)->asObject();
                 auto name = nameObject ? nameObject->getString("value"_s) : String();
-                for (auto& binding : m_bindings) {
-                    if (binding.name != name)
-                        continue;
-                    int reportedContext = contextID;
-                    if (!binding.worldName.isNull()) {
-                        if (auto index = m_worlds.find(binding.worldName); index != notFound)
-                            reportedContext = worldContextID(contextID, index);
-                    }
-                    forEachSession([&](Session& session) {
-                        if (!session.runtimeEnabled)
-                            return;
-                        auto event = JSON::Object::create();
-                        event->setString("name"_s, name);
-                        event->setString("payload"_s, payloadObject ? payloadObject->getString("value"_s) : String());
-                        event->setInteger("executionContextId"_s, reportedContext);
-                        session.event("Runtime.bindingCalled"_s, WTF::move(event));
-                    });
-                }
+                // The function is only in the worlds it was added to, but a
+                // page can write the same console message itself.
+                auto context = m_contexts.find(contextID);
+                bool known = context != m_contexts.end() && m_bindings.containsIf([&](auto& binding) {
+                    return binding.name == name && (binding.worldName.isNull() || binding.worldName == context->value.world);
+                });
+                if (!known)
+                    return;
+                forEachSession([&](Session& session) {
+                    if (!session.runtimeEnabled)
+                        return;
+                    auto event = JSON::Object::create();
+                    event->setString("name"_s, name);
+                    event->setString("payload"_s, payloadObject ? payloadObject->getString("value"_s) : String());
+                    event->setInteger("executionContextId"_s, contextID);
+                    session.event("Runtime.bindingCalled"_s, WTF::move(event));
+                });
                 return;
             }
         }
@@ -1093,6 +1144,7 @@ void PageTarget::scanNode(JSON::Object& node)
 {
     int nodeID = node.getInteger("nodeId"_s).value_or(0);
     node.setInteger("backendNodeId"_s, nodeID);
+    node.remove("contentSecurityPolicyHash"_s);
     // WebKit puts on every node the frame it is in. CDP puts on a frame
     // element the frame it holds, which here is the frame of the document
     // nested in the element.
@@ -1121,17 +1173,41 @@ void PageTarget::handleInnerEvent(const String& method, JSON::Object& params)
 {
     if (method == "Runtime.executionContextCreated"_s) {
         RefPtr context = params.getObject("context"_s);
-        if (!context || context->getString("type"_s) != "normal"_s)
+        if (!context)
             return;
         int id = context->getInteger("id"_s).value_or(0);
         auto frameID = context->getString("frameId"_s);
-        // Ids at and above worldContextBase stand for emulated worlds.
-        if (id <= 0 || id >= worldContextBase)
+        auto type = context->getString("type"_s);
+        // WebKit can report a context more than once.
+        if (id <= 0 || m_contexts.contains(id))
             return;
-        // A frame has one main world; a new one replaces what was there.
-        destroyContextsOfFrame(frameID);
         Context entry;
         entry.frameID = frameID;
+        if (type == "user"_s) {
+            // A world of the application's or of WebKit's is not a client's business.
+            auto name = context->getString("name"_s);
+            if (!name.startsWith(worldPrefix) || !m_worlds.contains(name.substring(worldPrefix.length())))
+                return;
+            entry.world = name.substring(worldPrefix.length());
+            if (entry.world.isNull())
+                entry.world = emptyString();
+            // The same world of the document the frame held before.
+            if (int old = contextForFrame(frameID, entry.world))
+                forgetContext(old);
+            entry.announced = m_scripts.containsIf([&](auto& script) {
+                return !script.world.isNull() && script.world == entry.world;
+            });
+        } else if (type == "normal"_s) {
+            entry.announced = true;
+            // A new main world means a new document: what the frame had is
+            // gone. For the main frame that is every context of the page,
+            // which Chrome reports in one event.
+            if (frameID == mainFrameID())
+                clearContexts();
+            else
+                destroyContextsOfFrame(frameID);
+        } else
+            return;
         if (auto frame = m_frames.find(frameID); frame != m_frames.end())
             entry.origin = originOf(frame->value.url);
         m_contexts.set(id, WTF::move(entry));
@@ -1157,7 +1233,11 @@ void PageTarget::handleInnerEvent(const String& method, JSON::Object& params)
                 target->value.mainFrameID = frameID;
         }
         bool isNewFrame = !m_frames.contains(frameID);
-        // The document the frame held is gone, with its child frames.
+        // The document the frame held is gone, with its child frames. For
+        // the main frame that is every context of the page, which Chrome
+        // reports in one event.
+        if (isMainFrame)
+            clearContexts();
         removeFrame(frameID, false);
         rememberFrame(*frame);
         if (isMainFrame) {
@@ -1201,7 +1281,6 @@ void PageTarget::handleInnerEvent(const String& method, JSON::Object& params)
             event->setString("type"_s, "Navigation"_s);
             session.event("Page.frameNavigated"_s, WTF::move(event));
         });
-        emitLifecycle(frameID, "commit"_s);
         if (isMainFrame) {
             // The page WebKit shows after a failed load commits like any
             // other. It is not the navigation a client may be waiting for.
@@ -1282,6 +1361,8 @@ void PageTarget::handleInnerEvent(const String& method, JSON::Object& params)
     if (method == "Network.loadingFinished"_s || method == "Network.loadingFailed"_s) {
         bool failed = method == "Network.loadingFailed"_s;
         auto innerRequestID = params.getString("requestId"_s);
+        if (innerRequestID.isNull())
+            return;
         forEachSession([&](Session& session) {
             if (!session.networkEnabled)
                 return;
@@ -1289,9 +1370,11 @@ void PageTarget::handleInnerEvent(const String& method, JSON::Object& params)
             event->setString("requestId"_s, toCDPRequestID(innerRequestID));
             event->setDouble("timestamp"_s, monotonicSeconds());
             if (failed) {
-                event->setString("type"_s, "Other"_s);
-                event->setString("errorText"_s, params.getString("errorText"_s));
-                event->setBoolean("canceled"_s, params.getBoolean("canceled"_s).value_or(false));
+                bool canceled = params.getBoolean("canceled"_s).value_or(false);
+                auto type = m_inflightRequests.find(innerRequestID);
+                event->setString("type"_s, type == m_inflightRequests.end() ? "Other"_s : type->value);
+                event->setString("errorText"_s, netErrorName(params.getString("errorText"_s), canceled));
+                event->setBoolean("canceled"_s, canceled);
             } else {
                 int length = 0;
                 if (RefPtr metrics = params.getObject("metrics"_s))

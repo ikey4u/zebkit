@@ -51,9 +51,9 @@ inline String str(const char* characters) { return characters ? String::fromUTF8
 // console.debug() calls that start with this string are calls of a function
 // installed by Runtime.addBinding.
 static constexpr auto bindingMarker = "\x01zebkit-binding"_s;
-// Context ids of emulated isolated worlds: above every id WebKit hands out,
-// and reversible without a table.
-static constexpr int worldContextBase = 1 << 24;
+// Isolated worlds are WebKit user worlds. Their names carry this prefix
+// inside WebKit, which tells them from worlds the application made.
+static constexpr auto worldPrefix = "zebkit:"_s;
 static constexpr unsigned maxWorlds = 16;
 // The longest side of a screenshot, as in Chrome. A page can be made as tall
 // as it likes, and the image is held in memory several times over.
@@ -70,6 +70,15 @@ String transcodeScreenshot(const String& base64PNG, const String& format, int qu
 
 inline void replyOK(Reply& reply) { reply(JSON::Object::create(), { }); }
 inline void replyError(Reply& reply, const String& message) { reply(nullptr, message); }
+// An error that starts with this is answered as "Invalid parameters", with
+// the rest as its detail.
+static constexpr auto invalidParametersPrefix = "\x1finvalid:"_s;
+// Chrome answers a command whose parameters name something that is not
+// there, or have a value that is not allowed, with the "invalid params"
+// code and a message of the handler's own.
+static constexpr auto invalidValuePrefix = "\x1fvalue:"_s;
+inline void replyInvalid(Reply& reply, const String& message) { reply(nullptr, makeString(invalidValuePrefix, message)); }
+String invalidParameters(const String& method, JSON::Object& params);
 
 double monotonicSeconds();
 String randomID();
@@ -195,7 +204,7 @@ private:
     void sendOuter(const String& method, Ref<JSON::Object>&& params);
     void sendToInner(const String& innerTargetID, int id, const String& method, JSON::Object* params);
     void wip(ASCIILiteral method, RefPtr<JSON::Object>&& params, WIPReply&& = nullptr);
-    void setState(ASCIILiteral method, RefPtr<JSON::Object>&& params);
+    void setState(ASCIILiteral method, RefPtr<JSON::Object>&& params, const String& key = { });
     void initializeInnerTarget(const String& innerTargetID);
     void innerTargetBecameCurrent(const String& innerTargetID);
     void failPendingCommands(const String& message, const String& exceptInnerTargetID = String());
@@ -219,7 +228,12 @@ private:
     void removeFrame(const String& innerFrameID, bool announce);
     void destroyContextsOfFrame(const String& innerFrameID);
     int defaultContextID() const;
-    int contextForFrame(const String& innerFrameID) const;
+    int contextForFrame(const String& innerFrameID, const String& world = { }) const;
+    bool isKnownContext(int contextID) const;
+    void announceContextToAll(int contextID);
+    void forgetContext(int contextID);
+    void clearContexts();
+    void resolveNodeInContext(const String& objectID, int contextID, Function<void(JSON::Object* remoteObject, const String& error)>&&);
     void scanNode(JSON::Object&);
     static String bindingSource(const String& name);
     void afterPageCatchesUp(Function<void()>&&);
@@ -232,10 +246,10 @@ private:
     void domPassThrough(const String& method, JSON::Object& params, Reply&&);
     void waitForViewportWidth(int width, unsigned attemptsLeft, Reply&&);
     void processTerminated();
-    int toInnerContextID(int cdpContextID) const;
-    int worldContextID(int innerContextID, unsigned worldIndex) const;
-    unsigned ensureWorld(const String& name);
-    void announceContext(Session&, int innerContextID);
+    void addressChanged();
+    void navigatedWithinDocument(const String& url);
+    bool ensureWorld(const String& name);
+    void announceContext(Session&, int contextID);
     void forEachSession(NOESCAPE const Function<void(Session&)>&);
     void emitLifecycle(const String& innerFrameID, ASCIILiteral name);
     void updateBootstrapScript();
@@ -354,7 +368,12 @@ private:
     StringMap<InnerTarget> m_innerTargets;
     IntMap<PendingCommand> m_pendingCommands;
     Vector<QueuedCommand> m_queuedCommands;
-    Vector<std::pair<ASCIILiteral, RefPtr<JSON::Object>>> m_state;
+    struct State {
+        String key;
+        ASCIILiteral method;
+        RefPtr<JSON::Object> params;
+    };
+    Vector<State> m_state;
 
     // Per-document state, rebuilt as the page navigates.
     struct Frame {
@@ -364,8 +383,13 @@ private:
     };
     struct Context {
         String frameID;
-        String name;
+        // Null for the frame's main world, else the name of an isolated one.
+        String world;
         String origin;
+        // WebKit makes each isolated world in every frame and document.
+        // Chrome has one only where a client created it or a script was
+        // registered for it, and those are the ones clients are told of.
+        bool announced { false };
     };
     StringMap<Frame> m_frames;
     IntMap<Context> m_contexts;
@@ -374,7 +398,8 @@ private:
     IntMap<String> m_frameOwnerNodes;
     StringMap<String> m_requestIDs;
     StringMap<String> m_documentURLs;
-    HashSet<String, NullSafeStringHash> m_inflightRequests;
+    // Requests that have not finished, with their resource types.
+    StringMap<ASCIILiteral> m_inflightRequests;
     std::unique_ptr<IntMap<RefPtr<JSON::Array>>> m_capturedChildNodes;
     unsigned m_childNodeCaptures { 0 };
     int m_nextBackendNodeID { 0 };
@@ -389,6 +414,8 @@ private:
     struct Script {
         int identifier;
         String source;
+        // Null for the main world.
+        String world;
     };
     struct Binding {
         String name;

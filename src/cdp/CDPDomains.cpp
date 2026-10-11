@@ -37,18 +37,118 @@ static String errorToCDP(const String& error)
     return error;
 }
 
+// WebKit's object previews carry a few fields of their own and leave out
+// one that CDP requires.
+static void previewToCDP(JSON::Object& preview)
+{
+    preview.remove("lossless"_s);
+    // "Array" in WebKit is "Array(2)" in Chrome.
+    auto subtype = preview.getString("subtype"_s);
+    if (auto size = preview.getInteger("size"_s); size && (subtype == "array"_s || subtype == "map"_s || subtype == "set"_s))
+        preview.setString("description"_s, makeString(preview.getString("description"_s), '(', *size, ')'));
+    preview.remove("size"_s);
+    if (!preview.getValue("overflow"_s))
+        preview.setBoolean("overflow"_s, false);
+    RefPtr properties = preview.getArray("properties"_s);
+    if (!properties)
+        preview.setArray("properties"_s, JSON::Array::create());
+    else {
+        for (auto& item : *properties) {
+            RefPtr property = item->asObject();
+            if (!property)
+                continue;
+            property->remove("internal"_s);
+            property->remove("isPrivate"_s);
+            if (RefPtr nested = property->getObject("valuePreview"_s)) {
+                previewToCDP(*nested);
+                if (!property->getValue("value"_s))
+                    property->setString("value"_s, nested->getString("description"_s));
+            }
+        }
+    }
+    if (RefPtr entries = preview.getArray("entries"_s)) {
+        for (auto& item : *entries) {
+            RefPtr entry = item->asObject();
+            if (!entry)
+                continue;
+            for (auto key : { "key"_s, "value"_s }) {
+                if (RefPtr nested = entry->getObject(key))
+                    previewToCDP(*nested);
+            }
+        }
+    }
+}
+
+// WebKit describes an element as its start tag and a text node with its
+// text; Chrome as a selector ("div#id.class") and "#text".
+static String nodeDescriptionToCDP(const String& description)
+{
+    if (description.startsWith('#')) {
+        auto space = description.find(' ');
+        return space == notFound ? description : description.left(space);
+    }
+    if (description.length() < 3 || !description.startsWith('<') || !description.endsWith('>'))
+        return description;
+    auto tag = description.substring(1, description.length() - 2);
+    auto space = tag.find(' ');
+    if (space == notFound)
+        return tag;
+    auto attribute = [&](ASCIILiteral name) -> String {
+        auto start = tag.find(makeString(' ', name, "=\""_s));
+        if (start == notFound)
+            return { };
+        start += name.length() + 3;
+        auto end = tag.find('"', start);
+        return end == notFound ? String() : tag.substring(start, end - start);
+    };
+    StringBuilder result;
+    result.append(tag.left(space));
+    if (auto id = attribute("id"_s); !id.isEmpty())
+        result.append('#', id);
+    for (auto name : attribute("class"_s).split(' '))
+        result.append('.', name);
+    return result.toString();
+}
+
 Ref<JSON::Object> remoteObjectToCDP(JSON::Object& object)
 {
     auto type = object.getString("type"_s);
+    auto subtype = object.getString("subtype"_s);
     auto description = object.getString("description"_s);
     RefPtr value = object.getValue("value"_s);
     // CDP has no JSON for these and carries them as text.
-    if (type == "bigint"_s || (type == "number"_s && (!value || value->isNull()) && !description.isNull())) {
+    bool isNegativeZero = type == "number"_s && description == "-0"_s;
+    if (type == "bigint"_s || isNegativeZero || (type == "number"_s && (!value || value->isNull()) && !description.isNull())) {
         object.remove("value"_s);
         object.setString("unserializableValue"_s, description);
     }
-    if (object.getString("subtype"_s) == "class"_s)
+    if (subtype == "class"_s)
         object.remove("subtype"_s);
+    // Chrome describes what has no value to show; these have one.
+    if (type == "string"_s || type == "boolean"_s || type == "undefined"_s)
+        object.remove("description"_s);
+    auto className = object.getString("className"_s);
+    if (subtype == "node"_s)
+        object.setString("description"_s, nodeDescriptionToCDP(description));
+    // "Array" in WebKit is "Array(2)" in Chrome, and so on.
+    if (subtype == "array"_s && className != "Array"_s && className.endsWith("Array"_s)) {
+        subtype = "typedarray"_s;
+        object.setString("subtype"_s, subtype);
+    }
+    if ((subtype == "array"_s || subtype == "typedarray"_s || subtype == "map"_s || subtype == "set"_s) && description == className) {
+        if (auto size = object.getInteger("size"_s))
+            object.setString("description"_s, makeString(className, '(', *size, ')'));
+    }
+    if (type == "object"_s && subtype.isNull() && className == "Promise"_s)
+        object.setString("subtype"_s, "promise"_s);
+    if (type == "function"_s)
+        object.setString("className"_s, "Function"_s);
+    if (type == "symbol"_s)
+        object.remove("className"_s);
+    object.remove("size"_s);
+    object.remove("classPrototype"_s);
+    if (RefPtr preview = object.getObject("preview"_s))
+        previewToCDP(*preview);
     return object;
 }
 
@@ -63,11 +163,21 @@ static Ref<JSON::Object> exceptionDetails(JSON::Object& exception, int id)
     return details;
 }
 
+static int contextOfObject(const String& objectID);
+
 void PageTarget::dispatch(Session& session, const String& method, JSON::Object& params, Reply&& reply)
 {
     if (!m_view) {
         replyError(reply, "Target closed"_s);
         return;
+    }
+    // What WebKit would make of an object id that is not one of its own
+    // depends on the command; Chrome has one answer.
+    for (auto key : { "objectId"_s, "promiseObjectId"_s }) {
+        if (auto objectID = params.getString(key); !objectID.isNull() && contextOfObject(objectID) <= 0) {
+            replyError(reply, "Invalid remote object id"_s);
+            return;
+        }
     }
     auto& table = handlers();
     if (auto iterator = table.find(method); iterator != table.end()) {
@@ -137,6 +247,8 @@ void PageTarget::callOn(const String& objectID, const String& function, RefPtr<J
 
 // Calls a function on a node and hands back its JSON result. A thrown
 // exception, or a null result, becomes the given error.
+static constexpr auto notANodeMarker = "zebkit-not-a-node"_s;
+
 void PageTarget::callOnNode(JSON::Object& params, const String& function, ASCIILiteral failure, Function<void(RefPtr<JSON::Value>&&, const String& objectID, const String& error)>&& completion)
 {
     resolveNode(params, [this, weakThis = WeakPtr { *this }, function, failure, completion = WTF::move(completion)](const String& objectID, const String& error) mutable {
@@ -144,11 +256,16 @@ void PageTarget::callOnNode(JSON::Object& params, const String& function, ASCIIL
             completion(nullptr, { }, error.isNull() ? "Could not find node with given id"_s : error);
             return;
         }
-        callOn(objectID, function, nullptr, true, [objectID, failure, completion = WTF::move(completion)](JSON::Object* result, const String& error) {
+        auto guarded = makeString("function(){if(!(this instanceof Node))return'"_s, notANodeMarker, "';return("_s, function, ").call(this)}"_s);
+        callOn(objectID, guarded, nullptr, true, [objectID, failure, completion = WTF::move(completion)](JSON::Object* result, const String& error) {
             RefPtr object = result ? result->getObject("result"_s) : nullptr;
             RefPtr value = object ? object->getValue("value"_s) : nullptr;
             if (!error.isNull()) {
                 completion(nullptr, objectID, errorToCDP(error));
+                return;
+            }
+            if (value && value->asString() == notANodeMarker) {
+                completion(nullptr, objectID, "Object id doesn't reference a Node"_s);
                 return;
             }
             if (result->getBoolean("wasThrown"_s).value_or(false) || !value || value->isNull()) {
@@ -221,28 +338,34 @@ void PageTarget::resolveNode(JSON::Object& params, Function<void(const String&, 
         completion(objectID, { });
         return;
     }
+    bool byBackendID = !!params.getValue("backendNodeId"_s);
+    auto notFound = byBackendID ? "No node found for given backend id"_s : "Could not find node with given id"_s;
     int nodeID = params.getInteger("backendNodeId"_s).value_or(0);
     if (nodeID >= backendNodeBase) {
         auto iterator = m_backendNodes.find(nodeID);
         if (iterator == m_backendNodes.end())
-            completion({ }, "No node with given id found"_s);
+            completion({ }, notFound);
         else
             completion(iterator->value, { });
         return;
     }
-    if (!nodeID)
+    if (!byBackendID)
         nodeID = params.getInteger("nodeId"_s).value_or(0);
-    if (!nodeID) {
+    if (!byBackendID && !params.getValue("nodeId"_s)) {
         completion({ }, "Either nodeId, backendNodeId or objectId must be specified"_s);
+        return;
+    }
+    if (nodeID <= 0) {
+        completion({ }, notFound);
         return;
     }
     auto resolveParams = JSON::Object::create();
     resolveParams->setInteger("nodeId"_s, nodeID);
-    wip("DOM.resolveNode"_s, WTF::move(resolveParams), [completion = WTF::move(completion)](JSON::Object* result, const String& error) {
+    wip("DOM.resolveNode"_s, WTF::move(resolveParams), [notFound, completion = WTF::move(completion)](JSON::Object* result, const String&) {
         RefPtr object = result ? result->getObject("object"_s) : nullptr;
         auto objectID = object ? object->getString("objectId"_s) : String();
         if (objectID.isNull())
-            completion({ }, error.isNull() ? "No node with given id found"_s : error);
+            completion({ }, notFound);
         else
             completion(objectID, { });
     });
@@ -402,8 +525,49 @@ void PageTarget::pageDisable(Session& session, JSON::Object&, Reply&& reply)
 
 void PageTarget::pageSetLifecycleEventsEnabled(Session& session, JSON::Object& params, Reply&& reply)
 {
-    session.lifecycleEnabled = params.getBoolean("enabled"_s).value_or(false);
+    bool enabled = params.getBoolean("enabled"_s).value_or(false);
+    bool wasEnabled = std::exchange(session.lifecycleEnabled, enabled);
     replyOK(reply);
+    if (!enabled || wasEnabled || !session.pageEnabled)
+        return;
+    // As in Chrome, a client that starts listening is told how far each
+    // frame has got. Not if the page has moved on by the time that is known:
+    // the new document reports itself.
+    auto isCurrent = [this, navigation = m_navigationGeneration, document = m_networkIdleGeneration] {
+        return navigation == m_navigationGeneration && document == m_networkIdleGeneration;
+    };
+    wip("Page.getResourceTree"_s, nullptr, [this, weakThis = WeakPtr { *this }, isCurrent, protectedSession = Ref { session }](JSON::Object* result, const String&) {
+        if (!weakThis || !isCurrent())
+            return;
+        if (RefPtr tree = result ? result->getObject("frameTree"_s) : nullptr)
+            frameTreeToCDP(*tree);
+        evaluateValue("document.readyState"_s, [this, weakThis, isCurrent, protectedSession](RefPtr<JSON::Value>&& value) {
+            if (!weakThis || !isCurrent() || !protectedSession->lifecycleEnabled)
+                return;
+            auto state = value ? value->asString() : String();
+            auto main = mainFrameID();
+            for (auto& frame : m_frames) {
+                bool isMain = frame.key == main;
+                Vector<ASCIILiteral> names { "commit"_s };
+                if (!isMain || state == "interactive"_s || state == "complete"_s)
+                    names.append("DOMContentLoaded"_s);
+                if (!isMain || state == "complete"_s)
+                    names.append("load"_s);
+                if (isMain && state == "complete"_s && m_inflightRequests.size() <= 2)
+                    names.append("networkAlmostIdle"_s);
+                if (isMain && state == "complete"_s && m_inflightRequests.isEmpty())
+                    names.append("networkIdle"_s);
+                for (auto name : names) {
+                    auto event = JSON::Object::create();
+                    event->setString("frameId"_s, toCDPFrameID(frame.key));
+                    event->setString("loaderId"_s, uniqueID(frame.value.loaderID));
+                    event->setString("name"_s, name);
+                    event->setDouble("timestamp"_s, monotonicSeconds());
+                    protectedSession->event("Page.lifecycleEvent"_s, WTF::move(event));
+                }
+            }
+        });
+    });
 }
 
 void PageTarget::pageGetFrameTree(Session&, JSON::Object&, Reply&& reply)
@@ -438,19 +602,33 @@ String PageTarget::bindingSource(const String& name)
     return makeString("(()=>{const n="_s, quote(name), ";if(globalThis[n]&&globalThis[n].__zebkit)return;const d=console.debug.bind(console);const f=function(p){if(typeof p!=='string')throw new Error('Invalid arguments: should be exactly one string.');d("_s, quote(bindingMarker), ",n,p,globalThis)};Object.defineProperty(f,'__zebkit',{value:true});globalThis[n]=f})();"_s);
 }
 
+// What runs in each new global object: of the main world (a null name) and
+// of each isolated world.
 void PageTarget::updateBootstrapScript()
 {
-    StringBuilder source;
-    HashSet<String> names;
-    for (auto& binding : m_bindings) {
-        if (!binding.name.isEmpty() && names.add(binding.name).isNewEntry)
-            source.append(bindingSource(binding.name), '\n');
-    }
-    for (auto& script : m_scripts)
-        source.append("try{\n"_s, script.source, "\n}catch(e){console.error(e)}\n"_s);
+    auto sourceFor = [&](const String& world) {
+        StringBuilder source;
+        HashSet<String> names;
+        for (auto& binding : m_bindings) {
+            bool applies = binding.worldName.isNull() || (!world.isNull() && binding.worldName == world);
+            if (applies && !binding.name.isEmpty() && names.add(binding.name).isNewEntry)
+                source.append(bindingSource(binding.name), '\n');
+        }
+        for (auto& script : m_scripts) {
+            if (script.world.isNull() == world.isNull() && (world.isNull() || script.world == world))
+                source.append("try{\n"_s, script.source, "\n}catch(e){console.error(e)}\n"_s);
+        }
+        return source.toString();
+    };
     auto params = JSON::Object::create();
-    params->setString("source"_s, source.toString());
+    params->setString("source"_s, sourceFor({ }));
     setState("Page.setBootstrapScript"_s, WTF::move(params));
+    for (auto& world : m_worlds) {
+        auto worldParams = JSON::Object::create();
+        worldParams->setString("source"_s, sourceFor(world));
+        worldParams->setString("worldName"_s, makeString(worldPrefix, world));
+        setState("Page.setBootstrapScript"_s, WTF::move(worldParams), makeString("world:"_s, world));
+    }
 }
 
 void PageTarget::pageAddScriptToEvaluateOnNewDocument(Session&, JSON::Object& params, Reply&& reply)
@@ -458,10 +636,29 @@ void PageTarget::pageAddScriptToEvaluateOnNewDocument(Session&, JSON::Object& pa
     Script script;
     script.identifier = m_nextScriptID++;
     script.source = params.getString("source"_s);
-    if (auto worldName = params.getString("worldName"_s); !worldName.isEmpty())
-        ensureWorld(worldName);
-    if (params.getBoolean("runImmediately"_s).value_or(false))
-        evaluateValue(script.source, [](RefPtr<JSON::Value>&&) { });
+    if (auto worldName = params.getString("worldName"_s); !worldName.isEmpty()) {
+        if (!ensureWorld(worldName)) {
+            replyError(reply, "Too many isolated worlds"_s);
+            return;
+        }
+        script.world = worldName;
+    }
+    if (params.getBoolean("runImmediately"_s).value_or(false)) {
+        // In the documents that are there now, in the world it is for.
+        auto run = [this, weakThis = WeakPtr { *this }, source = script.source, world = script.world] {
+            if (!weakThis)
+                return;
+            for (auto& entry : m_contexts) {
+                if (entry.value.world.isNull() != world.isNull() || (!world.isNull() && entry.value.world != world))
+                    continue;
+                auto evaluate = JSON::Object::create();
+                evaluate->setString("expression"_s, source);
+                evaluate->setInteger("contextId"_s, entry.key);
+                wip("Runtime.evaluate"_s, WTF::move(evaluate));
+            }
+        };
+        afterPageCatchesUp(WTF::move(run));
+    }
     auto result = JSON::Object::create();
     result->setString("identifier"_s, String::number(script.identifier));
     m_scripts.append(WTF::move(script));
@@ -474,9 +671,13 @@ void PageTarget::pageAddScriptToEvaluateOnNewDocument(Session&, JSON::Object& pa
 void PageTarget::pageRemoveScriptToEvaluateOnNewDocument(Session&, JSON::Object& params, Reply&& reply)
 {
     int identifier = parseInteger<int>(params.getString("identifier"_s)).value_or(0);
-    m_scripts.removeAllMatching([&](auto& script) {
+    bool removed = m_scripts.removeAllMatching([&](auto& script) {
         return script.identifier == identifier;
     });
+    if (!removed) {
+        replyError(reply, "Script not found"_s);
+        return;
+    }
     updateBootstrapScript();
     replyOK(reply);
 }
@@ -490,15 +691,28 @@ void PageTarget::pageCreateIsolatedWorld(Session&, JSON::Object& params, Reply&&
     afterPageCatchesUp([this, weakThis = WeakPtr { *this }, worldName, frameID, reply = WTF::move(reply)]() mutable {
         if (!weakThis)
             return;
-        unsigned index = ensureWorld(worldName);
-        int contextID = contextForFrame(frameID);
-        if (!contextID) {
-            replyError(reply, "No frame for given id found"_s);
+        if (!m_frames.contains(frameID)) {
+            replyInvalid(reply, "No frame for given id found"_s);
             return;
         }
-        auto result = JSON::Object::create();
-        result->setInteger("executionContextId"_s, worldContextID(contextID, index));
-        reply(WTF::move(result), { });
+        if (!ensureWorld(worldName)) {
+            replyError(reply, "Too many isolated worlds"_s);
+            return;
+        }
+        // WebKit has made the world in every frame by the time it answers.
+        afterPageCatchesUp([this, weakThis, worldName, frameID, reply = WTF::move(reply)]() mutable {
+            if (!weakThis)
+                return;
+            int contextID = contextForFrame(frameID, worldName);
+            if (!contextID) {
+                replyError(reply, "Could not create isolated world"_s);
+                return;
+            }
+            announceContextToAll(contextID);
+            auto result = JSON::Object::create();
+            result->setInteger("executionContextId"_s, contextID);
+            reply(WTF::move(result), { });
+        });
     });
 }
 
@@ -542,6 +756,10 @@ void PageTarget::pageCaptureScreenshot(Session& session, JSON::Object& params, R
         snapshot->setString("coordinateSystem"_s, "Viewport"_s);
     }
     auto format = params.getString("format"_s);
+    if (!format.isNull() && format != "png"_s && format != "jpeg"_s && format != "webp"_s) {
+        replyInvalid(reply, "Invalid image format"_s);
+        return;
+    }
     int quality = params.getInteger("quality"_s).value_or(80);
     wip("Page.snapshotRect"_s, WTF::move(snapshot), [format, quality, reply = WTF::move(reply)](JSON::Object* result, const String& error) mutable {
         auto dataURL = result ? result->getString("dataURL"_s) : String();
@@ -622,7 +840,14 @@ void PageTarget::runtimeEnable(Session& session, JSON::Object&, Reply&& reply)
     afterPageCatchesUp([this, weakThis = WeakPtr { *this }, protectedSession, reply = WTF::move(reply)]() mutable {
         if (weakThis && !protectedSession->runtimeEnabled) {
             protectedSession->runtimeEnabled = true;
-            for (auto id : copyToVector(m_contexts.keys()))
+            // Main worlds first, as when they are created.
+            auto ids = copyToVector(m_contexts.keys());
+            std::ranges::sort(ids, [&](int a, int b) {
+                bool mainA = m_contexts.get(a).world.isNull();
+                bool mainB = m_contexts.get(b).world.isNull();
+                return mainA != mainB ? mainA : a < b;
+            });
+            for (auto id : ids)
                 announceContext(protectedSession, id);
         }
         replyOK(reply);
@@ -692,8 +917,13 @@ void PageTarget::runtimeEvaluate(Session&, JSON::Object& params, Reply&& reply)
     int contextID = params.getInteger("contextId"_s).value_or(0);
     if (!contextID)
         contextID = parseInteger<int>(params.getString("uniqueContextId"_s)).value_or(0);
-    if (contextID)
-        evaluate->setInteger("contextId"_s, toInnerContextID(contextID));
+    if (contextID) {
+        if (!isKnownContext(contextID)) {
+            replyError(reply, "Cannot find context with specified id"_s);
+            return;
+        }
+        evaluate->setInteger("contextId"_s, contextID);
+    }
     evaluate->setBoolean("returnByValue"_s, returnByValue && !awaitPromise);
     evaluate->setBoolean("generatePreview"_s, generatePreview);
     if (params.getBoolean("userGesture"_s).value_or(false))
@@ -770,7 +1000,15 @@ void PageTarget::runtimeCallFunctionOn(Session&, JSON::Object& params, Reply&& r
     int contextID = params.getInteger("executionContextId"_s).value_or(0);
     if (!contextID)
         contextID = parseInteger<int>(params.getString("uniqueContextId"_s)).value_or(0);
-    globalObjectFor(contextID ? toInnerContextID(contextID) : defaultContextID(), WTF::move(send));
+    if (!contextID) {
+        send({ }, makeString(invalidValuePrefix, "Either objectId or executionContextId or uniqueContextId must be specified"_s));
+        return;
+    }
+    if (!isKnownContext(contextID)) {
+        send({ }, "Cannot find context with specified id"_s);
+        return;
+    }
+    globalObjectFor(contextID, WTF::move(send));
 }
 
 void PageTarget::runtimeAwaitPromise(Session&, JSON::Object& params, Reply&& reply)
@@ -805,6 +1043,8 @@ void PageTarget::runtimeGetProperties(Session&, JSON::Object& params, Reply&& re
             replyError(reply, error.isNull() ? "Could not find object with given id"_s : errorToCDP(error));
             return;
         }
+        RefPtr internal = result->getArray("internalProperties"_s);
+        auto listed = JSON::Array::create();
         for (auto& property : *properties) {
             RefPtr object = property->asObject();
             if (!object)
@@ -813,14 +1053,26 @@ void PageTarget::runtimeGetProperties(Session&, JSON::Object& params, Reply&& re
                 if (RefPtr value = object->getObject(key))
                     remoteObjectToCDP(*value);
             }
+            // WebKit lists the prototype as a property; in CDP it is an
+            // internal one.
+            if (RefPtr value = object->getObject("value"_s); value && object->getString("name"_s) == "__proto__"_s) {
+                auto prototype = JSON::Object::create();
+                prototype->setString("name"_s, "[[Prototype]]"_s);
+                prototype->setObject("value"_s, value.releaseNonNull());
+                if (!internal)
+                    internal = JSON::Array::create();
+                internal->pushObject(WTF::move(prototype));
+                continue;
+            }
             if (!object->getValue("configurable"_s))
                 object->setBoolean("configurable"_s, false);
             if (!object->getValue("enumerable"_s))
                 object->setBoolean("enumerable"_s, false);
+            listed->pushObject(object.releaseNonNull());
         }
         auto response = JSON::Object::create();
-        response->setArray("result"_s, properties.releaseNonNull());
-        if (RefPtr internal = result->getArray("internalProperties"_s)) {
+        response->setArray("result"_s, WTF::move(listed));
+        if (internal) {
             for (auto& property : *internal) {
                 RefPtr object = property->asObject();
                 if (RefPtr value = object ? object->getObject("value"_s) : nullptr)
@@ -873,26 +1125,37 @@ void PageTarget::runtimeAddBinding(Session&, JSON::Object& params, Reply&& reply
 {
     Binding binding;
     binding.name = params.getString("name"_s);
+    // With a world's name the function is in the contexts of that world;
+    // without one it is in every context.
     binding.worldName = params.getString("executionContextName"_s);
-    if (int contextID = params.getInteger("executionContextId"_s).value_or(0); contextID >= worldContextBase) {
-        unsigned index = (contextID - worldContextBase) % maxWorlds;
-        if (index < m_worlds.size())
-            binding.worldName = m_worlds[index];
+    if (binding.worldName.isEmpty())
+        binding.worldName = String();
+    if (int contextID = params.getInteger("executionContextId"_s).value_or(0)) {
+        auto context = m_contexts.find(contextID);
+        if (context == m_contexts.end()) {
+            replyError(reply, "Cannot find execution context with given executionContextId"_s);
+            return;
+        }
+        binding.worldName = context->value.world;
     }
-    // Client libraries add one binding per world under the same name. The
-    // emulated worlds share one function, so a call is reported once for
-    // each world the name was added to.
+    if (!binding.worldName.isNull() && !ensureWorld(binding.worldName)) {
+        replyError(reply, "Too many isolated worlds"_s);
+        return;
+    }
     m_bindings.removeAllMatching([&](auto& existing) {
-        return existing.name == binding.name && existing.worldName == binding.worldName;
+        return existing.name == binding.name && existing.worldName == binding.worldName && existing.worldName.isNull() == binding.worldName.isNull();
     });
     auto source = bindingSource(binding.name);
+    auto worldName = binding.worldName;
     m_bindings.append(WTF::move(binding));
     updateBootstrapScript();
 
-    for (auto id : copyToVector(m_contexts.keys())) {
+    for (auto& entry : m_contexts) {
+        if (!worldName.isNull() && (entry.value.world.isNull() || entry.value.world != worldName))
+            continue;
         auto evaluate = JSON::Object::create();
         evaluate->setString("expression"_s, source);
-        evaluate->setInteger("contextId"_s, id);
+        evaluate->setInteger("contextId"_s, entry.key);
         wip("Runtime.evaluate"_s, WTF::move(evaluate));
     }
     afterPageCatchesUp([reply = WTF::move(reply)]() mutable {
@@ -947,7 +1210,9 @@ void PageTarget::domDisable(Session& session, JSON::Object&, Reply&& reply)
 
 void PageTarget::domGetDocument(Session&, JSON::Object& params, Reply&& reply)
 {
-    int depth = params.getInteger("depth"_s).value_or(1);
+    // Two levels unless told otherwise, as in Chrome, whatever the
+    // definition says about one.
+    int depth = params.getInteger("depth"_s).value_or(2);
     wip("DOM.getDocument"_s, nullptr, [this, weakThis = WeakPtr { *this }, depth, reply = WTF::move(reply)](JSON::Object* result, const String& error) mutable {
         RefPtr root = result ? result->getObject("root"_s) : nullptr;
         if (!weakThis || !root) {
@@ -956,6 +1221,15 @@ void PageTarget::domGetDocument(Session&, JSON::Object& params, Reply&& reply)
         }
         scanNode(*root);
         m_documentNodeID = root->getInteger("nodeId"_s).value_or(0);
+        // WebKit always describes two levels below the document.
+        if (depth == 1) {
+            if (RefPtr children = root->getArray("children"_s)) {
+                for (auto& child : *children) {
+                    if (RefPtr object = child->asObject())
+                        object->remove("children"_s);
+                }
+            }
+        }
         auto finish = [root, reply = WTF::move(reply)]() mutable {
             auto response = JSON::Object::create();
             response->setObject("root"_s, root.releaseNonNull());
@@ -1031,15 +1305,61 @@ void PageTarget::domDescribeNode(Session&, JSON::Object& params, Reply&& reply)
     });
 }
 
+// A handle for the node behind objectID in another context of its frame. A
+// node has one wrapper object per world, and only WebKit can make them.
+void PageTarget::resolveNodeInContext(const String& objectID, int contextID, Function<void(JSON::Object*, const String&)>&& completion)
+{
+    if (!contextID || contextOfObject(objectID) == contextID) {
+        callOn(objectID, "function(){return this}"_s, nullptr, false, [completion = WTF::move(completion)](JSON::Object* result, const String& error) {
+            RefPtr object = result ? result->getObject("result"_s) : nullptr;
+            completion(object.get(), error);
+        });
+        return;
+    }
+    ensureDocument([this, weakThis = WeakPtr { *this }, objectID, contextID, completion = WTF::move(completion)]() mutable {
+        if (!weakThis)
+            return;
+        auto request = JSON::Object::create();
+        request->setString("objectId"_s, objectID);
+        wip("DOM.requestNode"_s, WTF::move(request), [this, weakThis, contextID, completion = WTF::move(completion)](JSON::Object* result, const String& error) mutable {
+            int nodeID = result ? result->getInteger("nodeId"_s).value_or(0) : 0;
+            if (!weakThis || !nodeID) {
+                completion(nullptr, error);
+                return;
+            }
+            auto resolve = JSON::Object::create();
+            resolve->setInteger("nodeId"_s, nodeID);
+            resolve->setInteger("executionContextId"_s, contextID);
+            wip("DOM.resolveNode"_s, WTF::move(resolve), [completion = WTF::move(completion)](JSON::Object* result, const String& error) {
+                RefPtr object = result ? result->getObject("object"_s) : nullptr;
+                if (!object && error.contains("does not belong"_s))
+                    completion(nullptr, "Node with given id does not belong to the document"_s);
+                else
+                    completion(object.get(), error);
+            });
+        });
+    });
+}
+
 void PageTarget::domResolveNode(Session&, JSON::Object& params, Reply&& reply)
 {
-    resolveNode(params, [this, weakThis = WeakPtr { *this }, reply = WTF::move(reply)](const String& objectID, const String& error) mutable {
+    int requestedContext = params.getInteger("executionContextId"_s).value_or(0);
+    if (requestedContext && !isKnownContext(requestedContext)) {
+        replyError(reply, "Node with given id does not belong to the document"_s);
+        return;
+    }
+    resolveNode(params, [this, weakThis = WeakPtr { *this }, requestedContext, reply = WTF::move(reply)](const String& objectID, const String& error) mutable {
         if (!weakThis || objectID.isNull()) {
             replyError(reply, error.isNull() ? "No node with given id found"_s : error);
             return;
         }
-        callOn(objectID, "function(){return this}"_s, nullptr, false, [reply = WTF::move(reply)](JSON::Object* result, const String& error) mutable {
-            RefPtr object = result ? result->getObject("result"_s) : nullptr;
+        // Without a context, the main world of the node's frame.
+        int contextID = requestedContext;
+        if (!contextID) {
+            if (auto context = m_contexts.find(contextOfObject(objectID)); context != m_contexts.end() && !context->value.world.isNull())
+                contextID = contextForFrame(context->value.frameID);
+        }
+        resolveNodeInContext(objectID, contextID, [reply = WTF::move(reply)](JSON::Object* object, const String& error) mutable {
             if (!object) {
                 replyError(reply, error.isNull() ? "No node with given id found"_s : errorToCDP(error));
                 return;
@@ -1128,7 +1448,7 @@ void PageTarget::domScrollIntoViewIfNeeded(Session&, JSON::Object& params, Reply
 void PageTarget::domFocus(Session&, JSON::Object& params, Reply&& reply)
 {
     focusView();
-    static constexpr auto function = "function(){if(typeof this.focus!=='function')return null;this.focus();return true}"_s;
+    static constexpr auto function = "function(){if(typeof this.focus!=='function')return null;this.focus();const r=this.getRootNode();return r.activeElement===this||null}"_s;
     callOnNode(params, function, "Element is not focusable"_s, [reply = WTF::move(reply)](RefPtr<JSON::Value>&& value, const String&, const String& error) mutable {
         if (value)
             replyOK(reply);
@@ -1282,7 +1602,7 @@ void PageTarget::networkGetResponseBody(Session&, JSON::Object& params, Reply&& 
         if (result)
             reply(Ref { *result }, { });
         else
-            replyError(reply, error.isNull() ? "No resource with given identifier found"_s : error);
+            replyError(reply, "No resource with given identifier found"_s);
     });
 }
 
@@ -1332,6 +1652,10 @@ void PageTarget::networkGetAllCookies(Session&, JSON::Object&, Reply&& reply)
 
 void PageTarget::networkSetCookie(Session&, JSON::Object& params, Reply&& reply)
 {
+    if (params.getString("url"_s).isEmpty() && params.getString("domain"_s).isEmpty()) {
+        replyInvalid(reply, "At least one of the url or domain needs to be specified"_s);
+        return;
+    }
     auto cookie = cookieFromCDP(params, str(webkit_web_view_get_uri(m_view)));
     if (!cookie) {
         replyError(reply, "Invalid cookie fields"_s);
@@ -1367,6 +1691,10 @@ void PageTarget::networkDeleteCookies(Session&, JSON::Object& params, Reply&& re
     auto domain = params.getString("domain"_s);
     auto path = params.getString("path"_s);
     auto url = params.getString("url"_s);
+    if (url.isEmpty() && domain.isEmpty()) {
+        replyInvalid(reply, "At least one of the url and domain needs to be specified"_s);
+        return;
+    }
     GRefPtr<GUri> uri = url.isEmpty() ? nullptr : adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
     GRefPtr<WebKitNetworkSession> networkSession = webkit_web_view_get_network_session(m_view);
     allCookies(networkSession.get(), [networkSession, name, domain, path, uri, reply = WTF::move(reply)](CookieList&& cookies) mutable {

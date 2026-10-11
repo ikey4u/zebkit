@@ -16,6 +16,7 @@
 #include "WebsiteDataStore.h"
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
+#include <wtf/URL.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/unicode/CharacterNames.h>
@@ -41,6 +42,7 @@ void PageTarget::connectViewSignals()
     }));
     connect("notify::uri", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
         static_cast<PageTarget*>(data)->infoChanged();
+        static_cast<PageTarget*>(data)->addressChanged();
     }));
     connect("notify::title", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
         static_cast<PageTarget*>(data)->infoChanged();
@@ -102,8 +104,46 @@ void PageTarget::infoChanged()
         Server::singleton().targetInfoChanged(*this);
 }
 
+// The address of the main frame changed. If no new document came with it,
+// the document changed its own address: a fragment, or the history API.
+// WebKit's protocol has no event for that, so the document is asked. A new
+// document has reported its address by the time it answers; one that is
+// still on its way leaves the old one answering with the old address.
+void PageTarget::addressChanged()
+{
+    if (!m_view || !m_inspectorConnected || m_crashed)
+        return;
+    evaluateValue("location.href"_s, [this, weakThis = WeakPtr { *this }](RefPtr<JSON::Value>&& value) {
+        if (weakThis && value)
+            navigatedWithinDocument(value->asString());
+    });
+}
+
+void PageTarget::navigatedWithinDocument(const String& url)
+{
+    auto frame = m_frames.find(mainFrameID());
+    if (frame == m_frames.end() || url.isEmpty() || frame->value.url == url)
+        return;
+    auto withoutFragment = [](const String& address) {
+        auto hash = address.find('#');
+        return hash == notFound ? address : address.left(hash);
+    };
+    bool isFragment = withoutFragment(frame->value.url) == withoutFragment(url);
+    frame->value.url = url;
+    forEachSession([&](Session& session) {
+        if (!session.pageEnabled)
+            return;
+        auto event = JSON::Object::create();
+        event->setString("frameId"_s, m_targetID);
+        event->setString("url"_s, url);
+        event->setString("navigationType"_s, isFragment ? "fragment"_s : "historyApi"_s);
+        session.event("Page.navigatedWithinDocument"_s, WTF::move(event));
+    });
+}
+
 void PageTarget::loadChanged(int loadEvent)
 {
+
     if (loadEvent == WEBKIT_LOAD_STARTED && std::exchange(m_crashed, false)) {
         // The load starts a new process, which knows nothing of this client.
         m_reconnectAttempts = 0;
@@ -236,6 +276,8 @@ bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
         session.sawDialog = true;
         auto event = JSON::Object::create();
         event->setString("url"_s, str(webkit_web_view_get_uri(m_view)));
+        // WebKit does not say which frame opened it.
+        event->setString("frameId"_s, m_targetID);
         event->setString("message"_s, str(webkit_script_dialog_get_message(dialog)));
         event->setString("type"_s, type);
         event->setBoolean("hasBrowserHandler"_s, false);
@@ -249,7 +291,7 @@ bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
 void PageTarget::pageHandleJavaScriptDialog(Session&, JSON::Object& params, Reply&& reply)
 {
     if (!m_dialog) {
-        replyError(reply, "No dialog is showing"_s);
+        replyInvalid(reply, "No dialog is showing"_s);
         return;
     }
     auto* dialog = std::exchange(m_dialog, nullptr);
@@ -279,6 +321,7 @@ void PageTarget::pageHandleJavaScriptDialog(Session&, JSON::Object& params, Repl
         if (!session.pageEnabled)
             return;
         auto event = JSON::Object::create();
+        event->setString("frameId"_s, m_targetID);
         event->setBoolean("result"_s, accept);
         event->setString("userInput"_s, promptText.isNull() ? emptyString() : promptText);
         session.event("Page.javascriptDialogClosed"_s, WTF::move(event));
@@ -346,7 +389,8 @@ void PageTarget::pageNavigate(Session&, JSON::Object& params, Reply&& reply)
         replyError(reply, "Only the main frame can be navigated"_s);
         return;
     }
-    if (url.isEmpty()) {
+    // What cannot be an address is refused, as in Chrome, and not loaded.
+    if (url.isEmpty() || !URL { url }.isValid()) {
         replyError(reply, "Cannot navigate to invalid URL"_s);
         return;
     }
@@ -367,16 +411,8 @@ void PageTarget::pageNavigate(Session&, JSON::Object& params, Reply&& reply)
         auto result = JSON::Object::create();
         result->setString("frameId"_s, m_targetID);
         reply(WTF::move(result), { });
-        if (sameDocument) {
-            forEachSession([&](Session& session) {
-                if (!session.pageEnabled)
-                    return;
-                auto event = JSON::Object::create();
-                event->setString("frameId"_s, m_targetID);
-                event->setString("url"_s, url);
-                session.event("Page.navigatedWithinDocument"_s, WTF::move(event));
-            });
-        }
+        if (sameDocument)
+            navigatedWithinDocument(url);
         return;
     }
 
@@ -441,7 +477,7 @@ void PageTarget::pageNavigateToHistoryEntry(Session&, JSON::Object& params, Repl
     // counts from the current item instead.
     auto* item = webkit_back_forward_list_get_nth_item(list, entryID - backLength);
     if (entryID < 0 || !item) {
-        replyError(reply, "No entry with passed id"_s);
+        replyInvalid(reply, "No entry with passed id"_s);
         return;
     }
     webkit_web_view_go_to_back_forward_list_item(m_view, item);
@@ -618,7 +654,7 @@ void PageTarget::inputDispatchMouseEvent(Session&, JSON::Object& params, Reply&&
         event = adoptGRef(wpe_event_scroll_new(wpeView, WPE_INPUT_SOURCE_MOUSE, eventTime(), static_cast<WPEModifiers>(modifiers),
             -params.getDouble("deltaX"_s).value_or(0) / mouseScrollMultiplier, -params.getDouble("deltaY"_s).value_or(0) / mouseScrollMultiplier, TRUE, FALSE, x, y));
     } else {
-        replyError(reply, "Unsupported mouse event"_s);
+        replyInvalid(reply, makeString("Unexpected event type '"_s, type, '\''));
         return;
     }
     m_lastMouseX = x;
@@ -675,6 +711,10 @@ void PageTarget::inputDispatchKeyEvent(Session& session, JSON::Object& params, R
     auto type = params.getString("type"_s);
     auto key = params.getString("key"_s);
     auto text = params.getString("text"_s);
+    if (type != "keyDown"_s && type != "keyUp"_s && type != "rawKeyDown"_s && type != "char"_s) {
+        replyInvalid(reply, makeString("Unexpected event type '"_s, type, '\''));
+        return;
+    }
     if (type == "char"_s) {
         // Text with no key behind it, as from an input method.
         inputInsertText(session, params, WTF::move(reply));

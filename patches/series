@@ -11,3 +11,4 @@
 2003-old-glibc-compat.patch
 2004-x11-display-backend.patch
 2005-cdp-endpoint.patch
+2006-inspector-user-worlds.patch

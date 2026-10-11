@@ -13,6 +13,18 @@ import struct
 import time
 import urllib.request
 
+from schema import Schema
+
+SCHEMA = Schema()
+# Where the endpoint or a test departs from the standard definition:
+# problem -> how many times it was seen. Reported by the test that ran.
+NONSTANDARD = {}
+
+
+def note(problems):
+    for problem in problems:
+        NONSTANDARD[problem] = NONSTANDARD.get(problem, 0) + 1
+
 
 class ProtocolError(Exception):
     pass
@@ -53,6 +65,7 @@ class Connection:
         if " 101 " not in status:
             raise ProtocolError(f"handshake refused: {status}")
         self.next_id = 1
+        self.methods = {}
         self.events = []
         self.closed = False
 
@@ -116,12 +129,26 @@ class Connection:
             if opcode in (0x0, 0x1):
                 message += payload
                 if first & 0x80:
-                    return json.loads(message.decode())
+                    message = json.loads(message.decode())
+                    self._compare(message)
+                    return message
+
+    def _compare(self, message):
+        if "id" in message:
+            method = self.methods.pop(message["id"], None)
+            if method and "result" in message:
+                note(SCHEMA.result(method, message["result"]))
+        elif "method" in message:
+            note(SCHEMA.event(message["method"], message.get("params", {})))
 
     # -- protocol -------------------------------------------------------
 
-    def post(self, method, params=None, session=None):
+    def post(self, method, params=None, session=None, standard=True):
+        """Send a command; standard=False for one that is meant to be wrong."""
         message = {"id": self.next_id, "method": method, "params": params or {}}
+        if standard:
+            note(SCHEMA.command(method, message["params"]))
+            self.methods[message["id"]] = method
         if session:
             message["sessionId"] = session
         self.next_id += 1
@@ -148,12 +175,29 @@ class Connection:
             raise ProtocolError(f"{method}: {message['error'].get('message')}")
         return message.get("result", {})
 
-    def error(self, method, params=None, session=None):
+    def error(self, method, params=None, session=None, standard=True):
         """Send a command that is expected to fail; return the message."""
-        message = self.reply(self.post(method, params, session))
+        message = self.reply(self.post(method, params, session, standard))
         if "error" not in message:
             raise ProtocolError(f"{method} was expected to fail but returned {message.get('result')}")
         return message["error"].get("message", "")
+
+    def failure(self, method, params=None, session=None, standard=True):
+        """Send a command that is expected to fail; return (code, message)."""
+        message = self.reply(self.post(method, params, session, standard))
+        if "error" not in message:
+            raise ProtocolError(f"{method} was expected to fail but returned {message.get('result')}")
+        return message["error"].get("code"), message["error"].get("message", "")
+
+    def send_raw(self, text):
+        """Send text that may not be a command at all; return the answer."""
+        self._send_frame(0x1, text.encode())
+        deadline = time.monotonic() + 10
+        while True:
+            message = self._read_message(deadline)
+            if "error" in message:
+                return message
+            self.events.append(message)
 
     def wait_event(self, method, predicate=None, session=None, timeout=30):
         """Return the first event that matches, received already or not."""

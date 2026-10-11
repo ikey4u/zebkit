@@ -8,7 +8,8 @@ Source changes on top of the pinned upstream release (see `upstream.lock`).
 - Name patches `NNNN-short-description.patch`. Group by purpose:
   `0xxx` fixes: for flag combinations upstream does not test, and for
   upstream bugs,
-  `1xxx` size reductions, `2xxx` platform ports.
+  `1xxx` size reductions, `2xxx` platform ports and what the engine
+  needs for zebkit's own features (the CDP endpoint).
 - Each patch starts with a short header saying what it does, why, and how
   many bytes it saves if it is a size patch.
 

@@ -28,7 +28,7 @@ Last updated: 2026-10-10
 |---|---|
 | Linux `slim` build | Builds; smoke test (HTTP, HTTPS, WebGL, JIT) and media test pass |
 | Size | **81.3 MiB** in 11 files, plus the CDP header |
-| Chrome DevTools Protocol | Built in; Puppeteer and Playwright connect and drive pages. A subset: see "Chrome DevTools Protocol" |
+| Chrome DevTools Protocol | Built in; Puppeteer and Playwright connect and drive pages. Checked against Chrome's protocol definition and against Chrome itself. A subset: see "Chrome DevTools Protocol" |
 | glibc floor | **2.17**: no shipped binary imports a newer symbol |
 | Media | H.264, VP8, VP9, AAC, MP3, Opus, Vorbis, FLAC; MP4 and WebM; Media Source; Web Audio |
 | Top-100 sites | **84 pass, 0 fail, 16 blocked** (round 4) |
@@ -126,7 +126,9 @@ given the browser's address, which contains a random id, can connect.
 
 | Test (`scripts/cdp.sh slim --clients`) | Result on `slim` |
 |---|---|
-| Raw protocol, `tests/cdp/protocol.py` | 34 of 34 checks |
+| Raw protocol, `tests/cdp/protocol.py` | 43 of 43 checks |
+| The same checks against Chrome 155, `scripts/cdp-reference.sh` | 41 of 41; the 2 that are about zebkit's own choices are left out |
+| Messages that depart from Chrome's protocol definition | none, in either browser |
 | Endpoint without discovery, `tests/cdp/private.py` | passes |
 | Puppeteer 24.10 (`puppeteer.connect`), `tests/cdp/puppeteer.js` | 17 of 17 steps |
 | Playwright 1.52 (`connectOverCDP`), `tests/cdp/playwright.js` | 17 of 17 steps |
@@ -152,9 +154,6 @@ What it is not:
   error.
 - **Not Chrome.** The user agent is WebKit's, sites serve what they serve
   Safari, and error text and stack traces are JavaScriptCore's.
-- **Isolated worlds are emulated**: they share the page's main world. The
-  client libraries work with that, but page script can see what they put
-  there.
 - **Tested with one version of each client**, on local pages plus the sites
   above. Other clients (browser-use, Stagehand, chrome-devtools-mcp and the
   like) have not been run; those that read pages through the accessibility
@@ -315,6 +314,49 @@ and the machine outliner (1.8 MiB, about 2x slower JSON and DOM).
 | libgcrypt with only the WebCrypto algorithms | `deps/libgcrypt` | A new WebCrypto algorithm needs the list extended |
 | FFmpeg with eight decoders | `deps/ffmpeg` | Other codecs (HEVC, AV1, ...) do not play |
 
+### Held to Chrome's definition and Chrome's behaviour (2026-10-10)
+
+Until this point the bridge was written from knowledge of the protocol and
+checked only against itself and two client libraries. Chrome's
+implementation cannot be compiled against WebKit (it is part of Blink and
+V8), so what was taken from it is what can be:
+
+- **Its protocol definition**, vendored unchanged in
+  `third_party/devtools-protocol` (revision r1716261, 1.6 MiB of JSON, not
+  shipped). The endpoint's parameter checks are generated from it, and the
+  tests compare every message with it.
+- **Its behaviour.** `scripts/cdp-reference.sh` runs the raw checks against
+  Chrome. On the first run Chrome failed 15 of the 34 checks, and passed
+  the definition check with no departures where zebkit had 10. Some checks
+  were wrong; most pointed at zebkit. Side-by-side runs of about 150
+  commands and their events found the rest.
+- **One more engine patch**, where WebKit lacked what CDP needs
+  (`patches/2006`, the same additions Playwright's WebKit has).
+
+What that found, all fixed, each with a check that Chrome passes too:
+
+| Where zebkit differed from Chrome | Before |
+|---|---|
+| Isolated worlds | Emulated in the page's own world: the page could see and overwrite what a client put there, and a script registered for a world ran in the page. Now WebKit user worlds, separate as in Chrome, with nodes carried between worlds by `DOM.resolveNode` |
+| Wrong or missing parameters | Accepted and guessed at (`Runtime.evaluate` without an expression returned `undefined`). Now `-32602 Invalid parameters`, checked against the definition |
+| Messages that are not commands (bad JSON, no id, no method, unknown session) | Dropped without an answer, so a client waited for ever. Now answered with Chrome's codes |
+| A document changing its own address (fragment, history API) | Not reported at all, so a client's idea of the page's address went stale on single-page sites. Now `Page.navigatedWithinDocument` |
+| State set while a new page was still being set up | Lost: a popup did not get the scripts and worlds a client registered in that moment. Found by Playwright's popup test once worlds were real |
+| A client that attaches to a loaded page | Was not told the page had loaded. Lifecycle events are now replayed as in Chrome |
+| Events with mandatory fields missing or fields Chrome does not have | Dialog events without `frameId`, `navigatedWithinDocument` without its type, object previews without `overflow`, cookies and nodes with fields of WebKit's own |
+| How objects are described | Nodes as `<div id="x">` for Chrome's `div#x`; typed arrays, maps, sets, promises, classes, symbols and `-0` with other types and descriptions than Chrome's; the prototype listed as a property |
+| About thirty error answers | Other codes and words than Chrome's, or success where Chrome fails (an invalid URL, a malformed object id, focus on what cannot be focused, a cookie with no address, an image format that does not exist, a target that is not there) |
+| Navigation and contexts | A `commit` lifecycle event Chrome does not send; contexts reported destroyed one by one where Chrome clears them; `DOM.getDocument` one level deeper or shallower than Chrome's |
+| Failed requests | WebKit's sentence for the error and type `Other`; now Chrome's error names (`net::ERR_CONNECTION_REFUSED`) and the request's type |
+
+What zebkit still does differently is listed in `docs/CDP.md` under
+"Differences from Chrome".
+
+Limits of this work: the comparison covers the commands the tests and the
+side-by-side runs exercise, not all 143 that are implemented; Chrome's
+answers were taken from one version (155); and what Chrome does that no
+check asks about is still unknown.
+
 ## What exists
 
 - **Pipeline:** `bootstrap-linux.sh`, `fetch-toolchain.sh`,
@@ -326,13 +368,18 @@ and the machine outliner (1.8 MiB, about 2x slower JSON and DOM).
   `slim-dev` is `slim` without link-time optimization, for working on the
   engine: a change relinks in seconds instead of five minutes.
 - **CDP endpoint:** `src/cdp` (first-party source, compiled into the engine),
-  `tools/cdphost` (a minimal embedding application), `tests/cdp`.
+  `tools/cdphost` (a minimal embedding application), `tests/cdp`, and
+  `third_party/devtools-protocol`, Chrome's protocol definition, which the
+  endpoint's parameter table is generated from (`gen-cdp-protocol.py`) and
+  the tests check against. `cdp-reference.sh` runs the checks against
+  Chrome.
 - **Toolchain:** Zig 0.16.0 (clang 21, lld, libc++), pinned by SHA-256.
 - **Dependencies:** 29 recipes in `deps/`, sources pinned by SHA-256.
   `deps/syslibs` builds lazy-loading stand-ins for optional system libraries
   with `tools/syslib-stubs`.
-- **Patches (12):** five build or bug fixes (`0xxx`), two size patches
-  (`1xxx`), five port patches (`2xxx`). `0005` stops WebKit from leaving a
+- **Patches (13):** five build or bug fixes (`0xxx`), two size patches
+  (`1xxx`), six port patches (`2xxx`). `2006` gives WebKit's inspector the
+  isolated worlds CDP needs. `0005` stops WebKit from leaving a
   web process behind for every page that starts at `about:blank`; `2002`
   is no longer used by `slim`; `2005` hooks `src/cdp` into the build and
   into `WebKitWebView`.
@@ -359,7 +406,8 @@ is the development build and can be rebuilt in about 20 minutes.
     accessibility tree and `DOMSnapshot`; request interception (`Fetch`);
     touch input; device, locale and timezone emulation; downloads and
     permissions, which are acknowledged today and not applied. Run the agent
-    frameworks themselves against it, and run it for days.
+    frameworks themselves against it, and run it for days. Extend the
+    comparison with Chrome to every implemented command.
     A transport without a TCP port, for applications that drive the engine
     from inside their own process.
 11. **Verify on old distributions** in containers or VMs.

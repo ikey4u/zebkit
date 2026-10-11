@@ -11,7 +11,9 @@
 # that one is a different origin from the other.
 #
 # The raw checks include one run with discovery switched off
-# (tests/cdp/private.py).
+# (tests/cdp/private.py). They also compare every message with the standard
+# protocol definition in third_party/devtools-protocol, and the same checks
+# run against Chrome itself with scripts/cdp-reference.sh.
 #
 # The client tests need Node.js and the npm packages puppeteer-core and
 # playwright-core. Neither is part of this repository; --clients downloads
@@ -28,6 +30,11 @@ page_port="${CDP_PAGE_PORT:-8771}"
 other_port=$(( page_port + 1 ))
 
 stage_profile "$profile"
+
+# The table the endpoint checks parameters against is generated from the
+# protocol definition and the sources. A stale one is a build that does not
+# match what is tested here.
+python3 -I "$ZEBKIT_ROOT/scripts/gen-cdp-protocol.py" --check || die "regenerate src/cdp/CDPProtocol.inc and rebuild"
 
 host="$build_dir/tools/cdphost"
 source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.c"

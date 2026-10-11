@@ -16,6 +16,7 @@
 #include <wpe/webkit.h>
 #include <wtf/CallbackAggregator.h>
 #include <wtf/MonotonicTime.h>
+#include <wtf/NeverDestroyed.h>
 #include <wtf/glib/GUniquePtr.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
@@ -159,19 +160,51 @@ void Connection::receive(const String& text)
     Ref protectedThis { *this };
     if (logLevel())
         logMessage("cdp >", text);
+    // A message that cannot be dispatched is answered the way Chrome
+    // answers it, with the JSON-RPC error codes.
+    auto reject = [&](std::optional<int> id, int code, ASCIILiteral text) {
+        auto errorObject = JSON::Object::create();
+        errorObject->setInteger("code"_s, code);
+        errorObject->setString("message"_s, text);
+        auto response = JSON::Object::create();
+        if (id)
+            response->setInteger("id"_s, *id);
+        response->setObject("error"_s, WTF::move(errorObject));
+        send(response);
+    };
     RefPtr value = JSON::Value::parseJSON(text);
-    RefPtr message = value ? value->asObject() : nullptr;
-    if (!message)
+    if (!value) {
+        reject({ }, -32700, "JSON: invalid message"_s);
         return;
-
+    }
+    RefPtr message = value->asObject();
+    if (!message) {
+        reject({ }, -32600, "Message must be an object"_s);
+        return;
+    }
     auto id = message->getInteger("id"_s);
+    if (!id) {
+        reject({ }, -32600, "Message must have integer 'id' property"_s);
+        return;
+    }
     auto method = message->getString("method"_s);
+    if (method.isNull()) {
+        reject(id, -32600, "Message must have string 'method' property"_s);
+        return;
+    }
     auto sessionID = message->getString("sessionId"_s);
+    RefPtr<Session> session;
+    if (sessionID.isEmpty())
+        session = m_root.ptr();
+    else
+        session = m_sessions.get(sessionID);
+    if (!session) {
+        reject(id, -32001, "Session with given id not found."_s);
+        return;
+    }
     RefPtr params = message->getObject("params"_s);
     if (!params)
         params = JSON::Object::create();
-    if (!id || method.isNull())
-        return;
 
     Reply reply = [weakThis = WeakPtr { *this }, id = *id, sessionID](RefPtr<JSON::Object>&& result, const String& error) {
         RefPtr connection = weakThis.get();
@@ -181,9 +214,19 @@ void Connection::receive(const String& text)
         response->setInteger("id"_s, id);
         if (!error.isNull()) {
             auto errorObject = JSON::Object::create();
-            bool notFound = error.endsWith("wasn't found"_s);
-            errorObject->setInteger("code"_s, notFound ? -32601 : -32000);
-            errorObject->setString("message"_s, error);
+            if (error.endsWith("wasn't found"_s))
+                errorObject->setInteger("code"_s, -32601);
+            else if (error.startsWith(invalidParametersPrefix)) {
+                errorObject->setInteger("code"_s, -32602);
+                errorObject->setString("message"_s, "Invalid parameters"_s);
+                errorObject->setString("data"_s, error.substring(invalidParametersPrefix.length()));
+            } else if (error.startsWith(invalidValuePrefix)) {
+                errorObject->setInteger("code"_s, -32602);
+                errorObject->setString("message"_s, error.substring(invalidValuePrefix.length()));
+            } else
+                errorObject->setInteger("code"_s, -32000);
+            if (!errorObject->getValue("message"_s))
+                errorObject->setString("message"_s, error);
             response->setObject("error"_s, WTF::move(errorObject));
         } else
             response->setObject("result"_s, result ? result.releaseNonNull() : JSON::Object::create());
@@ -192,13 +235,10 @@ void Connection::receive(const String& text)
         connection->send(response);
     };
 
-    RefPtr<Session> session;
-    if (sessionID.isEmpty())
-        session = m_root.ptr();
-    else
-        session = m_sessions.get(sessionID);
-    if (!session) {
-        replyError(reply, "Session with given id not found."_s);
+    // As in Chrome, parameters are checked against the protocol definition
+    // before the command gets anywhere.
+    if (auto problem = invalidParameters(method, *params); !problem.isNull()) {
+        replyError(reply, makeString(invalidParametersPrefix, problem));
         return;
     }
 
@@ -209,6 +249,87 @@ void Connection::receive(const String& text)
         return;
     }
     replyError(reply, makeString('\'', method, "' wasn't found"_s));
+}
+
+// MARK: Parameters
+
+struct CommandSignature {
+    ASCIILiteral method;
+    ASCIILiteral parameters;
+};
+
+// The commands that are implemented, with what the standard definition says
+// about their parameters.
+static constexpr CommandSignature commandSignatures[] = {
+#include "CDPProtocol.inc"
+};
+
+// Null if the parameters are what the definition asks for, else what is
+// wrong, in the words Chrome uses.
+String invalidParameters(const String& method, JSON::Object& params)
+{
+    static NeverDestroyed<HashMap<String, ASCIILiteral>> table = [] {
+        HashMap<String, ASCIILiteral> map;
+        for (auto& signature : commandSignatures)
+            map.add(String(signature.method), signature.parameters);
+        return map;
+    }();
+    auto iterator = table->find(method);
+    if (iterator == table->end())
+        return { };
+
+    for (auto parameter : StringView(iterator->value).split(' ')) {
+        auto separator = parameter.find([](char16_t character) {
+            return character == ':' || character == '?';
+        });
+        if (separator == notFound)
+            continue;
+        auto name = parameter.left(separator).toString();
+        bool optional = parameter[separator] == '?';
+        auto kind = parameter[separator + 1];
+        auto fail = [&](ASCIILiteral what) {
+            return makeString("Failed to deserialize params."_s, name, " - BINDINGS: "_s, what);
+        };
+        RefPtr value = params.getValue(name);
+        if (!value || (optional && value->isNull())) {
+            if (!optional)
+                return fail("mandatory field missing"_s);
+            continue;
+        }
+        auto type = value->type();
+        bool isNumber = type == JSON::Value::Type::Integer || type == JSON::Value::Type::Double;
+        switch (kind) {
+        case 's':
+            if (type != JSON::Value::Type::String)
+                return fail("string value expected"_s);
+            break;
+        case 'b':
+            if (type != JSON::Value::Type::Boolean)
+                return fail("bool value expected"_s);
+            break;
+        case 'n':
+            if (!isNumber)
+                return fail("double value expected"_s);
+            break;
+        case 'i': {
+            auto number = value->asDouble();
+            if (!isNumber || !number || *number != std::trunc(*number) || std::abs(*number) > std::numeric_limits<int>::max())
+                return fail("int32 value expected"_s);
+            break;
+        }
+        case 'a':
+            if (type != JSON::Value::Type::Array)
+                return fail("array value expected"_s);
+            break;
+        case 'o':
+            if (type != JSON::Value::Type::Object)
+                return fail("object expected"_s);
+            break;
+        default:
+            break;
+        }
+    }
+    return { };
 }
 
 // MARK: Cookies
@@ -256,7 +377,6 @@ Ref<JSON::Object> cookieToCDP(SoupCookie* cookie)
         break;
     }
     object->setString("priority"_s, "Medium"_s);
-    object->setBoolean("sameParty"_s, false);
     object->setString("sourceScheme"_s, soup_cookie_get_secure(cookie) ? "Secure"_s : "NonSecure"_s);
     object->setInteger("sourcePort"_s, soup_cookie_get_secure(cookie) ? 443 : 80);
     return object;
@@ -873,8 +993,13 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
     }
     if (method == "Browser.getWindowForTarget"_s || method == "Browser.getWindowBounds"_s) {
         RefPtr page = sessionPage;
-        if (auto targetID = params.getString("targetId"_s); !targetID.isEmpty())
+        if (auto targetID = params.getString("targetId"_s); !targetID.isEmpty()) {
             page = pageForID(targetID);
+            if (!page) {
+                replyError(reply, "No target with given id"_s);
+                return true;
+            }
+        }
         auto bounds = JSON::Object::create();
         int width = defaultViewWidth;
         int height = defaultViewHeight;
@@ -928,7 +1053,7 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
         if (auto targetID = params.getString("targetId"_s); !targetID.isEmpty()) {
             page = pageForID(targetID);
             if (!page && targetID != m_browserID) {
-                replyError(reply, "No target with given id found"_s);
+                replyInvalid(reply, "No target with given id found"_s);
                 return true;
             }
         }
@@ -967,7 +1092,7 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
     if (method == "Target.attachToTarget"_s) {
         RefPtr page = pageForID(params.getString("targetId"_s));
         if (!page) {
-            replyError(reply, "No target with given id found"_s);
+            replyInvalid(reply, "No target with given id found"_s);
             return true;
         }
         auto newSession = connection.createSession(*page);
@@ -996,7 +1121,7 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
                 return true;
             }
         }
-        replyError(reply, "No session with given id"_s);
+        replyInvalid(reply, "No session with given id"_s);
         return true;
     }
     if (method == "Target.createTarget"_s) {
@@ -1018,7 +1143,7 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
     if (method == "Target.closeTarget"_s) {
         RefPtr page = pageForID(params.getString("targetId"_s));
         if (!page) {
-            replyError(reply, "No target with given id found"_s);
+            replyInvalid(reply, "No target with given id found"_s);
             return true;
         }
         auto result = JSON::Object::create();
@@ -1028,10 +1153,13 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
         return true;
     }
     if (method == "Target.activateTarget"_s) {
-        if (RefPtr page = pageForID(params.getString("targetId"_s))) {
-            if (auto* wpeView = webkit_web_view_get_wpe_view(page->view()))
-                wpe_view_focus_in(wpeView);
+        RefPtr page = pageForID(params.getString("targetId"_s));
+        if (!page) {
+            replyInvalid(reply, "No target with given id found"_s);
+            return true;
         }
+        if (auto* wpeView = webkit_web_view_get_wpe_view(page->view()))
+            wpe_view_focus_in(wpeView);
         replyOK(reply);
         return true;
     }
@@ -1055,7 +1183,7 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
     if (method == "Target.disposeBrowserContext"_s) {
         auto id = params.getString("browserContextId"_s);
         if (!m_browserContexts.contains(id)) {
-            replyError(reply, makeString("Failed to find browser context with id "_s, id));
+            replyError(reply, makeString("Failed to find context with id "_s, id));
             return true;
         }
         for (auto& page : copyToVector(m_pages)) {
