@@ -163,3 +163,9 @@ zeb_option(ENABLE_WPE_LEGACY_API OFF)
 # page through WebKit's inspector backend, which therefore stays in; the
 # remote inspector server and WebDriver do not.
 zeb_string(ZEBKIT_CDP_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/cdp")
+
+# Libraries inside the engine that applications may use too (docs/VENDOR.md):
+# FFmpeg so far, as zebkit::vendor::ffmpeg. scripts/gen-vendor.py writes the
+# entry points; with them every function of the library's API is linked in,
+# not only what the engine itself calls.
+zeb_string(ZEBKIT_VENDOR_DIR "${CMAKE_CURRENT_LIST_DIR}/../out/deps/vendor/src")

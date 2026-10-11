@@ -189,3 +189,7 @@ fi
 for name in "${names[@]}"; do
     build_one "$name"
 done
+
+# What lets applications use these libraries through the engine. It follows
+# from what was just built, and is rewritten only where that changed.
+python3 "$ZEBKIT_ROOT/scripts/gen-vendor.py"

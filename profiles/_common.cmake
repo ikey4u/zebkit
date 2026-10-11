@@ -34,7 +34,7 @@ macro(zeb_use_deps)
         foreach (_zeb_lib IN LISTS _zeb_gst_plugins _zeb_gst_libs)
             string(APPEND _zeb_private_libs " ${_zeb_lib}")
         endforeach ()
-        foreach (_zeb_lib avfilter avformat avcodec swresample avutil)
+        foreach (_zeb_lib avfilter avformat avcodec swresample swscale avutil)
             string(APPEND _zeb_private_libs " ${_zeb_deps}/lib/lib${_zeb_lib}.a")
         endforeach ()
         # ALSA is a lazy-loading stand-in from deps/syslibs, like the display
