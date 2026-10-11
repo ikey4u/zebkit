@@ -35,7 +35,7 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__.strip().splitlines()[2].strip())
     profile, log = sys.argv[1], pathlib.Path(sys.argv[2])
-    libraries = sorted((ROOT / "out" / profile / "lib").glob("libWPEWebKit-*.so.*.*.*"))
+    libraries = sorted((ROOT / "out" / profile / "lib").glob("libzebkit.so.*.*.*"))
     if not libraries:
         sys.exit(f"error: profile '{profile}' is not built")
     addresses, names = load_symbols(libraries[0])
@@ -51,7 +51,7 @@ def main():
                 previous = None
             continue
         kind, module, offset = m.group(1), m.group(2), int(m.group(3), 16)
-        if module.startswith("libWPEWebKit"):
+        if module.startswith("libzebkit"):
             i = bisect.bisect_right(addresses, offset) - 1
             where = f"{names[i]} + {offset - addresses[i]:#x}" if i >= 0 else f"{module}+{offset:#x}"
         else:

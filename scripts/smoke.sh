@@ -19,7 +19,7 @@ stage_profile "$profile"
 # JavaScriptCore and the DOM bindings tell types apart by the address of each
 # class's ClassInfo. If the linker ever merges two of them (identical-code
 # folding did), type checks silently go wrong, so refuse to go on.
-read -r infos shared < <(nm "$build_dir"/lib/libWPEWebKit-*.so.*.*.* 2>/dev/null \
+read -r infos shared < <(nm "$build_dir"/lib/libzebkit.so.*.*.* 2>/dev/null \
     | awk '$3 ~ /6s_infoE$/ { total++; count[$1]++ } END { for (a in count) if (count[a] > 1) n++; print total + 0, n + 0 }')
 if (( infos == 0 )); then
     # The cross toolchain strips the symbol table at link time, so there is

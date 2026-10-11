@@ -2,7 +2,7 @@
 """Attribute an engine binary's code and data to subsystems by symbol name.
 
 Reads the *unstripped* library of a profile with `nm`, classifies every sized
-symbol, and writes reports/<profile>-code.md. There is no debug info in our
+symbol, and writes docs/reports/<profile>-code.md. There is no debug info in our
 builds, so attribution is by C++ namespace and class-name prefix rather than
 by source directory. Template helpers that live in WTF:: or std:: are charged
 to the first engine namespace mentioned in their arguments, since that is the
@@ -124,7 +124,7 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__.strip().splitlines()[-1].strip())
     profile = sys.argv[1]
-    libs = sorted((ROOT / "out" / profile / "lib").glob("libWPEWebKit-*.so.*.*.*"))
+    libs = sorted((ROOT / "out" / profile / "lib").glob("libzebkit.so.*.*.*"))
     if not libs:
         sys.exit(f"error: profile '{profile}' is not built")
     lib = libs[0]
@@ -183,7 +183,7 @@ def main():
         shown = name if len(name) <= 110 else name[:107] + "..."
         lines.append(f"| {size / 1024:.0f} | `{shown.replace('|', '/')}` |")
 
-    report = ROOT / "reports" / f"{profile}-code.md"
+    report = ROOT / "docs" / "reports" / f"{profile}-code.md"
     report.write_text("\n".join(lines) + "\n")
     print(f"wrote {report.relative_to(ROOT)}")
 

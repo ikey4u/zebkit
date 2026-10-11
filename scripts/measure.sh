@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measure what a profile ships and write reports/<profile>.md.
+# Measure what a profile ships and write docs/reports/<profile>.md.
 #
 # The number that counts is the size of the package directory that
 # scripts/package.sh assembles: the stripped engine plus every library a base
@@ -29,14 +29,15 @@ while IFS= read -r file; do
     name="${file#"$package"/}"
     size=$(stat -c %s "$file")
     total=$(( total + size ))
-    if [[ "$name" == libWPE* || "$name" == WPE*Process ]]; then
+    if [[ "$name" == libzebkit* || "$name" == zebkit-* ]]; then
         engine_total=$(( engine_total + size ))
         engine_rows+="| \`$name\` | $(mib "$size") |"$'\n'
     else
         other_total=$(( other_total + size ))
         other_rows+="$size|\`$name\`"$'\n'
     fi
-done < <(find "$package" -type f | sort)
+# Headers are for building an application; they are not shipped with one.
+done < <(find "$package" -type f -not -path "$package/include/*" | sort)
 other_count=$(grep -c . <<< "$other_rows" || true)
 
 if (( total <= BUDGET_BYTES )); then verdict="within"; else verdict="over"; fi
