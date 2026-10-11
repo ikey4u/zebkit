@@ -1,0 +1,15 @@
+[package]
+name = "zebkit"
+description = "A web engine to embed: web views, the Chrome DevTools Protocol endpoint, and the libraries inside the engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+zebkit-rs = { path = "../zebkit-rs" }
+
+# One process, one main loop: the test is a program, not a set of threads.
+[[test]]
+name = "engine"
+harness = false

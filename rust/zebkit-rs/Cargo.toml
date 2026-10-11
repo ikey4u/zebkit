@@ -1,0 +1,13 @@
+[package]
+name = "zebkit-rs"
+description = "Raw bindings to the zebkit engine library (libzebkit): declarations only, nothing safe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+# One crate per process links the engine; dependents read where it is from
+# DEP_ZEBKIT_LIB_DIR in their build scripts.
+links = "zebkit"
+
+[lib]
+name = "zebkit_rs"
