@@ -27,7 +27,8 @@ Last updated: 2026-10-10
 | Area | Status |
 |---|---|
 | Linux `slim` build | Builds; smoke test (HTTP, HTTPS, WebGL, JIT) and media test pass |
-| Size | **81.3 MiB** in 11 files, plus the CDP header |
+| Size | **83.1 MiB** in 11 files, plus headers |
+| Form | A shared library, `libzebkit.so.1`, with two helper programs it starts itself (`zebkit-web`, `zebkit-network`). An application links against it and creates views with WPE WebKit's C API; `examples/window.c` is a complete one |
 | Chrome DevTools Protocol | Built in; Puppeteer and Playwright connect and drive pages. Checked against Chrome's protocol definition and against Chrome itself. A subset: see "Chrome DevTools Protocol" |
 | glibc floor | **2.17**: no shipped binary imports a newer symbol |
 | Media | H.264, VP8, VP9, AAC, MP3, Opus, Vorbis, FLAC; MP4 and WebM; Media Source; Web Audio |
@@ -46,12 +47,12 @@ provide.
 | Profile | Engine | Bundled libraries | Total |
 |---|---:|---:|---:|
 | `baseline` (upstream defaults, host libraries) | 119.6 | 93.3 | 213.0 |
-| `slim` | 74.9 | 6.4 | **81.3** |
+| `slim` | 76.7 | 6.4 | **83.1** |
 
 Compressed, the 80.3 MiB build before the display work was 23.0 MiB with
 xz, 25.1 with zstd and 32.0 with gzip.
 
-### How it got from 61.0 to 81.3
+### How it got from 61.0 to 83.1
 
 | Change | MiB | Measured or estimated |
 |---|---:|---|
@@ -61,6 +62,8 @@ xz, 25.1 with zstd and 32.0 with gzip.
 | WebGL (ANGLE) | +3.7 | Measured: 76.6 to 80.3 |
 | X11 backend, static libxkbcommon, on-demand loading of system libraries | +0.3 | Measured: 80.3 to 80.6 |
 | CDP endpoint (`src/cdp`), and the inspector agents it drives, which a size patch had removed | +0.7 | Measured: 80.6 to 81.3 |
+| All of FFmpeg's API kept and exported for applications (`docs/VENDOR.md`) | +0.3 | Measured: 81.3 to 81.6 |
+| FFmpeg parts for applications only: file reading and writing, scaling, its own encoders | +1.5 | Measured: 81.6 to 83.1 |
 
 ### Where the engine's size is (at 73.9 MiB, before the display work)
 
@@ -72,7 +75,7 @@ xz, 25.1 with zstd and 32.0 with gzip.
 | Vtables and other relocated data | 3.4 |
 
 A per-component breakdown needs a linker map, which the cross toolchain's
-linker driver does not produce. `reports/slim-map.md` is from the last build
+linker driver does not produce. `docs/reports/slim-map.md` is from the last build
 before the toolchain change and no longer current.
 
 ### What could come back
@@ -119,7 +122,7 @@ WebKit API, and translates the rest to and from WebKit's protocol.
 `docs/CDP.md` has the design, the list of what is covered and what is not.
 
 Started with `ZEBKIT_CDP_PORT=9222` in the environment of any embedding
-application, or with `webkit_zebkit_cdp_listen()`. It listens on 127.0.0.1
+application, or with `zebkit_cdp_listen()`. It listens on 127.0.0.1
 and refuses requests that come from web pages. It has no password; with
 discovery switched off (`ZEBKIT_CDP_DISCOVERY=0`) only a client that was
 given the browser's address, which contains a random id, can connect.
@@ -284,7 +287,7 @@ and the machine outliner (1.8 MiB, about 2x slower JSON and DOM).
 
 ## Open questions for the project owner
 
-1. **Size.** 81.3 MiB is what media, glibc 2.17, WebGL and CDP cost with
+1. **Size.** 83.1 MiB is what media, glibc 2.17, WebGL and CDP cost with
    everything else as it was. Is that acceptable, or should one of the items
    under "What could come back" be pursued?
 2. **Codec licensing.** H.264 and AAC decoders are patented in some
@@ -322,7 +325,7 @@ implementation cannot be compiled against WebKit (it is part of Blink and
 V8), so what was taken from it is what can be:
 
 - **Its protocol definition**, vendored unchanged in
-  `third_party/devtools-protocol` (revision r1716261, 1.6 MiB of JSON, not
+  `deps/devtools-protocol` (revision r1716261, 1.6 MiB of JSON, not
   shipped). The endpoint's parameter checks are generated from it, and the
   tests compare every message with it.
 - **Its behaviour.** `scripts/cdp-reference.sh` runs the raw checks against
@@ -359,6 +362,11 @@ check asks about is still unknown.
 
 ## What exists
 
+- **One-command builds:** `mise.toml` with the tasks `r` (release, into
+  `dist/release`), `d` (with debug information, into `dist/debug`) and
+  `mise example:linux:basic` and `mise example:ffmpeg` (build and run the
+  programs in `examples/`); they call `scripts/dist.sh` and
+  `scripts/example.sh`.
 - **Pipeline:** `bootstrap-linux.sh`, `fetch-toolchain.sh`,
   `fetch-upstream.sh`, `fetch-cdp-clients.sh`, `build-deps.sh`, `build.sh`, `smoke.sh`, `media.sh`,
   `display.sh`, `cdp.sh`, `bench.sh`, `package.sh`, `measure.sh`, `compat.sh`,
@@ -369,7 +377,7 @@ check asks about is still unknown.
   engine: a change relinks in seconds instead of five minutes.
 - **CDP endpoint:** `src/cdp` (first-party source, compiled into the engine),
   `tools/cdphost` (a minimal embedding application), `tests/cdp`, and
-  `third_party/devtools-protocol`, Chrome's protocol definition, which the
+  `deps/devtools-protocol`, Chrome's protocol definition, which the
   endpoint's parameter table is generated from (`gen-cdp-protocol.py`) and
   the tests check against. `cdp-reference.sh` runs the checks against
   Chrome.
@@ -377,12 +385,30 @@ check asks about is still unknown.
 - **Dependencies:** 29 recipes in `deps/`, sources pinned by SHA-256.
   `deps/syslibs` builds lazy-loading stand-ins for optional system libraries
   with `tools/syslib-stubs`.
-- **Patches (13):** five build or bug fixes (`0xxx`), two size patches
-  (`1xxx`), six port patches (`2xxx`). `2006` gives WebKit's inspector the
-  isolated worlds CDP needs. `0005` stops WebKit from leaving a
-  web process behind for every page that starts at `about:blank`; `2002`
-  is no longer used by `slim`; `2005` hooks `src/cdp` into the build and
-  into `WebKitWebView`.
+- **Patches (16):** six build or bug fixes (`0xxx`), two size patches
+  (`1xxx`), eight port and feature patches (`2xxx`). `0005` stops WebKit from
+  leaving a web process behind for every page that starts at `about:blank`;
+  `0006` fixes a crash at exit in any application that has shown a window on
+  Wayland (EGL was shut down after the display connection it used was
+  closed); `2002` is no longer used by `slim`; `2005` hooks `src/cdp` into
+  the build and into `WebKitWebView`; `2006` gives WebKit's inspector the
+  isolated worlds CDP needs; `2007` names the shipped files after zebkit
+  (`libzebkit.so.1`, `zebkit-web`, `zebkit-network`, `libzebkit-bundle.so`),
+  the API and the symbols keeping WebKit's names; `2008` exports the entry
+  points for libraries inside the engine.
+- **Libraries inside the engine, for applications:** FFmpeg as
+  `zebkit::vendor::ffmpeg` (`docs/VENDOR.md`), generated by
+  `scripts/gen-vendor.py`, checked by `scripts/vendor.sh`. 938 functions,
+  under link names of zebkit's own so that another FFmpeg in the same
+  process cannot collide. Beyond what the engine needs it has file reading
+  and writing, scaling and FFmpeg's own encoders. Costs 1.8 MiB in all.
+- **Rust:** `rust/zebkit-rs` (raw bindings) and `rust/zebkit` (the safe
+  interface: pages, windows, main loop, CDP endpoint, the engine's FFmpeg).
+  `cargo test` loads a page headlessly, checks the CDP endpoint lists it and
+  looks at FFmpeg's decoders, on the real engine. A first cut: script
+  evaluation, settings, cookies and FFmpeg decoding are not wrapped yet.
+- **Examples:** `examples/window.c`, a small browser window, and
+  `examples/ffmpeg.cpp`, which decodes with the engine's FFmpeg.
 - **Tests:** smoke, media, display, CDP and benchmark pages; `tools/pageprobe`;
   `tools/crashsite`; the site list in `assets/WEBSITE-TOP-100.json`.
 
