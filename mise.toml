@@ -1,0 +1,26 @@
+# Tasks for zebkit, run with mise (https://mise.jdx.dev).
+#
+#   mise run r                release build for this machine  -> dist/release
+#   mise run d                debug build for this machine    -> dist/debug
+#   mise example:linux:basic  build and run examples/window.c, a small browser window
+#   mise example:ffmpeg       build and run examples/ffmpeg.cpp, which uses the engine's FFmpeg
+#
+# "mise d" works as a short form of "mise run d". "mise r" does not run the
+# task r: it is mise's own short form of "mise run", which with no task
+# named asks which one to run.
+
+[tasks.r]
+description = "Build the release zebkit for this machine into dist/release"
+run = "scripts/dist.sh release"
+
+[tasks.d]
+description = "Build zebkit with debug information for this machine into dist/debug"
+run = "scripts/dist.sh debug"
+
+[tasks."example:linux:basic"]
+description = "Build and run examples/window.c: a small browser window (pass a URL after --)"
+run = "scripts/example.sh linux-basic"
+
+[tasks."example:ffmpeg"]
+description = "Build and run examples/ffmpeg.cpp: decode an MP3 to WAV with the FFmpeg inside zebkit (pass IN.mp3 OUT.wav after --)"
+run = "scripts/example.sh ffmpeg"
