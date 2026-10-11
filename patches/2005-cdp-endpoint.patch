@@ -6,6 +6,9 @@ the two places WebKit has to know about them: the build adds the sources to
 libWPEWebKit, and WebKitWebView tells the endpoint about every view that is
 created and destroyed, since each view is a page a CDP client can drive.
 
+The library exports symbols by prefix, so the endpoint's own API
+(zebkit_cdp_*, src/cdp/zebkit-cdp.h) is added to that list.
+
 --- a/Source/WebKit/PlatformWPE.cmake
 +++ b/Source/WebKit/PlatformWPE.cmake
 @@ -824,3 +824,12 @@
@@ -56,3 +59,13 @@ created and destroyed, since each view is a page a CDP client can drive.
  #if PLATFORM(GTK)
      webkitWebViewCancelFaviconRequest(webView);
      webView->priv->faviconChangedHandlerID = 0;
+--- a/Source/WebKit/webkitglib-symbols.map
++++ b/Source/WebKit/webkitglib-symbols.map
+@@ -3,6 +3,7 @@
+   jsc_*;
+   webkit_*;
+   wpe_*;
++  zebkit_cdp_*;
+   extern "C++" {
+     "WebKit::GPUProcessMain(int, char**)";
+     "WebKit::NetworkProcessMain(int, char**)";

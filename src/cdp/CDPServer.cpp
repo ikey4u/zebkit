@@ -1265,33 +1265,33 @@ using namespace Zebkit::CDP;
 
 extern "C" {
 
-__attribute__((visibility("default"))) guint webkit_zebkit_cdp_listen(const char* address, guint port, GError** error)
+__attribute__((visibility("default"))) guint zebkit_cdp_listen(const char* address, guint port, GError** error)
 {
     return Server::singleton().listen(address, port, error);
 }
 
-__attribute__((visibility("default"))) guint webkit_zebkit_cdp_get_port(void)
+__attribute__((visibility("default"))) guint zebkit_cdp_get_port(void)
 {
     return Server::singleton().port();
 }
 
-__attribute__((visibility("default"))) void webkit_zebkit_cdp_stop(void)
+__attribute__((visibility("default"))) void zebkit_cdp_stop(void)
 {
     Server::singleton().stop();
 }
 
-__attribute__((visibility("default"))) void webkit_zebkit_cdp_set_discovery_enabled(gboolean enabled)
+__attribute__((visibility("default"))) void zebkit_cdp_set_discovery_enabled(gboolean enabled)
 {
     Server::singleton().discoveryEnabled = enabled;
 }
 
-__attribute__((visibility("default"))) char* webkit_zebkit_cdp_get_url(void)
+__attribute__((visibility("default"))) char* zebkit_cdp_get_url(void)
 {
     auto url = Server::singleton().browserURL();
     return url.isNull() ? nullptr : g_strdup(url.utf8().data());
 }
 
-__attribute__((visibility("default"))) void webkit_zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc function, gpointer userData)
+__attribute__((visibility("default"))) void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc function, gpointer userData)
 {
     Server::singleton().createViewFunc = function;
     Server::singleton().createViewData = userData;

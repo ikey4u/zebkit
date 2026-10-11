@@ -3,7 +3,7 @@
  * over the Chrome DevTools Protocol. It opens one page and serves CDP until
  * it is killed. scripts/cdp.sh uses it as the browser under test, and it
  * shows what an embedding application has to do: create a view and call
- * webkit_zebkit_cdp_listen().
+ * zebkit_cdp_listen().
  *
  *   cdphost [--port N] [--address IP] [--private] [--headless] [--size WxH] [URL]
  *
@@ -67,8 +67,8 @@ int main(int argc, char** argv)
         wpe_toplevel_resize(wpe_view_get_toplevel(wpeView), width, height);
 
     GError* error = NULL;
-    webkit_zebkit_cdp_set_discovery_enabled(!private);
-    if (!webkit_zebkit_cdp_listen(address, port, &error)) {
+    zebkit_cdp_set_discovery_enabled(!private);
+    if (!zebkit_cdp_listen(address, port, &error)) {
         fprintf(stderr, "cdphost: %s\n", error->message);
         return 1;
     }
@@ -78,6 +78,6 @@ int main(int argc, char** argv)
     g_unix_signal_add(SIGINT, quit, loop);
     webkit_web_view_load_uri(view, url);
     g_main_loop_run(loop);
-    webkit_zebkit_cdp_stop();
+    zebkit_cdp_stop();
     return 0;
 }

@@ -8,7 +8,7 @@ information in different shapes and has nothing for the browser-level parts:
 opening pages, navigating, mouse and keyboard.
 
 The engine therefore carries a CDP endpoint of its own (`src/cdp`, compiled
-into `libWPEWebKit`). It serves the HTTP and WebSocket interface CDP clients
+into `libzebkit`). It serves the HTTP and WebSocket interface CDP clients
 expect, answers what it can from the WebKit API, and translates the rest to
 and from the Web Inspector Protocol.
 
@@ -24,9 +24,9 @@ Start the endpoint in one of two ways:
 - Set `ZEBKIT_CDP_PORT` in the environment of any application that embeds
   the engine. `ZEBKIT_CDP_ADDRESS` chooses the address (default
   `127.0.0.1`); port `0` lets the system pick.
-- Call `webkit_zebkit_cdp_listen(address, port, &error)` from the
+- Call `zebkit_cdp_listen(address, port, &error)` from the
   application. The header is `src/cdp/zebkit-cdp.h`; `scripts/package.sh`
-  puts a copy in the package's `include/`. `webkit_zebkit_cdp_stop()`
+  puts a copy in the package's `include/`. `zebkit_cdp_stop()`
   disconnects every client, closes the pages the endpoint opened and stops
   listening.
 
@@ -42,7 +42,7 @@ const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
 ```
 
 `tools/cdphost` is a complete embedding application in 90 lines: one view
-and a call to `webkit_zebkit_cdp_listen()`.
+and a call to `zebkit_cdp_listen()`.
 
 ### Pages the client opens
 
@@ -53,7 +53,7 @@ A window a page opens becomes such a view only while a client is connected;
 with nobody to see or close it, it would stay for the life of the process.
 An application that wants to own these views (to put them in its own
 windows, say) registers a function with
-`webkit_zebkit_cdp_set_create_view_func()`.
+`zebkit_cdp_set_create_view_func()`.
 
 `Target.createBrowserContext` gives a context with its own cookies, cache
 and storage, backed by an ephemeral `WebKitNetworkSession`.
@@ -83,10 +83,10 @@ file inputs and `file:` addresses, the files the application can read. That
 is how Chrome's port behaves too, and it is fine on a machine that only the
 agent's owner uses. Where it is not:
 
-- Call `webkit_zebkit_cdp_set_discovery_enabled(FALSE)` before listening,
+- Call `zebkit_cdp_set_discovery_enabled(FALSE)` before listening,
   or set `ZEBKIT_CDP_DISCOVERY=0`. The `/json` pages are then not served,
   and the browser socket is reachable only at the address
-  `webkit_zebkit_cdp_get_url()` returns (the same one the engine prints on
+  `zebkit_cdp_get_url()` returns (the same one the engine prints on
   its standard error), which contains a random 122-bit id. Hand that
   address to the client: `puppeteer.connect({ browserWSEndpoint })`,
   `chromium.connectOverCDP(wsEndpoint)`.
@@ -97,7 +97,7 @@ agent's owner uses. Where it is not:
 The endpoint is written against Chrome's own material, not against a
 reading of the documentation:
 
-- **The protocol definition is Chrome's.** `third_party/devtools-protocol`
+- **The protocol definition is Chrome's.** `deps/devtools-protocol`
   holds the two files Chrome generates its protocol code from, unchanged,
   at a pinned revision. The endpoint checks the parameters of every command
   it implements against them before the command reaches its handler
