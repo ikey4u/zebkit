@@ -770,7 +770,8 @@ def refuses_requests_from_web_pages():
     equal(status("/json/new?about:blank"), 405, "GET /json/new")
     equal(status("/json/list", headers={"Origin": "http://evil.example"}), 403, "a request with a web origin")
     equal(status("/json/new?about:blank", "PUT", {"Origin": "http://evil.example"}), 403, "PUT with a web origin")
-    equal(len(http_json(CDP_PORT, "/json/list")), before, "pages after the refused requests")
+    # A page the check before this one closed may still have been listed.
+    expect(len(http_json(CDP_PORT, "/json/list")) <= before, "a refused request opened a page")
     try:
         connection = Connection(f"ws://127.0.0.1:{CDP_PORT}/devtools/browser/0000")
         connection.call("Browser.getVersion", timeout=3)

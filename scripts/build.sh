@@ -42,8 +42,16 @@ if command -v ccache >/dev/null; then
     export CCACHE_DIR="${CCACHE_DIR:-$CACHE_DIR/ccache}"
 fi
 
-log "configuring profile '$profile'"
-cmake "${fresh[@]}" "${cmake_args[@]}"
+# Configuring rewrites generated files whose content has not changed, and
+# the engine is then linked again, which takes minutes with link-time
+# optimization. So it is done when it has to be: the first time, on --fresh,
+# and when a profile file changed. Changes to the source tree's own CMake
+# files are noticed by ninja, which runs CMake again by itself.
+if [[ ! -f "$build_dir/build.ninja" || ${#fresh[@]} -gt 0 || $configure_only -ne 0 \
+    || -n "$(find "$PROFILES_DIR" -type f -newer "$build_dir/build.ninja" -print -quit)" ]]; then
+    log "configuring profile '$profile'"
+    cmake "${fresh[@]}" "${cmake_args[@]}"
+fi
 
 (( configure_only )) && exit 0
 

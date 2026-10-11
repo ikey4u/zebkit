@@ -60,8 +60,10 @@ has() { [[ "$1" == *"$2"* ]] && echo yes || echo no; }
 start_browser() {
     run="$1"; shift
     : > "$work/server.log"
+    # The address is new every time: the browser keeps a cache between runs,
+    # and a page it takes from there never reaches the server this watches.
     "${run_env[@]}" env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$work/empty" ZEBKIT_SYSLIB_LOG=1 "$@" \
-        "$build_dir/bin/MiniBrowser" "http://127.0.0.1:$port/index.html?run=$run" > "$work/$run.log" 2>&1 &
+        "$build_dir/bin/MiniBrowser" "http://127.0.0.1:$port/index.html?run=$run&at=$(date +%s%N)" > "$work/$run.log" 2>&1 &
     browser_pid=$!
     sleep 8
     # Which display libraries the engine itself loaded. (The process map would

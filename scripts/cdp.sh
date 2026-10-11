@@ -12,7 +12,7 @@
 #
 # The raw checks include one run with discovery switched off
 # (tests/cdp/private.py). They also compare every message with the standard
-# protocol definition in third_party/devtools-protocol, and the same checks
+# protocol definition in deps/devtools-protocol, and the same checks
 # run against Chrome itself with scripts/cdp-reference.sh.
 #
 # The client tests need Node.js and the npm packages puppeteer-core and
@@ -40,7 +40,8 @@ host="$build_dir/tools/cdphost"
 source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.c"
 pc_path="$stage_dir/lib/pkgconfig"
 [[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
-if [[ ! -x "$host" || "$source_file" -nt "$host" ]]; then
+# Rebuilt when its source changes, and when the engine it links against does.
+if [[ ! -x "$host" || "$source_file" -nt "$host" || "$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc" -nt "$host" ]]; then
     log "building cdphost for $profile"
     mkdir -p "$(dirname "$host")"
     # shellcheck disable=SC2046

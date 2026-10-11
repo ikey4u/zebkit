@@ -21,7 +21,8 @@ probe="$build_dir/tools/pageprobe"
 source_file="$ZEBKIT_ROOT/tools/pageprobe/pageprobe.c"
 pc_path="$stage_dir/lib/pkgconfig"
 [[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
-if [[ ! -x "$probe" || "$source_file" -nt "$probe" ]]; then
+# Rebuilt when its source changes, and when the engine it links against does.
+if [[ ! -x "$probe" || "$source_file" -nt "$probe" || "$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc" -nt "$probe" ]]; then
     log "building pageprobe for $profile"
     mkdir -p "$(dirname "$probe")"
     # shellcheck disable=SC2046
