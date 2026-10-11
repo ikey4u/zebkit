@@ -66,7 +66,7 @@ says nothing about `slim`, so it is reported separately and retried.
 ```sh
 scripts/compat.sh baseline          # reference results into out/compat/baseline/
 scripts/compat.sh slim              # results for the build under test
-scripts/compat-report.py slim       # compare, write reports/compat.md
+scripts/compat-report.py slim       # compare, write docs/reports/compat.md
 ```
 
 `scripts/compat.sh <profile> <domain>...` re-runs individual sites.

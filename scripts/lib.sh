@@ -25,7 +25,7 @@ OUT_DIR="$ZEBKIT_ROOT/out"
 TOOLCHAIN_DIR="$OUT_DIR/toolchain"
 PROFILES_DIR="$ZEBKIT_ROOT/profiles"
 PATCHES_DIR="$ZEBKIT_ROOT/patches"
-REPORTS_DIR="$ZEBKIT_ROOT/reports"
+REPORTS_DIR="$ZEBKIT_ROOT/docs/reports"
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }

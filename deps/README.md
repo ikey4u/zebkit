@@ -11,6 +11,11 @@ opt in with `zeb_use_deps()` (see `profiles/_common.cmake`).
   adding or removing a library, reconfigure the engine with
   `scripts/build.sh <profile> --fresh`.
 
+`devtools-protocol/` is not a library and has no recipe: it is Chrome's
+definition of the DevTools Protocol, copied unchanged. The CDP endpoint's
+parameter checks are generated from it and its tests compare every message
+with it (see the README in that directory).
+
 ## Static or shared
 
 Static is the default: the engine link then keeps only the functions it
@@ -32,7 +37,7 @@ something outside the engine binary must use the same copy.
 | `libsoup` | shared | Its objects cross WebKit's GLib API; built without Kerberos |
 | `nettle`, `gnutls` | static (into the TLS plugin) | No p11-kit, IDN or GMP |
 | `glib-networking` | shared plugin | GIO's TLS backend, one file |
-| `ffmpeg` | static | Decoders only: H.264, VP8, VP9, AAC, MP3, Opus, Vorbis, FLAC |
+| `ffmpeg` | static | The engine's decoders (H.264, VP8, VP9, AAC, MP3, Opus, Vorbis, FLAC); for applications also file reading and writing, scaling, and FFmpeg's own encoders |
 | `gstreamer` | static | Core, helper libraries and 21 plugins as one fixed set |
 
 Everything is compiled with the cross toolchain from `toolchain.lock`, so no

@@ -2,7 +2,7 @@
 """Compare a profile's site results with a reference profile's and judge each site.
 
 Reads out/compat/<profile>/ and out/compat/<reference>/ (written by
-scripts/compat.sh) and writes reports/compat.md. Exits non-zero unless every
+scripts/compat.sh) and writes docs/reports/compat.md. Exits non-zero unless every
 site passes. The rules are explained in docs/COMPAT.md; in short, a site
 passes when the profile loads it without crashing, paints it, builds a DOM
 about as large as the reference build does, and throws no script error the
@@ -168,7 +168,7 @@ def main():
             f"| {painted(result)} / {painted(reference)} "
             f"| {errors(result)} / {errors(reference)} |")
 
-    report = ROOT / "reports" / "compat.md"
+    report = ROOT / "docs" / "reports" / "compat.md"
     report.write_text("\n".join(lines) + "\n")
     print(f"pass {counts['PASS']}, fail {counts['FAIL']}, blocked {counts['BLOCKED']}; wrote {report.relative_to(ROOT)}")
     for site, status, reasons, _, _ in rows:

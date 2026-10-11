@@ -1,7 +1,7 @@
 """Check CDP messages against the standard protocol definition.
 
 The definition is the one Chrome publishes, vendored in
-third_party/devtools-protocol. Everything the endpoint sends (results and
+deps/devtools-protocol. Everything the endpoint sends (results and
 events) and everything the tests send (parameters) is compared with it:
 unknown methods and events, missing mandatory fields, wrong types, enum
 values the definition does not list, and fields it does not declare.
@@ -10,7 +10,7 @@ values the definition does not list, and fields it does not declare.
 import json
 import pathlib
 
-DEFINITION = pathlib.Path(__file__).resolve().parents[2] / "third_party" / "devtools-protocol"
+DEFINITION = pathlib.Path(__file__).resolve().parents[2] / "deps" / "devtools-protocol"
 
 
 class Schema:

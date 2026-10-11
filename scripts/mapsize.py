@@ -2,7 +2,7 @@
 """Attribute the engine binary's bytes to the object files they came from.
 
 Reads the linker map of a profile (out/<profile>/link.map, written when the
-profile links with -Wl,-Map) and writes reports/<profile>-map.md. Unlike
+profile links with -Wl,-Map) and writes docs/reports/<profile>-map.md. Unlike
 codesize.py, which guesses from symbol names, every input section is charged
 to its object file, so the numbers add up to the real section sizes and cover
 data as well as code.
@@ -143,7 +143,7 @@ def main():
         lines += [f"| `{a}` | {mib(s)} |" for a, s in shown]
         lines.append(f"| everything smaller | {mib(rest)} |")
 
-    report = ROOT / "reports" / f"{profile}-map.md"
+    report = ROOT / "docs" / "reports" / f"{profile}-map.md"
     report.write_text("\n".join(lines) + "\n")
     print(f"wrote {report.relative_to(ROOT)}")
 
