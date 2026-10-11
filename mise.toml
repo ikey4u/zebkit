@@ -1,6 +1,7 @@
 # Tasks for zebkit, run with mise (https://mise.jdx.dev).
 #
-#   mise run r                release build for this machine  -> dist/release
+#   mise run r                release build for this machine  -> dist/release, and its archive
+#   mise run r:github         the same, published as a GitHub release
 #   mise run d                debug build for this machine    -> dist/debug
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
 #   mise example:ffmpeg       build and run examples/ffmpeg.cpp, which uses the engine's FFmpeg
@@ -9,9 +10,19 @@
 # task r: it is mise's own short form of "mise run", which with no task
 # named asks which one to run.
 
+# The GitHub CLI, for r:github only. mise installs it on first use;
+# nothing has to be installed by hand. It needs to be logged in once
+# ("mise exec -- gh auth login"), or given a token in GH_TOKEN.
+[tools]
+gh = "2.102.0"
+
 [tasks.r]
-description = "Build the release zebkit for this machine into dist/release"
-run = "scripts/dist.sh release"
+description = "Build the release zebkit for this machine into dist/release, and the archive of it the Rust crates download"
+run = "scripts/release.sh"
+
+[tasks."r:github"]
+description = "Build the release and publish it as the GitHub release v<VERSION>"
+run = "scripts/release.sh --publish"
 
 [tasks.d]
 description = "Build zebkit with debug information for this machine into dist/debug"

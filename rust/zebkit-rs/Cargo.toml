@@ -4,6 +4,8 @@ description = "Raw bindings to the zebkit engine library (libzebkit): declaratio
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+include = ["src", "build.rs", "engines.txt", "Cargo.toml"]
 build = "build.rs"
 # One crate per process links the engine; dependents read where it is from
 # DEP_ZEBKIT_LIB_DIR in their build scripts.

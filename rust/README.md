@@ -1,16 +1,34 @@
 # zebkit for Rust
 
-Two crates:
+Three crates:
 
 | Crate | What it is |
 |---|---|
-| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine library (`libzebkit.so.1`), nothing else. Everything in it is `unsafe`. |
-| `zebkit` | The Rust interface, built on `zebkit-rs`: web views, the main loop, the Chrome DevTools Protocol endpoint, and the FFmpeg inside the engine. No `unsafe` is needed to use it. |
+| `zebkit` | The Rust interface: web views, the main loop, the Chrome DevTools Protocol endpoint, and the FFmpeg inside the engine. No `unsafe` is needed to use it. An application depends on this one. |
+| `zebkit-build` | For the application's build script: one call puts the engine beside the executable. |
+| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine library (`libzebkit.so.1`), everything `unsafe`. It also finds the engine, downloading it if need be. Re-exported as `zebkit::sys` for what `zebkit` does not wrap yet. |
 
-An application depends on `zebkit`. `zebkit-rs` is there for what `zebkit`
-does not wrap yet, re-exported as `zebkit::sys`.
+## Using it
+
+Nobody has to build the engine. The first build downloads it.
+
+```toml
+[dependencies]
+zebkit = "0.0.1-alpha.1"
+
+[build-dependencies]
+zebkit-build = "0.0.1-alpha.1"
+```
 
 ```rust
+// build.rs
+fn main() {
+    zebkit_build::bundle();
+}
+```
+
+```rust
+// src/main.rs
 use zebkit::{MainLoop, WebView};
 
 fn main() {
@@ -26,29 +44,66 @@ fn main() {
 }
 ```
 
-## Building
+```sh
+cargo run
+```
 
-The crates link against a built zebkit: a directory with `libzebkit.so.1`
-and the libraries shipped beside it. They look in `ZEBKIT_DIR`, and
-otherwise in `dist/release` of this repository, which `mise run r` makes.
+What happens:
+
+- **The engine is downloaded once**, about 25 MiB, from the GitHub release
+  of the same version as the crate, into `~/.cache/zebkit`. Its SHA-256 is
+  fixed in the crate (`zebkit-rs/engines.txt`); a file that does not match
+  is refused. The download uses the system's `curl`, `sha256sum`, `tar` and
+  `xz`, so the crates have no dependencies of their own.
+- **`zebkit_build::bundle()` puts the engine beside the executable**, in
+  `target/<profile>/zebkit/`, and makes the executable look for it there.
+  That is why `cargo run` works with no environment set up.
+- **To ship the application**, copy the executable and that `zebkit`
+  directory together. Nothing else is needed on the user's machine but
+  glibc 2.17 or newer.
+
+One archive covers every Linux distribution on x86_64. There is none for
+other platforms yet; the build says so and how to go on.
+
+| Environment variable | Effect |
+|---|---|
+| `ZEBKIT_DIR` | Use the engine in this directory and download nothing: for an engine built by hand, and for building without network access |
+| `ZEBKIT_CACHE_DIR` | Where downloads are kept, instead of `~/.cache/zebkit` |
+| `ZEBKIT_DOWNLOAD_URL` | Where the archives are, for a mirror: the directory that holds `zebkit-<version>-<target>.tar.xz` |
+
+## Working on the crates in this repository
+
+Inside the repository the crates use `dist/release`, which `mise run r`
+makes, and download nothing.
 
 ```sh
 mise run r                                   # once: the engine, into dist/release
 cd rust
 cargo test                                   # a page, the CDP endpoint, FFmpeg, on the real engine
 cargo run --example window -- https://example.com/
-cargo run --example codecs                   # what the engine's FFmpeg decodes
+cargo run --example codecs                   # what the engine's FFmpeg has
 ```
 
-The examples and the test find the engine by themselves. An application of
-your own has to be told where it is when it runs: ship the package
-directory beside the executable and link with a run path, in `build.rs`
+## Releasing
 
-```rust
-println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+The crates and the engine have one version, in `VERSION` and
+`rust/Cargo.toml`.
+
+```sh
+mise run r                     # the engine, and dist/zebkit-<version>-<target>.tar.xz; its checksum goes into rust/zebkit-rs/engines.txt
+git commit -am "Release <version>"
+mise run r:github              # the GitHub release v<version>, with the archive
+cd rust
+cargo publish -p zebkit-rs && cargo publish -p zebkit-build && cargo publish -p zebkit
 ```
 
-or run it with `LD_LIBRARY_PATH` set to the package directory.
+`mise` installs the GitHub CLI the second step uses. It has to be logged
+in once, with `mise exec -- gh auth login`, or given a token in `GH_TOKEN`.
+
+The archive has to be on GitHub, and readable by anyone, before the crates
+are published: a crate whose archive cannot be downloaded does not build.
+The release has to be made from the commit whose `engines.txt` names the
+archive's checksum, which the script checks.
 
 ## What is covered
 

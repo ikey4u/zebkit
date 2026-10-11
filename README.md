@@ -35,7 +35,8 @@ With [mise](https://mise.jdx.dev), after `scripts/bootstrap-linux.sh` has
 installed the host tools once:
 
 ```sh
-mise run r                # release build for this machine  -> dist/release
+mise run r                # release build for this machine -> dist/release, and the archive of it
+mise run r:github         # the same, published as a GitHub release
 mise run d                # the same with debug information -> dist/debug
 mise example:linux:basic  # build and run examples/window.c, a small browser window
 mise example:ffmpeg       # build and run examples/ffmpeg.cpp, on the FFmpeg inside the engine

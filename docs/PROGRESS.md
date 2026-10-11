@@ -402,11 +402,17 @@ check asks about is still unknown.
   under link names of zebkit's own so that another FFmpeg in the same
   process cannot collide. Beyond what the engine needs it has file reading
   and writing, scaling and FFmpeg's own encoders. Costs 1.8 MiB in all.
-- **Rust:** `rust/zebkit-rs` (raw bindings) and `rust/zebkit` (the safe
+- **Rust:** `rust/zebkit-rs` (raw bindings; its build script downloads the
+  engine of the same version from the GitHub release and checks it against
+  a SHA-256 fixed in the crate), `rust/zebkit-build` (puts the engine beside
+  an application's executable) and `rust/zebkit` (the safe
   interface: pages, windows, main loop, CDP endpoint, the engine's FFmpeg).
   `cargo test` loads a page headlessly, checks the CDP endpoint lists it and
   looks at FFmpeg's decoders, on the real engine. A first cut: script
   evaluation, settings, cookies and FFmpeg decoding are not wrapped yet.
+- **Releases:** `scripts/release.sh` makes the archive of `dist/release`
+  that the crates download (25 MiB, reproducible) and, with `--publish`,
+  the GitHub release. No release has been published yet.
 - **Examples:** `examples/window.c`, a small browser window, and
   `examples/ffmpeg.cpp`, which decodes with the engine's FFmpeg.
 - **Tests:** smoke, media, display, CDP and benchmark pages; `tools/pageprobe`;

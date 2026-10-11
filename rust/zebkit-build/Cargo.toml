@@ -1,0 +1,7 @@
+[package]
+name = "zebkit-build"
+description = "For the build script of an application that uses zebkit: puts the engine beside the executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
