@@ -36,6 +36,15 @@ stage_profile "$profile"
 # match what is tested here.
 python3 -I "$ZEBKIT_ROOT/scripts/gen-cdp-protocol.py" --check || die "regenerate src/cdp/CDPProtocol.inc and rebuild"
 
+# The endpoint's portable files must stay portable: what belongs to one
+# platform goes through src/cdp/CDPPlatform.h (the port to another platform
+# replaces only the files named after this one).
+portable=("$ZEBKIT_ROOT"/src/cdp/CDPServer.cpp "$ZEBKIT_ROOT"/src/cdp/CDPPage.cpp "$ZEBKIT_ROOT"/src/cdp/CDPDomains.cpp)
+if leaks="$(grep -nE '\b(webkit_[a-z_]+|wpe_[a-z_]+|soup_[a-z_]+|g_[a-z_]+)\(|\b(GRefPtr|GUniquePtr|GError|gpointer|WEBKIT_[A-Z_]+|Soup[A-Z][A-Za-z]+)\b|#include <(glib|gio|libsoup|wpe)' "${portable[@]}")"; then
+    echo "$leaks" >&2
+    die "platform API used in the endpoint's portable files"
+fi
+
 host="$build_dir/tools/cdphost"
 source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.c"
 pc_path="$stage_dir/lib/pkgconfig"

@@ -24,7 +24,7 @@ upstream release plus what turns it into zebkit:
 | `tests/` | Smoke, media, display and benchmark pages; `cdp/`, the protocol and client tests |
 | `tools/` | Small programs the scripts build: `pageprobe` loads a URL headlessly and reports on it, `cdphost` is a minimal embedding application, `crashsite` locates a crash, `syslib-stubs` makes the stand-ins for optional system libraries |
 | `assets/` | The top-100 site list used for compatibility testing |
-| `docs/` | `PROGRESS.md`: what is done, what is not, the roadmap. `CDP.md`: driving the engine over the Chrome DevTools Protocol. `DEPS.md`: every library in the engine and beside it, with versions. `VENDOR.md`: using those libraries from an application, FFmpeg first. `COMPAT.md`: how site compatibility is tested, and the record. `reports/`: size reports per profile, committed so regressions show in diffs |
+| `docs/` | `PROGRESS.md`: what is done, what is not, the roadmap. `CDP.md`: driving the engine over the Chrome DevTools Protocol. `MACOS.md`: the plan for the macOS port and where it stands. `DEPS.md`: every library in the engine and beside it, with versions. `VENDOR.md`: using those libraries from an application, FFmpeg first. `COMPAT.md`: how site compatibility is tested, and the record. `reports/`: size reports per profile, committed so regressions show in diffs |
 
 `upstream/` (extracted source), `out/` (build trees) and `.cache/` (downloads,
 ccache) are generated and not tracked.

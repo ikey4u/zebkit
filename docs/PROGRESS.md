@@ -444,8 +444,11 @@ is the development build and can be rebuilt in about 20 minutes.
     from inside their own process.
 11. **Verify on old distributions** in containers or VMs.
 12. **Resolve the open questions.**
-13. **Windows port.**
-14. **macOS port.**
+13. **macOS port.** Planned in `docs/MACOS.md`: WebKit's own Mac port,
+    built from the same revision. Prepared on Linux so far: the CDP
+    endpoint is split into portable code and a platform layer. The rest
+    needs a Mac.
+14. **Windows port.**
 15. **Embedding API** that hides GLib (the CDP calls in
     `src/cdp/zebkit-cdp.h` are its first piece).
 16. **CI:** build, smoke, media, CDP, site test, benchmark and size check.

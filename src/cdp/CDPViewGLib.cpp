@@ -1,11 +1,17 @@
 /*
- * The parts of a page target that go through the WebKit API instead of the
- * inspector: navigation, input, window size, dialogs, file choosers and the
- * life of the view. WebKit's protocol has none of these.
+ * The platform layer for WebKit's GLib API and WPE (see CDPPlatform.h):
+ * everything about a page that goes through the view and not through the
+ * inspector. Navigation, input, window size, dialogs, file choosers, the
+ * life of the view, cookies and the creation of views.
  *
  * Input is delivered as platform events to the view, the same path a real
  * mouse and keyboard take, so pages see trusted events and default actions
  * (focus, text entry, link activation) happen.
+ *
+ * Not all of this is specific to the platform. The logic that only uses
+ * the platform, such as the bookkeeping of a navigation or the order of
+ * input answers, is here with the calls it wraps, and moves to the
+ * portable files when a second platform shows which part that is.
  */
 
 #include "config.h"
@@ -28,7 +34,7 @@ namespace Zebkit::CDP {
 void PageTarget::connectViewSignals()
 {
     auto connect = [&](const char* signal, GCallback callback, bool after = false) {
-        m_signalHandlers.append(g_signal_connect_data(m_view, signal, callback, this, nullptr, after ? G_CONNECT_AFTER : static_cast<GConnectFlags>(0)));
+        m_native.signalHandlers.append(g_signal_connect_data(m_view, signal, callback, this, nullptr, after ? G_CONNECT_AFTER : static_cast<GConnectFlags>(0)));
     };
     connect("load-changed", G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent event, gpointer data) {
         static_cast<PageTarget*>(data)->loadChanged(event);
@@ -239,7 +245,7 @@ void PageTarget::dismissDialog()
 {
     for (auto& session : m_sessions)
         session->sawDialog = false;
-    if (auto* dialog = std::exchange(m_dialog, nullptr)) {
+    if (auto* dialog = std::exchange(m_native.dialog, nullptr)) {
         webkit_script_dialog_close(dialog);
         webkit_script_dialog_unref(dialog);
     }
@@ -250,12 +256,12 @@ bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
     bool hasListener = false;
     for (auto& session : m_sessions)
         hasListener |= session->pageEnabled;
-    if (!hasListener || m_dialog)
+    if (!hasListener || m_native.dialog)
         return false;
 
     // Keeping a reference holds the dialog, and the script that opened it,
     // until a client answers with Page.handleJavaScriptDialog.
-    m_dialog = webkit_script_dialog_ref(dialog);
+    m_native.dialog = webkit_script_dialog_ref(dialog);
     ASCIILiteral type = "alert"_s;
     switch (webkit_script_dialog_get_dialog_type(dialog)) {
     case WEBKIT_SCRIPT_DIALOG_ALERT:
@@ -290,11 +296,11 @@ bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
 
 void PageTarget::pageHandleJavaScriptDialog(Session&, JSON::Object& params, Reply&& reply)
 {
-    if (!m_dialog) {
+    if (!m_native.dialog) {
         replyInvalid(reply, "No dialog is showing"_s);
         return;
     }
-    auto* dialog = std::exchange(m_dialog, nullptr);
+    auto* dialog = std::exchange(m_native.dialog, nullptr);
     bool accept = params.getBoolean("accept"_s).value_or(false);
     auto promptText = params.getString("promptText"_s);
     switch (webkit_script_dialog_get_dialog_type(dialog)) {
@@ -751,6 +757,343 @@ void PageTarget::inputDispatchKeyEvent(Session& session, JSON::Object& params, R
         WPE_INPUT_SOURCE_KEYBOARD, eventTime(), modifiersFromCDP(params.getInteger("modifiers"_s).value_or(0)), keycode, keyval));
     wpe_view_event(wpeView, event.get());
     whenInputProcessed(WTF::move(reply));
+}
+
+// MARK: What the portable code asks of a view
+
+WebKit::WebPageProxy& pageProxy(PlatformView view)
+{
+    return webkitWebViewGetPage(view);
+}
+
+String viewTitle(PlatformView view)
+{
+    return str(webkit_web_view_get_title(view));
+}
+
+String viewURI(PlatformView view)
+{
+    return str(webkit_web_view_get_uri(view));
+}
+
+void loadURI(PlatformView view, const String& url)
+{
+    webkit_web_view_load_uri(view, url.utf8().data());
+}
+
+void reloadView(PlatformView view, bool bypassCache)
+{
+    // Through the API, which also works when the page's process has died.
+    if (bypassCache)
+        webkit_web_view_reload_bypass_cache(view);
+    else
+        webkit_web_view_reload(view);
+}
+
+std::pair<int, int> viewSize(PlatformView view)
+{
+    auto* wpeView = webkit_web_view_get_wpe_view(view);
+    return wpeView ? std::pair { wpe_view_get_width(wpeView), wpe_view_get_height(wpeView) } : std::pair { 0, 0 };
+}
+
+String engineVersion()
+{
+    return makeString(webkit_get_major_version(), '.', webkit_get_minor_version(), '.', webkit_get_micro_version());
+}
+
+PlatformNetworkSession networkSessionOf(PlatformView view)
+{
+    return webkit_web_view_get_network_session(view);
+}
+
+PlatformNetworkSession defaultNetworkSession()
+{
+    return webkit_network_session_get_default();
+}
+
+PlatformNetworkSession createEphemeralNetworkSession()
+{
+    return adoptGRef(webkit_network_session_new_ephemeral());
+}
+
+// MARK: What goes with the view
+
+void PageTarget::releaseView()
+{
+    for (auto handler : m_native.signalHandlers)
+        g_signal_handler_disconnect(m_view, handler);
+    m_native.signalHandlers.clear();
+    if (m_native.dialog)
+        webkit_script_dialog_unref(m_native.dialog);
+    m_native.dialog = nullptr;
+}
+
+bool PageTarget::hasOpenDialog() const
+{
+    return !!m_native.dialog;
+}
+
+// The network session is shared with other views, so what a client turns
+// off is remembered and put back when the client goes.
+void PageTarget::setCertificateErrorsIgnored(bool ignore)
+{
+    auto* session = webkit_web_view_get_network_session(m_view);
+    if (!m_native.originalTLSPolicy)
+        m_native.originalTLSPolicy = webkit_network_session_get_tls_errors_policy(session);
+    webkit_network_session_set_tls_errors_policy(session, ignore ? WEBKIT_TLS_ERRORS_POLICY_IGNORE : WEBKIT_TLS_ERRORS_POLICY_FAIL);
+}
+
+void PageTarget::restoreCertificateChecks()
+{
+    if (auto policy = std::exchange(m_native.originalTLSPolicy, std::nullopt))
+        webkit_network_session_set_tls_errors_policy(webkit_web_view_get_network_session(m_view), static_cast<WebKitTLSErrorsPolicy>(*policy));
+}
+
+// A page restored from the back/forward cache comes back with the script
+// contexts it had, and WebKit's inspector does not announce them again.
+// While a client is attached, history navigations load afresh. Views can
+// share one settings object, so it counts the pages that need this and gets
+// its own value back when the last of them is done.
+void PageTarget::setPageCacheSuspended(bool suspended)
+{
+    static GQuark quark = g_quark_from_static_string("zebkit-cdp-page-cache");
+    if (suspended == !!m_native.pageCacheSettings || (suspended && !m_view))
+        return;
+    if (suspended)
+        m_native.pageCacheSettings = G_OBJECT(webkit_web_view_get_settings(m_view));
+    auto settings = suspended ? m_native.pageCacheSettings : std::exchange(m_native.pageCacheSettings, nullptr);
+
+    gsize state = GPOINTER_TO_SIZE(g_object_get_qdata(settings.get(), quark));
+    gsize count = state >> 1;
+    bool wasEnabled = state & 1;
+    if (suspended) {
+        if (!count++) {
+            wasEnabled = webkit_settings_get_enable_page_cache(WEBKIT_SETTINGS(settings.get()));
+            webkit_settings_set_enable_page_cache(WEBKIT_SETTINGS(settings.get()), FALSE);
+        }
+    } else if (count && !--count && wasEnabled)
+        webkit_settings_set_enable_page_cache(WEBKIT_SETTINGS(settings.get()), TRUE);
+    g_object_set_qdata(settings.get(), quark, GSIZE_TO_POINTER(count ? (count << 1 | wasEnabled) : 0));
+}
+
+
+// MARK: Cookies
+
+void allCookies(const PlatformNetworkSession& session, Function<void(CookieList&&)>&& completion)
+{
+    auto* manager = webkit_network_session_get_cookie_manager(session.get());
+    auto* holder = new Function<void(CookieList&&)>(WTF::move(completion));
+    webkit_cookie_manager_get_all_cookies(manager, nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
+        std::unique_ptr<Function<void(CookieList&&)>> completion(static_cast<Function<void(CookieList&&)>*>(data));
+        CookieList cookies;
+        GList* list = webkit_cookie_manager_get_all_cookies_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
+        for (GList* item = list; item; item = item->next)
+            cookies.append(GUniquePtr<SoupCookie>(static_cast<SoupCookie*>(item->data)));
+        g_list_free(list);
+        (*completion)(WTF::move(cookies));
+    }, holder);
+}
+
+Ref<JSON::Object> cookieToCDP(const PlatformCookie& holder)
+{
+    auto* cookie = holder.get();
+    auto object = JSON::Object::create();
+    auto name = str(soup_cookie_get_name(cookie));
+    auto value = str(soup_cookie_get_value(cookie));
+    object->setString("name"_s, name);
+    object->setString("value"_s, value);
+    object->setString("domain"_s, str(soup_cookie_get_domain(cookie)));
+    object->setString("path"_s, str(soup_cookie_get_path(cookie)));
+    GDateTime* expires = soup_cookie_get_expires(cookie);
+    object->setDouble("expires"_s, expires ? static_cast<double>(g_date_time_to_unix(expires)) : -1);
+    object->setInteger("size"_s, name.length() + value.length());
+    object->setBoolean("httpOnly"_s, soup_cookie_get_http_only(cookie));
+    object->setBoolean("secure"_s, soup_cookie_get_secure(cookie));
+    object->setBoolean("session"_s, !expires);
+    switch (soup_cookie_get_same_site_policy(cookie)) {
+    case SOUP_SAME_SITE_POLICY_STRICT:
+        object->setString("sameSite"_s, "Strict"_s);
+        break;
+    case SOUP_SAME_SITE_POLICY_LAX:
+        object->setString("sameSite"_s, "Lax"_s);
+        break;
+    case SOUP_SAME_SITE_POLICY_NONE:
+        if (soup_cookie_get_secure(cookie))
+            object->setString("sameSite"_s, "None"_s);
+        break;
+    }
+    object->setString("priority"_s, "Medium"_s);
+    object->setString("sourceScheme"_s, soup_cookie_get_secure(cookie) ? "Secure"_s : "NonSecure"_s);
+    object->setInteger("sourcePort"_s, soup_cookie_get_secure(cookie) ? 443 : 80);
+    return object;
+}
+
+PlatformCookie cookieFromCDP(JSON::Object& object, const String& fallbackURL)
+{
+    auto name = object.getString("name"_s);
+    auto value = object.getString("value"_s);
+    auto domain = object.getString("domain"_s);
+    auto path = object.getString("path"_s);
+    auto url = object.getString("url"_s);
+    if (url.isEmpty())
+        url = fallbackURL;
+
+    GRefPtr<GUri> uri = url.isEmpty() ? nullptr : adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
+    if (domain.isEmpty() && uri)
+        domain = str(g_uri_get_host(uri.get()));
+    if (name.isNull() || domain.isEmpty())
+        return nullptr;
+    if (path.isEmpty())
+        path = "/"_s;
+
+    GUniquePtr<SoupCookie> cookie(soup_cookie_new(name.utf8().data(), value.utf8().data(), domain.utf8().data(), path.utf8().data(), -1));
+    bool secure = object.getBoolean("secure"_s).value_or(uri && !g_strcmp0(g_uri_get_scheme(uri.get()), "https"));
+    soup_cookie_set_secure(cookie.get(), secure);
+    soup_cookie_set_http_only(cookie.get(), object.getBoolean("httpOnly"_s).value_or(false));
+    auto sameSite = object.getString("sameSite"_s);
+    if (sameSite == "Strict"_s)
+        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_STRICT);
+    else if (sameSite == "Lax"_s)
+        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_LAX);
+    else if (sameSite == "None"_s)
+        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_NONE);
+    auto expires = object.getDouble("expires"_s);
+    if (expires && *expires > 0) {
+        GRefPtr<GDateTime> date = adoptGRef(g_date_time_new_from_unix_utc(static_cast<gint64>(*expires)));
+        soup_cookie_set_expires(cookie.get(), date.get());
+    }
+    return cookie;
+}
+
+void addCookie(const PlatformNetworkSession& session, const PlatformCookie& cookie, Function<void()>&& completion)
+{
+    auto* holder = new Function<void()>(WTF::move(completion));
+    webkit_cookie_manager_add_cookie(webkit_network_session_get_cookie_manager(session.get()), cookie.get(), nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
+        std::unique_ptr<Function<void()>> completion(static_cast<Function<void()>*>(data));
+        webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
+        (*completion)();
+    }, holder);
+}
+
+void deleteCookie(const PlatformNetworkSession& session, const PlatformCookie& cookie, Function<void()>&& completion)
+{
+    auto* holder = new Function<void()>(WTF::move(completion));
+    webkit_cookie_manager_delete_cookie(webkit_network_session_get_cookie_manager(session.get()), cookie.get(), nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
+        std::unique_ptr<Function<void()>> completion(static_cast<Function<void()>*>(data));
+        webkit_cookie_manager_delete_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
+        (*completion)();
+    }, holder);
+}
+
+
+bool cookieAppliesToURL(const PlatformCookie& cookie, const String& url)
+{
+    GRefPtr<GUri> uri = adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
+    return uri && g_uri_get_host(uri.get()) && soup_cookie_applies_to_uri(cookie.get(), uri.get());
+}
+
+bool cookieMatches(const PlatformCookie& cookie, const String& name, const String& domain, const String& path, const String& url)
+{
+    if (name != str(soup_cookie_get_name(cookie.get())))
+        return false;
+    if (!domain.isEmpty() && !soup_cookie_domain_matches(cookie.get(), domain.utf8().data()))
+        return false;
+    if (!path.isEmpty() && path != str(soup_cookie_get_path(cookie.get())))
+        return false;
+    GRefPtr<GUri> uri = url.isEmpty() ? nullptr : adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
+    if (uri && g_uri_get_host(uri.get()) && !soup_cookie_domain_matches(cookie.get(), g_uri_get_host(uri.get())))
+        return false;
+    return true;
+}
+
+// MARK: Views of the server
+
+static constexpr int defaultViewWidth = 1280;
+static constexpr int defaultViewHeight = 720;
+
+String Server::userAgent()
+{
+    if (!m_pages.isEmpty())
+        return str(webkit_settings_get_user_agent(webkit_web_view_get_settings(m_pages.first()->view())));
+    GRefPtr<WebKitSettings> settings = adoptGRef(webkit_settings_new());
+    return str(webkit_settings_get_user_agent(settings.get()));
+}
+
+PlatformView Server::createView(const String& browserContextID, PlatformView related)
+{
+    SetForScope contextScope(m_creatingContextID, related && pageForView(related) ? pageForView(related)->browserContextID : browserContextID);
+    SetForScope openerScope(m_creatingOpenerID, related && pageForView(related) ? pageForView(related)->targetID() : String());
+
+    // An isolated context needs its own network session, which only a view
+    // made here is sure to get.
+    if (createViewFunc && (related || !networkSessionFor(browserContextID))) {
+        if (auto* view = createViewFunc(related, createViewData))
+            return view;
+    }
+
+    WebKitWebView* view;
+    if (related)
+        view = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, nullptr));
+    else {
+        // Take everything else from a view the application made, so that
+        // pages opened over CDP behave like the application's own.
+        WebKitWebView* model = nullptr;
+        for (auto& page : m_pages) {
+            if (page->browserContextID.isEmpty()) {
+                model = page->view();
+                break;
+            }
+        }
+        Vector<const char*> names;
+        Vector<GValue> values;
+        auto add = [&](const char* name, gpointer object) {
+            if (!object)
+                return;
+            GValue value = G_VALUE_INIT;
+            g_value_init(&value, G_OBJECT_TYPE(object));
+            g_value_set_object(&value, object);
+            names.append(name);
+            values.append(value);
+        };
+        auto networkSession = networkSessionFor(browserContextID);
+        if (model) {
+            add("web-context", webkit_web_view_get_context(model));
+            add("settings", webkit_web_view_get_settings(model));
+            add("user-content-manager", webkit_web_view_get_user_content_manager(model));
+            add("display", webkit_web_view_get_display(model));
+            if (!networkSession)
+                networkSession = webkit_web_view_get_network_session(model);
+        }
+        add("network-session", networkSession.get());
+        view = WEBKIT_WEB_VIEW(g_object_new_with_properties(WEBKIT_TYPE_WEB_VIEW, names.size(), names.mutableSpan().data(), values.mutableSpan().data()));
+        for (auto& value : values)
+            g_value_unset(&value);
+    }
+    if (!view)
+        return nullptr;
+
+    if (RefPtr page = pageForView(view))
+        page->ownedByServer = true;
+    if (auto* wpeView = webkit_web_view_get_wpe_view(view)) {
+        if (auto* toplevel = wpe_view_get_toplevel(wpeView))
+            wpe_toplevel_resize(toplevel, defaultViewWidth, defaultViewHeight);
+        wpe_view_focus_in(wpeView);
+    }
+    return view;
+}
+
+void webViewCreated(WebKitWebView* view)
+{
+    auto& server = Server::singleton();
+    server.startFromEnvironmentOnce();
+    // Views are tracked even while nothing listens, so that an application
+    // can start the endpoint after it has created its views.
+    server.addView(view);
+}
+
+void webViewDestroyed(WebKitWebView* view)
+{
+    Server::singleton().removeView(view);
 }
 
 } // namespace Zebkit::CDP

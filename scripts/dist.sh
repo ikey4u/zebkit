@@ -24,7 +24,7 @@ case "$kind" in
 esac
 
 host="$(uname -s)-$(uname -m)"
-[[ "$host" == Linux-x86_64 ]] || die "zebkit builds on Linux x86_64 so far; this is $host"
+[[ "$host" == Linux-x86_64 ]] || die "zebkit builds on Linux x86_64 so far; this is $host (for macOS see docs/MACOS.md)"
 
 "$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
 "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"

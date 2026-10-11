@@ -1,23 +1,25 @@
 /*
- * The endpoint itself: HTTP discovery, WebSocket connections, sessions, and
- * the browser-level domains (Target, Browser, Storage) that have no
- * counterpart in WebKit's protocol and are answered from the WebKit API.
+ * The portable part of the endpoint's server: connections and sessions, the
+ * check of parameters against the protocol definition, HTTP discovery, the
+ * routing of sockets, and the Target, Browser and Storage domains.
+ *
+ * What it needs from the platform is declared in CDPPlatform.h.
  */
 
 #include "config.h"
 #include "CDPInternal.h"
 
-#include "WebKitWebViewPrivate.h"
 #include "WebPageInspectorController.h"
 #include "WebPageProxy.h"
 #include "WebsiteDataStore.h"
-#include "zebkit-cdp.h"
-#include <WebCore/GUniquePtrSoup.h>
-#include <wpe/webkit.h>
+#include <pal/text/TextEncoding.h>
+#include <arpa/inet.h>
 #include <wtf/CallbackAggregator.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/NeverDestroyed.h>
-#include <wtf/glib/GUniquePtr.h>
+#include <wtf/RunLoop.h>
+#include <wtf/URL.h>
+#include <wtf/UUID.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringToIntegerConversion.h>
@@ -35,8 +37,7 @@ double monotonicSeconds()
 // 32 upper-case hex digits, the shape of Chrome's target and session ids.
 String randomID()
 {
-    GUniquePtr<char> uuid(g_uuid_string_random());
-    return makeStringByReplacingAll(str(uuid.get()), '-', ""_s).convertToASCIIUppercase();
+    return makeStringByReplacingAll(WTF::UUID::createVersion4().toString(), '-', ""_s).convertToASCIIUppercase();
 }
 
 // ZEBKIT_CDP_LOG=1 prints the CDP traffic to stderr, 2 adds the Web
@@ -44,7 +45,7 @@ String randomID()
 int logLevel()
 {
     static int level = [] {
-        const char* value = g_getenv("ZEBKIT_CDP_LOG");
+        const char* value = std::getenv("ZEBKIT_CDP_LOG");
         return value ? atoi(value) : 0;
     }();
     return level;
@@ -53,18 +54,19 @@ int logLevel()
 void logMessage(const char* direction, const String& message)
 {
     auto utf8 = message.utf8();
-    g_printerr("%s %.*s%s\n", direction, static_cast<int>(std::min<size_t>(utf8.length(), 600)), utf8.data(), utf8.length() > 600 ? "..." : "");
+    fprintf(stderr, "%s %.*s%s\n", direction, static_cast<int>(std::min<size_t>(utf8.length(), 600)), utf8.data(), utf8.length() > 600 ? "..." : "");
 }
 
 void runAfter(unsigned milliseconds, Function<void()>&& function)
 {
-    auto* holder = new Function<void()>(WTF::move(function));
-    g_timeout_add_full(G_PRIORITY_DEFAULT, milliseconds, [](gpointer data) -> gboolean {
-        (*static_cast<Function<void()>*>(data))();
-        return G_SOURCE_REMOVE;
-    }, holder, [](gpointer data) {
-        delete static_cast<Function<void()>*>(data);
-    });
+    RunLoop::mainSingleton().dispatchAfter(Seconds::fromMilliseconds(milliseconds), WTF::move(function));
+}
+
+bool isIPAddress(const String& text)
+{
+    unsigned char buffer[sizeof(struct in6_addr)];
+    auto utf8 = text.utf8();
+    return inet_pton(AF_INET, utf8.data(), buffer) == 1 || inet_pton(AF_INET6, utf8.data(), buffer) == 1;
 }
 
 // MARK: Session and Connection
@@ -88,8 +90,8 @@ void Session::event(ASCIILiteral method, Ref<JSON::Object>&& params)
     strongConnection->send(message);
 }
 
-Connection::Connection(SoupWebsocketConnection* socket)
-    : m_socket(socket)
+Connection::Connection(Ref<Socket>&& socket)
+    : m_socket(WTF::move(socket))
     , m_root(Session::create(*this, emptyString()))
 {
 }
@@ -98,12 +100,12 @@ Connection::~Connection() = default;
 
 void Connection::send(const JSON::Object& message)
 {
-    if (!m_socket || soup_websocket_connection_get_state(m_socket.get()) != SOUP_WEBSOCKET_STATE_OPEN)
+    if (!m_socket || !m_socket->isOpen())
         return;
     auto text = message.toJSONString();
     if (logLevel())
         logMessage("cdp <", text);
-    soup_websocket_connection_send_text(m_socket.get(), text.utf8().data());
+    m_socket->send(text);
 }
 
 void Connection::close()
@@ -119,15 +121,17 @@ void Connection::close()
             page->detach(session);
         session->connection = nullptr;
     }
-    if (!m_socket)
+    RefPtr socket = std::exchange(m_socket, nullptr);
+    if (!socket)
         return;
-    // The handlers carry a plain pointer to this object, and the socket can
-    // outlive it while its closing handshake runs.
-    g_signal_handlers_disconnect_by_data(m_socket.get(), this);
-    if (soup_websocket_connection_get_state(m_socket.get()) == SOUP_WEBSOCKET_STATE_OPEN)
-        soup_websocket_connection_close(m_socket.get(), SOUP_WEBSOCKET_CLOSE_NORMAL, nullptr);
-    m_socket = nullptr;
+    // The callbacks refer to this object, and the socket can outlive it
+    // while its closing handshake runs.
+    socket->onMessage = nullptr;
+    socket->onClosed = nullptr;
+    if (socket->isOpen())
+        socket->close();
 }
+
 
 Ref<Session> Connection::createSession(PageTarget& page)
 {
@@ -332,113 +336,6 @@ String invalidParameters(const String& method, JSON::Object& params)
     return { };
 }
 
-// MARK: Cookies
-
-void allCookies(WebKitNetworkSession* session, Function<void(CookieList&&)>&& completion)
-{
-    auto* manager = webkit_network_session_get_cookie_manager(session);
-    auto* holder = new Function<void(CookieList&&)>(WTF::move(completion));
-    webkit_cookie_manager_get_all_cookies(manager, nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
-        std::unique_ptr<Function<void(CookieList&&)>> completion(static_cast<Function<void(CookieList&&)>*>(data));
-        CookieList cookies;
-        GList* list = webkit_cookie_manager_get_all_cookies_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
-        for (GList* item = list; item; item = item->next)
-            cookies.append(GUniquePtr<SoupCookie>(static_cast<SoupCookie*>(item->data)));
-        g_list_free(list);
-        (*completion)(WTF::move(cookies));
-    }, holder);
-}
-
-Ref<JSON::Object> cookieToCDP(SoupCookie* cookie)
-{
-    auto object = JSON::Object::create();
-    auto name = str(soup_cookie_get_name(cookie));
-    auto value = str(soup_cookie_get_value(cookie));
-    object->setString("name"_s, name);
-    object->setString("value"_s, value);
-    object->setString("domain"_s, str(soup_cookie_get_domain(cookie)));
-    object->setString("path"_s, str(soup_cookie_get_path(cookie)));
-    GDateTime* expires = soup_cookie_get_expires(cookie);
-    object->setDouble("expires"_s, expires ? static_cast<double>(g_date_time_to_unix(expires)) : -1);
-    object->setInteger("size"_s, name.length() + value.length());
-    object->setBoolean("httpOnly"_s, soup_cookie_get_http_only(cookie));
-    object->setBoolean("secure"_s, soup_cookie_get_secure(cookie));
-    object->setBoolean("session"_s, !expires);
-    switch (soup_cookie_get_same_site_policy(cookie)) {
-    case SOUP_SAME_SITE_POLICY_STRICT:
-        object->setString("sameSite"_s, "Strict"_s);
-        break;
-    case SOUP_SAME_SITE_POLICY_LAX:
-        object->setString("sameSite"_s, "Lax"_s);
-        break;
-    case SOUP_SAME_SITE_POLICY_NONE:
-        if (soup_cookie_get_secure(cookie))
-            object->setString("sameSite"_s, "None"_s);
-        break;
-    }
-    object->setString("priority"_s, "Medium"_s);
-    object->setString("sourceScheme"_s, soup_cookie_get_secure(cookie) ? "Secure"_s : "NonSecure"_s);
-    object->setInteger("sourcePort"_s, soup_cookie_get_secure(cookie) ? 443 : 80);
-    return object;
-}
-
-GUniquePtr<SoupCookie> cookieFromCDP(JSON::Object& object, const String& fallbackURL)
-{
-    auto name = object.getString("name"_s);
-    auto value = object.getString("value"_s);
-    auto domain = object.getString("domain"_s);
-    auto path = object.getString("path"_s);
-    auto url = object.getString("url"_s);
-    if (url.isEmpty())
-        url = fallbackURL;
-
-    GRefPtr<GUri> uri = url.isEmpty() ? nullptr : adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
-    if (domain.isEmpty() && uri)
-        domain = str(g_uri_get_host(uri.get()));
-    if (name.isNull() || domain.isEmpty())
-        return nullptr;
-    if (path.isEmpty())
-        path = "/"_s;
-
-    GUniquePtr<SoupCookie> cookie(soup_cookie_new(name.utf8().data(), value.utf8().data(), domain.utf8().data(), path.utf8().data(), -1));
-    bool secure = object.getBoolean("secure"_s).value_or(uri && !g_strcmp0(g_uri_get_scheme(uri.get()), "https"));
-    soup_cookie_set_secure(cookie.get(), secure);
-    soup_cookie_set_http_only(cookie.get(), object.getBoolean("httpOnly"_s).value_or(false));
-    auto sameSite = object.getString("sameSite"_s);
-    if (sameSite == "Strict"_s)
-        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_STRICT);
-    else if (sameSite == "Lax"_s)
-        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_LAX);
-    else if (sameSite == "None"_s)
-        soup_cookie_set_same_site_policy(cookie.get(), SOUP_SAME_SITE_POLICY_NONE);
-    auto expires = object.getDouble("expires"_s);
-    if (expires && *expires > 0) {
-        GRefPtr<GDateTime> date = adoptGRef(g_date_time_new_from_unix_utc(static_cast<gint64>(*expires)));
-        soup_cookie_set_expires(cookie.get(), date.get());
-    }
-    return cookie;
-}
-
-void addCookie(WebKitNetworkSession* session, SoupCookie* cookie, Function<void()>&& completion)
-{
-    auto* holder = new Function<void()>(WTF::move(completion));
-    webkit_cookie_manager_add_cookie(webkit_network_session_get_cookie_manager(session), cookie, nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
-        std::unique_ptr<Function<void()>> completion(static_cast<Function<void()>*>(data));
-        webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
-        (*completion)();
-    }, holder);
-}
-
-void deleteCookie(WebKitNetworkSession* session, SoupCookie* cookie, Function<void()>&& completion)
-{
-    auto* holder = new Function<void()>(WTF::move(completion));
-    webkit_cookie_manager_delete_cookie(webkit_network_session_get_cookie_manager(session), cookie, nullptr, [](GObject* source, GAsyncResult* result, gpointer data) {
-        std::unique_ptr<Function<void()>> completion(static_cast<Function<void()>*>(data));
-        webkit_cookie_manager_delete_cookie_finish(WEBKIT_COOKIE_MANAGER(source), result, nullptr);
-        (*completion)();
-    }, holder);
-}
-
 // MARK: Raw Web Inspector Protocol socket
 
 // /devtools/wip/<targetId> carries WebKit's own protocol untranslated, for
@@ -447,38 +344,33 @@ void deleteCookie(WebKitNetworkSession* session, SoupCookie* cookie, Function<vo
 class RawChannel final : public Inspector::FrontendChannel {
     WTF_MAKE_NONCOPYABLE(RawChannel);
 public:
-    RawChannel(PageTarget& page, SoupWebsocketConnection* socket)
+    // Lives as long as the socket is open.
+    RawChannel(PageTarget& page, Ref<Socket>&& socket)
         : m_page(page)
-        , m_socket(socket)
+        , m_socket(WTF::move(socket))
     {
-        webkitWebViewGetPage(page.view()).inspectorController().connectFrontend(*this);
-        g_signal_connect(socket, "message", G_CALLBACK(+[](SoupWebsocketConnection*, int type, GBytes* bytes, gpointer data) {
-            auto& channel = *static_cast<RawChannel*>(data);
-            RefPtr page = channel.m_page.get();
-            if (type != SOUP_WEBSOCKET_DATA_TEXT || !page)
-                return;
-            gsize size;
-            auto* text = static_cast<const char*>(g_bytes_get_data(bytes, &size));
-            webkitWebViewGetPage(page->view()).inspectorController().dispatchMessageFromFrontend(String::fromUTF8(unsafeMakeSpan(text, size)));
-        }), this);
-        g_signal_connect(socket, "closed", G_CALLBACK(+[](SoupWebsocketConnection*, gpointer data) {
-            auto* channel = static_cast<RawChannel*>(data);
-            if (RefPtr page = channel->m_page.get())
-                webkitWebViewGetPage(page->view()).inspectorController().disconnectFrontend(*channel);
-            delete channel;
-        }), this);
+        pageProxy(page.view()).inspectorController().connectFrontend(*this);
+        m_socket->onMessage = [this](const String& text) {
+            if (RefPtr page = m_page.get(); page && page->view())
+                pageProxy(page->view()).inspectorController().dispatchMessageFromFrontend(text);
+        };
+        m_socket->onClosed = [this] {
+            if (RefPtr page = m_page.get(); page && page->view())
+                pageProxy(page->view()).inspectorController().disconnectFrontend(*this);
+            delete this;
+        };
     }
 
 private:
     ConnectionType connectionType() const final { return ConnectionType::Remote; }
     void sendMessageToFrontend(const String& message) final
     {
-        if (soup_websocket_connection_get_state(m_socket.get()) == SOUP_WEBSOCKET_STATE_OPEN)
-            soup_websocket_connection_send_text(m_socket.get(), message.utf8().data());
+        if (m_socket->isOpen())
+            m_socket->send(message);
     }
 
     WeakPtr<PageTarget> m_page;
-    GRefPtr<SoupWebsocketConnection> m_socket;
+    const Ref<Socket> m_socket;
 };
 
 // MARK: Server
@@ -494,70 +386,49 @@ void Server::startFromEnvironmentOnce()
     if (m_checkedEnvironment)
         return;
     m_checkedEnvironment = true;
-    const char* port = g_getenv("ZEBKIT_CDP_PORT");
+    const char* port = std::getenv("ZEBKIT_CDP_PORT");
     if (!port || !*port)
         return;
-    char* end = nullptr;
-    guint64 number = g_ascii_strtoull(port, &end, 10);
-    if (*end || number > 65535) {
-        g_printerr("zebkit: ZEBKIT_CDP_PORT=%s is not a port number; the CDP endpoint is not started\n", port);
+    auto number = parseInteger<uint16_t>(String::fromUTF8(port));
+    if (!number) {
+        fprintf(stderr, "zebkit: ZEBKIT_CDP_PORT=%s is not a port number; the CDP endpoint is not started\n", port);
         return;
     }
-    if (const char* discovery = g_getenv("ZEBKIT_CDP_DISCOVERY"))
-        discoveryEnabled = g_strcmp0(discovery, "0");
-    GUniqueOutPtr<GError> error;
-    if (!listen(g_getenv("ZEBKIT_CDP_ADDRESS"), number, &error.outPtr()))
-        g_printerr("zebkit: cannot start the CDP endpoint: %s\n", error ? error->message : "unknown error");
+    if (const char* discovery = std::getenv("ZEBKIT_CDP_DISCOVERY"))
+        discoveryEnabled = strcmp(discovery, "0");
+    String error;
+    if (!listen(str(std::getenv("ZEBKIT_CDP_ADDRESS")), *number, error))
+        fprintf(stderr, "zebkit: cannot start the CDP endpoint: %s\n", error.utf8().data());
 }
 
-unsigned Server::listen(const char* address, unsigned port, GError** error)
+unsigned Server::listen(const String& address, unsigned port, String& error)
 {
     m_checkedEnvironment = true;
-    if (m_server)
+    if (m_listener)
         return m_port;
 
-    GRefPtr<SoupServer> server = adoptGRef(soup_server_new("server-header", "zebkit", nullptr));
-    GRefPtr<GInetAddress> inetAddress = adoptGRef(address && *address ? g_inet_address_new_from_string(address) : g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4));
-    if (!inetAddress) {
-        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "'%s' is not a numeric IP address", address);
+    auto listener = Listener::create(address, port, error);
+    if (!listener)
         return 0;
-    }
-    GRefPtr<GSocketAddress> socketAddress = adoptGRef(g_inet_socket_address_new(inetAddress.get(), port));
-    if (!soup_server_listen(server.get(), socketAddress.get(), static_cast<SoupServerListenOptions>(0), error))
-        return 0;
-
-    GSList* uris = soup_server_get_uris(server.get());
-    if (uris)
-        m_port = g_uri_get_port(static_cast<GUri*>(uris->data));
-    g_slist_free_full(uris, reinterpret_cast<GDestroyNotify>(g_uri_unref));
-
-    soup_server_add_handler(server.get(), nullptr, [](SoupServer*, SoupServerMessage* message, const char* path, GHashTable*, gpointer) {
-        Server::singleton().handleHTTP(message, path);
-    }, nullptr, nullptr);
-    soup_server_add_websocket_handler(server.get(), nullptr, nullptr, nullptr, [](SoupServer*, SoupServerMessage* message, const char* path, SoupWebsocketConnection* socket, gpointer) {
-        Server::singleton().handleWebSocket(message, path, socket);
-    }, nullptr, nullptr);
-
-    m_server = WTF::move(server);
+    m_port = listener->port;
+    m_host = listener->host;
     m_browserID = randomID();
-    GUniquePtr<char> host(g_inet_address_to_string(inetAddress.get()));
-    m_host = g_inet_address_get_family(inetAddress.get()) == G_SOCKET_FAMILY_IPV6 ? makeString('[', str(host.get()), ']') : str(host.get());
-
-    if (!g_inet_address_get_is_loopback(inetAddress.get()))
-        g_printerr("zebkit: the CDP endpoint is listening on %s, which other machines can reach. It has no authentication: whoever connects controls the browser and can read what it can read.\n", host.get());
+    if (!listener->isLoopback)
+        fprintf(stderr, "zebkit: the CDP endpoint is listening on %s, which other machines can reach. It has no authentication: whoever connects controls the browser and can read what it can read.\n", m_host.utf8().data());
+    m_listener = WTF::move(listener);
     // The line Chrome prints; launchers look for it to find the endpoint.
-    g_printerr("\nDevTools listening on %s\n", browserURL().utf8().data());
+    fprintf(stderr, "\nDevTools listening on %s\n", browserURL().utf8().data());
     return m_port;
 }
 
 String Server::browserURL() const
 {
-    return m_server ? makeString("ws://"_s, m_host, ':', m_port, "/devtools/browser/"_s, m_browserID) : String();
+    return m_listener ? makeString("ws://"_s, m_host, ':', m_port, "/devtools/browser/"_s, m_browserID) : String();
 }
 
 void Server::stop()
 {
-    if (!m_server)
+    if (!m_listener)
         return;
     for (auto& connection : copyToVector(m_connections))
         removeConnection(connection);
@@ -566,8 +437,7 @@ void Server::stop()
             page->close(true);
     }
     m_browserContexts.clear();
-    soup_server_disconnect(m_server.get());
-    m_server = nullptr;
+    m_listener = nullptr;
     m_port = 0;
 }
 
@@ -575,100 +445,79 @@ void Server::stop()
 // accept requests addressed to an IP address or to localhost, so that a
 // hostile site cannot reach the endpoint by rebinding its own name, and
 // refuse WebSocket connections that come from a web origin.
-static bool isTrustedHost(SoupServerMessage* message)
+static bool isTrustedHost(const String& header)
 {
-    const char* header = soup_message_headers_get_one(soup_server_message_get_request_headers(message), "Host");
-    if (!header)
+    if (header.isNull())
         return true;
-    auto host = str(header);
+    auto host = header;
     if (host.startsWith('[')) {
         auto end = host.find(']');
-        return end != notFound && g_hostname_is_ip_address(host.substring(1, end - 1).utf8().data());
+        return end != notFound && isIPAddress(host.substring(1, end - 1));
     }
     if (auto colon = host.reverseFind(':'); colon != notFound)
         host = host.left(colon);
-    return g_hostname_is_ip_address(host.utf8().data()) || equalLettersIgnoringASCIICase(host, "localhost"_s);
+    return isIPAddress(host) || equalLettersIgnoringASCIICase(host, "localhost"_s);
 }
 
-static bool isAllowedOrigin(const char* origin)
+static bool isAllowedOrigin(const String& origin)
 {
-    if (!origin || !*origin)
+    if (origin.isEmpty())
         return true;
-    const char* allowed = g_getenv("ZEBKIT_CDP_ALLOW_ORIGINS");
+    const char* allowed = std::getenv("ZEBKIT_CDP_ALLOW_ORIGINS");
     if (!allowed)
         return false;
-    if (!g_strcmp0(allowed, "*"))
+    if (!strcmp(allowed, "*"))
         return true;
-    GUniquePtr<char*> entries(g_strsplit(allowed, ",", -1));
-    return g_strv_contains(entries.get(), origin);
-}
-
-static void respond(SoupServerMessage* message, unsigned status, const String& body, const char* type = "application/json; charset=UTF-8")
-{
-    auto utf8 = body.utf8();
-    soup_server_message_set_status(message, status, nullptr);
-    soup_server_message_set_response(message, type, SOUP_MEMORY_COPY, utf8.data(), utf8.length());
-}
-
-String Server::userAgent()
-{
-    if (!m_pages.isEmpty())
-        return str(webkit_settings_get_user_agent(webkit_web_view_get_settings(m_pages.first()->view())));
-    GRefPtr<WebKitSettings> settings = adoptGRef(webkit_settings_new());
-    return str(webkit_settings_get_user_agent(settings.get()));
+    return String::fromUTF8(allowed).split(',').contains(origin);
 }
 
 Ref<JSON::Object> Server::versionInfo()
 {
     auto info = JSON::Object::create();
     info->setString("protocolVersion"_s, "1.3"_s);
-    info->setString("product"_s, makeString("Zebkit/"_s, webkit_get_major_version(), '.', webkit_get_minor_version(), '.', webkit_get_micro_version()));
+    info->setString("product"_s, makeString("Zebkit/"_s, engineVersion()));
     info->setString("revision"_s, "WebKit"_s);
     info->setString("userAgent"_s, userAgent());
     info->setString("jsVersion"_s, "JavaScriptCore"_s);
     return info;
 }
 
-void Server::handleHTTP(SoupServerMessage* message, const char* rawPath)
+std::optional<HTTPResponse> Server::handleHTTP(const HTTPRequest& request)
 {
-    if (!isTrustedHost(message)) {
-        respond(message, 403, "Host header is specified and is not an IP address or localhost."_s, "text/plain");
-        return;
-    }
+    auto text = [](unsigned status, ASCIILiteral body) {
+        return HTTPResponse { status, body, "text/plain"_s };
+    };
+    auto json = [](const String& body) {
+        return HTTPResponse { 200, body, "application/json; charset=UTF-8"_s };
+    };
 
-    // WebSocket paths. libsoup runs this handler first and performs the
-    // upgrade only if the request has been given no status.
-    if (g_str_has_prefix(rawPath, "/devtools/"))
-        return;
+    if (!isTrustedHost(request.host))
+        return text(403, "Host header is specified and is not an IP address or localhost."_s);
+
+    // WebSocket paths: the platform performs the upgrade.
+    if (request.path.startsWith("/devtools/"_s))
+        return std::nullopt;
 
     // Script in a web page can send requests here, though it cannot read
     // the answers. None of them may have an effect: a request that says it
     // comes from a page is refused, and the one that creates something
     // needs a method a page cannot use without asking first.
-    auto* requestHeaders = soup_server_message_get_request_headers(message);
-    if (!isAllowedOrigin(soup_message_headers_get_one(requestHeaders, "Origin"))) {
-        respond(message, 403, "Requests from web pages are not accepted."_s, "text/plain");
-        return;
-    }
-    if (!discoveryEnabled) {
-        respond(message, 404, "Not found"_s, "text/plain");
-        return;
-    }
+    if (!isAllowedOrigin(request.origin))
+        return text(403, "Requests from web pages are not accepted."_s);
+    if (!discoveryEnabled)
+        return text(404, "Not found"_s);
 
-    const char* hostHeader = soup_message_headers_get_one(soup_server_message_get_request_headers(message), "Host");
-    auto host = hostHeader ? str(hostHeader) : makeString("127.0.0.1:"_s, m_port);
-    auto path = str(rawPath);
-    GUri* uri = soup_server_message_get_uri(message);
-    auto query = str(g_uri_get_query(uri));
+    auto host = request.host.isNull() ? makeString("127.0.0.1:"_s, m_port) : request.host;
+    auto& path = request.path;
 
     auto describe = [&](PageTarget& page) {
         auto entry = JSON::Object::create();
         entry->setString("description"_s, emptyString());
         entry->setString("devtoolsFrontendUrl"_s, emptyString());
         entry->setString("id"_s, page.targetID());
-        entry->setString("title"_s, str(webkit_web_view_get_title(page.view())));
+        entry->setString("title"_s, viewTitle(page.view()));
         entry->setString("type"_s, "page"_s);
-        entry->setString("url"_s, str(webkit_web_view_get_uri(page.view())));
+        entry->setString("url"_s, viewURI(page.view()));
         entry->setString("webSocketDebuggerUrl"_s, makeString("ws://"_s, host, "/devtools/page/"_s, page.targetID()));
         return entry;
     };
@@ -680,97 +529,81 @@ void Server::handleHTTP(SoupServerMessage* message, const char* rawPath)
         info->setString("Protocol-Version"_s, "1.3"_s);
         info->setString("User-Agent"_s, version->getString("userAgent"_s));
         info->setString("V8-Version"_s, emptyString());
-        info->setString("WebKit-Version"_s, makeString(webkit_get_major_version(), '.', webkit_get_minor_version(), '.', webkit_get_micro_version()));
+        info->setString("WebKit-Version"_s, engineVersion());
         info->setString("webSocketDebuggerUrl"_s, makeString("ws://"_s, host, "/devtools/browser/"_s, m_browserID));
-        respond(message, 200, info->toJSONString());
-        return;
+        return json(info->toJSONString());
     }
     if (path == "/json"_s || path == "/json/"_s || path == "/json/list"_s) {
         auto list = JSON::Array::create();
         for (auto& page : m_pages)
             list->pushObject(describe(page));
-        respond(message, 200, list->toJSONString());
-        return;
+        return json(list->toJSONString());
     }
     if (path == "/json/new"_s) {
-        if (g_strcmp0(soup_server_message_get_method(message), "PUT")) {
-            respond(message, 405, "Using unsafe HTTP verb GET to invoke /json/new. This action supports only PUT verb."_s, "text/plain");
-            return;
-        }
-        GUniquePtr<char> url(query.isEmpty() ? nullptr : g_uri_unescape_string(query.utf8().data(), nullptr));
-        RefPtr page = createPage(str(url.get()), emptyString());
-        if (!page) {
-            respond(message, 500, "Could not create a page."_s, "text/plain");
-            return;
-        }
-        respond(message, 200, describe(*page)->toJSONString());
-        return;
+        if (request.method != "PUT"_s)
+            return text(405, "Using unsafe HTTP verb GET to invoke /json/new. This action supports only PUT verb."_s);
+        RefPtr page = createPage(request.query.isEmpty() ? String() : PAL::decodeURLEscapeSequences(request.query), emptyString());
+        if (!page)
+            return text(500, "Could not create a page."_s);
+        return json(describe(*page)->toJSONString());
     }
     if (path.startsWith("/json/close/"_s) || path.startsWith("/json/activate/"_s)) {
         bool isClose = path.startsWith("/json/close/"_s);
         RefPtr page = pageForID(path.substring(isClose ? 12 : 15));
-        if (!page) {
-            respond(message, 404, "No such target id"_s, "text/plain");
-            return;
-        }
+        if (!page)
+            return text(404, "No such target id"_s);
         if (isClose)
             page->close(true);
-        respond(message, 200, isClose ? "Target is closing"_s : "Target activated"_s, "text/plain");
-        return;
+        return text(200, isClose ? "Target is closing"_s : "Target activated"_s);
     }
-    if (path == "/json/protocol"_s) {
-        respond(message, 200, "{\"domains\":[]}"_s);
-        return;
-    }
-    respond(message, 404, "Not found"_s, "text/plain");
+    if (path == "/json/protocol"_s)
+        return json("{\"domains\":[]}"_s);
+    return text(404, "Not found"_s);
 }
 
-void Server::handleWebSocket(SoupServerMessage* message, const char* rawPath, SoupWebsocketConnection* socket)
+void Server::acceptSocket(const HTTPRequest& request, Ref<Socket>&& socket)
 {
-    if (!isTrustedHost(message) || !isAllowedOrigin(soup_websocket_connection_get_origin(socket))) {
-        soup_websocket_connection_close(socket, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "Rejected origin");
+    if (!isTrustedHost(request.host) || !isAllowedOrigin(request.origin)) {
+        socket->close("Rejected origin"_s);
         return;
     }
-    soup_websocket_connection_set_max_incoming_payload_size(socket, maxIncomingMessageSize);
 
-    auto path = str(rawPath);
+    auto& path = request.path;
     RefPtr<PageTarget> page;
     if (path.startsWith("/devtools/wip/"_s)) {
         page = pageForID(path.substring(14));
         if (page)
-            new RawChannel(*page, socket);
+            new RawChannel(*page, WTF::move(socket));
         else
-            soup_websocket_connection_close(socket, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "No such target id");
+            socket->close("No such target id"_s);
         return;
     }
     if (path.startsWith("/devtools/page/"_s)) {
         page = pageForID(path.substring(15));
         if (!page) {
-            soup_websocket_connection_close(socket, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "No such target id");
+            socket->close("No such target id"_s);
             return;
         }
     } else if (path != makeString("/devtools/browser/"_s, m_browserID)) {
         // The id is random: with discovery off it is what lets a client in.
-        soup_websocket_connection_close(socket, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "Unknown path");
+        socket->close("Unknown path"_s);
         return;
     }
 
-    auto connection = Connection::create(socket);
+    auto connection = Connection::create(socket.copyRef());
     addConnection(connection);
     if (page)
         page->attach(connection->rootSession());
 
-    g_signal_connect(socket, "message", G_CALLBACK(+[](SoupWebsocketConnection*, int type, GBytes* bytes, gpointer data) {
-        if (type != SOUP_WEBSOCKET_DATA_TEXT)
-            return;
-        gsize size;
-        auto* text = static_cast<const char*>(g_bytes_get_data(bytes, &size));
-        static_cast<Connection*>(data)->receive(String::fromUTF8(unsafeMakeSpan(text, size)));
-    }), connection.ptr());
-    g_signal_connect(socket, "closed", G_CALLBACK(+[](SoupWebsocketConnection*, gpointer data) {
-        Server::singleton().removeConnection(*static_cast<Connection*>(data));
-    }), connection.ptr());
+    // The server's list keeps the connection alive until the socket closes.
+    socket->onMessage = [connection = connection.ptr()](const String& text) {
+        connection->receive(text);
+    };
+    socket->onClosed = [connection = connection.ptr()] {
+        Server::singleton().removeConnection(*connection);
+    };
 }
+
 
 void Server::addConnection(Connection& connection)
 {
@@ -786,7 +619,7 @@ void Server::removeConnection(Connection& connection)
     connection.close();
 }
 
-PageTarget* Server::pageForView(WebKitWebView* view)
+PageTarget* Server::pageForView(PlatformView view)
 {
     for (auto& page : m_pages) {
         if (page->view() == view)
@@ -815,7 +648,7 @@ void Server::attachSession(Connection& connection, PageTarget& page, bool waitin
     connection.rootSession().event("Target.attachedToTarget"_s, WTF::move(params));
 }
 
-void Server::addView(WebKitWebView* view)
+void Server::addView(PlatformView view)
 {
     if (pageForView(view))
         return;
@@ -835,7 +668,7 @@ void Server::addView(WebKitWebView* view)
     }
 }
 
-void Server::removeView(WebKitWebView* view)
+void Server::removeView(PlatformView view)
 {
     RefPtr page = pageForView(view);
     if (!page)
@@ -878,80 +711,18 @@ void Server::targetInfoChanged(PageTarget& page)
     }
 }
 
-WebKitNetworkSession* Server::networkSessionFor(const String& browserContextID)
+PlatformNetworkSession Server::networkSessionFor(const String& browserContextID)
 {
     if (browserContextID.isEmpty())
         return nullptr;
     auto iterator = m_browserContexts.find(browserContextID);
-    return iterator == m_browserContexts.end() ? nullptr : WEBKIT_NETWORK_SESSION(iterator->value.get());
+    return iterator == m_browserContexts.end() ? nullptr : iterator->value;
 }
 
-WebKitWebView* Server::createView(const String& browserContextID, WebKitWebView* related)
-{
-    SetForScope contextScope(m_creatingContextID, related && pageForView(related) ? pageForView(related)->browserContextID : browserContextID);
-    SetForScope openerScope(m_creatingOpenerID, related && pageForView(related) ? pageForView(related)->targetID() : String());
-
-    // An isolated context needs its own network session, which only a view
-    // made here is sure to get.
-    if (createViewFunc && (related || !networkSessionFor(browserContextID))) {
-        if (auto* view = createViewFunc(related, createViewData))
-            return view;
-    }
-
-    WebKitWebView* view;
-    if (related)
-        view = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, nullptr));
-    else {
-        // Take everything else from a view the application made, so that
-        // pages opened over CDP behave like the application's own.
-        WebKitWebView* model = nullptr;
-        for (auto& page : m_pages) {
-            if (page->browserContextID.isEmpty()) {
-                model = page->view();
-                break;
-            }
-        }
-        Vector<const char*> names;
-        Vector<GValue> values;
-        auto add = [&](const char* name, gpointer object) {
-            if (!object)
-                return;
-            GValue value = G_VALUE_INIT;
-            g_value_init(&value, G_OBJECT_TYPE(object));
-            g_value_set_object(&value, object);
-            names.append(name);
-            values.append(value);
-        };
-        auto* networkSession = networkSessionFor(browserContextID);
-        if (model) {
-            add("web-context", webkit_web_view_get_context(model));
-            add("settings", webkit_web_view_get_settings(model));
-            add("user-content-manager", webkit_web_view_get_user_content_manager(model));
-            add("display", webkit_web_view_get_display(model));
-            if (!networkSession)
-                networkSession = webkit_web_view_get_network_session(model);
-        }
-        add("network-session", networkSession);
-        view = WEBKIT_WEB_VIEW(g_object_new_with_properties(WEBKIT_TYPE_WEB_VIEW, names.size(), names.mutableSpan().data(), values.mutableSpan().data()));
-        for (auto& value : values)
-            g_value_unset(&value);
-    }
-    if (!view)
-        return nullptr;
-
-    if (RefPtr page = pageForView(view))
-        page->ownedByServer = true;
-    if (auto* wpeView = webkit_web_view_get_wpe_view(view)) {
-        if (auto* toplevel = wpe_view_get_toplevel(wpeView))
-            wpe_toplevel_resize(toplevel, defaultViewWidth, defaultViewHeight);
-        wpe_view_focus_in(wpeView);
-    }
-    return view;
-}
 
 PageTarget* Server::createPage(const String& url, const String& browserContextID)
 {
-    auto* view = createView(browserContextID, nullptr);
+    auto view = createView(browserContextID, nullptr);
     auto* page = view ? pageForView(view) : nullptr;
     if (!page)
         return nullptr;
@@ -966,9 +737,9 @@ PageTarget* Server::createPage(const String& url, const String& browserContextID
             mustWait |= session->waitingForDebugger;
     }
     if (hasURL && !mustWait)
-        webkit_web_view_load_uri(view, url.utf8().data());
+        loadURI(view, url);
     else {
-        webkit_web_view_load_uri(view, "about:blank");
+        loadURI(view, "about:blank"_s);
         if (hasURL)
             page->pendingInitialURL = url;
     }
@@ -1004,9 +775,9 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
         int width = defaultViewWidth;
         int height = defaultViewHeight;
         if (page) {
-            if (auto* wpeView = webkit_web_view_get_wpe_view(page->view())) {
-                width = wpe_view_get_width(wpeView);
-                height = wpe_view_get_height(wpeView);
+            if (auto size = viewSize(page->view()); size.first) {
+                width = size.first;
+                height = size.second;
             }
         }
         bounds->setInteger("left"_s, 0);
@@ -1158,14 +929,13 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
             replyInvalid(reply, "No target with given id found"_s);
             return true;
         }
-        if (auto* wpeView = webkit_web_view_get_wpe_view(page->view()))
-            wpe_view_focus_in(wpeView);
+        page->focusView();
         replyOK(reply);
         return true;
     }
     if (method == "Target.createBrowserContext"_s) {
         auto id = randomID();
-        m_browserContexts.set(id, adoptGRef(G_OBJECT(webkit_network_session_new_ephemeral())));
+        m_browserContexts.set(id, createEphemeralNetworkSession());
         auto result = JSON::Object::create();
         result->setString("browserContextId"_s, id);
         reply(WTF::move(result), { });
@@ -1201,19 +971,19 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
         auto contextID = params.getString("browserContextId"_s);
         if (contextID.isEmpty() && sessionPage)
             contextID = sessionPage->browserContextID;
-        GRefPtr<WebKitNetworkSession> networkSession = networkSessionFor(contextID);
+        auto networkSession = networkSessionFor(contextID);
         if (!networkSession && sessionPage)
-            networkSession = webkit_web_view_get_network_session(sessionPage->view());
+            networkSession = networkSessionOf(sessionPage->view());
         if (!networkSession && !m_pages.isEmpty())
-            networkSession = webkit_web_view_get_network_session(m_pages.first()->view());
+            networkSession = networkSessionOf(m_pages.first()->view());
         if (!networkSession)
-            networkSession = webkit_network_session_get_default();
+            networkSession = defaultNetworkSession();
 
         if (method == "Storage.getCookies"_s) {
-            allCookies(networkSession.get(), [reply = WTF::move(reply)](CookieList&& cookies) mutable {
+            allCookies(networkSession, [reply = WTF::move(reply)](CookieList&& cookies) mutable {
                 auto array = JSON::Array::create();
                 for (auto& cookie : cookies)
-                    array->pushObject(cookieToCDP(cookie.get()));
+                    array->pushObject(cookieToCDP(cookie));
                 auto result = JSON::Object::create();
                 result->setArray("cookies"_s, WTF::move(array));
                 reply(WTF::move(result), { });
@@ -1230,14 +1000,14 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
                     RefPtr object = value->asObject();
                     auto cookie = object ? cookieFromCDP(*object, { }) : nullptr;
                     if (cookie)
-                        addCookie(networkSession.get(), cookie.get(), [aggregator] { });
+                        addCookie(networkSession, cookie, [aggregator] { });
                 }
             }
             return true;
         }
-        allCookies(networkSession.get(), [networkSession, aggregator](CookieList&& cookies) {
+        allCookies(networkSession, [networkSession, aggregator](CookieList&& cookies) {
             for (auto& cookie : cookies)
-                deleteCookie(networkSession.get(), cookie.get(), [aggregator] { });
+                deleteCookie(networkSession, cookie, [aggregator] { });
         });
         return true;
     }
@@ -1245,56 +1015,4 @@ bool Server::browserCommand(Connection& connection, Session& session, const Stri
     return false;
 }
 
-void webViewCreated(WebKitWebView* view)
-{
-    auto& server = Server::singleton();
-    server.startFromEnvironmentOnce();
-    // Views are tracked even while nothing listens, so that an application
-    // can start the endpoint after it has created its views.
-    server.addView(view);
-}
-
-void webViewDestroyed(WebKitWebView* view)
-{
-    Server::singleton().removeView(view);
-}
-
 } // namespace Zebkit::CDP
-
-using namespace Zebkit::CDP;
-
-extern "C" {
-
-__attribute__((visibility("default"))) guint zebkit_cdp_listen(const char* address, guint port, GError** error)
-{
-    return Server::singleton().listen(address, port, error);
-}
-
-__attribute__((visibility("default"))) guint zebkit_cdp_get_port(void)
-{
-    return Server::singleton().port();
-}
-
-__attribute__((visibility("default"))) void zebkit_cdp_stop(void)
-{
-    Server::singleton().stop();
-}
-
-__attribute__((visibility("default"))) void zebkit_cdp_set_discovery_enabled(gboolean enabled)
-{
-    Server::singleton().discoveryEnabled = enabled;
-}
-
-__attribute__((visibility("default"))) char* zebkit_cdp_get_url(void)
-{
-    auto url = Server::singleton().browserURL();
-    return url.isNull() ? nullptr : g_strdup(url.utf8().data());
-}
-
-__attribute__((visibility("default"))) void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc function, gpointer userData)
-{
-    Server::singleton().createViewFunc = function;
-    Server::singleton().createViewData = userData;
-}
-
-}

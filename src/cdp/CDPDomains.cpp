@@ -6,7 +6,6 @@
 #include "config.h"
 #include "CDPInternal.h"
 
-#include <wpe/webkit.h>
 #include <wtf/CallbackAggregator.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/CString.h>
@@ -587,10 +586,7 @@ void PageTarget::pageGetFrameTree(Session&, JSON::Object&, Reply&& reply)
 void PageTarget::pageReload(Session&, JSON::Object& params, Reply&& reply)
 {
     // Through the API, which also works when the page's process has died.
-    if (params.getBoolean("ignoreCache"_s).value_or(false))
-        webkit_web_view_reload_bypass_cache(m_view);
-    else
-        webkit_web_view_reload(m_view);
+    reloadView(m_view, params.getBoolean("ignoreCache"_s).value_or(false));
     replyOK(reply);
 }
 
@@ -748,11 +744,11 @@ void PageTarget::pageCaptureScreenshot(Session& session, JSON::Object& params, R
         });
         return;
     } else {
-        auto* wpeView = webkit_web_view_get_wpe_view(m_view);
+        auto size = viewSize(m_view);
         snapshot->setInteger("x"_s, 0);
         snapshot->setInteger("y"_s, 0);
-        snapshot->setInteger("width"_s, wpeView ? wpe_view_get_width(wpeView) : 0);
-        snapshot->setInteger("height"_s, wpeView ? wpe_view_get_height(wpeView) : 0);
+        snapshot->setInteger("width"_s, size.first);
+        snapshot->setInteger("height"_s, size.second);
         snapshot->setString("coordinateSystem"_s, "Viewport"_s);
     }
     auto format = params.getString("format"_s);
@@ -1118,7 +1114,7 @@ void PageTarget::resumeIfWaiting()
             return;
     }
     auto url = std::exchange(pendingInitialURL, String());
-    webkit_web_view_load_uri(m_view, url.utf8().data());
+    loadURI(m_view, url);
 }
 
 void PageTarget::runtimeAddBinding(Session&, JSON::Object& params, Reply&& reply)
@@ -1610,27 +1606,23 @@ void PageTarget::networkGetCookies(Session&, JSON::Object& params, Reply&& reply
 {
     // Cookies that apply to the given addresses, or to the documents of
     // the page when none are given.
-    Vector<GRefPtr<GUri>> uris;
-    auto addURL = [&](const String& url) {
-        if (GRefPtr<GUri> uri = adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr)))
-            uris.append(WTF::move(uri));
-    };
-    if (RefPtr urls = params.getArray("urls"_s)) {
-        for (auto& url : *urls)
-            addURL(url->asString());
+    Vector<String> urls;
+    if (RefPtr given = params.getArray("urls"_s)) {
+        for (auto& url : *given)
+            urls.append(url->asString());
     } else {
-        addURL(str(webkit_web_view_get_uri(m_view)));
+        urls.append(viewURI(m_view));
         for (auto& frame : m_frames.values())
-            addURL(frame.url);
+            urls.append(frame.url);
     }
-    allCookies(webkit_web_view_get_network_session(m_view), [uris = WTF::move(uris), reply = WTF::move(reply)](CookieList&& cookies) mutable {
+    allCookies(networkSessionOf(m_view), [urls = WTF::move(urls), reply = WTF::move(reply)](CookieList&& cookies) mutable {
         auto array = JSON::Array::create();
         for (auto& cookie : cookies) {
-            bool applies = false;
-            for (auto& uri : uris)
-                applies |= g_uri_get_host(uri.get()) && soup_cookie_applies_to_uri(cookie.get(), uri.get());
+            bool applies = urls.containsIf([&](auto& url) {
+                return cookieAppliesToURL(cookie, url);
+            });
             if (applies)
-                array->pushObject(cookieToCDP(cookie.get()));
+                array->pushObject(cookieToCDP(cookie));
         }
         auto result = JSON::Object::create();
         result->setArray("cookies"_s, WTF::move(array));
@@ -1640,10 +1632,10 @@ void PageTarget::networkGetCookies(Session&, JSON::Object& params, Reply&& reply
 
 void PageTarget::networkGetAllCookies(Session&, JSON::Object&, Reply&& reply)
 {
-    allCookies(webkit_web_view_get_network_session(m_view), [reply = WTF::move(reply)](CookieList&& cookies) mutable {
+    allCookies(networkSessionOf(m_view), [reply = WTF::move(reply)](CookieList&& cookies) mutable {
         auto array = JSON::Array::create();
         for (auto& cookie : cookies)
-            array->pushObject(cookieToCDP(cookie.get()));
+            array->pushObject(cookieToCDP(cookie));
         auto result = JSON::Object::create();
         result->setArray("cookies"_s, WTF::move(array));
         reply(WTF::move(result), { });
@@ -1656,12 +1648,12 @@ void PageTarget::networkSetCookie(Session&, JSON::Object& params, Reply&& reply)
         replyInvalid(reply, "At least one of the url or domain needs to be specified"_s);
         return;
     }
-    auto cookie = cookieFromCDP(params, str(webkit_web_view_get_uri(m_view)));
+    auto cookie = cookieFromCDP(params, viewURI(m_view));
     if (!cookie) {
         replyError(reply, "Invalid cookie fields"_s);
         return;
     }
-    addCookie(webkit_web_view_get_network_session(m_view), cookie.get(), [reply = WTF::move(reply)]() mutable {
+    addCookie(networkSessionOf(m_view), cookie, [reply = WTF::move(reply)]() mutable {
         auto result = JSON::Object::create();
         result->setBoolean("success"_s, true);
         reply(WTF::move(result), { });
@@ -1679,9 +1671,9 @@ void PageTarget::networkSetCookies(Session&, JSON::Object& params, Reply&& reply
         return;
     for (auto& value : *cookies) {
         RefPtr object = value->asObject();
-        auto cookie = object ? cookieFromCDP(*object, str(webkit_web_view_get_uri(m_view))) : nullptr;
+        auto cookie = object ? cookieFromCDP(*object, viewURI(m_view)) : nullptr;
         if (cookie)
-            addCookie(webkit_web_view_get_network_session(m_view), cookie.get(), [aggregator] { });
+            addCookie(networkSessionOf(m_view), cookie, [aggregator] { });
     }
 }
 
@@ -1695,47 +1687,35 @@ void PageTarget::networkDeleteCookies(Session&, JSON::Object& params, Reply&& re
         replyInvalid(reply, "At least one of the url and domain needs to be specified"_s);
         return;
     }
-    GRefPtr<GUri> uri = url.isEmpty() ? nullptr : adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
-    GRefPtr<WebKitNetworkSession> networkSession = webkit_web_view_get_network_session(m_view);
-    allCookies(networkSession.get(), [networkSession, name, domain, path, uri, reply = WTF::move(reply)](CookieList&& cookies) mutable {
+    auto networkSession = networkSessionOf(m_view);
+    allCookies(networkSession, [networkSession, name, domain, path, url, reply = WTF::move(reply)](CookieList&& cookies) mutable {
         auto sharedReply = Box<Reply>::create(WTF::move(reply));
         auto aggregator = CallbackAggregator::create([sharedReply] {
             replyOK(*sharedReply);
         });
         for (auto& cookie : cookies) {
-            if (name != str(soup_cookie_get_name(cookie.get())))
-                continue;
-            if (!domain.isEmpty() && !soup_cookie_domain_matches(cookie.get(), domain.utf8().data()))
-                continue;
-            if (!path.isEmpty() && path != str(soup_cookie_get_path(cookie.get())))
-                continue;
-            if (uri && g_uri_get_host(uri.get()) && !soup_cookie_domain_matches(cookie.get(), g_uri_get_host(uri.get())))
-                continue;
-            deleteCookie(networkSession.get(), cookie.get(), [aggregator] { });
+            if (cookieMatches(cookie, name, domain, path, url))
+                deleteCookie(networkSession, cookie, [aggregator] { });
         }
     });
 }
 
 void PageTarget::networkClearBrowserCookies(Session&, JSON::Object&, Reply&& reply)
 {
-    GRefPtr<WebKitNetworkSession> networkSession = webkit_web_view_get_network_session(m_view);
-    allCookies(networkSession.get(), [networkSession, reply = WTF::move(reply)](CookieList&& cookies) mutable {
+    auto networkSession = networkSessionOf(m_view);
+    allCookies(networkSession, [networkSession, reply = WTF::move(reply)](CookieList&& cookies) mutable {
         auto sharedReply = Box<Reply>::create(WTF::move(reply));
         auto aggregator = CallbackAggregator::create([sharedReply] {
             replyOK(*sharedReply);
         });
         for (auto& cookie : cookies)
-            deleteCookie(networkSession.get(), cookie.get(), [aggregator] { });
+            deleteCookie(networkSession, cookie, [aggregator] { });
     });
 }
 
 void PageTarget::securitySetIgnoreCertificateErrors(Session&, JSON::Object& params, Reply&& reply)
 {
-    bool ignore = params.getBoolean("ignore"_s).value_or(false);
-    // The session is shared with other views; see disconnectInspector().
-    if (!m_originalTLSPolicy)
-        m_originalTLSPolicy = webkit_network_session_get_tls_errors_policy(webkit_web_view_get_network_session(m_view));
-    webkit_network_session_set_tls_errors_policy(webkit_web_view_get_network_session(m_view), ignore ? WEBKIT_TLS_ERRORS_POLICY_IGNORE : WEBKIT_TLS_ERRORS_POLICY_FAIL);
+    setCertificateErrorsIgnored(params.getBoolean("ignore"_s).value_or(false));
     replyOK(reply);
 }
 

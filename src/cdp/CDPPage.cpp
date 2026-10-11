@@ -12,11 +12,11 @@
 #include "config.h"
 #include "CDPInternal.h"
 
-#include "WebKitWebViewPrivate.h"
 #include "WebPageInspectorController.h"
 #include "WebPageProxy.h"
 #include "WebsiteDataStore.h"
-#include <wpe/webkit.h>
+#include <wtf/URL.h>
+#include <wtf/WallTime.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringToIntegerConversion.h>
@@ -25,13 +25,12 @@ namespace Zebkit::CDP {
 
 static String originOf(const String& url)
 {
-    GRefPtr<GUri> uri = adoptGRef(g_uri_parse(url.utf8().data(), G_URI_FLAGS_NONE, nullptr));
-    if (!uri || !g_uri_get_host(uri.get()))
+    URL parsed { url };
+    if (!parsed.isValid() || parsed.host().isEmpty())
         return url.startsWith("about:"_s) || url.isEmpty() ? "://"_s : url;
-    int port = g_uri_get_port(uri.get());
-    if (port > 0)
-        return makeString(str(g_uri_get_scheme(uri.get())), "://"_s, str(g_uri_get_host(uri.get())), ':', port);
-    return makeString(str(g_uri_get_scheme(uri.get())), "://"_s, str(g_uri_get_host(uri.get())));
+    if (auto port = parsed.port())
+        return makeString(parsed.protocol(), "://"_s, parsed.host(), ':', *port);
+    return makeString(parsed.protocol(), "://"_s, parsed.host());
 }
 
 PageTarget::PageTarget(WebKitWebView* view)
@@ -48,9 +47,9 @@ Ref<JSON::Object> PageTarget::targetInfo() const
     auto info = JSON::Object::create();
     info->setString("targetId"_s, m_targetID);
     info->setString("type"_s, "page"_s);
-    info->setString("title"_s, m_view ? str(webkit_web_view_get_title(m_view)) : emptyString());
+    info->setString("title"_s, m_view ? viewTitle(m_view) : emptyString());
     // A view that has loaded nothing has no address; in Chrome it is at about:blank.
-    auto url = m_view ? str(webkit_web_view_get_uri(m_view)) : emptyString();
+    auto url = m_view ? viewURI(m_view) : emptyString();
     info->setString("url"_s, url.isEmpty() ? "about:blank"_s : url);
     info->setBoolean("attached"_s, !m_sessions.isEmpty());
     info->setBoolean("canAccessOpener"_s, false);
@@ -75,7 +74,7 @@ void PageTarget::detach(Session& session)
     });
     // A dialog holds the page's script until it is answered. When the last
     // client that knows of it leaves, nobody will.
-    if (m_dialog && std::exchange(session.sawDialog, false)) {
+    if (hasOpenDialog() && std::exchange(session.sawDialog, false)) {
         bool stillKnown = false;
         for (auto& other : m_sessions)
             stillKnown |= other->sawDialog;
@@ -95,12 +94,7 @@ void PageTarget::viewDestroyed()
     if (m_pendingNavigation)
         replyError(m_pendingNavigation, "Target closed"_s);
     m_pendingNavigation = nullptr;
-    for (auto handler : m_signalHandlers)
-        g_signal_handler_disconnect(m_view, handler);
-    m_signalHandlers.clear();
-    if (m_dialog)
-        webkit_script_dialog_unref(m_dialog);
-    m_dialog = nullptr;
+    releaseView();
     m_view = nullptr;
 }
 
@@ -124,37 +118,10 @@ void PageTarget::connectInspector()
 
     setPageCacheSuspended(true);
 
-    webkitWebViewGetPage(m_view).inspectorController().connectFrontend(*this);
+    pageProxy(m_view).inspectorController().connectFrontend(*this);
     auto params = JSON::Object::create();
     params->setBoolean("pauseOnStart"_s, true);
     sendOuter("Target.setPauseOnStart"_s, WTF::move(params));
-}
-
-// A page restored from the back/forward cache comes back with the script
-// contexts it had, and WebKit's inspector does not announce them again.
-// While a client is attached, history navigations load afresh. Views can
-// share one settings object, so it counts the pages that need this and gets
-// its own value back when the last of them is done.
-void PageTarget::setPageCacheSuspended(bool suspended)
-{
-    static GQuark quark = g_quark_from_static_string("zebkit-cdp-page-cache");
-    if (suspended == !!m_pageCacheSettings || (suspended && !m_view))
-        return;
-    if (suspended)
-        m_pageCacheSettings = G_OBJECT(webkit_web_view_get_settings(m_view));
-    auto settings = suspended ? m_pageCacheSettings : std::exchange(m_pageCacheSettings, nullptr);
-
-    gsize state = GPOINTER_TO_SIZE(g_object_get_qdata(settings.get(), quark));
-    gsize count = state >> 1;
-    bool wasEnabled = state & 1;
-    if (suspended) {
-        if (!count++) {
-            wasEnabled = webkit_settings_get_enable_page_cache(WEBKIT_SETTINGS(settings.get()));
-            webkit_settings_set_enable_page_cache(WEBKIT_SETTINGS(settings.get()), FALSE);
-        }
-    } else if (count && !--count && wasEnabled)
-        webkit_settings_set_enable_page_cache(WEBKIT_SETTINGS(settings.get()), TRUE);
-    g_object_set_qdata(settings.get(), quark, GSIZE_TO_POINTER(count ? (count << 1 | wasEnabled) : 0));
 }
 
 // Connects again from scratch. What had been sent to the page's process is
@@ -165,7 +132,7 @@ void PageTarget::reconnectInspector()
     if (!m_inspectorConnected || !m_view)
         return;
     ++m_connectionGeneration;
-    auto& controller = webkitWebViewGetPage(m_view).inspectorController();
+    auto& controller = pageProxy(m_view).inspectorController();
     controller.disconnectFrontend(*this);
     m_innerTargetID = String();
     m_innerTargets.clear();
@@ -186,13 +153,12 @@ void PageTarget::disconnectInspector()
     dismissDialog();
     restoreViewSize();
     if (m_view) {
-        if (auto policy = std::exchange(m_originalTLSPolicy, std::nullopt))
-            webkit_network_session_set_tls_errors_policy(webkit_web_view_get_network_session(m_view), static_cast<WebKitTLSErrorsPolicy>(*policy));
+        restoreCertificateChecks();
         // Nothing may stay paused waiting for a client that has gone.
         auto params = JSON::Object::create();
         params->setBoolean("pauseOnStart"_s, false);
         sendOuter("Target.setPauseOnStart"_s, WTF::move(params));
-        webkitWebViewGetPage(m_view).inspectorController().disconnectFrontend(*this);
+        pageProxy(m_view).inspectorController().disconnectFrontend(*this);
     }
     setPageCacheSuspended(false);
     m_crashed = false;
@@ -225,7 +191,7 @@ void PageTarget::sendOuter(const String& method, Ref<JSON::Object>&& params)
     message->setInteger("id"_s, m_nextCommandID++);
     message->setString("method"_s, method);
     message->setObject("params"_s, WTF::move(params));
-    webkitWebViewGetPage(m_view).inspectorController().dispatchMessageFromFrontend(message->toJSONString());
+    pageProxy(m_view).inspectorController().dispatchMessageFromFrontend(message->toJSONString());
 }
 
 void PageTarget::sendToInner(const String& innerTargetID, int id, const String& method, JSON::Object* params)
@@ -249,7 +215,7 @@ void PageTarget::sendToInner(const String& innerTargetID, int id, const String& 
     outer->setInteger("id"_s, id);
     outer->setString("method"_s, "Target.sendMessageToTarget"_s);
     outer->setObject("params"_s, WTF::move(outerParams));
-    webkitWebViewGetPage(m_view).inspectorController().dispatchMessageFromFrontend(outer->toJSONString());
+    pageProxy(m_view).inspectorController().dispatchMessageFromFrontend(outer->toJSONString());
 }
 
 void PageTarget::wip(ASCIILiteral method, RefPtr<JSON::Object>&& params, WIPReply&& reply)
@@ -956,7 +922,7 @@ void PageTarget::handleRequestWillBeSent(JSON::Object& params)
         event->setString("documentURL"_s, params.getString("documentURL"_s));
         event->setObject("request"_s, WTF::move(request));
         event->setDouble("timestamp"_s, monotonicSeconds());
-        event->setDouble("wallTime"_s, params.getDouble("walltime"_s).value_or(g_get_real_time() / 1000000.0));
+        event->setDouble("wallTime"_s, params.getDouble("walltime"_s).value_or(WallTime::now().secondsSinceEpoch().seconds()));
         event->setObject("initiator"_s, WTF::move(cdpInitiator));
         event->setBoolean("redirectHasExtraInfo"_s, false);
         if (redirectResponse)
@@ -985,7 +951,7 @@ void PageTarget::handleConsoleMessage(JSON::Object& message)
     int line = message.getInteger("line"_s).value_or(0);
     int column = message.getInteger("column"_s).value_or(0);
     RefPtr parameters = message.getArray("parameters"_s);
-    double timestamp = g_get_real_time() / 1000.0;
+    double timestamp = WallTime::now().secondsSinceEpoch().milliseconds();
 
     if (source == "console-api"_s) {
         int contextID = 0;

@@ -133,10 +133,12 @@ CDP client ── WebSocket ──> src/cdp (UI process)
 
 | File | What is in it |
 |---|---|
+| `CDPPlatform.h` | The line between portable code and what a platform supplies: the first three files below are portable, the two named `GLib` are the Linux layer (`docs/MACOS.md`) |
 | `CDPServer.cpp` | HTTP discovery, sockets, sessions, and the `Target`, `Browser` and `Storage` domains |
 | `CDPPage.cpp` | One page: the inspector connection, and the page's events translated to CDP |
 | `CDPDomains.cpp` | `Page`, `Runtime`, `DOM`, `Network`, `Emulation` commands |
-| `CDPInput.cpp` | Navigation, mouse and keyboard, window size, dialogs, file choosers |
+| `CDPViewGLib.cpp` | Linux: navigation, mouse and keyboard, window size, dialogs, file choosers, cookies, creating views |
+| `CDPTransportGLib.cpp` | Linux: the listening socket, HTTP requests and WebSockets (libsoup), and the C API |
 | `CDPImage.cpp` | JPEG and WebP screenshots |
 | `CDPProtocol.inc` | Generated: the implemented commands and their parameters, from the standard definition |
 

@@ -1,10 +1,8 @@
 #pragma once
 
 #include "CDP.h"
+#include "CDPPlatform.h"
 #include <JavaScriptCore/InspectorFrontendChannel.h>
-#include <glib-object.h>
-#include <libsoup/soup.h>
-#include <WebCore/GUniquePtrSoup.h>
 #include <wtf/Box.h>
 #include <wtf/Function.h>
 #include <wtf/HashMap.h>
@@ -14,8 +12,6 @@
 #include <wtf/SetForScope.h>
 #include <wtf/Vector.h>
 #include <wtf/WeakPtr.h>
-#include <wtf/glib/GRefPtr.h>
-#include <wtf/glib/GUniquePtr.h>
 #include <wtf/text/StringHash.h>
 #include <wtf/text/WTFString.h>
 
@@ -86,12 +82,8 @@ void runAfter(unsigned milliseconds, Function<void()>&&);
 int logLevel();
 void logMessage(const char* direction, const String&);
 
-using CookieList = Vector<GUniquePtr<SoupCookie>>;
-void allCookies(WebKitNetworkSession*, Function<void(CookieList&&)>&&);
-void addCookie(WebKitNetworkSession*, SoupCookie*, Function<void()>&&);
-void deleteCookie(WebKitNetworkSession*, SoupCookie*, Function<void()>&&);
-Ref<JSON::Object> cookieToCDP(SoupCookie*);
-GUniquePtr<SoupCookie> cookieFromCDP(JSON::Object&, const String& fallbackURL);
+// Whether the text is a numeric IPv4 or IPv6 address.
+bool isIPAddress(const String&);
 
 // A client's view of one target. The root session of a connection has an
 // empty id; the others are created by Target.attachToTarget and auto-attach
@@ -123,7 +115,7 @@ private:
 
 class Connection final : public RefCounted<Connection>, public CanMakeWeakPtr<Connection> {
 public:
-    static Ref<Connection> create(SoupWebsocketConnection* socket) { return adoptRef(*new Connection(socket)); }
+    static Ref<Connection> create(Ref<Socket>&& socket) { return adoptRef(*new Connection(WTF::move(socket))); }
     ~Connection();
 
     void send(const JSON::Object&);
@@ -140,20 +132,20 @@ public:
     bool waitForDebuggerOnStart { false };
 
 private:
-    explicit Connection(SoupWebsocketConnection*);
+    explicit Connection(Ref<Socket>&&);
 
-    GRefPtr<SoupWebsocketConnection> m_socket;
+    RefPtr<Socket> m_socket;
     Ref<Session> m_root;
     StringMap<Ref<Session>> m_sessions;
 };
 
-// One WebKitWebView.
+// One web view.
 class PageTarget final : public RefCounted<PageTarget>, public CanMakeWeakPtr<PageTarget>, private Inspector::FrontendChannel {
 public:
-    static Ref<PageTarget> create(WebKitWebView* view) { return adoptRef(*new PageTarget(view)); }
+    static Ref<PageTarget> create(PlatformView view) { return adoptRef(*new PageTarget(view)); }
     ~PageTarget();
 
-    WebKitWebView* view() const { return m_view; }
+    PlatformView view() const { return m_view; }
     const String& targetID() const { return m_targetID; }
     Ref<JSON::Object> targetInfo() const;
 
@@ -173,7 +165,7 @@ public:
     void resumeIfWaiting();
 
 private:
-    explicit PageTarget(WebKitWebView*);
+    explicit PageTarget(PlatformView);
 
     // Inspector::FrontendChannel
     ConnectionType connectionType() const final { return ConnectionType::Remote; }
@@ -331,7 +323,7 @@ private:
     void emulationSetEmulatedMedia(Session&, JSON::Object&, Reply&&);
     void logEnable(Session&, JSON::Object&, Reply&&);
     void logDisable(Session&, JSON::Object&, Reply&&);
-    // Input (CDPInput.cpp)
+    // Input (platform)
     void inputDispatchMouseEvent(Session&, JSON::Object&, Reply&&);
     void inputDispatchKeyEvent(Session&, JSON::Object&, Reply&&);
     void inputInsertText(Session&, JSON::Object&, Reply&&);
@@ -340,25 +332,30 @@ private:
     void focusView();
     void acknowledge(Session&, JSON::Object&, Reply&&);
 
-    // WebKitWebView signals.
+    // Platform: the view's notifications, and what goes with the view.
     void connectViewSignals();
+    void releaseView();
+    void restoreCertificateChecks();
+    void setCertificateErrorsIgnored(bool);
+#if USE(GLIB)
     void loadChanged(int loadEvent);
     bool loadFailed(const char* failingURI, GError*);
     bool scriptDialog(WebKitScriptDialog*);
     bool runFileChooser(GObject* request);
+#endif
     void infoChanged();
+    bool hasOpenDialog() const;
 
-    WebKitWebView* m_view;
+    PlatformView m_view;
+    PlatformPageState m_native;
     String m_targetID;
     Vector<Ref<Session>> m_sessions;
-    Vector<gulong> m_signalHandlers;
 
     // Web Inspector Protocol state.
     bool m_inspectorConnected { false };
     unsigned m_connectionGeneration { 0 };
     unsigned m_reconnectAttempts { 0 };
     bool m_errorPageExpected { false };
-    GRefPtr<GObject> m_pageCacheSettings;
     // The page's process died and nothing has been loaded since.
     bool m_crashed { false };
     int m_nextCommandID { 1 };
@@ -430,7 +427,6 @@ private:
     Reply m_pendingNavigation;
     String m_pendingErrorText;
     unsigned m_navigationGeneration { 0 };
-    WebKitScriptDialog* m_dialog { nullptr };
     Vector<String> m_pendingFiles;
     bool m_expectingFileChooser { false };
     Vector<Reply> m_inputReplies;
@@ -441,7 +437,6 @@ private:
     // What a client changed outside the page, to put back when it leaves.
     int m_originalWidth { 0 };
     int m_originalHeight { 0 };
-    std::optional<int> m_originalTLSPolicy;
 
     friend class Server;
 };
@@ -450,7 +445,8 @@ class Server {
 public:
     static Server& singleton();
 
-    unsigned listen(const char* address, unsigned port, GError**);
+    // Returns the port, or 0 with the reason in error.
+    unsigned listen(const String& address, unsigned port, String& error);
     void stop();
     String browserURL() const;
     // Without discovery the HTTP pages that list the sockets are not served:
@@ -458,12 +454,12 @@ public:
     bool discoveryEnabled { true };
     bool hasConnections() const { return !m_connections.isEmpty(); }
     unsigned port() const { return m_port; }
-    bool isListening() const { return !!m_server; }
+    bool isListening() const { return !!m_listener; }
     void startFromEnvironmentOnce();
 
-    void addView(WebKitWebView*);
-    void removeView(WebKitWebView*);
-    PageTarget* pageForView(WebKitWebView*);
+    void addView(PlatformView);
+    void removeView(PlatformView);
+    PageTarget* pageForView(PlatformView);
     PageTarget* pageForID(const String&);
 
     void addConnection(Connection&);
@@ -472,23 +468,30 @@ public:
     // Target and Browser domains, valid on any session.
     bool browserCommand(Connection&, Session&, const String& method, JSON::Object& params, Reply&);
     void targetInfoChanged(PageTarget&);
-    WebKitWebView* createView(const String& browserContextID, WebKitWebView* related);
+    // Platform. A new view for a client or for a page that opened a
+    // window (related is then the opener); null if there cannot be one.
+    PlatformView createView(const String& browserContextID, PlatformView related);
     PageTarget* createPage(const String& url, const String& browserContextID);
 
+    // Platform.
     String userAgent();
     Ref<JSON::Object> versionInfo();
 
-    typedef WebKitWebView* (*CreateViewFunc)(WebKitWebView*, void*);
+    typedef PlatformView (*CreateViewFunc)(PlatformView, void*);
     CreateViewFunc createViewFunc { nullptr };
     void* createViewData { nullptr };
 
-private:
-    void handleHTTP(SoupServerMessage*, const char* path);
-    void handleWebSocket(SoupServerMessage*, const char* path, SoupWebsocketConnection*);
-    void attachSession(Connection&, PageTarget&, bool waitingForDebugger);
-    WebKitNetworkSession* networkSessionFor(const String& browserContextID);
+    // For the platform's listener. No answer means the request is the
+    // start of a WebSocket, which comes to acceptSocket() once it is one.
+    std::optional<HTTPResponse> handleHTTP(const HTTPRequest&);
+    void acceptSocket(const HTTPRequest&, Ref<Socket>&&);
+    // Null for the default context and for one that does not exist.
+    PlatformNetworkSession networkSessionFor(const String& browserContextID);
 
-    GRefPtr<SoupServer> m_server;
+private:
+    void attachSession(Connection&, PageTarget&, bool waitingForDebugger);
+
+    std::unique_ptr<Listener> m_listener;
     unsigned m_port { 0 };
     String m_host;
     bool m_checkedEnvironment { false };
@@ -497,7 +500,7 @@ private:
     String m_creatingOpenerID;
     Vector<Ref<PageTarget>> m_pages;
     Vector<Ref<Connection>> m_connections;
-    StringMap<GRefPtr<GObject>> m_browserContexts;
+    StringMap<PlatformNetworkSession> m_browserContexts;
 };
 
 } // namespace Zebkit::CDP
