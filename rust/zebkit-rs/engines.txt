@@ -1,0 +1,7 @@
+# The engine archives this version of the crate can download, one per line:
+#
+#     <version> <target> <sha256 of zebkit-<version>-<target>.tar.xz>
+#
+# Written by scripts/release.sh. The build script refuses an archive whose
+# checksum is not the one here.
+0.0.1-alpha.1 x86_64-unknown-linux-gnu 2a57d33f9108c3ddcfa3d9dac846abe9f4521012c5e862a3ae108e45324629f6
