@@ -5,6 +5,8 @@ Source changes on top of the pinned upstream release (see `upstream.lock`).
 - `series` lists the patches to apply, one filename per line, in order.
   `#` starts a comment. `scripts/fetch-upstream.sh` applies them with
   `patch -p1` and rebuilds the tree whenever the list or a patch changes.
+- `series.macos` is the list for macOS, where the engine is WebKit's Mac
+  port, built from the same release in git. A patch can be in both lists.
 - Name patches `NNNN-short-description.patch`. Group by purpose:
   `0xxx` fixes: for flag combinations upstream does not test, and for
   upstream bugs,

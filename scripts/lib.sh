@@ -18,34 +18,76 @@ source "$ZEBKIT_ROOT/upstream.lock"
 # shellcheck source=../toolchain.lock
 source "$ZEBKIT_ROOT/toolchain.lock"
 
-CACHE_DIR="$ZEBKIT_ROOT/.cache"
-UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
-SRC_DIR="$UPSTREAM_DIR/$UPSTREAM_NAME-$UPSTREAM_VERSION"
-OUT_DIR="$ZEBKIT_ROOT/out"
-TOOLCHAIN_DIR="$OUT_DIR/toolchain"
-PROFILES_DIR="$ZEBKIT_ROOT/profiles"
-PATCHES_DIR="$ZEBKIT_ROOT/patches"
-REPORTS_DIR="$ZEBKIT_ROOT/docs/reports"
-
 log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# require_profile <name>: fail unless profiles/<name>.cmake exists.
+CACHE_DIR="$ZEBKIT_ROOT/.cache"
+UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
+OUT_DIR="$ZEBKIT_ROOT/out"
+TOOLCHAIN_DIR="$OUT_DIR/toolchain"
+PATCHES_DIR="$ZEBKIT_ROOT/patches"
+REPORTS_DIR="$ZEBKIT_ROOT/docs/reports"
+
+# What differs between the hosts. Linux builds WebKit's WPE port with CMake
+# from the release tarball. macOS builds WebKit's Mac port with Xcode from
+# the same release in git, with its own patch series and its own profiles,
+# which are Xcode configuration files.
+case "$(uname -s)" in
+    Linux)
+        ZEBKIT_HOST=linux
+        SRC_DIR="$UPSTREAM_DIR/$UPSTREAM_NAME-$UPSTREAM_VERSION"
+        PATCH_SERIES="$PATCHES_DIR/series"
+        PROFILES_DIR="$ZEBKIT_ROOT/profiles"
+        PROFILE_SUFFIX=cmake
+        ;;
+    Darwin)
+        ZEBKIT_HOST=macos
+        SRC_DIR="$UPSTREAM_DIR/webkit-$UPSTREAM_VERSION-macos"
+        PATCH_SERIES="$PATCHES_DIR/series.macos"
+        PROFILES_DIR="$ZEBKIT_ROOT/profiles/macos"
+        PROFILE_SUFFIX=xcconfig
+        ;;
+    *) die "zebkit is not ported to $(uname -s)" ;;
+esac
+
+# linux_only: for the scripts that have no macOS counterpart yet.
+linux_only() {
+    [[ "$ZEBKIT_HOST" == linux ]] || die "$(basename "$0") is not ported to macOS yet; see docs/MACOS.md"
+}
+
+# sha256 [file...]: like sha256sum, which macOS does not have.
+sha256() {
+    if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
+
+# require_profile <name>: fail unless the host has a profile of that name.
 require_profile() {
     [[ -n "${1:-}" ]] || die "usage: $(basename "$0") <profile>   (one of: $(list_profiles))"
-    [[ -f "$PROFILES_DIR/$1.cmake" ]] || die "unknown profile '$1' (have: $(list_profiles))"
+    [[ -f "$PROFILES_DIR/$1.$PROFILE_SUFFIX" ]] || die "unknown profile '$1' (have: $(list_profiles))"
 }
 
 list_profiles() {
-    find "$PROFILES_DIR" -maxdepth 1 -name '*.cmake' ! -name '_*' -printf '%f\n' | sed 's/\.cmake$//' | sort | paste -sd' '
+    find "$PROFILES_DIR" -maxdepth 1 -name "*.$PROFILE_SUFFIX" ! -name '_*' -exec basename {} ".$PROFILE_SUFFIX" \; | sort | paste -sd' ' -
 }
 
 # stage_profile <profile>: install a built profile into out/<profile>/stage
-# and set build_dir, stage_dir and run_env (the command prefix that lets its
-# MiniBrowser find the engine and, where used, the libraries from deps/).
+# and set build_dir, stage_dir and run_env (the command prefix that lets a
+# program find the engine and, where used, the libraries from deps/). On
+# macOS it sets products_dir, where the frameworks are, instead of stage_dir.
 stage_profile() {
     build_dir="$OUT_DIR/$1"
     stage_dir="$build_dir/stage"
+
+    # On macOS there is nothing to install: the frameworks are used from
+    # where Xcode put them, and the engine's helper processes, which launchd
+    # starts, are told where through the __XPC_ variables.
+    if [[ "$ZEBKIT_HOST" == macos ]]; then
+        products_dir="$build_dir/Release"
+        [[ -d "$products_dir/WebKit.framework" ]] || die "profile '$1' is not built; run scripts/build.sh $1"
+        run_env=(env "DYLD_FRAMEWORK_PATH=$products_dir" "DYLD_LIBRARY_PATH=$products_dir"
+                     "__XPC_DYLD_FRAMEWORK_PATH=$products_dir" "__XPC_DYLD_LIBRARY_PATH=$products_dir")
+        return
+    fi
     [[ -x "$build_dir/bin/MiniBrowser" ]] || die "profile '$1' is not built; run scripts/build.sh $1"
 
     # Refuse to install anywhere but the stage: a build tree configured

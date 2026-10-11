@@ -1,0 +1,26 @@
+Build fix, macOS: pull-to-refresh needs an AppKit header Apple does not ship.
+
+HAVE(NSREFRESHCONTROLLER) is switched on for every build that targets
+macOS 27. What it enables, WKWebView+RefreshControl.swift, conforms
+WKWebView to AppKit.NSRefreshControlHosting, a protocol that is in Apple's
+internal SDK and not in the one that comes with Xcode. With the public SDK
+the WebKit Swift module does not compile, and nothing that depends on it
+does either.
+
+Switch the feature on only when the private header it is built from is
+there, which is the test AppKitSPI.h already makes. A build with the public
+SDK is then without pull-to-refresh in the view, which is a gesture of the
+host application and not a feature of the web.
+
+--- a/Source/WTF/wtf/PlatformHave.h
++++ b/Source/WTF/wtf/PlatformHave.h
+@@ -1940,7 +1940,8 @@
+ #endif
+ 
+ #if !defined(HAVE_NSREFRESHCONTROLLER) \
+-    && ((PLATFORM(MAC) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 270000))
++    && ((PLATFORM(MAC) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 270000)) \
++    && __has_include(<AppKit/NSRefreshControl_Private.h>)
+ #define HAVE_NSREFRESHCONTROLLER 1
+ #endif
+ 

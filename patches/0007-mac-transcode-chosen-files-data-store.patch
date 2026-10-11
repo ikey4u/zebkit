@@ -1,0 +1,21 @@
+Build fix, macOS: a call to a method WebPageProxy does not have.
+
+WebPageProxy::transcodeChosenFiles(), which is compiled for the Cocoa ports
+only, calls protectedWebsiteDataStore() and protectedNetworkProcess(). Those
+accessors are not in this branch, where the same thing is written with
+protect() everywhere else in the file. The branch is built upstream for the
+GLib ports, so nothing caught it.
+
+Spell it the way the rest of the file does.
+
+--- a/Source/WebKit/UIProcess/WebPageProxy.cpp
++++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
+@@ -13038,7 +13038,7 @@ void WebPageProxy::transcodeChosenFiles(IPC::Connection& connection, Vector<Stri
+         process->send(Messages::WebPage::ExtendSandboxForFilesFromOpenPanel(WTF::move(sandboxExtensionHandles)), protectedThis->webPageIDInProcess(process.get()));
+ #endif
+ 
+-        protectedThis->protectedWebsiteDataStore()->protectedNetworkProcess()->sendWithAsyncReply(Messages::NetworkProcess::AllowFilesAccessFromWebProcess(process->coreProcessIdentifier(), transcodedPaths), [replacementPaths = WTF::move(replacementPaths), completionHandler = WTF::move(completionHandler)]() mutable {
++        protect(protect(protectedThis->websiteDataStore())->networkProcess())->sendWithAsyncReply(Messages::NetworkProcess::AllowFilesAccessFromWebProcess(process->coreProcessIdentifier(), transcodedPaths), [replacementPaths = WTF::move(replacementPaths), completionHandler = WTF::move(completionHandler)]() mutable {
+             completionHandler(WTF::move(replacementPaths));
+         });
+     });

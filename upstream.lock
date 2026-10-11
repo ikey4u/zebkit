@@ -4,3 +4,10 @@ UPSTREAM_NAME=wpewebkit
 UPSTREAM_VERSION=2.54.1
 UPSTREAM_URL=https://wpewebkit.org/releases/wpewebkit-2.54.1.tar.xz
 UPSTREAM_SHA256=0de8bdfba011f9cd63ba9a9171fa6038dd2c08237894f4082abbb821f29d3fe9
+
+# The same release in WebKit's git repository, for macOS: the tarball has
+# the GLib ports only, and the Mac port is built from this commit instead.
+# It is the commit the release tag points at; bump it with the fields above.
+UPSTREAM_GIT_URL=https://github.com/WebKit/WebKit.git
+UPSTREAM_GIT_TAG=wpewebkit-2.54.1
+UPSTREAM_GIT_COMMIT=537776966344c4982751692dd475c94124504271
