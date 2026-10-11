@@ -53,7 +53,7 @@ const steps = [
     await page.locator('#name').clear();
     await page.locator('#name').pressSequentially('Typed, Wörld');
     assert.strictEqual(await page.inputValue('#name'), 'Typed, Wörld');
-    await page.locator('#name').press('Control+a');
+    await page.locator('#name').press('ControlOrMeta+a');
     await page.keyboard.press('Delete');
     assert.strictEqual(await page.inputValue('#name'), '');
     await page.locator('#area').focus();

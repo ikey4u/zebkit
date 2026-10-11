@@ -15,8 +15,9 @@
 #include <wtf/text/StringHash.h>
 #include <wtf/text/WTFString.h>
 
-typedef struct _WebKitNetworkSession WebKitNetworkSession;
-typedef struct _WebKitScriptDialog WebKitScriptDialog;
+namespace WebKit {
+class WebOpenPanelResultListenerProxy;
+}
 
 namespace Zebkit::CDP {
 
@@ -58,9 +59,11 @@ static constexpr int maxScreenshotSide = 16384;
 // per document. The oldest are let go beyond this.
 static constexpr int maxBackendNodes = 20000;
 // The largest message accepted from a client.
-static constexpr guint64 maxIncomingMessageSize = 256 * 1024 * 1024;
+static constexpr uint64_t maxIncomingMessageSize = 256 * 1024 * 1024;
 
 Ref<JSON::Object> remoteObjectToCDP(JSON::Object&);
+// The script context a remote object's id says the object is in; 0 if none.
+int contextOfObject(const String& objectID);
 // Re-encodes a base64 PNG as "jpeg" or "webp"; null if that fails.
 String transcodeScreenshot(const String& base64PNG, const String& format, int quality);
 
@@ -80,10 +83,15 @@ double monotonicSeconds();
 String randomID();
 void runAfter(unsigned milliseconds, Function<void()>&&);
 int logLevel();
-void logMessage(const char* direction, const String&);
+void logMessage(const String& direction, const String&);
 
 // Whether the text is a numeric IPv4 or IPv6 address.
 bool isIPAddress(const String&);
+// The text's one character, or 0 if it is not exactly one.
+char32_t singleCodePoint(const String&);
+
+// What a view reports of a load of its main frame.
+enum class LoadEvent : uint8_t { Started, Committed, Finished };
 
 // A client's view of one target. The root session of a connection has an
 // empty id; the others are created by Target.attachToTarget and auto-attach
@@ -164,6 +172,29 @@ public:
     void close(bool force = false);
     void resumeIfWaiting();
 
+    // What the platform tells of the view (CDPView.cpp). Each platform has
+    // its own notifications, with its own types, and calls these from them.
+    void loadChanged(LoadEvent);
+    void loadFailed(ASCIILiteral errorText);
+    void loadCancelled();
+    void processTerminated();
+    void infoChanged();
+    void addressChanged();
+    void finishNavigation(const String& loaderID, const String& errorText);
+#if USE(GLIB)
+    void loadFailed(GError*);
+    bool scriptDialog(WebKitScriptDialog*);
+    bool runFileChooser(GObject* request);
+#elif PLATFORM(COCOA)
+    // Only if acceptsDialog().
+    void scriptDialog(ASCIILiteral type, const String& message, const String& defaultPrompt, Function<void(bool accept, const String& promptText)>&&);
+    // False if the endpoint leaves it to the application.
+    bool runFileChooser(WebKit::WebOpenPanelResultListenerProxy&);
+#endif
+    // A dialog is held open for a client only when one is there to answer it.
+    bool acceptsDialog() const;
+    PlatformPageState& native() { return m_native; }
+
 private:
     explicit PageTarget(PlatformView);
 
@@ -237,8 +268,6 @@ private:
     void frameOffsetOfObject(const String& objectID, Function<void(double x, double y)>&&);
     void domPassThrough(const String& method, JSON::Object& params, Reply&&);
     void waitForViewportWidth(int width, unsigned attemptsLeft, Reply&&);
-    void processTerminated();
-    void addressChanged();
     void navigatedWithinDocument(const String& url);
     bool ensureWorld(const String& name);
     void announceContext(Session&, int contextID);
@@ -255,7 +284,6 @@ private:
     void handleRequestWillBeSent(JSON::Object& params);
     String toCDPRequestID(const String& innerRequestID) const;
     String toInnerRequestID(const String& cdpRequestID) const;
-    void finishNavigation(const String& loaderID, const String& errorText);
     void confirmNavigationCommitted(unsigned generation, unsigned attemptsLeft);
 
     // Page
@@ -332,19 +360,16 @@ private:
     void focusView();
     void acknowledge(Session&, JSON::Object&, Reply&&);
 
-    // Platform: the view's notifications, and what goes with the view.
+    // Platform: what goes with the view.
     void connectViewSignals();
     void releaseView();
     void restoreCertificateChecks();
     void setCertificateErrorsIgnored(bool);
-#if USE(GLIB)
-    void loadChanged(int loadEvent);
-    bool loadFailed(const char* failingURI, GError*);
-    bool scriptDialog(WebKitScriptDialog*);
-    bool runFileChooser(GObject* request);
-#endif
-    void infoChanged();
     bool hasOpenDialog() const;
+    // The dialog is open (hasOpenDialog()): answer it, or just let it go.
+    void answerDialog(bool accept, const String& promptText);
+    void closeDialog();
+    void announceDialog(ASCIILiteral type, const String& message, const String& defaultPrompt);
 
     PlatformView m_view;
     PlatformPageState m_native;
@@ -427,6 +452,7 @@ private:
     Reply m_pendingNavigation;
     String m_pendingErrorText;
     unsigned m_navigationGeneration { 0 };
+    String m_dialogDefaultPrompt;
     Vector<String> m_pendingFiles;
     bool m_expectingFileChooser { false };
     Vector<Reply> m_inputReplies;
@@ -461,6 +487,9 @@ public:
     void removeView(PlatformView);
     PageTarget* pageForView(PlatformView);
     PageTarget* pageForID(const String&);
+#if PLATFORM(COCOA)
+    bool anyPageAcceptsDialog() const;
+#endif
 
     void addConnection(Connection&);
     void removeConnection(Connection&);
@@ -477,7 +506,12 @@ public:
     String userAgent();
     Ref<JSON::Object> versionInfo();
 
+#if PLATFORM(COCOA)
+    // The view has to be made with the configuration it is given.
+    typedef PlatformView (*CreateViewFunc)(PlatformView, WKWebViewConfiguration *, void*);
+#else
     typedef PlatformView (*CreateViewFunc)(PlatformView, void*);
+#endif
     CreateViewFunc createViewFunc { nullptr };
     void* createViewData { nullptr };
 

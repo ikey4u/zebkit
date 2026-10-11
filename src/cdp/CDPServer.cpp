@@ -46,15 +46,14 @@ int logLevel()
 {
     static int level = [] {
         const char* value = std::getenv("ZEBKIT_CDP_LOG");
-        return value ? atoi(value) : 0;
+        return value ? parseInteger<int>(String::fromUTF8(value)).value_or(0) : 0;
     }();
     return level;
 }
 
-void logMessage(const char* direction, const String& message)
+void logMessage(const String& direction, const String& message)
 {
-    auto utf8 = message.utf8();
-    fprintf(stderr, "%s %.*s%s\n", direction, static_cast<int>(std::min<size_t>(utf8.length(), 600)), utf8.data(), utf8.length() > 600 ? "..." : "");
+    SAFE_FPRINTF(stderr, "%s %s%s\n", direction.utf8(), message.left(600).utf8(), message.length() > 600 ? "..."_s : ""_s);
 }
 
 void runAfter(unsigned milliseconds, Function<void()>&& function)
@@ -104,7 +103,7 @@ void Connection::send(const JSON::Object& message)
         return;
     auto text = message.toJSONString();
     if (logLevel())
-        logMessage("cdp <", text);
+        logMessage("cdp <"_s, text);
     m_socket->send(text);
 }
 
@@ -163,7 +162,7 @@ void Connection::receive(const String& text)
 {
     Ref protectedThis { *this };
     if (logLevel())
-        logMessage("cdp >", text);
+        logMessage("cdp >"_s, text);
     // A message that cannot be dispatched is answered the way Chrome
     // answers it, with the JSON-RPC error codes.
     auto reject = [&](std::optional<int> id, int code, ASCIILiteral text) {
@@ -391,14 +390,14 @@ void Server::startFromEnvironmentOnce()
         return;
     auto number = parseInteger<uint16_t>(String::fromUTF8(port));
     if (!number) {
-        fprintf(stderr, "zebkit: ZEBKIT_CDP_PORT=%s is not a port number; the CDP endpoint is not started\n", port);
+        SAFE_FPRINTF(stderr, "zebkit: ZEBKIT_CDP_PORT=%s is not a port number; the CDP endpoint is not started\n", String::fromUTF8(port).utf8());
         return;
     }
     if (const char* discovery = std::getenv("ZEBKIT_CDP_DISCOVERY"))
-        discoveryEnabled = strcmp(discovery, "0");
+        discoveryEnabled = String::fromUTF8(discovery) != "0"_s;
     String error;
     if (!listen(str(std::getenv("ZEBKIT_CDP_ADDRESS")), *number, error))
-        fprintf(stderr, "zebkit: cannot start the CDP endpoint: %s\n", error.utf8().data());
+        SAFE_FPRINTF(stderr, "zebkit: cannot start the CDP endpoint: %s\n", error.utf8());
 }
 
 unsigned Server::listen(const String& address, unsigned port, String& error)
@@ -414,10 +413,10 @@ unsigned Server::listen(const String& address, unsigned port, String& error)
     m_host = listener->host;
     m_browserID = randomID();
     if (!listener->isLoopback)
-        fprintf(stderr, "zebkit: the CDP endpoint is listening on %s, which other machines can reach. It has no authentication: whoever connects controls the browser and can read what it can read.\n", m_host.utf8().data());
+        SAFE_FPRINTF(stderr, "zebkit: the CDP endpoint is listening on %s, which other machines can reach. It has no authentication: whoever connects controls the browser and can read what it can read.\n", m_host.utf8());
     m_listener = WTF::move(listener);
     // The line Chrome prints; launchers look for it to find the endpoint.
-    fprintf(stderr, "\nDevTools listening on %s\n", browserURL().utf8().data());
+    SAFE_FPRINTF(stderr, "\nDevTools listening on %s\n", browserURL().utf8());
     return m_port;
 }
 
@@ -463,12 +462,10 @@ static bool isAllowedOrigin(const String& origin)
 {
     if (origin.isEmpty())
         return true;
-    const char* allowed = std::getenv("ZEBKIT_CDP_ALLOW_ORIGINS");
-    if (!allowed)
+    auto allowed = str(std::getenv("ZEBKIT_CDP_ALLOW_ORIGINS"));
+    if (allowed.isEmpty())
         return false;
-    if (!strcmp(allowed, "*"))
-        return true;
-    return String::fromUTF8(allowed).split(',').contains(origin);
+    return allowed == "*"_s || allowed.split(',').contains(origin);
 }
 
 Ref<JSON::Object> Server::versionInfo()

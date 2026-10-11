@@ -162,8 +162,6 @@ static Ref<JSON::Object> exceptionDetails(JSON::Object& exception, int id)
     return details;
 }
 
-static int contextOfObject(const String& objectID);
-
 void PageTarget::dispatch(Session& session, const String& method, JSON::Object& params, Reply&& reply)
 {
     if (!m_view) {
@@ -370,7 +368,7 @@ void PageTarget::resolveNode(JSON::Object& params, Function<void(const String&, 
     });
 }
 
-static int contextOfObject(const String& objectID)
+int contextOfObject(const String& objectID)
 {
     RefPtr value = JSON::Value::parseJSON(objectID);
     RefPtr object = value ? value->asObject() : nullptr;

@@ -39,23 +39,35 @@ python3 -I "$ZEBKIT_ROOT/scripts/gen-cdp-protocol.py" --check || die "regenerate
 # The endpoint's portable files must stay portable: what belongs to one
 # platform goes through src/cdp/CDPPlatform.h (the port to another platform
 # replaces only the files named after this one).
-portable=("$ZEBKIT_ROOT"/src/cdp/CDPServer.cpp "$ZEBKIT_ROOT"/src/cdp/CDPPage.cpp "$ZEBKIT_ROOT"/src/cdp/CDPDomains.cpp)
-if leaks="$(grep -nE '\b(webkit_[a-z_]+|wpe_[a-z_]+|soup_[a-z_]+|g_[a-z_]+)\(|\b(GRefPtr|GUniquePtr|GError|gpointer|WEBKIT_[A-Z_]+|Soup[A-Z][A-Za-z]+)\b|#include <(glib|gio|libsoup|wpe)' "${portable[@]}")"; then
+portable=("$ZEBKIT_ROOT"/src/cdp/CDPServer.cpp "$ZEBKIT_ROOT"/src/cdp/CDPPage.cpp "$ZEBKIT_ROOT"/src/cdp/CDPDomains.cpp
+          "$ZEBKIT_ROOT"/src/cdp/CDPView.cpp "$ZEBKIT_ROOT"/src/cdp/CDPWebSocket.cpp)
+if leaks="$(grep -nE '\b(webkit_[a-z_]+|wpe_[a-z_]+|soup_[a-z_]+|g_[a-z_]+)\(|\b(GRefPtr|GUniquePtr|GError|gpointer|WebKitWebView|WEBKIT_[A-Z_]+|Soup[A-Z][A-Za-z]+)\b|#include <(glib|gio|libsoup|wpe)' "${portable[@]}")"; then
     echo "$leaks" >&2
     die "platform API used in the endpoint's portable files"
 fi
 
 host="$build_dir/tools/cdphost"
-source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.c"
-pc_path="$stage_dir/lib/pkgconfig"
-[[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
-# Rebuilt when its source changes, and when the engine it links against does.
-if [[ ! -x "$host" || "$source_file" -nt "$host" || "$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc" -nt "$host" ]]; then
-    log "building cdphost for $profile"
-    mkdir -p "$(dirname "$host")"
-    # shellcheck disable=SC2046
-    PKG_CONFIG_PATH="$pc_path" cc -O1 -Wall -I "$ZEBKIT_ROOT/src/cdp" -o "$host" "$source_file" \
-        $(PKG_CONFIG_PATH="$pc_path" pkg-config --cflags --libs wpe-webkit-2.0 wpe-platform-headless-2.0)
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.m"
+    # Rebuilt when its source changes, and when the engine it links against does.
+    if [[ ! -x "$host" || "$source_file" -nt "$host" || "$products_dir/WebKit.framework/WebKit" -nt "$host" ]]; then
+        log "building cdphost for $profile"
+        mkdir -p "$(dirname "$host")"
+        clang -fobjc-arc -O1 -Wall -Wno-deprecated-declarations -I "$ZEBKIT_ROOT/src/cdp" -o "$host" "$source_file" \
+            -F"$products_dir" -framework WebKit -framework Cocoa
+    fi
+else
+    source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.c"
+    pc_path="$stage_dir/lib/pkgconfig"
+    [[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
+    # Rebuilt when its source changes, and when the engine it links against does.
+    if [[ ! -x "$host" || "$source_file" -nt "$host" || "$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc" -nt "$host" ]]; then
+        log "building cdphost for $profile"
+        mkdir -p "$(dirname "$host")"
+        # shellcheck disable=SC2046
+        PKG_CONFIG_PATH="$pc_path" cc -O1 -Wall -I "$ZEBKIT_ROOT/src/cdp" -o "$host" "$source_file" \
+            $(PKG_CONFIG_PATH="$pc_path" pkg-config --cflags --libs wpe-webkit-2.0 wpe-platform-headless-2.0)
+    fi
 fi
 
 work="$(mktemp -d)"

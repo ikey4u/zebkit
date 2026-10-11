@@ -8,10 +8,8 @@
  * mouse and keyboard take, so pages see trusted events and default actions
  * (focus, text entry, link activation) happen.
  *
- * Not all of this is specific to the platform. The logic that only uses
- * the platform, such as the bookkeeping of a navigation or the order of
- * input answers, is here with the calls it wraps, and moves to the
- * portable files when a second platform shows which part that is.
+ * What is the same on every platform, such as the bookkeeping of a
+ * navigation and the order of input answers, is in CDPView.cpp.
  */
 
 #include "config.h"
@@ -37,10 +35,17 @@ void PageTarget::connectViewSignals()
         m_native.signalHandlers.append(g_signal_connect_data(m_view, signal, callback, this, nullptr, after ? G_CONNECT_AFTER : static_cast<GConnectFlags>(0)));
     };
     connect("load-changed", G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent event, gpointer data) {
-        static_cast<PageTarget*>(data)->loadChanged(event);
+        auto& page = *static_cast<PageTarget*>(data);
+        if (event == WEBKIT_LOAD_STARTED)
+            page.loadChanged(LoadEvent::Started);
+        else if (event == WEBKIT_LOAD_COMMITTED)
+            page.loadChanged(LoadEvent::Committed);
+        else if (event == WEBKIT_LOAD_FINISHED)
+            page.loadChanged(LoadEvent::Finished);
     }));
-    connect("load-failed", G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char* failingURI, GError* error, gpointer data) -> gboolean {
-        return static_cast<PageTarget*>(data)->loadFailed(failingURI, error);
+    connect("load-failed", G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char*, GError* error, gpointer data) -> gboolean {
+        static_cast<PageTarget*>(data)->loadFailed(error);
+        return FALSE;
     }));
     connect("load-failed-with-tls-errors", G_CALLBACK(+[](WebKitWebView*, const char*, GTlsCertificate*, GTlsCertificateFlags, gpointer data) -> gboolean {
         static_cast<PageTarget*>(data)->finishNavigation({ }, "net::ERR_CERT_AUTHORITY_INVALID"_s);
@@ -81,108 +86,12 @@ void PageTarget::connectViewSignals()
     }));
 }
 
-void PageTarget::confirmNavigationCommitted(unsigned generation, unsigned attemptsLeft)
+void PageTarget::loadFailed(GError* error)
 {
-    auto params = JSON::Object::create();
-    params->setString("objectGroup"_s, "zebkit-sync"_s);
-    wip("Runtime.releaseObjectGroup"_s, WTF::move(params), [this, weakThis = WeakPtr { *this }, generation, attemptsLeft](JSON::Object*, const String& error) {
-        if (!weakThis || generation != m_navigationGeneration || !m_pendingNavigation)
-            return;
-        if (!error.isNull()) {
-            // Asked of a process the page was just leaving; ask the new one.
-            if (attemptsLeft && !m_crashed && m_inspectorConnected)
-                confirmNavigationCommitted(generation, attemptsLeft - 1);
-            return;
-        }
-        if (!m_pendingErrorText.isNull()) {
-            m_errorPageExpected = false;
-            finishNavigation({ }, std::exchange(m_pendingErrorText, String()));
-            return;
-        }
-        auto frame = m_frames.find(mainFrameID());
-        finishNavigation(frame == m_frames.end() ? String() : uniqueID(frame->value.loaderID), { });
-    });
-}
-
-void PageTarget::infoChanged()
-{
-    if (m_view)
-        Server::singleton().targetInfoChanged(*this);
-}
-
-// The address of the main frame changed. If no new document came with it,
-// the document changed its own address: a fragment, or the history API.
-// WebKit's protocol has no event for that, so the document is asked. A new
-// document has reported its address by the time it answers; one that is
-// still on its way leaves the old one answering with the old address.
-void PageTarget::addressChanged()
-{
-    if (!m_view || !m_inspectorConnected || m_crashed)
-        return;
-    evaluateValue("location.href"_s, [this, weakThis = WeakPtr { *this }](RefPtr<JSON::Value>&& value) {
-        if (weakThis && value)
-            navigatedWithinDocument(value->asString());
-    });
-}
-
-void PageTarget::navigatedWithinDocument(const String& url)
-{
-    auto frame = m_frames.find(mainFrameID());
-    if (frame == m_frames.end() || url.isEmpty() || frame->value.url == url)
-        return;
-    auto withoutFragment = [](const String& address) {
-        auto hash = address.find('#');
-        return hash == notFound ? address : address.left(hash);
-    };
-    bool isFragment = withoutFragment(frame->value.url) == withoutFragment(url);
-    frame->value.url = url;
-    forEachSession([&](Session& session) {
-        if (!session.pageEnabled)
-            return;
-        auto event = JSON::Object::create();
-        event->setString("frameId"_s, m_targetID);
-        event->setString("url"_s, url);
-        event->setString("navigationType"_s, isFragment ? "fragment"_s : "historyApi"_s);
-        session.event("Page.navigatedWithinDocument"_s, WTF::move(event));
-    });
-}
-
-void PageTarget::loadChanged(int loadEvent)
-{
-
-    if (loadEvent == WEBKIT_LOAD_STARTED && std::exchange(m_crashed, false)) {
-        // The load starts a new process, which knows nothing of this client.
-        m_reconnectAttempts = 0;
-        reconnectInspector();
-    }
-    if (loadEvent == WEBKIT_LOAD_COMMITTED && m_pendingNavigation && m_inspectorConnected) {
-        // The page reports the commit itself, with the loader's id, unless
-        // it committed before its process had been told to report anything.
-        // Once the page has answered and the navigation is still waiting,
-        // that is what happened.
-        confirmNavigationCommitted(m_navigationGeneration, 5);
-    }
-    if (loadEvent != WEBKIT_LOAD_STARTED && loadEvent != WEBKIT_LOAD_FINISHED)
-        return;
-    bool started = loadEvent == WEBKIT_LOAD_STARTED;
-    forEachSession([&](Session& session) {
-        if (!session.pageEnabled)
-            return;
-        auto event = JSON::Object::create();
-        event->setString("frameId"_s, m_targetID);
-        session.event(started ? "Page.frameStartedLoading"_s : "Page.frameStoppedLoading"_s, WTF::move(event));
-    });
-}
-
-bool PageTarget::loadFailed(const char*, GError* error)
-{
-    // A load that was replaced by a newer one is not the newer one failing.
     if (g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED)) {
-        m_errorPageExpected = false;
-        return false;
+        loadCancelled();
+        return;
     }
-    m_errorPageExpected = true;
-
     if (logLevel())
         g_printerr("cdp: load failed: %s %d: %s\n", g_quark_to_string(error->domain), error->code, error->message);
     ASCIILiteral text = "net::ERR_FAILED"_s;
@@ -204,65 +113,19 @@ bool PageTarget::loadFailed(const char*, GError* error)
         text = "net::ERR_FILE_NOT_FOUND"_s;
     else if (g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_UNKNOWN_PROTOCOL))
         text = "net::ERR_UNKNOWN_URL_SCHEME"_s;
-    if (!m_pendingNavigation)
-        return false;
-    // WebKit now loads its error page. The client is told of the failure
-    // once that page has committed (handleInnerEvent), so that the commit
-    // is not taken for part of whatever the client does next. An
-    // application may suppress the error page; do not wait for long.
-    m_pendingErrorText = text;
-    unsigned generation = ++m_navigationGeneration;
-    runAfter(500, [this, weakThis = WeakPtr { *this }, generation] {
-        if (weakThis && generation == m_navigationGeneration && !m_pendingErrorText.isNull())
-            finishNavigation({ }, std::exchange(m_pendingErrorText, String()));
-    });
-    return false;
-}
-
-void PageTarget::processTerminated()
-{
-    // WebKit keeps the same inspector target for the page and gives it a new
-    // process on the next load, so nothing here says the old one is gone.
-    // Whatever was waiting for it will never be answered.
-    m_crashed = true;
-    m_queuedCommands.clear();
-    failPendingCommands("Target crashed"_s);
-    resetDocumentState();
-    dismissDialog();
-    forEachSession([](Session& session) {
-        session.event("Inspector.targetCrashed"_s, JSON::Object::create());
-    });
-    finishNavigation({ }, "net::ERR_ABORTED"_s);
-}
-
-void PageTarget::pageCrash(Session&, JSON::Object&, Reply&& reply)
-{
-    replyOK(reply);
-    webkit_web_view_terminate_web_process(m_view);
-}
-
-void PageTarget::dismissDialog()
-{
-    for (auto& session : m_sessions)
-        session->sawDialog = false;
-    if (auto* dialog = std::exchange(m_native.dialog, nullptr)) {
-        webkit_script_dialog_close(dialog);
-        webkit_script_dialog_unref(dialog);
-    }
+    loadFailed(text);
 }
 
 bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
 {
-    bool hasListener = false;
-    for (auto& session : m_sessions)
-        hasListener |= session->pageEnabled;
-    if (!hasListener || m_native.dialog)
+    if (!acceptsDialog())
         return false;
 
     // Keeping a reference holds the dialog, and the script that opened it,
     // until a client answers with Page.handleJavaScriptDialog.
     m_native.dialog = webkit_script_dialog_ref(dialog);
     ASCIILiteral type = "alert"_s;
+    String defaultPrompt;
     switch (webkit_script_dialog_get_dialog_type(dialog)) {
     case WEBKIT_SCRIPT_DIALOG_ALERT:
         break;
@@ -271,38 +134,19 @@ bool PageTarget::scriptDialog(WebKitScriptDialog* dialog)
         break;
     case WEBKIT_SCRIPT_DIALOG_PROMPT:
         type = "prompt"_s;
+        defaultPrompt = str(webkit_script_dialog_prompt_get_default_text(dialog));
         break;
     case WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM:
         type = "beforeunload"_s;
         break;
     }
-    forEachSession([&](Session& session) {
-        if (!session.pageEnabled)
-            return;
-        session.sawDialog = true;
-        auto event = JSON::Object::create();
-        event->setString("url"_s, str(webkit_web_view_get_uri(m_view)));
-        // WebKit does not say which frame opened it.
-        event->setString("frameId"_s, m_targetID);
-        event->setString("message"_s, str(webkit_script_dialog_get_message(dialog)));
-        event->setString("type"_s, type);
-        event->setBoolean("hasBrowserHandler"_s, false);
-        if (webkit_script_dialog_get_dialog_type(dialog) == WEBKIT_SCRIPT_DIALOG_PROMPT)
-            event->setString("defaultPrompt"_s, str(webkit_script_dialog_prompt_get_default_text(dialog)));
-        session.event("Page.javascriptDialogOpening"_s, WTF::move(event));
-    });
+    announceDialog(type, str(webkit_script_dialog_get_message(dialog)), defaultPrompt);
     return true;
 }
 
-void PageTarget::pageHandleJavaScriptDialog(Session&, JSON::Object& params, Reply&& reply)
+void PageTarget::answerDialog(bool accept, const String& promptText)
 {
-    if (!m_native.dialog) {
-        replyInvalid(reply, "No dialog is showing"_s);
-        return;
-    }
     auto* dialog = std::exchange(m_native.dialog, nullptr);
-    bool accept = params.getBoolean("accept"_s).value_or(false);
-    auto promptText = params.getString("promptText"_s);
     switch (webkit_script_dialog_get_dialog_type(dialog)) {
     case WEBKIT_SCRIPT_DIALOG_ALERT:
         break;
@@ -311,28 +155,20 @@ void PageTarget::pageHandleJavaScriptDialog(Session&, JSON::Object& params, Repl
         webkit_script_dialog_confirm_set_confirmed(dialog, accept);
         break;
     case WEBKIT_SCRIPT_DIALOG_PROMPT:
-        if (accept) {
-            if (promptText.isNull())
-                promptText = str(webkit_script_dialog_prompt_get_default_text(dialog));
+        if (accept)
             webkit_script_dialog_prompt_set_text(dialog, promptText.utf8().data());
-        }
         break;
     }
     webkit_script_dialog_close(dialog);
     webkit_script_dialog_unref(dialog);
-    for (auto& session : m_sessions)
-        session->sawDialog = false;
+}
 
-    forEachSession([&](Session& session) {
-        if (!session.pageEnabled)
-            return;
-        auto event = JSON::Object::create();
-        event->setString("frameId"_s, m_targetID);
-        event->setBoolean("result"_s, accept);
-        event->setString("userInput"_s, promptText.isNull() ? emptyString() : promptText);
-        session.event("Page.javascriptDialogClosed"_s, WTF::move(event));
-    });
-    replyOK(reply);
+void PageTarget::closeDialog()
+{
+    if (auto* dialog = std::exchange(m_native.dialog, nullptr)) {
+        webkit_script_dialog_close(dialog);
+        webkit_script_dialog_unref(dialog);
+    }
 }
 
 bool PageTarget::runFileChooser(GObject* request)
@@ -366,78 +202,7 @@ void PageTarget::close(bool force)
     });
 }
 
-void PageTarget::pageClose(Session&, JSON::Object&, Reply&& reply)
-{
-    replyOK(reply);
-    close();
-}
-
 // MARK: Navigation
-
-void PageTarget::finishNavigation(const String& loaderID, const String& errorText)
-{
-    if (!m_pendingNavigation)
-        return;
-    auto reply = std::exchange(m_pendingNavigation, nullptr);
-    auto result = JSON::Object::create();
-    result->setString("frameId"_s, m_targetID);
-    if (!loaderID.isEmpty())
-        result->setString("loaderId"_s, loaderID);
-    if (!errorText.isNull())
-        result->setString("errorText"_s, errorText);
-    reply(WTF::move(result), { });
-}
-
-void PageTarget::pageNavigate(Session&, JSON::Object& params, Reply&& reply)
-{
-    auto url = params.getString("url"_s);
-    if (auto frameID = params.getString("frameId"_s); !frameID.isEmpty() && frameID != m_targetID) {
-        replyError(reply, "Only the main frame can be navigated"_s);
-        return;
-    }
-    // What cannot be an address is refused, as in Chrome, and not loaded.
-    if (url.isEmpty() || !URL { url }.isValid()) {
-        replyError(reply, "Cannot navigate to invalid URL"_s);
-        return;
-    }
-    finishNavigation({ }, "net::ERR_ABORTED"_s);
-    pendingInitialURL = String();
-    m_pendingErrorText = String();
-    ++m_navigationGeneration;
-
-    auto withoutFragment = [](const String& address) {
-        auto hash = address.find('#');
-        return hash == notFound ? address : address.left(hash);
-    };
-    auto current = str(webkit_web_view_get_uri(m_view));
-    bool sameDocument = url.contains('#') && !current.isEmpty() && withoutFragment(url) == withoutFragment(current);
-    if (sameDocument || url.startsWith("javascript:"_s)) {
-        // Neither commits a new document, so there is nothing to wait for.
-        webkit_web_view_load_uri(m_view, url.utf8().data());
-        auto result = JSON::Object::create();
-        result->setString("frameId"_s, m_targetID);
-        reply(WTF::move(result), { });
-        if (sameDocument)
-            navigatedWithinDocument(url);
-        return;
-    }
-
-    // Answered when the document commits (handleInnerEvent) or the load
-    // fails (loadFailed), as Chrome does.
-    m_pendingNavigation = WTF::move(reply);
-    webkit_web_view_load_uri(m_view, url.utf8().data());
-}
-
-void PageTarget::pageStopLoading(Session&, JSON::Object&, Reply&& reply)
-{
-    webkit_web_view_stop_loading(m_view);
-    // WebKit reports this like a load a newer one replaced, which is not
-    // passed on; the navigation the client is waiting for is over all the same.
-    ++m_navigationGeneration;
-    m_pendingErrorText = String();
-    finishNavigation({ }, "net::ERR_ABORTED"_s);
-    replyOK(reply);
-}
 
 void PageTarget::pageGetNavigationHistory(Session&, JSON::Object&, Reply&& reply)
 {
@@ -546,22 +311,6 @@ void PageTarget::emulationClearDeviceMetricsOverride(Session&, JSON::Object&, Re
         replyOK(reply);
 }
 
-void PageTarget::waitForViewportWidth(int width, unsigned attemptsLeft, Reply&& reply)
-{
-    evaluateValue("innerWidth"_s, [this, weakThis = WeakPtr { *this }, width, attemptsLeft, reply = WTF::move(reply)](RefPtr<JSON::Value>&& value) mutable {
-        if (!weakThis || !attemptsLeft || (value && value->asInteger().value_or(0) == width)) {
-            replyOK(reply);
-            return;
-        }
-        runAfter(25, [this, weakThis, width, attemptsLeft, reply = WTF::move(reply)]() mutable {
-            if (weakThis)
-                waitForViewportWidth(width, attemptsLeft - 1, WTF::move(reply));
-            else
-                replyOK(reply);
-        });
-    });
-}
-
 // MARK: Input
 
 // CDP: Alt 1, Ctrl 2, Meta 4, Shift 8.
@@ -582,45 +331,6 @@ static WPEModifiers modifiersFromCDP(int modifiers)
 static guint32 eventTime()
 {
     return static_cast<guint32>(g_get_monotonic_time() / 1000);
-}
-
-// Events are handed to the page's process one at a time, the next when the
-// previous one has been handled. A command is answered when nothing is left
-// in that queue, so that script the client runs next sees its effect.
-//
-// The answers go out in the order the commands came in. Clients send a
-// press and its release without waiting in between and keep track of which
-// buttons are down from the order of the answers.
-void PageTarget::whenInputProcessed(Reply&& reply)
-{
-    m_inputReplies.append(WTF::move(reply));
-    if (!std::exchange(m_inputPollActive, true))
-        pollInput(1500);
-}
-
-void PageTarget::pollInput(unsigned attemptsLeft)
-{
-    if (!m_view) {
-        m_inputPollActive = false;
-        for (auto& reply : std::exchange(m_inputReplies, { }))
-            replyError(reply, "Target closed"_s);
-        return;
-    }
-    auto& page = webkitWebViewGetPage(m_view);
-    bool busy = page.isProcessingMouseEvents() || page.isProcessingKeyboardEvents() || page.isProcessingWheelEvents();
-    if (!busy || !attemptsLeft) {
-        // What the events set off in the page (a click handler, a focus
-        // change) has run by the time the page answers anything else.
-        m_inputPollActive = false;
-        afterPageCatchesUp([replies = std::exchange(m_inputReplies, { })]() mutable {
-            for (auto& reply : replies)
-                replyOK(reply);
-        });
-        return;
-    }
-    runAfter(2, [this, protectedThis = Ref { *this }, attemptsLeft] {
-        pollInput(attemptsLeft - 1);
-    });
 }
 
 void PageTarget::inputDispatchMouseEvent(Session&, JSON::Object& params, Reply&& reply)
@@ -685,17 +395,6 @@ static unsigned keyvalForName(const String& key)
             return entry.second;
     }
     return 0;
-}
-
-static char32_t singleCodePoint(const String& text)
-{
-    if (text.isEmpty())
-        return 0;
-    char32_t first = text[0];
-    if (U16_IS_LEAD(first) && text.length() > 1 && U16_IS_TRAIL(text[1]))
-        first = U16_GET_SUPPLEMENTARY(first, text[1]);
-    unsigned length = first > 0xffff ? 2 : 1;
-    return text.length() == length ? first : 0;
 }
 
 void PageTarget::inputInsertText(Session&, JSON::Object& params, Reply&& reply)
@@ -779,6 +478,16 @@ String viewURI(PlatformView view)
 void loadURI(PlatformView view, const String& url)
 {
     webkit_web_view_load_uri(view, url.utf8().data());
+}
+
+void stopLoading(PlatformView view)
+{
+    webkit_web_view_stop_loading(view);
+}
+
+void terminateWebProcess(PlatformView view)
+{
+    webkit_web_view_terminate_web_process(view);
 }
 
 void reloadView(PlatformView view, bool bypassCache)
@@ -875,7 +584,6 @@ void PageTarget::setPageCacheSuspended(bool suspended)
         webkit_settings_set_enable_page_cache(WEBKIT_SETTINGS(settings.get()), TRUE);
     g_object_set_qdata(settings.get(), quark, GSIZE_TO_POINTER(count ? (count << 1 | wasEnabled) : 0));
 }
-
 
 // MARK: Cookies
 
@@ -984,7 +692,6 @@ void deleteCookie(const PlatformNetworkSession& session, const PlatformCookie& c
         (*completion)();
     }, holder);
 }
-
 
 bool cookieAppliesToURL(const PlatformCookie& cookie, const String& url)
 {

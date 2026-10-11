@@ -49,9 +49,12 @@ const steps = [
   ['typing', async () => {
     await page.type('#name', 'Hello, Wörld 你好');
     assert.strictEqual(await page.$eval('#name', element => element.value), 'Hello, Wörld 你好');
-    await page.keyboard.down('Control');
-    await page.keyboard.press('a');
-    await page.keyboard.up('Control');
+    // On macOS, Select All is on Command, and what a key does to the text
+    // is not the browser's to know: Puppeteer has the test say it.
+    const onMac = process.platform === 'darwin';
+    await page.keyboard.down(onMac ? 'Meta' : 'Control');
+    await page.keyboard.press('a', onMac ? { commands: ['SelectAll'] } : {});
+    await page.keyboard.up(onMac ? 'Meta' : 'Control');
     await page.keyboard.press('Backspace');
     assert.strictEqual(await page.$eval('#name', element => element.value), '');
     await page.focus('#area');

@@ -1,0 +1,285 @@
+zebkit: build the Chrome DevTools Protocol endpoint into WebKit.framework
+
+The macOS counterpart of 2005. The endpoint's sources are zebkit's own and
+live in src/cdp, outside this tree; scripts/fetch-upstream.sh links them in
+as Source/WebKit/zebkit, and they are named in SourcesCocoa.txt like any
+other source of the framework.
+
+The rest is where WebKit has to tell the endpoint something. A WKWebView
+reports to the delegates its application gave it, and has one of each, so
+the endpoint cannot be a delegate. It is told from the places the delegates
+are called from instead:
+
+- WKWebView: a view was set up, a view is going. Each is a page a CDP
+  client can drive.
+- NavigationState: the main frame's loads (started, committed, finished,
+  failed), the end of the page's process, and authentication challenges,
+  which is how a certificate error arrives and where a client's request to
+  ignore them is granted.
+- UIDelegate: script dialogs and beforeunload, which a client answers when
+  one is attached to the page; file choosers a client has announced files
+  for; a page closing itself; and a page opening a window, for which the
+  endpoint makes a view when the application makes none.
+
+An application's delegates are asked as before in every case the endpoint
+does not take, and it takes none while no client is attached.
+
+--- a/Source/WebKit/SourcesCocoa.txt
++++ b/Source/WebKit/SourcesCocoa.txt
+@@ -941,6 +941,16 @@ LibWebRTCCodecsProxyMessageReceiver.cpp
+ LibWebRTCNetworkMessageReceiver.cpp
+ LogStreamMessageReceiver.cpp
+ Shared/LogStream.mm @no-unify-when(bundle<=8)
++
++// zebkit: the CDP endpoint (src/cdp in zebkit's repository).
++zebkit/cdp/CDPDomains.cpp
++zebkit/cdp/CDPImageCocoa.mm @nonARC
++zebkit/cdp/CDPPage.cpp
++zebkit/cdp/CDPServer.cpp
++zebkit/cdp/CDPTransportCocoa.mm @nonARC
++zebkit/cdp/CDPView.cpp
++zebkit/cdp/CDPViewCocoa.mm @nonARC
++zebkit/cdp/CDPWebSocket.cpp
+ ModelConnectionToWebProcessMessageReceiver.cpp
+ MediaPlayerPrivateRemoteMessageReceiver.cpp @cost:5
+ ModelProcessConnectionMessageReceiver.cpp
+--- a/Source/WebKit/UIProcess/API/Cocoa/WKWebView.mm
++++ b/Source/WebKit/UIProcess/API/Cocoa/WKWebView.mm
+@@ -270,6 +270,7 @@
+ #import "AppKitSPI.h"
+ #import "WKTextFinderClient.h"
+ #import "WKViewInternal.h"
++#import "zebkit/cdp/CDP.h"
+ #import <WebCore/ColorMac.h>
+ #import <pal/spi/mac/NSViewSPI.h>
+ #endif
+@@ -741,6 +742,9 @@ static void addBrowsingContextControllerMethodStubsIfNeeded()
+ #if HAVE(APPKIT_GESTURES_SUPPORT)
+     _impl->addTextSelectionManager();
+ #endif
++
++    // zebkit: every view is a page a CDP client can drive.
++    Zebkit::CDP::webViewCreated(self);
+ }
+ 
+ - (void)_setupPageConfiguration:(Ref<API::PageConfiguration>&)pageConfiguration withPool:(WebKit::WebProcessPool&)pool
+@@ -951,6 +955,8 @@ static void addBrowsingContextControllerMethodStubsIfNeeded()
+     if (WebCoreObjCScheduleDeallocateOnMainRunLoop(WKWebView.class, self))
+         return;
+ 
++    Zebkit::CDP::webViewDestroyed(self);
++
+ #if ENABLE(SCREEN_TIME)
+     [self _uninstallScreenTimeWebpageController];
+ #endif
+--- a/Source/WebKit/UIProcess/Cocoa/NavigationState.mm
++++ b/Source/WebKit/UIProcess/Cocoa/NavigationState.mm
+@@ -26,6 +26,8 @@
+ #import "config.h"
+ #import "NavigationState.h"
+ 
++#import "zebkit/cdp/CDP.h"
++
+ #import "APIContentRuleListAction.h"
+ #import "APIFrameInfo.h"
+ #import "APINavigationData.h"
+@@ -853,8 +855,10 @@ void NavigationState::NavigationClient::decidePolicyForNavigationResponse(WebPag
+     }).get()];
+ }
+ 
+-void NavigationState::NavigationClient::didStartProvisionalNavigation(WebPageProxy&, const WebCore::ResourceRequest& request, API::Navigation* navigation, API::Object* userInfo)
++void NavigationState::NavigationClient::didStartProvisionalNavigation(WebPageProxy& page, const WebCore::ResourceRequest& request, API::Navigation* navigation, API::Object* userInfo)
+ {
++    Zebkit::CDP::loadStarted(page);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return;
+@@ -968,6 +972,8 @@ static RetainPtr<NSError> createErrorWithRecoveryAttempter(WKWebView *webView, c
+ 
+ void NavigationState::NavigationClient::didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&& frameInfo, API::Navigation* navigation, const URL& url, const WebCore::ResourceError& error, API::Object*)
+ {
++    Zebkit::CDP::loadFailed(page, error);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return;
+@@ -1006,6 +1012,8 @@ void NavigationState::NavigationClient::didFailProvisionalLoadWithErrorForFrame(
+ 
+ void NavigationState::NavigationClient::didCommitNavigation(WebPageProxy& page, API::Navigation* navigation, API::Object*)
+ {
++    Zebkit::CDP::loadCommitted(page);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return;
+@@ -1051,8 +1059,10 @@ void NavigationState::NavigationClient::didFinishDocumentLoad(WebPageProxy& page
+     [static_cast<id<WKNavigationDelegatePrivate>>(navigationDelegate) _webView:navigationState->webView().get() navigationDidFinishDocumentLoad:protect(wrapper(navigation)).get()];
+ }
+ 
+-void NavigationState::NavigationClient::didFinishNavigation(WebPageProxy&, API::Navigation* navigation, API::Object*)
++void NavigationState::NavigationClient::didFinishNavigation(WebPageProxy& page, API::Navigation* navigation, API::Object*)
+ {
++    Zebkit::CDP::loadFinished(page);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return;
+@@ -1124,6 +1134,8 @@ void NavigationState::NavigationClient::didPromptForStorageAccess(WebPageProxy&,
+ 
+ void NavigationState::NavigationClient::didFailNavigationWithError(WebPageProxy& page, const FrameInfoData& frameInfo, API::Navigation* navigation, const URL& url, const WebCore::ResourceError& error, API::Object* userInfo)
+ {
++    Zebkit::CDP::loadFailed(page, error);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!m_navigationState)
+         return;
+@@ -1198,8 +1210,11 @@ bool NavigationState::NavigationClient::shouldBypassContentModeSafeguards() cons
+         || m_navigationState->m_navigationDelegateMethods.webViewDecidePolicyForNavigationActionWithPreferencesUserInfoDecisionHandler;
+ }
+ 
+-void NavigationState::NavigationClient::didReceiveAuthenticationChallenge(WebPageProxy&, AuthenticationChallengeProxy& authenticationChallenge)
++void NavigationState::NavigationClient::didReceiveAuthenticationChallenge(WebPageProxy& page, AuthenticationChallengeProxy& authenticationChallenge)
+ {
++    if (Zebkit::CDP::answerChallenge(page, authenticationChallenge))
++        return;
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return authenticationChallenge.listener().completeChallenge(WebKit::AuthenticationChallengeDisposition::RejectProtectionSpaceAndContinue);
+@@ -1304,6 +1319,8 @@ bool NavigationState::NavigationClient::processDidTerminate(WebPageProxy& page,
+     if (reason == ProcessTerminationReason::NonMainFrameWebContentProcessCrash)
+         return true;
+ 
++    Zebkit::CDP::processTerminated(page);
++
+     RefPtr navigationState = m_navigationState.get();
+     if (!navigationState)
+         return false;
+--- a/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm
++++ b/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm
+@@ -26,6 +26,8 @@
+ #import "config.h"
+ #import "UIDelegate.h"
+ 
++#import "zebkit/cdp/CDP.h"
++
+ #import "APIArray.h"
+ #import "APIContextMenuElementInfoMac.h"
+ #import "APIFrameInfo.h"
+@@ -347,8 +349,15 @@ void UIDelegate::UIClient::mouseDidMoveOverElement(WebPageProxy& page, const Web
+ }
+ #endif
+ 
+-void UIDelegate::UIClient::createNewPage(WebKit::WebPageProxy&, Ref<API::PageConfiguration>&& configuration, Ref<API::NavigationAction>&& navigationAction, CompletionHandler<void(RefPtr<WebPageProxy>&&)>&& completionHandler)
++void UIDelegate::UIClient::createNewPage(WebKit::WebPageProxy& page, Ref<API::PageConfiguration>&& configuration, Ref<API::NavigationAction>&& navigationAction, CompletionHandler<void(RefPtr<WebPageProxy>&&)>&& completionHandler)
+ {
++    // zebkit: where the application makes no view, the CDP endpoint may.
++    completionHandler = [page = Ref { page }, configuration = configuration.copyRef(), completionHandler = WTF::move(completionHandler)](RefPtr<WebPageProxy>&& newPage) mutable {
++        if (!newPage)
++            newPage = Zebkit::CDP::createPage(page, configuration);
++        completionHandler(WTF::move(newPage));
++    };
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return completionHandler(nullptr);
+@@ -420,6 +429,13 @@ void UIDelegate::UIClient::createNewPage(WebKit::WebPageProxy&, Ref<API::PageCon
+ 
+ void UIDelegate::UIClient::runJavaScriptAlert(WebPageProxy& page, const WTF::String& message, WebFrameProxy*, FrameInfoData&& frameInfo, Function<void()>&& completionHandler)
+ {
++    if (Zebkit::CDP::takesDialogs(page)) {
++        Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Alert, message, { }, [completionHandler = WTF::move(completionHandler)](bool, const String&) mutable {
++            completionHandler();
++        });
++        return;
++    }
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return completionHandler();
+@@ -448,6 +464,13 @@ void UIDelegate::UIClient::runJavaScriptAlert(WebPageProxy& page, const WTF::Str
+ 
+ void UIDelegate::UIClient::runJavaScriptConfirm(WebPageProxy& page, const WTF::String& message, WebFrameProxy* webFrameProxy, FrameInfoData&& frameInfo, Function<void(bool)>&& completionHandler)
+ {
++    if (Zebkit::CDP::takesDialogs(page)) {
++        Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Confirm, message, { }, [completionHandler = WTF::move(completionHandler)](bool accept, const String&) mutable {
++            completionHandler(accept);
++        });
++        return;
++    }
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return completionHandler(false);
+@@ -476,6 +499,14 @@ void UIDelegate::UIClient::runJavaScriptConfirm(WebPageProxy& page, const WTF::S
+ 
+ void UIDelegate::UIClient::runJavaScriptPrompt(WebPageProxy& page, const WTF::String& message, const WTF::String& defaultValue, WebFrameProxy*, FrameInfoData&& frameInfo, Function<void(const WTF::String&)>&& completionHandler)
+ {
++    if (Zebkit::CDP::takesDialogs(page)) {
++        Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Prompt, message, defaultValue, [completionHandler = WTF::move(completionHandler)](bool accept, const String& text) mutable {
++            // A null string is a prompt that was cancelled.
++            completionHandler(!accept ? String() : text.isNull() ? emptyString() : text);
++        });
++        return;
++    }
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return completionHandler({ });
+@@ -642,20 +673,25 @@ void UIDelegate::UIClient::didResignInputElementStrongPasswordAppearance(WebPage
+ bool UIDelegate::UIClient::canRunBeforeUnloadConfirmPanel() const
+ {
+     auto* uiDelegate = m_uiDelegate.get();
+-    return uiDelegate && uiDelegate->m_delegateMethods.webViewRunBeforeUnloadConfirmPanelWithMessageInitiatedByFrameCompletionHandler;
++    return (uiDelegate && uiDelegate->m_delegateMethods.webViewRunBeforeUnloadConfirmPanelWithMessageInitiatedByFrameCompletionHandler) || Zebkit::CDP::anyPageTakesDialogs();
+ }
+ 
+ void UIDelegate::UIClient::runBeforeUnloadConfirmPanel(WebPageProxy& page, WTF::String&& message, WebFrameProxy*, FrameInfoData&& frameInfo, Function<void(bool)>&& completionHandler)
+ {
+-    RefPtr uiDelegate = m_uiDelegate.get();
+-    if (!uiDelegate)
+-        return completionHandler(false);
+-
+-    if (!uiDelegate->m_delegateMethods.webViewRunBeforeUnloadConfirmPanelWithMessageInitiatedByFrameCompletionHandler) {
+-        completionHandler(false);
++    if (Zebkit::CDP::takesDialogs(page)) {
++        Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::BeforeUnload, message, { }, [completionHandler = WTF::move(completionHandler)](bool accept, const String&) mutable {
++            completionHandler(accept);
++        });
+         return;
+     }
+ 
++    // zebkit: with no delegate to ask, this is reached only because a CDP
++    // client answers the dialogs of some other page. The page may be left,
++    // as when nobody can be asked.
++    RefPtr uiDelegate = m_uiDelegate.get();
++    if (!uiDelegate || !uiDelegate->m_delegateMethods.webViewRunBeforeUnloadConfirmPanelWithMessageInitiatedByFrameCompletionHandler)
++        return completionHandler(true);
++
+     RetainPtr delegate = uiDelegatePrivate();
+     if (!delegate) {
+         completionHandler(false);
+@@ -881,6 +917,9 @@ bool UIDelegate::UIClient::focusFromServiceWorker(WebKit::WebPageProxy& proxy)
+ 
+ bool UIDelegate::UIClient::runOpenPanel(WebPageProxy& page, WebFrameProxy* webFrameProxy, FrameInfoData&& frameInfo, API::OpenPanelParameters* openPanelParameters, WebOpenPanelResultListenerProxy* listener)
+ {
++    if (listener && Zebkit::CDP::chooseFiles(page, *listener))
++        return true;
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return false;
+@@ -1503,8 +1542,11 @@ void UIDelegate::UIClient::printFrame(WebPageProxy&, WebFrameProxy& webFrameProx
+     completionHandler();
+ }
+ 
+-void UIDelegate::UIClient::close(WebPageProxy*)
++void UIDelegate::UIClient::close(WebPageProxy* page)
+ {
++    if (page && Zebkit::CDP::pageClosed(*page))
++        return;
++
+     RefPtr uiDelegate = m_uiDelegate.get();
+     if (!uiDelegate)
+         return;

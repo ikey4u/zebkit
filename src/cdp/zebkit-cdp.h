@@ -2,10 +2,53 @@
  * Public C interface of the zebkit CDP endpoint, for applications that embed
  * the engine. Nothing here is needed when the endpoint is started with the
  * ZEBKIT_CDP_PORT environment variable.
+ *
+ * The interface is the same on every platform but for the types that are
+ * the platform's: the view (WebKitWebView on Linux, WKWebView on macOS),
+ * and how an error is reported.
  */
 
 #ifndef ZEBKIT_CDP_H
 #define ZEBKIT_CDP_H
+
+#ifdef __APPLE__
+
+#include <stdbool.h>
+
+#ifdef __OBJC__
+@class WKWebView;
+@class WKWebViewConfiguration;
+#else
+typedef struct objc_object WKWebView;
+typedef struct objc_object WKWebViewConfiguration;
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * As below, with these differences. @error receives a message to free()
+ * and may be NULL. A view the application creates for the endpoint must be
+ * created with the configuration it is handed, which carries the page's
+ * opener or the browser context it belongs to.
+ */
+unsigned zebkit_cdp_listen(const char *address, unsigned port, char **error);
+unsigned zebkit_cdp_get_port(void);
+void zebkit_cdp_stop(void);
+void zebkit_cdp_set_discovery_enabled(bool enabled);
+/* Free with free(). */
+char *zebkit_cdp_get_url(void);
+
+typedef WKWebView *(*ZebkitCDPCreateViewFunc)(WKWebView *related, WKWebViewConfiguration *configuration, void *user_data);
+
+void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc func, void *user_data);
+
+#ifdef __cplusplus
+}
+#endif
+
+#else /* !__APPLE__ */
 
 #include <glib.h>
 
@@ -62,5 +105,7 @@ typedef WebKitWebView *(*ZebkitCDPCreateViewFunc)(WebKitWebView *related, gpoint
 void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc func, gpointer user_data);
 
 G_END_DECLS
+
+#endif /* !__APPLE__ */
 
 #endif

@@ -8,8 +8,10 @@
 //
 // Per platform: the web view API, the network listener, input, windows,
 // cookies, dialogs. On Linux that is WebKit's GLib API, libsoup and WPE,
-// in CDPViewGLib.cpp and CDPTransportGLib.cpp. A port to another platform
-// writes its own versions of those two files, and adds its types below.
+// in CDPViewGLib.cpp and CDPTransportGLib.cpp. On macOS it is WKWebView,
+// AppKit and BSD sockets, in CDPViewCocoa.mm and CDPTransportCocoa.mm. A
+// port to another platform writes its own versions of those two files, and
+// adds its types below.
 //
 // What a platform supplies, all of it:
 //
@@ -48,6 +50,15 @@
 typedef struct _WebKitWebView WebKitWebView;
 typedef struct _WebKitNetworkSession WebKitNetworkSession;
 typedef struct _WebKitScriptDialog WebKitScriptDialog;
+#elif PLATFORM(COCOA)
+#include "WebPreferences.h"
+#include "WebsiteDataStore.h"
+#include <WebCore/Cookie.h>
+#include <wtf/RetainPtr.h>
+
+OBJC_CLASS NSObject;
+OBJC_CLASS WKWebView;
+OBJC_CLASS WKWebViewConfiguration;
 #else
 #error "The CDP endpoint has no platform layer for this platform yet (see CDPPlatform.h)"
 #endif
@@ -71,6 +82,27 @@ struct PlatformPageState {
     WebKitScriptDialog* dialog { nullptr };
     std::optional<int> originalTLSPolicy;
 };
+// After a failed load the engine shows a page of its own that says so.
+static constexpr bool engineShowsErrorPages = true;
+#elif PLATFORM(COCOA)
+// A view, by identity, and not retained: the view says when it goes.
+using PlatformView = WKWebView *;
+using PlatformNetworkSession = RefPtr<WebKit::WebsiteDataStore>;
+using PlatformCookie = std::unique_ptr<WebCore::Cookie>;
+struct PlatformPageState {
+    // Watches the view's title and address.
+    RetainPtr<NSObject> observer;
+    // Answers the dialog the page is waiting in. Null when none is open.
+    Function<void(bool accept, const String& promptText)> dialog;
+    bool ignoresCertificateErrors { false };
+    // A client set the device scale factor; what it was, 0 for the screen's.
+    bool overridesScale { false };
+    float originalScale { 0 };
+    // Set while the back/forward cache is off for this page's sake.
+    RefPtr<WebKit::WebPreferences> pageCachePreferences;
+};
+// A failed load leaves the view as it was; an application shows what it likes.
+static constexpr bool engineShowsErrorPages = false;
 #endif
 
 using CookieList = Vector<PlatformCookie>;
@@ -82,6 +114,9 @@ String viewTitle(PlatformView);
 String viewURI(PlatformView);
 void loadURI(PlatformView, const String&);
 void reloadView(PlatformView, bool bypassCache);
+void stopLoading(PlatformView);
+// Kills the process the page runs in, as a crash would.
+void terminateWebProcess(PlatformView);
 // In CSS pixels; 0x0 when the view has no surface.
 std::pair<int, int> viewSize(PlatformView);
 // The engine's version, as in "2.54.1".

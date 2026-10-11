@@ -33,7 +33,7 @@ static String originOf(const String& url)
     return makeString(parsed.protocol(), "://"_s, parsed.host());
 }
 
-PageTarget::PageTarget(WebKitWebView* view)
+PageTarget::PageTarget(PlatformView view)
     : m_view(view)
     , m_targetID(randomID())
 {
@@ -210,7 +210,7 @@ void PageTarget::sendToInner(const String& innerTargetID, int id, const String& 
     outerParams->setString("targetId"_s, innerTargetID);
     outerParams->setString("message"_s, inner->toJSONString());
     if (logLevel() > 1)
-        logMessage(makeString("    wip "_s, m_targetID.left(4), " >"_s).utf8().data(), inner->toJSONString());
+        logMessage(makeString("    wip "_s, m_targetID.left(4), " >"_s), inner->toJSONString());
     auto outer = JSON::Object::create();
     outer->setInteger("id"_s, id);
     outer->setString("method"_s, "Target.sendMessageToTarget"_s);
@@ -411,7 +411,7 @@ void PageTarget::sendMessageToFrontend(const String& text)
 
     auto method = message->getString("method"_s);
     if (logLevel() > 1 && method != "Target.dispatchMessageFromTarget"_s && !(method.isNull() && !message->getObject("error"_s)))
-        logMessage(makeString("    wip "_s, m_targetID.left(4), " <"_s).utf8().data(), text);
+        logMessage(makeString("    wip "_s, m_targetID.left(4), " <"_s), text);
     if (method.isNull()) {
         // The reply to a wrapper. Only a failure to relay is of interest.
         RefPtr error = message->getObject("error"_s);
@@ -473,7 +473,7 @@ void PageTarget::sendMessageToFrontend(const String& text)
 void PageTarget::handleInnerMessage(const String& innerTargetID, const String& text)
 {
     if (logLevel() > 1)
-        logMessage(makeString("    wip "_s, m_targetID.left(4), " <"_s).utf8().data(), text);
+        logMessage(makeString("    wip "_s, m_targetID.left(4), " <"_s), text);
     RefPtr value = JSON::Value::parseJSON(text);
     RefPtr message = value ? value->asObject() : nullptr;
     if (!message)
@@ -854,7 +854,7 @@ static ASCIILiteral netErrorName(const String& text, bool canceled)
     };
     if (canceled || has("cancel"_s))
         return "net::ERR_ABORTED"_s;
-    if (has("refused"_s))
+    if (has("refused"_s) || has("could not connect"_s))
         return "net::ERR_CONNECTION_REFUSED"_s;
     if (has("resolv"_s) || has("name or service not known"_s) || has("hostname"_s))
         return "net::ERR_NAME_NOT_RESOLVED"_s;
@@ -864,9 +864,9 @@ static ASCIILiteral netErrorName(const String& text, bool canceled)
         return "net::ERR_ADDRESS_UNREACHABLE"_s;
     if (has("certificate"_s))
         return "net::ERR_CERT_AUTHORITY_INVALID"_s;
-    if (has("TLS"_s) || has("handshake"_s))
+    if (has("TLS"_s) || has("SSL"_s) || has("handshake"_s))
         return "net::ERR_SSL_PROTOCOL_ERROR"_s;
-    if (has("reset"_s) || has("closed"_s) || has("terminated"_s))
+    if (has("reset"_s) || has("closed"_s) || has("terminated"_s) || has("connection was lost"_s))
         return "net::ERR_CONNECTION_CLOSED"_s;
     return "net::ERR_FAILED"_s;
 }
@@ -932,13 +932,6 @@ void PageTarget::handleRequestWillBeSent(JSON::Object& params)
         event->setBoolean("hasUserGesture"_s, false);
         session.event("Network.requestWillBeSent"_s, WTF::move(event));
     });
-}
-
-static int contextOfObject(const String& objectID)
-{
-    RefPtr value = JSON::Value::parseJSON(objectID);
-    RefPtr object = value ? value->asObject() : nullptr;
-    return object ? object->getInteger("injectedScriptId"_s).value_or(0) : 0;
 }
 
 void PageTarget::handleConsoleMessage(JSON::Object& message)

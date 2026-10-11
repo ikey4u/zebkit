@@ -1,0 +1,8 @@
+# The series for macOS, applied in order by scripts/fetch-upstream.sh to
+# WebKit's git tree. See README.md in this directory. Patches that are for
+# the GLib ports are in "series" only.
+0007-mac-transcode-chosen-files-data-store.patch
+0008-mac-refresh-control-needs-private-appkit.patch
+1001-typed-array-sort-out-of-line.patch
+2006-inspector-user-worlds.patch
+2009-cdp-endpoint-cocoa.patch

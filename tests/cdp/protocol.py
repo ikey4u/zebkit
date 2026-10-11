@@ -413,8 +413,10 @@ def screenshot_and_metrics():
         equal((int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")), (200, 50), "clipped screenshot size")
         data = base64.b64decode(page.cdp.call("Page.captureScreenshot", {"format": "jpeg", "quality": 70})["data"])
         expect(data.startswith(b"\xff\xd8\xff"), "not a JPEG")
-        data = base64.b64decode(page.cdp.call("Page.captureScreenshot", {"format": "webp"})["data"])
-        expect(data[:4] == b"RIFF" and data[8:12] == b"WEBP", "not a WebP")
+        # macOS has no encoder for WebP, and the engine there contains none.
+        if sys.platform != "darwin":
+            data = base64.b64decode(page.cdp.call("Page.captureScreenshot", {"format": "webp"})["data"])
+            expect(data[:4] == b"RIFF" and data[8:12] == b"WEBP", "not a WebP")
         metrics = page.cdp.call("Page.getLayoutMetrics")
         equal(metrics["cssVisualViewport"]["clientWidth"], page.evaluate("document.documentElement.clientWidth"), "visual viewport width")
         expect(metrics["cssContentSize"]["height"] >= 3040, metrics["cssContentSize"])
