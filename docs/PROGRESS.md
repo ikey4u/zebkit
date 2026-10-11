@@ -20,7 +20,7 @@ Requirements, set by the project owner:
   required. Those two put it at 80.3 MiB; see "Size" for what that buys and
   what could come back.
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 ## Current state
 
@@ -36,7 +36,8 @@ Last updated: 2026-10-10
 | Relocatable | Yes: copied elsewhere, it loads an HTTPS page with nothing from the build tree |
 | System requirements | **glibc only.** Wayland, X11, GPU buffer and sound libraries are used when present |
 | Display | Chosen at run time: Wayland, then X11, then offscreen; all three tested |
-| Windows, macOS, embedding API, CI | Not started |
+| macOS | In progress (`docs/MACOS.md`): WebKit's Mac port builds from the same release with five patches, the smoke test passes, and the CDP endpoint passes the raw checks, Puppeteer and Playwright there. Not slimmed, packaged or released |
+| Windows, embedding API, CI | Not started |
 
 ## Size
 
@@ -444,10 +445,9 @@ is the development build and can be rebuilt in about 20 minutes.
     from inside their own process.
 11. **Verify on old distributions** in containers or VMs.
 12. **Resolve the open questions.**
-13. **macOS port.** Planned in `docs/MACOS.md`: WebKit's own Mac port,
-    built from the same revision. Prepared on Linux so far: the CDP
-    endpoint is split into portable code and a platform layer. The rest
-    needs a Mac.
+13. **macOS port.** `docs/MACOS.md`: WebKit's own Mac port, built from the
+    same revision. It builds, and the CDP endpoint works there. Left:
+    slimming, media test, packaging, the Rust crates, signing.
 14. **Windows port.**
 15. **Embedding API** that hides GLib (the CDP calls in
     `src/cdp/zebkit-cdp.h` are its first piece).

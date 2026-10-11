@@ -133,13 +133,15 @@ CDP client ── WebSocket ──> src/cdp (UI process)
 
 | File | What is in it |
 |---|---|
-| `CDPPlatform.h` | The line between portable code and what a platform supplies: the first three files below are portable, the two named `GLib` are the Linux layer (`docs/MACOS.md`) |
+| `CDPPlatform.h` | The line between portable code and what a platform supplies. The files named `GLib` are the Linux layer, those named `Cocoa` the macOS one; the rest is portable |
 | `CDPServer.cpp` | HTTP discovery, sockets, sessions, and the `Target`, `Browser` and `Storage` domains |
 | `CDPPage.cpp` | One page: the inspector connection, and the page's events translated to CDP |
 | `CDPDomains.cpp` | `Page`, `Runtime`, `DOM`, `Network`, `Emulation` commands |
-| `CDPViewGLib.cpp` | Linux: navigation, mouse and keyboard, window size, dialogs, file choosers, cookies, creating views |
-| `CDPTransportGLib.cpp` | Linux: the listening socket, HTTP requests and WebSockets (libsoup), and the C API |
-| `CDPImage.cpp` | JPEG and WebP screenshots |
+| `CDPView.cpp` | What goes through the view, as far as it is the same everywhere: the bookkeeping of a navigation, dialogs, the order of input answers |
+| `CDPViewGLib.cpp`, `CDPViewCocoa.mm` | The view itself: navigation, mouse and keyboard, window size, dialogs, file choosers, cookies, creating views |
+| `CDPTransportGLib.cpp`, `CDPTransportCocoa.mm` | The listening socket and the C API. On Linux, HTTP and WebSockets are libsoup's |
+| `CDPWebSocket.cpp` | HTTP requests and WebSockets over a plain connection, for macOS, where no system library serves both on one port |
+| `CDPImage.cpp`, `CDPImageCocoa.mm` | JPEG and WebP screenshots (Skia); on macOS JPEG only (ImageIO) |
 | `CDPProtocol.inc` | Generated: the implemented commands and their parameters, from the standard definition |
 
 Things worth knowing when something behaves unexpectedly:
@@ -273,6 +275,20 @@ whole list is in `CDPDomains.cpp` (`acknowledged`) and `CDPServer.cpp`.
 | Permissions (`Browser.grantPermissions`) | Acknowledged, not applied; permission requests go to the application. |
 | `fromSurface`, `scale` in clips | Screenshots are software-rendered snapshots of the page at CSS pixel size, at most 16384 pixels on a side (Chrome's limit too); a taller page is cut off there. |
 | Old-style sessions (`Target.sendMessageToTarget`) | Only flat sessions, which is what current clients use. |
+
+### macOS
+
+The same endpoint, checked with the same tests. What differs:
+
+| | On macOS |
+|---|---|
+| WebP screenshots | Not available: the system has no encoder for WebP and the engine there contains none. PNG and JPEG work |
+| `deviceScaleFactor` | Applied (a Mac's screen has two pixels to one of the page's, and a screenshot is otherwise twice the size asked for). On Linux it is ignored and always 1 |
+| What a key does to the text | The system decides it from the user's key bindings and the application's menu, which a synthesized key does not reach: Command+A typed by a client selects nothing, in Chrome as here. Clients say what the key does with `commands` on `Input.dispatchKeyEvent` (Playwright by itself, Puppeteer when the caller passes them), and the page gets the key with those commands |
+| Error names | Taken from the system's description of a failure, which is in the user's language. Only English ones are recognised; others come out as `net::ERR_FAILED` |
+| Views the endpoint creates | A window that is on no screen. The page behaves as in a visible, focused window. An application that wants to show them supplies its own (`zebkit_cdp_set_create_view_func`), and creates each view with the configuration it is handed |
+| Failed loads | The view shows no error page; it stays as it was |
+| C API | `zebkit-cdp.h` has the same functions, with `WKWebView` for the view and a string to `free()` for an error |
 
 ### Differences from Chrome
 
