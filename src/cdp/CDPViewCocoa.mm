@@ -34,10 +34,13 @@
 #import "WKWebsiteDataStoreInternal.h"
 #import "WebOpenPanelResultListenerProxy.h"
 #import "WebPageProxy.h"
+#import "WebProcessMessages.h"
+#import "WebProcessPool.h"
 #import <Carbon/Carbon.h>
 #import <WebCore/Credential.h>
 #import <WebCore/KeypressCommand.h>
 #import <WebCore/ResourceError.h>
+#import <wtf/CallbackAggregator.h>
 #import <wtf/NeverDestroyed.h>
 #import <wtf/URL.h>
 #import <wtf/WallTime.h>
@@ -981,17 +984,33 @@ void allCookies(const PlatformNetworkSession& session, Function<void(CookieList&
     });
 }
 
+// On this platform each page's process keeps the cookies of its site, and
+// is told of a change a moment after it was made. A client that changes a
+// cookie and then looks at document.cookie must not see the old one, so the
+// processes are made to forget what they keep, and ask again, before the
+// change is reported done.
+static void forgetCachedCookies(WebKit::WebsiteDataStore& store, Function<void()>&& completion)
+{
+    auto aggregator = CallbackAggregator::create(WTF::move(completion));
+    for (auto& pool : store.processPools()) {
+        pool->forEachProcessForSession(store.sessionID(), [&](auto& process) {
+            if (process.canSendMessage())
+                process.sendWithAsyncReply(Messages::WebProcess::DeleteAllCookies(), [aggregator] { });
+        });
+    }
+}
+
 void addCookie(const PlatformNetworkSession& session, const PlatformCookie& cookie, Function<void()>&& completion)
 {
-    session->cookieStore().setCookies({ *cookie }, [completion = WTF::move(completion)]() mutable {
-        completion();
+    session->cookieStore().setCookies({ *cookie }, [session, completion = WTF::move(completion)]() mutable {
+        forgetCachedCookies(*session, WTF::move(completion));
     });
 }
 
 void deleteCookie(const PlatformNetworkSession& session, const PlatformCookie& cookie, Function<void()>&& completion)
 {
-    session->cookieStore().deleteCookie(*cookie, [completion = WTF::move(completion)]() mutable {
-        completion();
+    session->cookieStore().deleteCookie(*cookie, [session, completion = WTF::move(completion)]() mutable {
+        forgetCachedCookies(*session, WTF::move(completion));
     });
 }
 
