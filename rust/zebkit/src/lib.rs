@@ -9,8 +9,9 @@
 //! main_loop.run();
 //! ```
 //!
-//! - [`WebView`] is a page. It opens a window on Wayland or X11 when the
-//!   machine has one; [`WebView::headless`] never does.
+//! - [`WebView`] is a page. It opens a window when the machine has a
+//!   display (Wayland or X11 on Linux, a screen on macOS);
+//!   [`WebView::headless`] never does.
 //! - [`MainLoop`] runs everything. The engine does its work, and calls the
 //!   closures given to it, on the thread that runs the loop.
 //! - [`cdp`] starts the Chrome DevTools Protocol endpoint, through which
@@ -30,17 +31,31 @@
 pub mod cdp;
 pub mod vendor;
 
-mod main_loop;
-mod web_view;
+// The same interface on what the engine's own API is on each system.
+#[cfg_attr(target_os = "macos", path = "cocoa/mod.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "glib/mod.rs")]
+mod platform;
 
-pub use main_loop::{timeout, MainLoop};
-pub use web_view::{LoadEvent, WebView, Window};
+pub use platform::{timeout, MainLoop, WebView, Window};
 
 /// The raw bindings this crate is built on.
 pub use zebkit_rs as sys;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+
+/// How far a page load has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadEvent {
+    /// A load was asked for.
+    Started,
+    /// The server sent the load somewhere else.
+    Redirected,
+    /// The new document replaced the old one.
+    Committed,
+    /// The load ended, whether it worked or not.
+    Finished,
+}
 
 /// An error reported by the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,13 +66,6 @@ pub struct Error {
 impl Error {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self { message: message.into() }
-    }
-
-    /// Takes a `GError` the engine handed over, and frees it.
-    pub(crate) unsafe fn from_glib(error: *mut sys::glib::GError) -> Self {
-        let message = string_from((*error).message).unwrap_or_default();
-        sys::glib::g_error_free(error);
-        Self { message }
     }
 }
 

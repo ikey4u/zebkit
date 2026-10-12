@@ -9,26 +9,14 @@
 //! drive the pages. It listens on this machine only unless told otherwise.
 
 use crate::sys::cdp;
-use crate::sys::glib;
-use crate::{c_string, string_from, Error};
+use crate::{platform, string_from, Error};
 
 /// Starts the endpoint and returns the port it listens on.
 ///
 /// `address` is the interface to listen on; `None` is 127.0.0.1, which is
 /// what to use unless the clients are on another machine.
 pub fn listen(address: Option<&str>, port: u16) -> Result<u16, Error> {
-    let address = address.map(c_string);
-    let mut error = std::ptr::null_mut();
-    let port = unsafe {
-        cdp::zebkit_cdp_listen(
-            address.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
-            port.into(),
-            &mut error,
-        )
-    };
-    if !error.is_null() {
-        return Err(unsafe { Error::from_glib(error) });
-    }
+    let port = platform::cdp_listen(address, port)?;
     u16::try_from(port)
         .ok()
         .filter(|port| *port != 0)
@@ -46,7 +34,9 @@ pub fn url() -> Option<String> {
     unsafe {
         let text = cdp::zebkit_cdp_get_url();
         let url = string_from(text);
-        glib::g_free(text.cast());
+        if !text.is_null() {
+            platform::free_text(text);
+        }
         url
     }
 }
@@ -55,7 +45,7 @@ pub fn url() -> Option<String> {
 /// are (no `/json/version`, no `/json/list`): only a client that was given
 /// [`url`], which holds a random id, can connect. Call before [`listen`].
 pub fn set_discovery_enabled(enabled: bool) {
-    unsafe { cdp::zebkit_cdp_set_discovery_enabled(enabled.into()) }
+    platform::cdp_set_discovery_enabled(enabled)
 }
 
 /// Stops the endpoint: clients are disconnected and the pages the endpoint

@@ -1,29 +1,39 @@
-//! Raw bindings to zebkit, the engine library (`libzebkit.so.1`).
+//! Raw bindings to zebkit, the engine library (`libzebkit.so.1` on Linux,
+//! `WebKit.framework` on macOS).
 //!
 //! Declarations and nothing else: every function here is `unsafe` and has
 //! the meaning and the rules it has in C. The `zebkit` crate is the safe
 //! interface built on these; use that unless something is missing from it.
 //!
-//! What is declared is what `zebkit` needs so far, in four groups:
+//! What is declared is what `zebkit` needs so far:
 //!
-//! - [`glib`]: the main loop, objects and signals of GLib and GObject,
-//!   which the engine's API is made of.
-//! - [`webkit`] and [`wpe`]: web views, and the windows they are shown in.
+//! - On Linux, [`glib`]: the main loop, objects and signals of GLib and
+//!   GObject, which the engine's API is made of; and [`webkit`] and
+//!   [`wpe`]: web views, and the windows they are shown in.
+//! - On macOS, [`cocoa`]: the same things, where the engine's API is
+//!   Objective-C (`WKWebView`, `NSWindow`, the application's loop), through
+//!   C functions this crate has for them.
 //! - [`cdp`]: the Chrome DevTools Protocol endpoint (`zebkit-cdp.h`).
 //! - [`ffmpeg`]: the FFmpeg inside the engine (`zebkit/vendor/ffmpeg.h`).
 //!
-//! The engine's C API is much larger than this (it is WPE WebKit's). A
-//! function that is missing can be declared in the same way.
+//! The engine's API is much larger than this (it is WPE WebKit's on Linux
+//! and WebKit's on macOS). On Linux a function that is missing can be
+//! declared in the same way; on macOS [`cocoa::zebkit_shim_view_get_web_view`]
+//! gives the `WKWebView` for whatever speaks Objective-C.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
 pub use std::os::raw::{c_char, c_int, c_uint, c_ulong, c_void};
 
+#[cfg(not(target_os = "macos"))]
 pub type gboolean = c_int;
+#[cfg(not(target_os = "macos"))]
 pub type gpointer = *mut c_void;
+#[cfg(not(target_os = "macos"))]
 pub type GType = usize;
 
 /// GLib and GObject: main loop, objects, signals.
+#[cfg(not(target_os = "macos"))]
 pub mod glib {
     use super::*;
 
@@ -95,6 +105,7 @@ pub mod glib {
 
 /// The windowing side of the engine: displays, the surface a view draws
 /// on, and the window that holds it.
+#[cfg(not(target_os = "macos"))]
 pub mod wpe {
     use super::*;
 
@@ -121,6 +132,7 @@ pub mod wpe {
 }
 
 /// Web views.
+#[cfg(not(target_os = "macos"))]
 pub mod webkit {
     use super::*;
 
@@ -152,18 +164,119 @@ pub mod webkit {
     }
 }
 
+/// Web views, their windows and the application's loop on macOS, as the C
+/// functions of `src/cocoa/shim.m`, which this crate compiles. All of it is
+/// for the main thread.
+#[cfg(target_os = "macos")]
+pub mod cocoa {
+    use super::*;
+
+    /// A view with its window. Reference counted: [`zebkit_shim_view_new`]
+    /// and [`zebkit_shim_view_retain`] each return a reference that
+    /// [`zebkit_shim_view_release`] gives back. The page and the window go
+    /// with the last one.
+    #[repr(C)]
+    pub struct ZebkitShimView {
+        _private: [u8; 0],
+    }
+
+    /// What [`zebkit_shim_view_add_handler`] can be told about.
+    pub const ZEBKIT_SHIM_TITLE: c_int = 0;
+    pub const ZEBKIT_SHIM_URI: c_int = 1;
+    pub const ZEBKIT_SHIM_LOAD: c_int = 2;
+    pub const ZEBKIT_SHIM_CLOSE: c_int = 3;
+
+    /// The `event` of a [`ZEBKIT_SHIM_LOAD`] handler.
+    pub const ZEBKIT_SHIM_LOAD_STARTED: c_int = 0;
+    pub const ZEBKIT_SHIM_LOAD_REDIRECTED: c_int = 1;
+    pub const ZEBKIT_SHIM_LOAD_COMMITTED: c_int = 2;
+    pub const ZEBKIT_SHIM_LOAD_FINISHED: c_int = 3;
+
+    /// `text` is the new title or address, valid during the call, and null
+    /// for the other kinds.
+    pub type ZebkitShimHandler = unsafe extern "C" fn(event: c_int, text: *const c_char, data: *mut c_void);
+    pub type ZebkitShimFunction = unsafe extern "C" fn(data: *mut c_void);
+
+    extern "C" {
+        /// A page in a window of 1024 by 768, which the engine makes: on
+        /// the screen when the machine has a display, and never on any
+        /// when it has none or `headless` is set.
+        pub fn zebkit_shim_view_new(headless: c_int) -> *mut ZebkitShimView;
+        pub fn zebkit_shim_view_retain(view: *mut ZebkitShimView) -> *mut ZebkitShimView;
+        pub fn zebkit_shim_view_release(view: *mut ZebkitShimView);
+        /// The `WKWebView`, which the view owns.
+        pub fn zebkit_shim_view_get_web_view(view: *mut ZebkitShimView) -> *mut c_void;
+
+        pub fn zebkit_shim_view_load_uri(view: *mut ZebkitShimView, uri: *const c_char);
+        pub fn zebkit_shim_view_load_html(view: *mut ZebkitShimView, html: *const c_char, base_uri: *const c_char);
+        /// Null when there is none. Free with [`free`].
+        pub fn zebkit_shim_view_copy_uri(view: *mut ZebkitShimView) -> *mut c_char;
+        /// Null when there is none. Free with [`free`].
+        pub fn zebkit_shim_view_copy_title(view: *mut ZebkitShimView) -> *mut c_char;
+        pub fn zebkit_shim_view_is_loading(view: *mut ZebkitShimView) -> c_int;
+        pub fn zebkit_shim_view_reload(view: *mut ZebkitShimView);
+        pub fn zebkit_shim_view_stop_loading(view: *mut ZebkitShimView);
+        pub fn zebkit_shim_view_can_go_back(view: *mut ZebkitShimView) -> c_int;
+        pub fn zebkit_shim_view_go_back(view: *mut ZebkitShimView);
+        pub fn zebkit_shim_view_can_go_forward(view: *mut ZebkitShimView) -> c_int;
+        pub fn zebkit_shim_view_go_forward(view: *mut ZebkitShimView);
+
+        /// Calls `handler` with `data` for every change of the kind, for
+        /// as long as the view lives, and `destroy` with `data` after that.
+        pub fn zebkit_shim_view_add_handler(
+            view: *mut ZebkitShimView,
+            kind: c_int,
+            handler: ZebkitShimHandler,
+            data: *mut c_void,
+            destroy: Option<ZebkitShimFunction>,
+        );
+
+        pub fn zebkit_shim_window_resize(view: *mut ZebkitShimView, width: c_int, height: c_int);
+        pub fn zebkit_shim_window_set_title(view: *mut ZebkitShimView, title: *const c_char);
+
+        /// Runs the application's loop until [`zebkit_shim_quit`].
+        pub fn zebkit_shim_run();
+        /// Does nothing when the loop is not running.
+        pub fn zebkit_shim_quit();
+        /// Calls `function` once from the loop, then `destroy`.
+        pub fn zebkit_shim_timeout(
+            milliseconds: c_uint,
+            function: ZebkitShimFunction,
+            data: *mut c_void,
+            destroy: Option<ZebkitShimFunction>,
+        );
+
+        /// The C library's, for the strings handed over here and by [`cdp`].
+        pub fn free(memory: *mut c_void);
+    }
+}
+
 /// The Chrome DevTools Protocol endpoint (`zebkit-cdp.h`, `docs/CDP.md`).
 pub mod cdp {
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
     extern "C" {
         /// Returns the port, or 0 with `error` set.
         pub fn zebkit_cdp_listen(address: *const c_char, port: c_uint, error: *mut *mut glib::GError) -> c_uint;
-        pub fn zebkit_cdp_get_port() -> c_uint;
-        pub fn zebkit_cdp_stop();
         pub fn zebkit_cdp_set_discovery_enabled(enabled: gboolean);
         /// Null when the endpoint is not running. Free with `g_free`.
         pub fn zebkit_cdp_get_url() -> *mut c_char;
+    }
+
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        /// Returns the port, or 0 with `error` set to a message to free
+        /// with [`cocoa::free`].
+        pub fn zebkit_cdp_listen(address: *const c_char, port: c_uint, error: *mut *mut c_char) -> c_uint;
+        pub fn zebkit_cdp_set_discovery_enabled(enabled: bool);
+        /// Null when the endpoint is not running. Free with [`cocoa::free`].
+        pub fn zebkit_cdp_get_url() -> *mut c_char;
+    }
+
+    extern "C" {
+        pub fn zebkit_cdp_get_port() -> c_uint;
+        pub fn zebkit_cdp_stop();
     }
 }
 

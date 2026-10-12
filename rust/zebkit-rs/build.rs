@@ -2,16 +2,18 @@
 //!
 //! In this order:
 //!
-//! 1. `ZEBKIT_DIR`: a directory holding `libzebkit.so.1` and what is shipped
-//!    beside it. For an engine built by hand, and for building offline.
+//! 1. `ZEBKIT_DIR`: a directory holding the engine (`libzebkit.so.1` on
+//!    Linux, `WebKit.framework` on macOS) and what is shipped beside it.
+//!    For an engine built by hand, and for building offline.
 //! 2. `dist/release` of the zebkit repository, when this crate is being
 //!    built from inside it (what `mise run r` produces).
 //! 3. The release archive for this crate's version and the target, from
 //!    GitHub. It is downloaded once into a cache directory, checked against
 //!    the SHA-256 in `engines.txt`, and unpacked there.
 //!
-//! The download uses the system's `curl`, `sha256sum`, `tar` and `xz`, so
-//! that this crate needs no others to build.
+//! The download uses the system's `curl`, `sha256sum` (`shasum` on macOS),
+//! `tar` and `xz`, so that this crate needs no others to build. On macOS
+//! the system's compiler is used as well, for `src/cocoa/shim.m`.
 //!
 //! Environment:
 //!
@@ -39,10 +41,13 @@ fn main() {
     }
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos");
+    // What a package directory is known by.
+    let engine_name = if macos { "WebKit.framework" } else { "libzebkit.so.1" };
     let local = manifest.join("../../dist/release");
     let directory = if let Some(given) = env::var_os("ZEBKIT_DIR") {
         PathBuf::from(given)
-    } else if local.join("libzebkit.so.1").exists() {
+    } else if local.join(engine_name).exists() {
         local
     } else {
         download(&manifest)
@@ -50,23 +55,59 @@ fn main() {
     let directory = directory
         .canonicalize()
         .unwrap_or_else(|_| fail(&format!("there is no directory {}", directory.display())));
-    let engine = directory.join("libzebkit.so.1");
+    let engine = directory.join(engine_name);
     if !engine.exists() {
         fail(&format!(
-            "{} has no libzebkit.so.1; it is not a zebkit package directory",
+            "{} has no {engine_name}; it is not a zebkit package directory",
             directory.display()
         ));
     }
-    println!("cargo:rerun-if-changed={}", engine.display());
 
-    println!("cargo:rustc-link-search=native={}", directory.display());
-    // The package has the libraries under their run-time names only, with
-    // no "libzebkit.so" for the linker to find, hence the exact file names.
-    for library in ["libzebkit.so.1", "libgobject-2.0.so.0", "libglib-2.0.so.0"] {
-        println!("cargo:rustc-link-lib=dylib:+verbatim={library}");
+    if macos {
+        println!("cargo:rerun-if-changed={}", engine.join("Versions/A/WebKit").display());
+        println!("cargo:rustc-link-search=framework={}", directory.display());
+        println!("cargo:rustc-link-lib=framework=WebKit");
+        println!("cargo:rustc-link-lib=framework=Cocoa");
+        compile_shim(&manifest, &directory);
+    } else {
+        println!("cargo:rerun-if-changed={}", engine.display());
+        println!("cargo:rustc-link-search=native={}", directory.display());
+        // The package has the libraries under their run-time names only, with
+        // no "libzebkit.so" for the linker to find, hence the exact file names.
+        for library in ["libzebkit.so.1", "libgobject-2.0.so.0", "libglib-2.0.so.0"] {
+            println!("cargo:rustc-link-lib=dylib:+verbatim={library}");
+        }
     }
     // For dependents' build scripts, as DEP_ZEBKIT_LIB_DIR.
     println!("cargo:lib_dir={}", directory.display());
+}
+
+/// macOS: the engine's API is Objective-C, which Rust cannot declare.
+/// `src/cocoa/shim.m` puts what this crate uses behind C functions; it is
+/// compiled here, against the engine's own headers, into a static library.
+fn compile_shim(manifest: &Path, engine: &Path) {
+    let source = manifest.join("src/cocoa/shim.m");
+    println!("cargo:rerun-if-changed={}", source.display());
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let (object, library) = (out.join("shim.o"), out.join("libzebkit_shim.a"));
+    run(
+        Command::new("cc")
+            .args(["-c", "-fobjc-arc", "-O2", "-Wall", "-Wno-deprecated-declarations", "-F"])
+            .arg(engine)
+            .arg("-I")
+            .arg(engine.join("include"))
+            .arg(&source)
+            .arg("-o")
+            .arg(&object),
+        "cannot compile src/cocoa/shim.m; this needs Xcode's command line tools",
+    );
+    let _ = fs::remove_file(&library);
+    run(
+        Command::new("ar").arg("rcs").arg(&library).arg(&object),
+        "cannot make a library of the compiled shim",
+    );
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=zebkit_shim");
 }
 
 /// The engine for this crate's version and the target, from the cache or
@@ -118,10 +159,19 @@ fn download(manifest: &Path) -> PathBuf {
         Command::new("curl").args(["--fail", "--location", "--silent", "--show-error", "--retry", "3", "--output"]).arg(&archive).arg(&url),
         &format!("cannot download {url}.\nIf this machine has no access to it, download the file elsewhere, unpack it and set ZEBKIT_DIR to the directory"),
     );
-    let output = Command::new("sha256sum")
+    // macOS has shasum where Linux has sha256sum; both print the sum first.
+    let mut sum = if cfg!(target_os = "macos") {
+        Command::new("shasum")
+    } else {
+        Command::new("sha256sum")
+    };
+    if cfg!(target_os = "macos") {
+        sum.args(["-a", "256"]);
+    }
+    let output = sum
         .arg(&archive)
         .output()
-        .unwrap_or_else(|error| fail(&format!("cannot run sha256sum: {error}")));
+        .unwrap_or_else(|error| fail(&format!("cannot compute the archive's SHA-256: {error}")));
     let actual = String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
         .next()

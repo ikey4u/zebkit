@@ -1,15 +1,16 @@
 //! For the build script of an application that uses `zebkit`.
 //!
 //! The engine is not inside the executable. It is a shared library with
-//! two helper programs and a few libraries of its own, and the executable
-//! has to find them when it runs. One call arranges that:
+//! helper programs and a few libraries of its own (on macOS, frameworks
+//! and the services they start), and the executable has to find them when
+//! it runs. One call arranges that:
 //!
 //! ```toml
 //! [dependencies]
-//! zebkit = "0.0.1-alpha.1"
+//! zebkit = "0.0.1-alpha.2"
 //!
 //! [build-dependencies]
-//! zebkit-build = "0.0.1-alpha.1"
+//! zebkit-build = "0.0.1-alpha.2"
 //! ```
 //!
 //! ```no_run
@@ -30,6 +31,8 @@
 //!         zebkit-web
 //!         ...
 //! ```
+//!
+//! On macOS the directory holds `WebKit.framework` and what belongs to it.
 
 #![allow(clippy::needless_doctest_main)]
 
@@ -49,11 +52,19 @@ pub fn bundle() {
     let engine = engine_directory();
     let destination = executable_directory().join(DIRECTORY);
     copy_engine(&engine, &destination);
-    // Beside the executable first, wherever that ends up.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/{DIRECTORY}");
-    // Tests and examples are built one directory further down.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../{DIRECTORY}");
-    println!("cargo:rerun-if-changed={}", engine.join("libzebkit.so.1").display());
+    // Beside the executable first, wherever that ends up; tests and
+    // examples are built one directory further down.
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos") {
+        println!("cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/{DIRECTORY}:@executable_path/../{DIRECTORY}");
+        println!(
+            "cargo:rerun-if-changed={}",
+            engine.join("WebKit.framework/Versions/A/WebKit").display()
+        );
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/{DIRECTORY}");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../{DIRECTORY}");
+        println!("cargo:rerun-if-changed={}", engine.join("libzebkit.so.1").display());
+    }
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -79,7 +90,8 @@ fn executable_directory() -> PathBuf {
 
 /// Makes `destination` hold the files of `engine`, without the headers.
 /// Files are hard links where the file system allows, copies otherwise, and
-/// are left alone when they are already the same.
+/// are left alone when they are already the same. Symbolic links, which a
+/// framework on macOS is full of, stay links.
 fn copy_engine(engine: &Path, destination: &Path) {
     let entries = fs::read_dir(engine).unwrap_or_else(|error| panic!("zebkit-build: cannot read {}: {error}", engine.display()));
     fs::create_dir_all(destination).unwrap_or_else(|error| panic!("zebkit-build: cannot create {}: {error}", destination.display()));
@@ -88,7 +100,16 @@ fn copy_engine(engine: &Path, destination: &Path) {
         let (from, to) = (entry.path(), destination.join(&name));
         // Headers are for compiling C against the engine; a marker file of
         // the download is nobody's business.
-        if name == "include" || name.to_string_lossy().starts_with('.') {
+        if name == "include" || name == "Headers" || name == "Modules" || name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if let Ok(target) = fs::read_link(&from) {
+            if fs::read_link(&to).ok().as_ref() != Some(&target) {
+                let _ = fs::remove_file(&to);
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&target, &to)
+                    .unwrap_or_else(|error| panic!("zebkit-build: cannot link {}: {error}", to.display()));
+            }
             continue;
         }
         if from.is_dir() {

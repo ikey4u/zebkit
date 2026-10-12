@@ -6,7 +6,10 @@ Three crates:
 |---|---|
 | `zebkit` | The Rust interface: web views, the main loop, the Chrome DevTools Protocol endpoint, and the FFmpeg inside the engine. No `unsafe` is needed to use it. An application depends on this one. |
 | `zebkit-build` | For the application's build script: one call puts the engine beside the executable. |
-| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine library (`libzebkit.so.1`), everything `unsafe`. It also finds the engine, downloading it if need be. Re-exported as `zebkit::sys` for what `zebkit` does not wrap yet. |
+| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine (`libzebkit.so.1` on Linux, `WebKit.framework` on macOS), everything `unsafe`. It also finds the engine, downloading it if need be. Re-exported as `zebkit::sys` for what `zebkit` does not wrap yet. |
+
+The interface of `zebkit` is the same on Linux and on macOS: a program
+written for one builds and runs on the other.
 
 ## Using it
 
@@ -14,10 +17,10 @@ Nobody has to build the engine. The first build downloads it.
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.1"
+zebkit = "0.0.1-alpha.2"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.1"
+zebkit-build = "0.0.1-alpha.2"
 ```
 
 ```rust
@@ -53,17 +56,19 @@ What happens:
 - **The engine is downloaded once**, about 25 MiB, from the GitHub release
   of the same version as the crate, into `~/.cache/zebkit`. Its SHA-256 is
   fixed in the crate (`zebkit-rs/engines.txt`); a file that does not match
-  is refused. The download uses the system's `curl`, `sha256sum`, `tar` and
-  `xz`, so the crates have no dependencies of their own.
+  is refused. The download uses the system's `curl`, `sha256sum` (`shasum`
+  on macOS), `tar` and `xz`, so the crates have no dependencies of their
+  own.
 - **`zebkit_build::bundle()` puts the engine beside the executable**, in
   `target/<profile>/zebkit/`, and makes the executable look for it there.
   That is why `cargo run` works with no environment set up.
 - **To ship the application**, copy the executable and that `zebkit`
   directory together. Nothing else is needed on the user's machine but
-  glibc 2.17 or newer.
+  glibc 2.17 or newer; on macOS, macOS 27 on Apple Silicon.
 
-One archive covers every Linux distribution on x86_64. There is none for
-other platforms yet; the build says so and how to go on.
+There are two archives: one covers every Linux distribution on x86_64,
+the other macOS 27 on Apple Silicon. For other platforms there is none;
+the build says so and how to go on.
 
 | Environment variable | Effect |
 |---|---|
@@ -84,15 +89,36 @@ cargo run --example window -- https://example.com/
 cargo run --example codecs                   # what the engine's FFmpeg has
 ```
 
+The same on a Mac. `mise example:rust:window` and
+`mise example:rust:codecs` are the last two.
+
+## On macOS
+
+The engine's API there is Objective-C (`WKWebView` in an `NSWindow`, in
+an application whose loop AppKit runs), which Rust cannot declare.
+`zebkit-rs/src/cocoa/shim.m` puts the part of it that `zebkit` uses behind
+C functions; the build script compiles it with the system's compiler, and
+`zebkit::sys::cocoa` declares them. What differs for a program:
+
+- The window of a view is the engine's on both: shown when the machine
+  has a display, and not otherwise (on macOS, `zebkit-view.h`).
+- `MainLoop` is the application's loop, of which a process has one: every
+  `MainLoop` is a handle to the same loop.
+- `WebView::as_ptr()` is a `WKWebView`, for code that speaks Objective-C.
+- The executable finds the engine through a path the linker writes into
+  it (`-dyld_env`), where Linux has a run path. `zebkit_build::bundle()`
+  arranges it on both.
+
 ## Releasing
 
 The crates and the engine have one version, in `VERSION` and
 `rust/Cargo.toml`.
 
 ```sh
-mise run r                     # the engine, and dist/zebkit-<version>-<target>.tar.xz; its checksum goes into rust/zebkit-rs/engines.txt
+mise run r                     # on each system: the engine, and dist/zebkit-<version>-<target>.tar.xz; its checksum goes into rust/zebkit-rs/engines.txt
+                               # then, on one machine, with every archive in dist/ and every checksum in engines.txt:
 git commit -am "Release <version>"
-mise run r:github              # the GitHub release v<version>, with the archive
+mise run r:github              # the GitHub release v<version>, with the archives
 cd rust
 cargo publish -p zebkit-rs && cargo publish -p zebkit-build && cargo publish -p zebkit
 ```
@@ -118,9 +144,10 @@ archive's checksum, which the script checks.
 Not covered yet: running script in a page and getting its result, settings,
 cookies, user scripts and message handlers, downloads, and decoding with
 FFmpeg from safe Rust (the C API is reachable through `zebkit::sys::ffmpeg`,
-where declarations are added as needed). The engine's C API is WPE
-WebKit's and is far larger than what is declared in `zebkit-rs`; the
-declarations are written by hand, not generated.
+where declarations are added as needed). The engine's own API (WPE
+WebKit's C API on Linux, WebKit's Objective-C API on macOS) is far larger
+than what is declared in `zebkit-rs`; the declarations are written by
+hand, not generated.
 
 ## Threads
 

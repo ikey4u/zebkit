@@ -2,22 +2,9 @@ use crate::sys::glib::{self, GCallback, GClosure, GParamSpec};
 use crate::sys::webkit::{self, WebKitWebView};
 use crate::sys::wpe::{self, WPEToplevel, WPEView};
 use crate::sys::{c_int, gpointer};
-use crate::{c_string, string_from};
+use crate::{c_string, string_from, LoadEvent};
 use std::marker::PhantomData;
 use std::mem::transmute;
-
-/// How far a page load has got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadEvent {
-    /// A load was asked for.
-    Started,
-    /// The server sent the load somewhere else.
-    Redirected,
-    /// The new document replaced the old one.
-    Committed,
-    /// The load ended, whether it worked or not.
-    Finished,
-}
 
 /// A web page.
 ///
