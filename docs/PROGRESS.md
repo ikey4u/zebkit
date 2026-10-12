@@ -36,7 +36,7 @@ Last updated: 2026-10-11
 | Relocatable | Yes: copied elsewhere, it loads an HTTPS page with nothing from the build tree |
 | System requirements | **glibc only.** Wayland, X11, GPU buffer and sound libraries are used when present |
 | Display | Chosen at run time: Wayland, then X11, then offscreen; all three tested |
-| macOS | In progress (`docs/MACOS.md`): WebKit's Mac port builds from the same release with five patches, the smoke test passes, and the CDP endpoint passes the raw checks, Puppeteer and Playwright there. Not slimmed, packaged or released |
+| macOS | In progress (`docs/MACOS.md`): WebKit's Mac port builds from the same release with nine patches, the smoke test passes, and the CDP endpoint passes the raw checks, Puppeteer and Playwright there. A `slim` profile is at 83.9 MiB (upstream settings: 125.1) with feature decisions open. Not packaged or released |
 | Windows, embedding API, CI | Not started |
 
 ## Size
