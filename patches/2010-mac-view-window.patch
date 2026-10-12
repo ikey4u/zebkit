@@ -1,0 +1,22 @@
+zebkit: views with a window of their own, on macOS.
+
+On Linux the engine gives every view a window and decides where it is: on
+the screen when the machine has a display, and nowhere otherwise. WebKit
+on macOS leaves the window to the application. zebkit's own source
+src/view/ZebkitViewCocoa.mm (zebkit-view.h) does for macOS what the
+engine does on Linux; this builds it into WebKit.framework, beside the CDP
+endpoint, through the link Source/WebKit/zebkit that
+scripts/fetch-upstream.sh makes.
+
+--- a/Source/WebKit/SourcesCocoa.txt
++++ b/Source/WebKit/SourcesCocoa.txt
+@@ -951,6 +951,9 @@ zebkit/cdp/CDPTransportCocoa.mm @nonARC
+ zebkit/cdp/CDPView.cpp
+ zebkit/cdp/CDPViewCocoa.mm @nonARC
+ zebkit/cdp/CDPWebSocket.cpp
++
++// zebkit: views with a window of their own (src/view).
++zebkit/view/ZebkitViewCocoa.mm @nonARC
+ ModelConnectionToWebProcessMessageReceiver.cpp
+ MediaPlayerPrivateRemoteMessageReceiver.cpp @cost:5
+ ModelProcessConnectionMessageReceiver.cpp
