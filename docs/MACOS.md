@@ -15,6 +15,20 @@ need nothing but this file and the repository.
 - **Networking, media, fonts, text and graphics are the system's** on
   macOS (CFNetwork, AVFoundation, CoreText, CoreGraphics, Metal). The
   libraries in `deps/` are for Linux.
+- **FFmpeg is in the engine for applications**, as on Linux
+  (`docs/VENDOR.md`): the same version, built the same way, behind the
+  same `zebkit_vendor_ffmpeg_*` entry points and the same header. The
+  engine itself does not use it on macOS. It costs 5.4 MiB.
+- **The package is a directory of frameworks**, `dist/release` as on
+  Linux, which works wherever it is copied. Nothing in it is renamed or
+  re-linked: the helper processes look for the frameworks beside
+  themselves, and a program names the directory when it is linked.
+- **A view's window is the engine's**, as on Linux: `zebkit-view.h`
+  (`src/view`, built in by `patches/2010`) makes a view with a window of
+  its own, on the screen when the machine has a display and nowhere
+  otherwise. The window example and the Rust crate use it. An
+  application that manages its own windows creates a `WKWebView` as
+  always.
 - **The same checks decide when it is done**: `tests/cdp/protocol.py`
   against the engine and against Chrome, the Puppeteer and Playwright
   suites, smoke and media tests.
@@ -25,8 +39,8 @@ need nothing but this file and the repository.
 |---|---|
 | Apple Silicon only, or Intel too | Build time doubles, and the release archive is per architecture or universal |
 | Oldest macOS to support | Sets the deployment target, and with it which system APIs the engine may use. As built now it is macOS 27, the version of the SDK, which is what upstream builds. An older target means patching the code that assumes otherwise; how much there is has not been looked at |
-| FFmpeg for applications on macOS | The Mac engine does not contain FFmpeg. `zebkit::vendor::ffmpeg` is either absent on macOS or FFmpeg is linked in for applications only, at a cost in size |
-| The C API | On macOS the engine's public API is Objective-C (`WKWebView`), not the GLib C API. The Rust crate can hide the difference; C applications would see two APIs unless a common C layer is written |
+| The C API | On macOS the engine's public API is Objective-C (`WKWebView`), not the GLib C API. The Rust crate hides the difference, with C functions of its own over the Objective-C API (`rust/zebkit-rs/src/cocoa/shim.m`); C applications see two APIs unless a common C layer is written, for which that file is a start |
+| A debug build | `scripts/dist.sh debug` is the `slim-dev` profile on Linux. There is no such profile for macOS: it would be a second build tree of 30 GB |
 
 ## What is needed
 
@@ -99,12 +113,57 @@ the inspector's interface.
   connection, which is what happened. `docs/CDP.md` has what differs from
   Linux.
 
+What exists on Linux and where it is on macOS:
+
+| | Linux | macOS |
+|---|---|---|
+| Fetch, build, smoke test, benchmark, CDP tests | yes | yes, the same scripts |
+| `slim` profile | yes | yes |
+| Libraries built from source (`scripts/build-deps.sh`) | 29, in `deps/order` | FFmpeg, in `deps/order.macos`; the rest is the system's |
+| FFmpeg for applications, and its test (`scripts/vendor.sh`) | yes | yes, the same test with the same results |
+| Package (`scripts/package.sh`), `dist/release` (`scripts/dist.sh`, `mise run r`) | yes | yes; a directory of frameworks |
+| Release archive (`scripts/release.sh`) | `x86_64-unknown-linux-gnu` | `aarch64-apple-darwin`; both are in the release `v0.0.1-alpha.2`. Each is built on its own system and they are published together from one |
+| A view's window: shown when there is a display, not otherwise | the engine's (WPE's display backends) | the engine's (`zebkit-view.h`) |
+| Window example | `examples/window.c` | `examples/window.m`, the same program, with the same bar (`examples/window-bar.h`) |
+| FFmpeg example | `examples/ffmpeg.cpp` | the same file |
+| Rust crates, their test and examples | yes | yes, the same interface, test and examples |
+| CDP host for the tests | `tools/cdphost/cdphost.c` | `tools/cdphost/cdphost.m` |
+| `dist/debug` (`mise run d`) | yes | no profile for it |
+| Page probe for the tests | `tools/pageprobe/pageprobe.c` | `tools/pageprobe/pageprobe.m`, with the same options, questions (`probe-scripts.h`) and report |
+| Media test (`scripts/media.sh`) | yes | yes, the same samples; the system's decoders play them |
+| Site comparison (`scripts/compat.sh`, `compat-report.py`) | yes, `docs/reports/compat.md` | yes, `docs/reports/macos/compat.md` |
+| Size report (`scripts/measure.sh`) | yes, `docs/reports/<profile>.md` | yes, `docs/reports/macos/<profile>.md` |
+| Code size by subsystem, linker map (`codesize.py`, `mapsize.py`) | yes | no; `docs/reports/macos/slim-experiments.md` has the breakdown made by hand |
+
+`dist/release` on macOS, 92.2 MiB (`docs/reports/macos/slim.md`), 28.2 MiB
+as the archive:
+
+```
+WebKit.framework  WebCore.framework  JavaScriptCore.framework
+WebKitLegacy.framework  WebGPU.framework
+libwebrtc.dylib  libANGLE-shared.dylib
+com.apple.WebKit.WebContent.xpc  com.apple.WebKit.Networking.xpc  com.apple.WebKit.GPU.xpc  ...
+include/
+```
+
+A program is linked with `-F<directory> -framework WebKit` and
+`-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=<directory>`, the directory given
+relative to the executable (`@executable_path/zebkit`) for a program that
+is shipped. Without the second option it runs with the system's WebKit.
+`scripts/example.sh` and the Rust crates' build scripts do this.
+
+Everything in the package is signed ad hoc, which is what runs on the
+machine that built it. Seen once and not explained: an engine directory
+whose links were broken was replaced, at the same path, by a good one, and
+pages still did not load from that path, while the same files at any
+other path worked.
+
 ## Slim
 
 `profiles/macos/slim.xcconfig`. Engine binaries stripped of local symbols,
 MiB; `scripts/bench.sh` in milliseconds, lower is better. Each build, what
 it showed and what was tried and dropped is in
-`docs/reports/macos-slim.md`.
+`docs/reports/macos/slim-experiments.md`.
 
 | Build | Size | loop | objects | json | regex | sort | dom |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -115,20 +174,23 @@ it showed and what was tried and dropped is in
 | `-Oz`, link-time optimization, nothing else | 82.2 | 19 | 29 | 220 | 139 | 73 | 212 |
 | `-Oz`, features off but all JIT tiers on, checks without their text | 75.2 | 18 | 30 | 222 | 140 | 74 | 208 |
 | the same, the JavaScript engine at `-Os` | 81.7 | 19 | 18 | 85 | 77 | 38 | 201 |
-| the same, WebCore inlining as `-Os` does: **`slim`** | **83.9** | 18 | 17 | 84 | 76 | 38 | 137 |
+| the same, WebCore inlining as `-Os` does | 83.9 | 18 | 17 | 84 | 76 | 38 | 137 |
+| the same, with FFmpeg for applications: **`slim`** | **89.4** | 18 | 18 | 86 | 78 | 37 | 137 |
 
 | `slim`, by binary | MiB |
 |---|---:|
 | WebCore | 33.3 |
 | JavaScriptCore | 22.5 |
-| WebKit | 14.6 |
+| WebKit, FFmpeg in it | 20.0 |
 | libwebrtc | 6.3 |
 | libANGLE | 3.3 |
 | WebKitLegacy | 2.4 |
 | WebGPU | 1.4 |
 
-Compressed, the seven binaries are 24.5 MiB with xz, 28.8 with zstd and
-36.9 with gzip (Linux's 80.3 MiB build: 23.0, 25.1 and 32.0).
+Compressed, the seven binaries without FFmpeg (83.9 MiB) are 24.5 MiB
+with xz, 28.8 with zstd and 36.9 with gzip (Linux's 80.3 MiB build: 23.0,
+25.1 and 32.0). The whole package with FFmpeg, 92.2 MiB, is 28.2 MiB as
+the release archive.
 
 - **`-Oz`**, the owner's choice, as on Linux. Against `-Os` it takes
   about 25 MiB off and makes JSON and DOM work two and a half times
@@ -205,31 +267,34 @@ Known gaps on macOS:
 - Error names depend on the system language (see `docs/CDP.md`).
 - Middle-button events are made with AppKit's general mouse-event call and
   have not been checked to arrive as button 1.
+- A view on a Mac with no display, or in a process outside a login
+  session (ssh, a daemon): `zebkit-view.h` gives it a window that is on
+  no screen, and whether a page then loads has not been tried, for want
+  of such a machine. With a display, both kinds of window are tested.
 
 ## The work that is left, in order
 
 1. **CDP, the rest.** The gaps above, and a run on a Mac without a
    name-answering network tool.
 2. **Slim, the rest.** The decisions listed under "Slim".
-3. **Media test** (`scripts/media.sh`), which on macOS exercises the
-   system's decoders.
-4. **Package.** A relocatable framework with its helper processes (XPC
-   services on macOS) that works from inside an application bundle.
-   `scripts/dist.sh`, `release.sh` and the mise tasks for macOS.
-5. **Rust.** `zebkit-rs` gets bindings for the Mac engine, `zebkit` an
-   implementation of `WebView`, `Window` and `MainLoop` on AppKit behind
-   the same interface, `zebkit-build` the copying of a framework. Release
-   archives for `aarch64-apple-darwin`.
-6. **Signing and notarization.**
+3. **Signing and notarization**, with the hardened runtime: whether a
+   program may then still name its frameworks' directory the way it does
+   now has to be checked.
 
 ## Starting on a Mac
 
 ```sh
 git clone git@github.com:ikey4u/zebkit.git && cd zebkit
-scripts/fetch-upstream.sh
-scripts/build.sh baseline
-scripts/smoke.sh baseline
+scripts/dist.sh release            # source, FFmpeg, the slim engine, dist/release
+scripts/smoke.sh slim
+scripts/cdp.sh slim --clients
+scripts/vendor.sh slim
+scripts/example.sh macos-basic     # a window
+(cd rust && cargo test)
+scripts/media.sh slim
+scripts/measure.sh slim            # docs/reports/macos/slim.md
+scripts/compat.sh baseline && scripts/compat.sh slim && scripts/compat-report.py slim
 ```
 
-The scripts that are not ported yet (dependencies, packaging, release) are
-for Linux only.
+`scripts/build.sh baseline` builds the engine with upstream's settings,
+for comparison; the site comparison needs it.

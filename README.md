@@ -1,7 +1,8 @@
 # zebkit
 
 A trimmed WebKit build that ships as a small, self-contained, relocatable
-engine with media playback, for Linux first and Windows and macOS later.
+engine with media playback, for Linux first, macOS next (in progress:
+`docs/MACOS.md`) and Windows later.
 The Linux package needs nothing from the system but glibc 2.17 or newer,
 and uses Wayland, X11, a GPU and sound when they are there. It is driven
 over the Chrome DevTools Protocol. See [docs/PROGRESS.md](docs/PROGRESS.md)
@@ -20,7 +21,7 @@ upstream release plus what turns it into zebkit:
 | `src/` | Our own engine code: `cdp/`, the Chrome DevTools Protocol endpoint |
 | `scripts/` | Fetch, build, test and measure; every step is one script |
 | `rust/` | zebkit for Rust: `zebkit-rs`, the raw bindings to the engine library, and `zebkit`, the Rust interface built on them |
-| `examples/` | Applications that embed the engine: `window.c` opens a window with a web page in it |
+| `examples/` | Applications that embed the engine: `window.c` (Linux) and `window.m` (macOS) open a window with a web page in it |
 | `tests/` | Smoke, media, display and benchmark pages; `cdp/`, the protocol and client tests |
 | `tools/` | Small programs the scripts build: `pageprobe` loads a URL headlessly and reports on it, `cdphost` is a minimal embedding application, `crashsite` locates a crash, `syslib-stubs` makes the stand-ins for optional system libraries |
 | `assets/` | The top-100 site list used for compatibility testing |
@@ -39,7 +40,10 @@ mise run r                # release build for this machine -> dist/release, and 
 mise run r:github         # the same, published as a GitHub release
 mise run d                # the same with debug information -> dist/debug
 mise example:linux:basic  # build and run examples/window.c, a small browser window
+mise example:macos:basic  # build and run examples/window.m, the same window on macOS
 mise example:ffmpeg       # build and run examples/ffmpeg.cpp, on the FFmpeg inside the engine
+mise example:rust:window  # run the Rust crate's window example
+mise example:rust:codecs  # run the Rust crate's example of the engine's FFmpeg
 ```
 
 `mise d` works as a short form. `mise r` alone does not: it is mise's own

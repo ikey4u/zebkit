@@ -36,7 +36,7 @@ Last updated: 2026-10-11
 | Relocatable | Yes: copied elsewhere, it loads an HTTPS page with nothing from the build tree |
 | System requirements | **glibc only.** Wayland, X11, GPU buffer and sound libraries are used when present |
 | Display | Chosen at run time: Wayland, then X11, then offscreen; all three tested |
-| macOS | In progress (`docs/MACOS.md`): WebKit's Mac port builds from the same release with nine patches, the smoke test passes, and the CDP endpoint passes the raw checks, Puppeteer and Playwright there. A `slim` profile is at 83.9 MiB (upstream settings: 125.1) with feature decisions open. Not packaged or released |
+| macOS | In progress (`docs/MACOS.md`): WebKit's Mac port builds from the same release with nine patches, and passes the smoke test and, for the CDP endpoint, the raw checks, Puppeteer and Playwright. The `slim` profile is 89.4 MiB of binaries (upstream settings: 125.1), with FFmpeg for applications as on Linux. `dist/release` is a relocatable directory of frameworks, 92.2 MiB, 28.2 as an archive; the examples, the Rust crates and the media test work there as on Linux, and the top-100 comparison is 89 pass, 0 fail, 11 blocked. Feature decisions are open; not signed for distribution |
 | Windows, embedding API, CI | Not started |
 
 ## Size
@@ -412,10 +412,14 @@ check asks about is still unknown.
   looks at FFmpeg's decoders, on the real engine. A first cut: script
   evaluation, settings, cookies and FFmpeg decoding are not wrapped yet.
 - **Releases:** `scripts/release.sh` makes the archive of `dist/release`
-  that the crates download (25 MiB, reproducible) and, with `--publish`,
-  the GitHub release. No release has been published yet.
-- **Examples:** `examples/window.c`, a small browser window, and
-  `examples/ffmpeg.cpp`, which decodes with the engine's FFmpeg.
+  that the crates download (25 MiB on Linux, 28 MiB on macOS,
+  reproducible) and, with `--publish`, the GitHub release, which holds
+  the archives of both systems. `v0.0.1-alpha.2` is the current one. The
+  repository is private, so the crates cannot download from it yet.
+- **Examples:** `examples/window.c`, a small browser window, with
+  `examples/window.m` as the same program for macOS, and
+  `examples/ffmpeg.cpp`, which decodes with the engine's FFmpeg, one
+  file for both systems. The Rust crate has the same two.
 - **Tests:** smoke, media, display, CDP and benchmark pages; `tools/pageprobe`;
   `tools/crashsite`; the site list in `assets/WEBSITE-TOP-100.json`.
 
@@ -446,8 +450,10 @@ is the development build and can be rebuilt in about 20 minutes.
 11. **Verify on old distributions** in containers or VMs.
 12. **Resolve the open questions.**
 13. **macOS port.** `docs/MACOS.md`: WebKit's own Mac port, built from the
-    same revision. It builds, and the CDP endpoint works there. Left:
-    slimming, media test, packaging, the Rust crates, signing.
+    same revision. It builds, is slimmed and packaged, and the CDP
+    endpoint, FFmpeg for applications, the examples and the Rust crates
+    work there. Left: feature decisions, the media test, publishing the
+    archive, signing.
 14. **Windows port.**
 15. **Embedding API** that hides GLib (the CDP calls in
     `src/cdp/zebkit-cdp.h` are its first piece).
