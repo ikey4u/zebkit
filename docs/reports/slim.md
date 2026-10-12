@@ -1,7 +1,7 @@
 # Size report: `slim`
 
 - Upstream: wpewebkit 2.54.1
-- Measured: 2026-10-11 on Linux x86_64, from the package directory `scripts/package.sh` assembles
+- Measured: 2026-10-12 on Linux x86_64, from the package directory `scripts/package.sh` assembles
 - **Total: 83.1 MiB** (over the 60.0 MiB budget)
 - Oldest glibc it can run on: 2.17
 - Expects from the system: ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libm.so.6 libpthread.so.0 libresolv.so.2 librt.so.1

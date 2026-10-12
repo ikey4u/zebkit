@@ -160,6 +160,28 @@ crash: the engine has no unwind tables, so a preloaded handler records the
 crash address and the stack's code pointers, and the script maps them to
 functions using the unstripped build.
 
+### macOS: 89 pass, 0 fail, 11 blocked
+
+The same test on macOS (2026-10-12): the Mac engine's `slim` against its
+`baseline`, with `tools/pageprobe/pageprobe.m`, which asks a page the same
+questions. `docs/reports/macos/compat.md` has the table.
+
+The first run had 87 pass, 4 fail and 9 blocked. None of the four was
+`slim`'s doing; each was reloaded in both builds until that was clear:
+
+- **microsoft.com and live.com** answer this machine with one of several
+  pages, among them stubs of 4, 20, 37 and 45 elements, whichever build
+  asks: in six loads each build got the full page (2,404 elements) and
+  the stubs. They ended up blocked or passing depending on what the
+  reference drew.
+- **spotify.com** has three variants of its landing page (2,779, 3,153 and
+  8,791 characters of text), and each build got each of them.
+- **walmart.com** threw "Script error." a different number of times in
+  the two builds on the first run and the same number since.
+
+So on a live site one load of each build is sometimes not a comparison,
+which is what the 60% margin is for and does not always cover.
+
 ### Script-visible differences from stock WebKit
 
 Comparing `window` in both builds, `slim` lacks 27 global interfaces that

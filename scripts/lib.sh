@@ -46,6 +46,8 @@ case "$(uname -s)" in
         PATCH_SERIES="$PATCHES_DIR/series.macos"
         PROFILES_DIR="$ZEBKIT_ROOT/profiles/macos"
         PROFILE_SUFFIX=xcconfig
+        # The reports of the two systems are of the same names.
+        REPORTS_DIR="$ZEBKIT_ROOT/docs/reports/macos"
         ;;
     *) die "zebkit is not ported to $(uname -s)" ;;
 esac
@@ -110,16 +112,44 @@ stage_profile() {
     fi
 }
 
-# build_pageprobe: on macOS, after stage_profile, build tools/pageprobe for
-# the profile if it is not up to date, and set probe to it. It is what loads
-# a page in the engine without a window there.
+# build_pageprobe: after stage_profile, build tools/pageprobe for the
+# profile if it is not up to date, and set probe to it. It is what loads a
+# page in the engine without a window and reports what happened.
 build_pageprobe() {
     probe="$build_dir/tools/pageprobe"
-    local source_file="$ZEBKIT_ROOT/tools/pageprobe/pageprobe.m"
-    if [[ ! -x "$probe" || "$source_file" -nt "$probe" || "$products_dir/WebKit.framework/WebKit" -nt "$probe" ]]; then
-        log "building pageprobe for $(basename "$build_dir")"
-        mkdir -p "$build_dir/tools"
-        clang -fobjc-arc -O1 -Wno-deprecated-declarations "$source_file" -o "$probe" \
+    local directory="$ZEBKIT_ROOT/tools/pageprobe" source_file engine pc_path file stale=0
+    if [[ "$ZEBKIT_HOST" == macos ]]; then
+        source_file="$directory/pageprobe.m"
+        engine="$products_dir/WebKit.framework/WebKit"
+    else
+        source_file="$directory/pageprobe.c"
+        engine="$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc"
+    fi
+    # Rebuilt when its source changes, and when the engine it links against does.
+    for file in "$source_file" "$directory/probe-scripts.h" "$engine"; do
+        [[ -x "$probe" && ! "$file" -nt "$probe" ]] || stale=1
+    done
+    (( stale )) || return 0
+    log "building pageprobe for $(basename "$build_dir")"
+    mkdir -p "$build_dir/tools"
+    if [[ "$ZEBKIT_HOST" == macos ]]; then
+        clang -fobjc-arc -O1 -Wall -Wno-deprecated-declarations "$source_file" -o "$probe" \
             -F"$products_dir" -framework WebKit -framework Cocoa
+    else
+        pc_path="$stage_dir/lib/pkgconfig"
+        [[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
+        # shellcheck disable=SC2046
+        cc -O1 -Wall -Wno-unused-parameter -o "$probe" "$source_file" \
+            $(PKG_CONFIG_PATH="$pc_path" pkg-config --cflags --libs wpe-webkit-2.0 wpe-platform-headless-2.0)
+    fi
+}
+
+# limited <seconds> <command...>: run a command, and end it if it is still
+# running after that long. The timeout of coreutils, which macOS lacks.
+limited() {
+    if command -v timeout > /dev/null; then
+        timeout "$@"
+    else
+        perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' "$@"
     fi
 }

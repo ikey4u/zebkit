@@ -2,7 +2,8 @@
 """Compare a profile's site results with a reference profile's and judge each site.
 
 Reads out/compat/<profile>/ and out/compat/<reference>/ (written by
-scripts/compat.sh) and writes docs/reports/compat.md. Exits non-zero unless every
+scripts/compat.sh) and writes docs/reports/compat.md (on macOS,
+docs/reports/macos/compat.md). Exits non-zero unless every
 site passes. The rules are explained in docs/COMPAT.md; in short, a site
 passes when the profile loads it without crashing, paints it, builds a DOM
 about as large as the reference build does, and throws no script error the
@@ -13,6 +14,7 @@ reference build does not also throw.
 
 import json
 import pathlib
+import platform
 import re
 import sys
 import urllib.parse
@@ -168,7 +170,10 @@ def main():
             f"| {painted(result)} / {painted(reference)} "
             f"| {errors(result)} / {errors(reference)} |")
 
-    report = ROOT / "docs" / "reports" / "compat.md"
+    # macOS has reports of the same names in a directory of its own.
+    reports = ROOT / "docs" / "reports" / ("macos" if platform.system() == "Darwin" else "")
+    reports.mkdir(parents=True, exist_ok=True)
+    report = reports / "compat.md"
     report.write_text("\n".join(lines) + "\n")
     print(f"pass {counts['PASS']}, fail {counts['FAIL']}, blocked {counts['BLOCKED']}; wrote {report.relative_to(ROOT)}")
     for site, status, reasons, _, _ in rows:

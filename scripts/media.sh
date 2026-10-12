@@ -6,6 +6,9 @@
 # play() resolves, playback reaches the end, and for video the decoded frame
 # size is right. It needs no sound device and no network.
 #
+# On Linux it is the engine's own decoders that play (GStreamer and
+# FFmpeg); on macOS the system's.
+#
 #   scripts/media.sh <profile>
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -14,8 +17,7 @@ profile="${1:-}"
 require_profile "$profile"
 stage_profile "$profile"
 
-probe="$build_dir/tools/pageprobe"
-[[ -x "$probe" ]] || die "no pageprobe for '$profile'; run scripts/compat.sh $profile <any site> once to build it"
+build_pageprobe
 
 port="${MEDIA_PORT:-8795}"
 work="$(mktemp -d)"
@@ -25,8 +27,8 @@ trap 'kill "$server_pid" 2>/dev/null; rm -r "$work"' EXIT
 sleep 1
 
 log "playing the media samples with profile '$profile'"
-"${run_env[@]}" timeout 120 "$probe" --settle 32 --timeout 60 --eval 'JSON.stringify(window.__media)' \
-    "http://127.0.0.1:$port/index.html?run=$(date +%s%N)" > "$work/result.json" 2> "$build_dir/media.log" || true
+limited 120 "${run_env[@]}" "$probe" --settle 32 --timeout 60 --eval 'JSON.stringify(window.__media)' \
+    "http://127.0.0.1:$port/index.html?run=$(date +%s)$RANDOM" > "$work/result.json" 2> "$build_dir/media.log" || true
 
 python3 - "$work/result.json" <<'PY'
 import json, sys

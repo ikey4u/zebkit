@@ -7,6 +7,11 @@
 # budget. The report also lists what the package still expects from the
 # system, since a small package that needs a long list of system libraries
 # would not be the same achievement.
+#
+# On macOS the report is docs/reports/macos/<profile>.md, and lists the
+# package by what is in it: each framework, library and helper process,
+# with how much of it is code and how much the resources beside it. The
+# budget was set for Linux and is not applied there.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -21,7 +26,34 @@ report="$REPORTS_DIR/$profile.md"
 mkdir -p "$REPORTS_DIR"
 
 mib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1048576 }'; }
-field() { sed -n "s/^.*==> $1: //p" <<< "$package_log" | sed 's/\x1b\[[0-9;]*m//g'; }
+field() { sed -n "s/^.*==> $1: //p" <<< "$package_log" | sed $'s/\x1b\\[[0-9;]*m//g'; }
+
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    # One row for each thing in the package: its Mach-O files, and the rest.
+    rows="$(find "$package" -type f ! -path "$package/include/*" ! -path '*/Headers/*' ! -path '*/Modules/*' \
+        -exec sh -c 'case "$(file -b "$1")" in Mach-O*) kind=code ;; *) kind=other ;; esac; echo "$kind $(stat -f %z "$1") $1"' _ {} \; \
+        | awk -v root="$package/" '{ path = substr($3, length(root) + 1); sub(/\/.*/, "", path); if ($1 == "code") code[path] += $2; else other[path] += $2; seen[path] = 1 }
+            END { for (item in seen) printf "%d %d %s\n", code[item], other[item], item }' | sort -rn)"
+    code_total="$(awk '{ total += $1 } END { print total + 0 }' <<< "$rows")"
+    other_total="$(awk '{ total += $2 } END { print total + 0 }' <<< "$rows")"
+    {
+        echo "# Size report: \`$profile\` on macOS"
+        echo
+        echo "- Upstream: WebKit's Mac port at $UPSTREAM_NAME $UPSTREAM_VERSION"
+        echo "- Measured: $(date -u +%Y-%m-%d) on $(uname -sm), from the package directory \`scripts/package.sh\` assembles"
+        echo "- **Total: $(mib $(( code_total + other_total ))) MiB**: $(mib "$code_total") of code and $(mib "$other_total") of resources"
+        echo "- Expects from the system: $(field 'expects from the system')"
+        echo
+        echo "Headers are for building against the engine and are not counted."
+        echo
+        echo "| In the package | Code, MiB | Resources, MiB |"
+        echo "|---|---:|---:|"
+        awk '{ printf "| `%s` | %.1f | %.1f |\n", $3, $1 / 1048576, $2 / 1048576 }' <<< "$rows"
+    } > "$report"
+    log "$(mib "$code_total") MiB of code + $(mib "$other_total") MiB of resources = $(mib $(( code_total + other_total ))) MiB"
+    log "wrote $report"
+    exit 0
+fi
 
 total=0 engine_total=0 other_total=0
 engine_rows="" other_rows=""

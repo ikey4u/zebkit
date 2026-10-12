@@ -16,19 +16,7 @@ shift
 
 stage_profile "$profile"
 
-# Build the probe against this profile's installed headers and libraries.
-probe="$build_dir/tools/pageprobe"
-source_file="$ZEBKIT_ROOT/tools/pageprobe/pageprobe.c"
-pc_path="$stage_dir/lib/pkgconfig"
-[[ "${run_env[*]}" == *"$OUT_DIR/deps/prefix"* ]] && pc_path+=":$OUT_DIR/deps/prefix/lib/pkgconfig"
-# Rebuilt when its source changes, and when the engine it links against does.
-if [[ ! -x "$probe" || "$source_file" -nt "$probe" || "$stage_dir/lib/pkgconfig/wpe-webkit-2.0.pc" -nt "$probe" ]]; then
-    log "building pageprobe for $profile"
-    mkdir -p "$(dirname "$probe")"
-    # shellcheck disable=SC2046
-    PKG_CONFIG_PATH="$pc_path" cc -O1 -Wall -Wno-unused-parameter -o "$probe" "$source_file" \
-        $(PKG_CONFIG_PATH="$pc_path" pkg-config --cflags --libs wpe-webkit-2.0 wpe-platform-headless-2.0)
-fi
+build_pageprobe
 
 results="$OUT_DIR/compat/$profile"
 mkdir -p "$results"
@@ -37,23 +25,20 @@ mkdir -p "$results"
 probe_site() {
     local domain="$1" url="$2"
     local raw="$results/$domain.raw"
-    "${run_env[@]}" timeout 150 "$probe" --settle 8 --timeout 90 --snapshot "$raw" "$url" \
+    limited 150 "${run_env[@]}" "$probe" --settle 8 --timeout 90 --snapshot "$raw" "$url" \
         > "$results/$domain.json" 2> "$results/$domain.log" \
         || echo '{"requested":"'"$url"'","probeFailed":true}' > "$results/$domain.json"
     if [[ -s "$raw" ]]; then
-        python3 - "$raw" "$results/$domain.png" <<'PY' 2>/dev/null || true
-import sys
-from PIL import Image
-with open(sys.argv[1], "rb") as f:
-    width, height, stride = map(int, f.readline().split())
-    Image.frombuffer("RGBA", (width, height), f.read(), "raw", "BGRA", stride, 1).convert("RGB").save(sys.argv[2])
-PY
+        python3 "$ZEBKIT_ROOT/scripts/raw-to-png.py" "$raw" "$results/$domain.png" 2>/dev/null || true
         rm -f "$raw"
     fi
     echo "$domain"
 }
 
-mapfile -t sites < <(python3 - "$ZEBKIT_ROOT/assets/WEBSITE-TOP-100.json" "$@" <<'PY'
+sites=()
+while IFS= read -r site; do
+    sites+=("$site")
+done < <(python3 - "$ZEBKIT_ROOT/assets/WEBSITE-TOP-100.json" "$@" <<'PY'
 import json, sys
 wanted = set(sys.argv[2:])
 for site in json.load(open(sys.argv[1]))["sites"]:
@@ -69,8 +54,9 @@ done_count=0
 for entry in "${sites[@]}"; do
     read -r domain url <<< "$entry"
     probe_site "$domain" "$url" > /dev/null &
+    # Polled: the shell macOS has cannot wait for whichever ends first.
     while (( $(jobs -rp | wc -l) >= jobs_max )); do
-        wait -n || true
+        sleep 0.2
     done
     done_count=$(( done_count + 1 ))
     (( done_count % 10 == 0 )) && log "$done_count of ${#sites[@]} started"

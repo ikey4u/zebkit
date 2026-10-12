@@ -7,7 +7,8 @@ is in `docs/MACOS.md`; this is the record behind it.
 - Upstream: WebKit's Mac port at the tag `wpewebkit-2.54.1`
 - Measured: 2026-10-11 and 12 on macOS 27.0.1, Apple Silicon, Xcode 27.0
 - **Result: 83.9 MiB**, against 125.1 MiB with upstream's settings;
-  24.5 MiB compressed with xz
+  24.5 MiB compressed with xz. With FFmpeg added for applications, which
+  is what ships: 89.4 MiB, 92.2 as a package, 28.2 as its archive
 
 ## How it was measured
 
@@ -38,7 +39,8 @@ is in `docs/MACOS.md`; this is the record behind it.
 | 5 | `-Oz` everywhere, thin link-time optimization | 82.2 | 19 | 29 | 220 | 139 | 73 | 212 |
 | 6 | 5, features off but all JIT tiers on, checks without their text | 75.2 | 18 | 30 | 222 | 140 | 74 | 208 |
 | 7 | 6, the JavaScript engine at `-Os` | 81.7 | 19 | 18 | 85 | 77 | 38 | 201 |
-| 8 | 7, WebCore inlining as `-Os` does: **`slim`** | **83.9** | 18 | 17 | 84 | 76 | 38 | 137 |
+| 8 | 7, WebCore inlining as `-Os` does | 83.9 | 18 | 17 | 84 | 76 | 38 | 137 |
+| 9 | 8, with FFmpeg for applications: **`slim`** | **89.4** | 18 | 18 | 86 | 78 | 37 | 137 |
 
 By binary, MiB:
 
@@ -170,6 +172,22 @@ would get there for 11.7 MiB (build 4 against build 6).
 Not tried: a threshold between 50 and 225, and the same treatment for
 the WebKit framework.
 
+### 8 to 9: FFmpeg for applications, 5.4 MiB
+
+Not slimming: the opposite, for the sake of one interface on both
+systems. On Linux the engine plays media with FFmpeg and lends it to
+applications for 1.8 MiB more (`docs/VENDOR.md`). On macOS the engine
+plays media with the system's decoders, so the same FFmpeg, built the
+same way and with the same 938 functions exposed, is all extra: WebKit's
+binary went from 14.6 to 20.0 MiB. Nothing else changed, and the
+benchmark is the same.
+
+It is linked into WebKit.framework by the profile alone, with no patch:
+the entry points whole (`-force_load`), FFmpeg's archives with their own
+names hidden (`-load_hidden`). The package with it (frameworks, helper
+processes, resources, without headers) is 92.2 MiB, and its archive
+28.2 MiB.
+
 ## Why macOS is larger than Linux
 
 The Linux engine is 76.7 MiB with `-Oz` throughout.
@@ -184,6 +202,8 @@ The Linux engine is 76.7 MiB with `-Oz` throughout.
   for Metal; the Linux port has no backend for it).
 - macOS has the top JIT tiers on, and `-Os` for the JavaScript engine
   (6.5 MiB).
+- FFmpeg is all extra on macOS (5.4 MiB), where on Linux the engine needs
+  most of it anyway.
 - macOS has code inside the main binaries that Linux has not: below.
 
 ## What features weigh
