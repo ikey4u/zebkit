@@ -13,6 +13,9 @@
 # "debug" is not an unoptimized build. It is the release configuration
 # without link-time optimization and with symbols left in, which is what a
 # debugger and a profiler need and what relinks in seconds after a change.
+#
+# On macOS (Apple Silicon) the steps are the same without the toolchain,
+# which is Xcode's, and there is the release kind only so far.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -24,9 +27,16 @@ case "$kind" in
 esac
 
 host="$(uname -s)-$(uname -m)"
-[[ "$host" == Linux-x86_64 ]] || die "zebkit builds on Linux x86_64 so far; this is $host (for macOS see docs/MACOS.md)"
+case "$host" in
+    Linux-x86_64) engine=libzebkit.so.1 ;;
+    Darwin-arm64)
+        engine=WebKit.framework
+        [[ "$kind" == release ]] || die "there is no profile for a debug build on macOS yet; scripts/dist.sh release"
+        ;;
+    *) die "zebkit builds on Linux x86_64 and on macOS on Apple Silicon so far; this is $host" ;;
+esac
 
-"$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
+[[ "$ZEBKIT_HOST" == macos ]] || "$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
 "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
 "$ZEBKIT_ROOT/scripts/build-deps.sh"
 "$ZEBKIT_ROOT/scripts/build.sh" "$profile"
@@ -34,7 +44,7 @@ PACKAGE_STRIP="$strip" "$ZEBKIT_ROOT/scripts/package.sh" "$profile"
 
 dist="$ZEBKIT_ROOT/dist/$kind"
 package="$OUT_DIR/$profile/package"
-[[ -f "$package/libzebkit.so.1" ]] || die "packaging left no engine in $package"
+[[ -e "$package/$engine" ]] || die "packaging left no engine in $package"
 mkdir -p "$dist"
 # Only what the package holds: files of an earlier build must not linger.
 find "$dist" -mindepth 1 -delete

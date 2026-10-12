@@ -8,6 +8,9 @@
 #
 #   scripts/package.sh <profile>
 #
+# On macOS the engine is frameworks and the package is laid out
+# differently: scripts/package-macos.sh.
+#
 # PACKAGE_STRIP=0 leaves symbols and debug information in, for a package
 # that is going to be debugged and not shipped.
 #
@@ -17,6 +20,8 @@
 # scripts/measure.sh reports for it, is always the whole thing.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+[[ "$ZEBKIT_HOST" == macos ]] && exec "$ZEBKIT_ROOT/scripts/package-macos.sh" "$@"
 
 profile="${1:-}"
 require_profile "$profile"
