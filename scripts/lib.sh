@@ -109,3 +109,17 @@ stage_profile() {
         run_env=(env "LD_LIBRARY_PATH=$stage_dir/lib:$deps_prefix/lib" "GIO_MODULE_DIR=$deps_prefix/lib/gio/modules")
     fi
 }
+
+# build_pageprobe: on macOS, after stage_profile, build tools/pageprobe for
+# the profile if it is not up to date, and set probe to it. It is what loads
+# a page in the engine without a window there.
+build_pageprobe() {
+    probe="$build_dir/tools/pageprobe"
+    local source_file="$ZEBKIT_ROOT/tools/pageprobe/pageprobe.m"
+    if [[ ! -x "$probe" || "$source_file" -nt "$probe" || "$products_dir/WebKit.framework/WebKit" -nt "$probe" ]]; then
+        log "building pageprobe for $(basename "$build_dir")"
+        mkdir -p "$build_dir/tools"
+        clang -fobjc-arc -O1 -Wno-deprecated-declarations "$source_file" -o "$probe" \
+            -F"$products_dir" -framework WebKit -framework Cocoa
+    fi
+}

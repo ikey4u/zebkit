@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Time tests/bench/ in a headless MiniBrowser for one or more built profiles.
+# Time tests/bench/ in the engine, without a window, for one or more built
+# profiles.
 # The page runs a handful of JavaScript and DOM workloads and reports
 # milliseconds for each; lower is better. Each profile runs three times and
 # the best time per workload is kept. Run it on an otherwise idle machine.
@@ -21,12 +22,17 @@ rows=()
 for profile in "$@"; do
     require_profile "$profile"
     stage_profile "$profile"
+    [[ "$ZEBKIT_HOST" == macos ]] && build_pageprobe
     log "benchmarking $profile"
     for run in 1 2 3; do
         # MiniBrowser does not exit on its own: wait for the page's report,
         # then stop it.
-        "${run_env[@]}" "$build_dir/bin/MiniBrowser" --headless \
-            "http://127.0.0.1:$port/index.html?profile=$profile&run=$run.$(date +%s%N)" > /dev/null 2>&1 &
+        url="http://127.0.0.1:$port/index.html?profile=$profile&run=$run.$(date +%s)$RANDOM"
+        if [[ "$ZEBKIT_HOST" == macos ]]; then
+            "${run_env[@]}" "$probe" --settle 300 --timeout 300 "$url" > /dev/null 2>&1 &
+        else
+            "${run_env[@]}" "$build_dir/bin/MiniBrowser" --headless "$url" > /dev/null 2>&1 &
+        fi
         browser_pid=$!
         for (( waited = 0; waited < 120; waited++ )); do
             (( $(grep -c "GET /result?profile=$profile&" "$work/server.log") >= run )) && break

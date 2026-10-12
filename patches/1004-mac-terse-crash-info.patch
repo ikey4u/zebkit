@@ -1,0 +1,31 @@
+Size, macOS: failed run-time checks without their diagnostic strings.
+
+RELEASE_ASSERT and its relatives end in CRASH_WITH_INFO, which hands the
+file name and the full C++ signature of the enclosing function to
+WTFCrashWithInfo. Every template instantiation has a signature of its own,
+and in the Mac port they come to about 4 MiB of text, with the code that
+loads it.
+
+With ZEBKIT_TERSE_CRASH_INFO defined, which profiles/macos/slim.xcconfig
+does, a failed check stops the process at the same place and says nothing
+about where. Linux gets the same from profiles/include/size-prelude.h,
+which is put in front of every file there; Xcode's precompiled headers
+have to be the first thing included, so that way is closed on macOS.
+
+--- a/Source/WTF/wtf/Assertions.h
++++ b/Source/WTF/wtf/Assertions.h
+@@ -1088,7 +1088,13 @@
+ 
+ // This is useful if you are going to stuff data into registers before crashing, like the
+ // crashWithInfo functions below.
+-#if !VA_OPT_SUPPORTED
++#if defined(ZEBKIT_TERSE_CRASH_INFO)
++// zebkit: stop at the same place, without the file and signature strings.
++#define CRASH_WITH_INFO(...) do { \
++        WTF::isIntegralOrPointerType(__VA_ARGS__); \
++        CRASH(); \
++    } while (false)
++#elif !VA_OPT_SUPPORTED
+ #define CRASH_WITH_INFO(...) do { \
+         WTF::isIntegralOrPointerType(__VA_ARGS__); \
+         compilerFenceForCrash(); \

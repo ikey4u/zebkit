@@ -57,14 +57,7 @@ sleep 1
 # browse <url>: load the page in the engine, without a window, and give it
 # time to report.
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    probe="$build_dir/tools/pageprobe"
-    source_file="$ZEBKIT_ROOT/tools/pageprobe/pageprobe.m"
-    if [[ ! -x "$probe" || "$source_file" -nt "$probe" || "$products_dir/WebKit.framework/WebKit" -nt "$probe" ]]; then
-        log "building pageprobe for $profile"
-        mkdir -p "$build_dir/tools"
-        clang -fobjc-arc -O1 -Wno-deprecated-declarations "$source_file" -o "$probe" \
-            -F"$products_dir" -framework WebKit -framework Cocoa
-    fi
+    build_pageprobe
     browse() { "${run_env[@]}" "$probe" --ignore-tls-errors --settle 3 --timeout 20 "$1"; }
 else
     browse() { "${run_env[@]}" timeout 20 "$build_dir/bin/MiniBrowser" --headless --ignore-tls-errors "$1"; }

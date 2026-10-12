@@ -118,7 +118,11 @@ int main(int argc, char **argv)
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         NSRect frame = NSMakeRect(0, 0, 800, 600);
-        WKWebView *view = [[WKWebView alloc] initWithFrame:frame configuration:[WKWebViewConfiguration new]];
+        // Cookies and caches in memory: nothing is kept between runs or
+        // written to the user's Library.
+        WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
+        configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+        WKWebView *view = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
         view.navigationDelegate = probe;
         NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
         window.contentView = view;

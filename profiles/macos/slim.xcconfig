@@ -1,0 +1,58 @@
+// slim: the engine as zebkit ships it on macOS. The counterpart of
+// profiles/slim.cmake, as far as the two builds have the same switches.
+// scripts/build-macos.sh hands each setting to Xcode, over what the
+// projects set for themselves. One setting to a line.
+
+// Optimize for size before speed. Upstream builds JavaScriptCore and WTF
+// with -O3, WebCore with -O2 and WebKit with -Os. -Oz everywhere takes a
+// quarter off the binaries and makes JSON and DOM work about two and a
+// half times slower; -Os would be as fast as upstream's build and 25 MiB
+// larger (docs/MACOS.md). The owner chose size, as on Linux.
+//
+// The exception is the JavaScript engine with what it stands on (strings
+// and collections, the allocator), which is where JSON, regular
+// expressions and sorting are.
+ZEBKIT_OPTIMIZATION_JavaScriptCore = s;
+ZEBKIT_OPTIMIZATION_WTF = s;
+ZEBKIT_OPTIMIZATION_bmalloc = s;
+WK_DEFAULT_GCC_OPTIMIZATION_LEVEL = $(ZEBKIT_OPTIMIZATION_$(PROJECT_NAME):default=z);
+
+// Link-time optimization, which lets the linker drop and merge across
+// files what each file alone has to keep. "thin" is the kind that builds
+// in parallel.
+WK_LTO_MODE = thin;
+
+// What a failed run-time check says about itself: nothing. WebKit's checks
+// carry the file and the full C++ signature of the function they are in,
+// about 4 MiB of text, which patches/1004 drops when this is defined.
+ZEBKIT_SIZE = ZEBKIT_TERSE_CRASH_INFO=1;
+
+// Paths in what text is left are relative to the checkout.
+ZEBKIT_PREFIX_MAP = -ffile-prefix-map=$(ZEBKIT_ROOT)/=;
+
+// WebCore inlines as it would with -Os. What makes -Oz slow there is not
+// one place: it is the small accessors and reference counts all over
+// style, layout and rendering, which -Oz leaves as calls.
+ZEBKIT_INLINE_WebCore = -mllvm -inline-threshold=50;
+ZEBKIT_INLINE_LD_WebCore = -Wl,-mllvm,-inline-threshold=50;
+
+WK_COMMON_OTHER_CFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_SANITIZER_OTHER_CFLAGS) $(ZEBKIT_PREFIX_MAP) $(ZEBKIT_INLINE_$(PROJECT_NAME));
+WK_COMMON_OTHER_CPLUSPLUSFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_LIBCPP_ASSERTIONS_CFLAGS) $(ZEBKIT_PREFIX_MAP) $(ZEBKIT_INLINE_$(PROJECT_NAME));
+WK_COMMON_OTHER_LDFLAGS = $(WK_SANITIZER_OTHER_LDFLAGS) $(ZEBKIT_INLINE_LD_$(PROJECT_NAME));
+
+// Features that are off, as in profiles/slim.cmake, each for the reason
+// given there. WebKit's headers switch a feature on unless it is defined
+// already.
+
+// Protected media.
+ZEBKIT_FEATURES_MEDIA = ENABLE_ENCRYPTED_MEDIA=0 ENABLE_LEGACY_ENCRYPTED_MEDIA=0;
+
+// Game controllers and speech.
+ZEBKIT_FEATURES_DEVICES = ENABLE_GAMEPAD=0 ENABLE_SPEECH_SYNTHESIS=0;
+
+// What a browser has around the engine: extensions, with their part of the
+// inspector, and the page that reports resource usage.
+ZEBKIT_FEATURES_BROWSER = ENABLE_WK_WEB_EXTENSIONS=0 ENABLE_INSPECTOR_EXTENSIONS=0 ENABLE_RESOURCE_USAGE=0;
+
+// WebKit's own definitions, with the above added.
+WK_GCC_PREPROCESSOR_DEFINITIONS = $(WK_GCC_PREPROCESSOR_DEFINITIONS_$(USE_INTERNAL_SDK)) ENGINEERING_BUILD=$(WK_ENGINEERING_BUILD) $(ZEBKIT_SIZE) $(ZEBKIT_FEATURES_MEDIA) $(ZEBKIT_FEATURES_DEVICES) $(ZEBKIT_FEATURES_BROWSER);

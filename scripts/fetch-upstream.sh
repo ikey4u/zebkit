@@ -65,7 +65,7 @@ fetch_git() {
     # working tree is then moved to it. Git writes only the files that
     # differ from what is there, and drops whatever was edited by hand.
     local index="$SRC_DIR/.git/zebkit-index" tree
-    rm -f "$index"
+    rm -f "$index" "$index.lock"
     GIT_INDEX_FILE="$index" git -C "$SRC_DIR" read-tree "$UPSTREAM_GIT_COMMIT"
     patch_list | while read -r p; do
         log "applying $p"

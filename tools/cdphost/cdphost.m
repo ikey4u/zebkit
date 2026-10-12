@@ -78,7 +78,11 @@ int main(int argc, char **argv)
         [NSApp setActivationPolicy:headless ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
 
         NSRect frame = NSMakeRect(0, 0, width, height);
-        WKWebView *view = [[WKWebView alloc] initWithFrame:frame configuration:[WKWebViewConfiguration new]];
+        /* Nothing is kept from one run to the next, and nothing is written
+         * to the user's Library: cookies and caches are in memory. */
+        WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
+        configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+        WKWebView *view = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
         NSWindow *window;
         if (headless) {
             window = [[HeadlessWindow alloc] initWithContentRect:NSOffsetRect(frame, -20000, -20000) styleMask:NSWindowStyleMaskBorderless
