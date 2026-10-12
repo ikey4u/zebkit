@@ -4,9 +4,13 @@
 //
 // The application has no FFmpeg of its own. It includes one header, uses the
 // library's ordinary API in the namespace zebkit::vendor::ffmpeg, and links
-// against libzebkit and nothing else (docs/VENDOR.md):
+// against the engine and nothing else (docs/VENDOR.md). On Linux:
 //
 //   c++ -std=c++17 ffmpeg.cpp -o ffmpeg -I<package>/include -L<package> -l:libzebkit.so.1
+//
+// On macOS, where the engine is WebKit.framework:
+//
+//   c++ -std=c++17 ffmpeg.cpp -o ffmpeg -I<package>/include -F<package> -framework WebKit
 //
 // This one works on the codec level: an MP3 file is a bare audio stream,
 // which the codec's parser splits into frames. The engine's FFmpeg can also

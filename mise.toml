@@ -4,7 +4,10 @@
 #   mise run r:github         the same, published as a GitHub release
 #   mise run d                debug build for this machine    -> dist/debug
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
+#   mise example:macos:basic  build and run examples/window.m, the same window on macOS
 #   mise example:ffmpeg       build and run examples/ffmpeg.cpp, which uses the engine's FFmpeg
+#   mise example:rust:window  run the Rust crate's window example
+#   mise example:rust:codecs  run the Rust crate's example of the engine's FFmpeg
 #
 # "mise d" works as a short form of "mise run d". "mise r" does not run the
 # task r: it is mise's own short form of "mise run", which with no task
@@ -32,6 +35,20 @@ run = "scripts/dist.sh debug"
 description = "Build and run examples/window.c: a small browser window (pass a URL after --)"
 run = "scripts/example.sh linux-basic"
 
+[tasks."example:macos:basic"]
+description = "Build and run examples/window.m: a small browser window on macOS (pass a URL after --)"
+run = "scripts/example.sh macos-basic"
+
 [tasks."example:ffmpeg"]
 description = "Build and run examples/ffmpeg.cpp: decode an MP3 to WAV with the FFmpeg inside zebkit (pass IN.mp3 OUT.wav after --)"
 run = "scripts/example.sh ffmpeg"
+
+[tasks."example:rust:window"]
+description = "Run the Rust crate's window example against dist/release (pass a URL after --)"
+dir = "rust"
+run = "cargo run --example window --"
+
+[tasks."example:rust:codecs"]
+description = "Run the Rust crate's codecs example: what the FFmpeg inside zebkit has"
+dir = "rust"
+run = "cargo run --example codecs"
