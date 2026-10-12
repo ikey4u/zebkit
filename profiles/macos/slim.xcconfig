@@ -38,7 +38,18 @@ ZEBKIT_INLINE_LD_WebCore = -Wl,-mllvm,-inline-threshold=50;
 
 WK_COMMON_OTHER_CFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_SANITIZER_OTHER_CFLAGS) $(ZEBKIT_PREFIX_MAP) $(ZEBKIT_INLINE_$(PROJECT_NAME));
 WK_COMMON_OTHER_CPLUSPLUSFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_LIBCPP_ASSERTIONS_CFLAGS) $(ZEBKIT_PREFIX_MAP) $(ZEBKIT_INLINE_$(PROJECT_NAME));
-WK_COMMON_OTHER_LDFLAGS = $(WK_SANITIZER_OTHER_LDFLAGS) $(ZEBKIT_INLINE_LD_$(PROJECT_NAME));
+
+// FFmpeg, for applications to use through the engine as on Linux
+// (docs/VENDOR.md), for 5.4 MiB. The engine itself plays media with the
+// system's decoders. scripts/build-deps.sh builds the library and its
+// entry points, zebkit_vendor_ffmpeg_<function>; they go into
+// WebKit.framework whole, and the library behind them with its own names
+// hidden.
+ZEBKIT_DEPS = $(ZEBKIT_ROOT)/out/deps;
+ZEBKIT_FFMPEG = -Wl,-load_hidden,$(ZEBKIT_DEPS)/prefix/lib/libavformat.a -Wl,-load_hidden,$(ZEBKIT_DEPS)/prefix/lib/libavcodec.a -Wl,-load_hidden,$(ZEBKIT_DEPS)/prefix/lib/libswscale.a -Wl,-load_hidden,$(ZEBKIT_DEPS)/prefix/lib/libswresample.a -Wl,-load_hidden,$(ZEBKIT_DEPS)/prefix/lib/libavutil.a;
+ZEBKIT_VENDOR_LD_WebKit = -Wl,-force_load,$(ZEBKIT_DEPS)/vendor/lib/libzebkit-vendor.a $(ZEBKIT_FFMPEG);
+
+WK_COMMON_OTHER_LDFLAGS = $(WK_SANITIZER_OTHER_LDFLAGS) $(ZEBKIT_INLINE_LD_$(PROJECT_NAME)) $(ZEBKIT_VENDOR_LD_$(TARGET_NAME));
 
 // Features that are off, as in profiles/slim.cmake, each for the reason
 // given there. WebKit's headers switch a feature on unless it is defined

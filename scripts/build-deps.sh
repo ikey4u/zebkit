@@ -11,6 +11,10 @@
 # DEP_LINKAGE=shared (the default is static) and may define
 # dep_extract <archive...> when the default "untar, strip one level" is wrong.
 # A dependency is rebuilt when its recipe directory or the flags below change.
+#
+# On macOS the system supplies what the engine needs, and the list
+# (deps/order.macos) holds only what is built for applications to use
+# through the engine: FFmpeg. It is compiled with Xcode's compiler.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -18,17 +22,31 @@ DEPS_DIR="$ZEBKIT_ROOT/deps"
 DEPS_OUT="$OUT_DIR/deps"
 DEPS_PREFIX="$DEPS_OUT/prefix"
 
-# Everything is compiled with the pinned cross toolchain, so no library can
-# pull in a symbol newer than the glibc floor in toolchain.lock.
-[[ -x "$TOOLCHAIN_DIR/bin/zebkit-cc" ]] || "$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
-DEP_CC="$TOOLCHAIN_DIR/bin/zebkit-cc"
-DEP_CXX="$TOOLCHAIN_DIR/bin/zebkit-c++"
-DEP_JOBS="${DEP_JOBS:-$(nproc)}"
-# Static, position-independent, one section per function so the engine link
-# can drop what it does not reference, and no unwind tables.
-# ("-Xclang -Oz -fomit-frame-pointer": the toolchain's driver would otherwise
-# turn -Oz into -Os and keep frame pointers.)
-BASE_CFLAGS="-Oz -Xclang -Oz -fomit-frame-pointer -DNDEBUG -fPIC -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables"
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    DEP_CC="$(xcrun -f clang)"
+    DEP_CXX="$(xcrun -f clang++)"
+    DEP_JOBS="${DEP_JOBS:-$(sysctl -n hw.ncpu)}"
+    DEP_ORDER="$DEPS_DIR/order.macos"
+    # What a change of compiler or system version has to rebuild for.
+    DEP_TOOLCHAIN="$("$DEP_CC" --version | head -1) $(xcrun --show-sdk-version)"
+    # Static and without unwind tables, as on Linux. The linker drops what
+    # the engine does not reference without being told about sections.
+    BASE_CFLAGS="-Oz -DNDEBUG -fPIC -fno-asynchronous-unwind-tables -fno-unwind-tables"
+else
+    # Everything is compiled with the pinned cross toolchain, so no library can
+    # pull in a symbol newer than the glibc floor in toolchain.lock.
+    [[ -x "$TOOLCHAIN_DIR/bin/zebkit-cc" ]] || "$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
+    DEP_CC="$TOOLCHAIN_DIR/bin/zebkit-cc"
+    DEP_CXX="$TOOLCHAIN_DIR/bin/zebkit-c++"
+    DEP_JOBS="${DEP_JOBS:-$(nproc)}"
+    DEP_ORDER="$DEPS_DIR/order"
+    DEP_TOOLCHAIN="$TOOLCHAIN_SHA256 $TOOLCHAIN_TARGET"
+    # Static, position-independent, one section per function so the engine link
+    # can drop what it does not reference, and no unwind tables.
+    # ("-Xclang -Oz -fomit-frame-pointer": the toolchain's driver would otherwise
+    # turn -Oz into -Os and keep frame pointers.)
+    BASE_CFLAGS="-Oz -Xclang -Oz -fomit-frame-pointer -DNDEBUG -fPIC -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables"
+fi
 
 export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
@@ -137,7 +155,7 @@ build_one() {
     local build="$DEPS_OUT/build/$name-$DEP_VERSION"
     local stamp="$DEPS_OUT/stamps/$name"
     local want
-    want="$(cat "$DEP_DIR"/* | sha256sum | cut -d' ' -f1) $TOOLCHAIN_SHA256 $TOOLCHAIN_TARGET $BASE_CFLAGS"
+    want="$(cat "$DEP_DIR"/* | sha256 | cut -d' ' -f1) $DEP_TOOLCHAIN $BASE_CFLAGS"
 
     if [[ -z "${DEP_FORCE:-}" && -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
         log "$name $DEP_VERSION is up to date"
@@ -149,12 +167,12 @@ build_one() {
     for entry in ${DEP_SOURCES[@]+"${DEP_SOURCES[@]}"}; do
         read -r url sha <<< "$entry"
         file="$CACHE_DIR/deps/$(basename "$url")"
-        if [[ ! -f "$file" ]] || ! echo "$sha  $file" | sha256sum -c --status; then
+        if [[ ! -f "$file" || "$(sha256 "$file" | cut -d' ' -f1)" != "$sha" ]]; then
             log "downloading $url"
             curl -fL --retry 3 -sS -o "$file.part" "$url"
             mv "$file.part" "$file"
         fi
-        echo "$sha  $file" | sha256sum -c --status || die "checksum mismatch for $file"
+        [[ "$(sha256 "$file" | cut -d' ' -f1)" == "$sha" ]] || die "checksum mismatch for $file"
         archives+=("$file")
     done
 
@@ -171,7 +189,12 @@ build_one() {
     local started="$DEPS_OUT/stamps/.started"
     # Dated slightly in the past: some installers round file times down to
     # the second, and a file from this build must still count as newer.
-    touch -d "@$(( $(date +%s) - 2 ))" "$started"
+    local before=$(( $(date +%s) - 2 ))
+    if [[ "$ZEBKIT_HOST" == macos ]]; then
+        touch -t "$(date -r "$before" +%Y%m%d%H%M.%S)" "$started"
+    else
+        touch -d "@$before" "$started"
+    fi
     ( cd "$build" && dep_build ) > "$build.log" 2>&1 \
         || { tail -n 30 "$build.log" >&2; die "$name failed to build"; }
     [[ "$DEP_LINKAGE" == static ]] && publish_private_dependencies "$started"
@@ -183,7 +206,10 @@ build_one() {
 if (( $# )); then
     names=("$@")
 else
-    mapfile -t names < <(sed -e 's/#.*//' -e '/^\s*$/d' "$DEPS_DIR/order")
+    names=()
+    while IFS= read -r name; do
+        names+=("$name")
+    done < <(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$DEP_ORDER")
 fi
 
 for name in "${names[@]}"; do
@@ -193,3 +219,27 @@ done
 # What lets applications use these libraries through the engine. It follows
 # from what was just built, and is rewritten only where that changed.
 python3 "$ZEBKIT_ROOT/scripts/gen-vendor.py"
+
+# On Linux the engine's build compiles the entry points (patches/2008). On
+# macOS they are compiled here, into a library the profile hands to the
+# link of WebKit.framework, which keeps Xcode's projects as they are.
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    vendor="$DEPS_OUT/vendor"
+    library="$vendor/lib/libzebkit-vendor.a"
+    stale=0
+    for source in "$vendor"/src/*.cpp; do
+        [[ -f "$library" && ! "$source" -nt "$library" ]] || stale=1
+    done
+    if (( stale )); then
+        log "compiling the entry points of the vendored libraries"
+        mkdir -p "$vendor/lib" "$vendor/obj"
+        objects=()
+        for source in "$vendor"/src/*.cpp; do
+            object="$vendor/obj/$(basename "${source%.cpp}").o"
+            "$DEP_CXX" -c "$source" -o "$object"
+            objects+=("$object")
+        done
+        rm -f "$library"
+        libtool -static -o "$library" "${objects[@]}" 2> /dev/null
+    fi
+fi

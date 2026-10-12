@@ -5,7 +5,8 @@
 #   scripts/vendor.sh <profile>
 #
 # Builds tests/vendor/ against the profile's package, with the system's
-# compiler and nothing but libzebkit to link against, and runs them.
+# compiler and nothing but the engine to link against (libzebkit on Linux,
+# WebKit.framework on macOS), and runs them.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -23,23 +24,35 @@ check() { # check <ok?> <description>
     if [[ "$1" == yes ]]; then echo "  PASS  $2"; else echo "  FAIL  $2"; failures=$(( failures + 1 )); fi
 }
 
-engine="$package/libzebkit.so.1"
-exported="$(nm -D --defined-only "$engine" | awk '{ print $3 }')"
+# What differs between the systems: where the engine is and what it
+# exports, how a program is linked against it, and what a program needs.
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    engine="$package/WebKit.framework/Versions/A/WebKit"
+    engine_name=WebKit.framework
+    exported="$(nm -gU "$engine" | awk '{ print $3 }' | sed 's/^_//')"
+    link=(-I"$package/include" -F"$package" -framework WebKit -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="$package")
+    needed_by() { otool -L "$1" | awk 'NR > 1 { print $1 }' | paste -sd' ' -; }
+else
+    engine="$package/libzebkit.so.1"
+    engine_name=libzebkit.so.1
+    exported="$(nm -D --defined-only "$engine" | awk '{ print $3 }')"
+    link=(-I"$package/include" -L"$package" -l:libzebkit.so.1 -Wl,-rpath,"$package" -Wl,--no-undefined)
+    needed_by() { objdump -p "$1" | awk '/NEEDED/ { print $2 }' | paste -sd' ' -; }
+fi
 count="$(grep -c '^zebkit_vendor_ffmpeg_' <<< "$exported" || true)"
 check "$( (( count == $(wc -l < "$OUT_DIR/deps/vendor/ffmpeg.functions") )) && echo yes || echo no)" "the engine exports all $count FFmpeg entry points"
 check "$([[ -z "$(grep -E '^(av|swr|sws)[a-z0-9]*_' <<< "$exported" || true)" ]] && echo yes || echo no)" "and none of FFmpeg's own names"
 
 log "C++, through zebkit::vendor::ffmpeg"
-link=(-I"$package/include" -L"$package" -l:libzebkit.so.1 -Wl,-rpath,"$package" -Wl,--no-undefined)
 if c++ -std=c++17 -O1 -Wall -o "$work/ffmpeg" "$ZEBKIT_ROOT/tests/vendor/ffmpeg.cpp" "${link[@]}" 2> "$work/build.log"; then
     result="$("$work/ffmpeg" "$ZEBKIT_ROOT/tests/media/sample.mp3" 2>&1 || true)"
     echo "  $result"
-    value() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" <<< "$result"; }
+    value() { tr ' ' '\n' <<< "$result" | sed -n "s/^$1=//p"; }
     check "$([[ "$(value decoder)" == mp3* && "$(value samples)" -gt 10000 ]] && echo yes || echo no)" "an MP3 file is decoded"
     check "$([[ -n "$(value samples)" && "$(value converted)" == "$(value samples)" ]] && echo yes || echo no)" "and converted to 16-bit samples"
     check "$([[ "$(value h264)" == 1 && "$(value aac_encoder)" == 1 ]] && echo yes || echo no)" "the H.264 decoder and the AAC encoder are there"
-    needed="$(objdump -p "$work/ffmpeg" | awk '/NEEDED/ { print $2 }' | paste -sd' ')"
-    check "$([[ "$needed" == *libzebkit.so.1* && "$needed" != *libav* && "$needed" != *libsw* ]] && echo yes || echo no)" "the program needs libzebkit and no FFmpeg library ($needed)"
+    needed="$(needed_by "$work/ffmpeg")"
+    check "$([[ "$needed" == *"$engine_name"* && "$needed" != *libav* && "$needed" != *libsw* ]] && echo yes || echo no)" "the program needs the engine and no FFmpeg library ($needed)"
 else
     cat "$work/build.log" >&2
     check no "the C++ test builds"

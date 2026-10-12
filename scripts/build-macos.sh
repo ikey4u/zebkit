@@ -42,6 +42,17 @@ while IFS= read -r line; do
     settings+=("${BASH_REMATCH[1]}=${value%"${value##*[![:space:]]}"}")
 done < "$PROFILES_DIR/$profile.xcconfig"
 
+# A profile that links what scripts/build-deps.sh builds needs it built,
+# and has to link again when it changed.
+if [[ "${settings[*]}" == *'$(ZEBKIT_ROOT)/out/deps'* ]]; then
+    vendor="$OUT_DIR/deps/vendor/lib/libzebkit-vendor.a"
+    [[ -f "$vendor" ]] || die "profile '$profile' links the libraries in out/deps; run scripts/build-deps.sh first"
+    framework="$build_dir/Release/WebKit.framework/Versions/A/WebKit"
+    if [[ -f "$framework" && "$vendor" -nt "$framework" ]]; then
+        rm -f "$framework"
+    fi
+fi
+
 # Disk. A build tree is about 40 GB. Xcode would add a cache of every
 # compilation it ever did, which is as much again for each change of
 # settings and buys nothing here, so that is off; and the cache link-time

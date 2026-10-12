@@ -21,7 +21,8 @@ Written to out/deps/vendor/:
 
     src/ZebkitVendor<Name>.cpp        one exported entry point per function,
                                       each a jump to the function inside
-                                      the engine (built into libzebkit)
+                                      the engine (built into libzebkit, or
+                                      on macOS into WebKit.framework)
     include/zebkit/vendor/<name>.h    the header an application includes
     include/zebkit/vendor/<name>/     the library's own headers, as built
 
@@ -32,6 +33,7 @@ headers declare; nothing is listed by hand.
 
 import os
 import pathlib
+import platform
 import re
 import subprocess
 import sys
@@ -69,7 +71,11 @@ VENDORED = {
 def defined_functions(archive):
     """Names of the global functions a static archive defines."""
     output = subprocess.run(["nm", "-g", "--defined-only", str(archive)], capture_output=True, text=True, check=True).stdout
-    return {fields[2] for fields in (line.split() for line in output.splitlines()) if len(fields) == 3 and fields[1] == "T"}
+    names = {fields[2] for fields in (line.split() for line in output.splitlines()) if len(fields) == 3 and fields[1] == "T"}
+    # A C name has an underscore in front of it in a Mach-O file.
+    if platform.system() == "Darwin":
+        names = {name[1:] for name in names if name.startswith("_")}
+    return names
 
 
 def write_if_changed(path, text):
@@ -134,10 +140,11 @@ def generate(name, spec):
         f" * C++: the library's API is in the namespace zebkit::vendor::{name}.",
         " * C:   the library's API is as the library declares it.",
         " *",
-        " * Link with libzebkit and nothing else. Each function is taken from the",
-        f" * engine under the name {prefix}<function>, which this header arranges;",
-        " * the engine does not export the library's own names, so another copy of",
-        " * the library in the same process is a different one and does no harm.",
+        " * Link with libzebkit (on macOS, WebKit.framework) and nothing else. Each",
+        f" * function is taken from the engine under the name {prefix}<function>,",
+        " * which this header arranges; the engine does not export the library's own",
+        " * names, so another copy of the library in the same process is a different",
+        " * one and does no harm.",
         " * Preprocessor macros and inline functions are the library's own.",
         " *",
         " * Only what the engine was built with is there. See docs/VENDOR.md. */",
@@ -148,7 +155,10 @@ def generate(name, spec):
     ]
     lines += [f"#include <{header}>" for header in sorted(system)]
     lines += [""]
-    lines += [f"#pragma redefine_extname {function} {prefix}{function}" for function in functions]
+    # The pragma takes the name as the object file has it, which for Mach-O
+    # is the C name with an underscore in front.
+    underscore = "_" if platform.system() == "Darwin" else ""
+    lines += [f"#pragma redefine_extname {function} {underscore}{prefix}{function}" for function in functions]
     lines += [
         "",
         "#ifdef __cplusplus",
@@ -179,7 +189,15 @@ def generate(name, spec):
         f"// Each {prefix}<function> is an exported entry point that jumps to <function>,",
         "// which the engine links statically and does not export.",
         "",
-        "#if defined(__x86_64__)",
+        "#if defined(__APPLE__) && defined(__aarch64__)",
+        '#define ZEBKIT_VENDOR_ENTRY(name) __asm__(".text\\n.p2align 2\\n" \\',
+        f'    ".globl _{prefix}" #name "\\n" \\',
+        f'    "_{prefix}" #name ":\\n\\tb _" #name "\\n");',
+        "#elif defined(__APPLE__) && defined(__x86_64__)",
+        '#define ZEBKIT_VENDOR_ENTRY(name) __asm__(".text\\n" \\',
+        f'    ".globl _{prefix}" #name "\\n" \\',
+        f'    "_{prefix}" #name ":\\n\\tjmp _" #name "\\n");',
+        "#elif defined(__x86_64__)",
         '#define ZEBKIT_VENDOR_ENTRY(name) __asm__(".pushsection .text.zebkit_vendor,\\"ax\\",@progbits\\n" \\',
         f'    ".globl {prefix}" #name "\\n.type {prefix}" #name ",@function\\n" \\',
         f'    "{prefix}" #name ":\\n\\tjmp " #name "@PLT\\n" \\',

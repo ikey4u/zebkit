@@ -2,6 +2,9 @@
 # GStreamer's libav plugin, and a library applications use through the
 # engine as zebkit::vendor::ffmpeg (docs/VENDOR.md).
 #
+# On macOS the engine plays media with the system's decoders, and this is
+# built, the same way, for applications alone.
+#
 # For the engine: decoders and their parsers for H.264, VP8, VP9, AAC, MP3,
 # Opus, Vorbis, FLAC and PCM. The engine reads containers with GStreamer and
 # needs nothing else; libavfilter is built empty (the GStreamer plugin
@@ -41,7 +44,9 @@ dep_build() {
         --enable-protocol=file || return
     # glibc 2.17 still exports sysctl(), so configure enables it, but the
     # toolchain's headers (shared by all glibc versions) no longer declare it.
-    sed -i 's/^#define HAVE_SYSCTL 1$/#define HAVE_SYSCTL 0/' config.h || return
+    if [[ "$ZEBKIT_HOST" == linux ]]; then
+        sed -i 's/^#define HAVE_SYSCTL 1$/#define HAVE_SYSCTL 0/' config.h || return
+    fi
     make -j"$DEP_JOBS" || return
     make install
 }

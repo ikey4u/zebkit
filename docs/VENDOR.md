@@ -3,7 +3,8 @@
 zebkit has whole libraries linked into it. An application that needs one of
 them, and ships its own, ships it twice. The ones listed here can be used
 from the engine instead: the application includes one header, links against
-`libzebkit.so.1` and nothing else, and calls the library's ordinary API.
+the engine (`libzebkit.so.1` on Linux, `WebKit.framework` on macOS) and
+nothing else, and calls the library's ordinary API.
 
 | Library | Version | C++ namespace | Header |
 |---|---|---|---|
@@ -25,8 +26,15 @@ ff::avcodec_open2(context, codec, nullptr);
 ```
 
 ```sh
+# Linux
 c++ app.cpp -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,'$ORIGIN'
+# macOS
+c++ app.cpp -I<package>/include -F<package> -framework WebKit -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path
 ```
+
+The header, the namespace, the functions and what is built in are the
+same on both. On macOS the engine does not use FFmpeg itself (it plays
+media with the system's decoders): the library is there for applications.
 
 - **C++:** types, functions and enumerators are in the namespace. The
   library's macros (`AVERROR`, `AV_NOPTS_VALUE`, `AV_VERSION_MAJOR`) are
@@ -94,12 +102,17 @@ almost none.
 
 ## Cost
 
+On Linux:
+
 Exposing the API means every function of it is linked in, not only what the
 engine calls, and the parts built for applications are extra code. For
 FFmpeg that is 1.8 MiB in all: 0.3 MiB for exporting the API the engine
 already had, and 1.5 MiB for file reading and writing, scaling and the
 encoders (the package went from 81.3 to 83.1 MiB). A call through an entry
 point costs one extra jump.
+
+On macOS all of it is extra, since the engine does not need it: 5.4 MiB
+(WebKit.framework's binary went from 14.6 to 20.0 MiB).
 
 ## How it works
 
@@ -119,6 +132,14 @@ writes, into `out/deps/vendor/`:
 The list of functions is not written anywhere by hand: it is every global
 function the library's static archives define, whose name matches the
 pattern FFmpeg exports by, and which a public header declares.
+
+On macOS the list of what `scripts/build-deps.sh` builds is
+`deps/order.macos`, the entry points are compiled there into
+`out/deps/vendor/lib/libzebkit-vendor.a`, and the profile hands that and
+FFmpeg's archives to the link of WebKit.framework
+(`profiles/macos/slim.xcconfig`), with FFmpeg's own names hidden. The
+names in the header have the underscore that C names carry in a Mach-O
+file.
 
 To expose another library, add it to `VENDORED` in `scripts/gen-vendor.py`.
 
