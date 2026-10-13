@@ -6,7 +6,7 @@ Three crates:
 |---|---|
 | `zebkit` | The Rust interface: web views, the main loop, the Chrome DevTools Protocol endpoint, and the FFmpeg inside the engine. No `unsafe` is needed to use it. An application depends on this one. |
 | `zebkit-build` | For the application's build script: one call puts the engine beside the executable. |
-| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine (`libzebkit.so.1` on Linux, `WebKit.framework` on macOS), everything `unsafe`. It also finds the engine, downloading it if need be. Re-exported as `zebkit::sys` for what `zebkit` does not wrap yet. |
+| `zebkit-rs` | The raw bindings: `extern "C"` declarations for the engine (`libzebkit.so.1` on Linux, `Zebkit.framework` on macOS), everything `unsafe`. It also finds the engine, downloading it if need be. Re-exported as `zebkit::sys` for what `zebkit` does not wrap yet. |
 
 The interface of `zebkit` is the same on Linux and on macOS: a program
 written for one builds and runs on the other.
@@ -17,10 +17,10 @@ Nobody has to build the engine. The first build downloads it.
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.2"
+zebkit = "0.0.1-alpha.3"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.2"
+zebkit-build = "0.0.1-alpha.3"
 ```
 
 ```rust

@@ -1,5 +1,5 @@
 //! Raw bindings to zebkit, the engine library (`libzebkit.so.1` on Linux,
-//! `WebKit.framework` on macOS).
+//! `Zebkit.framework` on macOS).
 //!
 //! Declarations and nothing else: every function here is `unsafe` and has
 //! the meaning and the rules it has in C. The `zebkit` crate is the safe

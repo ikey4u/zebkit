@@ -11,9 +11,9 @@
 # goes to dist/example/ and finds the engine through a relative run path,
 # the way a shipped application finds the one beside it.
 #
-# On macOS the engine is WebKit.framework in dist/release, and a program is
-# told where its frameworks are in the loader's own words in place of a run
-# path.
+# On macOS the engine is Zebkit.framework in dist/release. A program finds
+# it through a run path as well, and names the frameworks inside it to the
+# loader, which takes them in place of the system's WebKit.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -36,14 +36,15 @@ case "$kind" in
 esac
 dist="$ZEBKIT_ROOT/dist/$kind"
 engine=libzebkit.so.1
-[[ "$ZEBKIT_HOST" == macos ]] && engine=WebKit.framework
+[[ "$ZEBKIT_HOST" == macos ]] && engine=Zebkit.framework
 [[ -e "$dist/$engine" ]] || "$ZEBKIT_ROOT/scripts/dist.sh" "$kind"
 
 out="$ZEBKIT_ROOT/dist/example"
 binary="$out/$example"
 mkdir -p "$out"
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    link=(-F"$dist" -framework WebKit -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="@executable_path/../$kind")
+    link=(-F"$dist" -framework Zebkit -Wl,-rpath,"@executable_path/../$kind"
+          -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="@executable_path/../$kind/Zebkit.framework/Versions/A/Frameworks")
 else
     link=(-L"$dist" -l:libzebkit.so.1 -Wl,-rpath,"\$ORIGIN/../$kind")
 fi
@@ -52,7 +53,7 @@ case "$example" in
     macos-basic)
         log "building examples/window.m against dist/$kind"
         clang -fobjc-arc -O1 -Wall -Wno-deprecated-declarations -o "$binary" "$ZEBKIT_ROOT/examples/window.m" \
-            -I"$dist/include" "${link[@]}" -framework Cocoa
+            "${link[@]}" -framework Cocoa
         ;;
     linux-basic)
         # WebKit's headers are not part of the package yet; they are in the

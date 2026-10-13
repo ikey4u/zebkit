@@ -9,14 +9,18 @@ fn main() {
     if let Ok(directory) = std::env::var("DEP_ZEBKIT_LIB_DIR") {
         // For the application's build script, as DEP_ZEBKIT_ENGINE_DIR.
         println!("cargo:dir={directory}");
-        // On macOS a program is told where its frameworks are in the same
-        // place, in the words of that system's loader.
-        let found = if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos") {
-            format!("-Wl,-dyld_env,DYLD_FRAMEWORK_PATH={directory}")
-        } else {
-            format!("-Wl,-rpath,{directory}")
-        };
-        println!("cargo:rustc-link-arg-examples={found}");
-        println!("cargo:rustc-link-arg-tests={found}");
+        let mut found = vec![format!("-Wl,-rpath,{directory}")];
+        // On macOS the loader is also told where the frameworks inside
+        // Zebkit.framework are, which it takes in place of the system's.
+        if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos") {
+            found.push(format!(
+                "-Wl,-dyld_env,DYLD_FRAMEWORK_PATH={directory}/Zebkit.framework/Versions/A/Frameworks"
+            ));
+        }
+        // For everything of this crate that is linked: its examples, its
+        // tests and the unit tests in the library. Not for its dependents.
+        for argument in found {
+            println!("cargo:rustc-link-arg={argument}");
+        }
     }
 }

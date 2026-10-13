@@ -1,13 +1,13 @@
 # Size report: `slim` on macOS
 
 - Upstream: WebKit's Mac port at wpewebkit 2.54.1
-- Measured: 2026-10-12 on Darwin arm64, from the package directory `scripts/package.sh` assembles
-- **Total: 92.2 MiB**: 89.7 of code and 2.5 of resources
+- Measured: 2026-10-13 on Darwin arm64, from the package directory `scripts/package.sh` assembles
+- **Total: 92.3 MiB**: 89.7 of code and 2.5 of resources
 - Expects from the system: macOS 27.0 or newer
 
 Headers are for building against the engine and are not counted.
 
-| In the package | Code, MiB | Resources, MiB |
+| In `Zebkit.framework` | Code, MiB | Resources, MiB |
 |---|---:|---:|
 | `WebCore.framework` | 33.3 | 1.5 |
 | `JavaScriptCore.framework` | 22.8 | 0.0 |
@@ -23,3 +23,4 @@ Headers are for building against the engine and are not counted.
 | `com.apple.WebKit.GPU.xpc` | 0.0 | 0.0 |
 | `com.apple.WebKit.Networking.xpc` | 0.0 | 0.0 |
 | `com.apple.WebKit.Model.xpc` | 0.0 | 0.0 |
+| `Zebkit.framework` | 0.0 | 0.0 |

@@ -109,7 +109,8 @@ reading of the documentation:
   the raw protocol checks against a real Chrome. A check Chrome fails is a
   wrong check. The first such run failed 15 of 34 checks, and going through
   them found about forty places where zebkit answered differently from
-  Chrome; `docs/PROGRESS.md` lists them. The handful of things zebkit does
+  Chrome; "Held to Chrome's definition and Chrome's behaviour" below
+  lists them. The handful of things zebkit does
   on purpose and Chrome does not are marked in the tests and listed under
   "Differences from Chrome" below.
 - **Chrome's implementation itself cannot be used.** It is not a library:
@@ -386,6 +387,86 @@ scripts/cdp-reference.sh         # the raw checks against Chrome itself
   `--clients` downloads a pinned Node.js and the two client libraries into
   `.cache/`; they are not part of the engine.
 
-Results are recorded in `docs/PROGRESS.md`. `profiles/slim-dev.cmake` builds the
+Results are recorded in `docs/PROGRESS.md` and, for each platform, in
+`docs/LINUX.md` and `docs/MACOS.md`. `profiles/slim-dev.cmake` builds the
 engine without link-time optimization; with it a change to `src/cdp` is
 running again in about 15 seconds.
+
+## Held to Chrome's definition and Chrome's behaviour (2026-10-10)
+
+Until this point the bridge was written from knowledge of the protocol and
+checked only against itself and two client libraries. Chrome's
+implementation cannot be compiled against WebKit (it is part of Blink and
+V8), so what was taken from it is what can be:
+
+- **Its protocol definition**, vendored unchanged in
+  `deps/devtools-protocol` (revision r1716261, 1.6 MiB of JSON, not
+  shipped). The endpoint's parameter checks are generated from it, and the
+  tests compare every message with it.
+- **Its behaviour.** `scripts/cdp-reference.sh` runs the raw checks against
+  Chrome. On the first run Chrome failed 15 of the 34 checks, and passed
+  the definition check with no departures where zebkit had 10. Some checks
+  were wrong; most pointed at zebkit. Side-by-side runs of about 150
+  commands and their events found the rest.
+- **One more engine patch**, where WebKit lacked what CDP needs
+  (`patches/2006`, the same additions Playwright's WebKit has).
+
+What that found, all fixed, each with a check that Chrome passes too:
+
+| Where zebkit differed from Chrome | Before |
+|---|---|
+| Isolated worlds | Emulated in the page's own world: the page could see and overwrite what a client put there, and a script registered for a world ran in the page. Now WebKit user worlds, separate as in Chrome, with nodes carried between worlds by `DOM.resolveNode` |
+| Wrong or missing parameters | Accepted and guessed at (`Runtime.evaluate` without an expression returned `undefined`). Now `-32602 Invalid parameters`, checked against the definition |
+| Messages that are not commands (bad JSON, no id, no method, unknown session) | Dropped without an answer, so a client waited for ever. Now answered with Chrome's codes |
+| A document changing its own address (fragment, history API) | Not reported at all, so a client's idea of the page's address went stale on single-page sites. Now `Page.navigatedWithinDocument` |
+| State set while a new page was still being set up | Lost: a popup did not get the scripts and worlds a client registered in that moment. Found by Playwright's popup test once worlds were real |
+| A client that attaches to a loaded page | Was not told the page had loaded. Lifecycle events are now replayed as in Chrome |
+| Events with mandatory fields missing or fields Chrome does not have | Dialog events without `frameId`, `navigatedWithinDocument` without its type, object previews without `overflow`, cookies and nodes with fields of WebKit's own |
+| How objects are described | Nodes as `<div id="x">` for Chrome's `div#x`; typed arrays, maps, sets, promises, classes, symbols and `-0` with other types and descriptions than Chrome's; the prototype listed as a property |
+| About thirty error answers | Other codes and words than Chrome's, or success where Chrome fails (an invalid URL, a malformed object id, focus on what cannot be focused, a cookie with no address, an image format that does not exist, a target that is not there) |
+| Navigation and contexts | A `commit` lifecycle event Chrome does not send; contexts reported destroyed one by one where Chrome clears them; `DOM.getDocument` one level deeper or shallower than Chrome's |
+| Failed requests | WebKit's sentence for the error and type `Other`; now Chrome's error names (`net::ERR_CONNECTION_REFUSED`) and the request's type |
+
+What zebkit still does differently is listed in `docs/CDP.md` under
+"Differences from Chrome".
+
+Limits of this work: the comparison covers the commands the tests and the
+side-by-side runs exercise, not all 143 that are implemented; Chrome's
+answers were taken from one version (155); and what Chrome does that no
+check asks about is still unknown.
+
+## Review for production use (2026-10-10)
+
+A read of all of `src/cdp` and tests aimed at failures, not at the usual
+path, found the following. All are fixed and each has a check in
+`tests/cdp/protocol.py` unless noted.
+
+| Found | Effect before the fix |
+|---|---|
+| Every page opened at `about:blank` left a web process running after it closed. An upstream bug in how WebKit hands out its spare process, not in the bridge (`patches/0005`) | 300 pages opened and closed left 303 processes of 100 MiB and more. Now 4, and the application's memory stays flat. Measured by hand; no scripted check |
+| Answers to mouse and key commands could overtake each other | Puppeteer believed a button was still down; about one run in six of the client suite failed |
+| After the page's process died, nothing was ever answered again, `Page.navigate` included | A client hung until its own timeouts, and could not recover the page |
+| `Page.stopLoading` left the `Page.navigate` it stopped unanswered | The client's navigation hung |
+| A dialog a client was shown and did not answer stayed open after the client left | The page's script was blocked for good |
+| `GET /json/new` and requests carrying a web page's `Origin` were served; any id was accepted on the browser socket | A web page open anywhere on the machine could open pages in the browser |
+| The back/forward cache was switched off and on per page on a settings object views share | The second attached page could get the cache back while attached; history navigation then lost its script contexts. No scripted check |
+| `DOM.setFileInputFiles` clicked whatever element it was given | A wrong id pressed a button |
+| Certificate checks a client turned off, and the view size it set, stayed that way after it left | The application's own pages kept running without certificate checks |
+| Bookkeeping per document (request ids, document addresses, requests in flight) was dropped only when the page changed process | Slow growth on a page used for days; a request cut off by a navigation could keep "network idle" from ever being reported |
+| Integer ids from clients and pages were used as map keys of the same width as the map's two reserved values | Not shown to fail in this build; keys are now wider than any id |
+| Popups became hidden views of the endpoint whether or not a client was connected | Views nobody would ever close |
+| Full-page screenshots had no size limit; incoming messages had none either | Memory use set by the page or the client |
+
+Still true after the review, and the reasons it is not yet what a product
+should promise without saying so:
+
+- It has run for minutes at a time, not days. The longest run is 300 page
+  lifecycles in 85 seconds.
+- One version each of two client libraries. No agent framework has been
+  run against it.
+- No password on the port. Discovery can be switched off; a transport that
+  is not a TCP port (a pipe, or calls inside the process) does not exist.
+- Some setup commands are answered with success and do nothing
+  (`docs/CDP.md` lists them), among them granting permissions and
+  redirecting downloads.
+- Verified on this one machine and its glibc only.

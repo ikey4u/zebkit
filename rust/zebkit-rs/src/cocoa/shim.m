@@ -14,8 +14,7 @@
  */
 
 #import <Cocoa/Cocoa.h>
-#import <WebKit/WebKit.h>
-#import <zebkit-view.h>
+#import <Zebkit/Zebkit.h>
 
 enum { HandlerTitle, HandlerURI, HandlerLoad, HandlerClose };
 enum { LoadStarted, LoadRedirected, LoadCommitted, LoadFinished };

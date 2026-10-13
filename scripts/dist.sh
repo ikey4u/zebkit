@@ -30,7 +30,7 @@ host="$(uname -s)-$(uname -m)"
 case "$host" in
     Linux-x86_64) engine=libzebkit.so.1 ;;
     Darwin-arm64)
-        engine=WebKit.framework
+        engine=Zebkit.framework
         [[ "$kind" == release ]] || die "there is no profile for a debug build on macOS yet; scripts/dist.sh release"
         ;;
     *) die "zebkit builds on Linux x86_64 and on macOS on Apple Silicon so far; this is $host" ;;

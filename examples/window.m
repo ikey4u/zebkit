@@ -9,7 +9,7 @@
  *
  * What a host has to do is all here: create a view, give its window a
  * size and a title, load something, and run the application. The engine
- * chooses the display itself, as on Linux (zebkit-view.h): a window on the
+ * chooses the display itself, as on Linux (<Zebkit/zebkit-view.h>): a window on the
  * screen if the machine has one, else no window at all (the page still
  * loads and can be driven over CDP).
  *
@@ -24,14 +24,12 @@
  *
  * Build against a packaged zebkit (see examples/README.md):
  *
- *   clang -fobjc-arc window.m -o window -I<package>/include -F<package> \
- *       -framework WebKit -framework Cocoa
+ *   clang -fobjc-arc window.m -o window -F<package> -framework Zebkit -framework Cocoa
  */
 
 #import "window-bar.h"
 #import <Cocoa/Cocoa.h>
-#import <WebKit/WebKit.h>
-#import <zebkit-view.h>
+#import <Zebkit/Zebkit.h>
 
 /* What was typed is an address if it looks like one; "example.com" means
  * "https://example.com". */

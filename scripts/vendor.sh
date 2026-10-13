@@ -6,7 +6,7 @@
 #
 # Builds tests/vendor/ against the profile's package, with the system's
 # compiler and nothing but the engine to link against (libzebkit on Linux,
-# WebKit.framework on macOS), and runs them.
+# Zebkit.framework on macOS), and runs them.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -27,10 +27,11 @@ check() { # check <ok?> <description>
 # What differs between the systems: where the engine is and what it
 # exports, how a program is linked against it, and what a program needs.
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    engine="$package/WebKit.framework/Versions/A/WebKit"
-    engine_name=WebKit.framework
+    engine="$package/Zebkit.framework/Versions/A/Frameworks/WebKit.framework/Versions/A/WebKit"
+    engine_name=Zebkit.framework
     exported="$(nm -gU "$engine" | awk '{ print $3 }' | sed 's/^_//')"
-    link=(-I"$package/include" -F"$package" -framework WebKit -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="$package")
+    link=(-I"$package/include" -F"$package" -framework Zebkit -Wl,-rpath,"$package"
+          -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="$package/Zebkit.framework/Versions/A/Frameworks")
     needed_by() { otool -L "$1" | awk 'NR > 1 { print $1 }' | paste -sd' ' -; }
 else
     engine="$package/libzebkit.so.1"

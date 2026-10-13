@@ -1,8 +1,8 @@
 # zebkit
 
 A trimmed WebKit build that ships as a small, self-contained, relocatable
-engine with media playback, for Linux first, macOS next (in progress:
-`docs/MACOS.md`) and Windows later.
+engine with media playback, for Linux (`docs/LINUX.md`) and macOS
+(`docs/MACOS.md`), and Windows later (`docs/WINDOWS.md`).
 The Linux package needs nothing from the system but glibc 2.17 or newer,
 and uses Wayland, X11, a GPU and sound when they are there. It is driven
 over the Chrome DevTools Protocol. See [docs/PROGRESS.md](docs/PROGRESS.md)
@@ -25,7 +25,7 @@ upstream release plus what turns it into zebkit:
 | `tests/` | Smoke, media, display and benchmark pages; `cdp/`, the protocol and client tests |
 | `tools/` | Small programs the scripts build: `pageprobe` loads a URL headlessly and reports on it, `cdphost` is a minimal embedding application, `crashsite` locates a crash, `syslib-stubs` makes the stand-ins for optional system libraries |
 | `assets/` | The top-100 site list used for compatibility testing |
-| `docs/` | `PROGRESS.md`: what is done, what is not, the roadmap. `CDP.md`: driving the engine over the Chrome DevTools Protocol. `MACOS.md`: the plan for the macOS port and where it stands. `DEPS.md`: every library in the engine and beside it, with versions. `VENDOR.md`: using those libraries from an application, FFmpeg first. `COMPAT.md`: how site compatibility is tested, and the record. `reports/`: size reports per profile, committed so regressions show in diffs |
+| `docs/` | `PROGRESS.md`: the project as a whole, what is done on each platform, what is not, the roadmap. `LINUX.md`, `MACOS.md`, `WINDOWS.md`: each platform's state, sizes, speed, decisions and what is left. `CDP.md`: driving the engine over the Chrome DevTools Protocol. `DEPS.md`: every library in the engine and beside it, with versions. `VENDOR.md`: using those libraries from an application, FFmpeg first. `COMPAT.md`: how site compatibility is tested, and the record. `reports/`: size reports per profile, committed so regressions show in diffs |
 
 `upstream/` (extracted source), `out/` (build trees) and `.cache/` (downloads,
 ccache) are generated and not tracked.

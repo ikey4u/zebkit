@@ -7,10 +7,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! zebkit = "0.0.1-alpha.2"
+//! zebkit = "0.0.1-alpha.3"
 //!
 //! [build-dependencies]
-//! zebkit-build = "0.0.1-alpha.2"
+//! zebkit-build = "0.0.1-alpha.3"
 //! ```
 //!
 //! ```no_run
@@ -32,7 +32,7 @@
 //!         ...
 //! ```
 //!
-//! On macOS the directory holds `WebKit.framework` and what belongs to it.
+//! On macOS the directory holds `Zebkit.framework`, with the engine inside it.
 
 #![allow(clippy::needless_doctest_main)]
 
@@ -55,10 +55,15 @@ pub fn bundle() {
     // Beside the executable first, wherever that ends up; tests and
     // examples are built one directory further down.
     if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos") {
-        println!("cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/{DIRECTORY}:@executable_path/../{DIRECTORY}");
+        // Zebkit.framework by a run path, and the frameworks inside it,
+        // which the loader takes in place of the system's, by name.
+        const INSIDE: &str = "Zebkit.framework/Versions/A/Frameworks";
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/{DIRECTORY}");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../{DIRECTORY}");
+        println!("cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/{DIRECTORY}/{INSIDE}:@executable_path/../{DIRECTORY}/{INSIDE}");
         println!(
             "cargo:rerun-if-changed={}",
-            engine.join("WebKit.framework/Versions/A/WebKit").display()
+            engine.join("Zebkit.framework/Versions/A/Zebkit").display()
         );
     } else {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/{DIRECTORY}");
@@ -88,7 +93,7 @@ fn executable_directory() -> PathBuf {
         .unwrap_or_else(|| panic!("zebkit-build: unexpected OUT_DIR {}", out.display()))
 }
 
-/// Makes `destination` hold the files of `engine`, without the headers.
+/// Makes `destination` hold the files of `engine`, without `include/`.
 /// Files are hard links where the file system allows, copies otherwise, and
 /// are left alone when they are already the same. Symbolic links, which a
 /// framework on macOS is full of, stay links.
@@ -98,9 +103,10 @@ fn copy_engine(engine: &Path, destination: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let (from, to) = (entry.path(), destination.join(&name));
-        // Headers are for compiling C against the engine; a marker file of
-        // the download is nobody's business.
-        if name == "include" || name == "Headers" || name == "Modules" || name.to_string_lossy().starts_with('.') {
+        // include/ is for compiling against the engine; a marker file of
+        // the download is nobody's business. What is inside a framework
+        // all stays, its headers too: it is signed as a whole.
+        if name == "include" || name.to_string_lossy().starts_with('.') {
             continue;
         }
         if let Ok(target) = fs::read_link(&from) {

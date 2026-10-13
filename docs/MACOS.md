@@ -1,8 +1,10 @@
-# macOS port: plan and state
+# macOS
 
-zebkit on macOS is being built. This is the plan, what is done, and where
-to start on a Mac. Whoever picks the work up, on whatever machine, should
-need nothing but this file and the repository.
+zebkit on macOS: what was decided, what is done, how large and how fast
+it is, what is left, and where to start on a Mac. `docs/PROGRESS.md` has
+the project as a whole; this is the part that is macOS's alone. Whoever
+picks the work up, on whatever machine, should need nothing but this file
+and the repository.
 
 ## Decisions taken
 
@@ -19,10 +21,22 @@ need nothing but this file and the repository.
   (`docs/VENDOR.md`): the same version, built the same way, behind the
   same `zebkit_vendor_ffmpeg_*` entry points and the same header. The
   engine itself does not use it on macOS. It costs 5.4 MiB.
-- **The package is a directory of frameworks**, `dist/release` as on
-  Linux, which works wherever it is copied. Nothing in it is renamed or
-  re-linked: the helper processes look for the frameworks beside
-  themselves, and a program names the directory when it is linked.
+- **The package is one framework, `Zebkit.framework`**, in `dist/release`
+  as on Linux, which works wherever it is copied. A program links it and
+  includes `<Zebkit/Zebkit.h>`. Its binary has no code and hands on what
+  the engine exports; the engine is inside it, under the names WebKit's
+  build gives it (`WebKit.framework`, `WebCore.framework`,
+  `JavaScriptCore.framework`, the `com.apple.WebKit` services), not
+  renamed and not re-linked.
+- **Why the engine inside keeps WebKit's names:** it is found by them.
+  macOS has a WebKit of its own, which its own libraries use. The loader,
+  told a directory, takes the frameworks of those names there in the
+  system's place, for the program and for those libraries, and the process
+  has one engine. Tried and dropped: everything renamed and linked by
+  path, with no word to the loader. It links and loads pages, but system
+  libraries the engine uses (Lookup, QuickLook, data detectors) then load
+  the system's WebKit, WebCore and JavaScriptCore as well, and the process
+  has two of each, with the same class names and bundle identifiers.
 - **A view's window is the engine's**, as on Linux: `zebkit-view.h`
   (`src/view`, built in by `patches/2010`) makes a view with a window of
   its own, on the screen when the machine has a display and nowhere
@@ -125,8 +139,8 @@ What exists on Linux and where it is on macOS:
 | `slim` profile | yes | yes |
 | Libraries built from source (`scripts/build-deps.sh`) | 29, in `deps/order` | FFmpeg, in `deps/order.macos`; the rest is the system's |
 | FFmpeg for applications, and its test (`scripts/vendor.sh`) | yes | yes, the same test with the same results |
-| Package (`scripts/package.sh`), `dist/release` (`scripts/dist.sh`, `mise run r`) | yes | yes; a directory of frameworks |
-| Release archive (`scripts/release.sh`) | `x86_64-unknown-linux-gnu` | `aarch64-apple-darwin`; both are in the release `v0.0.1-alpha.2`. Each is built on its own system and they are published together from one |
+| Package (`scripts/package.sh`), `dist/release` (`scripts/dist.sh`, `mise run r`) | yes, `libzebkit.so.1` | yes, `Zebkit.framework` |
+| Release archive (`scripts/release.sh`) | `x86_64-unknown-linux-gnu` | `aarch64-apple-darwin`; both are in the release `v0.0.1-alpha.2`, which on macOS still has the frameworks side by side and no `Zebkit.framework`. Each is built on its own system and they are published together from one |
 | A view's window: shown when there is a display, not otherwise | the engine's (WPE's display backends) | the engine's (`zebkit-view.h`) |
 | Window example | `examples/window.c` | `examples/window.m`, the same program, with the same bar (`examples/window-bar.h`) |
 | FFmpeg example | `examples/ffmpeg.cpp` | the same file |
@@ -139,22 +153,32 @@ What exists on Linux and where it is on macOS:
 | Size report (`scripts/measure.sh`) | yes, `docs/reports/<profile>.md` | yes, `docs/reports/macos/<profile>.md` |
 | Code size by subsystem, linker map (`codesize.py`, `mapsize.py`) | yes | no; `docs/reports/macos/slim-experiments.md` has the breakdown made by hand |
 
-`dist/release` on macOS, 92.2 MiB (`docs/reports/macos/slim.md`), 28.2 MiB
+`dist/release` on macOS, 92.3 MiB (`docs/reports/macos/slim.md`), 27.9 MiB
 as the archive:
 
 ```
-WebKit.framework  WebCore.framework  JavaScriptCore.framework
-WebKitLegacy.framework  WebGPU.framework
-libwebrtc.dylib  libANGLE-shared.dylib
-com.apple.WebKit.WebContent.xpc  com.apple.WebKit.Networking.xpc  com.apple.WebKit.GPU.xpc  ...
-include/
+Zebkit.framework/
+    Zebkit                  re-exports the engine
+    Headers/                <Zebkit/Zebkit.h>: WebKit's API, zebkit-view.h, zebkit-cdp.h
+    Frameworks/
+        WebKit.framework  WebCore.framework  JavaScriptCore.framework
+        WebKitLegacy.framework  WebGPU.framework
+        libwebrtc.dylib  libANGLE-shared.dylib
+        com.apple.WebKit.WebContent.xpc  com.apple.WebKit.Networking.xpc  com.apple.WebKit.GPU.xpc  ...
+include/                    what the Linux package has there: zebkit-cdp.h, zebkit/vendor/
 ```
 
-A program is linked with `-F<directory> -framework WebKit` and
-`-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=<directory>`, the directory given
-relative to the executable (`@executable_path/zebkit`) for a program that
-is shipped. Without the second option it runs with the system's WebKit.
-`scripts/example.sh` and the Rust crates' build scripts do this.
+A program is linked with `-F<directory> -framework Zebkit`,
+`-Wl,-rpath,<directory>` and
+`-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=<directory>/Zebkit.framework/Versions/A/Frameworks`,
+the directory given relative to the executable (`@executable_path/zebkit`)
+for a program that is shipped. Without the last option it does not start:
+the loader says a zebkit symbol is missing from the system's WebKit.
+`scripts/example.sh` and the Rust crates' build scripts do this. The
+headers are Objective-C; there is no module for Swift yet. The tests and
+their hosts (`tools/`) run against the build's own products in
+`out/<profile>/Release`, where the frameworks are side by side as Xcode
+leaves them.
 
 Everything in the package is signed ad hoc, which is what runs on the
 machine that built it. Seen once and not explained: an engine directory
@@ -193,7 +217,7 @@ it showed and what was tried and dropped is in
 
 Compressed, the seven binaries without FFmpeg (83.9 MiB) are 24.5 MiB
 with xz, 28.8 with zstd and 36.9 with gzip (Linux's 80.3 MiB build: 23.0,
-25.1 and 32.0). The whole package with FFmpeg, 92.2 MiB, is 28.2 MiB as
+25.1 and 32.0). The whole package with FFmpeg, 92.3 MiB, is 27.9 MiB as
 the release archive.
 
 - **`-Oz`**, the owner's choice, as on Linux. Against `-Os` it takes

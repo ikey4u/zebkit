@@ -53,25 +53,28 @@ neither, the view still exists and loads pages, without a window.
 
 ## Building and running one on macOS
 
-zebkit's API is `WKWebView`, from the engine's own `WebKit.framework`,
-with `zebkit-view.h` for a view whose window the engine makes, as it does
-on Linux: on the screen when the machine has a display, and nowhere
-otherwise. The
-package directory (`scripts/package.sh slim`, then `out/slim/package`; or
-`dist/release`) holds the frameworks, with WebKit's headers in the
-framework:
+zebkit is `Zebkit.framework`, and its API is `<Zebkit/Zebkit.h>`:
+WebKit's `WKWebView` and the rest, with `zebkit-view.h` for a view whose
+window the engine makes, as it does on Linux: on the screen when the
+machine has a display, and nowhere otherwise. The package directory
+(`scripts/package.sh slim`, then `out/slim/package`; or `dist/release`)
+holds the framework:
 
 ```sh
 package=$PWD/dist/release
-clang -fobjc-arc examples/window.m -o window -I$package/include -F$package -framework WebKit -framework Cocoa \
-    -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=$package
+clang -fobjc-arc examples/window.m -o window -F$package -framework Zebkit -framework Cocoa \
+    -Wl,-rpath,$package -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=$package/Zebkit.framework/Versions/A/Frameworks
 ./window https://example.com/
 ```
 
-The last option is what `-rpath` is on Linux: macOS has a WebKit of its
-own, and a program gets that one unless it says where its frameworks are.
-To ship the program, put the package directory beside it and name it
-relative to the executable, as in
-`-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/zebkit`. The engine's
-helper processes find the frameworks in the directory they are in
-themselves.
+`-rpath` is what it is on Linux: where the program finds
+`Zebkit.framework`. The last option is macOS's own. The engine inside
+`Zebkit.framework` is made of frameworks with WebKit's names, and macOS
+has a WebKit too, which the system's own libraries use; told this
+directory, the loader takes the frameworks there in the system's place
+for the whole process. A program linked without it does not start. To
+ship the program, put the package directory beside it and name both
+relative to the executable: `-Wl,-rpath,@executable_path/zebkit` and
+`-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/zebkit/Zebkit.framework/Versions/A/Frameworks`.
+The engine's helper processes find the frameworks in the directory they
+are in themselves.

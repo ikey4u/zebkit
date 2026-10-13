@@ -32,7 +32,8 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     # One row for each thing in the package: its Mach-O files, and the rest.
     rows="$(find "$package" -type f ! -path "$package/include/*" ! -path '*/Headers/*' ! -path '*/Modules/*' \
         -exec sh -c 'case "$(file -b "$1")" in Mach-O*) kind=code ;; *) kind=other ;; esac; echo "$kind $(stat -f %z "$1") $1"' _ {} \; \
-        | awk -v root="$package/" '{ path = substr($3, length(root) + 1); sub(/\/.*/, "", path); if ($1 == "code") code[path] += $2; else other[path] += $2; seen[path] = 1 }
+        | awk -v root="$package/Zebkit.framework/Versions/A/" '{ path = substr($3, length(root) + 1); sub(/^Frameworks\//, "", path); sub(/\/.*/, "", path);
+            if (path == "Zebkit" || path == "Resources" || path == "_CodeSignature") path = "Zebkit.framework itself"; if ($1 == "code") code[path] += $2; else other[path] += $2; seen[path] = 1 }
             END { for (item in seen) printf "%d %d %s\n", code[item], other[item], item }' | sort -rn)"
     code_total="$(awk '{ total += $1 } END { print total + 0 }' <<< "$rows")"
     other_total="$(awk '{ total += $2 } END { print total + 0 }' <<< "$rows")"
@@ -46,7 +47,7 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         echo
         echo "Headers are for building against the engine and are not counted."
         echo
-        echo "| In the package | Code, MiB | Resources, MiB |"
+        echo "| In \`Zebkit.framework\` | Code, MiB | Resources, MiB |"
         echo "|---|---:|---:|"
         awk '{ printf "| `%s` | %.1f | %.1f |\n", $3, $1 / 1048576, $2 / 1048576 }' <<< "$rows"
     } > "$report"

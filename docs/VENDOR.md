@@ -3,7 +3,7 @@
 zebkit has whole libraries linked into it. An application that needs one of
 them, and ships its own, ships it twice. The ones listed here can be used
 from the engine instead: the application includes one header, links against
-the engine (`libzebkit.so.1` on Linux, `WebKit.framework` on macOS) and
+the engine (`libzebkit.so.1` on Linux, `Zebkit.framework` on macOS) and
 nothing else, and calls the library's ordinary API.
 
 | Library | Version | C++ namespace | Header |
@@ -29,7 +29,8 @@ ff::avcodec_open2(context, codec, nullptr);
 # Linux
 c++ app.cpp -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,'$ORIGIN'
 # macOS
-c++ app.cpp -I<package>/include -F<package> -framework WebKit -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path
+c++ app.cpp -I<package>/include -F<package> -framework Zebkit -Wl,-rpath,@executable_path \
+    -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/Zebkit.framework/Versions/A/Frameworks
 ```
 
 The header, the namespace, the functions and what is built in are the

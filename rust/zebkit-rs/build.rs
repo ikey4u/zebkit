@@ -3,7 +3,7 @@
 //! In this order:
 //!
 //! 1. `ZEBKIT_DIR`: a directory holding the engine (`libzebkit.so.1` on
-//!    Linux, `WebKit.framework` on macOS) and what is shipped beside it.
+//!    Linux, `Zebkit.framework` on macOS) and what is shipped beside it.
 //!    For an engine built by hand, and for building offline.
 //! 2. `dist/release` of the zebkit repository, when this crate is being
 //!    built from inside it (what `mise run r` produces).
@@ -43,7 +43,7 @@ fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos");
     // What a package directory is known by.
-    let engine_name = if macos { "WebKit.framework" } else { "libzebkit.so.1" };
+    let engine_name = if macos { "Zebkit.framework" } else { "libzebkit.so.1" };
     let local = manifest.join("../../dist/release");
     let directory = if let Some(given) = env::var_os("ZEBKIT_DIR") {
         PathBuf::from(given)
@@ -64,10 +64,18 @@ fn main() {
     }
 
     if macos {
-        println!("cargo:rerun-if-changed={}", engine.join("Versions/A/WebKit").display());
+        println!("cargo:rerun-if-changed={}", engine.join("Versions/A/Zebkit").display());
         println!("cargo:rustc-link-search=framework={}", directory.display());
-        println!("cargo:rustc-link-lib=framework=WebKit");
+        println!("cargo:rustc-link-lib=framework=Zebkit");
         println!("cargo:rustc-link-lib=framework=Cocoa");
+        // For this crate's own tests, which cargo does not help to find a
+        // framework as it helps to find a library. Dependents say this
+        // themselves (zebkit-build).
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
+        println!(
+            "cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH={}/Zebkit.framework/Versions/A/Frameworks",
+            directory.display()
+        );
         compile_shim(&manifest, &directory);
     } else {
         println!("cargo:rerun-if-changed={}", engine.display());
@@ -94,8 +102,6 @@ fn compile_shim(manifest: &Path, engine: &Path) {
         Command::new("cc")
             .args(["-c", "-fobjc-arc", "-O2", "-Wall", "-Wno-deprecated-declarations", "-F"])
             .arg(engine)
-            .arg("-I")
-            .arg(engine.join("include"))
             .arg(&source)
             .arg("-o")
             .arg(&object),
