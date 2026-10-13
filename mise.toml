@@ -16,8 +16,13 @@
 # The GitHub CLI, for r:github only. mise installs it on first use;
 # nothing has to be installed by hand. It needs to be logged in once
 # ("mise exec -- gh auth login"), or given a token in GH_TOKEN.
+#
+# xz packs the release archive. macOS has none of its own, and one version
+# on every machine keeps the archive, and so its checksum, the same
+# wherever it is made.
 [tools]
 gh = "2.102.0"
+"conda:xz-tools" = "5.8.3"
 
 [tasks.r]
 description = "Build the release zebkit for this machine into dist/release, and the archive of it the Rust crates download"

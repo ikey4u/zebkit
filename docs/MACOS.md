@@ -53,6 +53,10 @@ need nothing but this file and the repository.
   compiles its shaders with it. `scripts/build.sh` says so if it is missing.
 - About 55 GB of disk for one profile's build tree (30 GB without
   link-time optimization).
+- **mise**, to run the tasks (`mise run r`). It brings the one tool the
+  system lacks, `xz`, which packs the release archive (`mise.toml`).
+  `scripts/release.sh` run by hand needs an `xz` on the path and says so
+  before it builds.
 - For releases, later: an Apple Developer ID, to sign and notarize. The JIT
   needs the `com.apple.security.cs.allow-jit` entitlement in a hardened
   runtime. Not needed to develop.

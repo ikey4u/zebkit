@@ -42,6 +42,9 @@ case "$(uname -s)-$(uname -m)" in
     *) die "no release target for $(uname -s)-$(uname -m) yet" ;;
 esac
 
+# Asked for before the build, which is long, and not after it.
+command -v xz > /dev/null || die "xz is missing; \"mise run r\" brings it (mise.toml), or install it"
+
 dist="$ZEBKIT_ROOT/dist/release"
 "$ZEBKIT_ROOT/scripts/dist.sh" release
 
