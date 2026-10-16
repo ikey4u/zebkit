@@ -1,0 +1,544 @@
+Port: files dropped from other applications, as WPEView::file-drag.
+
+WPE has no drop target: a file dragged from a file manager over a WPE
+window is refused. This adds a signal on WPEView,
+
+  file-drag (phase, x, y, uris)    phase: WPE_FILE_DRAG_ENTER, _MOTION,
+                                   _LEAVE or _DROP; uris on drop only
+
+and wpe_view_file_drag() for the platforms to emit it; it tells them
+whether anything handles the signal, and a view nothing handles refuses
+the drag. The engine does nothing else with a drop: the application
+decides what it means (it can, for instance, dispatch drag events into
+the page).
+Only text/uri-list is taken, and only as a copy, never a move (a move
+makes the source delete what it gave).
+
+- Wayland: the clipboard's wl_data_device. An offer is now held apart
+  until the selection or enter event says what it is, so a drag no longer
+  replaces the clipboard's offer. The URI list is read without blocking.
+- X11 (patch 2004): XDND version 5 on top-level windows: XdndAware,
+  XdndStatus with XdndActionCopy, the URI list from XdndSelection, then
+  XdndFinished.
+
+--- a/Source/WebKit/WPEPlatform/wpe/WPEView.h
++++ b/Source/WebKit/WPEPlatform/wpe/WPEView.h
+@@ -94,6 +94,22 @@
+ 
+ WPE_API GQuark                wpe_view_error_quark                  (void);
+ 
++/**
++ * WPEFileDragPhase:
++ * @WPE_FILE_DRAG_ENTER: files dragged from another application entered the view
++ * @WPE_FILE_DRAG_MOTION: they moved over it
++ * @WPE_FILE_DRAG_LEAVE: they left it, or the drag was cancelled
++ * @WPE_FILE_DRAG_DROP: they were dropped on it
++ *
++ * zebkit: the phases of a #WPEView::file-drag.
++ */
++typedef enum {
++    WPE_FILE_DRAG_ENTER,
++    WPE_FILE_DRAG_MOTION,
++    WPE_FILE_DRAG_LEAVE,
++    WPE_FILE_DRAG_DROP
++} WPEFileDragPhase;
++
+ WPE_API WPEView              *wpe_view_new                          (WPEDisplay         *display);
+ WPE_API WPEDisplay           *wpe_view_get_display                  (WPEView            *view);
+ WPE_API WPEToplevel          *wpe_view_get_toplevel                 (WPEView            *view);
+@@ -155,6 +171,11 @@
+                                                                      WPEGestureController *controller);
+ WPE_API WPEGestureController *wpe_view_get_gesture_controller       (WPEView            *view);
+ WPE_API WPEViewAccessible    *wpe_view_get_accessible               (WPEView            *view);
++WPE_API gboolean              wpe_view_file_drag                    (WPEView            *view,
++                                                                     WPEFileDragPhase    phase,
++                                                                     gdouble             x,
++                                                                     gdouble             y,
++                                                                     const char * const *uris);
+ 
+ G_END_DECLS
+ 
+--- a/Source/WebKit/WPEPlatform/wpe/WPEView.cpp
++++ b/Source/WebKit/WPEPlatform/wpe/WPEView.cpp
+@@ -125,6 +125,7 @@
+     EVENT,
+     TOPLEVEL_STATE_CHANGED,
+     PREFERRED_BUFFER_FORMATS_CHANGED,
++    FILE_DRAG,
+ 
+     LAST_SIGNAL
+ };
+@@ -501,6 +502,28 @@
+         0, nullptr, nullptr,
+         g_cclosure_marshal_generic,
+         G_TYPE_NONE, 0);
++
++    /**
++     * WPEView::file-drag:
++     * @view: a #WPEView
++     * @phase: a #WPEFileDragPhase, as a guint
++     * @x: the pointer's x, in view coordinates
++     * @y: the pointer's y, in view coordinates
++     * @uris: (nullable) (array zero-terminated=1): on %WPE_FILE_DRAG_DROP,
++     *    the URIs dropped; %NULL in the other phases
++     *
++     * zebkit: files dragged from another application over @view. The
++     * engine itself does nothing with them: the application decides what a
++     * drop means (WPE has no drop target of its own).
++     */
++    signals[FILE_DRAG] = g_signal_new(
++        "file-drag",
++        G_TYPE_FROM_CLASS(viewClass),
++        G_SIGNAL_RUN_LAST,
++        0, nullptr, nullptr,
++        g_cclosure_marshal_generic,
++        G_TYPE_NONE, 4,
++        G_TYPE_UINT, G_TYPE_DOUBLE, G_TYPE_DOUBLE, G_TYPE_STRV);
+ }
+ 
+ void wpeViewToplevelStateChanged(WPEView* view, WPEToplevelState state)
+@@ -1206,3 +1229,26 @@
+ 
+     return nullptr;
+ }
++
++/**
++ * wpe_view_file_drag:
++ * @view: a #WPEView
++ * @phase: a #WPEFileDragPhase
++ * @x: the pointer's x, in view coordinates
++ * @y: the pointer's y, in view coordinates
++ * @uris: (nullable) (array zero-terminated=1): the URIs dropped
++ *
++ * zebkit: emit #WPEView::file-drag. Called by the platform.
++ *
++ * Returns: whether anything handles the signal: when nothing does, the
++ *    platform refuses the drag.
++ */
++gboolean wpe_view_file_drag(WPEView* view, WPEFileDragPhase phase, gdouble x, gdouble y, const char* const* uris)
++{
++    g_return_val_if_fail(WPE_IS_VIEW(view), FALSE);
++
++    if (!g_signal_has_handler_pending(view, signals[FILE_DRAG], 0, FALSE))
++        return FALSE;
++    g_signal_emit(view, signals[FILE_DRAG], 0, static_cast<guint>(phase), x, y, uris);
++    return TRUE;
++}
+--- a/Source/WebKit/WPEPlatform/wpe/wayland/WPEClipboardWayland.cpp
++++ b/Source/WebKit/WPEPlatform/wpe/wayland/WPEClipboardWayland.cpp
+@@ -28,12 +28,16 @@
+ 
+ #include "WPEClipboardWaylandPrivate.h"
+ #include "WPEDisplayWaylandPrivate.h"
++#include "WPEToplevelWaylandPrivate.h"
++#include "WPEView.h"
+ #include <array>
++#include <memory>
+ #include <gio/gunixinputstream.h>
+ #include <gio/gunixoutputstream.h>
+ #include <glib-unix.h>
+ #include <wayland-client.h>
+ #include <wtf/glib/GRefPtr.h>
++#include <wtf/glib/GUniquePtr.h>
+ #include <wtf/glib/GWeakPtr.h>
+ #include <wtf/glib/WTFGType.h>
+ 
+@@ -51,6 +55,17 @@
+     struct wl_data_offer* offer;
+     struct wl_data_source* source;
+     GRefPtr<GPtrArray> formats;
++
++    // zebkit: an offer is announced before it is known to be the selection
++    // or a drag; it waits here until the selection or enter event says.
++    struct wl_data_offer* newOffer;
++    GRefPtr<GPtrArray> newFormats;
++    // zebkit: files dragged over one of our surfaces from elsewhere, for
++    // WPEView::file-drag. Only text/uri-list is taken, and only as a copy.
++    struct wl_data_offer* dragOffer;
++    GRefPtr<WPEView> dragView;
++    double dragX;
++    double dragY;
+ };
+ WEBKIT_DEFINE_FINAL_TYPE(WPEClipboardWayland, wpe_clipboard_wayland, WPE_TYPE_CLIPBOARD, WPEClipboard)
+ 
+@@ -104,12 +119,12 @@
+     // offer
+     [](void* data, wl_data_offer* offer, const char* mimeType) {
+         auto* priv = WPE_CLIPBOARD_WAYLAND(data)->priv;
+-        if (priv->offer != offer)
++        if (priv->newOffer != offer)
+             return;
+ 
+         const auto* format = g_intern_string(mimeType);
+-        if (!g_ptr_array_find(priv->formats.get(), format, nullptr))
+-            g_ptr_array_add(priv->formats.get(), static_cast<gpointer>(const_cast<char*>(format)));
++        if (!g_ptr_array_find(priv->newFormats.get(), format, nullptr))
++            g_ptr_array_add(priv->newFormats.get(), static_cast<gpointer>(const_cast<char*>(format)));
+     },
+     // source_actions
+     [](void*, wl_data_offer*, uint32_t /*sourceActions*/) {
+@@ -119,31 +134,142 @@
+     }
+ };
+ 
++static const char* uriListFormat = "text/uri-list";
++
++// The visible view of the toplevel a surface belongs to.
++static WPEView* viewForSurface(wl_surface* surface)
++{
++    auto* toplevel = surface ? wl_surface_get_user_data(surface) : nullptr;
++    if (!WPE_IS_TOPLEVEL(toplevel))
++        return nullptr;
++    WPEView* found = nullptr;
++    wpe_toplevel_foreach_view(WPE_TOPLEVEL(toplevel), [](WPEToplevel*, WPEView* view, gpointer data) -> gboolean {
++        if (!wpe_view_get_visible(view))
++            return FALSE;
++        *static_cast<WPEView**>(data) = view;
++        return TRUE;
++    }, &found);
++    return found;
++}
++
++static void endDrag(WPEClipboardWaylandPrivate* priv, bool notify)
++{
++    if (auto view = std::exchange(priv->dragView, nullptr); view && notify)
++        wpe_view_file_drag(view.get(), WPE_FILE_DRAG_LEAVE, 0, 0, nullptr);
++    g_clear_pointer(&priv->dragOffer, wl_data_offer_destroy);
++}
++
++struct DropRead {
++    struct wl_data_offer* offer;
++    GRefPtr<WPEView> view;
++    double x;
++    double y;
++    GRefPtr<GOutputStream> output;
++};
++
++static void dropRead(GObject* stream, GAsyncResult* result, gpointer data)
++{
++    std::unique_ptr<DropRead> drop(static_cast<DropRead*>(data));
++    bool read = g_output_stream_splice_finish(G_OUTPUT_STREAM(stream), result, nullptr) != -1;
++    if (wl_proxy_get_version(reinterpret_cast<wl_proxy*>(drop->offer)) >= 3)
++        wl_data_offer_finish(drop->offer);
++    wl_data_offer_destroy(drop->offer);
++    if (!read) {
++        wpe_view_file_drag(drop->view.get(), WPE_FILE_DRAG_LEAVE, 0, 0, nullptr);
++        return;
++    }
++
++    GRefPtr<GBytes> bytes = adoptGRef(g_memory_output_stream_steal_as_bytes(G_MEMORY_OUTPUT_STREAM(drop->output.get())));
++    gsize size;
++    const auto* text = static_cast<const char*>(g_bytes_get_data(bytes.get(), &size));
++    GUniquePtr<char> list(g_strndup(text, size));
++    GUniquePtr<char*> uris(g_uri_list_extract_uris(list.get()));
++    wpe_view_file_drag(drop->view.get(), WPE_FILE_DRAG_DROP, drop->x, drop->y, uris.get());
++}
++
+ static const struct wl_data_device_listener wlDataDeviceListener = {
+     // data_offer
+     [](void* data, wl_data_device*, wl_data_offer* offer) {
+         auto* priv = WPE_CLIPBOARD_WAYLAND(data)->priv;
+-        g_clear_pointer(&priv->offer, wl_data_offer_destroy);
+-        priv->offer = offer;
+-        wl_data_offer_add_listener(priv->offer, &wlDataOfferListener, data);
++        g_clear_pointer(&priv->newOffer, wl_data_offer_destroy);
++        priv->newOffer = offer;
++        wl_data_offer_add_listener(offer, &wlDataOfferListener, data);
+ 
+-        priv->formats = adoptGRef(g_ptr_array_new());
++        priv->newFormats = adoptGRef(g_ptr_array_new());
+     },
+     // enter
+-    [](void*, wl_data_device*, uint32_t /*serial*/, wl_surface*, wl_fixed_t /*x*/, wl_fixed_t /*y*/, wl_data_offer*) {
++    [](void* data, wl_data_device*, uint32_t serial, wl_surface* surface, wl_fixed_t x, wl_fixed_t y, wl_data_offer* offer) {
++        auto* priv = WPE_CLIPBOARD_WAYLAND(data)->priv;
++        endDrag(priv, true);
++        if (!offer)
++            return;
++        bool hasURIs = false;
++        if (offer == priv->newOffer) {
++            priv->newOffer = nullptr;
++            hasURIs = g_ptr_array_find(std::exchange(priv->newFormats, nullptr).get(), g_intern_static_string(uriListFormat), nullptr);
++        }
++        priv->dragOffer = offer;
++        auto* view = hasURIs ? viewForSurface(surface) : nullptr;
++        priv->dragX = wl_fixed_to_double(x);
++        priv->dragY = wl_fixed_to_double(y);
++        if (!view || !wpe_view_file_drag(view, WPE_FILE_DRAG_ENTER, priv->dragX, priv->dragY, nullptr)) {
++            wl_data_offer_accept(offer, serial, nullptr);
++            return;
++        }
++        wl_data_offer_accept(offer, serial, uriListFormat);
++        // Never a move: the source would delete what it gave.
++        if (wl_proxy_get_version(reinterpret_cast<wl_proxy*>(offer)) >= 3)
++            wl_data_offer_set_actions(offer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
++        priv->dragView = view;
+     },
+     // leave
+-    [](void*, wl_data_device*) {
++    [](void* data, wl_data_device*) {
++        endDrag(WPE_CLIPBOARD_WAYLAND(data)->priv, true);
+     },
+     // motion
+-    [](void*, wl_data_device*, uint32_t /*time*/, wl_fixed_t /*x*/, wl_fixed_t /*y*/) {
++    [](void* data, wl_data_device*, uint32_t /*time*/, wl_fixed_t x, wl_fixed_t y) {
++        auto* priv = WPE_CLIPBOARD_WAYLAND(data)->priv;
++        if (!priv->dragView)
++            return;
++        priv->dragX = wl_fixed_to_double(x);
++        priv->dragY = wl_fixed_to_double(y);
++        wpe_view_file_drag(priv->dragView.get(), WPE_FILE_DRAG_MOTION, priv->dragX, priv->dragY, nullptr);
+     },
+     // drop
+-    [](void*, wl_data_device*) {
++    [](void* data, wl_data_device*) {
++        auto* clipboard = WPE_CLIPBOARD_WAYLAND(data);
++        auto* priv = clipboard->priv;
++        if (!priv->dragView) {
++            endDrag(priv, false);
++            return;
++        }
++
++        // The last motion's position; the drop event carries none.
++        std::unique_ptr<DropRead> drop(new DropRead { std::exchange(priv->dragOffer, nullptr), std::exchange(priv->dragView, nullptr), priv->dragX, priv->dragY, nullptr });
++        std::array<int, 2> pipeFD;
++        if (!g_unix_open_pipe(pipeFD.data(), O_CLOEXEC, nullptr)) {
++            wpe_view_file_drag(drop->view.get(), WPE_FILE_DRAG_LEAVE, 0, 0, nullptr);
++            wl_data_offer_destroy(drop->offer);
++            return;
++        }
++        wl_data_offer_receive(drop->offer, uriListFormat, pipeFD[1]);
++        close(pipeFD[1]);
++        wl_display_flush(wpe_display_wayland_get_wl_display(WPE_DISPLAY_WAYLAND(wpe_clipboard_get_display(WPE_CLIPBOARD(clipboard)))));
++
++        GRefPtr<GInputStream> input = adoptGRef(g_unix_input_stream_new(pipeFD[0], TRUE));
++        drop->output = adoptGRef(g_memory_output_stream_new_resizable());
++        auto* output = drop->output.get();
++        g_output_stream_splice_async(output, input.get(), static_cast<GOutputStreamSpliceFlags>(G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE | G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET),
++            G_PRIORITY_DEFAULT, nullptr, dropRead, drop.release());
+     },
+     // selection
+     [](void* data, wl_data_device*, wl_data_offer* offer) {
+         auto* priv = WPE_CLIPBOARD_WAYLAND(data)->priv;
++        if (offer && offer == priv->newOffer) {
++            g_clear_pointer(&priv->offer, wl_data_offer_destroy);
++            priv->offer = std::exchange(priv->newOffer, nullptr);
++            priv->formats = std::exchange(priv->newFormats, nullptr);
++        }
+         GRefPtr<GPtrArray> formats;
+         if (offer) {
+             if (priv->offer == offer) {
+@@ -250,6 +376,9 @@
+ void wpeClipboardWaylandInvalidate(WPEClipboardWayland* clipboard)
+ {
+     auto* priv = clipboard->priv;
++    endDrag(priv, false);
++    g_clear_pointer(&priv->newOffer, wl_data_offer_destroy);
++    priv->newFormats = nullptr;
+     g_clear_pointer(&priv->offer, wl_data_offer_destroy);
+     g_clear_pointer(&priv->source, wl_data_source_destroy);
+     g_clear_pointer(&priv->wlDataDevice, wl_data_device_destroy);
+--- a/Source/WebKit/WPEPlatform/wpe/x11/WPEPlatformX11.cpp
++++ b/Source/WebKit/WPEPlatform/wpe/x11/WPEPlatformX11.cpp
+@@ -41,6 +41,16 @@
+     Atom netWMStateMaximizedHorz;
+     // Window to toplevel, for routing events.
+     GHashTable* toplevels;
++    // zebkit: files dragged in from other applications (XDND, version 5),
++    // for WPEView::file-drag. Only text/uri-list, only as a copy.
++    struct {
++        Atom aware, enter, position, status, leave, drop, finished, selection, typeList, actionCopy, uriList, property;
++        Window source;
++        Window target;
++        GRefPtr<WPEView> view;
++        bool entered;
++        double x, y;
++    } dnd;
+ };
+ 
+ WEBKIT_DEFINE_FINAL_TYPE_WITH_CODE(WPEDisplayX11, wpe_display_x11, WPE_TYPE_DISPLAY, WPEDisplay,
+@@ -114,6 +124,131 @@
+ 
+ static void presentBuffer(WPEView*, WPEBuffer*);
+ 
++static void sendDndMessage(WPEDisplayX11Private* priv, Atom type, long l1, long l2, long l4)
++{
++    XEvent reply { };
++    reply.xclient.type = ClientMessage;
++    reply.xclient.display = priv->xdisplay;
++    reply.xclient.window = priv->dnd.source;
++    reply.xclient.message_type = type;
++    reply.xclient.format = 32;
++    reply.xclient.data.l[0] = priv->dnd.target;
++    reply.xclient.data.l[1] = l1;
++    reply.xclient.data.l[2] = l2;
++    reply.xclient.data.l[4] = l4;
++    XSendEvent(priv->xdisplay, priv->dnd.source, False, NoEventMask, &reply);
++    XFlush(priv->xdisplay);
++}
++
++static void endDnd(WPEDisplayX11Private* priv, bool notify)
++{
++    if (auto view = std::exchange(priv->dnd.view, nullptr); view && notify && priv->dnd.entered)
++        wpe_view_file_drag(view.get(), WPE_FILE_DRAG_LEAVE, 0, 0, nullptr);
++    priv->dnd.source = 0;
++    priv->dnd.target = 0;
++    priv->dnd.entered = false;
++}
++
++static bool dndOffersURIs(WPEDisplayX11Private* priv, const XClientMessageEvent& message)
++{
++    auto* xdisplay = priv->xdisplay;
++    // More than three types are in the source's XdndTypeList property.
++    if (!(message.data.l[1] & 1)) {
++        for (int i = 2; i <= 4; ++i) {
++            if (static_cast<Atom>(message.data.l[i]) == priv->dnd.uriList)
++                return true;
++        }
++        return false;
++    }
++    Atom type;
++    int format;
++    unsigned long count, remaining;
++    unsigned char* data = nullptr;
++    if (XGetWindowProperty(xdisplay, message.data.l[0], priv->dnd.typeList, 0, 1024, False, XA_ATOM, &type, &format, &count, &remaining, &data) || !data)
++        return false;
++    bool found = false;
++    for (unsigned long i = 0; i < count && !found; ++i)
++        found = reinterpret_cast<Atom*>(data)[i] == priv->dnd.uriList;
++    XFree(data);
++    return found;
++}
++
++// An XDND message to one of our windows. Returns false when it is not one.
++static bool handleDndMessage(WPEDisplayX11Private* priv, WPEToplevel* toplevel, WPEView* view, const XClientMessageEvent& message)
++{
++    auto& dnd = priv->dnd;
++    auto window = WPE_TOPLEVEL_X11(toplevel)->priv->window;
++    if (message.message_type == dnd.enter) {
++        endDnd(priv, true);
++        dnd.source = message.data.l[0];
++        dnd.target = window;
++        if (view && (message.data.l[1] >> 24) >= 2 && dndOffersURIs(priv, message))
++            dnd.view = view;
++        return true;
++    }
++    if (static_cast<Window>(message.data.l[0]) != dnd.source || !dnd.source)
++        return message.message_type == dnd.position || message.message_type == dnd.leave || message.message_type == dnd.drop;
++    if (message.message_type == dnd.position) {
++        long root = message.data.l[2];
++        int x, y;
++        Window child;
++        XTranslateCoordinates(priv->xdisplay, DefaultRootWindow(priv->xdisplay), window, root >> 16, root & 0xffff, &x, &y, &child);
++        dnd.x = x;
++        dnd.y = y;
++        if (dnd.view) {
++            if (wpe_view_file_drag(dnd.view.get(), dnd.entered ? WPE_FILE_DRAG_MOTION : WPE_FILE_DRAG_ENTER, x, y, nullptr))
++                dnd.entered = true;
++            else
++                dnd.view = nullptr;
++        }
++        // Accepted (bit 0), and positions wanted everywhere (bit 1).
++        sendDndMessage(priv, dnd.status, dnd.view ? 3 : 2, 0, dnd.view ? dnd.actionCopy : xNone);
++        return true;
++    }
++    if (message.message_type == dnd.leave) {
++        endDnd(priv, true);
++        return true;
++    }
++    if (message.message_type == dnd.drop) {
++        if (!dnd.view || !dnd.entered) {
++            sendDndMessage(priv, dnd.finished, 0, xNone, 0);
++            endDnd(priv, true);
++            return true;
++        }
++        // The answer is a SelectionNotify to the window.
++        XConvertSelection(priv->xdisplay, dnd.selection, dnd.uriList, dnd.property, window, message.data.l[2]);
++        XFlush(priv->xdisplay);
++        return true;
++    }
++    return false;
++}
++
++static void handleDndSelection(WPEDisplayX11Private* priv, const XSelectionEvent& event)
++{
++    auto& dnd = priv->dnd;
++    if (!dnd.view || event.requestor != dnd.target)
++        return;
++    GUniquePtr<char*> uris;
++    if (event.property != static_cast<Atom>(xNone)) {
++        Atom type;
++        int format;
++        unsigned long count, remaining;
++        unsigned char* data = nullptr;
++        if (!XGetWindowProperty(priv->xdisplay, event.requestor, event.property, 0, 1 << 24, True, AnyPropertyType, &type, &format, &count, &remaining, &data) && data) {
++            GUniquePtr<char> list(g_strndup(reinterpret_cast<const char*>(data), count * (format / 8)));
++            uris.reset(g_uri_list_extract_uris(list.get()));
++            XFree(data);
++        }
++    }
++    auto view = std::exchange(dnd.view, nullptr);
++    sendDndMessage(priv, dnd.finished, uris ? 1 : 0, uris ? dnd.actionCopy : xNone, 0);
++    if (uris)
++        wpe_view_file_drag(view.get(), WPE_FILE_DRAG_DROP, dnd.x, dnd.y, uris.get());
++    else
++        wpe_view_file_drag(view.get(), WPE_FILE_DRAG_LEAVE, 0, 0, nullptr);
++    endDnd(priv, false);
++}
++
+ static void handleXEvent(WPEDisplayX11* display, XEvent& xevent)
+ {
+     auto* priv = display->priv;
+@@ -143,9 +278,15 @@
+         break;
+     }
+     case ClientMessage:
++        if (handleDndMessage(priv, toplevel, view, xevent.xclient))
++            break;
+         if (xevent.xclient.message_type == priv->wmProtocols && static_cast<Atom>(xevent.xclient.data.l[0]) == priv->wmDeleteWindow)
+             wpe_toplevel_closed(toplevel);
+         break;
++    case SelectionNotify:
++        if (xevent.xselection.selection == priv->dnd.selection)
++            handleDndSelection(priv, xevent.xselection);
++        break;
+     case FocusIn:
+     case FocusOut: {
+         auto state = wpe_toplevel_get_state(toplevel);
+@@ -279,6 +420,7 @@
+         g_source_destroy(priv->eventSource.get());
+         priv->eventSource = nullptr;
+     }
++    priv->dnd.view = nullptr;
+     g_clear_pointer(&priv->toplevels, g_hash_table_unref);
+     wpeDisplayTerminateEGL(WPE_DISPLAY(object));
+     if (priv->xdisplay) {
+@@ -311,6 +453,18 @@
+     priv->netWMStateMaximizedVert = XInternAtom(priv->xdisplay, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+     priv->netWMStateMaximizedHorz = XInternAtom(priv->xdisplay, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+     priv->toplevels = g_hash_table_new(g_direct_hash, g_direct_equal);
++    priv->dnd.aware = XInternAtom(priv->xdisplay, "XdndAware", False);
++    priv->dnd.enter = XInternAtom(priv->xdisplay, "XdndEnter", False);
++    priv->dnd.position = XInternAtom(priv->xdisplay, "XdndPosition", False);
++    priv->dnd.status = XInternAtom(priv->xdisplay, "XdndStatus", False);
++    priv->dnd.leave = XInternAtom(priv->xdisplay, "XdndLeave", False);
++    priv->dnd.drop = XInternAtom(priv->xdisplay, "XdndDrop", False);
++    priv->dnd.finished = XInternAtom(priv->xdisplay, "XdndFinished", False);
++    priv->dnd.selection = XInternAtom(priv->xdisplay, "XdndSelection", False);
++    priv->dnd.typeList = XInternAtom(priv->xdisplay, "XdndTypeList", False);
++    priv->dnd.actionCopy = XInternAtom(priv->xdisplay, "XdndActionCopy", False);
++    priv->dnd.uriList = XInternAtom(priv->xdisplay, "text/uri-list", False);
++    priv->dnd.property = XInternAtom(priv->xdisplay, "ZEBKIT_XDND", False);
+ 
+     auto* source = g_source_new(&xEventSourceFuncs, sizeof(XEventSource));
+     reinterpret_cast<XEventSource*>(source)->display = WPE_DISPLAY_X11(display);
+@@ -386,6 +540,9 @@
+     if (!isChild) {
+         Atom protocols[] = { display->priv->wmDeleteWindow };
+         XSetWMProtocols(xdisplay, priv->window, protocols, 1);
++        // zebkit: a drop target for files from other applications.
++        Atom version = 5;
++        XChangeProperty(xdisplay, priv->window, display->priv->dnd.aware, XA_ATOM, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&version), 1);
+     }
+     priv->gc = XCreateGC(xdisplay, priv->window, 0, nullptr);
+     g_hash_table_insert(display->priv->toplevels, GSIZE_TO_POINTER(priv->window), toplevel);

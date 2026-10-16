@@ -16,3 +16,4 @@
 2008-vendor-entry-points.patch
 2014-child-toplevels.patch
 0006-display-egl-teardown-order.patch
+2015-file-drops.patch
