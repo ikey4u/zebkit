@@ -4,8 +4,8 @@
  * ZEBKIT_CDP_PORT environment variable.
  *
  * The interface is the same on every platform but for the types that are
- * the platform's: the view (WebKitWebView on Linux, WKWebView on macOS),
- * and how an error is reported.
+ * the platform's: the view (WebKitWebView on Linux, WKWebView on macOS,
+ * WKViewRef on Windows), and how an error is reported.
  */
 
 #ifndef ZEBKIT_CDP_H
@@ -48,7 +48,42 @@ void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc func, void *user_da
 }
 #endif
 
-#else /* !__APPLE__ */
+#elif defined(_WIN32)
+
+#include <WebKit/WKBase.h>
+#include <stdbool.h>
+
+#ifndef ZEBKIT_CDP_API
+#define ZEBKIT_CDP_API __declspec(dllimport)
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * As below, with the differences macOS has too. @error receives a message
+ * to free() and may be NULL. A view the application creates for the
+ * endpoint (WKViewCreate) must be created with the configuration it is
+ * handed, which carries the page's opener or the browser context it
+ * belongs to.
+ */
+ZEBKIT_CDP_API unsigned zebkit_cdp_listen(const char *address, unsigned port, char **error);
+ZEBKIT_CDP_API unsigned zebkit_cdp_get_port(void);
+ZEBKIT_CDP_API void zebkit_cdp_stop(void);
+ZEBKIT_CDP_API void zebkit_cdp_set_discovery_enabled(bool enabled);
+/* Free with free(). */
+ZEBKIT_CDP_API char *zebkit_cdp_get_url(void);
+
+typedef WKViewRef (*ZebkitCDPCreateViewFunc)(WKViewRef related, WKPageConfigurationRef configuration, void *user_data);
+
+ZEBKIT_CDP_API void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc func, void *user_data);
+
+#ifdef __cplusplus
+}
+#endif
+
+#else /* Linux */
 
 #include <glib.h>
 
@@ -106,6 +141,6 @@ void zebkit_cdp_set_create_view_func(ZebkitCDPCreateViewFunc func, gpointer user
 
 G_END_DECLS
 
-#endif /* !__APPLE__ */
+#endif /* Linux */
 
 #endif

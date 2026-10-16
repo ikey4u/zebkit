@@ -13,7 +13,6 @@
 #include "WebPageProxy.h"
 #include "WebsiteDataStore.h"
 #include <pal/text/TextEncoding.h>
-#include <arpa/inet.h>
 #include <wtf/CallbackAggregator.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/NeverDestroyed.h>
@@ -22,6 +21,13 @@
 #include <wtf/UUID.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/MakeString.h>
+
+// inet_pton, for telling a numeric address from a name.
+#if OS(WINDOWS)
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 #include <wtf/text/StringToIntegerConversion.h>
 
 namespace Zebkit::CDP {

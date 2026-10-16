@@ -1,0 +1,272 @@
+zebkit: build the Chrome DevTools Protocol endpoint into WebKit2.dll
+
+The Windows counterpart of 2005 and 2009. The endpoint's sources are
+zebkit's own and live in src/cdp, outside this tree; the profile passes
+their location as ZEBKIT_CDP_DIR, and the build adds them to the library.
+The build is also told the version of the release (ZEBKIT_ENGINE_VERSION),
+which the endpoint reports and this port has nowhere to ask for.
+
+The rest is where WebKit has to tell the endpoint something. A page
+reports to the clients its application gave it (WKPageSetPageUIClient,
+WKPageSetPageNavigationClient), and has one of each, so the endpoint
+cannot be a client. It is told from the places the application's
+callbacks are called from instead, as on macOS:
+
+- WebView (what a WKViewRef is): a view was set up, a view is going. Each
+  is a page a CDP client can drive.
+- the navigation client: the main frame's loads (started, committed,
+  finished, failed), a web process that ended, and a certificate a client
+  asked to have accepted.
+- the UI client: script dialogs and beforeunload, which a client answers
+  when it is attached; the file chooser, when a client set the files; a
+  page that asks to be closed; and a page that opens a window, for which
+  the endpoint makes a view when the application makes none.
+
+An application's callbacks are called as before in every case the endpoint
+does not take, and it takes none while no client is attached.
+
+diff --git a/Source/WebKit/PlatformWin.cmake b/Source/WebKit/PlatformWin.cmake
+index 1003cc3cc..fdaffa56c 100644
+--- a/Source/WebKit/PlatformWin.cmake
++++ b/Source/WebKit/PlatformWin.cmake
+@@ -1,4 +1,14 @@
+ set(WebKit_OUTPUT_NAME WebKit2)
++
++# zebkit: the Chrome DevTools Protocol endpoint, built from sources that live
++# outside this tree.
++if (ZEBKIT_CDP_DIR)
++    foreach (_zebkit_source CDPDomains CDPImage CDPPage CDPServer CDPView CDPWebSocket CDPViewProxy CDPViewWin CDPTransportWin)
++        list(APPEND WebKit_SOURCES "${ZEBKIT_CDP_DIR}/${_zebkit_source}.cpp")
++    endforeach ()
++    list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES "${ZEBKIT_CDP_DIR}")
++    add_definitions(-DENABLE_ZEBKIT_CDP=1 -DZEBKIT_ENGINE_VERSION="${ZEBKIT_ENGINE_VERSION}")
++endif ()
+ set(WebProcess_OUTPUT_NAME WebKitWebProcess)
+ set(NetworkProcess_OUTPUT_NAME WebKitNetworkProcess)
+ set(GPUProcess_OUTPUT_NAME WebKitGPUProcess)
+diff --git a/Source/WebKit/UIProcess/API/C/WKPage.cpp b/Source/WebKit/UIProcess/API/C/WKPage.cpp
+index d379e8975..c35401b26 100644
+--- a/Source/WebKit/UIProcess/API/C/WKPage.cpp
++++ b/Source/WebKit/UIProcess/API/C/WKPage.cpp
+@@ -89,6 +89,9 @@
+ #include "WebImage.h"
+ #include "WebInspectorUIProxy.h"
+ #include "WebOpenPanelResultListenerProxy.h"
++#if ENABLE(ZEBKIT_CDP)
++#include "CDP.h"
++#endif
+ #include "WebPageDiagnosticLoggingClient.h"
+ #include "WebPageGroup.h"
+ #include "WebPageMessages.h"
+@@ -1716,6 +1719,14 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+     private:
+         void createNewPage(WebPageProxy& page, Ref<API::PageConfiguration>&& configuration, Ref<API::NavigationAction>&& navigationAction, CompletionHandler<void(RefPtr<WebPageProxy>&&)>&& completionHandler) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            // zebkit: where the application makes no view, the CDP endpoint may.
++            completionHandler = [page = Ref { page }, configuration = configuration.copyRef(), completionHandler = WTF::move(completionHandler)](RefPtr<WebPageProxy>&& newPage) mutable {
++                if (!newPage)
++                    newPage = Zebkit::CDP::createPage(page, configuration);
++                completionHandler(WTF::move(newPage));
++            };
++#endif
+             ASSERT(configuration->windowFeatures());
+             auto& windowFeatures = *configuration->windowFeatures();
+             if (m_client.createNewPage) {
+@@ -1793,6 +1804,10 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         void close(WebPageProxy* page) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (page && Zebkit::CDP::pageClosed(*page))
++                return;
++#endif
+             if (!m_client.close)
+                 return;
+ 
+@@ -1826,6 +1841,14 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         void runJavaScriptAlert(WebPageProxy& page, const String& message, WebFrameProxy* frame, FrameInfoData&& frameInfo, Function<void()>&& completionHandler) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::takesDialogs(page)) {
++                Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Alert, message, { }, [completionHandler = WTF::move(completionHandler)](bool, const String&) mutable {
++                    completionHandler();
++                });
++                return;
++            }
++#endif
+             if (m_client.runJavaScriptAlert) {
+                 RefPtr<RunJavaScriptAlertResultListener> listener = RunJavaScriptAlertResultListener::create(WTF::move(completionHandler));
+                 RefPtr<API::SecurityOrigin> securityOrigin = API::SecurityOrigin::create(frameInfo.securityOrigin);
+@@ -1852,6 +1875,14 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         void runJavaScriptConfirm(WebPageProxy& page, const String& message, WebFrameProxy* frame, FrameInfoData&& frameInfo, Function<void(bool)>&& completionHandler) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::takesDialogs(page)) {
++                Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Confirm, message, { }, [completionHandler = WTF::move(completionHandler)](bool accept, const String&) mutable {
++                    completionHandler(accept);
++                });
++                return;
++            }
++#endif
+             if (m_client.runJavaScriptConfirm) {
+                 RefPtr<RunJavaScriptConfirmResultListener> listener = RunJavaScriptConfirmResultListener::create(WTF::move(completionHandler));
+                 RefPtr<API::SecurityOrigin> securityOrigin = API::SecurityOrigin::create(frameInfo.securityOrigin);
+@@ -1879,6 +1910,15 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         void runJavaScriptPrompt(WebPageProxy& page, const String& message, const String& defaultValue, WebFrameProxy* frame, FrameInfoData&& frameInfo, Function<void(const String&)>&& completionHandler) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::takesDialogs(page)) {
++                Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::Prompt, message, defaultValue, [completionHandler = WTF::move(completionHandler)](bool accept, const String& text) mutable {
++                    // A null string is a prompt that was cancelled.
++                    completionHandler(!accept ? String() : text.isNull() ? emptyString() : text);
++                });
++                return;
++            }
++#endif
+             if (m_client.runJavaScriptPrompt) {
+                 RefPtr<RunJavaScriptPromptResultListener> listener = RunJavaScriptPromptResultListener::create(WTF::move(completionHandler));
+                 RefPtr<API::SecurityOrigin> securityOrigin = API::SecurityOrigin::create(frameInfo.securityOrigin);
+@@ -1989,11 +2029,23 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         bool canRunBeforeUnloadConfirmPanel() const final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::anyPageTakesDialogs())
++                return true;
++#endif
+             return m_client.runBeforeUnloadConfirmPanel_deprecatedForUseWithV6 || m_client.runBeforeUnloadConfirmPanel;
+         }
+ 
+         void runBeforeUnloadConfirmPanel(WebKit::WebPageProxy& page, WTF::String&& message, WebKit::WebFrameProxy* frame, FrameInfoData&&, Function<void(bool)>&& completionHandler) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::takesDialogs(page)) {
++                Zebkit::CDP::runDialog(page, Zebkit::CDP::Dialog::BeforeUnload, message, { }, [completionHandler = WTF::move(completionHandler)](bool accept, const String&) mutable {
++                    completionHandler(accept);
++                });
++                return;
++            }
++#endif
+             if (m_client.runBeforeUnloadConfirmPanel) {
+                 RefPtr<RunBeforeUnloadConfirmPanelResultListener> listener = RunBeforeUnloadConfirmPanelResultListener::create(WTF::move(completionHandler));
+                 m_client.runBeforeUnloadConfirmPanel(toAPI(&page), toAPI(message.impl()), toAPI(frame), toAPI(listener.get()), m_client.base.clientInfo);
+@@ -2029,6 +2081,10 @@ void WKPageSetPageUIClient(WKPageRef pageRef, const WKPageUIClientBase* wkClient
+ 
+         bool runOpenPanel(WebPageProxy& page, WebFrameProxy* frame, FrameInfoData&&, API::OpenPanelParameters* parameters, WebOpenPanelResultListenerProxy* listener) final
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (listener && Zebkit::CDP::chooseFiles(page, *listener))
++                return true;
++#endif
+             if (!m_client.runOpenPanel)
+                 return false;
+ 
+@@ -2357,6 +2413,9 @@ void WKPageSetPageNavigationClient(WKPageRef pageRef, const WKPageNavigationClie
+ 
+         void didStartProvisionalNavigation(WebPageProxy& page, const ResourceRequest&, API::Navigation* navigation, API::Object* userData) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            Zebkit::CDP::loadStarted(page);
++#endif
+             if (m_client.didStartProvisionalNavigation)
+                 m_client.didStartProvisionalNavigation(toAPI(&page), toAPI(navigation), toAPI(userData), m_client.base.clientInfo);
+         }
+@@ -2370,6 +2429,10 @@ void WKPageSetPageNavigationClient(WKPageRef pageRef, const WKPageNavigationClie
+ 
+         void didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&& frameInfo, API::Navigation* navigation, const URL&, const WebCore::ResourceError& error, API::Object* userData) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (frameInfo.isMainFrame)
++                Zebkit::CDP::loadFailed(page, error);
++#endif
+             if (frameInfo.isMainFrame) {
+                 if (m_client.didFailProvisionalNavigation)
+                     m_client.didFailProvisionalNavigation(toAPI(&page), toAPI(navigation), toAPI(error), toAPI(userData), m_client.base.clientInfo);
+@@ -2381,18 +2444,27 @@ void WKPageSetPageNavigationClient(WKPageRef pageRef, const WKPageNavigationClie
+ 
+         void didCommitNavigation(WebPageProxy& page, API::Navigation* navigation, API::Object* userData) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            Zebkit::CDP::loadCommitted(page);
++#endif
+             if (m_client.didCommitNavigation)
+                 m_client.didCommitNavigation(toAPI(&page), toAPI(navigation), toAPI(userData), m_client.base.clientInfo);
+         }
+ 
+         void didFinishNavigation(WebPageProxy& page, API::Navigation* navigation, API::Object* userData) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            Zebkit::CDP::loadFinished(page);
++#endif
+             if (m_client.didFinishNavigation)
+                 m_client.didFinishNavigation(toAPI(&page), toAPI(navigation), toAPI(userData), m_client.base.clientInfo);
+         }
+ 
+         void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData&, API::Navigation* navigation, const URL&, const WebCore::ResourceError& error, API::Object* userData) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            Zebkit::CDP::loadFailed(page, error);
++#endif
+             if (m_client.didFailNavigation)
+                 m_client.didFailNavigation(toAPI(&page), toAPI(navigation), toAPI(error), toAPI(userData), m_client.base.clientInfo);
+         }
+@@ -2420,6 +2492,10 @@ void WKPageSetPageNavigationClient(WKPageRef pageRef, const WKPageNavigationClie
+         
+         void didReceiveAuthenticationChallenge(WebPageProxy& page, AuthenticationChallengeProxy& authenticationChallenge) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            if (Zebkit::CDP::answerChallenge(page, authenticationChallenge))
++                return;
++#endif
+             if (m_client.canAuthenticateAgainstProtectionSpace && !m_client.canAuthenticateAgainstProtectionSpace(toAPI(&page), toAPI(WebProtectionSpace::create(authenticationChallenge.core().protectionSpace()).ptr()), m_client.base.clientInfo))
+                 return authenticationChallenge.listener().completeChallenge(WebKit::AuthenticationChallengeDisposition::RejectProtectionSpaceAndContinue);
+             if (!m_client.didReceiveAuthenticationChallenge)
+@@ -2429,6 +2505,9 @@ void WKPageSetPageNavigationClient(WKPageRef pageRef, const WKPageNavigationClie
+ 
+         bool processDidTerminate(WebPageProxy& page, WebKit::ProcessTerminationReason reason) override
+         {
++#if ENABLE(ZEBKIT_CDP)
++            Zebkit::CDP::processTerminated(page);
++#endif
+             if (m_client.webProcessDidTerminate) {
+                 m_client.webProcessDidTerminate(toAPI(&page), toAPI(reason), m_client.base.clientInfo);
+                 return true;
+diff --git a/Source/WebKit/UIProcess/win/WebView.cpp b/Source/WebKit/UIProcess/win/WebView.cpp
+index f3beb2f83..a4aa18d4d 100644
+--- a/Source/WebKit/UIProcess/win/WebView.cpp
++++ b/Source/WebKit/UIProcess/win/WebView.cpp
+@@ -59,6 +59,10 @@
+ #include <wtf/text/StringBuilder.h>
+ #include <wtf/text/WTFString.h>
+ 
++#if ENABLE(ZEBKIT_CDP)
++#include "CDP.h"
++#endif
++
+ #if ENABLE(REMOTE_INSPECTOR)
+ #include "RemoteInspectorProtocolHandler.h"
+ #endif
+@@ -259,10 +263,19 @@ WebView::WebView(RECT rect, const API::PageConfiguration& configuration, HWND pa
+ 
+     // Initialize the top level parent window and register it with the WindowMessageBroadcaster.
+     windowAncestryDidChange();
++
++#if ENABLE(ZEBKIT_CDP)
++    // zebkit: every view is a page a CDP client can drive.
++    Zebkit::CDP::webViewCreated(this);
++#endif
+ }
+ 
+ WebView::~WebView()
+ {
++#if ENABLE(ZEBKIT_CDP)
++    Zebkit::CDP::webViewDestroyed(this);
++#endif
++
+     // Tooltip window needs to be explicitly destroyed since it isn't a WS_CHILD.
+     if (::IsWindow(m_toolTipWindow))
+         ::DestroyWindow(m_toolTipWindow);

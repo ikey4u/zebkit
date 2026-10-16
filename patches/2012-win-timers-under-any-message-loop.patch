@@ -1,0 +1,41 @@
+zebkit, Windows: timers that fire under an application's own message loop
+
+The run loop of this port fires its timers from RunLoop::run(): a loop
+that looks at the timers, takes the messages off the queue and waits
+until the next timer is due. The port's own programs run it. An
+application that embeds the engine has a message loop of its own
+(GetMessage and DispatchMessage, or that of its toolkit), cannot run
+this one, which is not in the API, and so never fired a timer: nothing in
+the UI process that waits for a moment ever went on. The CDP endpoint
+waits in many places, and so does WebKit.
+
+When a timer is started the run loop's window is already sent a message,
+which did nothing but wake the loop. It now fires what is due and sets a
+timer of the system for the next, and does the same when that arrives.
+Messages to a window reach it whoever dispatches them, so this works
+under any loop, RunLoop::run() included.
+
+diff --git a/Source/WTF/wtf/win/RunLoopWin.cpp b/Source/WTF/wtf/win/RunLoopWin.cpp
+index ef92d7281..43422ff41 100644
+--- a/Source/WTF/wtf/win/RunLoopWin.cpp
++++ b/Source/WTF/wtf/win/RunLoopWin.cpp
+@@ -58,7 +58,19 @@ LRESULT RunLoop::wndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+         performWork();
+         return 0;
+     case SetTimerMessage:
++    case WM_TIMER: {
++        // zebkit: the timers are fired by RunLoop::run(), and an application
++        // has a message loop of its own and does not run that one. A timer
++        // of the system brings the loop here when the next one is due,
++        // whoever takes the messages off the queue.
++        fireTimers();
++        DWORD delay = msTillNextTimer();
++        if (delay < 3600 * 1000)
++            ::SetTimer(hWnd, 1, delay, nullptr);
++        else
++            ::KillTimer(hWnd, 1);
+         return 0;
++    }
+     case FireTimerMessage:
+         RunLoop::TimerBase* timer = nullptr;
+         timer = std::bit_cast<RunLoop::TimerBase*>(wParam);

@@ -9,9 +9,11 @@
 // Per platform: the web view API, the network listener, input, windows,
 // cookies, dialogs. On Linux that is WebKit's GLib API, libsoup and WPE,
 // in CDPViewGLib.cpp and CDPTransportGLib.cpp. On macOS it is WKWebView,
-// AppKit and BSD sockets, in CDPViewCocoa.mm and CDPTransportCocoa.mm. A
-// port to another platform writes its own versions of those two files, and
-// adds its types below.
+// AppKit and BSD sockets, in CDPViewCocoa.mm and CDPTransportCocoa.mm. On
+// Windows it is the view of WebKit's C API, window messages and Winsock,
+// in CDPViewWin.cpp and CDPTransportWin.cpp, with what needs none of those
+// in CDPViewProxy.cpp. A port to another platform writes its own versions
+// of those files, and adds its types below.
 //
 // What a platform supplies, all of it:
 //
@@ -59,6 +61,14 @@ typedef struct _WebKitScriptDialog WebKitScriptDialog;
 OBJC_CLASS NSObject;
 OBJC_CLASS WKWebView;
 OBJC_CLASS WKWebViewConfiguration;
+#elif PLATFORM(WIN)
+#include "WebPreferences.h"
+#include "WebsiteDataStore.h"
+#include <WebCore/Cookie.h>
+
+namespace WebKit {
+class WebView;
+}
 #else
 #error "The CDP endpoint has no platform layer for this platform yet (see CDPPlatform.h)"
 #endif
@@ -103,6 +113,28 @@ struct PlatformPageState {
 };
 // A failed load leaves the view as it was; an application shows what it likes.
 static constexpr bool engineShowsErrorPages = false;
+#elif PLATFORM(WIN)
+// A view, by identity, and not referenced: the view says when it goes.
+using PlatformView = WebKit::WebView*;
+using PlatformNetworkSession = RefPtr<WebKit::WebsiteDataStore>;
+using PlatformCookie = std::unique_ptr<WebCore::Cookie>;
+class ViewObserver;
+struct PlatformPageState {
+    PlatformPageState();
+    ~PlatformPageState();
+    // Watches the page's title and address.
+    RefPtr<ViewObserver> observer;
+    // Answers the dialog the page is waiting in. Null when none is open.
+    Function<void(bool accept, const String& promptText)> dialog;
+    bool ignoresCertificateErrors { false };
+    // A client set the device scale factor; what it was, 0 for the screen's.
+    bool overridesScale { false };
+    float originalScale { 0 };
+    // Set while the back/forward cache is off for this page's sake.
+    RefPtr<WebKit::WebPreferences> pageCachePreferences;
+};
+// A failed load leaves the view as it was; an application shows what it likes.
+static constexpr bool engineShowsErrorPages = false;
 #endif
 
 using CookieList = Vector<PlatformCookie>;
@@ -110,6 +142,10 @@ using CookieList = Vector<PlatformCookie>;
 // MARK: Views
 
 WebKit::WebPageProxy& pageProxy(PlatformView);
+#if PLATFORM(WIN)
+// The view a page is shown in; null for a page no view of this process has.
+PlatformView viewForPage(WebKit::WebPageProxy&);
+#endif
 String viewTitle(PlatformView);
 String viewURI(PlatformView);
 void loadURI(PlatformView, const String&);

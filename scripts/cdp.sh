@@ -47,7 +47,22 @@ if leaks="$(grep -nE '\b(webkit_[a-z_]+|wpe_[a-z_]+|soup_[a-z_]+|g_[a-z_]+)\(|\b
 fi
 
 host="$build_dir/tools/cdphost"
-if [[ "$ZEBKIT_HOST" == macos ]]; then
+if [[ "$ZEBKIT_HOST" == windows ]]; then
+    # A program for Windows, built here like the engine and run under Wine
+    # (scripts/wine.sh, which looks for it beside the engine).
+    host=cdphost.exe
+    source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost-win.c"
+    if [[ ! -f "$build_dir/bin/$host" || "$source_file" -nt "$build_dir/bin/$host" || "$build_dir/lib/WebKit2.lib" -nt "$build_dir/bin/$host" ]]; then
+        log "building cdphost for $profile"
+        sysroot="$WINDOWS_TOOLCHAIN_DIR/sysroot"
+        mkdir -p "$build_dir/tools"
+        "$WINDOWS_TOOLCHAIN_DIR/llvm/bin/clang-cl" /nologo /MD /O1 /W3 -D_CRT_SECURE_NO_WARNINGS -Wno-unused-function \
+            -imsvc "$sysroot/crt/include" -imsvc "$sysroot/sdk/include/ucrt" -imsvc "$sysroot/sdk/include/um" -imsvc "$sysroot/sdk/include/shared" \
+            -I "$ZEBKIT_ROOT/src/cdp" -I "$build_dir/WebKit/Headers" "$source_file" "/Fo$build_dir/tools/" -fuse-ld=lld \
+            /link "-libpath:$sysroot/crt/lib/x64" "-libpath:$sysroot/sdk/lib/ucrt/x64" "-libpath:$sysroot/sdk/lib/um/x64" \
+            "$build_dir/lib/WebKit2.lib" user32.lib "/out:$build_dir/bin/$host"
+    fi
+elif [[ "$ZEBKIT_HOST" == macos ]]; then
     source_file="$ZEBKIT_ROOT/tools/cdphost/cdphost.m"
     # Rebuilt when its source changes, and when the engine it links against does.
     if [[ ! -x "$host" || "$source_file" -nt "$host" || "$products_dir/WebKit.framework/WebKit" -nt "$host" ]]; then
@@ -72,7 +87,11 @@ fi
 
 work="$(mktemp -d)"
 pids=()
-trap 'kill "${pids[@]}" 2>/dev/null; rm -r "$work"' EXIT
+# end_browser: under Wine the browser's processes are not this script's.
+end_browser() {
+    [[ "$ZEBKIT_HOST" != windows ]] || "$ZEBKIT_ROOT/scripts/wine.sh" --stop
+}
+trap 'end_browser; kill "${pids[@]}" 2>/dev/null || true; rm -r "$work"' EXIT
 
 python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$ZEBKIT_ROOT/tests/cdp/pages" "$page_port" > "$work/pages.log" 2>&1 &
 pids+=($!)
@@ -87,7 +106,8 @@ start_browser() {
         >> "$build_dir/cdp.log" 2>&1 &
     browser_pid=$!
     pids+=("$browser_pid")
-    for _ in $(seq 50); do
+    # Ten seconds; a minute under Wine, which starts slowly.
+    for _ in $(seq "$([[ "$ZEBKIT_HOST" == windows ]] && echo 300 || echo 50)"); do
         (( $(grep -c "^DevTools listening on" "$build_dir/cdp.log" || true) > started )) && return
         kill -0 "$browser_pid" 2>/dev/null || die "cdphost exited; see $build_dir/cdp.log"
         sleep 0.2
@@ -96,6 +116,7 @@ start_browser() {
 }
 
 stop_browser() {
+    end_browser
     kill "$browser_pid" 2>/dev/null || true
     wait "$browser_pid" 2>/dev/null || true
 }

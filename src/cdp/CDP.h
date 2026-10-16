@@ -31,12 +31,14 @@ void webViewDestroyed(WebKitWebView*);
 
 } // namespace Zebkit::CDP
 
-#elif PLATFORM(COCOA)
+#elif PLATFORM(COCOA) || PLATFORM(WIN)
 
 #include <wtf/Forward.h>
 #include <wtf/Function.h>
 
+#if PLATFORM(COCOA)
 OBJC_CLASS WKWebView;
+#endif
 
 namespace API {
 class PageConfiguration;
@@ -50,18 +52,27 @@ namespace WebKit {
 class AuthenticationChallengeProxy;
 class WebOpenPanelResultListenerProxy;
 class WebPageProxy;
+#if PLATFORM(WIN)
+class WebView;
+#endif
 }
 
 namespace Zebkit::CDP {
 
-// Called by WKWebView when a view has been set up and when it is about to
-// go. Every view in the process is a CDP page target while the server is
-// listening.
+// Called by the view (WKWebView; on Windows WebKit::WebView, which is what
+// a WKViewRef is) when it has been set up and when it is about to go. Every
+// view in the process is a CDP page target while the server is listening.
+#if PLATFORM(COCOA)
 void webViewCreated(WKWebView *);
 void webViewDestroyed(WKWebView *);
+#else
+void webViewCreated(WebKit::WebView*);
+void webViewDestroyed(WebKit::WebView*);
+#endif
 
-// A WKWebView reports to the delegates its application gave it, and has one
-// of each. The endpoint is told from where the delegates are called.
+// A view reports to the delegates its application gave it (on Windows, the
+// clients of its page), and has one of each. The endpoint is told from
+// where they are called.
 
 // From the navigation client: the main frame's loads.
 void loadStarted(WebKit::WebPageProxy&);

@@ -185,7 +185,7 @@ public:
     void loadFailed(GError*);
     bool scriptDialog(WebKitScriptDialog*);
     bool runFileChooser(GObject* request);
-#elif PLATFORM(COCOA)
+#elif PLATFORM(COCOA) || PLATFORM(WIN)
     // Only if acceptsDialog().
     void scriptDialog(ASCIILiteral type, const String& message, const String& defaultPrompt, Function<void(bool accept, const String& promptText)>&&);
     // False if the endpoint leaves it to the application.
@@ -487,7 +487,7 @@ public:
     void removeView(PlatformView);
     PageTarget* pageForView(PlatformView);
     PageTarget* pageForID(const String&);
-#if PLATFORM(COCOA)
+#if PLATFORM(COCOA) || PLATFORM(WIN)
     bool anyPageAcceptsDialog() const;
 #endif
 
@@ -509,6 +509,9 @@ public:
 #if PLATFORM(COCOA)
     // The view has to be made with the configuration it is given.
     typedef PlatformView (*CreateViewFunc)(PlatformView, WKWebViewConfiguration *, void*);
+#elif PLATFORM(WIN)
+    // The same, in the C API's types (WKViewRef, WKPageConfigurationRef).
+    typedef const struct OpaqueWKView* (*CreateViewFunc)(const struct OpaqueWKView*, const struct OpaqueWKPageConfiguration*, void*);
 #else
     typedef PlatformView (*CreateViewFunc)(PlatformView, void*);
 #endif

@@ -134,7 +134,7 @@ CDP client ── WebSocket ──> src/cdp (UI process)
 
 | File | What is in it |
 |---|---|
-| `CDPPlatform.h` | The line between portable code and what a platform supplies. The files named `GLib` are the Linux layer, those named `Cocoa` the macOS one; the rest is portable |
+| `CDPPlatform.h` | The line between portable code and what a platform supplies. The files named `GLib` are the Linux layer, those named `Cocoa` the macOS one, those named `Win` and `CDPViewProxy.cpp` the Windows one (`docs/WINDOWS.md`); the rest is portable |
 | `CDPServer.cpp` | HTTP discovery, sockets, sessions, and the `Target`, `Browser` and `Storage` domains |
 | `CDPPage.cpp` | One page: the inspector connection, and the page's events translated to CDP |
 | `CDPDomains.cpp` | `Page`, `Runtime`, `DOM`, `Network`, `Emulation` commands |
@@ -388,7 +388,7 @@ scripts/cdp-reference.sh         # the raw checks against Chrome itself
   `.cache/`; they are not part of the engine.
 
 Results are recorded in `docs/PROGRESS.md` and, for each platform, in
-`docs/LINUX.md` and `docs/MACOS.md`. `profiles/slim-dev.cmake` builds the
+`docs/LINUX.md`, `docs/MACOS.md` and `docs/WINDOWS.md`. `profiles/slim-dev.cmake` builds the
 engine without link-time optimization; with it a change to `src/cdp` is
 running again in about 15 seconds.
 
