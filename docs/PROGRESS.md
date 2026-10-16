@@ -31,16 +31,16 @@ what was decided for it and what is left.
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | Document | [`docs/LINUX.md`](LINUX.md) | [`docs/MACOS.md`](MACOS.md) | [`docs/WINDOWS.md`](WINDOWS.md) |
-| State | Released, `v0.0.1-alpha.2` | Released, `v0.0.1-alpha.2`; `Zebkit.framework` is since then, not released yet | Not started |
-| Engine | WPE WebKit 2.54.1 | WebKit's Mac port, the same release | Not decided |
-| Target | x86_64, glibc 2.17 or newer | Apple Silicon, macOS 27 | |
+| State | Released, `v0.0.1-alpha.2` | Released, `v0.0.1-alpha.2`; `Zebkit.framework` is since then, not released yet | Started: the engine builds with the CDP endpoint and passes its tests under Wine; not slimmed, nothing released |
+| Engine | WPE WebKit 2.54.1 | WebKit's Mac port, the same release | WebKit's Windows port, the same release, cross-built on Linux |
+| Target | x86_64, glibc 2.17 or newer | Apple Silicon, macOS 27 | x86_64, Windows 10 1809 or newer; run under Wine only so far |
 | Form | `libzebkit.so.1` and two helper programs | `Zebkit.framework`, with the engine's frameworks and helper processes inside it | |
-| `slim` package | 83.1 MiB | 92.3 MiB | |
+| `slim` package | 83.1 MiB | 92.3 MiB | `slim` has the functions, not yet the size: 160.3 MiB (`baseline` 165.8) |
 | Release archive | 24.7 MiB | 27.9 MiB | |
-| JIT | Baseline and DFG | All tiers | |
-| Networking, media, fonts | Built from source, in the package | The system's | |
+| JIT | Baseline and DFG | All tiers | All tiers |
+| Networking, media, fonts | Built from source, in the package | The system's | Networking built from source; media and fonts the system's |
 | Smoke test | Pass | Pass | |
-| CDP: raw checks, Puppeteer, Playwright | 43 of 43, 17 of 17, 17 of 17 | 42 of 43 (the one is the test machine's network), 17 of 17, 17 of 17 | |
+| CDP: raw checks, Puppeteer, Playwright | 43 of 43, 17 of 17, 17 of 17 | 42 of 43 (the one is the test machine's network), 17 of 17, 17 of 17 | 43 of 43, 17 of 17, 17 of 17, under Wine |
 | Media test | Pass | Pass | |
 | Top-100 sites against stock WebKit | 84 pass, 0 fail, 16 blocked | 89 pass, 0 fail, 11 blocked | |
 | FFmpeg for applications (`docs/VENDOR.md`) | Yes | Yes, the same | |
@@ -151,7 +151,7 @@ the review for production use, each with what it found.
    C++-bound benchmarks. Worth investigating now, or later?
 4. **macOS.** WebRTC and the features only the Mac port has, Intel, the
    oldest macOS to support, signing: listed in `docs/MACOS.md`.
-5. **Windows.** Everything; `docs/WINDOWS.md` has the questions.
+5. **Windows.** Everything after the baseline build; `docs/WINDOWS.md` has the list and the questions.
 
 ## What exists
 
@@ -183,8 +183,8 @@ Linux's only, `docs/MACOS.md` says so.
 - **Dependencies:** 29 recipes in `deps/`, sources pinned by SHA-256.
   `deps/syslibs` builds lazy-loading stand-ins for optional system libraries
   with `tools/syslib-stubs`.
-- **Patches (16):** six build or bug fixes (`0xxx`), two size patches
-  (`1xxx`), eight port and feature patches (`2xxx`). `0005` stops WebKit from
+- **Patches (18):** six build or bug fixes (`0xxx`), two size patches
+  (`1xxx`), ten port and feature patches (`2xxx`). `0005` stops WebKit from
   leaving a web process behind for every page that starts at `about:blank`;
   `0006` fixes a crash at exit in any application that has shown a window on
   Wayland (EGL was shut down after the display connection it used was
@@ -193,7 +193,21 @@ Linux's only, `docs/MACOS.md` says so.
   isolated worlds CDP needs; `2007` names the shipped files after zebkit
   (`libzebkit.so.1`, `zebkit-web`, `zebkit-network`, `libzebkit-bundle.so`),
   the API and the symbols keeping WebKit's names; `2008` exports the entry
-  points for libraries inside the engine.
+  points for libraries inside the engine; `2014` adds child toplevels
+  (`wpe_toplevel_new_child`, `_set_child_geometry`, `_set_child_visible`):
+  a view drawn inside another view's window at a rectangle, as a Wayland
+  subsurface or an X11 child window, keyboard focus following the last
+  click, for applications that embed a browser in their window
+  (the application's, checked on X11 under Xvfb with pixels and xdotool input,
+  and on Wayland under labwc). The X11 backend now redraws on Expose.
+  `2015` takes files dropped from other applications: a `file-drag`
+  signal on `WPEView` (enter, motion, leave, drop with the URIs), from the
+  Wayland data device and from XDND (version 5) on X11; only
+  `text/uri-list`, only as a copy, and refused by a view nothing listens
+  to. On Wayland a drag no longer replaces the clipboard's offer. Checked
+  with test drag sources (Xlib; a Wayland client driving a virtual
+  pointer under labwc): the application imports what is dropped, MiniBrowser
+  refuses, pasting from another application still works after a drag.
 - **Libraries inside the engine, for applications:** FFmpeg as
   `zebkit::vendor::ffmpeg` (`docs/VENDOR.md`), generated by
   `scripts/gen-vendor.py`, checked by `scripts/vendor.sh`. 938 functions,
@@ -246,7 +260,7 @@ Linux's only, `docs/MACOS.md` says so.
     same revision, slimmed, packaged and released, with the CDP endpoint,
     FFmpeg for applications, the examples, the Rust crates and the tests
     as on Linux. Left there: feature decisions, signing, a debug build.
-14. **Windows port.** `docs/WINDOWS.md`. Not started.
+14. **Windows port.** `docs/WINDOWS.md`. Started: the toolchain, the build, the feature set of the other platforms but for Web Audio and Media Source Extensions, and the CDP endpoint, tested under Wine.
 15. **Embedding API** that hides GLib (the CDP calls in
     `src/cdp/zebkit-cdp.h` are its first piece).
 16. **CI:** build, smoke, media, CDP, site test, benchmark and size check.

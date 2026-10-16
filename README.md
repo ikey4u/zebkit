@@ -2,7 +2,7 @@
 
 A trimmed WebKit build that ships as a small, self-contained, relocatable
 engine with media playback, for Linux (`docs/LINUX.md`) and macOS
-(`docs/MACOS.md`), and Windows later (`docs/WINDOWS.md`).
+(`docs/MACOS.md`); Windows is started (`docs/WINDOWS.md`).
 The Linux package needs nothing from the system but glibc 2.17 or newer,
 and uses Wayland, X11, a GPU and sound when they are there. It is driven
 over the Chrome DevTools Protocol. See [docs/PROGRESS.md](docs/PROGRESS.md)
@@ -14,9 +14,9 @@ upstream release plus what turns it into zebkit:
 | Directory | What it holds |
 |---|---|
 | `upstream.lock` | The upstream release we build, with its checksum |
-| `toolchain.lock` | The cross toolchain and the oldest glibc we target |
-| `profiles/` | Build flavours as CMake initial-cache files (`baseline`, `slim`, `slim-dev`) |
-| `patches/` | Source changes on top of upstream, applied in `series` order |
+| `toolchain.lock` | The cross toolchain and the oldest glibc we target; for Windows, the compiler, Microsoft's SDK and the package manager |
+| `profiles/` | Build flavours as CMake initial-cache files (`baseline`, `slim`, `slim-dev`); `macos/` and `windows/` hold those platforms' |
+| `patches/` | Source changes on top of upstream, applied in `series` order (`series.macos`, `series.windows` for those platforms) |
 | `deps/` | Recipes for third-party libraries built from source for size; `devtools-protocol/`, Chrome's definition of the protocol, copied unchanged, which the CDP endpoint is generated from and tested against |
 | `src/` | Our own engine code: `cdp/`, the Chrome DevTools Protocol endpoint |
 | `scripts/` | Fetch, build, test and measure; every step is one script |
