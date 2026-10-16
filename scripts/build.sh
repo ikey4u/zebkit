@@ -3,11 +3,12 @@
 #
 #   scripts/build.sh <profile> [--fresh] [--configure-only] [ninja args...]
 #
-# On macOS the build is Xcode's and scripts/build-macos.sh does it.
+# On macOS the build is Xcode's and scripts/build-macos.sh does it; for
+# Windows (ZEBKIT_TARGET=windows) scripts/build-windows.sh does.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-[[ "$ZEBKIT_HOST" == macos ]] && exec "$ZEBKIT_ROOT/scripts/build-macos.sh" "$@"
+[[ "$ZEBKIT_HOST" == linux ]] || exec "$ZEBKIT_ROOT/scripts/build-$ZEBKIT_HOST.sh" "$@"
 
 profile="${1:-}"
 require_profile "$profile"

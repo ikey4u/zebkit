@@ -6,7 +6,9 @@ Source changes on top of the pinned upstream release (see `upstream.lock`).
   `#` starts a comment. `scripts/fetch-upstream.sh` applies them with
   `patch -p1` and rebuilds the tree whenever the list or a patch changes.
 - `series.macos` is the list for macOS, where the engine is WebKit's Mac
-  port, built from the same release in git. A patch can be in both lists.
+  port, built from the same release in git. `series.windows` is the list
+  for Windows, where it is WebKit's Windows port, from git as well. A patch
+  can be in more than one list.
 - Name patches `NNNN-short-description.patch`. Group by purpose:
   `0xxx` fixes: for flag combinations upstream does not test, and for
   upstream bugs,

@@ -8,3 +8,25 @@ TOOLCHAIN_URL=https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
 TOOLCHAIN_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
 # The oldest glibc the package must run on.
 TOOLCHAIN_TARGET=x86_64-linux-gnu.2.17
+
+# Windows is built on Linux (scripts/fetch-toolchain-windows.sh): clang-cl
+# and lld-link from LLVM, Microsoft's SDK and C++ runtime fetched by xwin,
+# and vcpkg for the libraries. WebKit's own cross-build asks for LLVM 20 and
+# names the vcpkg commit in its vcpkg-configuration.json; bump that with
+# upstream.lock.
+WINDOWS_LLVM_VERSION=20.1.8
+WINDOWS_LLVM_URL=https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-Linux-X64.tar.xz
+WINDOWS_LLVM_SHA256=1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
+# The same release for Windows, for clang_rt.builtins only.
+WINDOWS_CLANG_RT_URL=https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz
+WINDOWS_CLANG_RT_SHA256=f229769f11d6a6edc8ada599c0cda964b7dee6ab1a08c6cf9dd7f513e85b107f
+WINDOWS_XWIN_URL=https://github.com/Jake-Shadle/xwin/releases/download/0.7.0/xwin-0.7.0-x86_64-unknown-linux-musl.tar.gz
+WINDOWS_XWIN_SHA256=f1bffe5319728fca9cde5bb03fcb6c88cdf44922bd003fca8b4b9ce5b6f259d2
+WINDOWS_SDK_VERSION=10.0.26100
+WINDOWS_CRT_VERSION=14.44.17.14
+WINDOWS_VCPKG_URL=https://github.com/microsoft/vcpkg
+WINDOWS_VCPKG_COMMIT=36fb57eb3878cc3422351a91d3e87c328388dabd
+# Wine, to try what was built on this machine (scripts/wine.sh). A build
+# that needs nothing installed: https://github.com/Kron4ek/Wine-Builds.
+WINDOWS_WINE_URL=https://github.com/Kron4ek/Wine-Builds/releases/download/11.19/wine-11.19-amd64-wow64.tar.xz
+WINDOWS_WINE_SHA256=a1fe858b45d12c9b16b91c7601d9b934f68430f7b6b95e240212ab6e2a198d8a

@@ -32,7 +32,11 @@ REPORTS_DIR="$ZEBKIT_ROOT/docs/reports"
 # from the release tarball. macOS builds WebKit's Mac port with Xcode from
 # the same release in git, with its own patch series and its own profiles,
 # which are Xcode configuration files.
-case "$(uname -s)" in
+#
+# Windows is not a host: WebKit's Windows port is cross-built on Linux, by
+# setting ZEBKIT_TARGET=windows (docs/WINDOWS.md). ZEBKIT_HOST is then
+# "windows", and everything of that build is under out/windows.
+case "${ZEBKIT_TARGET:-$(uname -s)}" in
     Linux)
         ZEBKIT_HOST=linux
         SRC_DIR="$UPSTREAM_DIR/$UPSTREAM_NAME-$UPSTREAM_VERSION"
@@ -49,12 +53,29 @@ case "$(uname -s)" in
         # The reports of the two systems are of the same names.
         REPORTS_DIR="$ZEBKIT_ROOT/docs/reports/macos"
         ;;
-    *) die "zebkit is not ported to $(uname -s)" ;;
+    windows)
+        [[ "$(uname -s)" == Linux ]] || die "zebkit for Windows is built on Linux"
+        ZEBKIT_HOST=windows
+        SRC_DIR="$UPSTREAM_DIR/webkit-$UPSTREAM_VERSION-windows"
+        PATCH_SERIES="$PATCHES_DIR/series.windows"
+        PROFILES_DIR="$ZEBKIT_ROOT/profiles/windows"
+        PROFILE_SUFFIX=cmake
+        OUT_DIR="$OUT_DIR/windows"
+        REPORTS_DIR="$ZEBKIT_ROOT/docs/reports/windows"
+        # The compiler, Microsoft's SDK and vcpkg: scripts/fetch-toolchain-windows.sh.
+        WINDOWS_TOOLCHAIN_DIR="$TOOLCHAIN_DIR/windows"
+        # The other scripts would do to it what they do on Linux.
+        case "$(basename "$0")" in
+            fetch-upstream.sh|fetch-toolchain-windows.sh|build.sh|build-windows.sh|wine.sh|cdp.sh) ;;
+            *) die "$(basename "$0") is not ported to Windows yet; see docs/WINDOWS.md" ;;
+        esac
+        ;;
+    *) die "zebkit is not ported to ${ZEBKIT_TARGET:-$(uname -s)}" ;;
 esac
 
 # linux_only: for the scripts that have no macOS counterpart yet.
 linux_only() {
-    [[ "$ZEBKIT_HOST" == linux ]] || die "$(basename "$0") is not ported to macOS yet; see docs/MACOS.md"
+    [[ "$ZEBKIT_HOST" == linux ]] || die "$(basename "$0") is not ported to $ZEBKIT_HOST yet; see docs/"
 }
 
 # sha256 [file...]: like sha256sum, which macOS does not have.
@@ -79,6 +100,14 @@ list_profiles() {
 stage_profile() {
     build_dir="$OUT_DIR/$1"
     stage_dir="$build_dir/stage"
+
+    # For Windows there is nothing to install either, and what was built
+    # runs under Wine (scripts/wine.sh), which finds the libraries itself.
+    if [[ "$ZEBKIT_HOST" == windows ]]; then
+        [[ -f "$build_dir/bin/WebKit2.dll" ]] || die "profile '$1' is not built; run ZEBKIT_TARGET=windows scripts/build.sh $1"
+        run_env=("$ZEBKIT_ROOT/scripts/wine.sh" "$1")
+        return
+    fi
 
     # On macOS there is nothing to install: the frameworks are used from
     # where Xcode put them, and the engine's helper processes, which launchd

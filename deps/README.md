@@ -11,6 +11,11 @@ opt in with `zeb_use_deps()` (see `profiles/_common.cmake`).
   adding or removing a library, reconfigure the engine with
   `scripts/build.sh <profile> --fresh`.
 
+`windows/` has no recipes either. The libraries of the Windows engine are
+built by vcpkg from WebKit's own list, for now as WebKit builds them; the
+directory holds zebkit's vcpkg triplet (which compiler, which SDK) and a
+fix for ICU's data library (`docs/WINDOWS.md`).
+
 `devtools-protocol/` is not a library and has no recipe: it is Chrome's
 definition of the DevTools Protocol, copied unchanged. The CDP endpoint's
 parameter checks are generated from it and its tests compare every message

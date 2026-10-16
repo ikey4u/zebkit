@@ -14,7 +14,7 @@ stamp="$SRC_DIR/.zebkit-stamp"
 # The stamp captures everything that determines the tree's contents.
 patch_list() { [[ -f "$PATCH_SERIES" ]] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$PATCH_SERIES" || true; }
 patches_hash="$(patch_list | while read -r p; do sha256 "$PATCHES_DIR/$p"; done | sha256 | cut -d' ' -f1)"
-if [[ "$ZEBKIT_HOST" == macos ]]; then
+if [[ "$ZEBKIT_HOST" != linux ]]; then
     want="$UPSTREAM_GIT_COMMIT $patches_hash"
 else
     want="$UPSTREAM_SHA256 $patches_hash"
@@ -71,7 +71,9 @@ fetch_git() {
         log "applying $p"
         GIT_INDEX_FILE="$index" git -C "$SRC_DIR" apply --cached "$PATCHES_DIR/$p"
     done
-    tree="$(GIT_INDEX_FILE="$index" git -C "$SRC_DIR" write-tree)"
+    # --missing-ok: the test suites were never fetched, and without it Git
+    # would download all of them just to see that they are there.
+    tree="$(GIT_INDEX_FILE="$index" git -C "$SRC_DIR" write-tree --missing-ok)"
     rm -f "$index"
     log "checking out $UPSTREAM_GIT_TAG with the patches"
     git -C "$SRC_DIR" read-tree --reset -u "$tree"
@@ -82,7 +84,7 @@ fetch_git() {
     ln -sfn ../../../../src "$SRC_DIR/Source/WebKit/zebkit"
 }
 
-if [[ "$ZEBKIT_HOST" == macos ]]; then fetch_git; else fetch_tarball; fi
+if [[ "$ZEBKIT_HOST" == linux ]]; then fetch_tarball; else fetch_git; fi
 
 echo "$want" > "$stamp"
 log "ready: $SRC_DIR"

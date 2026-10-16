@@ -1,0 +1,34 @@
+Fix, Windows: a crash when the size of the process cannot be asked for.
+
+WTF::memoryFootprint() asks Windows for the pages of the process with a
+small buffer first, and if that fails takes from the buffer how many
+entries there are and allocates room for them. The number is there only
+when the call failed because the buffer was too small. When it failed for
+another reason the buffer was never written, the number is whatever was on
+the stack, and the allocation of that many entries ends the process.
+
+Under Wine the call always fails so (it is not implemented), and every
+process of the engine died within half a minute of starting, when the
+memory monitor first measured. The buffer now starts out zeroed, and the
+reason for the failure is looked at before the number is, as the code does
+for the calls after the first.
+
+diff --git a/Source/WTF/wtf/win/MemoryFootprintWin.cpp b/Source/WTF/wtf/win/MemoryFootprintWin.cpp
+index 3fcbe1c8f..f7c8e4df9 100644
+--- a/Source/WTF/wtf/win/MemoryFootprintWin.cpp
++++ b/Source/WTF/wtf/win/MemoryFootprintWin.cpp
+@@ -64,10 +64,13 @@ size_t memoryFootprint()
+     // https://msdn.microsoft.com/en-us/library/windows/desktop/ms684946(v=vs.85).aspx
+     constexpr const size_t minNumberOfEntries = 16;
+     constexpr const size_t sizeOfBufferOnStack = sizeof(PSAPI_WORKING_SET_INFORMATION) + minNumberOfEntries * sizeof(PSAPI_WORKING_SET_BLOCK);
+-    alignas(PSAPI_WORKING_SET_INFORMATION) std::byte bufferOnStack[sizeOfBufferOnStack];
++    alignas(PSAPI_WORKING_SET_INFORMATION) std::byte bufferOnStack[sizeOfBufferOnStack] { };
+     auto* workingSetsOnStack = reinterpret_cast<PSAPI_WORKING_SET_INFORMATION*>(&bufferOnStack);
+     if (QueryWorkingSet(process.get(), workingSetsOnStack, sizeOfBufferOnStack))
+         return countSizeOfPrivateWorkingSet(*workingSetsOnStack);
++    // The number of entries is there only if the buffer was too small.
++    if (GetLastError() != ERROR_BAD_LENGTH)
++        return 0;
+ 
+     auto updateNumberOfEntries = [&] (size_t numberOfEntries) {
+         // If working set increases between first QueryWorkingSet and second QueryWorkingSet, the second one can fail.

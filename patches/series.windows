@@ -1,0 +1,6 @@
+# The series for Windows, applied in order by scripts/fetch-upstream.sh
+# (with ZEBKIT_TARGET=windows) to WebKit's git tree. See README.md in this
+# directory.
+0010-win-skia-strike-ref.patch
+0011-win-webcore-exports.patch
+0012-win-memory-footprint-query.patch
