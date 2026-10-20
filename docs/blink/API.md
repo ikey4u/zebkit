@@ -13,7 +13,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 |---|---|---|
 | 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
-| 2. Services | `<zebkit/services.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, over Chromium's own code |
+| 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, over Chromium's own code |
 | 3. Bindings | `bindings/python/zebkit` | Layers 0 and 2 for Python |
 | 4. JavaScript | `zebkit.*` in a page | Layers 0 and 2 for the page's script, as the application grants it |
 
@@ -62,7 +62,21 @@ int main(int argc, char **argv) {
   `--remote-debugging-port`; `zebkit_cdp_get_url()` is the browser
   target's WebSocket address for Puppeteer and Playwright.
 - **Data.** The profile is in `--user-data-dir`, by default
-  `$XDG_CONFIG_HOME/zebkit/<program name>`.
+  `$XDG_CONFIG_HOME/zebkit/<program name>`
+  (`~/Library/Application Support/zebkit/<program name>` on macOS). The
+  log goes to stderr.
+- **URL schemes of the application's own.** `zebkit_scheme_register()`,
+  before `zebkit_main()`, makes `app:` (say) a scheme of the engine's in
+  every process: standard (an origin, relative URLs), secure, open to
+  `fetch()`, past pages' Content-Security-Policy, as its flags say.
+  `zebkit_scheme_handle()` answers its requests, page loads, subresources,
+  `fetch()` and media alike: `zebkit_request_respond()` with a status,
+  headers and a body, from any thread, or `zebkit_request_respond_file()`
+  with a file read as it is sent, in the range a `Range` header asks for, as
+  a `<video>` seeking asks. This is Chromium's way for its own schemes (a
+  URL loader factory per scheme in the browser process), and Electron's
+  `protocol.handle`. The same from the command line:
+  `--zebkit-scheme=app,standard,secure,fetch`.
 
 ## 1. The libraries inside the engine
 
@@ -129,6 +143,42 @@ is not one library's API.
 | `zebkit_fetch` | An HTTP request through the engine's network stack: HTTP/1.1, 2 and 3, its cache, cookies and proxy settings, without CORS | The network service |
 
 All but `zebkit_fetch()` work without the engine running.
+
+### PDF
+
+`<zebkit/pdf.h>` is documents on Chromium's own PDFium, which is in the
+engine (without XFA forms and without PDFium's JavaScript). What it covers
+is measured against EmbedPDF's viewer (`docs/blink/ROADMAP.md`, section 8).
+
+```c
+zebkit_pdf *pdf = zebkit_pdf_open_file("report.pdf", NULL, &error);
+char *info = zebkit_pdf_info(pdf);                      /* JSON: pages, metadata, permissions */
+zebkit_pdf_render_options tile = {.scale = 2, .background = 0xffffffff,
+                                  .x = 0, .y = 0, .width = 512, .height = 512};
+uint8_t *rgba = zebkit_pdf_render(pdf, 0, &tile, &width, &height, &error);
+char *found = zebkit_pdf_search(pdf, "revenue", 0, 0, 100, &error);
+int index = zebkit_pdf_annotation_add(pdf, 0, "{\"type\": \"highlight\", \"rect\": [...], \"quads\": [[...]]}", &error);
+uint8_t *bytes = zebkit_pdf_save(pdf, ZEBKIT_PDF_SAVE_INCREMENTAL, &size, &error);
+```
+
+| Functions | What |
+|---|---|
+| `zebkit_pdf_open`, `_open_file`, `_close`, `_save` | Bytes or a file, a password; saved whole or incrementally, with or without its encryption |
+| `zebkit_pdf_info`, `_set_metadata` | Pages, version, encryption, permissions, form type, language, the document information |
+| `zebkit_pdf_page_count`, `_page` | A page's size as shown, rotation, label and boxes |
+| `zebkit_pdf_render` | RGBA at a scale and rotation, the whole page or a tile, with annotations and form fields, on a background |
+| `zebkit_pdf_text`, `_text_layout`, `_text_rects`, `_char_at` | The text; each character's box, font, size and angle; selection rectangles; hit testing |
+| `zebkit_pdf_search` | Every match in the document, with its rectangles and the text around it |
+| `zebkit_pdf_outline`, `_links` | Bookmarks, link annotations and addresses written in the text |
+| `zebkit_pdf_annotations`, `_annotation_add`, `_update`, `_remove`, `zebkit_pdf_flatten` | Every kind read; highlights, underlines, squiggles, strikeouts, ink, lines, polygons, polylines, squares, circles, notes, free text, links and redaction marks made, changed and removed, with their appearances generated |
+| `zebkit_pdf_attachments`, `_attachment`, `_attach`, `_detach` | Embedded files |
+
+Structured answers are JSON. Coordinates are PDF page space: points, the
+origin at the bottom left, before the page's rotation. PDFium is not
+thread-safe; the functions take one lock, so any thread may call them.
+Where PDFium had nothing for it, zebkit patches PDFium (`patches/1014`,
+`1015`). Still to come: forms, page editing, redaction, signatures,
+`zebkit.pdf` in JavaScript.
 
 ## 3. Bindings
 

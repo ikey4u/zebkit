@@ -15,6 +15,8 @@
 #   from another thread, closes the view and quits.
 # - tests/engine/bridge.c: zebkit.* in a page the application grants it
 #   to, refused to one it does not; zebkit_fetch().
+# - tests/engine/scheme.c: URL schemes of the application's own, a page
+#   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
 #   JavaScript, outside any page.
 # - tests/engine/ui/app.mjs: zebkit.ui, a window of Chromium's views from
@@ -47,6 +49,7 @@ build_against_package "$package" "$work/services" "$tests/services.c"
 build_against_package "$package" "$work/pdf" "$tests/pdf.c"
 build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
+build_against_package "$package" "$work/scheme" "$tests/scheme.c"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
 
@@ -94,6 +97,9 @@ sleep 1
 mkdir -p "$work/files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
     ZEBKIT_TEST_FILES="$work/files" run bridge "$work/bridge" "${engine_switches[@]}"
+
+mkdir -p "$work/scheme-files"
+ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
 
 mkdir -p "$work/script-files"
 run script "$OUT_DIR/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \

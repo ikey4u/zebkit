@@ -162,6 +162,11 @@ int main(void) {
         {"{\"type\": \"square\", \"rect\": [230, 10, 290, 50], \"color\": [0, 0, 0], \"border\": 1,"
          " \"opacity\": 0.5}",
          "square"},
+        {"{\"type\": \"circle\", \"rect\": [100, 150, 130, 180], \"color\": [0, 0, 0], \"border\": 1}", "circle"},
+        {"{\"type\": \"freeText\", \"rect\": [150, 150, 290, 190], \"contents\": \"free text\"}", "free text"},
+        {"{\"type\": \"redact\", \"rect\": [20, 115, 80, 145],"
+         " \"quads\": [[20, 145, 80, 145, 20, 115, 80, 115]]}",
+         "redaction mark"},
         {"{\"type\": \"text\", \"rect\": [5, 170, 25, 190], \"contents\": \"sticky\"}", "note"},
     };
     int last = -1;
@@ -186,7 +191,9 @@ int main(void) {
               contains(annotations, "\"ink\":[[[210.0,110.0],[270.0,170.0]]") &&
               contains(annotations, "\"line\":[20.0,60.0,280.0,60.0]") &&
               contains(annotations, "\"vertices\":[[150.0,10.0],[190.0,10.0],[170.0,45.0]]") &&
-              contains(annotations, "\"opacity\":0.5") && contains(annotations, "\"modified\":\"D:"),
+              contains(annotations, "\"opacity\":0.5") && contains(annotations, "\"modified\":\"D:") &&
+              contains(annotations, "\"type\":\"circle\"") && contains(annotations, "\"contents\":\"free text\"") &&
+              contains(annotations, "\"type\":\"redact\""),
           "zebkit_pdf_annotations: what was made", annotations);
     zebkit_free(annotations);
 

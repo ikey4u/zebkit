@@ -13,6 +13,8 @@
 #include "content/shell/app/shell_main_delegate.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
 #include "content/shell/browser/shell_content_browser_client.h"
+#include "content/shell/common/shell_content_client.h"
+#include "content/shell/renderer/shell_content_renderer_client.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace base {
@@ -35,7 +37,9 @@ class MainDelegate : public content::ShellMainDelegate {
 
   std::optional<int> BasicStartupComplete() override;
   bool ShouldLoadV8Snapshot(const std::string& process_type) override;
+  content::ContentClient* CreateContentClient() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
+  content::ContentRendererClient* CreateContentRendererClient() override;
   std::variant<int, content::MainFunctionParams> RunProcess(
       const std::string& process_type,
       content::MainFunctionParams main_function_params) override;
@@ -43,13 +47,44 @@ class MainDelegate : public content::ShellMainDelegate {
  private:
   zebkit_task_func ready_;
   void* data_;
+  std::unique_ptr<content::ShellContentClient> content_client_;
   std::unique_ptr<content::ShellContentBrowserClient> browser_client_;
+  std::unique_ptr<content::ShellContentRendererClient> renderer_client_;
+};
+
+// The content shell's, with the application's URL schemes (scheme.cc).
+class ContentClient : public content::ShellContentClient {
+ public:
+  void AddAdditionalSchemes(Schemes* schemes) override;
+};
+
+class RendererClient : public content::ShellContentRendererClient {
+ public:
+  RendererClient() : content::ShellContentRendererClient(false) {}
+  void RenderThreadStarted() override;
 };
 
 class BrowserClient : public content::ShellContentBrowserClient {
  public:
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
       bool is_integration_test) override;
+  bool IsHandledURL(const GURL& url) override;
+  void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
+                                      int child_process_id) override;
+  mojo::PendingRemote<network::mojom::URLLoaderFactory>
+  CreateNonNetworkNavigationURLLoaderFactory(
+      const std::string& scheme,
+      content::FrameTreeNodeId frame_tree_node_id) override;
+  void RegisterNonNetworkSubresourceURLLoaderFactories(
+      int render_process_id,
+      int render_frame_id,
+      const std::optional<url::Origin>& request_initiator_origin,
+      NonNetworkURLLoaderFactoryMap* factories) override;
+  void RegisterNonNetworkWorkerMainResourceURLLoaderFactories(
+      content::BrowserContext* browser_context,
+      const std::optional<url::Origin>& request_initiator,
+      network::mojom::RequestDestination request_destination,
+      NonNetworkURLLoaderFactoryMap* factories) override;
 };
 
 // The content shell's, without its first window and without a DevTools

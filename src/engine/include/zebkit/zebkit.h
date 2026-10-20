@@ -28,6 +28,7 @@
 #define ZEBKIT_ZEBKIT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #if defined(ZEBKIT_IMPLEMENTATION)
@@ -261,6 +262,63 @@ ZEBKIT_API char *zebkit_cdp_get_url(void);
 
 /* Disconnects every client and stops serving CDP. */
 ZEBKIT_API void zebkit_cdp_stop(void);
+
+/* ---- URL schemes of the application's own ---------------------------- */
+
+typedef enum {
+    /* Like https:, with a host and a path: an origin of its own, relative
+     * URLs, cookies and storage. */
+    ZEBKIT_SCHEME_STANDARD = 1 << 0,
+    /* A secure context, as https: is. */
+    ZEBKIT_SCHEME_SECURE = 1 << 1,
+    /* fetch() and XMLHttpRequest from pages, with CORS. */
+    ZEBKIT_SCHEME_FETCH = 1 << 2,
+    /* Pages' Content-Security-Policy does not restrict loads from it. */
+    ZEBKIT_SCHEME_BYPASS_CSP = 1 << 3,
+} zebkit_scheme_flags;
+
+/*
+ * Makes @scheme ("app", lower case) a URL scheme of the application's, as
+ * @flags say. Before zebkit_main(); every process of the engine learns of
+ * it. The same from the command line: --zebkit-scheme=app,standard,secure,
+ * fetch,bypass-csp. Returns false for a scheme the engine has already.
+ */
+ZEBKIT_API bool zebkit_scheme_register(const char *scheme, unsigned flags);
+
+typedef struct zebkit_request zebkit_request;
+typedef void (*zebkit_scheme_func)(zebkit_request *request, void *data);
+
+/*
+ * Answers the requests for @scheme's URLs with @func, on the engine's
+ * thread: page loads, subresources, fetch(), media. NULL stops; requests
+ * nobody answers fail as not found.
+ */
+ZEBKIT_API void zebkit_scheme_handle(const char *scheme, zebkit_scheme_func func, void *data);
+
+/* What was asked for: valid until the request is answered. */
+ZEBKIT_API const char *zebkit_request_url(zebkit_request *request);
+ZEBKIT_API const char *zebkit_request_method(zebkit_request *request);
+/* "Name: value" lines separated by "\r\n". */
+ZEBKIT_API const char *zebkit_request_headers(zebkit_request *request);
+/* The body sent with it, or NULL; *@size is set. */
+ZEBKIT_API const uint8_t *zebkit_request_body(zebkit_request *request, size_t *size);
+
+/*
+ * Answers @request, from any thread, once: @status, @headers as "Name:
+ * value" lines separated by "\r\n" (NULL for none; Content-Type is worth
+ * giving), and @size bytes of @body, which are copied. The request is gone
+ * after.
+ */
+ZEBKIT_API void zebkit_request_respond(zebkit_request *request, int status, const char *headers, const void *body,
+                                       size_t size);
+
+/*
+ * Answers @request with the file at @path, read as it is sent, with the
+ * range a Range header asks for (206), as a player seeking in a video
+ * asks; 404 when it is not there. Content-Type is taken from the file's
+ * extension unless @headers gives one.
+ */
+ZEBKIT_API void zebkit_request_respond_file(zebkit_request *request, const char *path, const char *headers);
 
 /* ---- For zebkit-helper ----------------------------------------------- */
 

@@ -42,6 +42,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
+#include "zebkit/engine/scheme.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_switches.h"
@@ -186,9 +187,29 @@ bool MainDelegate::ShouldLoadV8Snapshot(const std::string& process_type) {
          content::ShellMainDelegate::ShouldLoadV8Snapshot(process_type);
 }
 
+content::ContentClient* MainDelegate::CreateContentClient() {
+  content_client_ = std::make_unique<ContentClient>();
+  return content_client_.get();
+}
+
 content::ContentBrowserClient* MainDelegate::CreateContentBrowserClient() {
   browser_client_ = std::make_unique<BrowserClient>();
   return browser_client_.get();
+}
+
+content::ContentRendererClient* MainDelegate::CreateContentRendererClient() {
+  renderer_client_ = std::make_unique<RendererClient>();
+  return renderer_client_.get();
+}
+
+void ContentClient::AddAdditionalSchemes(Schemes* schemes) {
+  content::ShellContentClient::AddAdditionalSchemes(schemes);
+  AddSchemes(schemes);
+}
+
+void RendererClient::RenderThreadStarted() {
+  content::ShellContentRendererClient::RenderThreadStarted();
+  RegisterSchemesInRenderer();
 }
 
 std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
@@ -223,6 +244,52 @@ std::unique_ptr<content::BrowserMainParts> BrowserClient::CreateBrowserMainParts
   return parts;
 }
 
+bool BrowserClient::IsHandledURL(const GURL& url) {
+  return (url.is_valid() && IsApplicationScheme(url.scheme())) ||
+         content::ShellContentBrowserClient::IsHandledURL(url);
+}
+
+void BrowserClient::AppendExtraCommandLineSwitches(
+    base::CommandLine* command_line,
+    int child_process_id) {
+  content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
+      command_line, child_process_id);
+  AppendSchemeSwitch(command_line);
+}
+
+mojo::PendingRemote<network::mojom::URLLoaderFactory>
+BrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
+    const std::string& scheme,
+    content::FrameTreeNodeId frame_tree_node_id) {
+  if (IsApplicationScheme(scheme))
+    return CreateSchemeLoaderFactory(scheme);
+  return content::ShellContentBrowserClient::
+      CreateNonNetworkNavigationURLLoaderFactory(scheme, frame_tree_node_id);
+}
+
+void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
+    int render_process_id,
+    int render_frame_id,
+    const std::optional<url::Origin>& request_initiator_origin,
+    NonNetworkURLLoaderFactoryMap* factories) {
+  content::ShellContentBrowserClient::
+      RegisterNonNetworkSubresourceURLLoaderFactories(
+          render_process_id, render_frame_id, request_initiator_origin,
+          factories);
+  AddSchemeLoaderFactories(factories);
+}
+
+void BrowserClient::RegisterNonNetworkWorkerMainResourceURLLoaderFactories(
+    content::BrowserContext* browser_context,
+    const std::optional<url::Origin>& request_initiator,
+    network::mojom::RequestDestination request_destination,
+    NonNetworkURLLoaderFactoryMap* factories) {
+  content::ShellContentBrowserClient::
+      RegisterNonNetworkWorkerMainResourceURLLoaderFactories(
+          browser_context, request_initiator, request_destination, factories);
+  AddSchemeLoaderFactories(factories);
+}
+
 namespace {
 
 // The content shell's windows, but the loop does not end when the last one
@@ -252,6 +319,7 @@ void BrowserMainParts::PreCreateMainMessageLoop() {
 
 int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
+  AllowSchemes();
 #if BUILDFLAG(IS_MAC)
   SetUpViews();
 #endif

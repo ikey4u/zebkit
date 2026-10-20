@@ -3,9 +3,10 @@ PDF: line, polygon, polyline and redaction annotations made and drawn.
 zebkit's PDF API makes every kind of annotation a reader adds
 (<zebkit/pdf.h>). PDFium makes only some, and generates appearances only for
 those: this lets FPDFPage_CreateAnnot() make lines, polygons, polylines and
-redaction marks, adds FPDFAnnot_SetVertices() and FPDFAnnot_SetLine() beside
-their getters, and generates the appearance of lines, polygons and
-polylines from their points, colours and border, as PDFium does for ink.
+redaction marks, the last with their quadrilaterals as markup has them,
+adds FPDFAnnot_SetVertices() and FPDFAnnot_SetLine() beside their getters,
+and generates the appearance of lines, polygons and polylines from their
+points, colours and border, as PDFium does for ink.
 
 --- a/third_party/pdfium/core/fpdfdoc/cpdf_generateap.cpp
 +++ b/third_party/pdfium/core/fpdfdoc/cpdf_generateap.cpp
@@ -109,7 +110,19 @@ polylines from their points, colours and border, as PDFium does for ink.
      case FPDF_ANNOT_SQUARE:
      case FPDF_ANNOT_SQUIGGLY:
      case FPDF_ANNOT_STAMP:
-@@ -1034,6 +1039,52 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetLine(FPDF_ANNOTATION annot,
+@@ -831,9 +836,10 @@ FPDFAnnot_HasAttachmentPoints(FPDF_ANNOTATION annot) {
+   }
+ 
+   FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
++  // zebkit: redaction marks have them too (ISO 32000-2, 12.5.6.23).
+   return subtype == FPDF_ANNOT_LINK || subtype == FPDF_ANNOT_HIGHLIGHT ||
+          subtype == FPDF_ANNOT_UNDERLINE || subtype == FPDF_ANNOT_SQUIGGLY ||
+-         subtype == FPDF_ANNOT_STRIKEOUT;
++         subtype == FPDF_ANNOT_STRIKEOUT || subtype == FPDF_ANNOT_REDACT;
+ }
+ 
+ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+@@ -1034,6 +1040,52 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetLine(FPDF_ANNOTATION annot,
    return true;
  }
  
