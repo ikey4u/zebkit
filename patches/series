@@ -13,3 +13,5 @@
 1015-pdf-more-annotations.patch
 1016-content-shell-new-windows-to-the-embedder.patch
 1017-ffmpeg-zebkit-configuration.patch
+0013-mac-iosurface-without-dawn.patch
+0014-mac-shell-geolocation-without-test-support.patch

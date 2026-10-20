@@ -1,0 +1,103 @@
+Fix: macOS's IOSurface shared images without Dawn.
+
+Chrome always builds Dawn on macOS, and the IOSurface backing's WebGPU
+representation, its texture cache and its wait for Dawn's commands are not
+under BUILDFLAG(USE_DAWN) as the other platforms' backings are: with
+use_dawn = false (profiles/slim.gn) the engine did not link. They are
+now; ProduceDawn() gives nothing, as a backing without Dawn does.
+
+--- a/gpu/command_buffer/service/shared_image/iosurface_image_backing.h
++++ b/gpu/command_buffer/service/shared_image/iosurface_image_backing.h
+@@ -274,12 +274,14 @@ class GPU_GLES2_EXPORT IOSurfaceImageBacking
+   const gfx::Size io_surface_size_;
+   const uint32_t io_surface_format_;
+ 
++#if BUILDFLAG(USE_DAWN)
+   // DawnSharedTextureCache that keeps an internal cache of per-device
+   // SharedTextureData that vends WebGPU textures for the underlying IOSurface.
+   scoped_refptr<DawnSharedTextureCache> dawn_texture_cache_ GUARDED_BY(lock_);
+ 
+   const scoped_refptr<DawnSharedTextureCache>& GetDawnTextureCache()
+       EXCLUSIVE_LOCKS_REQUIRED(lock_);
++#endif  // BUILDFLAG(USE_DAWN)
+ 
+   // Tracks the number of currently-ongoing accesses to a given WGPU texture.
+   base::flat_map<WGPUTexture, int> wgpu_texture_ongoing_accesses_
+--- a/gpu/command_buffer/service/shared_image/iosurface_image_backing.mm
++++ b/gpu/command_buffer/service/shared_image/iosurface_image_backing.mm
+@@ -707,6 +707,9 @@ bool IOSurfaceImageBacking::OverlayRepresentation::IsInUseByWindowServer()
+   return IOSurfaceIsInUse(io_surface_.get());
+ }
+ 
++// zebkit: Dawn's representation only with Dawn (use_dawn), as the other
++// platforms' backings have it.
++#if BUILDFLAG(USE_DAWN)
+ ///////////////////////////////////////////////////////////////////////////////
+ // DawnRepresentation
+ 
+@@ -926,6 +929,8 @@ void IOSurfaceImageBacking::DawnRepresentation::EndAccess() {
+   usage_ = internal_usage_ = wgpu::TextureUsage::None;
+ }
+ 
++#endif  // BUILDFLAG(USE_DAWN)
++
+ ///////////////////////////////////////////////////////////////////////////////
+ // SkiaGraphiteDawnMetalRepresentation
+ 
+@@ -984,7 +989,9 @@ IOSurfaceImageBacking::IOSurfaceImageBacking(
+       io_surface_size_(IOSurfaceGetWidth(io_surface_.get()),
+                        IOSurfaceGetHeight(io_surface_.get())),
+       io_surface_format_(IOSurfaceGetPixelFormat(io_surface_.get())),
++#if BUILDFLAG(USE_DAWN)
+       dawn_texture_cache_(base::MakeRefCounted<DawnSharedTextureCache>()),
++#endif
+       gl_target_(gl_target),
+       framebuffer_attachment_angle_(framebuffer_attachment_angle),
+       weak_factory_(this) {
+@@ -1280,17 +1287,20 @@ int IOSurfaceImageBacking::TrackEndAccessToWGPUTexture(wgpu::Texture texture) {
+   return num_outstanding_accesses;
+ }
+ 
++#if BUILDFLAG(USE_DAWN)
+ const scoped_refptr<DawnSharedTextureCache>&
+ IOSurfaceImageBacking::GetDawnTextureCache() {
+   AssertLockAcquired();
+   return dawn_texture_cache_;
+ }
++#endif
+ 
+ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
+     id<MTLDevice> waiting_device) {
+   AssertLockAcquired();
+   TRACE_EVENT0("gpu", "IOSurfaceImageBacking::WaitForCommandsToBeScheduled");
+ 
++#if BUILDFLAG(USE_DAWN)
+   base::flat_map<wgpu::Device, wgpu::Future, WGPUDeviceCompare> futures_to_keep;
+   for (const auto& [device, future] : wgpu_commands_scheduled_futures_) {
+     id<MTLDevice> mtl_device = dawn::native::metal::GetMTLDevice(device.Get());
+@@ -1308,6 +1318,7 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
+     }
+   }
+   wgpu_commands_scheduled_futures_ = std::move(futures_to_keep);
++#endif  // BUILDFLAG(USE_DAWN)
+ 
+   base::flat_map<EGLDisplay, std::unique_ptr<gl::GLFenceEGL>> fences_to_keep;
+   for (auto& [display, fence] : egl_commands_scheduled_fences_) {
+@@ -1334,6 +1345,9 @@ std::unique_ptr<DawnImageRepresentation> IOSurfaceImageBacking::ProduceDawn(
+     wgpu::BackendType backend_type,
+     std::vector<wgpu::TextureFormat> view_formats,
+     scoped_refptr<SharedContextState> context_state) {
++#if !BUILDFLAG(USE_DAWN)
++  return nullptr;
++#else
+   wgpu::TextureFormat wgpu_format = ToDawnFormat(format());
+   // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
+   // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
+@@ -1418,6 +1432,7 @@ std::unique_ptr<DawnImageRepresentation> IOSurfaceImageBacking::ProduceDawn(
+   return std::make_unique<DawnFallbackImageRepresentation>(
+       manager, this, tracker, wgpu::Device(device), wgpu_format,
+       std::move(view_formats));
++#endif  // BUILDFLAG(USE_DAWN)
+ }
+ 
+ std::unique_ptr<SkiaGaneshImageRepresentation>

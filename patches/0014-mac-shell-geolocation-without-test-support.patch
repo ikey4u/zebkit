@@ -1,0 +1,61 @@
+Fix: the content shell on macOS without Chromium's test support.
+
+On macOS the shell gives content a fake location permission manager from
+the device service's test support, which content_shell_test_support =
+false (1009) leaves out: the engine did not link. Without the test
+support it is the system's own, as Chrome's is.
+
+--- a/content/shell/browser/shell_content_browser_client.cc
++++ b/content/shell/browser/shell_content_browser_client.cc
+@@ -118,8 +118,12 @@
+ #include "components/crash/content/browser/crash_handler_host_linux.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"
++#elif BUILDFLAG(IS_MAC)
++// zebkit: without the test support, the system's own, as Chrome has it.
++#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
++#include "services/device/public/cpp/geolocation/system_geolocation_source_apple.h"
+ #endif
+ 
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+@@ -284,17 +288,22 @@
+ // needed should be added here so that it's shared between the instances.
+ struct SharedState {
+   SharedState() {
+-#if BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
+     location_manager =
+         std::make_unique<device::FakeGeolocationSystemPermissionManager>();
+     location_manager->SetSystemPermission(
+         device::LocationSystemPermissionStatus::kAllowed);
++#elif BUILDFLAG(IS_MAC)
++    location_manager = device::SystemGeolocationSourceApple::
++        CreateGeolocationSystemPermissionManager();
+ #endif
+   }
+ 
+-#if BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
+   std::unique_ptr<device::FakeGeolocationSystemPermissionManager>
+       location_manager;
++#elif BUILDFLAG(IS_MAC)
++  std::unique_ptr<device::GeolocationSystemPermissionManager> location_manager;
+ #endif
+ 
+   // Owned by content::BrowserMainLoop.
+--- a/content/shell/BUILD.gn
++++ b/content/shell/BUILD.gn
+@@ -365,6 +365,10 @@
+       "//content/test/mock_reduce_accept_language_controller_delegate.h",
+     ]
+     deps = []
++    if (is_mac) {
++      # The system's location permission, in place of the tests' fake.
++      deps += [ "//services/device/public/cpp/geolocation" ]
++    }
+   }
+ 
+   public_deps = [
