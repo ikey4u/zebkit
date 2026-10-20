@@ -46,6 +46,8 @@
 #include "v8/include/v8-script.h"
 #include "v8/include/v8-typed-array.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/ui.h"
+#include "zebkit/engine/ui_script.h"
 #include "zebkit/engine/view.h"
 
 namespace {
@@ -154,6 +156,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
   }
 
   globalThis.zebkit = Object.freeze({
+    ui: native.ui,
     version: native.version,
     engineVersion: native.engineVersion,
     args: Object.freeze([...native.args]),
@@ -414,6 +417,12 @@ struct zebkit_script {
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void UiCommit(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void UiDump(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void UiAct(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void UiListen(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void UiCapture(const v8::FunctionCallbackInfo<v8::Value>& info);
+  zebkit::UiTree* Ui();
 
   ViewEntry* FindView(const v8::FunctionCallbackInfo<v8::Value>& info);
   void FireTimer(int id);
@@ -438,6 +447,10 @@ struct zebkit_script {
 
   int holds_ = 0;
   int depth_ = 0;
+  // zebkit.ui's views, made when first used, and the function it hands
+  // their events to.
+  std::unique_ptr<zebkit::UiTree> ui_;
+  v8::Global<v8::Function> ui_listener_;
   bool started_ = false;
   bool evaluating_ = false;
   zebkit_task_func idle_func_ = nullptr;
@@ -480,6 +493,7 @@ zebkit_script::zebkit_script(std::vector<std::string> args)
 
 zebkit_script::~zebkit_script() {
   weak_factory_.InvalidateWeakPtrs();
+  ui_.reset();
   {
     v8::Isolate::Scope isolate_scope(isolate());
     v8::HandleScope handles(isolate());
@@ -517,6 +531,11 @@ void zebkit_script::Install() {
   SetMethod(native, "viewEvaluate", &ViewEvaluate);
   SetMethod(native, "viewGrant", &ViewGrant);
   SetMethod(native, "viewBind", &ViewBind);
+  SetMethod(native, "uiCommit", &UiCommit);
+  SetMethod(native, "uiDump", &UiDump);
+  SetMethod(native, "uiAct", &UiAct);
+  SetMethod(native, "uiListen", &UiListen);
+  SetMethod(native, "uiCapture", &UiCapture);
   SetMethod(native, "viewLoad", &ViewAction<Action::kLoad>);
   SetMethod(native, "viewReload", &ViewAction<Action::kReload>);
   SetMethod(native, "viewBack", &ViewAction<Action::kBack>);
@@ -536,6 +555,21 @@ void zebkit_script::Install() {
                             String8(isolate(), zebkit_engine_version()));
 
   v8::TryCatch try_catch(isolate());
+  // zebkit.ui first: the bootstrap puts it in zebkit.
+  v8::Local<v8::Value> make_ui =
+      v8::Script::Compile(context, String8(isolate(), zebkit::kUiScript))
+          .ToLocalChecked()
+          ->Run(context)
+          .ToLocalChecked();
+  v8::Local<v8::Value> ui_argv[] = {native};
+  v8::Local<v8::Value> ui;
+  if (!make_ui.As<v8::Function>()
+           ->Call(context, v8::Undefined(isolate()), 1, ui_argv)
+           .ToLocal(&ui)) {
+    Report(try_catch);
+    return;
+  }
+  std::ignore = native->Set(context, String8(isolate(), "ui"), ui);
   v8::Local<v8::Script> script =
       v8::Script::Compile(context, String8(isolate(), kBootstrap))
           .ToLocalChecked();
@@ -550,7 +584,7 @@ void zebkit_script::Install() {
 
 void zebkit_script::CheckIdle() {
   if (!started_ || evaluating_ || holds_ > 0 || !views_.empty() ||
-      !idle_func_ || idle_posted_) {
+      (ui_ && ui_->open_windows()) || !idle_func_ || idle_posted_) {
     return;
   }
   // Not from inside script: the application may destroy the script.
@@ -562,6 +596,7 @@ void zebkit_script::CheckIdle() {
                          return;
                        script->idle_posted_ = false;
                        if (script->holds_ == 0 && script->views_.empty() &&
+                           !(script->ui_ && script->ui_->open_windows()) &&
                            !script->evaluating_ && script->idle_func_) {
                          script->idle_func_(script->idle_data_);
                        }
@@ -1019,6 +1054,98 @@ void zebkit_script::ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info) {
                 .ToLocalChecked());
       },
       data);
+}
+
+// ---- zebkit.ui ----
+
+zebkit::UiTree* zebkit_script::Ui() {
+  if (!ui_) {
+    ui_ = std::make_unique<zebkit::UiTree>(
+        base::BindRepeating(
+            [](base::WeakPtr<zebkit_script> script, int id,
+               const std::string& event, base::Value value) {
+              if (!script || script->ui_listener_.IsEmpty())
+                return;
+              Scope scope(script.get());
+              v8::Isolate* isolate = script->isolate();
+              script->CallFunction(
+                  script->ui_listener_.Get(isolate),
+                  {v8::Integer::New(isolate, id), String8(isolate, event),
+                   FromValue(isolate, script->context(), value)});
+            },
+            weak_factory_.GetWeakPtr()),
+        base::BindRepeating(&zebkit_script::CheckIdle,
+                            weak_factory_.GetWeakPtr()));
+  }
+  return ui_.get();
+}
+
+void zebkit_script::UiCommit(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  base::Value operations =
+      ToValue(isolate, isolate->GetCurrentContext(), info[0]);
+  if (!operations.is_list())
+    return;
+  const std::string error = self->Ui()->Commit(operations.GetList());
+  if (!error.empty()) {
+    isolate->ThrowException(
+        v8::Exception::Error(String8(isolate, "zebkit.ui: " + error)));
+  }
+}
+
+void zebkit_script::UiDump(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  if (!info[0]->IsInt32())
+    return;
+  info.GetReturnValue().Set(FromValue(
+      isolate, isolate->GetCurrentContext(),
+      self->Ui()->Dump(info[0].As<v8::Int32>()->Value())));
+}
+
+void zebkit_script::UiAct(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  if (!info[0]->IsInt32())
+    return;
+  const std::string error = self->Ui()->Act(
+      info[0].As<v8::Int32>()->Value(), Utf8(isolate, info[1]),
+      ToValue(isolate, isolate->GetCurrentContext(), info[2]));
+  if (!error.empty()) {
+    isolate->ThrowException(
+        v8::Exception::Error(String8(isolate, "zebkit.ui: " + error)));
+  }
+}
+
+void zebkit_script::UiCapture(
+    const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  if (!info[0]->IsInt32())
+    return;
+  v8::Local<v8::Promise> promise;
+  const int id = self->NewPromise(&promise);
+  info.GetReturnValue().Set(promise);
+  self->Ui()->Capture(
+      info[0].As<v8::Int32>()->Value(),
+      base::BindOnce(
+          [](base::WeakPtr<zebkit_script> script, int id,
+             std::vector<uint8_t> png) {
+            if (script) {
+              script->Settle(id, true,
+                             base::Value(base::Value::BlobStorage(
+                                 png.begin(), png.end())));
+            }
+          },
+          self->weak_factory_.GetWeakPtr(), id));
+  std::ignore = isolate;
+}
+
+void zebkit_script::UiListen(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  if (info[0]->IsFunction())
+    self->ui_listener_.Reset(info.GetIsolate(), info[0].As<v8::Function>());
 }
 
 // ---- Modules and scripts ----

@@ -613,7 +613,7 @@ process, where layer 2 does the work, so the renderer stays sandboxed.
 | N4 | Layer 3: Python, then Rust | Python done 2026-10-20; Rust next |
 | N5 | Layer 4: `zebkit.app`, then the capabilities | Done 2026-10-20 |
 | N6 | Script outside a page; later areas of layer 2 | Script done 2026-10-20: `zebkit_script_*`, `zebkit-js` |
-| N7 | Native UI from JavaScript: `zebkit.ui` on `ui/views` (below) | Next; the approach accepted by the owner 2026-10-20 |
+| N7 | Native UI from JavaScript: `zebkit.ui` on `ui/views` (below) | First version done 2026-10-20: elements, signals, Tailwind classes, automation, capture; the measurement against a page is next |
 
 Each phase is measured for size and speed and tested from a program that
 uses it. `docs/blink/API.md` is what is built, and

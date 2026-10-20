@@ -11,7 +11,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 
 | Layer | Header | What |
 |---|---|---|
-| 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, CDP, calls between the page and the application |
+| 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
 | 2. Services | `<zebkit/services.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, over Chromium's own code |
 | 3. Bindings | `bindings/python/zebkit` | Layers 0 and 2 for Python |
@@ -239,6 +239,53 @@ evaluation) and no view is open, as Node ends.
 
 Not yet: `import` of anything but files (no packages, no `import()` of a
 computed name), and the web's other globals (`URL`, `structuredClone`).
+
+## Native interface: `zebkit.ui`
+
+A script outside any page can make windows of native widgets instead of
+web pages: Chromium's `ui/views`, the toolkit Chrome draws its own
+interface with on Linux, Windows and macOS, already in the engine. The
+model is Native Shell's and Solid's: components run once, signals update
+the properties that read them, and the changes go to the native side as
+one batch of mount operations per turn of the loop. No DOM, no GTK.
+
+```js
+// zebkit-js todo.mjs
+const {h, signal, For, window} = zebkit.ui;
+
+const [todos, setTodos] = signal([]);
+const [draft, setDraft] = signal('');
+
+window({title: 'To do', width: 420, height: 440}, () =>
+  h('view', {class: 'flex-col gap-3 p-6 bg-gray-50'},
+    h('text', {class: 'text-2xl font-bold'}, 'Things to do'),
+    h('view', {class: 'flex-row gap-2 items-center'},
+      h('input', {class: 'grow', placeholder: 'What needs doing?', value: draft,
+                  onInput: setDraft, onSubmit: () => { setTodos((t) => [...t, draft()]); setDraft(''); }})),
+    h(For, {each: todos}, (todo) => h('text', {}, todo)),
+    h('text', {class: 'text-sm text-gray-500'}, () => `${todos().length} things`)));
+```
+
+![examples/ui/todo.mjs, captured with zebkit.ui.capture](zebkit-ui-todo.png)
+
+`examples/ui/todo.mjs` is the whole example above, and the picture is it
+captured headless with `zebkit.ui.capture()`.
+
+| | |
+|---|---|
+| Elements | `view` (a flexbox), `text`, `button`, `input`, `image` (PNG, JPEG or WebP bytes as `src`), `scroll`, `web` (a web page, `url`) |
+| Properties | `direction`, `gap`, `padding`, `align`, `justify`, `grow`, `width`, `height`, `background`, `radius`, `border`, `color`, `fontSize`, `fontWeight`, `textAlign`, `wrap`, `visible`, `enabled`, `text`, `value`, `placeholder`, `password`, `tooltip`, and for a window `title`, `width`, `height` |
+| Classes | A subset of Tailwind: `flex-row`, `flex-col`, `grow`, `gap-*`, `p-*`, `px-*` and the like, `items-*`, `justify-*`, `bg-*`, `text-*` (size, colour, alignment), `font-*`, `rounded-*`, `border`, `w-*`, `h-*`, `hidden`; an unknown class is an error |
+| Events | `onClick`, `onInput` (the text), `onSubmit`, and a window's `onClose` |
+| Signals | `signal`, `computed`, `effect`, `batch`, `untracked`, `onCleanup`, `root` |
+| Control flow | `Show({when, fallback}, ...)`, `For({each}, (item) => ...)`, keyed: an item's widgets are made once and moved |
+| JSX | `h` and `Fragment`: compile with `--jsx-factory=zebkit.ui.h --jsx-fragment=zebkit.ui.Fragment` (esbuild); a property given as a function is reactive |
+| Automation | `dump(node)` (the laid-out tree, with bounds), `click`, `type`, `submit`, `capture(node)` (PNG bytes, as the compositor shows it): for tests, and for agents, which can drive native interface as they drive pages |
+
+A property given as a function is read in an effect: `text: () =>
+\`${count()}\`` sets the text again when `count` changes, and nothing
+else. Layout is views' box layout (one direction, gap, padding,
+alignment, grow); a window's content fills it.
 
 ## Loading the library
 

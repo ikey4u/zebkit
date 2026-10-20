@@ -15,6 +15,8 @@
 #   to, refused to one it does not; zebkit_fetch().
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
 #   JavaScript, outside any page.
+# - tests/engine/ui/app.mjs: zebkit.ui, a window of Chromium's views from
+#   that script, driven as a user would.
 # - tools/zebkit-run with --remote-debugging-port=0: CDP as Chrome serves
 #   it, read back over HTTP the way a client finds it.
 #
@@ -87,6 +89,9 @@ run script "$OUT_DIR/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app
     "http://127.0.0.1:$port" "$work/script-files"
 # It ends by itself once idle; ending before its last line is a failure.
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/script.log" || { echo "FAIL the script did not finish"; failed=1; }
+
+run ui "$OUT_DIR/tools/zebkit-js" "${engine_switches[@]}" "$tests/ui/app.mjs"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/ui.log" || { echo "FAIL zebkit.ui's script did not finish"; failed=1; }
 
 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     run python python3 "$tests/test_python.py" "${engine_switches[@]}"

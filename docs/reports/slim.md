@@ -2,14 +2,14 @@
 
 - Upstream: Chromium 155.0.8059.84, content shell
 - Measured: 2026-10-20 on Linux x86_64, from the package directory `scripts/package.sh` assembles
-- **Total: 142.5 MiB** (within the 150.0 MiB limit)
-- Compressed: 44.6 MiB as `.tar.xz` (xz -6, as releases ship), 60.2 MiB as `.zip` (deflate -9, as Electron ships)
+- **Total: 142.6 MiB** (within the 150.0 MiB limit)
+- Compressed: 44.7 MiB as `.tar.xz` (xz -6, as releases ship), 60.3 MiB as `.zip` (deflate -9, as Electron ships)
 - Oldest glibc it can run on: 2.25
 - Expects from the system: ld-linux-x86-64.so.2 libasound.so.2 libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0 libc.so.6 libdbus-1.so.3 libdl.so.2 libexpat.so.1 libgbm.so.1 libgcc_s.so.1 libglib-2.0.so.0 libgobject-2.0.so.0 libm.so.6 libnspr4.so libnss3.so libnssutil3.so libpthread.so.0 libudev.so.1 libX11.so.6 libxcb.so.1 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libxkbcommon.so.0 libXrandr.so.2
 
 | File | MiB |
 |---|---:|
-| `libzebkit.so.1` | 123.6 |
+| `libzebkit.so.1` | 123.7 |
 | `icudtl.dat` | 6.5 |
 | `libvk_swiftshader.so` | 3.0 |
 | `v8_context_snapshot.bin` | 0.7 |
@@ -148,6 +148,7 @@
 | `include/zebkit/vendor/libxml/libxml/valid.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlIO.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ulocdata.h` | 0.0 |
+| `include/zebkit/zebkit.h` | 0.0 |
 | `include/zebkit/vendor/libjpeg/jpeglibmangler.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uclean.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-subset.h` | 0.0 |
@@ -163,7 +164,6 @@
 | `include/zebkit/vendor/libwebp.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ucoleitr.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/encoding.h` | 0.0 |
-| `include/zebkit/zebkit.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/mathematics.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/dict.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/obj.h` | 0.0 |
