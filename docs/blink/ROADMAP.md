@@ -816,15 +816,18 @@ Read from the application's code (`src/pc/desktop`, `src/crates/media`):
 
 ### Order of work
 
-| Phase | What |
-|---|---|
-| M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there |
-| P1-P2 | Chromium's PDFium in the engine by default; its C API |
-| S | URL schemes, scripts before the page's, the larger FFmpeg |
-| P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests |
-| F1 | the application's host on the Blink engine (the Rust crates of section 7), its interface as it is |
-| F2 | the application's reader on `zebkit.pdf` in place of EmbedPDF; its media on zebkit's FFmpeg |
-| F3 | the application's interface remade |
+| Phase | What | State |
+|---|---|---|
+| M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there | Building, on Linux against the macOS SDK |
+| P1-P2 | Chromium's PDFium in the engine by default; its C API | Done 2026-10-20: 2.9 MiB; the package is 145.9 MiB |
+| S | URL schemes, scripts before the page's, the larger FFmpeg | Schemes done 2026-10-20 (`zebkit_scheme_*`, ranges for media) |
+| P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests | Documents, rendering, text, search, outline, links, annotations, attachments, metadata done 2026-10-20, in C, JavaScript, Python and Rust (`patches/1014`, `1015`); forms, page editing, redaction and signatures next |
+| F1 | the application's host on the Blink engine (the Rust crates of section 7), its interface as it is | |
+| F2 | the application's reader on `zebkit.pdf` in place of EmbedPDF; its media on zebkit's FFmpeg | |
+| F3 | the application's interface remade | |
+
+The 150 MiB limit leaves 4.1 MiB after PDFium: the larger FFmpeg and what
+else the application needs have to fit in it, or be paid for elsewhere.
 
 ## 9. Costs to plan for
 
