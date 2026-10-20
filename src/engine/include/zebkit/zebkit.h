@@ -106,6 +106,20 @@ ZEBKIT_API void zebkit_view_go_back(zebkit_view *view);
 ZEBKIT_API void zebkit_view_go_forward(zebkit_view *view);
 ZEBKIT_API void zebkit_view_resize(zebkit_view *view, int width, int height);
 
+/*
+ * Places @view inside @parent's window, over @parent's page, at (@x, @y),
+ * @width by @height, in @parent's coordinates (CSS pixels at zoom 1); its
+ * own window is hidden. A browser inside an application's window. The view
+ * goes with @parent's window when that closes.
+ */
+ZEBKIT_API void zebkit_view_attach(zebkit_view *view, zebkit_view *parent, int x, int y, int width, int height);
+
+/* Where an attached view is in its parent's window. */
+ZEBKIT_API void zebkit_view_set_bounds(zebkit_view *view, int x, int y, int width, int height);
+
+/* Shows or hides an attached view. */
+ZEBKIT_API void zebkit_view_set_visible(zebkit_view *view, bool visible);
+
 /* The title of the view's window; NULL for the page's, which it is by default. */
 ZEBKIT_API void zebkit_view_set_title(zebkit_view *view, const char *title);
 

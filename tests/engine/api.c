@@ -82,10 +82,54 @@ static void after_capture(zebkit_view *v, const uint8_t *png, size_t size, const
     zebkit_view_evaluate(view, "window.open('https://example.invalid/popup') === null", after_open, NULL);
 }
 
+static zebkit_view *child;
+
+static void after_threads(void);
+
+static void after_resized(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    check(json && strcmp(json, "[200,100]") == 0, "zebkit_view_set_bounds: the page's new size", json ? json : error);
+    zebkit_view_close(child);
+    after_threads();
+}
+
+static void measure_resized(void *data) {
+    (void)data;
+    zebkit_view_evaluate(child, "[innerWidth, innerHeight]", after_resized, NULL);
+}
+
+static void after_attached(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    check(json && strcmp(json, "[300,200]") == 0, "zebkit_view_attach: the page is the size it was given",
+          json ? json : error);
+    zebkit_view_set_bounds(child, 0, 0, 200, 100);
+    zebkit_post_delayed_task(measure_resized, NULL, 500);
+}
+
+static void measure_attached(void *data) {
+    (void)data;
+    zebkit_view_evaluate(child, "[innerWidth, innerHeight]", after_attached, NULL);
+}
+
+static void on_child_load(zebkit_view *v, zebkit_load_event event, const char *url, void *data) {
+    (void)v, (void)url, (void)data;
+    if (event != ZEBKIT_LOAD_FINISHED)
+        return;
+    zebkit_view_on_load(child, NULL, NULL);
+    zebkit_view_attach(child, view, 10, 20, 300, 200);
+    zebkit_post_delayed_task(measure_attached, NULL, 500);
+}
+
 static void after_open(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
     check(json && strcmp(json, "true") == 0 && new_windows == 1, "no window is made: window.open gives null",
           json ? json : error);
+    /* A second view, inside the first's window. */
+    child = zebkit_view_new("data:text/html,<title>child</title>", 640, 480);
+    zebkit_view_on_load(child, on_child_load, NULL);
+}
+
+static void after_threads(void) {
     pthread_t thread;
     pthread_create(&thread, NULL, thread_main, NULL);
     pthread_join(thread, NULL);

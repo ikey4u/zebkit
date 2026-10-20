@@ -15,6 +15,7 @@
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/common/shell_content_client.h"
 #include "content/shell/renderer/shell_content_renderer_client.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
@@ -142,6 +143,12 @@ void StartCdpFromCommandLine();
 // page's; brought to the front.
 void UpdateWindowTitle(content::Shell* shell);
 void FocusWindow(content::Shell* shell);
+
+// A view's page in another view's window (attach.cc; engine_mac.mm).
+bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds);
+void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds);
+void SetAttachedVisible(zebkit_view* view, bool visible);
+void DetachView(zebkit_view* view);
 
 // Closes the views the application holds, before the shell closes its
 // windows (view.cc).

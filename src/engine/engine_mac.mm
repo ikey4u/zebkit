@@ -7,6 +7,7 @@
 #import <Cocoa/Cocoa.h>
 #include <mach-o/dyld.h>
 
+#include <map>
 #include <string>
 
 #include "base/apple/bundle_locations.h"
@@ -18,6 +19,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_paths.h"
 #include "content/shell/browser/shell.h"
+#include "zebkit/engine/view.h"
 #include "sandbox/mac/seatbelt_exec.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
@@ -192,6 +194,69 @@ void FocusNativeWindow(gfx::NativeWindow window) {
     return;
   [ns_window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
+}
+
+namespace {
+
+struct Attached {
+  base::WeakPtr<zebkit_view> parent;
+  NSView* __strong view = nil;
+};
+
+std::map<const zebkit_view*, Attached>& AttachedViews() {
+  static base::NoDestructor<std::map<const zebkit_view*, Attached>> attached;
+  return *attached;
+}
+
+// @bounds, from the top left of @container, in Cocoa's coordinates, which
+// start at the bottom left.
+NSRect Frame(NSView* container, const gfx::Rect& bounds) {
+  const CGFloat height = container.bounds.size.height;
+  return NSMakeRect(bounds.x(),
+                    container.isFlipped ? bounds.y()
+                                        : height - bounds.y() - bounds.height(),
+                    bounds.width(), bounds.height());
+}
+
+}  // namespace
+
+bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds) {
+  if (!view || !parent || view == parent || !view->shell() || !parent->shell())
+    return false;
+  NSWindow* parent_window = parent->shell()->window().GetNativeNSWindow();
+  if (!parent_window)
+    return false;
+  DetachView(view);
+  NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
+  NSWindow* own_window = page.window;
+  NSView* container = parent_window.contentView;
+  page.autoresizingMask = NSViewNotSizable;
+  [container addSubview:page positioned:NSWindowAbove relativeTo:nil];
+  page.frame = Frame(container, bounds);
+  if (own_window && own_window != parent_window)
+    [own_window orderOut:nil];
+  AttachedViews()[view] = {parent->GetWeakPtr(), page};
+  return true;
+}
+
+void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
+  auto it = AttachedViews().find(view);
+  if (it != AttachedViews().end() && it->second.parent && it->second.view.superview)
+    it->second.view.frame = Frame(it->second.view.superview, bounds);
+}
+
+void SetAttachedVisible(zebkit_view* view, bool visible) {
+  auto it = AttachedViews().find(view);
+  if (it != AttachedViews().end() && it->second.parent)
+    it->second.view.hidden = !visible;
+}
+
+void DetachView(zebkit_view* view) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end())
+    return;
+  [it->second.view removeFromSuperview];
+  AttachedViews().erase(it);
 }
 
 void SetUpViews() {

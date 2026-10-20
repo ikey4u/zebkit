@@ -145,6 +145,7 @@ zebkit_view::zebkit_view(content::Shell* shell)
 zebkit_view::~zebkit_view() {
   Views().erase(this);
   zebkit::ClosePdfsOf(this);
+  zebkit::DetachView(this);
   if (devtools_)
     devtools_->DetachClient(this);
 }
@@ -662,6 +663,27 @@ zebkit_view* zebkit_view_new(const char* url, int width, int height) {
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
   view->LoadUrl(GURL(url ? url : "about:blank"));
+}
+
+void zebkit_view_attach(zebkit_view* view,
+                        zebkit_view* parent,
+                        int x,
+                        int y,
+                        int width,
+                        int height) {
+  zebkit::AttachView(view, parent, gfx::Rect(x, y, width, height));
+}
+
+void zebkit_view_set_bounds(zebkit_view* view,
+                            int x,
+                            int y,
+                            int width,
+                            int height) {
+  zebkit::SetAttachedBounds(view, gfx::Rect(x, y, width, height));
+}
+
+void zebkit_view_set_visible(zebkit_view* view, bool visible) {
+  zebkit::SetAttachedVisible(view, visible);
 }
 
 void zebkit_view_set_title(zebkit_view* view, const char* title) {

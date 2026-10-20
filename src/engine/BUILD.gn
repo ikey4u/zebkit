@@ -186,6 +186,8 @@ _deps = [
 _deps += _vendored_libraries
 
 if (!is_mac) {
+  _sources += [ "attach.cc" ]
+
   shared_library("zebkit") {
     # The content shell's browser classes, which are test-only in Chromium,
     # until zebkit has its own.
