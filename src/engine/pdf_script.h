@@ -54,12 +54,23 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     save({incremental = false, noSecurity = false} = {}) {
       return this.#call('save', (incremental ? 1 : 0) | (noSecurity ? 2 : 0));
     }
+    formFields() { return this.#call('formFields'); }
+    setField(name, value) { return this.#call('setField', String(name), String(value)); }
+    resetForm() { return this.#call('resetForm'); }
+    rotatePage(index, rotation) { return this.#call('rotatePage', index, rotation); }
+    deletePages(pages) { return this.#call('deletePages', [...pages]); }
+    movePages(pages, to) { return this.#call('movePages', [...pages], to); }
+    insertPage(at, width, height) { return this.#call('insertPage', at, width, height); }
+    // Copies pages (all when null) of another open document in, at index at.
+    importPages(from, pages, at) { return this.#call('importPages', from.#id, pages ? [...pages] : null, at); }
     close() { return this.#call('close'); }
   }
   return Object.freeze({
     // Bytes; in the application's script also a file's path.
     open: async (source, {password = null} = {}) =>
         new PdfDocument(await send('pdf', 'open', [source, password])),
+    // An empty document, to build from others' pages.
+    create: async () => new PdfDocument(await send('pdf', 'create', [])),
   });
 }))js";
 

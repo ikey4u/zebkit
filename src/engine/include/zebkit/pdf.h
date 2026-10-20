@@ -218,6 +218,56 @@ ZEBKIT_API bool zebkit_pdf_annotation_remove(zebkit_pdf *pdf, int page, int inde
  */
 ZEBKIT_API bool zebkit_pdf_flatten(zebkit_pdf *pdf, int page, bool for_print, char **error);
 
+/* ---- Forms ------------------------------------------------------------ */
+
+/*
+ * The document's form fields, as JSON:
+ *   [{"name": "address.city", "type": "text" | "checkbox" | "radio" |
+ *     "combobox" | "listbox" | "pushbutton" | "signature", "value": "...",
+ *     "readOnly": false, "required": true, "flags": 4096,
+ *     "options": [{"label": "...", "selected": true}, ...],
+ *     "widgets": [{"page": 0, "annotation": 3, "rect": [l, b, r, t],
+ *                  "checked": true, "exportValue": "Yes"}, ...]}, ...]
+ * with the keys a field has; a field is one entry however many widgets it
+ * has on however many pages.
+ */
+ZEBKIT_API char *zebkit_pdf_form_fields(zebkit_pdf *pdf, char **error);
+
+/*
+ * Sets field @name (its full name) to @value: the text of a text field or
+ * combo box, an option's value of a list box, the export value of the
+ * check box or radio button to check ("Off" for none). The fields'
+ * appearances follow.
+ */
+ZEBKIT_API bool zebkit_pdf_form_set(zebkit_pdf *pdf, const char *name, const char *value, char **error);
+
+/* Every field back to its default value. */
+ZEBKIT_API bool zebkit_pdf_form_reset(zebkit_pdf *pdf, char **error);
+
+/* ---- Pages, changed ------------------------------------------------- */
+
+/* Sets the page's rotation: 0, 90, 180 or 270. */
+ZEBKIT_API bool zebkit_pdf_page_rotate(zebkit_pdf *pdf, int page, int rotation, char **error);
+
+/* Deletes @count pages, at the indexes @pages holds. */
+ZEBKIT_API bool zebkit_pdf_pages_delete(zebkit_pdf *pdf, const int *pages, int count, char **error);
+
+/* Moves @count pages, in the order given, to start at index @to of the document they leave. */
+ZEBKIT_API bool zebkit_pdf_pages_move(zebkit_pdf *pdf, const int *pages, int count, int to, char **error);
+
+/* Inserts a blank page @width by @height points at index @at. */
+ZEBKIT_API bool zebkit_pdf_page_insert(zebkit_pdf *pdf, int at, double width, double height, char **error);
+
+/*
+ * Copies @count pages of @from (all when @pages is NULL) into @pdf at index
+ * @at: merging documents, and taking pages from another.
+ */
+ZEBKIT_API bool zebkit_pdf_pages_import(zebkit_pdf *pdf, zebkit_pdf *from, const int *pages, int count, int at,
+                                        char **error);
+
+/* A new, empty document, for building one from others' pages. */
+ZEBKIT_API zebkit_pdf *zebkit_pdf_new(char **error);
+
 /* ---- Attachments ----------------------------------------------------- */
 
 /* The files attached to the document: JSON [{"name": "data.csv", "size": 1234}, ...]. */

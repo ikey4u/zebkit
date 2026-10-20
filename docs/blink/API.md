@@ -171,13 +171,15 @@ uint8_t *bytes = zebkit_pdf_save(pdf, ZEBKIT_PDF_SAVE_INCREMENTAL, &size, &error
 | `zebkit_pdf_search` | Every match in the document, with its rectangles and the text around it |
 | `zebkit_pdf_outline`, `_links` | Bookmarks, link annotations and addresses written in the text |
 | `zebkit_pdf_annotations`, `_annotation_add`, `_update`, `_remove`, `zebkit_pdf_flatten` | Every kind read; highlights, underlines, squiggles, strikeouts, ink, lines, polygons, polylines, squares, circles, notes, free text, links and redaction marks made, changed and removed, with their appearances generated |
+| `zebkit_pdf_form_fields`, `_form_set`, `_form_reset` | Every field with its type, value, options and widgets; a value set, check boxes and radio buttons by export value, with the appearance redrawn; the form reset |
+| `zebkit_pdf_page_rotate`, `_pages_delete`, `_pages_move`, `_page_insert`, `_pages_import`, `zebkit_pdf_new` | Pages turned, deleted, moved, inserted blank, copied in from another document; a new document to build from others' pages (merge, extract) |
 | `zebkit_pdf_attachments`, `_attachment`, `_attach`, `_detach` | Embedded files |
 
 Structured answers are JSON. Coordinates are PDF page space: points, the
 origin at the bottom left, before the page's rotation. PDFium is not
 thread-safe; the functions take one lock, so any thread may call them.
 Where PDFium had nothing for it, zebkit patches PDFium (`patches/1014`,
-`1015`). Still to come: forms, page editing, redaction, signatures.
+`1015`). Still to come: redaction, signatures, editing the outline.
 
 In JavaScript the same is `zebkit.pdf` (layer 4), for pages granted
 `ZEBKIT_ALLOW_PDF` and for the application's script. A page's documents are
@@ -243,7 +245,7 @@ const url = await zebkit.url.parse('../x', location.href);
 | `zebkit.crypto` | `digest(algorithm, data)`, `hmac(algorithm, key, data)`, `randomBytes(count)` |
 | `zebkit.image` | `decode(bytes)`, `encode('png' \| 'jpeg' \| 'webp', {width, height, data}, quality)` |
 | `zebkit.url` | `parse(url, base)`, `registrableDomain(host)` |
-| `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `render(i, {scale, rotation, x, y, width, height})` (RGBA), `text`, `textLayout`, `textRects`, `charAt`, `search`, `outline`, `links`, `annotations`, `addAnnotation`, `updateAnnotation`, `removeAnnotation`, `flatten`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`: `<zebkit/pdf.h>` |
+| `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `render(i, {scale, rotation, x, y, width, height})` (RGBA), `text`, `textLayout`, `textRects`, `charAt`, `search`, `outline`, `links`, `annotations`, `addAnnotation`, `updateAnnotation`, `removeAnnotation`, `flatten`, `formFields`, `setField`, `resetForm`, `rotatePage`, `deletePages`, `movePages`, `insertPage`, `importPages`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`; `zebkit.pdf.create()` for a new one: `<zebkit/pdf.h>` |
 
 Every function returns a promise; bytes are `Uint8Array`s, and a string is
 taken as its UTF-8 where bytes are expected.

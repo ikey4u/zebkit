@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -105,8 +106,70 @@ base::Value BytesValue(const uint8_t* data, size_t size) {
 
 // What a document is asked for, on the PDF sequence. @args are the call's
 // after the document's id.
-Answer Work(zebkit_pdf* pdf, const std::string& method, base::ListValue args) {
+std::vector<int> IntList(const base::ListValue& args, size_t index) {
+  std::vector<int> list;
+  if (index < args.size() && args[index].is_list()) {
+    for (const base::Value& item : args[index].GetList())
+      list.push_back(item.is_int() ? item.GetInt() : -1);
+  }
+  return list;
+}
+
+// @other is a second document a call names (importPages), or null.
+Answer Work(zebkit_pdf* pdf,
+            zebkit_pdf* other,
+            const std::string& method,
+            base::ListValue args) {
   char* error = nullptr;
+  if (method == "formFields")
+    return Json(zebkit_pdf_form_fields(pdf, &error), error, "no form");
+  if (method == "setField") {
+    if (!zebkit_pdf_form_set(pdf, StringArg(args, 0).c_str(),
+                             StringArg(args, 1).c_str(), &error)) {
+      return Failed(error, "the field cannot be set");
+    }
+    return Ok(base::Value());
+  }
+  if (method == "resetForm") {
+    if (!zebkit_pdf_form_reset(pdf, &error))
+      return Failed(error, "the form cannot be reset");
+    return Ok(base::Value());
+  }
+  if (method == "rotatePage") {
+    if (!zebkit_pdf_page_rotate(pdf, IntArg(args, 0), IntArg(args, 1), &error))
+      return Failed(error, "the page cannot be turned");
+    return Ok(base::Value());
+  }
+  if (method == "deletePages" || method == "movePages") {
+    const std::vector<int> pages = IntList(args, 0);
+    const bool ok =
+        method == "deletePages"
+            ? zebkit_pdf_pages_delete(pdf, pages.data(),
+                                      static_cast<int>(pages.size()), &error)
+            : zebkit_pdf_pages_move(pdf, pages.data(),
+                                    static_cast<int>(pages.size()),
+                                    IntArg(args, 1), &error);
+    if (!ok)
+      return Failed(error, "the pages cannot be changed");
+    return Ok(base::Value());
+  }
+  if (method == "insertPage") {
+    if (!zebkit_pdf_page_insert(pdf, IntArg(args, 0), NumberArg(args, 1),
+                                NumberArg(args, 2), &error)) {
+      return Failed(error, "the page cannot be made");
+    }
+    return Ok(base::Value());
+  }
+  if (method == "importPages") {
+    const bool all = args.size() < 2 || args[1].is_none();
+    const std::vector<int> pages = IntList(args, 1);
+    if (!zebkit_pdf_pages_import(pdf, other, all ? nullptr : pages.data(),
+                                 static_cast<int>(pages.size()),
+                                 IntArg(args, 2), &error)) {
+      return Failed(error, "the pages cannot be copied");
+    }
+    return Ok(base::Value());
+  }
   if (method == "info")
     return Json(zebkit_pdf_info(pdf), nullptr, "no information");
   if (method == "setMetadata") {
@@ -267,14 +330,16 @@ struct Opened {
   std::string error;
 };
 
-Opened Open(std::optional<std::string> bytes,
+Opened Open(bool create,
+            std::optional<std::string> bytes,
             std::string path,
             std::string password) {
   char* error = nullptr;
   const char* pass = password.empty() ? nullptr : password.c_str();
   zebkit_pdf* pdf =
-      bytes ? zebkit_pdf_open(bytes->data(), bytes->size(), pass, &error)
-            : zebkit_pdf_open_file(path.c_str(), pass, &error);
+      create  ? zebkit_pdf_new(&error)
+      : bytes ? zebkit_pdf_open(bytes->data(), bytes->size(), pass, &error)
+              : zebkit_pdf_open_file(path.c_str(), pass, &error);
   Opened opened;
   opened.pdf = pdf;
   if (!pdf)
@@ -291,11 +356,14 @@ void CloseOnSequence(zebkit_pdf* pdf) {
 
 void CallPdf(PageCall call) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (call.method == "open") {
+  if (call.method == "open" || call.method == "create") {
+    const bool create = call.method == "create";
     const base::Value* source = call.args.empty() ? nullptr : &call.args[0];
     std::optional<std::string> bytes;
     std::string path;
-    if (source && source->is_string() && !call.view) {
+    if (create) {
+      // Nothing to read.
+    } else if (source && source->is_string() && !call.view) {
       path = source->GetString();
     } else {
       // A page gives bytes; a string from a page is not a path.
@@ -314,7 +382,7 @@ void CallPdf(PageCall call) {
     const bool from_page = call.view != nullptr;
     PdfSequence()->PostTaskAndReplyWithResult(
         FROM_HERE,
-        base::BindOnce(&Open, std::move(bytes), std::move(path),
+        base::BindOnce(&Open, create, std::move(bytes), std::move(path),
                        std::move(password)),
         base::BindOnce(
             [](base::WeakPtr<zebkit_view> view, bool from_page,
@@ -337,29 +405,45 @@ void CallPdf(PageCall call) {
     return;
   }
 
-  const int id = call.args.empty() || !call.args[0].is_int()
-                     ? 0
-                     : call.args[0].GetInt();
-  auto document = Documents().find(id);
   // A page has the documents its view and origin opened, and no others.
-  if (document == Documents().end() ||
-      document->second.owner != call.view ||
-      (call.view && document->second.origin != call.origin)) {
+  auto find = [&](const base::Value* id) -> zebkit_pdf* {
+    auto document =
+        id && id->is_int() ? Documents().find(id->GetInt()) : Documents().end();
+    if (document == Documents().end() ||
+        document->second.owner != call.view ||
+        (call.view && document->second.origin != call.origin)) {
+      return nullptr;
+    }
+    return document->second.pdf;
+  };
+  zebkit_pdf* pdf = find(call.args.empty() ? nullptr : &call.args[0]);
+  if (!pdf) {
     std::move(call.reply).Run(false, base::Value("no such document"));
     return;
   }
-  zebkit_pdf* pdf = document->second.pdf;
+  zebkit_pdf* other = nullptr;
+  if (call.method == "importPages") {
+    other = find(call.args.size() > 1 ? &call.args[1] : nullptr);
+    if (!other) {
+      std::move(call.reply).Run(false, base::Value("no such document"));
+      return;
+    }
+  }
   if (call.method == "close") {
-    Documents().erase(document);
+    Documents().erase(call.args[0].GetInt());
     CloseOnSequence(pdf);
     std::move(call.reply).Run(true, base::Value());
     return;
   }
   base::ListValue args;
-  for (size_t i = 1; i < call.args.size(); ++i)
+  // importPages' second argument was the other document's id.
+  for (size_t i = other ? 2 : 1; i < call.args.size(); ++i)
     args.Append(call.args[i].Clone());
+  if (other)
+    args.Insert(args.begin(), base::Value());
   PdfSequence()->PostTaskAndReplyWithResult(
-      FROM_HERE, base::BindOnce(&Work, pdf, call.method, std::move(args)),
+      FROM_HERE,
+      base::BindOnce(&Work, pdf, other, call.method, std::move(args)),
       base::BindOnce(&Reply, std::move(call.reply)));
 }
 

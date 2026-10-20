@@ -81,6 +81,21 @@ await check('pdf: open, info, render, search, annotate, save', async () => {
       found.length === 1 && found[0].count === 3 && index === 0 &&
       annotations[0].type === 'highlight' && text === 'Hello pdf';
 });
+await check('pdf: pages copied, inserted, moved, turned and deleted', async () => {
+  const source = await zebkit.pdf.open(new TextEncoder().encode(PDF));
+  const built = await zebkit.pdf.create();
+  await built.importPages(source, null, 0);
+  await built.importPages(source, [0], 1);
+  await built.insertPage(0, 100, 50);
+  await built.movePages([0], 2);
+  await built.rotatePage(2, 90);
+  await built.deletePages([1]);
+  const reopened = await zebkit.pdf.open(await built.save());
+  const pages = (await reopened.info()).pages;
+  const turned = await reopened.page(1);
+  await Promise.all([source.close(), built.close(), reopened.close()]);
+  return pages === 2 && turned.rotation === 90 && turned.width === 50;
+});
 await check('pdf: a closed document is gone', async () => {
   const doc = await zebkit.pdf.open(new TextEncoder().encode(PDF));
   await doc.close();

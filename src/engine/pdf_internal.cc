@@ -12,6 +12,11 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfdoc/cpdf_annot.h"
+#include "core/fpdfdoc/cpdf_formcontrol.h"
+#include "core/fpdfdoc/cpdf_formfield.h"
+#include "core/fpdfdoc/cpdf_interactiveform.h"
+#include "fpdfsdk/cpdfsdk_formfillenvironment.h"
+#include "fpdfsdk/cpdfsdk_interactiveform.h"
 #include "core/fxcrt/widestring.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
@@ -113,6 +118,92 @@ bool SetLinkPage(FPDF_DOCUMENT document, FPDF_ANNOTATION annot, int page) {
   dest->AppendNew<CPDF_Null>();
   dest->AppendNew<CPDF_Null>();
   dict->RemoveFor("A");
+  return true;
+}
+
+namespace {
+
+CPDFSDK_InteractiveForm* SdkForm(FPDF_FORMHANDLE form) {
+  CPDFSDK_FormFillEnvironment* environment =
+      CPDFSDKFormFillEnvironmentFromFPDFFormHandle(form);
+  return environment ? environment->GetInteractiveForm() : nullptr;
+}
+
+}  // namespace
+
+std::string SetFieldValue(FPDF_FORMHANDLE form,
+                          const char* name,
+                          const char* value) {
+  CPDFSDK_InteractiveForm* sdk = SdkForm(form);
+  if (!sdk)
+    return "the document has no form";
+  CPDF_InteractiveForm* interactive = sdk->GetInteractiveForm();
+  const WideString field_name = WideString::FromUTF8(name);
+  const WideString wide_value = WideString::FromUTF8(value);
+  CPDF_FormField* field = nullptr;
+  for (size_t i = 0; i < interactive->CountFields(field_name); ++i) {
+    CPDF_FormField* candidate = interactive->GetField(i, field_name);
+    if (candidate && candidate->GetFullName() == field_name) {
+      field = candidate;
+      break;
+    }
+  }
+  if (!field)
+    return "no field of that name";
+  // The read-only flag of the PDF reference, table 226.
+  if (field->GetFieldFlags() & 1)
+    return "the field is read-only";
+  constexpr auto kNotify = NotificationOption::kNotify;
+  switch (field->GetType()) {
+    case CPDF_FormField::kText:
+    case CPDF_FormField::kRichText:
+    case CPDF_FormField::kComboBox:
+      if (!field->SetValue(wide_value, kNotify))
+        return "the value cannot be set";
+      break;
+    case CPDF_FormField::kListBox: {
+      const int option = field->FindOption(wide_value);
+      if (option < 0)
+        return "the list has no such option";
+      field->ClearSelection(kNotify);
+      field->SetItemSelection(option, kNotify);
+      break;
+    }
+    case CPDF_FormField::kCheckBox:
+    case CPDF_FormField::kRadioButton: {
+      bool found = wide_value == L"Off";
+      for (int i = 0; i < field->CountControls(); ++i) {
+        CPDF_FormControl* control = field->GetControl(i);
+        const bool match = control->GetExportValue() == wide_value;
+        if (match || wide_value == L"Off") {
+          field->CheckControl(i, match, kNotify);
+          found = found || match;
+        }
+      }
+      if (!found)
+        return "no button has that export value";
+      break;
+    }
+    default:
+      return "fields of this type have no value to set";
+  }
+  sdk->ResetFieldAppearance(field, std::nullopt);
+  sdk->UpdateField(field);
+  return std::string();
+}
+
+bool ResetForm(FPDF_FORMHANDLE form) {
+  CPDFSDK_InteractiveForm* sdk = SdkForm(form);
+  if (!sdk)
+    return false;
+  CPDF_InteractiveForm* interactive = sdk->GetInteractiveForm();
+  interactive->ResetForm();
+  for (size_t i = 0; i < interactive->CountFields(WideString()); ++i) {
+    if (CPDF_FormField* field = interactive->GetField(i, WideString())) {
+      sdk->ResetFieldAppearance(field, std::nullopt);
+      sdk->UpdateField(field);
+    }
+  }
   return true;
 }
 

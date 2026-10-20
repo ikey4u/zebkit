@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +30,7 @@
 #include "base/values.h"
 #include "public/fpdf_annot.h"
 #include "public/fpdf_attachment.h"
+#include "public/fpdf_ppo.h"
 #include "public/fpdf_flatten.h"
 #include "public/fpdf_catalog.h"
 #include "public/fpdf_doc.h"
@@ -1224,6 +1226,247 @@ bool zebkit_pdf_flatten(zebkit_pdf* pdf,
     return FailFalse(error, "the page cannot be flattened");
   }
   return true;
+}
+
+char* zebkit_pdf_form_fields(zebkit_pdf* pdf, char** error) {
+  if (!pdf)
+    return Fail(error, "no document");
+  base::AutoLock lock(PdfiumLock());
+  FPDF_FORMHANDLE form = Form(pdf);
+  if (!form)
+    return Fail(error, "the document's form cannot be read");
+  static constexpr const char* kTypes[] = {
+      "unknown", "pushbutton", "checkbox", "radio",
+      "combobox", "listbox",   "text",     "signature",
+  };
+  // One entry per field, in the order first seen.
+  std::vector<std::string> order;
+  std::map<std::string, base::DictValue> fields;
+  const int pages = FPDF_GetPageCount(pdf->document);
+  for (int index = 0; index < pages; ++index) {
+    Page page(pdf, index);
+    if (!page.get())
+      continue;
+    FORM_OnAfterLoadPage(page.get(), form);
+    const int count = FPDFPage_GetAnnotCount(page.get());
+    for (int i = 0; i < count; ++i) {
+      FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
+      if (!annot)
+        continue;
+      if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_WIDGET) {
+        FPDFPage_CloseAnnot(annot);
+        continue;
+      }
+      auto text = [&](auto get) {
+        return Utf16String([&](void* buffer, unsigned long size) {
+          return get(form, annot, static_cast<FPDF_WCHAR*>(buffer), size);
+        });
+      };
+      const std::string name = text(&FPDFAnnot_GetFormFieldName);
+      auto [field, added] = fields.try_emplace(name);
+      const int type = FPDFAnnot_GetFormFieldType(form, annot);
+      if (added) {
+        order.push_back(name);
+        base::DictValue& f = field->second;
+        f.Set("name", name);
+        f.Set("type", type >= 0 && type < static_cast<int>(std::size(kTypes))
+                          ? kTypes[type]
+                          : "unknown");
+        const int flags = FPDFAnnot_GetFormFieldFlags(form, annot);
+        f.Set("flags", flags);
+        f.Set("readOnly", (flags & FPDF_FORMFLAG_READONLY) != 0);
+        f.Set("required", (flags & FPDF_FORMFLAG_REQUIRED) != 0);
+        f.Set("value", text(&FPDFAnnot_GetFormFieldValue));
+        const int options = FPDFAnnot_GetOptionCount(form, annot);
+        if (options > 0) {
+          base::ListValue list;
+          for (int o = 0; o < options; ++o) {
+            base::DictValue option;
+            option.Set("label", Utf16String([&](void* buffer,
+                                                 unsigned long size) {
+                         return FPDFAnnot_GetOptionLabel(
+                             form, annot, o, static_cast<FPDF_WCHAR*>(buffer),
+                             size);
+                       }));
+            option.Set("selected",
+                       static_cast<bool>(
+                           FPDFAnnot_IsOptionSelected(form, annot, o)));
+            list.Append(std::move(option));
+          }
+          f.Set("options", std::move(list));
+        }
+        f.Set("widgets", base::ListValue());
+      }
+      base::DictValue widget;
+      widget.Set("page", index);
+      widget.Set("annotation", i);
+      FS_RECTF rect = {};
+      if (FPDFAnnot_GetRect(annot, &rect))
+        widget.Set("rect", Rect(rect.left, rect.bottom, rect.right, rect.top));
+      if (type == FPDF_FORMFIELD_CHECKBOX ||
+          type == FPDF_FORMFIELD_RADIOBUTTON) {
+        widget.Set("checked", static_cast<bool>(FPDFAnnot_IsChecked(form, annot)));
+        widget.Set("exportValue", text(&FPDFAnnot_GetFormFieldExportValue));
+      }
+      field->second.FindList("widgets")->Append(std::move(widget));
+      FPDFPage_CloseAnnot(annot);
+    }
+    FORM_OnBeforeClosePage(page.get(), form);
+  }
+  base::ListValue list;
+  for (const std::string& name : order)
+    list.Append(std::move(fields[name]));
+  return GiveJson(base::Value(std::move(list)));
+}
+
+bool zebkit_pdf_form_set(zebkit_pdf* pdf,
+                         const char* name,
+                         const char* value,
+                         char** error) {
+  if (!pdf)
+    return FailFalse(error, "no document");
+  if (!name || !value)
+    return FailFalse(error, "a field's name and a value");
+  base::AutoLock lock(PdfiumLock());
+  FPDF_FORMHANDLE form = Form(pdf);
+  if (!form)
+    return FailFalse(error, "the document's form cannot be read");
+  const std::string problem = zebkit::pdf::SetFieldValue(form, name, value);
+  if (!problem.empty())
+    return FailFalse(error, problem);
+  return true;
+}
+
+bool zebkit_pdf_form_reset(zebkit_pdf* pdf, char** error) {
+  if (!pdf)
+    return FailFalse(error, "no document");
+  base::AutoLock lock(PdfiumLock());
+  FPDF_FORMHANDLE form = Form(pdf);
+  if (!form || !zebkit::pdf::ResetForm(form))
+    return FailFalse(error, "the document has no form");
+  return true;
+}
+
+bool zebkit_pdf_page_rotate(zebkit_pdf* pdf,
+                            int index,
+                            int rotation,
+                            char** error) {
+  if (rotation % 90)
+    return FailFalse(error, "the rotation is not a multiple of 90");
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get())
+    return FailFalse(error, "no page " + std::to_string(index));
+  FPDFPage_SetRotation(page.get(), ((rotation / 90) % 4 + 4) % 4);
+  return true;
+}
+
+namespace {
+
+// @count page indexes, each a page of @pages pages, none twice.
+bool ValidPages(const int* indexes, int count, int pages) {
+  if (!indexes || count <= 0)
+    return false;
+  std::vector<bool> seen(pages, false);
+  for (int i = 0; i < count; ++i) {
+    if (indexes[i] < 0 || indexes[i] >= pages || seen[indexes[i]])
+      return false;
+    seen[indexes[i]] = true;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool zebkit_pdf_pages_delete(zebkit_pdf* pdf,
+                             const int* pages,
+                             int count,
+                             char** error) {
+  if (!pdf)
+    return FailFalse(error, "no document");
+  base::AutoLock lock(PdfiumLock());
+  const int total = FPDF_GetPageCount(pdf->document);
+  if (!ValidPages(pages, count, total))
+    return FailFalse(error, "not a list of pages of the document");
+  std::vector<int> sorted(pages, pages + count);
+  std::sort(sorted.rbegin(), sorted.rend());
+  for (int index : sorted)
+    FPDFPage_Delete(pdf->document, index);
+  return true;
+}
+
+bool zebkit_pdf_pages_move(zebkit_pdf* pdf,
+                           const int* pages,
+                           int count,
+                           int to,
+                           char** error) {
+  if (!pdf)
+    return FailFalse(error, "no document");
+  base::AutoLock lock(PdfiumLock());
+  const int total = FPDF_GetPageCount(pdf->document);
+  if (!ValidPages(pages, count, total) || to < 0 || to > total - count)
+    return FailFalse(error, "not a list of pages, or nowhere to move them");
+  if (!FPDF_MovePages(pdf->document, pages, static_cast<unsigned long>(count),
+                      to)) {
+    return FailFalse(error, "the pages cannot be moved");
+  }
+  return true;
+}
+
+bool zebkit_pdf_page_insert(zebkit_pdf* pdf,
+                            int at,
+                            double width,
+                            double height,
+                            char** error) {
+  if (!pdf)
+    return FailFalse(error, "no document");
+  if (!(width > 0 && height > 0 && width <= 14400 && height <= 14400))
+    return FailFalse(error, "a page is 1 to 14400 points each way");
+  base::AutoLock lock(PdfiumLock());
+  const int total = FPDF_GetPageCount(pdf->document);
+  if (at < 0 || at > total)
+    return FailFalse(error, "no place " + std::to_string(at));
+  FPDF_PAGE page = FPDFPage_New(pdf->document, at, width, height);
+  if (!page)
+    return FailFalse(error, "the page cannot be made");
+  FPDF_ClosePage(page);
+  return true;
+}
+
+bool zebkit_pdf_pages_import(zebkit_pdf* pdf,
+                             zebkit_pdf* from,
+                             const int* pages,
+                             int count,
+                             int at,
+                             char** error) {
+  if (!pdf || !from)
+    return FailFalse(error, "no document");
+  if (pdf == from)
+    return FailFalse(error, "a document's pages are copied from another");
+  base::AutoLock lock(PdfiumLock());
+  const int total = FPDF_GetPageCount(pdf->document);
+  if (at < 0 || at > total)
+    return FailFalse(error, "no place " + std::to_string(at));
+  if (pages &&
+      !ValidPages(pages, count, FPDF_GetPageCount(from->document))) {
+    return FailFalse(error, "not a list of pages of the other document");
+  }
+  if (!FPDF_ImportPagesByIndex(pdf->document, from->document, pages,
+                               pages ? static_cast<unsigned long>(count) : 0,
+                               at)) {
+    return FailFalse(error, "the pages cannot be copied");
+  }
+  return true;
+}
+
+zebkit_pdf* zebkit_pdf_new(char** error) {
+  base::AutoLock lock(PdfiumLock());
+  InitializeOnce();
+  auto pdf = std::make_unique<zebkit_pdf>();
+  pdf->document = FPDF_CreateNewDocument();
+  if (!pdf->document)
+    return Fail(error, "the document cannot be made");
+  return pdf.release();
 }
 
 char* zebkit_pdf_attachments(zebkit_pdf* pdf, char** error) {

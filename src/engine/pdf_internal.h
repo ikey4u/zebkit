@@ -6,7 +6,10 @@
 #ifndef ZEBKIT_ENGINE_PDF_INTERNAL_H_
 #define ZEBKIT_ENGINE_PDF_INTERNAL_H_
 
+#include <string>
+
 #include "public/fpdf_annot.h"
+#include "public/fpdf_formfill.h"
 #include "public/fpdfview.h"
 
 namespace zebkit::pdf {
@@ -28,6 +31,15 @@ bool SetAnnotationColor(FPDF_ANNOTATION annot, const char* key, float r, float g
 
 // Makes a link annotation go to page @page of @document.
 bool SetLinkPage(FPDF_DOCUMENT document, FPDF_ANNOTATION annot, int page);
+
+// Sets form field @name to @value (zebkit_pdf_form_set() says how each type
+// takes it) and updates its appearance. Returns "" or what was wrong.
+std::string SetFieldValue(FPDF_FORMHANDLE form,
+                          const char* name,
+                          const char* value);
+
+// Every field back to its default value, with its appearance.
+bool ResetForm(FPDF_FORMHANDLE form);
 
 // Generates the annotation's appearance again from its entries, for the
 // types PDFium makes appearances for; others keep theirs.

@@ -43,6 +43,107 @@ static int contains(const char *text, const char *part) {
     return text && strstr(text, part) != NULL;
 }
 
+/* A form: a text field with a value, and a check box with Yes and Off. */
+static const char form[] =
+    "%PDF-1.7\n"
+    "1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R] /DA (/Helv 0 Tf 0 g)"
+    " /DR << /Font << /Helv 8 0 R >> >> >> >> endobj\n"
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [6 0 R 7 0 R] >> endobj\n"
+    "6 0 obj << /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (Ada) /Rect [20 150 200 170] /P 3 0 R"
+    " /DA (/Helv 12 Tf 0 g) /F 4 >> endobj\n"
+    "7 0 obj << /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /V /Off /AS /Off /Rect [20 120 35 135] /P 3 0 R"
+    " /F 4 /AP << /N << /Yes 9 0 R /Off 10 0 R >> >> >> endobj\n"
+    "8 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+    "9 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 15 15] >> stream\n0 0 0 rg 2 2 11 11 re f\nendstream endobj\n"
+    "10 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 15 15] >> stream\n\nendstream endobj\n"
+    "trailer << /Root 1 0 R >>\n"
+    "%%EOF\n";
+
+static void test_forms_and_pages(void) {
+    char *error = NULL;
+    zebkit_pdf *pdf = zebkit_pdf_open(form, sizeof(form) - 1, NULL, &error);
+    check(pdf != NULL, "a document with a form", error);
+    if (!pdf)
+        return;
+    char *fields = zebkit_pdf_form_fields(pdf, &error);
+    check(contains(fields, "\"name\":\"name\"") && contains(fields, "\"type\":\"text\"") &&
+              contains(fields, "\"value\":\"Ada\"") && contains(fields, "\"type\":\"checkbox\"") &&
+              contains(fields, "\"exportValue\":\"Yes\"") && contains(fields, "\"checked\":false"),
+          "zebkit_pdf_form_fields", fields);
+    zebkit_free(fields);
+    check(zebkit_pdf_form_set(pdf, "name", "Grace Hopper", &error), "zebkit_pdf_form_set: a text field", error);
+    check(zebkit_pdf_form_set(pdf, "agree", "Yes", &error), "zebkit_pdf_form_set: a check box", error);
+    check(!zebkit_pdf_form_set(pdf, "nobody", "x", &error) && contains(error, "no field"),
+          "zebkit_pdf_form_set refuses a field that is not there", error);
+    zebkit_free(error);
+    error = NULL;
+    fields = zebkit_pdf_form_fields(pdf, &error);
+    check(contains(fields, "\"value\":\"Grace Hopper\"") && contains(fields, "\"checked\":true"),
+          "the values are set", fields);
+    zebkit_free(fields);
+    /* The text drawn into the field's new appearance, with forms on. */
+    zebkit_pdf_render_options options = {.scale = 1, .background = 0xffffffff, .flags = ZEBKIT_PDF_RENDER_FORMS};
+    int width = 0, height = 0;
+    uint8_t *pixels = zebkit_pdf_render(pdf, 0, &options, &width, &height, &error);
+    int dark = 0;
+    for (int y = 200 - 170; pixels && y < 200 - 150; y++)
+        for (int x = 20; x < 200; x++)
+            dark += pixels[(y * width + x) * 4] < 128;
+    char detail[64];
+    snprintf(detail, sizeof(detail), "%d dark pixels in the field", dark);
+    check(dark > 30, "the field draws its new value", detail);
+    zebkit_free(pixels);
+    size_t size = 0;
+    uint8_t *saved = zebkit_pdf_save(pdf, 0, &size, &error);
+    check(zebkit_pdf_form_reset(pdf, &error), "zebkit_pdf_form_reset", error);
+    fields = zebkit_pdf_form_fields(pdf, &error);
+    check(!contains(fields, "Grace") && contains(fields, "\"checked\":false"), "the values are reset", fields);
+    zebkit_free(fields);
+    zebkit_pdf_close(pdf);
+    zebkit_pdf *again = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
+    fields = again ? zebkit_pdf_form_fields(again, &error) : NULL;
+    check(contains(fields, "Grace Hopper") && contains(fields, "\"checked\":true"), "the saved form keeps its values",
+          fields);
+    zebkit_free(fields);
+    zebkit_free(saved);
+
+    /* Pages: one blank page inserted, turned, moved, others copied in. */
+    check(zebkit_pdf_page_insert(again, 1, 100, 50, &error), "zebkit_pdf_page_insert", error);
+    check(zebkit_pdf_page_rotate(again, 1, 90, &error), "zebkit_pdf_page_rotate", error);
+    char *page = zebkit_pdf_page(again, 1, &error);
+    check(contains(page, "\"rotation\":90") && contains(page, "\"width\":50.0"), "the new page, turned", page);
+    zebkit_free(page);
+    int first[] = {1};
+    check(zebkit_pdf_pages_move(again, first, 1, 0, &error), "zebkit_pdf_pages_move", error);
+    page = zebkit_pdf_page(again, 0, &error);
+    check(contains(page, "\"rotation\":90"), "the moved page is first", page);
+    zebkit_free(page);
+    zebkit_pdf *merged = zebkit_pdf_new(&error);
+    check(merged && zebkit_pdf_pages_import(merged, again, NULL, 0, 0, &error) &&
+              zebkit_pdf_page_count(merged) == 2,
+          "zebkit_pdf_new and zebkit_pdf_pages_import, all pages", error);
+    int second[] = {1};
+    check(merged && zebkit_pdf_pages_import(merged, again, second, 1, 2, &error) &&
+              zebkit_pdf_page_count(merged) == 3,
+          "zebkit_pdf_pages_import, one page", error);
+    int both[] = {0, 2};
+    check(merged && zebkit_pdf_pages_delete(merged, both, 2, &error) && zebkit_pdf_page_count(merged) == 1,
+          "zebkit_pdf_pages_delete", error);
+    int bad[] = {5};
+    check(!zebkit_pdf_pages_delete(merged, bad, 1, &error), "zebkit_pdf_pages_delete refuses a page not there",
+          error);
+    zebkit_free(error);
+    error = NULL;
+    saved = merged ? zebkit_pdf_save(merged, 0, &size, &error) : NULL;
+    zebkit_pdf *built = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
+    check(built && zebkit_pdf_page_count(built) == 1, "the built document saved and opened", error);
+    zebkit_pdf_close(built);
+    zebkit_free(saved);
+    zebkit_pdf_close(merged);
+    zebkit_pdf_close(again);
+}
+
 int main(void) {
     char *error = NULL;
     zebkit_pdf *pdf = zebkit_pdf_open("not a pdf", 9, NULL, &error);
@@ -275,6 +376,7 @@ int main(void) {
     zebkit_pdf_close(again);
     zebkit_free(saved);
 
+    test_forms_and_pages();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }
