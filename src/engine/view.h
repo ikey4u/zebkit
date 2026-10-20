@@ -28,17 +28,24 @@ class Origin;
 
 namespace zebkit {
 
-// A call from a page's script, after the browser has decided which origin
-// made it and what that origin may use.
+// How a call is answered: true with the result, or false with the message.
+// Bytes are binary values (base::Value::BlobStorage).
+using CallReply = base::OnceCallback<void(bool ok, base::Value value)>;
+
+// A call to zebkit.*: from a page's script, after the browser has decided
+// which origin made it and what that origin may use, or from the
+// application's own script (script.cc), which may use everything.
 struct PageCall {
   PageCall();
   PageCall(PageCall&&);
   PageCall& operator=(PageCall&&);
   ~PageCall();
 
+  // The page's view, for zebkit.app; null for the application's script.
   zebkit_view* view = nullptr;
   int context_id = 0;
   int call_id = 0;
+  CallReply reply;
   std::string origin;
   unsigned allow = 0;
   base::FilePath files_root;
@@ -49,6 +56,9 @@ struct PageCall {
 
 // Answers a call (bridge.cc), now or later, on the UI thread.
 void HandlePageCall(PageCall call);
+
+// The page's form of a value: bytes as {"$bytes": base64}, for JSON.
+base::Value ToPageValue(base::Value value);
 
 }  // namespace zebkit
 

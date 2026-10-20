@@ -112,6 +112,7 @@ shared_library("zebkit") {
     "engine.h",
     "include/zebkit/services.h",
     "include/zebkit/zebkit.h",
+    "script.cc",
     "services.cc",
     "view.cc",
     "view.h",
@@ -129,6 +130,7 @@ shared_library("zebkit") {
     "//content/shell:content_shell_app",
     "//content/shell:content_shell_lib",
     "//content/shell:pak",
+    "//gin",
     "//net",
     "//net:net_resources",
     "//services/network/public/cpp",
@@ -139,6 +141,7 @@ shared_library("zebkit") {
     "//ui/gfx",
     "//ui/ozone",
     "//url",
+    "//v8",
   ]
 
   data_deps = [

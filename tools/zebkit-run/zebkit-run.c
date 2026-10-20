@@ -1,5 +1,5 @@
 /* zebkit-run: open each URL given in a view, and run until killed or until
- * the last view is closed. Chromium's switches are passed through, so
+ * the last of them is closed. Chromium's switches are passed through, so
  *
  *     zebkit-run --no-sandbox --remote-debugging-port=9222 https://example.com/
  *
@@ -13,13 +13,28 @@
 
 static int url_count;
 static char **urls;
+static int open_views;
+
+static void closed(zebkit_view *view, void *data) {
+    (void)view, (void)data;
+    if (--open_views == 0)
+        zebkit_quit();
+}
+
+static void open_view(const char *url) {
+    zebkit_view *view = zebkit_view_new(url, 0, 0);
+    if (view) {
+        ++open_views;
+        zebkit_view_on_close(view, closed, NULL);
+    }
+}
 
 static void ready(void *data) {
     (void)data;
     if (url_count == 0)
-        zebkit_view_new("about:blank", 0, 0);
+        open_view("about:blank");
     for (int i = 0; i < url_count; ++i)
-        zebkit_view_new(urls[i], 0, 0);
+        open_view(urls[i]);
 }
 
 int main(int argc, char **argv) {

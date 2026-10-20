@@ -11,7 +11,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 
 | Layer | Header | What |
 |---|---|---|
-| 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script, CDP, calls between the page and the application |
+| 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, CDP, calls between the page and the application |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
 | 2. Services | `<zebkit/services.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, over Chromium's own code |
 | 3. Bindings | `bindings/python/zebkit` | Layers 0 and 2 for Python |
@@ -43,8 +43,9 @@ int main(int argc, char **argv) {
 - **One call starts and runs the engine.** `zebkit_main()` starts
   Chromium's content layer the way Android WebView does
   (`BrowserMainRunner` initialized by the embedder), calls `ready` on the
-  main thread when views can be made, and returns after `zebkit_quit()`
-  or when the last view closes. Chromium's switches in `argv` are
+  main thread when views can be made, and returns after `zebkit_quit()`.
+  Closing the last window does not end it: that is the application's to
+  act on. Chromium's switches in `argv` are
   honoured: `--remote-debugging-port`, `--user-data-dir`, `--no-sandbox`,
   `--headless`, `--enable-logging=stderr` and the rest.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,
@@ -199,6 +200,45 @@ browser process, files and compression on Chromium's thread pool. Bytes
 travel as base64, which is fine for what a page usually moves and slow for
 hundreds of megabytes; a Mojo channel is the way to go faster, if it is
 needed.
+
+## Script outside any page
+
+An application can be JavaScript, as Electron's main process is, without
+Node: `zebkit_script_new()` makes a V8 context in the application's own
+process, on the engine's thread, and `zebkit-js` runs a module with it.
+
+```js
+// app.mjs: zebkit-js app.mjs
+import {render} from './ui.mjs';                       // ES modules, from files
+
+const view = new zebkit.View('https://app.example/', {width: 1024, height: 768});
+view.grant('https://app.example', ['app', 'fetch']);
+view.bind('save', async function (name, text) {      // the page calls zebkit.app.save()
+  await zebkit.fs.writeFile(`/home/me/notes/${name}`, text);
+  return {saved: true, from: this.origin};
+});
+view.on('load', (event, url) => event === 'finished' && console.log('loaded', url));
+view.on('close', () => zebkit.quit());
+
+const packed = await zebkit.compress('zstd', new TextEncoder().encode('...'), 19);
+```
+
+| In the script | What |
+|---|---|
+| `zebkit.View(url, {width, height})` | `load`, `reload`, `back`, `forward`, `resize`, `close`, `url`, `title`, `evaluate(script)`, `grant(origin, capabilities, filesRoot)`, `bind(name, fn)`, `on('load' \| 'title' \| 'close', fn)` |
+| `zebkit.fetch`, `fs`, `compress`, `decompress`, `crypto`, `image`, `url` | As in a page (layer 4), with no grant: the script is the application; `fs` takes any path |
+| `zebkit.args`, `zebkit.quit()`, `zebkit.version`, `zebkit.engineVersion` | |
+| `console`, `setTimeout`, `setInterval`, `TextEncoder`, `TextDecoder` | |
+
+Bytes are `Uint8Array`s both ways, without base64: the calls go to the
+same code as a page's, in the same process. A function bound with
+`bind()` is called with the page's arguments and `this.origin`, and may
+return a promise. `zebkit-js` ends when the script calls `zebkit.quit()`,
+or once nothing of it is pending (a timer, a call, the module's
+evaluation) and no view is open, as Node ends.
+
+Not yet: `import` of anything but files (no packages, no `import()` of a
+computed name), and the web's other globals (`URL`, `structuredClone`).
 
 ## Loading the library
 

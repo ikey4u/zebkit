@@ -612,8 +612,8 @@ process, where layer 2 does the work, so the renderer stays sandboxed.
 | N3 | Layer 2: `net`, `url`, `image`, `compress`, `crypto` | Done 2026-10-20, in one header, `<zebkit/services.h>` |
 | N4 | Layer 3: Python, then Rust | Python done 2026-10-20; Rust next |
 | N5 | Layer 4: `zebkit.app`, then the capabilities | Done 2026-10-20 |
-| N6 | Later areas of layer 2; script outside a page | |
-| N7 | To investigate: native UI from JavaScript (below) | |
+| N6 | Script outside a page; later areas of layer 2 | Script done 2026-10-20: `zebkit_script_*`, `zebkit-js` |
+| N7 | Native UI from JavaScript: `zebkit.ui` on `ui/views` (below) | Next; the approach accepted by the owner 2026-10-20 |
 
 Each phase is measured for size and speed and tested from a program that
 uses it. `docs/blink/API.md` is what is built, and
@@ -645,35 +645,68 @@ package.
   data, which the library cannot relocate. Linking the library, or loading
   it before threads start, is what is supported.
 
-### Native UI from JavaScript: to investigate (N7)
+### Native UI from JavaScript (N7)
 
-Proposed by the owner on 2026-10-19, after Native Shell
-(github.com/longbridge/nsh): an application written in JavaScript and
-TSX whose interface is the system's own widgets, not a web page.
+Asked for by the owner on 2026-10-19 and 2026-10-20: applications written
+in JavaScript, with their interface made of the system's widgets rather
+than a web page, the way Native Shell (github.com/longbridge/nsh) does it,
+or Native Shell itself as a library inside zebkit.
 
-What Native Shell is: TSX run at runtime in QuickJS, one interpreter per
-view, with its own signals model, not React; the reactive graph, the
-layout (Taffy: flexbox and grid), Tailwind styling and the renderer are
-Rust, drawing with each platform's toolkit (AppKit, GTK 4, Win32 with
-Direct2D, UIKit, Android views). Its speed comes from that split: layout,
-rendering and animation never call into JavaScript per frame. JavaScript
-is not compiled to native code.
+**Native Shell, read (version 0.1.1, 2026-10-20).** A Rust engine:
+TSX compiled ahead of time by its CLI (rolldown, Oxc and its own JSX
+compiler, Solid-style: components run once, signals update the nodes they
+feed, no virtual DOM, not React), run on QuickJS, one interpreter per
+view. A shared core holds the reactive graph, the layout (Taffy: flexbox
+and grid), Tailwind v4 classes parsed in Rust, and a diff of mount
+operations that a backend per platform applies to the system's toolkit:
+GTK 4 and Pango on Linux, AppKit, Win32 with Direct2D, UIKit, Android
+views, or GPUI. Apache-2.0, with extensive tests and documentation.
 
-For zebkit it would be a React renderer (react-reconciler) that makes
-native widgets instead of DOM nodes, on the runtime of N6 (V8 outside a
-page, faster than QuickJS) and the APIs of layers 0–2:
+**Not as a library.** Four things stand against linking it into zebkit:
 
-- Widgets: `ui/views` on Linux and Windows, which is in the binary
-  already; Cocoa on macOS.
-- Layout of a CSS subset, text, input methods, accessibility and focus
-  on each platform: most of the work.
-- Startup: the application's script in a V8 startup snapshot.
-- The limit: React libraries written for the DOM and CSS (component kits,
-  charts) do not work there, as they do not in React Native.
+- **A second JavaScript engine.** Its runtime layer, 49,000 lines, calls
+  QuickJS's C API directly, with no interface to put V8 behind; its own
+  documentation puts QuickJS at 10 to 50 times slower than V8.
+- **GTK 4 on Linux.** The backend is GTK 4 and Pango and owns the GTK main
+  loop; zebkit has no GTK, and Chromium owns the loop. Its GPUI backend
+  brings its own windowing and Vulkan through wgpu instead.
+- **Duplicates of what zebkit exposes.** Its own HTTP and TLS (ureq,
+  rustls), cryptography, zlib, image decoding and a Tokio runtime.
+- **No C API on the desktop.** It embeds through Rust there; only iOS has
+  a C ABI.
 
-Months of work, after N1–N6, and only after a prototype is measured
-against React in a page: Blink's composited DOM is not what makes most
-desktop applications slow.
+**zebkit's own, on what the engine has.** The same idea, built from the
+engine's parts:
+
+| Native Shell | zebkit |
+|---|---|
+| QuickJS, one interpreter per view | V8, outside any page (N6) |
+| GTK 4, AppKit, Win32 backends | Chromium's `ui/views`: the toolkit Chrome draws its own interface with on Linux, Windows and macOS, already in the binary |
+| Taffy | `views::FlexLayout` (flexbox) first; Taffy, a Rust crate, if grid is wanted |
+| Pango, Core Text, DirectWrite | `gfx::RenderText` (HarfBuzz) |
+| Its modules for files, network, crypto, zlib | `zebkit.*`: layers 1 and 2 |
+| Signals, `View`, `Text`, `Input` | The same model: what Native Shell shows works, and its design can be followed where it fits; its code is Apache-2.0 |
+
+One toolkit for three systems, as Chrome has it, instead of a backend per
+system; a web view is a widget among the others, since the engine is
+there. What does not carry over is the look of each system's own widgets:
+`ui/views` draws its own, as Chrome's interface does.
+
+The parts, in order:
+
+1. **N6, script outside a page:** a V8 isolate in the application's
+   process with layers 0 to 2 as `zebkit.*`, ES modules from files, and
+   `zebkit-js app.js` to run one. An application then is JavaScript, as
+   with Electron's main process, without Node.
+2. **N7, `zebkit.ui`:** windows and widgets of `ui/views` from that script
+   (view, text, button, input, image, scroll, web view), flexbox layout,
+   events.
+3. **Signals and JSX:** signals that update widgets in place, and a JSX
+   runtime over `zebkit.ui`; TSX compiled ahead of time by an existing
+   compiler (esbuild or Oxc).
+4. **Measured against a web page:** startup, memory and frame time of the
+   same interface written for `zebkit.ui` and as React in a page, before
+   it goes further.
 
 ## 8. Costs to plan for
 

@@ -54,22 +54,22 @@ Result Error(const std::string& message) {
 }
 
 base::Value Bytes(const uint8_t* data, size_t size) {
-  base::DictValue bytes;
-  bytes.Set("$bytes", base::Base64Encode(base::span<const uint8_t>(data, size)));
-  return base::Value(std::move(bytes));
+  return base::Value(base::Value::BlobStorage(data, data + size));
 }
 
 base::Value Bytes(const std::string& data) {
   return Bytes(reinterpret_cast<const uint8_t*>(data.data()), data.size());
 }
 
-// Bytes from the page: a Uint8Array arrives as {$bytes}; a string is taken
-// as its UTF-8.
+// Bytes: a binary value from the application's script, {$bytes} from a
+// page, or a string, taken as its UTF-8.
 std::optional<std::string> GetBytes(const base::Value* value) {
   if (!value)
     return std::nullopt;
   if (value->is_string())
     return value->GetString();
+  if (value->is_blob())
+    return std::string(value->GetBlob().begin(), value->GetBlob().end());
   if (value->is_dict()) {
     const std::string* encoded = value->GetDict().FindString("$bytes");
     std::string decoded;
@@ -95,14 +95,8 @@ std::string Take(char* text) {
   return out;
 }
 
-void Reply(base::WeakPtr<zebkit_view> view,
-           int context_id,
-           int call_id,
-           Result result) {
-  if (view) {
-    view->ReplyToPage(context_id, call_id, result.ok,
-                      std::move(result.value));
-  }
+void Reply(CallReply reply, Result result) {
+  std::move(reply).Run(result.ok, std::move(result.value));
 }
 
 // ---- zebkit.fs: under the granted directory, and nowhere else ----
@@ -415,16 +409,13 @@ Result Url(const PageCall& call) {
 // ---- zebkit.fetch ----
 
 struct FetchCall {
-  base::WeakPtr<zebkit_view> view;
-  int context_id;
-  int call_id;
+  CallReply reply;
 };
 
 void FetchDone(const zebkit_response* response, void* data) {
   std::unique_ptr<FetchCall> call(static_cast<FetchCall*>(data));
   if (response->error && !response->status) {
-    Reply(call->view, call->context_id, call->call_id,
-          Error(response->error));
+    Reply(std::move(call->reply), Error(response->error));
     return;
   }
   base::DictValue headers;
@@ -448,8 +439,7 @@ void FetchDone(const zebkit_response* response, void* data) {
   result.Set("url", response->url ? response->url : "");
   result.Set("headers", std::move(headers));
   result.Set("body", Bytes(response->body, response->body_size));
-  Reply(call->view, call->context_id, call->call_id,
-        Ok(base::Value(std::move(result))));
+  Reply(std::move(call->reply), Ok(base::Value(std::move(result))));
 }
 
 void Fetch(PageCall call) {
@@ -471,8 +461,7 @@ void Fetch(PageCall call) {
     }
     body = GetBytes(options->GetDict().Find("body"));
   }
-  auto* pending = new FetchCall{call.view->GetWeakPtr(), call.context_id,
-                                call.call_id};
+  auto* pending = new FetchCall{std::move(call.reply)};
   zebkit_fetch(method.c_str(), url.c_str(),
                headers.empty() ? nullptr : headers.c_str(),
                body ? body->data() : nullptr, body ? body->size() : 0,
@@ -499,21 +488,44 @@ unsigned Needs(const std::string& module) {
 
 }  // namespace
 
+base::Value ToPageValue(base::Value value) {
+  if (value.is_blob()) {
+    base::DictValue bytes;
+    bytes.Set("$bytes", base::Base64Encode(value.GetBlob()));
+    return base::Value(std::move(bytes));
+  }
+  if (value.is_list()) {
+    base::ListValue list;
+    for (base::Value& item : value.GetList())
+      list.Append(ToPageValue(std::move(item)));
+    return base::Value(std::move(list));
+  }
+  if (value.is_dict()) {
+    base::DictValue dict;
+    for (auto [key, item] : value.GetDict())
+      dict.Set(key, ToPageValue(std::move(item)));
+    return base::Value(std::move(dict));
+  }
+  return value;
+}
+
 void HandlePageCall(PageCall call) {
-  base::WeakPtr<zebkit_view> view = call.view->GetWeakPtr();
   const unsigned needs = Needs(call.module);
   if (!needs) {
-    Reply(view, call.context_id, call.call_id,
-          Error("zebkit has no " + call.module));
+    Reply(std::move(call.reply), Error("zebkit has no " + call.module));
     return;
   }
   if (!(call.allow & needs)) {
-    Reply(view, call.context_id, call.call_id,
+    Reply(std::move(call.reply),
           Error("zebkit." + call.module + " is not allowed for " +
                 call.origin));
     return;
   }
   if (call.module == "app") {
+    if (!call.view) {
+      Reply(std::move(call.reply), Error("zebkit.app is for pages"));
+      return;
+    }
     call.view->CallApp(std::move(call));
     return;
   }
@@ -522,12 +534,12 @@ void HandlePageCall(PageCall call) {
     return;
   }
   if (call.module == "url") {
-    Reply(view, call.context_id, call.call_id, Url(call));
+    Result result = Url(call);
+    Reply(std::move(call.reply), std::move(result));
     return;
   }
   // The rest reads files or does work that takes time: off the UI thread.
-  const int context_id = call.context_id;
-  const int call_id = call.call_id;
+  CallReply reply = std::move(call.reply);
   base::OnceCallback<Result()> work;
   if (call.module == "fs") {
     const base::Value* data = Arg(call, 1);
@@ -546,8 +558,7 @@ void HandlePageCall(PageCall call) {
   }
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-      std::move(work),
-      base::BindOnce(&Reply, view, context_id, call_id));
+      std::move(work), base::BindOnce(&Reply, std::move(reply)));
 }
 
 }  // namespace zebkit

@@ -66,7 +66,8 @@ typedef void (*zebkit_task_func)(void *data);
  * Profile data is kept in --user-data-dir, by default
  * $XDG_CONFIG_HOME/zebkit/<program name>.
  *
- * The loop also ends when the last view is closed.
+ * The loop runs until zebkit_quit(), also with no view open: closing the
+ * last window is the application's to act on (zebkit_view_on_close()).
  */
 ZEBKIT_API int zebkit_main(int argc, char **argv, zebkit_task_func ready, void *data);
 
@@ -91,7 +92,8 @@ typedef struct zebkit_view zebkit_view;
  * a default size when either is 0. It lives until it is closed, by
  * zebkit_view_close(), by the user closing its window, by the page's
  * window.close(), or by zebkit_quit(); the on_close callback is the last
- * use of it.
+ * use of it. zebkit_view_close() and zebkit_quit() take effect once the
+ * current callback has returned, so either may be called from any of them.
  */
 ZEBKIT_API zebkit_view *zebkit_view_new(const char *url, int width, int height);
 
@@ -197,6 +199,43 @@ ZEBKIT_API void zebkit_call_resolve(zebkit_call *call, const char *json);
 
 /* Rejects the page's promise with an Error of @message. */
 ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
+
+/* ---- Script outside any page ---------------------------------------- */
+
+/*
+ * A JavaScript context of the application's own, in this process, on the
+ * engine's thread: V8 with the whole of zebkit.* (no grants: it is the
+ * application's code, as an Electron application's main process is), and
+ * zebkit.View to make views, load pages in them and answer their calls.
+ * <zebkit/zebkit.h>'s script reference is docs/blink/API.md.
+ */
+typedef struct zebkit_script zebkit_script;
+
+/* @args: what the script sees as zebkit.args; may be NULL. */
+ZEBKIT_API zebkit_script *zebkit_script_new(int argc, const char *const *argv);
+
+/*
+ * Runs the ES module in the file @path, with the modules it imports
+ * relative to it, and calls @func when its evaluation ends (for a
+ * top-level await, when the promise settles): @json NULL, or @error the
+ * message and stack of what was thrown.
+ */
+ZEBKIT_API void zebkit_script_run_module(zebkit_script *script, const char *path, zebkit_result_func func,
+                                         void *data);
+
+/* Evaluates @source as a classic script; @func gets the value as JSON. */
+ZEBKIT_API void zebkit_script_evaluate(zebkit_script *script, const char *source, zebkit_result_func func,
+                                       void *data);
+
+/*
+ * Called once nothing of the script is pending: no timer, no call in
+ * progress, no view open, and its module evaluated. zebkit-js quits then,
+ * as Node exits.
+ */
+ZEBKIT_API void zebkit_script_on_idle(zebkit_script *script, zebkit_task_func func, void *data);
+
+/* Ends the script: its timers stop, its views stay. */
+ZEBKIT_API void zebkit_script_destroy(zebkit_script *script);
 
 /* ---- The Chrome DevTools Protocol ------------------------------------ */
 

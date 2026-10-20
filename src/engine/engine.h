@@ -33,6 +33,7 @@ class MainDelegate : public content::ShellMainDelegate {
   ~MainDelegate() override;
 
   std::optional<int> BasicStartupComplete() override;
+  bool ShouldLoadV8Snapshot(const std::string& process_type) override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
   std::variant<int, content::MainFunctionParams> RunProcess(
       const std::string& process_type,
@@ -59,6 +60,8 @@ class BrowserMainParts : public content::ShellBrowserMainParts {
 
  protected:
   void InitializeMessageLoopContext() override {}
+  std::unique_ptr<content::ShellPlatformDelegate> CreateShellPlatformDelegate()
+      override;
 };
 
 // The directory libzebkit is in, which has the engine's data files.

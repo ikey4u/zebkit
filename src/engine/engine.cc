@@ -33,6 +33,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_switches.h"
 #include "content/shell/browser/shell.h"
+#include "content/shell/browser/shell_platform_delegate.h"
 #include "content/shell/common/shell_switches.h"
 #include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
@@ -143,6 +144,13 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
   return content::ShellMainDelegate::BasicStartupComplete();
 }
 
+bool MainDelegate::ShouldLoadV8Snapshot(const std::string& process_type) {
+  // The browser process runs the application's own script
+  // (zebkit_script_new()), so it needs V8 as a renderer does.
+  return process_type.empty() ||
+         content::ShellMainDelegate::ShouldLoadV8Snapshot(process_type);
+}
+
 content::ContentBrowserClient* MainDelegate::CreateContentBrowserClient() {
   browser_client_ = std::make_unique<BrowserClient>();
   return browser_client_.get();
@@ -178,6 +186,23 @@ std::unique_ptr<content::BrowserMainParts> BrowserClient::CreateBrowserMainParts
   auto parts = std::make_unique<BrowserMainParts>();
   set_browser_main_parts(parts.get());
   return parts;
+}
+
+namespace {
+
+// The content shell's windows, but the loop does not end when the last one
+// closes: when an application is done is the application's to say
+// (zebkit_quit()), or its script's (zebkit_script_on_idle()).
+class PlatformDelegate : public content::ShellPlatformDelegate {
+ public:
+  void DidCloseLastWindow() override {}
+};
+
+}  // namespace
+
+std::unique_ptr<content::ShellPlatformDelegate>
+BrowserMainParts::CreateShellPlatformDelegate() {
+  return std::make_unique<PlatformDelegate>();
 }
 
 int BrowserMainParts::PreMainMessageLoopRun() {
@@ -235,8 +260,12 @@ int zebkit_helper_main(int argc, char** argv) {
 
 void zebkit_quit(void) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  zebkit::CloseAllViews();
-  content::Shell::Shutdown();
+  // As a task: the caller may be a callback of a view being destroyed,
+  // such as on_close, which the shutdown must not pull out from under it.
+  content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, base::BindOnce([] {
+                                                 zebkit::CloseAllViews();
+                                                 content::Shell::Shutdown();
+                                               }));
 }
 
 void zebkit_post_task(zebkit_task_func func, void* data) {

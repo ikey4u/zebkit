@@ -27,6 +27,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
@@ -317,6 +318,13 @@ void zebkit_view::OnBindingCalled(const base::DictValue& params) {
   call.view = this;
   call.context_id = *context_id;
   call.call_id = *call_id;
+  call.reply = base::BindOnce(
+      [](base::WeakPtr<zebkit_view> view, int context_id, int call_id,
+         bool ok, base::Value value) {
+        if (view)
+          view->ReplyToPage(context_id, call_id, ok, std::move(value));
+      },
+      GetWeakPtr(), *context_id, *call_id);
   call.module = *module;
   call.method = *method;
   call.args = std::move(*args);
@@ -324,8 +332,8 @@ void zebkit_view::OnBindingCalled(const base::DictValue& params) {
   // says, and only a frame of the page itself, in its main world, is heard.
   content::RenderFrameHost* frame = FrameForContext(*context_id);
   if (!frame) {
-    ReplyToPage(call.context_id, call.call_id, false,
-                base::Value("zebkit is not available in this frame"));
+    std::move(call.reply).Run(
+        false, base::Value("zebkit is not available in this frame"));
     return;
   }
   const url::Origin origin = frame->GetLastCommittedOrigin();
@@ -342,7 +350,8 @@ void zebkit_view::ReplyToPage(int context_id,
                               int call_id,
                               bool ok,
                               base::Value value) {
-  const std::string json = base::WriteJson(value).value_or("null");
+  const std::string json =
+      base::WriteJson(zebkit::ToPageValue(std::move(value))).value_or("null");
   base::DictValue params;
   params.Set("expression", "globalThis.__zebkit_reply && __zebkit_reply(" +
                                base::NumberToString(call_id) + ", " +
@@ -354,9 +363,9 @@ void zebkit_view::ReplyToPage(int context_id,
 void zebkit_view::CallApp(zebkit::PageCall call) {
   auto it = bindings_.find(call.method);
   if (it == bindings_.end()) {
-    ReplyToPage(call.context_id, call.call_id, false,
-                base::Value("zebkit.app." + call.method +
-                            " is not bound by the application"));
+    std::move(call.reply).Run(
+        false, base::Value("zebkit.app." + call.method +
+                           " is not bound by the application"));
     return;
   }
   const std::string args = base::WriteJson(call.args).value_or("[]");
@@ -543,7 +552,15 @@ void zebkit_view_resize(zebkit_view* view, int width, int height) {
 }
 
 void zebkit_view_close(zebkit_view* view) {
-  view->Close();
+  // As a task: the caller may be in a callback of the page, which must not
+  // be destroyed while it notifies.
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<zebkit_view> view) {
+                       if (view)
+                         view->Close();
+                     },
+                     view->GetWeakPtr()));
 }
 
 char* zebkit_view_get_url(zebkit_view* view) {

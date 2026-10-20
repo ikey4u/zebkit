@@ -13,6 +13,8 @@
 #   from another thread, closes the view and quits.
 # - tests/engine/bridge.c: zebkit.* in a page the application grants it
 #   to, refused to one it does not; zebkit_fetch().
+# - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
+#   JavaScript, outside any page.
 # - tools/zebkit-run with --remote-debugging-port=0: CDP as Chrome serves
 #   it, read back over HTTP the way a client finds it.
 #
@@ -39,6 +41,7 @@ build_against_package "$package" "$work/services" "$tests/services.c"
 build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+build_against_package "$package" "$OUT_DIR/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
 
 engine_switches=(--no-sandbox --headless --user-data-dir="$work/profile")
 failed=0
@@ -78,6 +81,12 @@ sleep 1
 mkdir -p "$work/files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
     ZEBKIT_TEST_FILES="$work/files" run bridge "$work/bridge" "${engine_switches[@]}"
+
+mkdir -p "$work/script-files"
+run script "$OUT_DIR/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \
+    "http://127.0.0.1:$port" "$work/script-files"
+# It ends by itself once idle; ending before its last line is a failure.
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/script.log" || { echo "FAIL the script did not finish"; failed=1; }
 
 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     run python python3 "$tests/test_python.py" "${engine_switches[@]}"
