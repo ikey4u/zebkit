@@ -114,6 +114,32 @@ constexpr char kBootstrap[] = R"js((function (native) {
     }
   };
 
+  // Base64 of a binary string, as the web's btoa() and atob() have it.
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  globalThis.btoa = (text) => {
+    const s = String(text);
+    let out = '';
+    for (let i = 0; i < s.length; i += 3) {
+      const [a, b, c] = [s.charCodeAt(i), s.charCodeAt(i + 1), s.charCodeAt(i + 2)];
+      if (a > 255 || b > 255 || c > 255) throw new Error('btoa: a character outside Latin-1');
+      const n = a << 16 | (b || 0) << 8 | (c || 0);
+      out += B64[n >> 18] + B64[n >> 12 & 63] +
+          (i + 1 < s.length ? B64[n >> 6 & 63] : '=') + (i + 2 < s.length ? B64[n & 63] : '=');
+    }
+    return out;
+  };
+  globalThis.atob = (text) => {
+    const s = String(text).replace(/[\s=]/g, '');
+    let out = '';
+    for (let i = 0; i < s.length; i += 4) {
+      const n = [0, 1, 2, 3].reduce((v, k) => v << 6 | Math.max(0, B64.indexOf(s[i + k] || 'A')), 0);
+      out += String.fromCharCode(n >> 16 & 255);
+      if (i + 2 < s.length) out += String.fromCharCode(n >> 8 & 255);
+      if (i + 3 < s.length) out += String.fromCharCode(n & 255);
+    }
+    return out;
+  };
+
   const call = (module, method, args) => native.call(module, method, args);
   const api = (module, methods) => Object.freeze(Object.fromEntries(
       methods.map((m) => [m, (...args) => call(module, m, args)])));

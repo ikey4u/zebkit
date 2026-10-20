@@ -708,6 +708,33 @@ The parts, in order:
    same interface written for `zebkit.ui` and as React in a page, before
    it goes further.
 
+**Where it stands, 2026-10-20.** Parts 1 to 3 are built (`zebkit-js`,
+`zebkit.ui`; docs/blink/API.md), on 0.1 MiB of code, and part 4 is
+measured (`scripts/ui-bench.sh`): a list of rows, each a button and a
+text, built and then every text changed, as `zebkit.ui` widgets and as a
+page of plain DOM, the fastest a page gets, both run by `zebkit-js`:
+
+| Rows | | Laid out | Every row changed | Memory (PSS, all processes) |
+|---:|---|---:|---:|---:|
+| 100 | `zebkit.ui` | 48 ms | 8 ms | **105 MiB** |
+| 100 | Web page | 47 ms | 4 ms | 136 MiB |
+| 1,000 | `zebkit.ui` | 384 ms | 89 ms | 147 MiB |
+| 1,000 | Web page | 116 ms | 41 ms | 152 MiB |
+
+At the size of an ordinary window the two are equal in time, and the
+native one needs 31 MiB less: it has no renderer process. With a thousand
+rows the page builds three times faster. The script's side is not why:
+building the tree takes it 24 ms. A widget of `ui/views` costs more than
+an element of the DOM, a Material button most (its own layer, ink drop
+and focus ring: 0.09 ms each), and attaching three thousand of them to a
+window more again. What native toolkits do about long lists is what
+`zebkit.ui` does next:
+
+- **A virtual list:** widgets only for the rows in sight, reused as the
+  list scrolls, as Android's RecyclerView, AppKit's NSTableView and Native
+  Shell's list do.
+- **A light button** beside the Material one, for rows of many.
+
 ## 8. Costs to plan for
 
 - **Builds.** The checkout is about 30 GB without history; a full build of
