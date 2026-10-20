@@ -14,6 +14,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <optional>
@@ -139,7 +141,7 @@ FPDF_WIDESTRING Wide(const std::u16string& text) {
   return reinterpret_cast<FPDF_WIDESTRING>(text.c_str());
 }
 
-base::ListValue Rect(double left, double bottom, double right, double top) {
+base::ListValue PdfRect(double left, double bottom, double right, double top) {
   base::ListValue rect;
   rect.Append(left);
   rect.Append(bottom);
@@ -481,7 +483,7 @@ char* zebkit_pdf_page(zebkit_pdf* pdf, int index, char** error) {
   for (const auto& box : kBoxes) {
     float left = 0, bottom = 0, right = 0, top = 0;
     if (box.get(page.get(), &left, &bottom, &right, &top))
-      info.Set(box.name, Rect(left, bottom, right, top));
+      info.Set(box.name, PdfRect(left, bottom, right, top));
   }
   return GiveJson(base::Value(std::move(info)));
 }
@@ -611,7 +613,7 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
     if (FPDFText_IsGenerated(text_page, i) != 1) {
       double left = 0, right = 0, bottom = 0, top = 0;
       if (FPDFText_GetCharBox(text_page, i, &left, &right, &bottom, &top))
-        item.Set("box", Rect(left, bottom, right, top));
+        item.Set("box", PdfRect(left, bottom, right, top));
       item.Set("size", FPDFText_GetFontSize(text_page, i));
       const unsigned long size =
           FPDFText_GetFontInfo(text_page, i, nullptr, 0, nullptr);
@@ -639,7 +641,7 @@ base::ListValue TextRects(FPDF_TEXTPAGE text_page, int start, int count) {
   for (int i = 0; i < n; ++i) {
     double left = 0, top = 0, right = 0, bottom = 0;
     if (FPDFText_GetRect(text_page, i, &left, &top, &right, &bottom))
-      rects.Append(Rect(left, bottom, right, top));
+      rects.Append(PdfRect(left, bottom, right, top));
   }
   return rects;
 }
@@ -748,7 +750,7 @@ char* zebkit_pdf_links(zebkit_pdf* pdf, int index, char** error) {
     base::DictValue item;
     FS_RECTF rect = {};
     if (FPDFLink_GetAnnotRect(link, &rect))
-      item.Set("rect", Rect(rect.left, rect.bottom, rect.right, rect.top));
+      item.Set("rect", PdfRect(rect.left, rect.bottom, rect.right, rect.top));
     if (FPDF_DEST dest = FPDFLink_GetDest(pdf->document, link)) {
       if (base::Value place = Destination(pdf->document, dest);
           place.is_dict()) {
@@ -774,7 +776,7 @@ char* zebkit_pdf_links(zebkit_pdf* pdf, int index, char** error) {
           if (!FPDFLink_GetRect(web, i, r, &left, &top, &right, &bottom))
             continue;
           base::DictValue item;
-          item.Set("rect", Rect(left, bottom, right, top));
+          item.Set("rect", PdfRect(left, bottom, right, top));
           item.Set("url", base::UTF16ToUTF8(url));
           item.Set("detected", true);
           links.Append(std::move(item));
@@ -813,7 +815,7 @@ base::ListValue Color(const float rgb[3]) {
   return color;
 }
 
-base::ListValue Point(float x, float y) {
+base::ListValue PdfPoint(float x, float y) {
   base::ListValue point;
   point.Append(x);
   point.Append(y);
@@ -840,7 +842,7 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
                        : "unknown");
   FS_RECTF rect = {};
   if (FPDFAnnot_GetRect(annot, &rect))
-    item.Set("rect", Rect(rect.left, rect.bottom, rect.right, rect.top));
+    item.Set("rect", PdfRect(rect.left, rect.bottom, rect.right, rect.top));
   float rgb[3] = {};
   if (zebkit::pdf::GetAnnotationColor(annot, "C", rgb))
     item.Set("color", Color(rgb));
@@ -881,7 +883,7 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
       FPDFAnnot_GetInkListPath(annot, i, points.data(), n);
       base::ListValue stroke;
       for (const FS_POINTF& point : points)
-        stroke.Append(Point(point.x, point.y));
+        stroke.Append(PdfPoint(point.x, point.y));
       strokes.Append(std::move(stroke));
     }
     item.Set("ink", std::move(strokes));
@@ -892,7 +894,7 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
     FPDFAnnot_GetVertices(annot, points.data(), n);
     base::ListValue vertices;
     for (const FS_POINTF& point : points)
-      vertices.Append(Point(point.x, point.y));
+      vertices.Append(PdfPoint(point.x, point.y));
     item.Set("vertices", std::move(vertices));
   }
   FS_POINTF start = {}, end = {};
@@ -1228,6 +1230,158 @@ bool zebkit_pdf_flatten(zebkit_pdf* pdf,
   return true;
 }
 
+int zebkit_pdf_redact(zebkit_pdf* pdf,
+                      int index,
+                      const char* areas_json,
+                      uint32_t fill,
+                      char** error) {
+  std::vector<std::array<float, 4>> areas;
+  if (areas_json) {
+    std::optional<base::Value> parsed = base::JSONReader::Read(
+        areas_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    if (!parsed || !parsed->is_list()) {
+      Fail(error, "the areas are not a JSON array of [l, b, r, t]");
+      return -1;
+    }
+    for (const base::Value& item : parsed->GetList()) {
+      std::optional<std::vector<float>> r = Numbers(&item, 4);
+      if (!r) {
+        Fail(error, "an area is not [l, b, r, t]");
+        return -1;
+      }
+      areas.push_back({(*r)[0], (*r)[1], (*r)[2], (*r)[3]});
+    }
+  }
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get()) {
+    Fail(error, "no page " + std::to_string(index));
+    return -1;
+  }
+  // The page's redaction marks: their quadrilaterals, or their rectangles.
+  std::vector<int> marks;
+  for (int i = FPDFPage_GetAnnotCount(page.get()) - 1; i >= 0; --i) {
+    FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
+    if (!annot)
+      continue;
+    if (FPDFAnnot_GetSubtype(annot) == FPDF_ANNOT_REDACT) {
+      marks.push_back(i);
+      if (!areas_json) {
+        const size_t quads = FPDFAnnot_CountAttachmentPoints(annot);
+        for (size_t q = 0; q < quads; ++q) {
+          FS_QUADPOINTSF quad = {};
+          if (!FPDFAnnot_GetAttachmentPoints(annot, q, &quad))
+            continue;
+          areas.push_back(
+              {std::min({quad.x1, quad.x2, quad.x3, quad.x4}),
+               std::min({quad.y1, quad.y2, quad.y3, quad.y4}),
+               std::max({quad.x1, quad.x2, quad.x3, quad.x4}),
+               std::max({quad.y1, quad.y2, quad.y3, quad.y4})});
+        }
+        FS_RECTF rect = {};
+        if (!quads && FPDFAnnot_GetRect(annot, &rect))
+          areas.push_back({rect.left, rect.bottom, rect.right, rect.top});
+      }
+    }
+    FPDFPage_CloseAnnot(annot);
+  }
+  if (areas.empty())
+    return 0;
+  auto overlaps = [&](float left, float bottom, float right, float top) {
+    for (const auto& a : areas) {
+      if (left < a[2] && right > a[0] && bottom < a[3] && top > a[1])
+        return true;
+    }
+    return false;
+  };
+  // Text, paths, shadings and forms.
+  if (zebkit::pdf::RedactObjects(page.get(), areas) < 0) {
+    Fail(error, "the page cannot be changed");
+    return -1;
+  }
+  // Images: their pixels under the areas, black.
+  const int objects = FPDFPage_CountObjects(page.get());
+  for (int i = 0; i < objects; ++i) {
+    FPDF_PAGEOBJECT object = FPDFPage_GetObject(page.get(), i);
+    float left = 0, bottom = 0, right = 0, top = 0;
+    if (!object || FPDFPageObj_GetType(object) != FPDF_PAGEOBJ_IMAGE ||
+        !FPDFPageObj_GetBounds(object, &left, &bottom, &right, &top) ||
+        !overlaps(left, bottom, right, top)) {
+      continue;
+    }
+    FS_MATRIX matrix = {};
+    FPDF_BITMAP bitmap = FPDFImageObj_GetBitmap(object);
+    if (!bitmap || !FPDFPageObj_GetMatrix(object, &matrix)) {
+      if (bitmap)
+        FPDFBitmap_Destroy(bitmap);
+      FPDFPage_RemoveObject(page.get(), object);
+      FPDFPageObj_Destroy(object);
+      --i;
+      continue;
+    }
+    const int width = FPDFBitmap_GetWidth(bitmap);
+    const int height = FPDFBitmap_GetHeight(bitmap);
+    // Page space to the image's unit square: the inverse of its matrix.
+    const double det = matrix.a * matrix.d - matrix.b * matrix.c;
+    for (const auto& a : areas) {
+      if (det == 0)
+        break;
+      double min_u = 1, min_v = 1, max_u = 0, max_v = 0;
+      for (float x : {a[0], a[2]}) {
+        for (float y : {a[1], a[3]}) {
+          const double dx = x - matrix.e, dy = y - matrix.f;
+          const double u = (matrix.d * dx - matrix.c * dy) / det;
+          const double v = (-matrix.b * dx + matrix.a * dy) / det;
+          min_u = std::min(min_u, u);
+          max_u = std::max(max_u, u);
+          min_v = std::min(min_v, v);
+          max_v = std::max(max_v, v);
+        }
+      }
+      // Rows run from the top of the image, v from its bottom.
+      const int x0 = std::clamp(static_cast<int>(std::floor(min_u * width)), 0, width);
+      const int x1 = std::clamp(static_cast<int>(std::ceil(max_u * width)), 0, width);
+      const int y0 = std::clamp(static_cast<int>(std::floor((1 - max_v) * height)), 0, height);
+      const int y1 = std::clamp(static_cast<int>(std::ceil((1 - min_v) * height)), 0, height);
+      if (x1 > x0 && y1 > y0)
+        FPDFBitmap_FillRect(bitmap, x0, y0, x1 - x0, y1 - y0, 0xff000000);
+    }
+    FPDF_PAGE pages[] = {page.get()};
+    FPDFImageObj_SetBitmap(pages, 1, object, bitmap);
+    FPDFBitmap_Destroy(bitmap);
+  }
+  // Boxes over the areas.
+  if (fill & 0xff) {
+    for (const auto& a : areas) {
+      FPDF_PAGEOBJECT box =
+          FPDFPageObj_CreateNewRect(a[0], a[1], a[2] - a[0], a[3] - a[1]);
+      FPDFPageObj_SetFillColor(box, fill >> 24, (fill >> 16) & 0xff,
+                               (fill >> 8) & 0xff, fill & 0xff);
+      FPDFPath_SetDrawMode(box, FPDF_FILLMODE_WINDING, false);
+      FPDFPage_InsertObject(page.get(), box);
+    }
+  }
+  if (!FPDFPage_GenerateContent(page.get())) {
+    Fail(error, "the page's content cannot be written");
+    return -1;
+  }
+  // The marks, and annotations that reach into an area.
+  for (int i = FPDFPage_GetAnnotCount(page.get()) - 1; i >= 0; --i) {
+    FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
+    if (!annot)
+      continue;
+    FS_RECTF rect = {};
+    const bool mark = FPDFAnnot_GetSubtype(annot) == FPDF_ANNOT_REDACT;
+    const bool reaches = FPDFAnnot_GetRect(annot, &rect) &&
+                         overlaps(rect.left, std::min(rect.bottom, rect.top),
+                                  rect.right, std::max(rect.bottom, rect.top));
+    FPDFPage_CloseAnnot(annot);
+    if (mark || reaches)
+      FPDFPage_RemoveAnnot(page.get(), i);
+  }
+  return static_cast<int>(areas.size());
+}
+
 char* zebkit_pdf_form_fields(zebkit_pdf* pdf, char** error) {
   if (!pdf)
     return Fail(error, "no document");
@@ -1302,7 +1456,7 @@ char* zebkit_pdf_form_fields(zebkit_pdf* pdf, char** error) {
       widget.Set("annotation", i);
       FS_RECTF rect = {};
       if (FPDFAnnot_GetRect(annot, &rect))
-        widget.Set("rect", Rect(rect.left, rect.bottom, rect.right, rect.top));
+        widget.Set("rect", PdfRect(rect.left, rect.bottom, rect.right, rect.top));
       if (type == FPDF_FORMFIELD_CHECKBOX ||
           type == FPDF_FORMFIELD_RADIOBUTTON) {
         widget.Set("checked", static_cast<bool>(FPDFAnnot_IsChecked(form, annot)));

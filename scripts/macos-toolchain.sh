@@ -41,6 +41,9 @@ cp "$version_plist" "$xcode/Contents/version.plist"
 log "unpacking the macOS $sdk_version SDK"
 tar -xJf "$sdk_archive" -C "$sdks" --warning=no-unknown-keyword
 mv "$sdks/MacOSX.sdk" "$sdks/MacOSX$sdk_version.sdk"
+# Also under the name Xcode gives the current one, which Chromium's scripts
+# for FFmpeg look for.
+ln -s "MacOSX$sdk_version.sdk" "$sdks/MacOSX.sdk"
 grep -q "mac_sdk_official_version = \"$sdk_version\"" "$PROFILES_DIR/slim-macos.gn" \
     || log "note: profiles/slim-macos.gn names another SDK version than $sdk_version"
 

@@ -60,6 +60,51 @@ static const char form[] =
     "trailer << /Root 1 0 R >>\n"
     "%%EOF\n";
 
+static void test_redaction(void) {
+    char *error = NULL;
+    zebkit_pdf *pdf = zebkit_pdf_open(document, sizeof(document) - 1, NULL, &error);
+    if (!pdf)
+        return;
+    /* A mark over "Hello", the first word of "Hello zebkit" (24 points, from x 20). */
+    int mark = zebkit_pdf_annotation_add(
+        pdf, 0, "{\"type\": \"redact\", \"rect\": [18, 112, 80, 148], \"quads\": [[18, 148, 80, 148, 18, 112, 80, 112]]}",
+        &error);
+    check(mark >= 0, "a redaction mark", error);
+    int areas = zebkit_pdf_redact(pdf, 0, NULL, 0x000000ff, &error);
+    char detail[64];
+    snprintf(detail, sizeof(detail), "%d", areas);
+    check(areas == 1, "zebkit_pdf_redact: the page's mark", error ? error : detail);
+    char *text = zebkit_pdf_text(pdf, 0, &error);
+    check(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "the word under it is gone, the rest is there",
+          text);
+    zebkit_free(text);
+    char *annotations = zebkit_pdf_annotations(pdf, 0, &error);
+    check(annotations && !strstr(annotations, "redact"), "the mark is gone", annotations);
+    zebkit_free(annotations);
+    int width = 0, height = 0;
+    uint8_t *pixels = zebkit_pdf_render(pdf, 0, NULL, &width, &height, &error);
+    /* The middle of the area, in pixels from the top: x 50, y 200 - 130. */
+    const uint8_t *middle = pixels ? pixels + ((size_t)(200 - 130) * width + 50) * 4 : NULL;
+    check(middle && middle[0] < 20 && middle[1] < 20 && middle[2] < 20, "a black box over the area", NULL);
+    zebkit_free(pixels);
+    /* Saved and opened again, the word is not in the file's text. */
+    size_t size = 0;
+    uint8_t *saved = zebkit_pdf_save(pdf, 0, &size, &error);
+    zebkit_pdf *again = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
+    text = again ? zebkit_pdf_text(again, 0, &error) : NULL;
+    check(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "and not in the saved document", text);
+    zebkit_free(text);
+    /* An area given, on the second page: "Second" goes, with no box. */
+    areas = again ? zebkit_pdf_redact(again, 1, "[[15, 110, 80, 145]]", 0, &error) : -1;
+    text = again ? zebkit_pdf_text(again, 1, &error) : NULL;
+    check(areas == 1 && text && !strstr(text, "Second") && strstr(text, "page zebkit"), "zebkit_pdf_redact: an area",
+          text);
+    zebkit_free(text);
+    zebkit_pdf_close(again);
+    zebkit_free(saved);
+    zebkit_pdf_close(pdf);
+}
+
 static void test_forms_and_pages(void) {
     char *error = NULL;
     zebkit_pdf *pdf = zebkit_pdf_open(form, sizeof(form) - 1, NULL, &error);
@@ -377,6 +422,7 @@ int main(void) {
     zebkit_free(saved);
 
     test_forms_and_pages();
+    test_redaction();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

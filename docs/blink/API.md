@@ -109,12 +109,13 @@ size_t size = ZSTD_compress(out, capacity, data, length, 19);
 | libxml2 | `libxml.h` | 1,008 | XML and HTML parsing, the tree, XPath, the reader and writer |
 | libwebp | `libwebp.h` | 105 | Decoding, encoding, demuxing, muxing |
 | libjpeg-turbo | `libjpeg.h` | 63 | The libjpeg API |
-| FFmpeg | `ffmpeg.h` | 534 | As Chromium builds it: demuxing and decoding of what web pages play; no encoders, no scaling |
+| FFmpeg | `ffmpeg.h` | 610 | zebkit's configuration (`src/ffmpeg`, `scripts/ffmpeg-config.sh`): Chrome's demuxers and decoders, and for applications libswresample, libswscale, the file protocol, the MP4, MOV, Matroska and WebM muxers, VP8 and VP9 through the engine's libvpx; no encoders |
 | dav1d | `dav1d.h` | 19 | AV1 decoding |
 | Opus | `opus.h` | 71 | Encoding and decoding |
 | libvpx | `libvpx.h` | 36 | VP8 and VP9, decoding and encoding |
+| PDFium | `pdfium.h` | 468 | Chromium's, without XFA forms and its JavaScript; call `FPDF_InitLibrary()` first, or use `<zebkit/pdf.h>` |
 
-6,686 functions in all, and the engine exports nothing else but zebkit's
+7,230 functions in all, and the engine exports nothing else but zebkit's
 own API (`scripts/engine-test.sh` checks both). Only the headers the
 library's header reaches are shipped, not the library's internals.
 
@@ -171,6 +172,7 @@ uint8_t *bytes = zebkit_pdf_save(pdf, ZEBKIT_PDF_SAVE_INCREMENTAL, &size, &error
 | `zebkit_pdf_search` | Every match in the document, with its rectangles and the text around it |
 | `zebkit_pdf_outline`, `_links` | Bookmarks, link annotations and addresses written in the text |
 | `zebkit_pdf_annotations`, `_annotation_add`, `_update`, `_remove`, `zebkit_pdf_flatten` | Every kind read; highlights, underlines, squiggles, strikeouts, ink, lines, polygons, polylines, squares, circles, notes, free text, links and redaction marks made, changed and removed, with their appearances generated |
+| `zebkit_pdf_redact` | What is under the page's redaction marks, or areas given, taken out for good: text character by character, image pixels blacked out, paths and annotations that reach in; boxes drawn over |
 | `zebkit_pdf_form_fields`, `_form_set`, `_form_reset` | Every field with its type, value, options and widgets; a value set, check boxes and radio buttons by export value, with the appearance redrawn; the form reset |
 | `zebkit_pdf_page_rotate`, `_pages_delete`, `_pages_move`, `_page_insert`, `_pages_import`, `zebkit_pdf_new` | Pages turned, deleted, moved, inserted blank, copied in from another document; a new document to build from others' pages (merge, extract) |
 | `zebkit_pdf_attachments`, `_attachment`, `_attach`, `_detach` | Embedded files |
@@ -179,7 +181,7 @@ Structured answers are JSON. Coordinates are PDF page space: points, the
 origin at the bottom left, before the page's rotation. PDFium is not
 thread-safe; the functions take one lock, so any thread may call them.
 Where PDFium had nothing for it, zebkit patches PDFium (`patches/1014`,
-`1015`). Still to come: redaction, signatures, editing the outline.
+`1015`). Still to come: signatures, editing the outline.
 
 In JavaScript the same is `zebkit.pdf` (layer 4), for pages granted
 `ZEBKIT_ALLOW_PDF` and for the application's script. A page's documents are

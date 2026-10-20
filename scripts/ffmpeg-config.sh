@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Generate zebkit's configuration of FFmpeg into src/ffmpeg, which the
+# engine builds with (zebkit_ffmpeg = true, patches/1017).
+#
+#   scripts/ffmpeg-config.sh [--no-build]
+#
+# --no-build takes FFmpeg's builds already in the tree, from a run before.
+#
+# Chromium's FFmpeg has what a browser plays. Applications need more of it
+# (the application: audio resampled for Whisper, frames scaled, files remuxed, VP8 and
+# VP9 frames), so zebkit's adds, to Chrome's configuration:
+#
+#   libswresample and libswscale, the file protocol, the MP4, MOV, Matroska
+#   and WebM muxers, and VP8 and VP9 decoding through the engine's libvpx
+#   (FFmpeg's wrapper is 1.1 MiB smaller than its own VP9 decoder)
+#
+# The work is Chromium's own tools for FFmpeg (media/ffmpeg/scripts): FFmpeg's
+# configure and make for each platform zebkit builds (Linux x86-64, macOS
+# arm64 from Linux), then generate_gn.py, which finds the sources of the
+# objects built. That writes into the FFmpeg tree it reads, so it runs on a
+# copy. Run again when Chromium's FFmpeg changes (a new CHROMIUM_VERSION).
+
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+FLAGS=(
+    --disable-unstable
+    --enable-swresample
+    --enable-swscale
+    --enable-protocol=file
+    --enable-muxer=mp4,mov,matroska,webm,ipod
+    --enable-libvpx
+    --enable-decoder=libvpx_vp8,libvpx_vp9
+    "--extra-cflags=-I$SRC_DIR/third_party/libvpx/source/libvpx"
+)
+PLATFORMS=("linux x64" "mac arm64")
+
+ffmpeg="$SRC_DIR/third_party/ffmpeg"
+scripts="$SRC_DIR/media/ffmpeg/scripts"
+out="$ZEBKIT_ROOT/src/ffmpeg"
+work="$CACHE_DIR/ffmpeg-gen"
+[[ -d "$ffmpeg" ]] || die "no upstream tree; run scripts/fetch-upstream.sh first"
+[[ -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] || die "no macOS SDK; run scripts/macos-toolchain.sh first"
+export PATH="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin:$PATH"
+
+# configure checks that libvpx links, which the engine's does in the end:
+# a library with the two entry points does for the check.
+stub_libvpx() {
+    local os="$1" dir="$CACHE_DIR/ffmpeg-vpx-stub/$1"
+    local target=x86_64-unknown-linux-gnu
+    [[ "$os" == mac ]] && target=arm64-apple-macos13
+    mkdir -p "$dir"
+    printf 'void *vpx_codec_vp8_dx(void) { return 0; }\nvoid *vpx_codec_vp9_dx(void) { return 0; }\n' > "$dir/stub.c"
+    clang --target="$target" -c "$dir/stub.c" -o "$dir/stub.o"
+    rm -f "$dir/libvpx.a"
+    llvm-ar rcs "$dir/libvpx.a" "$dir/stub.o"
+    echo "$dir"
+}
+
+build=1
+[[ "${1:-}" == --no-build ]] && build=0
+for platform in "${PLATFORMS[@]}"; do
+    (( build )) || break
+    log "configuring and building FFmpeg for $platform"
+    stub="$(stub_libvpx "${platform%% *}")"
+    # shellcheck disable=SC2086
+    (cd "$ffmpeg" && python3 "$scripts/build_ffmpeg.py" $platform --branding Chrome -- "${FLAGS[@]}" \
+        "--extra-ldflags=-L$stub")
+done
+
+log "finding the sources of what was built"
+# The copy is laid out as in Chromium's tree, src/third_party/ffmpeg, beside
+# the license checker the script runs.
+copy="$work/src/third_party/ffmpeg"
+rm -rf "$work"
+mkdir -p "$work/builds" "$copy"
+(cd "$ffmpeg" && tar --exclude='./build.*' --exclude=./.git -cf - .) | tar -xf - -C "$copy"
+ln -s "$SRC_DIR/third_party/devscripts" "$work/src/third_party/devscripts"
+# The files it renames include their originals as
+# "../../third_party/ffmpeg/...", which it then reads: from two directories
+# down too.
+ln -s .. "$copy/third_party/ffmpeg" 2>/dev/null || { mkdir -p "$copy/third_party"; ln -s .. "$copy/third_party/ffmpeg"; }
+for platform in "${PLATFORMS[@]}"; do
+    read -r os arch <<< "$platform"
+    ln -s "$ffmpeg/build.$arch.$os" "$work/builds/build.$arch.$os"
+done
+# It writes the files it renames relative to where it runs: in the copy.
+(cd "$copy" && python3 -W ignore "$scripts/generate_gn.py" -s "$copy" -b "$work/builds")
+
+log "writing $out"
+rm -rf "$out/config"
+for platform in "${PLATFORMS[@]}"; do
+    read -r os arch <<< "$platform"
+    # What copy_config.sh copies for Chromium's configurations.
+    from="$ffmpeg/build.$arch.$os/Chrome"
+    to="$out/config/$os/$arch"
+    mkdir -p "$to"
+    for file in config.h config.asm config_components.h config_components.asm \
+                libavutil/avconfig.h libavutil/ffversion.h libavcodec/bsf_list.c \
+                libavcodec/codec_list.c libavcodec/parser_list.c libavformat/demuxer_list.c \
+                libavformat/muxer_list.c libavformat/protocol_list.c; do
+        [[ -f "$from/$file" ]] || continue
+        mkdir -p "$to/$(dirname "$file")"
+        cp "$from/$file" "$to/$file"
+    done
+done
+cp "$copy/ffmpeg_generated.gni" "$out/ffmpeg_generated.gni"
+# Files generate_gn.py made for sources whose objects would share a name.
+(cd "$copy" && find . -name 'autorename_*' -newer "$work/builds" -type f) | while read -r file; do
+    mkdir -p "$out/autorename/$(dirname "$file")"
+    cp "$copy/$file" "$out/autorename/$file"
+done
+# The list names them as FFmpeg's own; they are zebkit's.
+python3 -I - "$out" <<'PY'
+import pathlib, sys
+out = pathlib.Path(sys.argv[1])
+gni = out / "ffmpeg_generated.gni"
+text = gni.read_text()
+for path in sorted((out / "autorename").rglob("autorename_*")):
+    relative = path.relative_to(out / "autorename").as_posix()
+    text = text.replace(f'"{relative}"', f'"//zebkit/ffmpeg/autorename/{relative}"')
+# Imported from //zebkit/ffmpeg, where FFmpeg's options are not.
+text = text.replace('import("ffmpeg_options.gni")', 'import("//third_party/ffmpeg/ffmpeg_options.gni")')
+# generate_gn.py leaves out sdp.c for size, which nothing of Chromium's
+# FFmpeg calls; the MOV and MP4 muxers do (its stubs, without RTP).
+text += """
+# zebkit: sdp.c, which the MOV and MP4 muxers call; Chromium's script leaves
+# it out (scripts/ffmpeg-config.sh).
+ffmpeg_c_sources += [ "libavformat/sdp.c" ]
+"""
+gni.write_text(text)
+PY
+log "done: $out"

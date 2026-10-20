@@ -26,6 +26,8 @@ want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash"
 link_engine() {
     mkdir -p "$SRC_DIR/zebkit"
     ln -sfn "$ZEBKIT_ROOT/src/engine" "$SRC_DIR/zebkit/engine"
+    # zebkit's configuration of FFmpeg (scripts/ffmpeg-config.sh).
+    ln -sfn "$ZEBKIT_ROOT/src/ffmpeg" "$SRC_DIR/zebkit/ffmpeg"
     # What scripts/macos-toolchain.sh set up for building macOS on Linux:
     # Apple's SDK in a copy of Xcode, and what DEPS fetches for a macOS
     # checkout.

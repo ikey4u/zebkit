@@ -257,9 +257,11 @@ LIBRARIES = {
     "ffmpeg": {
         "title": "FFmpeg",
         "version": ("libavutil/ffversion.h", r'#define FFMPEG_VERSION "([^"]+)"'),
-        "roots": {"": "third_party/ffmpeg", "config": "third_party/ffmpeg/chromium/config/Chrome/linux/x64"},
-        "ship": ["libavutil/*.h", "libavcodec/*.h", "libavformat/*.h",
-                 "config:libavutil/avconfig.h", "config:libavutil/ffversion.h"],
+        # zebkit's configuration of FFmpeg (src/ffmpeg, scripts/ffmpeg-config.sh),
+        # for the system the engine is built for: "{config}" is filled in.
+        "roots": {"": "third_party/ffmpeg", "config": "zebkit/ffmpeg/config/{config}"},
+        "ship": ["libavutil/*.h", "libavcodec/*.h", "libavformat/*.h", "libswscale/*.h",
+                 "libswresample/*.h", "config:libavutil/avconfig.h", "config:libavutil/ffversion.h"],
         "skip_ship": ["libavutil/hwcontext_*.h", "libavcodec/d3d*.h", "libavcodec/dxva2.h",
                       "libavcodec/qsv.h", "libavcodec/vdpau.h", "libavcodec/videotoolbox.h",
                       "libavcodec/mediacodec.h", "libavcodec/jni.h", "libavcodec/vaapi.h"],
@@ -267,8 +269,9 @@ LIBRARIES = {
             "libavutil/avutil.h", "libavutil/avstring.h", "libavutil/channel_layout.h",
             "libavutil/dict.h", "libavutil/error.h", "libavutil/frame.h", "libavutil/imgutils.h",
             "libavutil/log.h", "libavutil/mathematics.h", "libavutil/mem.h", "libavutil/opt.h",
-            "libavutil/pixdesc.h", "libavutil/samplefmt.h", "libavcodec/avcodec.h",
-            "libavformat/avformat.h", "libavformat/avio.h",
+            "libavutil/pixdesc.h", "libavutil/samplefmt.h", "libavutil/display.h",
+            "libavutil/bprint.h", "libavcodec/avcodec.h", "libavformat/avformat.h",
+            "libavformat/avio.h", "libswscale/swscale.h", "libswresample/swresample.h",
         ],
         "objects": ["third_party/ffmpeg"],
     },
@@ -292,7 +295,7 @@ def gather(spec, src):
     files = {}
     for pattern in spec["ship"]:
         root_key, _, glob = pattern.rpartition(":")
-        root = src / spec["roots"][root_key]
+        root = src / spec["roots"][root_key].format(config=FFMPEG_CONFIGS[TARGET])
         matches = sorted(root.glob(glob))
         if not matches:
             raise SystemExit(f"error: no {glob} under {root}")
@@ -354,6 +357,8 @@ def defined_functions(nm, objects_dirs, underscore):
 
 
 TRIPLES = {"linux": "x86_64-unknown-linux-gnu", "mac": "arm64-apple-macos13"}
+# The configuration directories of zebkit's FFmpeg, by system.
+FFMPEG_CONFIGS = {"linux": "linux/x64", "mac": "mac/arm64"}
 TARGET = "linux"
 
 

@@ -144,6 +144,49 @@ static void test_libxml(void) {
 static void test_media(void) {
     check(avcodec_find_decoder(AV_CODEC_ID_H264) != NULL, "ffmpeg: avcodec_find_decoder(H264)", av_version_info());
     check(avcodec_find_decoder(AV_CODEC_ID_AAC) != NULL, "ffmpeg: avcodec_find_decoder(AAC)", NULL);
+    /* zebkit's FFmpeg: what applications need besides playing. */
+    check(avcodec_find_decoder(AV_CODEC_ID_VP9) != NULL && avcodec_find_decoder(AV_CODEC_ID_VP8) != NULL,
+          "ffmpeg: VP8 and VP9 decoders", NULL);
+    check(av_guess_format("mp4", NULL, NULL) != NULL && av_guess_format("webm", NULL, NULL) != NULL &&
+              av_guess_format("matroska", NULL, NULL) != NULL,
+          "ffmpeg: MP4, WebM and Matroska muxers", NULL);
+    AVFormatContext *output = NULL;
+    int made = avformat_alloc_output_context2(&output, NULL, "mp4", "out.mp4");
+    check(made >= 0 && output, "ffmpeg: avformat_alloc_output_context2(mp4)", NULL);
+    avformat_free_context(output);
+    AVIOContext *io = NULL;
+    check(avio_open(&io, "/dev/null", AVIO_FLAG_WRITE) >= 0, "ffmpeg: the file protocol", NULL);
+    avio_closep(&io);
+    /* 48 kHz stereo to 16 kHz mono, as speech recognition wants it. */
+    SwrContext *resampler = NULL;
+    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO, mono = AV_CHANNEL_LAYOUT_MONO;
+    int set = swr_alloc_set_opts2(&resampler, &mono, AV_SAMPLE_FMT_FLT, 16000, &stereo, AV_SAMPLE_FMT_FLT, 48000, 0,
+                                  NULL);
+    float in[960 * 2], out[400];
+    for (int i = 0; i < 960 * 2; i++)
+        in[i] = 0.5f;
+    const uint8_t *in_planes[] = {(const uint8_t *)in};
+    uint8_t *out_planes[] = {(uint8_t *)out};
+    int converted = set >= 0 && swr_init(resampler) >= 0 ? swr_convert(resampler, out_planes, 400, in_planes, 960) : -1;
+    char detail[48];
+    snprintf(detail, sizeof(detail), "%d samples", converted);
+    check(converted > 250 && converted <= 320, "libswresample: 48 kHz stereo to 16 kHz mono", detail);
+    swr_free(&resampler);
+    /* A 64 by 32 YUV picture to RGB, half the size. */
+    struct SwsContext *scaler =
+        sws_getContext(64, 32, AV_PIX_FMT_YUV420P, 32, 16, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+    uint8_t y[64 * 32], u[32 * 16], v[32 * 16], rgb[32 * 16 * 3];
+    memset(y, 200, sizeof(y));
+    memset(u, 128, sizeof(u));
+    memset(v, 128, sizeof(v));
+    const uint8_t *src[] = {y, u, v};
+    const int src_stride[] = {64, 32, 32};
+    uint8_t *dst[] = {rgb};
+    const int dst_stride[] = {32 * 3};
+    int rows = scaler ? sws_scale(scaler, src, src_stride, 0, 32, dst, dst_stride) : -1;
+    snprintf(detail, sizeof(detail), "%d rows, %d,%d,%d", rows, rgb[0], rgb[1], rgb[2]);
+    check(rows == 16 && rgb[0] > 200 && rgb[1] > 200 && rgb[2] > 200, "libswscale: YUV to RGB, scaled", detail);
+    sws_freeContext(scaler);
     check(strlen(dav1d_version()) > 0, "dav1d: dav1d_version", dav1d_version());
     check(strlen(opus_get_version_string()) > 0, "opus: opus_get_version_string", opus_get_version_string());
     int error = 0;

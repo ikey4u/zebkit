@@ -1,0 +1,67 @@
+FFmpeg: zebkit's configuration, with more of FFmpeg for applications.
+
+Chromium configures FFmpeg for what a browser plays. zebkit's applications
+need more of it (libswresample, libswscale, muxers, VP8 and VP9 decoding),
+which zebkit configures and generates with Chromium's own tools into its
+src/ffmpeg (scripts/ffmpeg-config.sh), linked into the tree as
+//zebkit/ffmpeg. With zebkit_ffmpeg = true the build takes the sources and
+the configuration from there, in place of chromium/config and
+ffmpeg_generated.gni, and links the engine's libvpx, which FFmpeg's wrapper
+decodes VP8 and VP9 with.
+
+--- a/third_party/ffmpeg/BUILD.gn
++++ b/third_party/ffmpeg/BUILD.gn
+@@ -2,16 +2,24 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+-import("ffmpeg_generated.gni")
+ import("ffmpeg_options.gni")
++if (zebkit_ffmpeg) {
++  import("//zebkit/ffmpeg/ffmpeg_generated.gni")
++} else {
++  import("ffmpeg_generated.gni")
++}
+ 
+ import("//build/buildflag_header.gni")
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ 
+ # Path to platform configuration files.
+-platform_config_root =
+-    "chromium/config/$ffmpeg_branding/$os_config/$ffmpeg_arch"
++if (zebkit_ffmpeg) {
++  platform_config_root = "//zebkit/ffmpeg/config/$os_config/$ffmpeg_arch"
++} else {
++  platform_config_root =
++      "chromium/config/$ffmpeg_branding/$os_config/$ffmpeg_arch"
++}
+ 
+ has_nasm_deps =
+     ffmpeg_asm_sources != [] &&
+@@ -274,6 +282,11 @@ target(link_target_type, "ffmpeg_internal") {
+     ":ffmpeg_features",
+     "//third_party/opus",
+   ]
++  if (zebkit_ffmpeg) {
++    # zebkit: VP8 and VP9 decoded by the engine's libvpx, through FFmpeg's
++    # wrapper, rather than by a second decoder of FFmpeg's own.
++    deps += [ "//third_party/libvpx" ]
++  }
+ 
+   configs -= [ "//build/config/compiler:chromium_code" ]
+   configs += [
+--- a/third_party/ffmpeg/ffmpeg_options.gni
++++ b/third_party/ffmpeg/ffmpeg_options.gni
+@@ -40,6 +40,11 @@ declare_args() {
+   # directives as used in chromium's clang stdatomic.h.
+   # Some background: https://bugs.llvm.org/show_bug.cgi?id=26828
+   ffmpeg_use_unsafe_atomics = false
++
++  # zebkit: its own configuration of FFmpeg, with more of it for
++  # applications (zebkit's scripts/ffmpeg-config.sh): //zebkit/ffmpeg in
++  # place of chromium/config and ffmpeg_generated.gni.
++  zebkit_ffmpeg = false
+ }
+ 
+ # We no longer have a separate ChromeOS configuration, but don't break existing

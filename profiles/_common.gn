@@ -31,3 +31,8 @@ treat_warnings_as_errors = false
 # turns on for Chrome's viewer. A PDF's scripts are not run.
 pdf_enable_xfa = false
 pdf_enable_v8 = false
+
+# zebkit's configuration of FFmpeg: Chrome's, with what applications need
+# besides (libswresample, libswscale, muxers, VP8 and VP9 decoders):
+# src/ffmpeg, made by scripts/ffmpeg-config.sh, patches/1017.
+zebkit_ffmpeg = true

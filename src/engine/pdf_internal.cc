@@ -2,7 +2,11 @@
 
 #include "zebkit/engine/pdf_internal.h"
 
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
+#include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
@@ -205,6 +209,81 @@ bool ResetForm(FPDF_FORMHANDLE form) {
     }
   }
   return true;
+}
+
+int RedactObjects(FPDF_PAGE fpdf_page,
+                  const std::vector<std::array<float, 4>>& areas) {
+  CPDF_Page* page = CPDFPageFromFPDFPage(fpdf_page);
+  if (!page)
+    return -1;
+  auto covered = [&](const CFX_FloatRect& rect) {
+    for (const auto& a : areas) {
+      CFX_FloatRect area(a[0], a[1], a[2], a[3]);
+      area.Normalize();
+      CFX_FloatRect overlap = area;
+      overlap.Intersect(rect);
+      if (!overlap.IsEmpty())
+        return true;
+    }
+    return false;
+  };
+  int changed = 0;
+  std::vector<CPDF_PageObject*> removed;
+  for (size_t i = 0; i < page->GetPageObjectCount(); ++i) {
+    CPDF_PageObject* object = page->GetPageObjectByIndex(i);
+    if (!object || object->AsImage() || !covered(object->GetRect()))
+      continue;
+    CPDF_TextObject* text = object->AsText();
+    RetainPtr<CPDF_Font> font = text ? text->GetFont() : nullptr;
+    if (!text || !font || font->IsVertWriting()) {
+      removed.push_back(object);
+      continue;
+    }
+    // Each character's box: its advance, from the font's descent to its
+    // ascent, through the text matrix.
+    const CFX_Matrix matrix = text->GetTextMatrix();
+    const float size = text->GetFontSize();
+    const float ascent = font->GetTypeAscent() * size / 1000;
+    const float descent = font->GetTypeDescent() * size / 1000;
+    const std::vector<uint32_t> codes = text->GetCharCodes();
+    const std::vector<float> positions = text->GetCharPositions();
+    std::vector<size_t> kept;
+    for (size_t c = 0; c < codes.size() && c < positions.size(); ++c) {
+      const float left = positions[c];
+      const float right = left + text->GetCharWidth(codes[c]);
+      const CFX_FloatRect box = matrix.TransformRect(
+          CFX_FloatRect(left, std::min(descent, 0.0f), right,
+                        std::max(ascent, size)));
+      if (!covered(box))
+        kept.push_back(c);
+    }
+    if (kept.size() == codes.size())
+      continue;
+    if (kept.empty()) {
+      removed.push_back(object);
+      continue;
+    }
+    // The characters left, each where it was.
+    ByteString bytes;
+    for (size_t c : kept)
+      font->AppendChar(&bytes, codes[c]);
+    const float first = positions[kept[0]];
+    std::vector<float> offsets;
+    for (size_t k = 1; k < kept.size(); ++k)
+      offsets.push_back(positions[kept[k]] - first);
+    const CFX_PointF origin = matrix.Transform(CFX_PointF(first, 0));
+    text->SetSegments(pdfium::span_from_ref(bytes), {});
+    if (!offsets.empty())
+      text->SetAbsolutePositions(offsets);
+    text->SetPosition(origin);
+    text->SetDirty(true);
+    ++changed;
+  }
+  for (CPDF_PageObject* object : removed) {
+    page->RemovePageObject(object);
+    ++changed;
+  }
+  return changed;
 }
 
 void RegenerateAppearance(FPDF_DOCUMENT document, FPDF_ANNOTATION annot) {

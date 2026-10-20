@@ -218,6 +218,19 @@ ZEBKIT_API bool zebkit_pdf_annotation_remove(zebkit_pdf *pdf, int page, int inde
  */
 ZEBKIT_API bool zebkit_pdf_flatten(zebkit_pdf *pdf, int page, bool for_print, char **error);
 
+/* ---- Redaction -------------------------------------------------------- */
+
+/*
+ * Takes what is under @areas, a JSON array of [l, b, r, t] (NULL for the
+ * page's redaction marks, their quadrilaterals or else their rectangles),
+ * out of the page for good: characters of text one by one, the rest kept
+ * where it was; the pixels of images, blacked out; paths, shadings and
+ * forms that reach into an area, whole; annotations that reach into one.
+ * Draws a box of @fill (0xRRGGBBAA; 0 for none) over each area, and removes
+ * the marks. Returns the number of areas, or -1.
+ */
+ZEBKIT_API int zebkit_pdf_redact(zebkit_pdf *pdf, int page, const char *areas_json, uint32_t fill, char **error);
+
 /* ---- Forms ------------------------------------------------------------ */
 
 /*

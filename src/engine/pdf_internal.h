@@ -6,7 +6,9 @@
 #ifndef ZEBKIT_ENGINE_PDF_INTERNAL_H_
 #define ZEBKIT_ENGINE_PDF_INTERNAL_H_
 
+#include <array>
 #include <string>
+#include <vector>
 
 #include "public/fpdf_annot.h"
 #include "public/fpdf_formfill.h"
@@ -40,6 +42,13 @@ std::string SetFieldValue(FPDF_FORMHANDLE form,
 
 // Every field back to its default value, with its appearance.
 bool ResetForm(FPDF_FORMHANDLE form);
+
+// Takes what is under @areas (left, bottom, right, top) out of @page's
+// objects: characters of text one by one, the rest of a text object kept
+// where it was; paths, shadings and forms whole. Images are left for the
+// caller, which blacks out their pixels. Returns how many objects were
+// changed or removed, or -1.
+int RedactObjects(FPDF_PAGE page, const std::vector<std::array<float, 4>>& areas);
 
 // Generates the annotation's appearance again from its entries, for the
 // types PDFium makes appearances for; others keep theirs.
