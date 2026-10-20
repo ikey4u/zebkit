@@ -46,6 +46,7 @@
 #include "v8/include/v8-script.h"
 #include "v8/include/v8-typed-array.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/pdf_script.h"
 #include "zebkit/engine/ui.h"
 #include "zebkit/engine/ui_script.h"
 #include "zebkit/engine/view.h"
@@ -143,7 +144,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
   const call = (module, method, args) => native.call(module, method, args);
   const api = (module, methods) => Object.freeze(Object.fromEntries(
       methods.map((m) => [m, (...args) => call(module, m, args)])));
-  const ALLOW = {app: 1, fetch: 2, files: 4, compress: 8, crypto: 16, image: 32, url: 64, all: 127};
+  const ALLOW = {app: 1, fetch: 2, files: 4, compress: 8, crypto: 16, image: 32, url: 64, pdf: 128, all: 255};
 
   class View {
     #id;
@@ -195,8 +196,17 @@ constexpr char kBootstrap[] = R"js((function (native) {
     crypto: api('crypto', ['digest', 'hmac', 'randomBytes']),
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
+    pdf: (__ZEBKIT_PDF__)(call),
   });
 }))js";
+
+// The bootstrap with zebkit.pdf's wrapper in it (pdf_script.h).
+std::string Bootstrap() {
+  std::string source = kBootstrap;
+  const std::string marker = "__ZEBKIT_PDF__";
+  source.replace(source.find(marker), marker.size(), zebkit::kPdfScript);
+  return source;
+}
 
 constexpr int kMaxDepth = 64;
 
@@ -600,7 +610,7 @@ void zebkit_script::Install() {
   }
   std::ignore = native->Set(context, String8(isolate(), "ui"), ui);
   v8::Local<v8::Script> script =
-      v8::Script::Compile(context, String8(isolate(), kBootstrap))
+      v8::Script::Compile(context, String8(isolate(), Bootstrap()))
           .ToLocalChecked();
   v8::Local<v8::Value> bootstrap = script->Run(context).ToLocalChecked();
   v8::Local<v8::Value> argv[] = {native};

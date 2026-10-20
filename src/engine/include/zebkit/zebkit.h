@@ -159,6 +159,9 @@ ZEBKIT_API void zebkit_view_evaluate(zebkit_view *view, const char *script, zebk
  *   ZEBKIT_ALLOW_CRYPTO    zebkit.crypto: digest, hmac, randomBytes
  *   ZEBKIT_ALLOW_IMAGE     zebkit.image: decode(bytes), encode(format, image, quality)
  *   ZEBKIT_ALLOW_URL       zebkit.url: parse(url, base), registrableDomain(host)
+ *   ZEBKIT_ALLOW_PDF       zebkit.pdf: open(bytes), and the document's
+ *                          functions (<zebkit/pdf.h>); PDFium works on the
+ *                          page's documents in the browser process
  *
  * Every function returns a promise. Bytes are Uint8Arrays.
  */
@@ -170,7 +173,8 @@ typedef enum {
     ZEBKIT_ALLOW_CRYPTO = 1 << 4,
     ZEBKIT_ALLOW_IMAGE = 1 << 5,
     ZEBKIT_ALLOW_URL = 1 << 6,
-    ZEBKIT_ALLOW_ALL = 0x7f,
+    ZEBKIT_ALLOW_PDF = 1 << 7,
+    ZEBKIT_ALLOW_ALL = 0xff,
 } zebkit_allow;
 
 /*

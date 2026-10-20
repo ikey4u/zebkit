@@ -62,7 +62,8 @@ pub const ZEBKIT_ALLOW_COMPRESS: c_uint = 1 << 3;
 pub const ZEBKIT_ALLOW_CRYPTO: c_uint = 1 << 4;
 pub const ZEBKIT_ALLOW_IMAGE: c_uint = 1 << 5;
 pub const ZEBKIT_ALLOW_URL: c_uint = 1 << 6;
-pub const ZEBKIT_ALLOW_ALL: c_uint = 0x7f;
+pub const ZEBKIT_ALLOW_PDF: c_uint = 1 << 7;
+pub const ZEBKIT_ALLOW_ALL: c_uint = 0xff;
 
 /// `zebkit_compression`.
 pub type zebkit_compression = c_int;

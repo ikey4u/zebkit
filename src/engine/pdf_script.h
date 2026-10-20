@@ -1,0 +1,68 @@
+// zebkit.pdf in JavaScript, the same in a page and in the application's
+// script: a function of the way calls are sent, which makes the object.
+// The calls are answered by pdf_bridge.cc, over <zebkit/pdf.h>.
+
+#ifndef ZEBKIT_ENGINE_PDF_SCRIPT_H_
+#define ZEBKIT_ENGINE_PDF_SCRIPT_H_
+
+namespace zebkit {
+
+inline constexpr char kPdfScript[] = R"js(((send) => {
+  const FLAGS = {annotations: 1, forms: 2, lcdText: 4, grayscale: 8, printing: 16, noSmoothing: 32};
+  class PdfDocument {
+    #id;
+    constructor(id) { this.#id = id; }
+    #call(method, ...args) { return send('pdf', method, [this.#id, ...args]); }
+    info() { return this.#call('info'); }
+    setMetadata(metadata) { return this.#call('setMetadata', metadata); }
+    page(index) { return this.#call('page', index); }
+    // {width, height, data}: data is RGBA, rows top to bottom.
+    render(index, options = {}) {
+      let flags = options.flags;
+      if (flags === undefined) {
+        flags = 0;
+        for (const [name, bit] of Object.entries(FLAGS)) {
+          if (options[name] ?? (name === 'annotations')) flags |= bit;
+        }
+      }
+      return this.#call('render', index, {
+        scale: options.scale ?? 1, rotation: options.rotation ?? 0, flags,
+        background: options.background ?? 0xffffffff,
+        x: options.x ?? 0, y: options.y ?? 0, width: options.width ?? 0, height: options.height ?? 0,
+      });
+    }
+    text(index) { return this.#call('text', index); }
+    textLayout(index) { return this.#call('textLayout', index); }
+    textRects(index, start, count) { return this.#call('textRects', index, start, count); }
+    charAt(index, x, y, tolerance = 2) { return this.#call('charAt', index, x, y, tolerance); }
+    search(query, {matchCase = false, wholeWord = false, first = 0, limit = 0} = {}) {
+      return this.#call('search', String(query), (matchCase ? 1 : 0) | (wholeWord ? 2 : 0), first, limit);
+    }
+    outline() { return this.#call('outline'); }
+    links(index) { return this.#call('links', index); }
+    annotations(index) { return this.#call('annotations', index); }
+    addAnnotation(index, annotation) { return this.#call('addAnnotation', index, annotation); }
+    updateAnnotation(index, annotation, changes) {
+      return this.#call('updateAnnotation', index, annotation, changes);
+    }
+    removeAnnotation(index, annotation) { return this.#call('removeAnnotation', index, annotation); }
+    flatten(index, {print = false} = {}) { return this.#call('flatten', index, print); }
+    attachments() { return this.#call('attachments'); }
+    attachment(index) { return this.#call('attachment', index); }
+    attach(name, bytes) { return this.#call('attach', String(name), bytes); }
+    detach(index) { return this.#call('detach', index); }
+    save({incremental = false, noSecurity = false} = {}) {
+      return this.#call('save', (incremental ? 1 : 0) | (noSecurity ? 2 : 0));
+    }
+    close() { return this.#call('close'); }
+  }
+  return Object.freeze({
+    // Bytes; in the application's script also a file's path.
+    open: async (source, {password = null} = {}) =>
+        new PdfDocument(await send('pdf', 'open', [source, password])),
+  });
+}))js";
+
+}  // namespace zebkit
+
+#endif  // ZEBKIT_ENGINE_PDF_SCRIPT_H_

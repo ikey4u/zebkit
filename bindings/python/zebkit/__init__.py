@@ -36,12 +36,12 @@ __all__ = [
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
     "ALLOW_APP", "ALLOW_FETCH", "ALLOW_FILES", "ALLOW_COMPRESS", "ALLOW_CRYPTO", "ALLOW_IMAGE",
-    "ALLOW_URL", "ALLOW_ALL",
+    "ALLOW_URL", "ALLOW_PDF", "ALLOW_ALL",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
 ALLOW_APP, ALLOW_FETCH, ALLOW_FILES, ALLOW_COMPRESS = 1, 2, 4, 8
-ALLOW_CRYPTO, ALLOW_IMAGE, ALLOW_URL, ALLOW_ALL = 16, 32, 64, 0x7F
+ALLOW_CRYPTO, ALLOW_IMAGE, ALLOW_URL, ALLOW_PDF, ALLOW_ALL = 16, 32, 64, 128, 0xFF
 
 _COMPRESSION = {"gzip": 1, "zlib": 2, "deflate": 2, "deflate-raw": 3, "brotli": 4, "br": 4, "zstd": 5}
 _DIGEST = {"sha1": 1, "sha256": 2, "sha384": 3, "sha512": 4}

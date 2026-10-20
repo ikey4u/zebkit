@@ -39,6 +39,7 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/pdf_script.h"
 
 namespace {
 
@@ -50,6 +51,9 @@ char* Copy(const std::string& text) {
 // adds (Runtime.addBinding, as Playwright's exposeFunction is), before any
 // of the page's own script runs. Bytes travel as {"$bytes": base64}.
 constexpr char kBridgeScript[] = R"js((() => {
+  // zebkit.pdf's wrapper, put before this script (pdf_script.h).
+  const makePdf = globalThis.__zebkit_pdf;
+  delete globalThis.__zebkit_pdf;
   const call = globalThis.__zebkit_call;
   if (typeof call !== 'function' || globalThis.zebkit) return;
   delete globalThis.__zebkit_call;
@@ -122,6 +126,7 @@ constexpr char kBridgeScript[] = R"js((() => {
     crypto: api('crypto', ['digest', 'hmac', 'randomBytes']),
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
+    pdf: makePdf(send),
   };
   Object.defineProperty(globalThis, 'zebkit', {value: Object.freeze(zebkit), enumerable: false});
 })();)js";
@@ -135,6 +140,7 @@ zebkit_view::zebkit_view(content::Shell* shell)
 
 zebkit_view::~zebkit_view() {
   Views().erase(this);
+  zebkit::ClosePdfsOf(this);
   if (devtools_)
     devtools_->DetachClient(this);
 }
@@ -269,7 +275,11 @@ void zebkit_view::InstallBridge() {
   binding.Set("name", "__zebkit_call");
   Send("Runtime.addBinding", std::move(binding));
   base::DictValue script;
-  script.Set("source", kBridgeScript);
+  script.Set("source",
+             base::StrCat({"Object.defineProperty(globalThis, '__zebkit_pdf', "
+                           "{value: ",
+                           zebkit::kPdfScript,
+                           ", configurable: true});\n", kBridgeScript}));
   script.Set("runImmediately", true);
   bridge_pending_ = true;
   // Answered, or failed when the page goes, either way once.

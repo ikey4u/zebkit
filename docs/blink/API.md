@@ -177,8 +177,14 @@ Structured answers are JSON. Coordinates are PDF page space: points, the
 origin at the bottom left, before the page's rotation. PDFium is not
 thread-safe; the functions take one lock, so any thread may call them.
 Where PDFium had nothing for it, zebkit patches PDFium (`patches/1014`,
-`1015`). Still to come: forms, page editing, redaction, signatures,
-`zebkit.pdf` in JavaScript.
+`1015`). Still to come: forms, page editing, redaction, signatures.
+
+In JavaScript the same is `zebkit.pdf` (layer 4), for pages granted
+`ZEBKIT_ALLOW_PDF` and for the application's script. A page's documents are
+worked on in the browser process, one call at a time on the thread pool;
+a page reaches only the documents it opened, and they close with its view.
+A PDF is untrusted input, and PDFium in the browser process is outside the
+renderer's sandbox: a sandboxed utility process for it is on the roadmap.
 
 ## 3. Bindings
 
@@ -237,6 +243,7 @@ const url = await zebkit.url.parse('../x', location.href);
 | `zebkit.crypto` | `digest(algorithm, data)`, `hmac(algorithm, key, data)`, `randomBytes(count)` |
 | `zebkit.image` | `decode(bytes)`, `encode('png' \| 'jpeg' \| 'webp', {width, height, data}, quality)` |
 | `zebkit.url` | `parse(url, base)`, `registrableDomain(host)` |
+| `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `render(i, {scale, rotation, x, y, width, height})` (RGBA), `text`, `textLayout`, `textRects`, `charAt`, `search`, `outline`, `links`, `annotations`, `addAnnotation`, `updateAnnotation`, `removeAnnotation`, `flatten`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`: `<zebkit/pdf.h>` |
 
 Every function returns a promise; bytes are `Uint8Array`s, and a string is
 taken as its UTF-8 where bytes are expected.
@@ -293,7 +300,7 @@ const packed = await zebkit.compress('zstd', new TextEncoder().encode('...'), 19
 | In the script | What |
 |---|---|
 | `zebkit.View(url, {width, height})` | `load`, `reload`, `back`, `forward`, `resize`, `close`, `url`, `title`, `evaluate(script)`, `grant(origin, capabilities, filesRoot)`, `bind(name, fn)`, `on('load' \| 'title' \| 'close', fn)` |
-| `zebkit.fetch`, `fs`, `compress`, `decompress`, `crypto`, `image`, `url` | As in a page (layer 4), with no grant: the script is the application; `fs` takes any path |
+| `zebkit.fetch`, `fs`, `compress`, `decompress`, `crypto`, `image`, `url`, `pdf` | As in a page (layer 4), with no grant: the script is the application; `fs` takes any path, and `pdf.open` a path as well as bytes |
 | `zebkit.args`, `zebkit.quit()`, `zebkit.version`, `zebkit.engineVersion` | |
 | `console`, `setTimeout`, `setInterval`, `TextEncoder`, `TextDecoder` | |
 

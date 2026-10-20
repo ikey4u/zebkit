@@ -31,6 +31,25 @@
 
 namespace zebkit {
 
+// Bytes: a binary value from the application's script, {$bytes} from a
+// page, or a string, taken as its UTF-8.
+std::optional<std::string> GetBytes(const base::Value* value) {
+  if (!value)
+    return std::nullopt;
+  if (value->is_string())
+    return value->GetString();
+  if (value->is_blob())
+    return std::string(value->GetBlob().begin(), value->GetBlob().end());
+  if (value->is_dict()) {
+    const std::string* encoded = value->GetDict().FindString("$bytes");
+    std::string decoded;
+    if (encoded && base::Base64Decode(*encoded, &decoded))
+      return decoded;
+  }
+  return std::nullopt;
+}
+
+
 PageCall::PageCall() = default;
 PageCall::PageCall(PageCall&&) = default;
 PageCall& PageCall::operator=(PageCall&&) = default;
@@ -61,23 +80,6 @@ base::Value Bytes(const std::string& data) {
   return Bytes(reinterpret_cast<const uint8_t*>(data.data()), data.size());
 }
 
-// Bytes: a binary value from the application's script, {$bytes} from a
-// page, or a string, taken as its UTF-8.
-std::optional<std::string> GetBytes(const base::Value* value) {
-  if (!value)
-    return std::nullopt;
-  if (value->is_string())
-    return value->GetString();
-  if (value->is_blob())
-    return std::string(value->GetBlob().begin(), value->GetBlob().end());
-  if (value->is_dict()) {
-    const std::string* encoded = value->GetDict().FindString("$bytes");
-    std::string decoded;
-    if (encoded && base::Base64Decode(*encoded, &decoded))
-      return decoded;
-  }
-  return std::nullopt;
-}
 
 const base::Value* Arg(const PageCall& call, size_t index) {
   return index < call.args.size() ? &call.args[index] : nullptr;
@@ -483,6 +485,8 @@ unsigned Needs(const std::string& module) {
     return ZEBKIT_ALLOW_IMAGE;
   if (module == "url")
     return ZEBKIT_ALLOW_URL;
+  if (module == "pdf")
+    return ZEBKIT_ALLOW_PDF;
   return 0;
 }
 
@@ -536,6 +540,10 @@ void HandlePageCall(PageCall call) {
   if (call.module == "url") {
     Result result = Url(call);
     Reply(std::move(call.reply), std::move(result));
+    return;
+  }
+  if (call.module == "pdf") {
+    CallPdf(std::move(call));
     return;
   }
   // The rest reads files or does work that takes time: off the UI thread.

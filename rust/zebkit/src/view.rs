@@ -43,6 +43,8 @@ impl Allow {
     pub const IMAGE: Allow = Allow(sys::ZEBKIT_ALLOW_IMAGE);
     /// `zebkit.url`.
     pub const URL: Allow = Allow(sys::ZEBKIT_ALLOW_URL);
+    /// `zebkit.pdf`: documents the page opens, in the browser process.
+    pub const PDF: Allow = Allow(sys::ZEBKIT_ALLOW_PDF);
     /// All of it.
     pub const ALL: Allow = Allow(sys::ZEBKIT_ALLOW_ALL);
 }

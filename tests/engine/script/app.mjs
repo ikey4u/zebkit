@@ -52,6 +52,41 @@ await check('a thrown error is a rejection', async () => {
   try { await zebkit.compress('nonsense', 'x'); return false; } catch (e) { return /unknown format/.test(e.message); }
 });
 
+// zebkit.pdf: a document made here, read, drawn, searched and changed.
+const PDF = [
+  '%PDF-1.7',
+  '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+  '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+  '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R' +
+      ' /Resources << /Font << /F1 5 0 R >> >> >> endobj',
+  '4 0 obj << >> stream', 'BT /F1 18 Tf 10 40 Td (Hello pdf) Tj ET', 'endstream endobj',
+  '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+  'trailer << /Root 1 0 R >>', '%%EOF', ''].join('\n');
+await check('pdf: open, info, render, search, annotate, save', async () => {
+  const doc = await zebkit.pdf.open(new TextEncoder().encode(PDF));
+  const info = await doc.info();
+  const image = await doc.render(0, {scale: 2});
+  const found = await doc.search('pdf');
+  const index = await doc.addAnnotation(0, {type: 'highlight', rect: [8, 35, 100, 60], color: [255, 255, 0],
+                                            quads: [[8, 60, 100, 60, 8, 35, 100, 35]]});
+  const file = `${directory}/saved.pdf`;
+  await zebkit.fs.writeFile(file, await doc.save());
+  await doc.close();
+  const again = await zebkit.pdf.open(file);
+  const annotations = await again.annotations(0);
+  const text = await again.text(0);
+  await again.close();
+  return info.pages === 1 && image.width === 400 && image.height === 200 &&
+      image.data instanceof Uint8Array && image.data.length === 400 * 200 * 4 &&
+      found.length === 1 && found[0].count === 3 && index === 0 &&
+      annotations[0].type === 'highlight' && text === 'Hello pdf';
+});
+await check('pdf: a closed document is gone', async () => {
+  const doc = await zebkit.pdf.open(new TextEncoder().encode(PDF));
+  await doc.close();
+  try { await doc.info(); return false; } catch (e) { return /no such document/.test(e.message); }
+});
+
 // A view, its page, and a function the page calls.
 await check('a view, and the page calling the script', () => new Promise((resolve, reject) => {
   const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
@@ -71,6 +106,33 @@ await check('a view, and the page calling the script', () => new Promise((resolv
       view.close();
       await sleep(50);
       resolve(sum === 5 && later === 'x!' && /no/.test(failed) && title === 'bridge' && closed);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}));
+
+await check('pdf in a page granted it: bytes, not paths', () => new Promise((resolve, reject) => {
+  const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
+  view.grant(base, ['pdf']);
+  view.on('load', async (event) => {
+    if (event !== 'finished') return;
+    try {
+      const result = await view.evaluate(`(async () => {
+        const pdf = ${JSON.stringify(PDF)};
+        const doc = await zebkit.pdf.open(new TextEncoder().encode(pdf));
+        const page = await doc.page(0);
+        const image = await doc.render(0, {width: 50, height: 20, x: 0, y: 0});
+        const text = await doc.text(0);
+        let path;
+        try { await zebkit.pdf.open('/etc/hostname'); path = 'opened'; } catch (e) { path = e.message; }
+        return {width: page.width, image: [image.width, image.height, image.data.length], text, path};
+      })()`);
+      // Bytes that are not a PDF are refused.
+      const other = await view.evaluate(`zebkit.pdf.open(new Uint8Array([1])).then(() => 'opened', (e) => e.message)`);
+      view.close();
+      resolve(result.width === 200 && result.image.join() === '50,20,4000' && result.text === 'Hello pdf' &&
+              /bytes/.test(result.path) && /not a PDF/.test(other));
     } catch (e) {
       reject(e);
     }

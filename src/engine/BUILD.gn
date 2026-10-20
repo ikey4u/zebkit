@@ -142,6 +142,8 @@ _sources = [
   "engine.h",
   "include/zebkit/services.h",
   "include/zebkit/zebkit.h",
+  "pdf_bridge.cc",
+  "pdf_script.h",
   "scheme.cc",
   "scheme.h",
   "script.cc",

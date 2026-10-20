@@ -62,6 +62,15 @@ void HandlePageCall(PageCall call);
 // The page's form of a value: bytes as {"$bytes": base64}, for JSON.
 base::Value ToPageValue(base::Value value);
 
+// Bytes in a call: a binary value from the application's script, {$bytes}
+// from a page, or a string, taken as its UTF-8.
+std::optional<std::string> GetBytes(const base::Value* value);
+
+// zebkit.pdf (pdf_bridge.cc); and the documents a view's pages opened,
+// closed with it.
+void CallPdf(PageCall call);
+void ClosePdfsOf(const zebkit_view* view);
+
 }  // namespace zebkit
 
 // A view is the observer of its page, and a DevTools client of it: for
