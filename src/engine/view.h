@@ -94,9 +94,12 @@ struct zebkit_view : public content::WebContentsObserver,
             base::DictValue params,
             Reply reply = Reply());
 
-  // Loads @url, once zebkit.* is ready for the new document if a grant
-  // has just asked for it.
+  // Loads @url, once the scripts for new documents that were just asked
+  // for (zebkit.*, zebkit_view_add_script()) are in place.
   void LoadUrl(const GURL& url);
+
+  // A script for every new document, before the page's own.
+  void AddScript(const std::string& source);
 
   void Evaluate(const char* script, zebkit_result_func func, void* data);
   void Grant(const std::string& origin,
@@ -148,6 +151,7 @@ struct zebkit_view : public content::WebContentsObserver,
   };
 
   bool EnsureSession();
+  void SendScript(const std::string& source);
   void InstallBridge();
   const GrantEntry* GrantFor(const url::Origin& origin) const;
   content::RenderFrameHost* FrameForContext(int context_id);
@@ -159,9 +163,10 @@ struct zebkit_view : public content::WebContentsObserver,
   int next_id_ = 1;
   std::map<int, Reply> pending_;
   bool bridge_installed_ = false;
-  // Until the browser has the script that makes zebkit.*, a load waits
-  // for it: a document committed first would be without it.
-  bool bridge_pending_ = false;
+  // Until the browser has the scripts for new documents (zebkit.*, and the
+  // application's), a load waits: a document committed first would be
+  // without them.
+  int scripts_pending_ = 0;
   std::optional<GURL> deferred_load_;
   // The main-world execution contexts of the page's frames, by id, with
   // the DevTools id of their frame.

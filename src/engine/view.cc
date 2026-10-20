@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/check.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -24,6 +25,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
@@ -274,22 +276,29 @@ void zebkit_view::InstallBridge() {
   base::DictValue binding;
   binding.Set("name", "__zebkit_call");
   Send("Runtime.addBinding", std::move(binding));
-  base::DictValue script;
-  script.Set("source",
-             base::StrCat({"Object.defineProperty(globalThis, '__zebkit_pdf', "
+  SendScript(base::StrCat({"Object.defineProperty(globalThis, '__zebkit_pdf', "
                            "{value: ",
                            zebkit::kPdfScript,
                            ", configurable: true});\n", kBridgeScript}));
+}
+
+void zebkit_view::AddScript(const std::string& source) {
+  Send("Page.enable", base::DictValue());
+  SendScript(source);
+}
+
+void zebkit_view::SendScript(const std::string& source) {
+  base::DictValue script;
+  script.Set("source", source);
   script.Set("runImmediately", true);
-  bridge_pending_ = true;
+  ++scripts_pending_;
   // Answered, or failed when the page goes, either way once.
   Send("Page.addScriptToEvaluateOnNewDocument", std::move(script),
        base::BindOnce(
            [](base::WeakPtr<zebkit_view> view, const base::DictValue* result,
               const std::string& error) {
-             if (!view)
+             if (!view || --view->scripts_pending_ > 0)
                return;
-             view->bridge_pending_ = false;
              if (std::optional<GURL> url = std::move(view->deferred_load_)) {
                view->deferred_load_.reset();
                view->LoadUrl(*url);
@@ -299,7 +308,7 @@ void zebkit_view::InstallBridge() {
 }
 
 void zebkit_view::LoadUrl(const GURL& url) {
-  if (bridge_pending_) {
+  if (scripts_pending_ > 0) {
     deferred_load_ = url;
     return;
   }
@@ -558,6 +567,52 @@ zebkit_view* zebkit_view_new(const char* url, int width, int height) {
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
   view->LoadUrl(GURL(url ? url : "about:blank"));
+}
+
+void zebkit_view_add_script(zebkit_view* view, const char* source) {
+  if (source && *source)
+    view->AddScript(source);
+}
+
+void zebkit_view_stop(zebkit_view* view) {
+  if (view->web_contents())
+    view->web_contents()->Stop();
+}
+
+bool zebkit_view_is_loading(zebkit_view* view) {
+  return view->web_contents() && view->web_contents()->IsLoading();
+}
+
+void zebkit_view_set_user_agent(zebkit_view* view, const char* user_agent) {
+  // For the view's session, as Chrome's own override for a tab: its
+  // requests, navigator.userAgent and workers.
+  base::DictValue params;
+  params.Set("userAgent", user_agent ? user_agent : "");
+  view->Send("Emulation.setUserAgentOverride", std::move(params));
+}
+
+void zebkit_view_capture(zebkit_view* view,
+                         zebkit_capture_func func,
+                         void* data) {
+  base::DictValue params;
+  params.Set("format", "png");
+  view->Send(
+      "Page.captureScreenshot", std::move(params),
+      base::BindOnce(
+          [](zebkit_view* view, zebkit_capture_func func, void* data,
+             const base::DictValue* result, const std::string& error) {
+            const std::string* encoded =
+                result ? result->FindString("data") : nullptr;
+            std::string png;
+            if (!encoded || !base::Base64Decode(*encoded, &png)) {
+              func(view, nullptr, 0,
+                   error.empty() ? "no picture" : error.c_str(), data);
+              return;
+            }
+            func(view, reinterpret_cast<const uint8_t*>(png.data()),
+                 png.size(), nullptr, data);
+          },
+          base::Unretained(view), func, data));
 }
 
 void zebkit_view_reload(zebkit_view* view) {

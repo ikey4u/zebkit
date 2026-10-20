@@ -141,6 +141,32 @@ typedef void (*zebkit_result_func)(zebkit_view *view, const char *json, const ch
  */
 ZEBKIT_API void zebkit_view_evaluate(zebkit_view *view, const char *script, zebkit_result_func func, void *data);
 
+/*
+ * Runs @source in every document the view loads from now on, in each
+ * frame's main world, before the page's own script: what Electron calls a
+ * preload, Puppeteer evaluateOnNewDocument. A load asked for right after
+ * waits until the engine has it.
+ */
+ZEBKIT_API void zebkit_view_add_script(zebkit_view *view, const char *source);
+
+/* Stops the page's load. */
+ZEBKIT_API void zebkit_view_stop(zebkit_view *view);
+
+/* Whether the page is loading. */
+ZEBKIT_API bool zebkit_view_is_loading(zebkit_view *view);
+
+/* The User-Agent the view's requests send and its pages see; NULL or "" for the engine's. */
+ZEBKIT_API void zebkit_view_set_user_agent(zebkit_view *view, const char *user_agent);
+
+typedef void (*zebkit_capture_func)(zebkit_view *view, const uint8_t *png, size_t size, const char *error,
+                                    void *data);
+
+/*
+ * A picture of what the view shows, as PNG bytes, valid during @func; or
+ * @error. Chrome's Page.captureScreenshot: with or without a window.
+ */
+ZEBKIT_API void zebkit_view_capture(zebkit_view *view, zebkit_capture_func func, void *data);
+
 /* ---- The page's script and the application -------------------------- */
 
 /*

@@ -51,14 +51,15 @@ static void *thread_main(void *data) {
 }
 
 static void after_error(zebkit_view *v, const char *json, const char *error, void *data);
+static void after_title(zebkit_view *v, const char *json, const char *error, void *data);
 static void after_promise(zebkit_view *v, const char *json, const char *error, void *data);
 
-static void after_title(zebkit_view *v, const char *json, const char *error, void *data) {
-    (void)v, (void)json, (void)data;
-    check(error == NULL, "evaluate: assignment", error);
-    char *url = zebkit_view_get_url(view);
-    check(url && strncmp(url, "data:text/html", 14) == 0, "zebkit_view_get_url", url);
-    zebkit_free(url);
+static void after_capture(zebkit_view *v, const uint8_t *png, size_t size, const char *error, void *data) {
+    (void)v, (void)data;
+    char detail[64];
+    snprintf(detail, sizeof(detail), "%zu bytes", size);
+    check(png && size > 100 && memcmp(png, "\x89PNG", 4) == 0, "zebkit_view_capture: a PNG", error ? error : detail);
+    check(!zebkit_view_is_loading(view), "zebkit_view_is_loading", NULL);
     pthread_t thread;
     pthread_create(&thread, NULL, thread_main, NULL);
     pthread_join(thread, NULL);
@@ -83,8 +84,33 @@ static void after_sum(zebkit_view *v, const char *json, const char *error, void 
     zebkit_view_evaluate(view, "new Promise(r => setTimeout(() => r({a: [1, 'x']}), 50))", after_promise, NULL);
 }
 
+static void after_added(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    check(json && strcmp(json, "[\"yes\",\"zebkit-test/1\"]") == 0,
+          "zebkit_view_add_script before the page's, and zebkit_view_set_user_agent", json ? json : error);
+    zebkit_view_capture(view, after_capture, NULL);
+}
+
+static void after_title(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)json, (void)data;
+    check(error == NULL, "evaluate: assignment", error);
+    char *url = zebkit_view_get_url(view);
+    check(url && strncmp(url, "data:text/html", 14) == 0, "zebkit_view_get_url", url);
+    zebkit_free(url);
+    /* A script for every new document, and another User-Agent, then a load. */
+    zebkit_view_add_script(view, "window.__added = 'yes'");
+    zebkit_view_set_user_agent(view, "zebkit-test/1");
+    /* The page's own first script sees what the added one set. */
+    zebkit_view_load_url(view, "data:text/html,<script>window.__seen = window.__added</script><p>third</p>");
+}
+
 static void on_load(zebkit_view *v, zebkit_load_event event, const char *url, void *data) {
     (void)v, (void)data;
+    if (event == ZEBKIT_LOAD_FINISHED && loaded == 1) {
+        loaded++;
+        zebkit_view_evaluate(view, "[window.__seen, navigator.userAgent]", after_added, NULL);
+        return;
+    }
     if (event == ZEBKIT_LOAD_FINISHED && !loaded++) {
         check(1, "on_load: finished", url);
         zebkit_view_evaluate(view, "1 + 2", after_sum, NULL);
