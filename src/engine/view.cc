@@ -664,6 +664,20 @@ void zebkit_view_load_url(zebkit_view* view, const char* url) {
   view->LoadUrl(GURL(url ? url : "about:blank"));
 }
 
+void zebkit_view_set_title(zebkit_view* view, const char* title) {
+  if (title)
+    view->window_title_ = title;
+  else
+    view->window_title_.reset();
+  if (content::Shell* shell = view->shell())
+    zebkit::UpdateWindowTitle(shell);
+}
+
+void zebkit_view_focus(zebkit_view* view) {
+  if (content::Shell* shell = view->shell())
+    zebkit::FocusWindow(shell);
+}
+
 void zebkit_view_on_new_window(zebkit_view* view,
                                zebkit_url_func func,
                                void* data) {

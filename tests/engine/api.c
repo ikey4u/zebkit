@@ -70,6 +70,14 @@ static void after_capture(zebkit_view *v, const uint8_t *png, size_t size, const
     snprintf(detail, sizeof(detail), "%zu bytes", size);
     check(png && size > 100 && memcmp(png, "\x89PNG", 4) == 0, "zebkit_view_capture: a PNG", error ? error : detail);
     check(!zebkit_view_is_loading(view), "zebkit_view_is_loading", NULL);
+    /* The window's title and focus: not seen without a window, but made. */
+    zebkit_view_set_title(view, "the application's title");
+    zebkit_view_focus(view);
+    char *title = zebkit_view_get_title(view);
+    check(title && strcmp(title, "the application's title") != 0, "zebkit_view_set_title leaves the page's title",
+          title);
+    zebkit_free(title);
+    zebkit_view_set_title(view, NULL);
     zebkit_view_on_new_window(view, on_new_window, NULL);
     zebkit_view_evaluate(view, "window.open('https://example.invalid/popup') === null", after_open, NULL);
 }

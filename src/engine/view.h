@@ -153,6 +153,8 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_title_data_ = nullptr;
   zebkit_view_func on_close_ = nullptr;
   void* on_close_data_ = nullptr;
+  // The window's title, when the application gave one.
+  std::optional<std::string> window_title_;
   zebkit_url_func on_new_window_ = nullptr;
   void* on_new_window_data_ = nullptr;
   zebkit_drop_func on_drop_ = nullptr;

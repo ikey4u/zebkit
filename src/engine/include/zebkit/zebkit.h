@@ -105,6 +105,12 @@ ZEBKIT_API void zebkit_view_reload(zebkit_view *view);
 ZEBKIT_API void zebkit_view_go_back(zebkit_view *view);
 ZEBKIT_API void zebkit_view_go_forward(zebkit_view *view);
 ZEBKIT_API void zebkit_view_resize(zebkit_view *view, int width, int height);
+
+/* The title of the view's window; NULL for the page's, which it is by default. */
+ZEBKIT_API void zebkit_view_set_title(zebkit_view *view, const char *title);
+
+/* Brings the view's window to the front and gives it the keyboard. */
+ZEBKIT_API void zebkit_view_focus(zebkit_view *view);
 ZEBKIT_API void zebkit_view_close(zebkit_view *view);
 
 /* The page's URL and title. Free with zebkit_free(). */

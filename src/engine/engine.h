@@ -15,6 +15,7 @@
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/common/shell_content_client.h"
 #include "content/shell/renderer/shell_content_renderer_client.h"
+#include "ui/gfx/native_ui_types.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace base {
@@ -23,6 +24,7 @@ class FilePath;
 
 namespace content {
 class BrowserContext;
+class Shell;
 }
 
 namespace zebkit {
@@ -120,6 +122,7 @@ void SetUpBundle(const base::FilePath& library);
 bool EnterHelperSandbox(int argc, char** argv);
 void SetUpApplication(bool headless);
 void SetUpViews();
+void FocusNativeWindow(gfx::NativeWindow window);
 std::unique_ptr<content::ShellPlatformDelegate> CreateHeadlessPlatformDelegate();
 #endif
 
@@ -134,6 +137,11 @@ void CdpStop();
 
 // Starts CDP if the command line asks for it, as Chrome's switches do.
 void StartCdpFromCommandLine();
+
+// The window of a view: its title again, from the application's or the
+// page's; brought to the front.
+void UpdateWindowTitle(content::Shell* shell);
+void FocusWindow(content::Shell* shell);
 
 // Closes the views the application holds, before the shell closes its
 // windows (view.cc).

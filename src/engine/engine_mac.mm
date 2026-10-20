@@ -186,6 +186,14 @@ void SetUpApplication(bool headless) {
   app.mainMenu = main;
 }
 
+void FocusNativeWindow(gfx::NativeWindow window) {
+  NSWindow* ns_window = window.GetNativeNSWindow();
+  if (!ns_window)
+    return;
+  [ns_window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+}
+
 void SetUpViews() {
   if (!views::ViewsDelegate::GetInstance())
     static base::NoDestructor<ViewsDelegate> delegate;

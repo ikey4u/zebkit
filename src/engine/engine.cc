@@ -27,12 +27,14 @@
 #include "base/process/current_process.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "content/public/app/content_main.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_platform_delegate.h"
@@ -42,6 +44,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
+#include "ui/views/widget/widget.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
 
@@ -304,20 +307,55 @@ namespace {
 // The content shell's windows, but the loop does not end when the last one
 // closes: when an application is done is the application's to say
 // (zebkit_quit()), or its script's (zebkit_script_on_idle()).
+// The window's title: the application's, when it gave one.
+std::u16string WindowTitle(content::Shell* shell, const std::u16string& page) {
+  zebkit_view* view = ViewOf(shell->web_contents());
+  return view && view->window_title_ ? base::UTF8ToUTF16(*view->window_title_)
+                                     : page;
+}
+
 class PlatformDelegate : public content::ShellPlatformDelegate {
  public:
   void DidCloseLastWindow() override {}
+  void SetTitle(content::Shell* shell, const std::u16string& title) override {
+    content::ShellPlatformDelegate::SetTitle(shell, WindowTitle(shell, title));
+  }
 };
+
+// The shell's platform delegate, for the windows' titles.
+content::ShellPlatformDelegate* g_platform = nullptr;
 
 }  // namespace
 
+void UpdateWindowTitle(content::Shell* shell) {
+  if (g_platform && shell->web_contents())
+    g_platform->SetTitle(shell, shell->web_contents()->GetTitle());
+}
+
+void FocusWindow(content::Shell* shell) {
+#if BUILDFLAG(IS_MAC)
+  FocusNativeWindow(shell->window());
+#else
+  if (views::Widget* widget =
+          views::Widget::GetWidgetForNativeWindow(shell->window())) {
+    widget->Activate();
+  }
+#endif
+  if (shell->web_contents())
+    shell->web_contents()->Focus();
+}
+
 std::unique_ptr<content::ShellPlatformDelegate>
 BrowserMainParts::CreateShellPlatformDelegate() {
+  std::unique_ptr<content::ShellPlatformDelegate> platform;
 #if BUILDFLAG(IS_MAC)
   if (zebkit_is_headless())
-    return CreateHeadlessPlatformDelegate();
+    platform = CreateHeadlessPlatformDelegate();
 #endif
-  return std::make_unique<PlatformDelegate>();
+  if (!platform)
+    platform = std::make_unique<PlatformDelegate>();
+  g_platform = platform.get();
+  return platform;
 }
 
 #if BUILDFLAG(IS_MAC)
