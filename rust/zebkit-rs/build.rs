@@ -5,15 +5,16 @@
 //! 1. `ZEBKIT_DIR`: a directory holding the engine (`libzebkit.so.1` on
 //!    Linux, `Zebkit.framework` on macOS) and what is shipped beside it.
 //!    For an engine built by hand, and for building offline.
-//! 2. `dist/release` of the zebkit repository, when this crate is being
-//!    built from inside it (what `mise run r` produces).
+//! 2. The package of the zebkit repository's slim profile
+//!    (`out/blink/slim/package`, `out/blink/slim-macos/package` on macOS),
+//!    when this crate is being built from inside the repository
+//!    (`scripts/package.sh`).
 //! 3. The release archive for this crate's version and the target, from
 //!    GitHub. It is downloaded once into a cache directory, checked against
 //!    the SHA-256 in `engines.txt`, and unpacked there.
 //!
 //! The download uses the system's `curl`, `sha256sum` (`shasum` on macOS),
-//! `tar` and `xz`, so that this crate needs no others to build. On macOS
-//! the system's compiler is used as well, for `src/cocoa/shim.m`.
+//! `tar` and `xz`, so that this crate needs no others to build.
 //!
 //! Environment:
 //!
@@ -44,7 +45,8 @@ fn main() {
     let macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos");
     // What a package directory is known by.
     let engine_name = if macos { "Zebkit.framework" } else { "libzebkit.so.1" };
-    let local = manifest.join("../../dist/release");
+    let profile = if macos { "slim-macos" } else { "slim" };
+    let local = manifest.join("../../out/blink").join(profile).join("package");
     let directory = if let Some(given) = env::var_os("ZEBKIT_DIR") {
         PathBuf::from(given)
     } else if local.join(engine_name).exists() {
@@ -67,53 +69,19 @@ fn main() {
         println!("cargo:rerun-if-changed={}", engine.join("Versions/A/Zebkit").display());
         println!("cargo:rustc-link-search=framework={}", directory.display());
         println!("cargo:rustc-link-lib=framework=Zebkit");
-        println!("cargo:rustc-link-lib=framework=Cocoa");
         // For this crate's own tests, which cargo does not help to find a
         // framework as it helps to find a library. Dependents say this
         // themselves (zebkit-build).
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
-        println!(
-            "cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH={}/Zebkit.framework/Versions/A/Frameworks",
-            directory.display()
-        );
-        compile_shim(&manifest, &directory);
     } else {
         println!("cargo:rerun-if-changed={}", engine.display());
         println!("cargo:rustc-link-search=native={}", directory.display());
-        // The package has the libraries under their run-time names only, with
-        // no "libzebkit.so" for the linker to find, hence the exact file names.
-        for library in ["libzebkit.so.1", "libgobject-2.0.so.0", "libglib-2.0.so.0"] {
-            println!("cargo:rustc-link-lib=dylib:+verbatim={library}");
-        }
+        // The package has the library under its run-time name only, with no
+        // "libzebkit.so" for the linker to find, hence the exact file name.
+        println!("cargo:rustc-link-lib=dylib:+verbatim=libzebkit.so.1");
     }
     // For dependents' build scripts, as DEP_ZEBKIT_LIB_DIR.
     println!("cargo:lib_dir={}", directory.display());
-}
-
-/// macOS: the engine's API is Objective-C, which Rust cannot declare.
-/// `src/cocoa/shim.m` puts what this crate uses behind C functions; it is
-/// compiled here, against the engine's own headers, into a static library.
-fn compile_shim(manifest: &Path, engine: &Path) {
-    let source = manifest.join("src/cocoa/shim.m");
-    println!("cargo:rerun-if-changed={}", source.display());
-    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let (object, library) = (out.join("shim.o"), out.join("libzebkit_shim.a"));
-    run(
-        Command::new("cc")
-            .args(["-c", "-fobjc-arc", "-O2", "-Wall", "-Wno-deprecated-declarations", "-F"])
-            .arg(engine)
-            .arg(&source)
-            .arg("-o")
-            .arg(&object),
-        "cannot compile src/cocoa/shim.m; this needs Xcode's command line tools",
-    );
-    let _ = fs::remove_file(&library);
-    run(
-        Command::new("ar").arg("rcs").arg(&library).arg(&object),
-        "cannot make a library of the compiled shim",
-    );
-    println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=zebkit_shim");
 }
 
 /// The engine for this crate's version and the target, from the cache or
@@ -160,7 +128,7 @@ fn download(manifest: &Path) -> PathBuf {
     fs::create_dir_all(&scratch).unwrap_or_else(|error| fail(&format!("cannot create {}: {error}", scratch.display())));
     let archive = scratch.join("archive.tar.xz");
 
-    println!("cargo:warning=downloading zebkit {version} for {target} (about 25 MiB, once) from {url}");
+    println!("cargo:warning=downloading zebkit {version} for {target} (about 45 MiB, once) from {url}");
     run(
         Command::new("curl").args(["--fail", "--location", "--silent", "--show-error", "--retry", "3", "--output"]).arg(&archive).arg(&url),
         &format!("cannot download {url}.\nIf this machine has no access to it, download the file elsewhere, unpack it and set ZEBKIT_DIR to the directory"),

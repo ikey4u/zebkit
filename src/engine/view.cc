@@ -271,7 +271,30 @@ void zebkit_view::InstallBridge() {
   base::DictValue script;
   script.Set("source", kBridgeScript);
   script.Set("runImmediately", true);
-  Send("Page.addScriptToEvaluateOnNewDocument", std::move(script));
+  bridge_pending_ = true;
+  // Answered, or failed when the page goes, either way once.
+  Send("Page.addScriptToEvaluateOnNewDocument", std::move(script),
+       base::BindOnce(
+           [](base::WeakPtr<zebkit_view> view, const base::DictValue* result,
+              const std::string& error) {
+             if (!view)
+               return;
+             view->bridge_pending_ = false;
+             if (std::optional<GURL> url = std::move(view->deferred_load_)) {
+               view->deferred_load_.reset();
+               view->LoadUrl(*url);
+             }
+           },
+           weak_factory_.GetWeakPtr()));
+}
+
+void zebkit_view::LoadUrl(const GURL& url) {
+  if (bridge_pending_) {
+    deferred_load_ = url;
+    return;
+  }
+  if (content::Shell* s = shell())
+    s->LoadURL(url);
 }
 
 const zebkit_view::GrantEntry* zebkit_view::GrantFor(
@@ -524,8 +547,7 @@ zebkit_view* zebkit_view_new(const char* url, int width, int height) {
 }
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
-  if (content::Shell* shell = view->shell())
-    shell->LoadURL(GURL(url ? url : "about:blank"));
+  view->LoadUrl(GURL(url ? url : "about:blank"));
 }
 
 void zebkit_view_reload(zebkit_view* view) {

@@ -3,9 +3,6 @@
 #     <version> <target> <sha256 of zebkit-<version>-<target>.tar.xz>
 #
 # Written by scripts/release.sh. The build script refuses an archive whose
-# checksum is not the one here.
-0.0.1-alpha.1 x86_64-unknown-linux-gnu 2a57d33f9108c3ddcfa3d9dac846abe9f4521012c5e862a3ae108e45324629f6
-0.0.1-alpha.2 aarch64-apple-darwin 672b65515ddb360615a5dfa55aa3efddcfc2307076209387222e8e5ecfb720bc
-0.0.1-alpha.2 x86_64-unknown-linux-gnu 1ed4bd61c7b9fabb9bab79b66682ad3c756f7372578caa8b8ac865bd3142c21d
-0.0.1-alpha.3 aarch64-apple-darwin b4f3f1f89f7d90da1c48d440d0c5ced836a81262dad27acd8738553789a099d3
-0.0.1-alpha.3 x86_64-unknown-linux-gnu 81f8af0292d3511e156e5d3706e48cb140ed8f11ca709e6408e538e846f18aaf
+# checksum is not the one here. The archives of earlier versions are of the
+# WebKit engine, whose API this crate no longer declares; none is listed
+# until a release of the Blink engine.

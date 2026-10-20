@@ -8,11 +8,12 @@
 
 /// The FFmpeg inside the engine.
 ///
-/// It has what playing media in a web page needs, decoders for H.264, VP8,
-/// VP9, AAC, MP3, Opus, Vorbis and FLAC, and for applications also reading
-/// and writing files (MP4, WebM, Ogg, WAV), scaling, sample conversion, and
-/// the encoders FFmpeg has of its own (AAC, FLAC, PCM, Motion JPEG). There
-/// is no H.264 or VP9 encoder.
+/// It is Chromium's, with what playing media in a web page needs from it:
+/// demuxers for MP4, WebM, Ogg, MP3, AAC, FLAC and WAV, and decoders for H.264,
+/// AAC, MP3, Vorbis, FLAC, PCM and Opus (as `libopus`). It has no encoders.
+/// VP8, VP9 and AV1 are decoded by libvpx and dav1d, which are inside the
+/// engine too, with C headers of their own (`<zebkit/vendor/libvpx.h>`,
+/// `<zebkit/vendor/dav1d.h>`).
 ///
 /// What is here in safe Rust is a look at what the library has. Decoding
 /// itself is FFmpeg's C API, which is [`crate::sys::ffmpeg`]; declarations

@@ -528,6 +528,9 @@ zebkit_script::~zebkit_script() {
     views_.clear();
     modules_.clear();
     modules_by_hash_.clear();
+    // Every handle goes while the isolate is there: members destroyed after
+    // this would release theirs into an isolate that is gone.
+    ui_listener_.Reset();
     context_.Reset();
   }
   holder_.reset();

@@ -146,8 +146,23 @@ def ready():
 zebkit.main(ready)
 ```
 
-It finds the engine in `$ZEBKIT_DIR`. Rust (the existing crates, written
-for the WebKit engine) is next.
+It finds the engine in `$ZEBKIT_DIR`.
+
+`rust/` is the same for Rust: `zebkit-rs` declares the C API, and the
+`zebkit` crate is safe Rust over it, with closures for callbacks and the
+engine's thread enforced by the types (`rust/README.md`):
+
+```rust
+std::process::exit(zebkit::run(|| {
+    let view = zebkit::View::new(Some("https://example.com/"), 1024, 768);
+    view.grant("https://example.com", zebkit::Allow::APP, None);
+    view.bind("greet", |call| {
+        let answer = format!("\"hello, {}\"", call.args_json());
+        call.resolve(&answer)
+    });
+    view.on_close(zebkit::quit);
+}));
+```
 
 ## 4. JavaScript in the page
 
@@ -193,7 +208,9 @@ another origin has the object, and every call it makes is refused.
 How it works: the view's internal DevTools session adds a binding
 (`Runtime.addBinding`, as Playwright's `exposeFunction` does) and a script
 that runs before the page's own (`Page.addScriptToEvaluateOnNewDocument`);
-the script makes the `zebkit` object, each call goes to the browser
+the script makes the `zebkit` object (a load asked for right after the
+first grant waits until the browser has the script, so that the new
+document cannot miss it), each call goes to the browser
 process as JSON, and the answer comes back by `Runtime.evaluate` in the
 calling context. The renderer stays sandboxed; the work is done in the
 browser process, files and compression on Chromium's thread pool. Bytes

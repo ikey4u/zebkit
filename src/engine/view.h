@@ -4,6 +4,7 @@
 #define ZEBKIT_ENGINE_VIEW_H_
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -15,6 +16,7 @@
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "url/gurl.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace content {
@@ -83,6 +85,10 @@ struct zebkit_view : public content::WebContentsObserver,
             base::DictValue params,
             Reply reply = Reply());
 
+  // Loads @url, once zebkit.* is ready for the new document if a grant
+  // has just asked for it.
+  void LoadUrl(const GURL& url);
+
   void Evaluate(const char* script, zebkit_result_func func, void* data);
   void Grant(const std::string& origin,
              unsigned allow,
@@ -144,6 +150,10 @@ struct zebkit_view : public content::WebContentsObserver,
   int next_id_ = 1;
   std::map<int, Reply> pending_;
   bool bridge_installed_ = false;
+  // Until the browser has the script that makes zebkit.*, a load waits
+  // for it: a document committed first would be without it.
+  bool bridge_pending_ = false;
+  std::optional<GURL> deferred_load_;
   // The main-world execution contexts of the page's frames, by id, with
   // the DevTools id of their frame.
   std::map<int, std::string> contexts_;

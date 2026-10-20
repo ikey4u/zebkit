@@ -1,9 +1,9 @@
 //! For the build script of an application that uses `zebkit`.
 //!
 //! The engine is not inside the executable. It is a shared library with
-//! helper programs and a few libraries of its own (on macOS, frameworks
-//! and the services they start), and the executable has to find them when
-//! it runs. One call arranges that:
+//! a helper program, its data files and a few libraries of its own (on
+//! macOS, all inside Zebkit.framework), and the executable has to find
+//! them when it runs. One call arranges that:
 //!
 //! ```toml
 //! [dependencies]
@@ -28,7 +28,7 @@
 //!     my-app
 //!     zebkit/              <- the engine: ship this directory with my-app
 //!         libzebkit.so.1
-//!         zebkit-web
+//!         zebkit-helper
 //!         ...
 //! ```
 //!
@@ -55,12 +55,9 @@ pub fn bundle() {
     // Beside the executable first, wherever that ends up; tests and
     // examples are built one directory further down.
     if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos") {
-        // Zebkit.framework by a run path, and the frameworks inside it,
-        // which the loader takes in place of the system's, by name.
-        const INSIDE: &str = "Zebkit.framework/Versions/A/Frameworks";
+        // Zebkit.framework, by a run path.
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/{DIRECTORY}");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../{DIRECTORY}");
-        println!("cargo:rustc-link-arg=-Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/{DIRECTORY}/{INSIDE}:@executable_path/../{DIRECTORY}/{INSIDE}");
         println!(
             "cargo:rerun-if-changed={}",
             engine.join("Zebkit.framework/Versions/A/Zebkit").display()

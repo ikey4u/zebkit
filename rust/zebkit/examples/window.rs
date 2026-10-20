@@ -2,31 +2,26 @@
 //!
 //!     cargo run --example window -- https://example.com/
 //!
-//! With `ZEBKIT_CDP_PORT=9222` in the environment, or the two lines marked
-//! below, the page can also be driven by Puppeteer and Playwright.
+//! Chromium's switches work as they do for Chrome: with
+//! `--remote-debugging-port=9222` the page can also be driven by Puppeteer
+//! and Playwright, and `--headless` keeps it off the screen.
 
-use zebkit::{MainLoop, WebView};
+use zebkit::{LoadEvent, View};
 
 fn main() {
-    let url = std::env::args().nth(1).unwrap_or_else(|| "https://example.com/".into());
-    let main_loop = MainLoop::new();
-    let view = WebView::new();
-
-    // On a machine without a display the window is never on a screen; the
-    // page loads all the same.
-    if let Some(window) = view.window() {
-        window.resize(1024, 768);
-        window.set_title("zebkit");
-        view.on_title_changed(move |title| window.set_title(if title.is_empty() { "zebkit" } else { title }));
-        let quit = main_loop.clone();
-        view.on_close(move || quit.quit());
-    }
-    view.on_load_changed(|event| eprintln!("load: {event:?}"));
-
-    // For CDP clients:
-    //     let port = zebkit::cdp::listen(None, 9222).expect("cannot start the CDP endpoint");
-    //     eprintln!("CDP on http://127.0.0.1:{port}");
-
-    view.load_uri(&url);
-    main_loop.run();
+    let url = std::env::args()
+        .skip(1)
+        .find(|arg| !arg.starts_with("--"))
+        .unwrap_or_else(|| "https://example.com/".into());
+    std::process::exit(zebkit::run(move || {
+        let view = View::new(Some(&url), 1024, 768);
+        view.on_load(|event, url| {
+            if event != LoadEvent::Started {
+                eprintln!("{event:?}: {url}")
+            }
+        });
+        view.on_title(|title| eprintln!("title: {title}"));
+        // The application ends when its window is closed.
+        view.on_close(zebkit::quit);
+    }));
 }
