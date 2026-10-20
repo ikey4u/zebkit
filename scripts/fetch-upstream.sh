@@ -1,90 +1,105 @@
 #!/usr/bin/env bash
-# Get the pinned upstream source into upstream/ and apply this host's patch
-# series on top. Re-running is a no-op unless the pin or the series changed.
+# Get the pinned Chromium release into upstream/chromium/src, with what it
+# depends on (V8, Skia, the compiler and sysroot it builds with), and apply
+# patches/series on top. Re-running is a no-op unless the pin or the series
+# changed.
 #
-# Linux: the release tarball, verified, extracted afresh.
-# macOS: the same release from WebKit's git repository, because the tarball
-#        leaves the Mac port out. The tree is updated in place, so a build
-#        after a patch change recompiles only what the change reaches.
+# The tree is fetched without history: about 30 GB instead of over 100.
+# gclient syncs only when the pinned version changes. A sync of a tree that
+# is already there fetches every branch's history, so a change of patches
+# undoes the previous ones file by file instead.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-stamp="$SRC_DIR/.zebkit-stamp"
+stamp="$GCLIENT_DIR/.zebkit-stamp"
+synced="$GCLIENT_DIR/.zebkit-synced"
+applied="$GCLIENT_DIR/.zebkit-applied"
+series="$PATCHES_DIR/series"
 
-# The stamp captures everything that determines the tree's contents.
-patch_list() { [[ -f "$PATCH_SERIES" ]] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$PATCH_SERIES" || true; }
+patch_list() { [[ -f "$series" ]] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$series" || true; }
 patches_hash="$(patch_list | while read -r p; do sha256 "$PATCHES_DIR/$p"; done | sha256 | cut -d' ' -f1)"
-if [[ "$ZEBKIT_HOST" != linux ]]; then
-    want="$UPSTREAM_GIT_COMMIT $patches_hash"
-else
-    want="$UPSTREAM_SHA256 $patches_hash"
-fi
+want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash"
+
+# zebkit's own engine code is not a patch: src/engine is linked into the
+# tree as //zebkit/engine, so that what is built is what is in the
+# repository.
+link_engine() {
+    mkdir -p "$SRC_DIR/zebkit"
+    ln -sfn "$ZEBKIT_ROOT/src/engine" "$SRC_DIR/zebkit/engine"
+}
 
 if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+    link_engine
     log "upstream tree is up to date: $SRC_DIR"
     exit 0
 fi
+rm -f "$stamp"
 
-mkdir -p "$CACHE_DIR" "$UPSTREAM_DIR"
+# depot_tools, at its pin. It bootstraps its own Python and CIPD on first use.
+if [[ ! -d "$DEPOT_TOOLS_DIR/.git" ]]; then
+    log "cloning depot_tools"
+    git clone -q "$DEPOT_TOOLS_URL" "$DEPOT_TOOLS_DIR"
+fi
+if [[ "$(git -C "$DEPOT_TOOLS_DIR" rev-parse HEAD)" != "$DEPOT_TOOLS_COMMIT" ]]; then
+    git -C "$DEPOT_TOOLS_DIR" cat-file -e "$DEPOT_TOOLS_COMMIT^{commit}" 2>/dev/null \
+        || git -C "$DEPOT_TOOLS_DIR" fetch -q origin
+    git -C "$DEPOT_TOOLS_DIR" checkout -q "$DEPOT_TOOLS_COMMIT"
+fi
+"$DEPOT_TOOLS_DIR/ensure_bootstrap"
 
-fetch_tarball() {
-    local tarball="$CACHE_DIR/$(basename "$UPSTREAM_URL")"
-    if [[ ! -f "$tarball" ]] || ! echo "$UPSTREAM_SHA256  $tarball" | sha256sum -c --status; then
-        log "downloading $UPSTREAM_URL"
-        curl -fL --retry 3 -o "$tarball.part" "$UPSTREAM_URL"
-        mv "$tarball.part" "$tarball"
-    fi
-    echo "$UPSTREAM_SHA256  $tarball" | sha256sum -c --status || die "checksum mismatch for $tarball"
+mkdir -p "$GCLIENT_DIR"
+# Only the operating systems built here. NaCl is gone upstream; the PGO
+# profiles are measured against size before a profile uses them.
+cat > "$GCLIENT_DIR/.gclient" <<EOF
+solutions = [{
+    "name": "src",
+    "url": "$CHROMIUM_URL@refs/tags/$CHROMIUM_VERSION",
+    "managed": False,
+    "custom_deps": {},
+    # Pre-builds the Python environment of Chromium's test runners (numpy,
+    # pandas, opencv), which the build does not use. Its installer also
+    # unpacks into /tmp whatever TMPDIR says.
+    "custom_hooks": [{"name": "vpython3_common"}],
+    "custom_vars": {
+        "checkout_nacl": False,
+        "checkout_pgo_profiles": True,
+    },
+}]
+target_os = ["linux"]
+EOF
 
-    log "extracting into $SRC_DIR"
-    rm -rf "$SRC_DIR"
-    tar -xf "$tarball" -C "$UPSTREAM_DIR"
-    [[ -d "$SRC_DIR" ]] || die "tarball did not contain $(basename "$SRC_DIR")/"
+# Undo the previous series: files it created are removed, files it changed
+# are restored from the repository they belong to (src/ or one inside it).
+if [[ -f "$applied" ]]; then
+    while read -r kind file; do
+        if [[ "$kind" == new ]]; then
+            rm -f "$SRC_DIR/$file"
+        else
+            git -C "$(dirname "$SRC_DIR/$file")" checkout -q HEAD -- "$(basename "$file")"
+        fi
+    done < "$applied"
+    rm -f "$applied"
+fi
 
-    patch_list | while read -r p; do
-        log "applying $p"
-        patch -d "$SRC_DIR" -p1 --no-backup-if-mismatch < "$PATCHES_DIR/$p"
-    done
-}
+if [[ ! -f "$synced" || "$(cat "$synced")" != "$CHROMIUM_VERSION" ]]; then
+    log "syncing Chromium $CHROMIUM_VERSION into $SRC_DIR"
+    (cd "$GCLIENT_DIR" && gclient sync --no-history --nohooks --jobs 16 \
+        --revision "src@refs/tags/$CHROMIUM_VERSION")
+    echo "$CHROMIUM_VERSION" > "$synced"
+fi
+log "running Chromium's hooks"
+(cd "$GCLIENT_DIR" && gclient runhooks --jobs 16)
 
-fetch_git() {
-    if [[ ! -d "$SRC_DIR/.git" ]]; then
-        git init -q "$SRC_DIR"
-        git -C "$SRC_DIR" remote add origin "$UPSTREAM_GIT_URL"
-        # WebKit's test suites are most of the repository and nothing here
-        # builds or runs them.
-        git -C "$SRC_DIR" sparse-checkout set --no-cone '/*' '!/LayoutTests/' '!/PerformanceTests/' \
-            '!/JSTests/' '!/WebDriverTests/' '!/ManualTests/' '!/Websites/'
-    fi
-    if ! git -C "$SRC_DIR" cat-file -e "$UPSTREAM_GIT_COMMIT^{commit}" 2>/dev/null; then
-        log "fetching $UPSTREAM_GIT_TAG ($UPSTREAM_GIT_COMMIT) from $UPSTREAM_GIT_URL"
-        git -C "$SRC_DIR" fetch --depth 1 --filter=blob:none origin "$UPSTREAM_GIT_COMMIT"
-    fi
+# Patch paths are relative to src/ and may reach into its other
+# repositories (v8/, third_party/skia/ and the like).
+patch_list | while read -r p; do
+    log "applying $p"
+    patch -d "$SRC_DIR" -p1 --no-backup-if-mismatch < "$PATCHES_DIR/$p"
+    awk '/^--- / { created = ($2 == "/dev/null"); next }
+         /^\+\+\+ / { file = $2; sub(/^b\//, "", file); print (created ? "new " : "changed ") file }' \
+        "$PATCHES_DIR/$p" >> "$applied"
+done
 
-    # The patched tree is put together in an index of its own, and the
-    # working tree is then moved to it. Git writes only the files that
-    # differ from what is there, and drops whatever was edited by hand.
-    local index="$SRC_DIR/.git/zebkit-index" tree
-    rm -f "$index" "$index.lock"
-    GIT_INDEX_FILE="$index" git -C "$SRC_DIR" read-tree "$UPSTREAM_GIT_COMMIT"
-    patch_list | while read -r p; do
-        log "applying $p"
-        GIT_INDEX_FILE="$index" git -C "$SRC_DIR" apply --cached "$PATCHES_DIR/$p"
-    done
-    # --missing-ok: the test suites were never fetched, and without it Git
-    # would download all of them just to see that they are there.
-    tree="$(GIT_INDEX_FILE="$index" git -C "$SRC_DIR" write-tree --missing-ok)"
-    rm -f "$index"
-    log "checking out $UPSTREAM_GIT_TAG with the patches"
-    git -C "$SRC_DIR" read-tree --reset -u "$tree"
-    git -C "$SRC_DIR" clean -qfd
-
-    # zebkit's own sources that are built into the engine (src/cdp) are named
-    # in WebKit's source lists by a path inside its tree.
-    ln -sfn ../../../../src "$SRC_DIR/Source/WebKit/zebkit"
-}
-
-if [[ "$ZEBKIT_HOST" == linux ]]; then fetch_tarball; else fetch_git; fi
-
+link_engine
 echo "$want" > "$stamp"
-log "ready: $SRC_DIR"
+log "upstream tree ready: $SRC_DIR"

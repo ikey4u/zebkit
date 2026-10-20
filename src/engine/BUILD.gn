@@ -1,0 +1,179 @@
+# The engine as a library: libzebkit.so.1, with zebkit-helper for its child
+# processes. This directory is zebkit's src/engine, linked into the
+# Chromium tree as //zebkit/engine by scripts/fetch-upstream.sh.
+
+import("//build/config/clang/clang.gni")
+import("//build/config/sysroot.gni")
+import("//zebkit/relr/relr.gni")
+
+_version = read_file("VERSION", "trim string")
+
+config("implementation") {
+  defines = [
+    "ZEBKIT_IMPLEMENTATION",
+    "ZEBKIT_VERSION=\"$_version\"",
+  ]
+}
+
+# Applications include <zebkit/zebkit.h>.
+config("public") {
+  include_dirs = [ "include" ]
+}
+
+# The C libraries inside the engine, for applications: each function under
+# zebkit's own link name, and a header that maps the library's names to
+# those (vendor/gen_vendor.py, docs/VENDOR.md). Each is linked whole, so
+# that every function its headers declare is there.
+_vendored = [
+  "zlib",
+  "zstd",
+  "brotli",
+  "boringssl",
+  "sqlite",
+  "icu",
+  "harfbuzz",
+  "libwebp",
+  "opus",
+  "dav1d",
+  "libvpx",
+  "libjpeg",
+  "libxml",
+  "ffmpeg",
+]
+
+_vendored_libraries = [
+  "//third_party/boringssl",
+  "//third_party/brotli:dec",
+  "//third_party/brotli:enc",
+  "//third_party/dav1d",
+  "//third_party/ffmpeg",
+  "//third_party/harfbuzz",
+  "//third_party/icu",
+  "//third_party/libjpeg_turbo:libjpeg",
+  "//third_party/libvpx",
+  "//third_party/libwebp",
+  "//third_party/libwebp:libwebp_demux",
+  "//third_party/libwebp:libwebp_mux",
+  "//third_party/libxml",
+  "//third_party/opus",
+  "//third_party/sqlite",
+  "//third_party/zlib",
+  "//third_party/zstd:compress",
+  "//third_party/zstd:decompress",
+]
+
+action("vendor_sources") {
+  testonly = true
+  script = "vendor/gen_vendor.py"
+  inputs = [ "vendor/gen_vendor.py" ]
+  deps = _vendored_libraries
+  outputs = [ "$target_gen_dir/vendor/libraries.txt" ]
+  foreach(library, _vendored) {
+    outputs += [
+      "$target_gen_dir/vendor/$library.S",
+      "$target_gen_dir/vendor/$library.txt",
+      "$target_gen_dir/include/zebkit/vendor/$library.h",
+    ]
+  }
+  args = [
+           "--src",
+           rebase_path("//", root_build_dir),
+           "--clang",
+           rebase_path("$clang_base_path/bin/clang", root_build_dir),
+           "--nm",
+           rebase_path("$clang_base_path/bin/llvm-nm", root_build_dir),
+           "--sysroot",
+           rebase_path(sysroot, root_build_dir),
+           "--out",
+           rebase_path(target_gen_dir, root_build_dir),
+           "--stamp",
+           rebase_path("$target_gen_dir/vendor/libraries.txt", root_build_dir),
+         ] + _vendored
+}
+
+source_set("vendor") {
+  testonly = true
+  sources = filter_include(get_target_outputs(":vendor_sources"), [ "*.S" ])
+  deps = [ ":vendor_sources" ]
+}
+
+shared_library("zebkit") {
+  # The content shell's browser classes, which are test-only in Chromium,
+  # until zebkit has its own.
+  testonly = true
+
+  output_name = "zebkit"
+  output_extension = "so.1"
+
+  sources = [
+    "bridge.cc",
+    "cdp.cc",
+    "engine.cc",
+    "engine.h",
+    "include/zebkit/services.h",
+    "include/zebkit/zebkit.h",
+    "services.cc",
+    "view.cc",
+    "view.h",
+  ]
+
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
+
+  deps = [
+    "//base",
+    "//base/version_info",
+    "//content/public/app",
+    "//content/public/browser",
+    "//content/public/common",
+    "//content/shell:content_shell_app",
+    "//content/shell:content_shell_lib",
+    "//content/shell:pak",
+    "//net",
+    "//net:net_resources",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+    "//skia",
+    "//ui/base",
+    "//ui/gfx/codec",
+    "//ui/gfx",
+    "//ui/ozone",
+    "//url",
+  ]
+
+  data_deps = [
+    "//content/shell:pak",
+    "//tools/v8_context_snapshot",
+  ]
+
+  inputs = [ "zebkit.ver" ]
+  ldflags = [
+    "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
+    "-Wl,-soname,libzebkit.so.1",
+  ]
+
+  deps += [ ":vendor" ] + _vendored_libraries
+
+  if (zebkit_pack_relocations) {
+    deps += [ "//zebkit/relr:relr_shared" ]
+    configs += [
+      "//zebkit/relr:link",
+      "//zebkit/relr:link_shared",
+    ]
+  }
+}
+
+executable("zebkit-helper") {
+  testonly = true
+  sources = [ "helper.c" ]
+  deps = [ ":zebkit" ]
+  configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
+}
+
+group("engine") {
+  testonly = true
+  deps = [
+    ":zebkit",
+    ":zebkit-helper",
+  ]
+}

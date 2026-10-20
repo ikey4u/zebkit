@@ -1,0 +1,7 @@
+/* What libzebkit exports: zebkit's API and nothing of what is inside it. */
+{
+  global:
+    zebkit_*;
+  local:
+    *;
+};

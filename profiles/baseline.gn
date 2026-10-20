@@ -1,0 +1,3 @@
+# Chromium's content shell as an official release build, with no zebkit
+# changes: the "before" number for size and the reference for speed and
+# site compatibility.

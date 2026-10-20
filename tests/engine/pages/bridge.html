@@ -1,0 +1,79 @@
+<!doctype html><meta charset=utf-8><title>bridge</title>
+<p>zebkit.* from a page. tests/engine/bridge.c runs runBridgeTests().</p>
+<script>
+async function runBridgeTests() {
+  const results = {};
+  const test = async (name, f) => {
+    try {
+      const passed = await f();
+      results[name] = passed === true ? true : 'unexpected result';
+    } catch (e) {
+      results[name] = String(e && e.message || e);
+    }
+  };
+  const text = (bytes) => new TextDecoder().decode(bytes);
+  const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+  await test('app: a bound function', async () => await zebkit.app.add(2, 3) === 5);
+  await test('app: answered later', async () => await zebkit.app.later('x') === 'x!');
+  await test('app: rejected', async () => {
+    try { await zebkit.app.fail(); return false; } catch (e) { return e.message === 'no'; }
+  });
+  await test('app: not bound', async () => {
+    try { await zebkit.app.missing(); return false; } catch (e) { return /not bound/.test(e.message); }
+  });
+  await test('compress: brotli', async () => {
+    const packed = await zebkit.compress('br', 'hello hello hello hello');
+    return packed instanceof Uint8Array && text(await zebkit.decompress('br', packed)) === 'hello hello hello hello';
+  });
+  await test('compress: zstd of bytes', async () => {
+    const bytes = new Uint8Array(1000).fill(7);
+    const back = await zebkit.decompress('zstd', await zebkit.compress('zstd', bytes, 19));
+    return back.length === 1000 && back[999] === 7;
+  });
+  await test('crypto: digest', async () =>
+      hex(await zebkit.crypto.digest('SHA-256', 'abc')).startsWith('ba7816bf8f01cfea'));
+  await test('crypto: hmac', async () =>
+      hex(await zebkit.crypto.hmac('SHA-256', 'Jefe', 'what do ya want for nothing?')).startsWith('5bdcc146'));
+  await test('crypto: random bytes', async () => (await zebkit.crypto.randomBytes(16)).length === 16);
+  await test('url: parse', async () => {
+    const u = await zebkit.url.parse('../x?y#z', 'https://a.example/b/c');
+    return u.href === 'https://a.example/x?y#z' && u.search === '?y' && u.origin === 'https://a.example';
+  });
+  await test('url: registrable domain', async () =>
+      await zebkit.url.registrableDomain('a.b.example.co.uk') === 'example.co.uk');
+  await test('image: encode and decode', async () => {
+    const data = new Uint8Array(4 * 4 * 4).fill(200);
+    const png = await zebkit.image.encode('png', {width: 4, height: 4, data});
+    const back = await zebkit.image.decode(png);
+    return back.width === 4 && back.height === 4 && back.data[0] === 200 && back.data.length === 64;
+  });
+  await test('fs: write, read, list, stat, remove', async () => {
+    await zebkit.fs.mkdir('sub');
+    await zebkit.fs.writeFile('sub/a.txt', 'written');
+    const read = await zebkit.fs.readText('sub/a.txt');
+    const bytes = await zebkit.fs.readFile('sub/a.txt');
+    const list = await zebkit.fs.readDir('sub');
+    const stat = await zebkit.fs.stat('sub/a.txt');
+    await zebkit.fs.remove('sub', {recursive: true});
+    let gone = false;
+    try { await zebkit.fs.stat('sub'); } catch (e) { gone = true; }
+    return read === 'written' && bytes.length === 7 && list.length === 1 && list[0].name === 'a.txt' &&
+        stat.size === 7 && stat.file === true && gone;
+  });
+  await test('fs: nothing outside the directory', async () => {
+    for (const path of ['../outside.txt', '/../../etc/passwd', 'a/../../b']) {
+      try { await zebkit.fs.readText(path); return false; } catch (e) {
+        if (!/not a path inside/.test(e.message)) return false;
+      }
+    }
+    return true;
+  });
+  await test('fetch: through the engine', async () => {
+    const response = await zebkit.fetch(location.origin + '/hello.txt');
+    return response.status === 200 && text(response.body) === 'hello\n' &&
+        /text\/plain/.test(response.headers['content-type']);
+  });
+  return results;
+}
+</script>

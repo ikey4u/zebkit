@@ -1,0 +1,364 @@
+Size: pack the engine's relative relocations, for any glibc.
+
+The engine is a position-independent executable with 272 thousand relative
+relocations, which take 6.2 MiB as RELA entries of 24 bytes each. lld can
+pack them as DT_RELR, about 100 KiB, but only glibc 2.36 and later apply
+DT_RELR, and they refuse it without a GLIBC_ABI_DT_RELR version that older
+glibc does not have. zebkit runs on glibc 2.17 and later.
+
+So the engine applies them itself. //zebkit/relr adds a function that runs
+from .preinit_array, after the loader's own relocation and before any
+library constructor (those can call the engine's malloc). In a shared
+library (:relr_shared, for libzebkit.so.1) it is the library's DT_INIT
+function: the loader calls DT_INIT at the library's address, which needs
+no relocation, before it reads .init_array, whose entries are packed
+relocations themselves. The link step, the executable's or the library's,
+renames the DT_RELR tags so that no loader sees them, and a linker script
+puts .relr.dyn after .rela.plt, where glibc 2.17's loader needs it. The
+executable was tested on glibc 2.17, 2.31 and 2.41, including thread-local
+data and a library constructor that calls the program's malloc.
+
+Thread-local data in a library is copied for the threads that exist when
+the library is loaded, before it relocates itself. The function fixes the
+loading thread's copy; a thread that existed before a dlopen() of the
+library keeps a stale copy of the one pointer base has there, so the
+library is to be linked, or loaded before threads are started.
+
+On with zebkit_pack_relocations = true (profiles/slim.gn). Startup does the
+same work as before, from a smaller table.
+
+
+--- a/build/toolchain/gcc_link_wrapper.py
++++ b/build/toolchain/gcc_link_wrapper.py
+@@ -70,6 +70,14 @@ def main():
+     if result != 0:
+         return result
+ 
++    # zebkit: a binary linked with //zebkit/relr applies its packed
++    # relocations itself, and no loader may see them.
++    if any(arg.endswith('zebkit_relr.lds') for arg in args.command):
++        sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir,
++                                        os.pardir, 'zebkit', 'relr'))
++        import relr_tags
++        relr_tags.rename(args.symbols_file or args.output)
++
+     # Finally, strip the linked executable (if desired).
+     if args.strip:
+         result = subprocess.call(
+
+--- a/build/toolchain/gcc_solink_wrapper.py
++++ b/build/toolchain/gcc_solink_wrapper.py
+@@ -184,6 +184,14 @@ def main():
+     if result != 0:
+         return result
+ 
++    # zebkit: a library linked with //zebkit/relr applies its packed
++    # relocations itself, and no loader may see them.
++    if any(arg.endswith('zebkit_relr.lds') for arg in args.command):
++        sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir,
++                                        os.pardir, 'zebkit', 'relr'))
++        import relr_tags
++        relr_tags.rename(args.symbols_file or args.output)
++
+     if not partitioned_library:
+         # Strip the linked shared object file (if desired).
+         # When use_mold=true, the linker creates both stripped and symbols
+--- a/content/shell/BUILD.gn
++++ b/content/shell/BUILD.gn
+@@ -18,6 +18,7 @@ import("//third_party/inspector_protocol/inspector_protocol.gni")
+ import("//tools/grit/grit_rule.gni")
+ import("//tools/grit/repack.gni")
+ import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
++import("//zebkit/relr/relr.gni")
+ if (is_android) {
+   import("//build/config/android/config.gni")
+ } else if (is_mac) {
+@@ -810,6 +811,10 @@ if (is_android) {
+     if ((is_linux || is_chromeos) && !is_component_build) {
+       configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
+     }
++
++    if (zebkit_pack_relocations) {
++      deps += [ "//zebkit/relr" ]
++    }
+   }
+ 
+   if (is_fuchsia) {
+
+new file mode 100644
+--- /dev/null
++++ b/zebkit/relr/BUILD.gn
+@@ -0,0 +1,37 @@
++# Packed relative relocations for an executable or a shared library on any
++# glibc: see relr_preinit.c. An executable gets them by depending on :relr.
++
++import("//zebkit/relr/relr.gni")
++
++assert(zebkit_pack_relocations)
++
++config("link") {
++  _script = "zebkit_relr.lds"
++  ldflags = [
++    "-Wl,--pack-dyn-relocs=relr",
++    "-Wl,-T," + rebase_path(_script, root_build_dir),
++  ]
++  inputs = [
++    _script,
++    "relr_tags.py",
++  ]
++}
++
++source_set("relr") {
++  sources = [ "relr_preinit.c" ]
++  all_dependent_configs = [ ":link" ]
++}
++
++# A shared library runs the function as its DT_INIT.
++config("link_shared") {
++  ldflags = [ "-Wl,-init,zebkit_relr_init" ]
++}
++
++# The same for a shared library, which depends on this one and adds the
++# configs :link and :link_shared to its own: as all_dependent_configs they
++# would reach the programs linked against the library too, which do not
++# apply packed relocations.
++source_set("relr_shared") {
++  sources = [ "relr_preinit.c" ]
++  defines = [ "ZEBKIT_RELR_SHARED" ]
++}
+--- /dev/null
++++ b/zebkit/relr/relr.gni
+@@ -0,0 +1,7 @@
++declare_args() {
++  # Link the engine with packed relative relocations, which it applies
++  # itself (//zebkit/relr). Linux on x86-64 only.
++  zebkit_pack_relocations = false
++}
++
++assert(!zebkit_pack_relocations || (is_linux && current_cpu == "x64"))
+
+new file mode 100644
+--- /dev/null
++++ b/zebkit/relr/relr_preinit.c
+@@ -0,0 +1,161 @@
++// Applies the binary's packed relative relocations (DT_RELR) itself, so
++// that they work with every glibc: only 2.36 and later know the format.
++//
++// The engine is linked with --pack-dyn-relocs=relr, which stores its 270
++// thousand relative relocations in about 100 KiB instead of 6.2 MiB. The
++// link step then renames the DT_RELR tags (relr_tags.py) so that no loader
++// applies them, or refuses the binary for want of the GLIBC_ABI_DT_RELR
++// version, which older glibc does not have.
++//
++// In an executable this runs first among the binary's code: from
++// .preinit_array, which the loader calls after relocating and before any
++// library constructor. Those constructors can call into the engine, which
++// provides malloc. In a shared library (ZEBKIT_RELR_SHARED) it is the
++// library's DT_INIT function (the link gives -init): the loader calls that
++// at the library's address plus DT_INIT, which needs no relocation, and
++// before it reads .init_array, whose entries are relocations in the packed
++// table themselves. The libraries it depends on were initialized before it
++// and do not call into it. Until it is done, nothing it touches may need
++// relocating: it reads only its own ELF headers, found at addresses
++// relative to the code.
++
++#include <elf.h>
++#include <link.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/mman.h>
++#include <sys/syscall.h>
++
++// The renamed tags; relr_tags.py writes them.
++#define ZEBKIT_DT_RELR 0x6fffe000
++#define ZEBKIT_DT_RELRSZ 0x6fffe001
++
++extern const ElfW(Ehdr) __ehdr_start __attribute__((visibility("hidden")));
++extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
++
++// A pointer in the thread-local data, relocated like any other, that says
++// whether the main thread's copy of that data was fixed as well.
++static const char tls_target = 0;
++#if defined(ZEBKIT_RELR_SHARED)
++// Not static, so that its name is the one the assembly below gives.
++__attribute__((visibility("hidden")))
++__thread const char* volatile zebkit_relr_tls_check = &tls_target;
++#define tls_check zebkit_relr_tls_check
++#else
++static __thread const char* volatile tls_check = &tls_target;
++#endif
++
++// The pages wholly inside [start, end), as the loader protects them. A raw
++// system call: libc's wrapper may be instrumented.
++static long raw_mprotect(uintptr_t start, uintptr_t end, int prot) {
++  long ret;
++  start &= ~(uintptr_t)4095;
++  end &= ~(uintptr_t)4095;
++  __asm__ volatile("syscall"
++                   : "=a"(ret)
++                   : "a"(SYS_mprotect), "D"(start), "S"(end - start), "d"(prot)
++                   : "rcx", "r11", "memory");
++  return ret;
++}
++
++static void relocate(uintptr_t* where, uintptr_t base, uintptr_t tls_start,
++                     uintptr_t tls_end, uintptr_t tls_block) {
++  *where += base;
++  // The loader copied the thread-local data for the main thread before this
++  // runs; that copy needs the same fix.
++  uintptr_t at = (uintptr_t)where;
++  if (at >= tls_start && at < tls_end)
++    *(uintptr_t*)(tls_block + (at - tls_start)) += base;
++}
++
++__attribute__((no_stack_protector, no_sanitize("all"))) static void
++apply_relr(int argc, char** argv, char** envp) {
++  (void)argc, (void)argv, (void)envp;
++  const uintptr_t base = (uintptr_t)&__ehdr_start;
++  const uintptr_t* relr = NULL;
++  size_t relrsz = 0;
++  for (const ElfW(Dyn)* d = _DYNAMIC; d->d_tag != DT_NULL; ++d) {
++    if (d->d_tag == ZEBKIT_DT_RELR)
++      relr = (const uintptr_t*)(base + d->d_un.d_ptr);
++    else if (d->d_tag == ZEBKIT_DT_RELRSZ)
++      relrsz = d->d_un.d_val;
++  }
++  if (!relr)
++    __builtin_trap();  // Linked without relr_tags.py.
++
++  uintptr_t relro_start = 0, relro_end = 0;
++  uintptr_t tls_start = 0, tls_end = 0, tls_block = 0;
++  const ElfW(Phdr)* ph = (const ElfW(Phdr)*)(base + __ehdr_start.e_phoff);
++  for (int i = 0; i < __ehdr_start.e_phnum; ++i) {
++    if (ph[i].p_type == PT_GNU_RELRO) {
++      relro_start = base + ph[i].p_vaddr;
++      relro_end = relro_start + ph[i].p_memsz;
++    } else if (ph[i].p_type == PT_TLS) {
++      tls_start = base + ph[i].p_vaddr;
++      tls_end = tls_start + ph[i].p_filesz;
++#if defined(ZEBKIT_RELR_SHARED)
++      // A library's block is wherever the loader put it, and the loader
++      // has copied the data into it for the threads that exist, from the
++      // image not yet relocated here. This thread's block is the address
++      // of one of the library's thread-local variables less that
++      // variable's offset in the block, which the link fixed. A thread that
++      // existed before a dlopen() of the library keeps its stale copy:
++      // linking the library, or loading it before starting threads, is
++      // what is supported.
++      uintptr_t offset;
++      __asm__("movabsq $zebkit_relr_tls_check@dtpoff, %0" : "=r"(offset));
++      tls_block = (uintptr_t)&tls_check - offset;
++#else
++      // On x86-64 the executable's block ends at the thread pointer.
++      uintptr_t align = ph[i].p_align ? ph[i].p_align : 1;
++      uintptr_t size = (ph[i].p_memsz + align - 1) & ~(align - 1);
++      uintptr_t tp;
++      __asm__("mov %%fs:0, %0" : "=r"(tp));
++      tls_block = tp - size;
++#endif
++    }
++  }
++  if (relro_start &&
++      raw_mprotect(relro_start, relro_end, PROT_READ | PROT_WRITE)) {
++    __builtin_trap();
++  }
++
++  // An even entry is the address of a relocation; an odd one is a bitmap
++  // of which of the 63 words after the last address are relocations.
++  uintptr_t* where = NULL;
++  for (size_t i = 0; i < relrsz / sizeof(uintptr_t); ++i) {
++    uintptr_t entry = relr[i];
++    if ((entry & 1) == 0) {
++      where = (uintptr_t*)(base + entry);
++      relocate(where++, base, tls_start, tls_end, tls_block);
++    } else {
++      for (uintptr_t* p = where; (entry >>= 1) != 0; ++p) {
++        if (entry & 1)
++          relocate(p, base, tls_start, tls_end, tls_block);
++      }
++      where += 8 * sizeof(uintptr_t) - 1;
++    }
++  }
++
++  if (relro_start && raw_mprotect(relro_start, relro_end, PROT_READ))
++    __builtin_trap();
++  if (tls_check != &tls_target)
++    __builtin_trap();
++}
++
++#if defined(ZEBKIT_RELR_SHARED)
++// DT_INIT, by name for the link's -init. A direct call, which needs no
++// relocation.
++void zebkit_relr_init(int argc, char** argv, char** envp);
++__attribute__((visibility("hidden"), used, no_stack_protector,
++               no_sanitize("all"))) void
++zebkit_relr_init(int argc, char** argv, char** envp) {
++  apply_relr(argc, argv, envp);
++}
++#else
++// Byte-aligned, so that the linker leaves this one relocation out of the
++// packed table: the loader applies it before calling the function.
++static const struct __attribute__((packed)) {
++  void (*function)(int, char**, char**);
++} preinit __attribute__((used, section(".preinit_array"))) = {apply_relr};
++#endif
+--- /dev/null
++++ b/zebkit/relr/relr_tags.py
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python3
++"""Rename an ELF file's DT_RELR tags so that no loader applies them.
++
++For a binary that applies its packed relocations itself (relr_preinit.c).
++glibc 2.36 and later would apply them a second time, and refuses a DT_RELR
++without the GLIBC_ABI_DT_RELR version, which older glibc does not have. The
++file is changed in place; renaming a file twice changes nothing.
++
++    relr_tags.py <file>
++"""
++
++import struct
++import sys
++
++DT_RELRSZ, DT_RELR, DT_RELRENT = 35, 36, 37
++# What relr_preinit.c looks for. Tags in this range are the operating
++# system's to define; glibc ignores the ones it does not know.
++RENAMED = {DT_RELR: 0x6FFFE000, DT_RELRSZ: 0x6FFFE001, DT_RELRENT: 0x6FFFE002}
++PT_DYNAMIC = 2
++
++
++def rename(path):
++  with open(path, "r+b") as f:
++    data = bytearray(f.read())
++    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
++      raise ValueError(f"{path}: not a little-endian 64-bit ELF file")
++    phoff, = struct.unpack_from("<Q", data, 0x20)
++    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
++    for i in range(phnum):
++      p_type, _, p_offset, _, _, p_filesz = struct.unpack_from(
++          "<IIQQQQ", data, phoff + i * phentsize)
++      if p_type == PT_DYNAMIC:
++        break
++    else:
++      raise ValueError(f"{path}: no dynamic section")
++    for at in range(p_offset, p_offset + p_filesz, 16):
++      tag, = struct.unpack_from("<q", data, at)
++      if tag == 0:
++        break
++      if tag in RENAMED:
++        f.seek(at)
++        f.write(struct.pack("<q", RENAMED[tag]))
++
++
++if __name__ == "__main__":
++  rename(sys.argv[1])
+
+new file mode 100644
+--- /dev/null
++++ b/zebkit/relr/zebkit_relr.lds
+@@ -0,0 +1,6 @@
++/* The packed relocations go after the PLT's. The loader of glibc 2.17
++   processes .rela.dyn and .rela.plt as one table when the program is
++   bound at load time, and assumes the one follows the other; lld puts
++   .relr.dyn between them. The link step recognizes this file's name and
++   renames the DT_RELR tags (relr_tags.py). */
++SECTIONS { .relr.dyn : { *(.relr.dyn) } } INSERT AFTER .rela.plt;

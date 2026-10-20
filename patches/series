@@ -1,19 +1,11 @@
-# Applied in order by scripts/fetch-upstream.sh. See README.md in this directory.
-0001-wasm-address-type-guard-b3-conversions.patch
-0002-script-executable-include-compilation-result.patch
-0003-gstreamer-dmabuf-frames-need-gl.patch
-0004-video-upload-uses-decoded-frame-size.patch
-0005-prewarmed-process-leak.patch
-1001-typed-array-sort-out-of-line.patch
-1003-accessibility-never-enabled.patch
-2001-relocatable-engine-directory.patch
-2002-video-elements-without-media-backend.patch
-2003-old-glibc-compat.patch
-2004-x11-display-backend.patch
-2005-cdp-endpoint.patch
-2006-inspector-user-worlds.patch
-2007-zebkit-file-names.patch
-2008-vendor-entry-points.patch
-2014-child-toplevels.patch
-0006-display-egl-teardown-order.patch
-2015-file-drops.patch
+# Patches on top of Chromium (upstream.lock), applied in this order by
+# scripts/fetch-upstream.sh with patch -p1 from src/.
+1005-pack-relative-relocations.patch
+1006-content-shell-without-web-tests.patch
+1007-min-size-for-chosen-targets.patch
+1008-ml-size-inliner-for-linux.patch
+1009-content-shell-without-test-support.patch
+1010-utility-without-on-device-model.patch
+1011-v8-optimized-for-size.patch
+1012-zebkit-engine-in-the-build.patch
+1013-libraries-visible-to-zebkit.patch

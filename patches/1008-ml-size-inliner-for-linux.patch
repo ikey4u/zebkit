@@ -1,0 +1,30 @@
+Size: the ML size inliner for Linux too.
+
+Chromium inlines with a model trained for size when it builds 32-bit
+Android (use_ml_inliner), and asserts that nothing else asks for it,
+because it was not known whether the model helps other targets. On x86-64
+it does: twelve large engine sources (Blink, V8, content, net, Skia, cc)
+compiled 21.6% smaller with it at -Os. This lets Linux builds use it, from
+a Linux host as before. On in profiles/slim.gn.
+
+Chromium's -Os configuration then passes the model to the compiler, which
+does all of the engine's inlining: the engine is linked without LTO
+optimization. Code built at another level does not get it: V8 (-O3), the
+-Oz targets of patches/1007-min-size-for-chosen-targets.patch, and the hot
+paths that file lets a profile name.
+
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -1210,9 +1210,10 @@
+   #    non-Android targets.
+   # MLGO is only officially supported on linux.
+   if (use_ml_inliner && is_a_target_toolchain) {
++    # zebkit: also for Linux. The size model makes x86-64 code smaller too.
+     assert(
+-        is_android && host_os == "linux",
+-        "MLGO is currently only supported for targeting Android on a linux host")
++        (is_android || is_linux) && host_os == "linux",
++        "MLGO is currently only supported for targeting Android or Linux on a linux host")
+     if (use_thin_lto) {
+       ldflags += [ "-Wl,-mllvm,-enable-ml-inliner=release" ]
+       if (is_high_end_android) {

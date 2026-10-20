@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Time tests/bench/ in the engine, without a window, for one or more built
-# profiles.
+# Time tests/bench/ in the engine, without a window, for one or more
+# packages.
 # The page runs a handful of JavaScript and DOM workloads and reports
-# milliseconds for each; lower is better. Each profile runs three times and
+# milliseconds for each; lower is better. Each package runs three times and
 # the best time per workload is kept. Run it on an otherwise idle machine.
 #
-#   scripts/bench.sh baseline slim
+#   scripts/bench.sh slim                     # out/blink/slim/package
+#   scripts/bench.sh before=<dir> slim        # a saved package beside it
+#
+# BENCH_ARGS adds switches to every engine it starts, such as
+# --enable-features=..., to time one feature on its own.
+#
+# A package is what scripts/package.sh assembles. Keeping a copy of one
+# before a rebuild is how a change is timed against what it replaces.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-(( $# )) || die "usage: $(basename "$0") <profile>...   (one of: $(list_profiles))"
+(( $# )) || die "usage: $(basename "$0") <profile>|<label>=<package dir>..."
 port="${BENCH_PORT:-8775}"
 
 work="$(mktemp -d)"
@@ -19,37 +26,49 @@ trap 'kill "$server_pid" 2>/dev/null; rm -r "$work"' EXIT
 sleep 1
 
 rows=()
-for profile in "$@"; do
-    require_profile "$profile"
-    stage_profile "$profile"
-    [[ "$ZEBKIT_HOST" == macos ]] && build_pageprobe
-    log "benchmarking $profile"
+for arg in "$@"; do
+    if [[ "$arg" == *=* ]]; then
+        label="${arg%%=*}" package="${arg#*=}"
+    else
+        require_profile "$arg"
+        label="$arg" package="$OUT_DIR/$arg/package"
+    fi
+    # A package of the engine library is driven by tools/zebkit-run, built
+    # against it; an older one is the content shell itself.
+    if [[ -f "$package/libzebkit.so.1" ]]; then
+        build_against_package "$package" "$work/run-$label" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+        engine=("$work/run-$label" --headless)
+    elif [[ -x "$package/content_shell" ]]; then
+        engine=("$package/content_shell" --ozone-platform=headless)
+    else
+        die "no engine in $package; run scripts/package.sh first"
+    fi
+    log "benchmarking $label ($package)"
     for run in 1 2 3; do
-        # MiniBrowser does not exit on its own: wait for the page's report,
-        # then stop it.
-        url="http://127.0.0.1:$port/index.html?profile=$profile&run=$run.$(date +%s)$RANDOM"
-        if [[ "$ZEBKIT_HOST" == macos ]]; then
-            "${run_env[@]}" "$probe" --settle 300 --timeout 300 "$url" > /dev/null 2>&1 &
-        else
-            "${run_env[@]}" "$build_dir/bin/MiniBrowser" --headless "$url" > /dev/null 2>&1 &
-        fi
+        # The shell does not exit on its own: wait for the page's report,
+        # then stop it. Each run gets a profile directory of its own. No
+        # sandbox: it does not change the times, and build machines and
+        # containers often cannot give the engine one.
+        url="http://127.0.0.1:$port/index.html?profile=$label&run=$run.$(date +%s)$RANDOM"
+        "${engine[@]}" --no-sandbox --user-data-dir="$work/data-$label-$run" \
+            ${BENCH_ARGS:-} "$url" > "$work/shell-$label-$run.log" 2>&1 &
         browser_pid=$!
         for (( waited = 0; waited < 120; waited++ )); do
-            (( $(grep -c "GET /result?profile=$profile&" "$work/server.log") >= run )) && break
+            (( $(grep -c "GET /result?profile=$label&" "$work/server.log") >= run )) && break
             sleep 1
         done
         kill "$browser_pid" 2>/dev/null || true
         wait "$browser_pid" 2>/dev/null || true
     done
     # Lines look like: GET /result?profile=slim&loop=12&objects=34...
-    best="$(grep -oE "GET /result\?profile=$profile&[^ ]+" "$work/server.log" | sed 's/^[^&]*&//' | awk -F'&' '
+    best="$(grep -oE "GET /result\?profile=$label&[^ ]+" "$work/server.log" | sed 's/^[^&]*&//' | awk -F'&' '
         { for (i = 1; i <= NF; i++) { split($i, kv, "="); if (!(kv[1] in min) || kv[2] + 0 < min[kv[1]]) min[kv[1]] = kv[2] + 0; if (NR == 1) order[i] = kv[1] } n = NF }
         END { for (i = 1; i <= n; i++) printf "%s%s=%d", (i > 1 ? " " : ""), order[i], min[order[i]] }')"
-    [[ -n "$best" ]] || die "no benchmark report from profile '$profile'"
-    rows+=("$profile $best")
+    [[ -n "$best" ]] || die "no benchmark report from '$label'; the shell printed: $(tail -5 "$work/shell-$label-1.log")"
+    rows+=("$label $best")
 done
 
-printf '\n%-12s' profile
+printf '\n%-12s' package
 for kv in ${rows[0]#* }; do printf '%9s' "${kv%%=*}"; done
 printf '\n'
 for row in "${rows[@]}"; do

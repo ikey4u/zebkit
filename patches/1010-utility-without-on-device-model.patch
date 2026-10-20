@@ -1,0 +1,164 @@
+Size: content without the on-device model service where it is off.
+
+The on-device model service runs the language models behind Chrome's
+built-in AI APIs, and its utility process prepares the GPU through Dawn
+before it is sandboxed. use_on_device_model_service says where it is
+built, but content's utility process links the service and its sandbox
+setup whatever it says, and Dawn with them: 3 MiB, and the SPIR-V tools
+under it, in an engine without WebGPU. This links them only where the
+service is on. The content shell has no model to run in it.
+
+Off in profiles/slim.gn. Upstream's default is unchanged.
+
+--- a/content/utility/BUILD.gn
++++ b/content/utility/BUILD.gn
+@@ -9,6 +9,7 @@ import("//media/media_options.gni")
+ import("//mojo/public/tools/bindings/mojom.gni")
+ import("//printing/buildflags/buildflags.gni")
+ import("//services/accessibility/buildflags.gni")
++import("//services/on_device_model/on_device_model.gni")
+ import("//services/screen_ai/buildflags/features.gni")
+ 
+ source_set("utility") {
+@@ -47,7 +48,6 @@ source_set("utility") {
+     "//content/public/common:content_descriptor_keys",
+     "//content/public/utility:utility_sources",
+     "//content/services/devtools_media_encoding_service",
+-    "//content/utility/on_device_model:on_device_model_sandbox_init",
+     "//content/utility/webnn:webnn_sandbox_init",
+     "//device/vr/buildflags",
+     "//media:media_buildflags",
+@@ -60,8 +60,8 @@ source_set("utility") {
+     "//services/data_decoder:lib",
+     "//services/data_decoder/public/cpp",
+     "//services/network:network_service",
+-    "//services/on_device_model:on_device_model_service",
+     "//services/on_device_model/public/cpp",
++    "//services/on_device_model/public/cpp:buildflags",
+     "//services/on_device_model/public/mojom",
+     "//services/screen_ai/buildflags",
+     "//services/service_manager/public/cpp",
+@@ -77,6 +77,15 @@ source_set("utility") {
+     "//url",
+   ]
+ 
++  # zebkit: the on-device model service, behind Chrome's built-in AI APIs,
++  # only where it is built at all. It links Dawn.
++  if (use_on_device_model_service) {
++    deps += [
++      "//content/utility/on_device_model:on_device_model_sandbox_init",
++      "//services/on_device_model:on_device_model_service",
++    ]
++  }
++
+   # When library CDMs are supported, we support running the CDM in the utility
+   # process using mojo MediaService. On Windows, we use MediaFoundationService.
+   if (enable_library_cdms || is_win) {
+--- a/content/utility/services.cc
++++ b/content/utility/services.cc
+@@ -32,13 +32,17 @@
+ #include "services/audio/service_factory.h"
+ #include "services/data_decoder/data_decoder_service.h"
+ #include "services/network/network_service.h"
+-#include "services/on_device_model/on_device_model_service.h"
+-#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
++#include "services/on_device_model/public/cpp/buildflags.h"
+ #include "services/tracing/public/mojom/tracing_service.mojom.h"
+ #include "services/tracing/tracing_service.h"
+ #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
+ #include "services/video_capture/video_capture_service_impl.h"
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
++#include "services/on_device_model/on_device_model_service.h"  // nogncheck
++#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
++#endif
++
+ #if BUILDFLAG(IS_MAC)
+ #include "base/apple/mach_logging.h"
+ #include "sandbox/mac/system_services.h"
+@@ -344,11 +348,13 @@ auto RunVideoCapture(
+   return service;
+ }
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
+ auto RunOnDeviceModel(
+     mojo::PendingReceiver<on_device_model::mojom::OnDeviceModelService>
+         receiver) {
+   return on_device_model::OnDeviceModelService::Create(std::move(receiver));
+ }
++#endif
+ 
+ #if BUILDFLAG(ENABLE_VR) && !BUILDFLAG(IS_ANDROID)
+ auto RunXrDeviceService(
+@@ -415,7 +421,9 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
+   services.Add(RunOOPVideoDecoderFactoryProcessService);
+ #endif
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
+   services.Add(RunOnDeviceModel);
++#endif
+ 
+ #if BUILDFLAG(IS_WIN) || (BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
+                           (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)))
+--- a/content/utility/utility_main.cc
++++ b/content/utility/utility_main.cc
+@@ -34,16 +34,20 @@
+ #include "content/public/common/content_switches.h"
+ #include "content/public/common/main_function_params.h"
+ #include "content/public/utility/content_utility_client.h"
+-#include "content/utility/on_device_model/on_device_model_sandbox_init.h"
+ #include "content/utility/utility_thread_impl.h"
+ #include "printing/buildflags/buildflags.h"
+ #include "sandbox/policy/mojom/sandbox.mojom.h"
+ #include "sandbox/policy/sandbox.h"
+ #include "sandbox/policy/sandbox_type.h"
++#include "services/on_device_model/public/cpp/buildflags.h"
+ #include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
+ #include "services/tracing/public/cpp/trace_startup.h"
+ #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
++#include "content/utility/on_device_model/on_device_model_sandbox_init.h"  // nogncheck
++#endif
++
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+ #include "base/file_descriptor_store.h"
+ #include "base/files/file_util.h"
+@@ -292,9 +296,11 @@ int UtilityMain(MainFunctionParams parameters) {
+     }
+   }
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
+   if (utility_sub_type == on_device_model::mojom::OnDeviceModelService::Name_) {
+     CHECK(on_device_model::PreSandboxInit());
+   }
++#endif
+ 
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+ 
+@@ -336,9 +342,13 @@ int UtilityMain(MainFunctionParams parameters) {
+       pre_sandbox_hook = base::BindOnce(&audio::AudioPreSandboxHook);
+       break;
+     case sandbox::mojom::Sandbox::kOnDeviceModelExecution:
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
+       on_device_model::AddSandboxLinuxOptions(sandbox_options);
+       pre_sandbox_hook = base::BindOnce(&on_device_model::PreSandboxHook);
+       break;
++#else
++      NOTREACHED();
++#endif
+     case sandbox::mojom::Sandbox::kSpeechRecognition:
+       pre_sandbox_hook =
+           base::BindOnce(&speech::SpeechRecognitionPreSandboxHook);
+@@ -526,9 +536,11 @@ int UtilityMain(MainFunctionParams parameters) {
+ 
+   run_loop.Run();
+ 
++#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
+   if (utility_sub_type == on_device_model::mojom::OnDeviceModelService::Name_) {
+     CHECK(on_device_model::Shutdown());
+   }
++#endif
+ 
+ #if defined(LEAK_SANITIZER)
+   // Invoke LeakSanitizer before shutting down the utility thread, to avoid

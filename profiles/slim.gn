@@ -1,0 +1,191 @@
+# The product: an engine for HTML, CSS and JavaScript, driven over CDP,
+# with media playback. What goes beyond that is left out where Chromium has
+# a switch for it; what has no switch is patched out (patches/series).
+#
+# docs/reports/slim-map.md says what each part of the engine weighs.
+
+# Compile for size. Chromium's own size-optimized configuration does the
+# same and leaves PGO off, which makes the binary larger.
+optimize_for_size = true
+chrome_pgo_phase = 0
+
+# Vtables as offsets rather than pointers, as on Android and Fuchsia: they
+# are half the size and need no relocation at load time. Relocations were
+# 14.5 MiB of the binary, nine tenths of them in .data.rel.ro. Safe because
+# every line of C++ in the engine, libc++ included, is built here.
+use_relative_vtables_abi = true
+
+# The relative relocations that remain, 272 thousand, packed into about
+# 100 KiB instead of 6.2 MiB, and applied by the engine itself, since glibc
+# before 2.36 does not (patches/1005-pack-relative-relocations.patch).
+zebkit_pack_relocations = true
+
+# Control Flow Integrity, which official Linux builds turn on: a check
+# before every virtual and indirect call that its target has the expected
+# type. It is hardening against memory bugs, not a feature, and it costs
+# both size and some speed. The renderer sandbox stays.
+is_cfi = false
+
+# Services of a desktop session the content layer can use and zebkit does
+# not: printers through CUPS, Kerberos sign-on, GNOME's settings, GTK's
+# theme and dialogs (GIO is required with it), Bluetooth through BlueZ.
+use_cups = false
+use_kerberos = false
+use_gio = false
+use_gtk = false
+use_bluez = false
+
+# Qt's theme shims: libraries built beside the engine and loaded only to
+# look like a Qt desktop. Not shipped; this only saves building them.
+use_qt5 = false
+use_qt6 = false
+
+# Content decryption modules loaded as libraries: Widevine cannot be
+# shipped by anyone but Google, and the library form of Clear Key is a
+# test tool. Clear Key itself (EME) stays; it is built in.
+enable_widevine = false
+enable_library_cdms = false
+
+# WebGPU: Dawn, the Tint shader compiler and SPIR-V tools.
+use_dawn = false
+skia_use_dawn = false
+
+# On-device machine learning: WebNN's TFLite and LiteRT back ends. (Speech
+# recognition and translation are services of Chrome's own browser layer,
+# which the content shell does not link; their switches only trip Chrome's
+# tests.)
+webnn_use_tflite = false
+webnn_use_litert = false
+
+# Image and video formats beyond the common ones: JPEG XL decoding and AV1
+# encoding (libaom). AV1 decoding (dav1d) stays; it is small and sites play it.
+enable_jxl_decoder = false
+enable_libaom = false
+
+# Trace events that are off unless a developer turns them on, and the
+# trace processor, which analyses traces in the browser. The Tracing domain
+# of CDP keeps recording.
+optional_trace_events_enabled = false
+use_perfetto_trace_processor = false
+
+# Virtual reality (WebXR, OpenXR), sending a tab's media to a Cast device
+# (media remoting, Open Screen), and the browser's capture of page previews.
+enable_vr = false
+enable_media_remoting = false
+enable_paint_preview = false
+
+# Delivery of reports to a site's endpoints (Reporting-Endpoints, Network
+# Error Logging). ReportingObserver, in the page, is Blink's and stays.
+enable_reporting = false
+
+# Hardware video decoding through VA-API, and the H.264 encoder (OpenH264)
+# behind WebRTC and MediaRecorder. Decoding in software stays, H.264
+# included; MediaRecorder still records VP8 and VP9.
+use_vaapi = false
+media_use_openh264 = false
+# Screen capture through the desktop portal and PipeWire.
+rtc_use_pipewire = false
+
+# The harness Chromium's web tests run in, which the content shell links
+# (patches/1006-content-shell-without-web-tests.patch).
+content_shell_web_tests = false
+
+# Chromium's test support, which the shell links for the browser tests that
+# run in it, and with it a benchmark library, the on-device model service,
+# TFLite and the SPIR-V tools
+# (patches/1009-content-shell-without-test-support.patch).
+content_shell_test_support = false
+
+# Locals initialized to zero by the compiler: hardening against reads of
+# uninitialized memory, as Chrome's official builds do on Linux but not on
+# Android, where it is off for size.
+init_stack_vars = false
+
+# The on-device language model service behind Chrome's built-in AI APIs.
+# It is what links Dawn, WebGPU's implementation, into the content layer
+# (patches/1010-utility-without-on-device-model.patch).
+use_on_device_model_service = false
+
+# The inliner Chromium uses for size on 32-bit Android: a model trained to
+# decide what to inline for the smallest code. A sample of twelve large
+# engine sources compiled 21.6% smaller with it on x86-64
+# (patches/1008-ml-size-inliner-for-linux.patch).
+use_ml_inliner = true
+
+# -Oz in place of -Os for code off the hot path: the browser process's
+# logic, networking, services, device access, the shell's window toolkit,
+# tracing and storage (patches/1007-min-size-for-chosen-targets.patch).
+# Blink, V8, Skia, the compositor, base, media and BoringSSL keep -Os.
+zebkit_min_size_patterns = [
+  "//content/browser/*",
+  "//content/utility/*",
+  "//content/services/*",
+  "//net/*",
+  "//services/network/*",
+  "//services/device/*",
+  "//services/audio/*",
+  "//services/storage/*",
+  "//services/tracing/*",
+  "//components/services/*",
+  "//components/download/*",
+  "//components/variations/*",
+  "//components/metrics/*",
+  "//components/ukm/*",
+  "//components/prefs/*",
+  "//components/os_crypt/*",
+  "//components/crash/*",
+  "//components/tracing/*",
+  "//components/permissions/*",
+  "//components/embedder_support/*",
+  "//components/custom_handlers/*",
+  "//components/subresource_filter/*",
+  "//components/network_session_configurator/*",
+  "//device/*",
+  "//storage/*",
+  "//sql/*",
+  "//third_party/sqlite/*",
+  "//third_party/perfetto/*",
+  "//third_party/webrtc/*",
+  "//ui/views/*",
+  "//ui/aura/*",
+  "//ui/ozone/*",
+  "//ui/accessibility/*",
+  "//printing/*",
+  "//media/capture/*",
+  "//media/mojo/*",
+]
+
+# Where the size model costs speed, LLVM's own inliner at -Os: the DOM,
+# style and layout, and the bindings every call from JavaScript into the
+# page goes through. With the model, laying out 20,000 lines of text took a
+# third longer; without it there, as long as before, for 2.4 MiB. Blink's
+# platform library, ICU and HarfBuzz showed no difference.
+zebkit_speed_patterns = [
+  "//third_party/blink/renderer/core/*",
+  "//third_party/blink/renderer/bindings/*",
+]
+
+# V8 at -O2, as on Android, in place of the -O3 it chooses on the desktop,
+# and its optimizing compilers at -Os with the size-trained inliner: 4.1 MiB
+# less, with no difference in scripts/bench.sh. The code V8 generates is not
+# affected; its own C++ is (patches/1011-v8-optimized-for-size.patch). All
+# of V8 at -Os with the size-trained inliner was 3.6 MiB smaller still, but
+# made JSON, regular expressions and parsing half as slow again.
+zebkit_v8_optimization = "//build/config/compiler:optimize_max"
+zebkit_v8_compiler_optimization = "//build/config/compiler:optimize"
+
+# V8 and Blink's heap are in a shared library: thread-local variables that
+# a library can have, as on Android.
+zebkit_v8_tls_local_dynamic = true
+blink_heap_inside_shared_library = true
+
+# The engine is a library an application loads (libzebkit.so.1), and a
+# library must not replace the application's malloc: PartitionAlloc does
+# not take malloc over. Blink and V8 keep their own heaps. BackupRefPtr,
+# the check that a raw_ptr's object is alive, needs PartitionAlloc as malloc
+# and goes with it.
+use_allocator_shim = false
+enable_backup_ref_ptr_support = false
+
+# No dependency on the system's fontconfig: the engine carries its own.
+use_bundled_fontconfig = true

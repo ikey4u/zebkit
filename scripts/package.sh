@@ -1,109 +1,80 @@
 #!/usr/bin/env bash
-# Assemble what a profile ships into one flat, relocatable directory:
-# out/<profile>/package/. Everything we built is stripped. The engine finds
-# its helper processes, injected bundle and GIO plugins next to itself
-# (patches/2001), and the engine and executables carry an $ORIGIN run path,
-# so the directory works wherever it is copied; an embedder only has to load
-# libzebkit from it.
+# Assemble what a profile ships into one flat directory, out/blink/<profile>/package,
+# with every binary stripped.
 #
 #   scripts/package.sh <profile>
 #
-# On macOS the engine is frameworks and the package is laid out
-# differently: scripts/package-macos.sh.
+# The engine is libzebkit.so.1, with zebkit-helper for its child processes,
+# and the headers an application builds against in include/. Its run-time
+# dependencies, as GN lists them, include the content shell's test fonts,
+# test data, mock Vulkan drivers, validation layers and a crash reporter;
+# the list below is what the engine needs to run, and nothing else is
+# copied.
 #
-# PACKAGE_STRIP=0 leaves symbols and debug information in, for a package
-# that is going to be debugged and not shipped.
-#
-# Libraries come from scripts/build-deps.sh when the profile links them.
-# Whatever else the engine needs that a base Linux system does not provide is
-# copied from the host as is, so that the directory, and the size
-# scripts/measure.sh reports for it, is always the whole thing.
+# PACKAGE_STRIP=0 leaves the symbols in.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-[[ "$ZEBKIT_HOST" == macos ]] && exec "$ZEBKIT_ROOT/scripts/package-macos.sh" "$@"
-
 profile="${1:-}"
 require_profile "$profile"
-stage_profile "$profile"
 
-# Libraries every desktop Linux already provides: the C library, the
-# GL/windowing stack with its drivers, and ALSA. These are never bundled.
-SYSTEM_LIBS='^(linux-vdso|ld-linux[a-z0-9_-]*|libc|libm|libdl|librt|libpthread|libresolv|libgcc_s|libstdc\+\+|libasound|libEGL|libGL|libGLESv2|libGLdispatch|libGLX|libOpenGL|libgbm|libdrm|libwayland-[a-z]+|libxkbcommon|libudev|libinput|libX[a-z0-9]*|libxcb[a-z0-9-]*|libsystemd|libcap|libselinux|libmount|libblkid)\.so'
+build_dir="$SRC_DIR/out/$profile"
+package="$OUT_DIR/$profile/package"
+[[ -f "$build_dir/libzebkit.so.1" ]] || die "profile '$profile' is not built; run scripts/build.sh $profile"
 
-package="$build_dir/package"
-deps_lib="$OUT_DIR/deps/prefix/lib"
-uses_deps=0
-[[ "${run_env[*]}" == *"$deps_lib"* ]] && uses_deps=1
-search_path="$stage_dir/lib"
-(( uses_deps )) && search_path+=":$deps_lib"
+files=(
+    libzebkit.so.1             # the engine
+    zebkit-helper              # its renderer, GPU and utility processes
+    content_shell.pak          # resources: Blink's user-agent style sheets, strings, images
+    icudtl.dat                 # ICU's data
+    snapshot_blob.bin          # V8's startup snapshot
+    v8_context_snapshot.bin    # the same with Blink's bindings
+    libEGL.so libGLESv2.so     # ANGLE: OpenGL ES for the compositor and WebGL
+    libvulkan.so.1             # the Vulkan loader ANGLE and SwiftShader go through
+    libvk_swiftshader.so       # SwiftShader: WebGL and compositing without a GPU
+    vk_swiftshader_icd.json
+)
 
 rm -rf "$package"
-mkdir -p "$package/gio/modules"
-
-# add <file> [name]: copy a real file under its run-time name; strip it if we built it.
-add() {
-    local source name
-    source="$(readlink -f "$1")"
-    name="${2:-$(basename "$1")}"
-    cp "$source" "$package/$name"
-    [[ "${PACKAGE_STRIP:-1}" != 0 && "$source" == "$OUT_DIR"/* ]] && strip --strip-unneeded "$package/$name"
-    return 0
-}
-
-engine="$(find "$stage_dir/lib" -maxdepth 1 -name 'libzebkit.so.[0-9]*' ! -name '*.so.*.*' | head -1)"
-[[ -n "$engine" ]] || die "no engine library in $stage_dir/lib"
-add "$engine"
-for helper in "$stage_dir"/libexec/zebkit-*; do
-    add "$helper"
+mkdir -p "$package"
+for file in "${files[@]}"; do
+    [[ -f "$build_dir/$file" ]] || die "$file is not in $build_dir"
+    cp "$build_dir/$file" "$package/"
 done
-add "$(find "$stage_dir/lib" -name 'libzebkit-bundle.so' | head -1)"
 
-# HTTPS needs GIO's TLS backend, which libgio loads as a plugin at run time.
-tls_plugin="$deps_lib/gio/modules/libgiognutls.so"
-(( uses_deps )) && [[ -f "$tls_plugin" ]] \
-    || tls_plugin="$(pkg-config --variable=giomoduledir gio-2.0 2>/dev/null)/libgiognutls.so"
-if [[ -f "$tls_plugin" ]]; then
-    add "$tls_plugin" "gio/modules/libgiognutls.so"
+# The resource pack less the DevTools front end and the browser's internal
+# pages (scripts/trim-pak.py), and ICU's data for the languages zebkit
+# supports (scripts/build-icu-data.sh) in place of Chromium's for all of them.
+python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/content_shell.pak" \
+    "$build_dir/content_shell.pak.info" "$package/content_shell.pak" >&2
+"$ZEBKIT_ROOT/scripts/build-icu-data.sh"
+cp "$OUT_DIR/icu/icudtl.dat" "$package/icudtl.dat"
+
+# The API: <zebkit/zebkit.h> and what the build generated beside it.
+mkdir -p "$package/include"
+cp -R "$ZEBKIT_ROOT/src/engine/include/zebkit" "$package/include/"
+if [[ -d "$build_dir/gen/zebkit/engine/include/zebkit" ]]; then
+    cp -R "$build_dir/gen/zebkit/engine/include/zebkit" "$package/include/"
 fi
 
-# Add what the packaged files themselves ask for (their NEEDED entries),
-# minus what the system provides, and repeat for whatever that brought in.
-# Libraries that only system libraries need are the system's business.
-added=1
-while (( added )); do
-    added=0
-    for file in "$package"/*.so* "$package"/zebkit-* "$package"/gio/modules/*.so; do
-        [[ -f "$file" ]] || continue
-        resolved="$(LD_LIBRARY_PATH="$search_path" ldd "$file" 2>/dev/null | awk '$2 == "=>" && $3 ~ /^\// { print $1, $3 }')"
-        while read -r soname; do
-            [[ "$soname" =~ $SYSTEM_LIBS || -e "$package/$soname" ]] && continue
-            path="$(awk -v n="$soname" '$1 == n { print $2; exit }' <<< "$resolved")"
-            [[ -n "$path" ]] || die "cannot find $soname, needed by $(basename "$file")"
-            add "$path" "$soname"
-            added=1
-        done < <(objdump -p "$file" | awk '/NEEDED/ { print $2 }')
+is_elf() { [[ "$(od -An -tx1 -N4 "$1" | tr -d ' ')" == 7f454c46 ]]; }
+
+strip_tool="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin/llvm-strip"
+if [[ "${PACKAGE_STRIP:-1}" != 0 ]]; then
+    for file in "$package"/*; do
+        if [[ -f "$file" ]] && is_elf "$file"; then "$strip_tool" --strip-all "$file"; fi
     done
-done
-
-mapfile -t binaries < <(find "$package" -type f)
-
-# What an application needs to compile against the endpoint in src/cdp, when
-# the profile has it. The rest of the API is upstream's, in the stage.
-if [[ "$(nm -D --defined-only "$package/$(basename "$engine")")" == *" zebkit_cdp_listen"* ]]; then
-    mkdir -p "$package/include"
-    cp "$ZEBKIT_ROOT/src/cdp/zebkit-cdp.h" "$package/include/"
 fi
-# And to use the libraries inside the engine (scripts/gen-vendor.py).
-if [[ "$(nm -D --defined-only "$package/$(basename "$engine")")" == *" zebkit_vendor_"* ]]; then
-    mkdir -p "$package/include"
-    cp -r "$OUT_DIR/deps/vendor/include/zebkit" "$package/include/"
-fi
-system_libs="$(objdump -p "${binaries[@]}" | awk '/NEEDED/ { print $2 }' | sort -u \
-    | while read -r soname; do [[ -e "$package/$soname" ]] || echo "$soname"; done | paste -sd' ')"
-glibc_floor="$(objdump -T "${binaries[@]}" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1)"
 
-# The size is what runs: headers in include/ are for building against it.
-log "package: $package ($(du -sb --exclude=include "$package" | awk '{ printf "%.1f MiB", $1 / 1048576 }'), ${#binaries[@]} files)"
-log "expects from the system: $system_libs"
-log "oldest usable glibc: ${glibc_floor#GLIBC_}"
+# What the package expects from the system, and the oldest glibc that has
+# every symbol version it uses.
+needed="$(for file in "$package"/*; do
+    if [[ -f "$file" ]] && is_elf "$file"; then readelf -d "$file" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'; fi
+done | sort -u | grep -vxF -f <(ls "$package") | paste -sd' ' -)"
+glibc="$(for file in "$package"/*; do
+    if [[ -f "$file" ]] && is_elf "$file"; then readelf -V "$file" | grep -o 'GLIBC_[0-9.]*' || true; fi
+done | sed 's/GLIBC_//' | sort -uV | tail -1)"
+
+log "expects from the system: $needed"
+log "oldest usable glibc: $glibc"
+log "package: $package"

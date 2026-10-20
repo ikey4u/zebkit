@@ -1,0 +1,18 @@
+Build: zebkit's engine library in the build.
+
+zebkit's own engine code is its src/engine directory, which
+scripts/fetch-upstream.sh links into the tree as //zebkit/engine. GN reads
+only the build files the root one leads to; this adds that directory to
+the group of everything.
+
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -96,6 +96,8 @@ group("gn_all") {
+     }
+   } else {
+     deps = [
++      # zebkit: the engine as a library (src/engine in zebkit's repository).
++      "//zebkit/engine",
+       "//base:base_perftests",
+       "//base:base_unittests",
+       "//build/modules",

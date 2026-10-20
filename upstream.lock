@@ -1,13 +1,18 @@
 # Pinned upstream engine release. Sourced by scripts/lib.sh.
-# Bump all four fields together; scripts/fetch-upstream.sh verifies the hash.
-UPSTREAM_NAME=wpewebkit
-UPSTREAM_VERSION=2.54.1
-UPSTREAM_URL=https://wpewebkit.org/releases/wpewebkit-2.54.1.tar.xz
-UPSTREAM_SHA256=0de8bdfba011f9cd63ba9a9171fa6038dd2c08237894f4082abbb821f29d3fe9
+#
+# The engine is Chromium's content layer and Blink, at a stable release.
+# Bump CHROMIUM_VERSION to another tag of chromium/src; the dependencies
+# (V8, Skia, the toolchain Chromium builds with, its sysroot) follow from
+# the DEPS file at that tag, which gclient reads.
+CHROMIUM_VERSION=155.0.8059.84
+CHROMIUM_URL=https://chromium.googlesource.com/chromium/src.git
 
-# The same release in WebKit's git repository, for macOS: the tarball has
-# the GLib ports only, and the Mac port is built from this commit instead.
-# It is the commit the release tag points at; bump it with the fields above.
-UPSTREAM_GIT_URL=https://github.com/WebKit/WebKit.git
-UPSTREAM_GIT_TAG=wpewebkit-2.54.1
-UPSTREAM_GIT_COMMIT=537776966344c4982751692dd475c94124504271
+# Chromium's checkout and build tools. Pinned, and not left to update
+# themselves, so that a fetch is the same on every machine.
+DEPOT_TOOLS_URL=https://chromium.googlesource.com/chromium/tools/depot_tools.git
+DEPOT_TOOLS_COMMIT=889099791deff38466d471fa6590951c91a1d8ab
+
+# Electron, the size baseline (scripts/electron-baseline.sh): its prebuilt
+# runtime for Linux x86-64, at the stable release, checked by its SHA-256.
+ELECTRON_VERSION=44.9.0
+ELECTRON_LINUX_X64_SHA256=ecced7ecb55697f92ca870939c5988557faa8acd8c222c232cae5913d318c8b9

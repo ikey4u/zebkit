@@ -1,0 +1,136 @@
+Size: V8 optimized as a profile chooses.
+
+On desktop Linux, V8 replaces Chromium's default optimization with -O3
+(gni/v8.gni), so a build that optimizes for size still compiles all of V8
+for speed. Two GN arguments name other configs:
+
+- zebkit_v8_optimization, for all of V8.
+- zebkit_v8_compiler_optimization, for the optimizing compilers
+  (:v8_compiler, Turbofan and Turboshaft) alone.
+
+What runs a page's JavaScript is code V8 generates itself, the builtins in
+its snapshot and what its compilers emit, and neither changes it. V8's own
+C++ does change: the parser, the runtime and the garbage collector with
+the first, how long compiling takes with the second, which runs mostly on
+background threads.
+
+profiles/slim.gn compiles the compilers at -Os with the size-trained
+inliner (patches/1008-ml-size-inliner-for-linux.patch), and the rest of V8
+at -O2, as on Android. All of V8 at -Os with the size-trained inliner was
+tried too: JSON, regular expressions and parsing became half as slow
+again.
+
+A third argument, zebkit_v8_tls_local_dynamic, is for V8 in a shared
+library (libzebkit.so.1), which may also be loaded with dlopen: its
+thread-local variables use the local-dynamic model, as V8's do on Android.
+On desktop Linux V8 uses local-exec, which only an executable can link,
+and V8's own library mode puts every access behind a call.
+
+Upstream's default is unchanged.
+
+--- a/v8/BUILD.gn
++++ b/v8/BUILD.gn
+@@ -1339,6 +1339,11 @@ config("features") {
+     defines += [ "V8_TLS_USED_IN_LIBRARY" ]
+   }
+ 
++  # zebkit: thread-local variables for a shared library (gni/v8.gni).
++  if (zebkit_v8_tls_local_dynamic) {
++    defines += [ "ZEBKIT_V8_TLS_LOCAL_DYNAMIC" ]
++  }
++
+   if (v8_enable_pointer_compression) {
+     defines += [
+       "V8_CONTIGUOUS_COMPRESSED_RO_SPACE",
+@@ -6111,6 +6116,13 @@ v8_cluster_source_set("v8_compiler") {
+   ]
+ 
+   configs = [ ":internal_config" ]
++
++  # zebkit: the compilers' own optimization (gni/v8.gni).
++  if (zebkit_v8_compiler_optimization != "" &&
++      zebkit_v8_chosen_optimization != "") {
++    remove_configs = [ zebkit_v8_chosen_optimization ]
++    configs += [ zebkit_v8_compiler_optimization ]
++  }
+ }
+ 
+ group("v8_compiler_for_mksnapshot") {
+--- a/v8/gni/v8.gni
++++ b/v8/gni/v8.gni
+@@ -390,6 +390,26 @@ v8_inspector_js_protocol = v8_path_prefix + "/include/js_protocol.pdl"
+ # Templates
+ #
+ 
++declare_args() {
++  # zebkit: an optimization config for all of V8 in place of the one V8
++  # chooses below (-O3 on the desktop), such as
++  # "//build/config/compiler:optimize_max" (-O2, as on Android).
++  zebkit_v8_optimization = ""
++
++  # zebkit: an optimization config for V8's optimizing compilers
++  # (:v8_compiler, Turbofan and Turboshaft), such as
++  # "//build/config/compiler:optimize" (Chromium's default: -Os when
++  # optimize_for_size, with the size-trained inliner when use_ml_inliner).
++  # Only how long compiling takes changes, not the code they generate.
++  zebkit_v8_compiler_optimization = ""
++
++  # zebkit: V8 is linked into a shared library (libzebkit.so.1), which may
++  # be loaded with dlopen: its thread-local variables use the local-dynamic
++  # model, as on Android, where V8 would use local-exec, which only an
++  # executable can.
++  zebkit_v8_tls_local_dynamic = false
++}
++
+ # Common configs to remove or add in all v8 targets.
+ v8_remove_configs = [ "//build/config/compiler:default_optimization" ]
+ v8_add_configs = [
+@@ -398,6 +418,9 @@ v8_add_configs = [
+   v8_path_prefix + ":strict_warnings",
+ ]
+ 
++# zebkit: the optimization config chosen below, so that :v8_compiler can
++# replace it.
++_zebkit_v8_chosen = ""
+ if (v8_force_optimize_speed) {
+   # Switch to force -O3 optimization regardless of platform or sanitizer
+   # usage.
+@@ -407,10 +430,21 @@ if (v8_force_optimize_speed) {
+ } else if (((is_posix && !is_android) || is_win) && !using_sanitizer) {
+   # TODO(crbug.com/621335) Rework this so that we don't have the confusion
+   # between "optimize_speed" and "optimize_max".
+-  v8_add_configs += [ "//build/config/compiler:optimize_speed" ]
++  if (zebkit_v8_optimization != "") {
++    _zebkit_v8_chosen = zebkit_v8_optimization
++  } else {
++    _zebkit_v8_chosen = "//build/config/compiler:optimize_speed"
++  }
++  v8_add_configs += [ _zebkit_v8_chosen ]
+ } else {
+-  v8_add_configs += [ "//build/config/compiler:optimize_max" ]
++  if (zebkit_v8_optimization != "") {
++    _zebkit_v8_chosen = zebkit_v8_optimization
++  } else {
++    _zebkit_v8_chosen = "//build/config/compiler:optimize_max"
++  }
++  v8_add_configs += [ _zebkit_v8_chosen ]
+ }
++zebkit_v8_chosen_optimization = _zebkit_v8_chosen
+ 
+ if (!is_debug) {
+   v8_remove_configs += [
+--- a/v8/src/common/thread-local-storage.h
++++ b/v8/src/common/thread-local-storage.h
+@@ -31,7 +31,11 @@
+ #if V8_TLS_LIBRARY_MODE
+ #define V8_TLS_MODEL "local-dynamic"
+ #else
+-#if defined(V8_TARGET_OS_WIN)
++#if defined(ZEBKIT_V8_TLS_LOCAL_DYNAMIC)
++// zebkit: V8 in a shared library that may be loaded with dlopen, as on
++// Android.
++#define V8_TLS_MODEL "local-dynamic"
++#elif defined(V8_TARGET_OS_WIN)
+ #define V8_TLS_MODEL "initial-exec"
+ #elif defined(V8_TARGET_OS_ANDROID)
+ #define V8_TLS_MODEL "local-dynamic"

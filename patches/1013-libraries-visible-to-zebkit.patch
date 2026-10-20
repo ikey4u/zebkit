@@ -1,0 +1,56 @@
+Build: the libraries zebkit exposes may be linked by //zebkit.
+
+zebkit exposes the C libraries inside the engine to applications
+(//zebkit/engine:vendor, docs/VENDOR.md) and links each of them whole into
+libzebkit for that. Chromium restricts which targets may depend on
+libxml and libwebp; this adds //zebkit/* to those lists.
+
+--- a/third_party/libwebp/visibility.gni
++++ b/third_party/libwebp/visibility.gni
+@@ -5,6 +5,8 @@
+ 
+ # This is appended to the visibility list of every public target
+ allowed_visibility = [
++  # zebkit: libwebp for applications (//zebkit/engine:vendor).
++  "//zebkit/*",
+   "//chrome/browser/ui/tab_contents/*",
+   "//chrome/renderer:*",
+   "//chrome/test:*",
+--- a/third_party/libxml/BUILD.gn
++++ b/third_party/libxml/BUILD.gn
+@@ -80,6 +80,7 @@ static_library("xml_reader") {
+   # Do not expand this visibility list without first consulting with the
+   # Security Team.
+   visibility = [
++    "//zebkit/*",  # zebkit: for applications
+     "//base/test:test_support",
+     "//components/policy/core/common:unit_tests",
+ 
+@@ -104,7 +105,10 @@ static_library("xml_reader") {
+ # Please keep in sync with //build/linux/unbundle/libxml.gn.
+ static_library("xml_writer") {
+   # The XmlWriter is considered safe to use from any target.
+-  visibility = [ "*" ]
++  visibility = [
++    "//zebkit/*",  # zebkit: for applications
++    "*",
++  ]
+   sources = [
+     "chromium/xml_writer.cc",
+     "chromium/xml_writer.h",
+@@ -121,6 +125,7 @@ static_library("libxml_utils") {
+   # Do not expand this visibility list without first consulting with the
+   # Security Team.
+   visibility = [
++    "//zebkit/*",  # zebkit: for applications
+     ":xml_reader",
+     ":xml_writer",
+     "//base/test:test_support",
+@@ -140,6 +145,7 @@ static_library("libxml") {
+   # Do not expand this visibility list without first consulting with the
+   # Security Team.
+   visibility = [
++    "//zebkit/*",  # zebkit: for applications
+     ":libxml_utils",
+     ":xml_reader",
+     ":xml_writer",

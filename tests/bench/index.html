@@ -8,6 +8,12 @@ r.strings = t(() => { let s = ''; for (let i = 0; i < 3e5; i++) s += i.toString(
 r.json = t(() => { const o = []; for (let i = 0; i < 1e5; i++) o.push({ a: i, b: [i, i + 1], c: 'x' + i }); for (let k = 0; k < 5; k++) JSON.parse(JSON.stringify(o)); });
 r.regex = t(() => { const s = 'the quick brown fox jumps over the lazy dog '.repeat(2e4); let n = 0; for (let k = 0; k < 5; k++) n += s.replace(/\b(\w)(\w*)\b/g, (m, a, b) => a.toUpperCase() + b).length; return n; });
 r.sort = t(() => { const a = Array.from({ length: 3e5 }, (_, i) => (i * 2654435761) % 1000003); a.sort((x, y) => x - y); });
+// V8's own C++ rather than code it generates: the parser and bytecode
+// compiler on 3,000 distinct functions, the garbage collector with a large
+// live heap, and the optimizing compilers on 300 distinct hot functions.
+r.parse = t(() => { let src = ''; for (let i = 0; i < 3000; i++) src += `function f${i}(a, b) { const o = { x: a + ${i}, y: [b, ${i}], z: 's${i}' }; if (o.x > b) { for (let k = 0; k < 3; k++) o.y.push(k * a); } return o.y.length + o.z.length; }\n`; src += 'let s = 0;'; for (let i = 0; i < 3000; i++) src += `s += f${i}(${i}, 2);`; return new Function(src + 'return s;')(); });
+r.gc = t(() => { const keep = []; for (let i = 0; i < 1e6; i++) keep.push({ i, next: keep[i - 1] || null, s: 'k' + i }); let x = 0; for (let k = 0; k < 1e7; k++) { const o = { a: k, b: [k] }; x += o.b.length; } return keep.length + x; });
+r.jit = t(() => { let s = 0; for (let i = 0; i < 300; i++) { const f = new Function('a', `let s = 0; for (let k = 0; k < a; k++) s += (k * ${i + 1}) % 13; return s;`); for (let j = 0; j < 200; j++) s += f(100); } return s; });
 r.dom = t(() => { const o = document.getElementById('o'); for (let i = 0; i < 2e4; i++) { const d = document.createElement('div'); d.textContent = 'row ' + i; d.style.padding = (i % 5) + 'px'; o.appendChild(d); } return o.offsetHeight; });
 fetch('/result?profile=' + new URLSearchParams(location.search).get('profile') + '&' + Object.entries(r).map(([k, v]) => k + '=' + v).join('&'));
 </script>

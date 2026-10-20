@@ -1,0 +1,27 @@
+# GN arguments every profile starts from. scripts/build.sh writes this file
+# and then the profile's into out/<profile>/args.gn; a profile can override
+# anything set here.
+
+target_os = "linux"
+target_cpu = "x64"
+
+# A release build as Google ships it: optimized, ThinLTO, no debug
+# information, one static binary rather than hundreds of libraries.
+is_debug = false
+is_official_build = true
+is_component_build = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+
+# Size is measured by component from the linker's map, with Chromium's
+# supersize (tools/binary_size), so no debug information is needed for it.
+generate_linker_map = true
+
+# Media playback is required, H.264 and AAC included.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+
+# Nothing here builds remotely.
+use_remoteexec = false
+treat_warnings_as_errors = false

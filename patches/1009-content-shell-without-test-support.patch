@@ -1,0 +1,505 @@
+Size: the content shell without Chromium's test support.
+
+The content shell links the test support of content/, Views, Aura and the
+device service for the browser tests that run inside it, and with it a
+benchmark library, test services, the on-device model service, TFLite and
+the SPIR-V tools. A GN argument, content_shell_test_support, leaves it out.
+The services only tests use (the test, echo and Rust test services, the
+sandbox status helper, the internals object) are then not built, under
+CONTENT_SHELL_TEST_SUPPORT, which content_shell_lib exports so that every
+user of its headers sees the same classes.
+
+What the shell needs of the test support it compiles itself: a background
+sync controller and an accept-language delegate, which content requires,
+the registry behind navigator.registerProtocolHandler(), and the Views
+delegate its windows are made with. The feature list comes
+from the command line, in place of SetupFieldTrials(), which also applies
+Chromium's testing configuration of field trials: the engine runs with
+Chromium's default features, as a browser does.
+
+Off in profiles/slim.gn. Upstream's default is unchanged.
+
+--- a/content/shell/BUILD.gn
++++ b/content/shell/BUILD.gn
+@@ -64,8 +64,21 @@
+   # slim profile leaves it out: the shell is the engine there, and no web
+   # tests run in it.
+   content_shell_web_tests = !is_android
++
++  # Chromium's test support, which the shell links for the browser tests
++  # that run in it. zebkit's slim profile leaves it out, with the services
++  # only tests use.
++  content_shell_test_support = true
+ }
+ support_web_tests = content_shell_web_tests
++assert(content_shell_test_support || !support_web_tests,
++       "The web tests need the test support")
++
++config("test_support_config") {
++  if (content_shell_test_support) {
++    defines = [ "CONTENT_SHELL_TEST_SUPPORT" ]
++  }
++}
+ 
+ config("web_tests_config") {
+   if (support_web_tests) {
+@@ -321,6 +334,39 @@
+     check_includes = false
+   }
+ 
++  public_configs = [ ":test_support_config" ]
++
++  if (content_shell_test_support) {
++    deps = [
++      ":rust_test_mojom",
++      ":rust_test_mojom_js",
++      ":rust_test_service_ffi",
++      "//components/custom_handlers:test_support",
++      "//components/services/storage/test_api",
++      "//content/test:content_test_mojo_bindings",
++      "//content/test:test_support",
++      "//services/device/public/cpp:test_support",
++      "//services/test/echo:lib",
++      "//services/test/echo/public/mojom",
++    ]
++  } else {
++    # What the shell needs of Chromium's test support, without the test
++    # support: a background sync controller and an accept-language
++    # delegate, which content requires, and the registry behind
++    # navigator.registerProtocolHandler().
++    sources += [
++      "//components/custom_handlers/simple_protocol_handler_registry_factory.cc",
++      "//components/custom_handlers/simple_protocol_handler_registry_factory.h",
++      "//components/custom_handlers/test_protocol_handler_registry_delegate.cc",
++      "//components/custom_handlers/test_protocol_handler_registry_delegate.h",
++      "//content/test/mock_background_sync_controller.cc",
++      "//content/test/mock_background_sync_controller.h",
++      "//content/test/mock_reduce_accept_language_controller_delegate.cc",
++      "//content/test/mock_reduce_accept_language_controller_delegate.h",
++    ]
++    deps = []
++  }
++
+   public_deps = [
+     ":android_shell_descriptors",
+ 
+@@ -334,19 +380,15 @@
+     "//content/public/utility",
+     "//services/network:network_service",
+   ]
+-  deps = [
++  deps += [
+     ":content_browsertests_mojom",
+     ":protocol_sources",
+     ":resources",
+-    ":rust_test_mojom",
+-    ":rust_test_mojom_js",
+-    ":rust_test_service_ffi",
+     ":shell_controller_mojom",
+     "//base",
+     "//base:base_static",
+     "//components/cdm/renderer",
+     "//components/custom_handlers",
+-    "//components/custom_handlers:test_support",
+     "//components/embedder_support",
+     "//components/embedder_support:user_agent",
+     "//components/input",
+@@ -360,7 +402,6 @@
+     "//components/performance_manager",
+     "//components/permissions",
+     "//components/prefs",
+-    "//components/services/storage/test_api",
+     "//components/surface_embed/renderer",
+     "//components/url_formatter",
+     "//components/variations/service",
+@@ -368,18 +409,13 @@
+     "//content:content_resources",
+     "//content/common:main_frame_counter",
+     "//content/public/common",
+-    "//content/test:content_test_mojo_bindings",
+-    "//content/test:test_support",
+     "//device/bluetooth",
+     "//media",
+     "//media/mojo:buildflags",
+     "//media/mojo/services",
+     "//net",
+     "//net:net_resources",
+-    "//services/device/public/cpp:test_support",
+     "//services/network/public/cpp",
+-    "//services/test/echo:lib",
+-    "//services/test/echo/public/mojom",
+     "//third_party/blink/public:blink",
+     "//third_party/blink/public:image_resources",
+     "//third_party/blink/public:resources",
+@@ -468,10 +504,12 @@
+   if (use_aura) {
+     deps += [
+       "//ui/aura",
+-      "//ui/aura:test_support",
+       "//ui/events",
+       "//ui/wm",
+     ]
++    if (content_shell_test_support) {
++      deps += [ "//ui/aura:test_support" ]
++    }
+ 
+     if (shell_use_toolkit_views) {
+       sources += [
+@@ -482,10 +520,28 @@
+       deps += [
+         "//ui/color:color_headers",
+         "//ui/resources",
+-        "//ui/views:test_support",
+         "//ui/views/controls/webview",
+-        "//ui/wm:test_support",
+       ]
++      if (content_shell_test_support) {
++        deps += [
++          "//ui/views:test_support",
++          "//ui/wm:test_support",
++        ]
++      } else {
++        # The Views delegate the shell's windows are made with, which is
++        # the only part of the Views test support it uses. The Aura
++        # platform data is for the shell without Views and uses Aura's.
++        sources += [
++          "//ui/views/test/desktop_test_views_delegate.h",
++          "//ui/views/test/desktop_test_views_delegate_aura.cc",
++          "//ui/views/test/test_views_delegate.h",
++          "//ui/views/test/test_views_delegate_aura.cc",
++        ]
++        sources -= [
++          "browser/shell_platform_data_aura.cc",
++          "browser/shell_platform_data_aura.h",
++        ]
++      }
+     } else {
+       sources += [
+         "browser/shell_platform_delegate_aura.cc",
+--- a/content/shell/utility/shell_content_utility_client.h
++++ b/content/shell/utility/shell_content_utility_client.h
+@@ -5,8 +5,10 @@
+ #ifndef CONTENT_SHELL_UTILITY_SHELL_CONTENT_UTILITY_CLIENT_H_
+ #define CONTENT_SHELL_UTILITY_SHELL_CONTENT_UTILITY_CLIENT_H_
+ 
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/public/test/audio_service_test_helper.h"
+ #include "content/public/test/network_service_test_helper.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/public/utility/content_utility_client.h"
+ 
+ namespace content {
+@@ -26,8 +28,10 @@
+   void RegisterIOThreadServices(mojo::ServiceFactory& services) override;
+ 
+  private:
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   std::unique_ptr<NetworkServiceTestHelper> network_service_test_helper_;
+   std::unique_ptr<AudioServiceTestHelper> audio_service_test_helper_;
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+   bool register_sandbox_status_helper_ = false;
+ };
+ 
+--- a/content/shell/utility/shell_content_utility_client.cc
++++ b/content/shell/utility/shell_content_utility_client.cc
+@@ -23,15 +23,12 @@
+ #include "base/memory/writable_shared_memory_region.h"
+ #include "base/process/process.h"
+ #include "base/task/single_thread_task_runner.h"
+-#include "base/test/allow_check_is_test_for_testing.h"
+ #include "build/build_config.h"
+-#include "components/services/storage/test_api/test_api.h"
+ #include "content/common/pseudonymization_salt.h"
+ #include "content/common/skia_utils.h"
+ #include "content/public/child/child_thread.h"
+ #include "content/public/common/content_switches.h"
+ #include "content/public/common/pseudonymization_util.h"
+-#include "content/public/test/test_service.mojom.h"
+ #include "content/public/utility/utility_thread.h"
+ #include "content/shell/common/power_monitor_test_impl.h"
+ #include "mojo/public/cpp/bindings/binder_map.h"
+@@ -41,11 +38,17 @@
+ #include "mojo/public/cpp/bindings/service_factory.h"
+ #include "mojo/public/cpp/system/buffer.h"
+ #include "sandbox/policy/sandbox.h"
++
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
++#include "base/test/allow_check_is_test_for_testing.h"
++#include "components/services/storage/test_api/test_api.h"
++#include "content/public/test/test_service.mojom.h"
+ #include "services/test/echo/echo_service.h"
+ 
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+ #include "content/test/sandbox_status_service.h"
+ #endif
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ 
+ #if BUILDFLAG(IS_POSIX)
+ #include "base/file_descriptor_store.h"
+@@ -53,6 +56,8 @@
+ 
+ namespace content {
+ 
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
++
+ namespace {
+ 
+ class TestUtilityServiceImpl : public mojom::TestService {
+@@ -193,7 +198,10 @@
+ 
+ }  // namespace
+ 
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
++
+ ShellContentUtilityClient::ShellContentUtilityClient(bool is_browsertest) {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   if (is_browsertest &&
+       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+           switches::kProcessType) == switches::kUtilityProcess) {
+@@ -203,6 +211,7 @@
+     storage::InjectTestApiImplementation();
+     register_sandbox_status_helper_ = true;
+   }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ }
+ 
+ ShellContentUtilityClient::~ShellContentUtilityClient() = default;
+@@ -212,7 +221,8 @@
+   binders->Add<mojom::PowerMonitorTest>(
+       &PowerMonitorTestImpl::MakeSelfOwnedReceiver,
+       base::SingleThreadTaskRunner::GetCurrentDefault());
+-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
++    defined(CONTENT_SHELL_TEST_SUPPORT)
+   if (register_sandbox_status_helper_) {
+     binders->Add<content::mojom::SandboxStatusService>(
+         base::BindRepeating(
+@@ -224,8 +234,10 @@
+ 
+ void ShellContentUtilityClient::RegisterIOThreadServices(
+     mojo::ServiceFactory& services) {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   services.Add(RunTestService);
+   services.Add(RunEchoService);
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ }
+ 
+ }  // namespace content
+--- a/content/shell/renderer/shell_content_renderer_client.cc
++++ b/content/shell/renderer/shell_content_renderer_client.cc
+@@ -17,7 +17,9 @@
+ #include "base/strings/string_number_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "base/test/allow_check_is_test_for_testing.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "base/types/pass_key.h"
+ #include "components/cdm/renderer/external_clear_key_key_system_info.h"
+ #include "components/network_hints/renderer/web_prescient_networking_impl.h"
+@@ -30,7 +32,9 @@
+ #include "content/public/common/web_identity.h"
+ #include "content/public/renderer/render_frame.h"
+ #include "content/public/renderer/render_thread.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/public/test/test_service.mojom.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/shell/common/main_frame_counter_test_impl.h"
+ #include "content/shell/common/power_monitor_test_impl.h"
+ #include "content/shell/common/shell_switches.h"
+@@ -47,7 +51,9 @@
+ #include "third_party/blink/public/platform/web_url_error.h"
+ #include "third_party/blink/public/web/modules/credentialmanagement/throttle_helper.h"
+ #include "third_party/blink/public/web/web_local_frame.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "third_party/blink/public/web/web_testing_support.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "third_party/blink/public/web/web_view.h"
+ #include "v8/include/v8-initialization.h"
+ #include "v8/include/v8.h"
+@@ -68,6 +74,7 @@
+ 
+ namespace {
+ 
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ // A test service which can be driven by browser tests for various reasons.
+ class TestRendererServiceImpl : public mojom::TestService {
+  public:
+@@ -180,6 +187,7 @@
+ 
+   mojo::Receiver<mojom::TestService> receiver_;
+ };
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ 
+ class ShellContentRendererUrlLoaderThrottleProvider
+     : public blink::URLLoaderThrottleProvider {
+@@ -242,20 +250,24 @@
+   scoped_refptr<base::SequencedTaskRunner> main_thread_task_runner_;
+ };
+ 
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ void CreateRendererTestService(
+     mojo::PendingReceiver<mojom::TestService> receiver) {
+   // Owns itself.
+   new TestRendererServiceImpl(std::move(receiver));
+ }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ 
+ }  // namespace
+ 
+ ShellContentRendererClient::ShellContentRendererClient(bool is_browsertest) {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   if (is_browsertest &&
+       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+           switches::kProcessType) == switches::kRendererProcess) {
+     base::test::AllowCheckIsTestForTesting();
+   }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ }
+ 
+ ShellContentRendererClient::~ShellContentRendererClient() {
+@@ -321,9 +333,11 @@
+ 
+ void ShellContentRendererClient::ExposeInterfacesToBrowser(
+     mojo::BinderMap* binders) {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   binders->Add<mojom::TestService>(
+       &CreateRendererTestService,
+       base::SingleThreadTaskRunner::GetCurrentDefault());
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+   binders->Add<mojom::MemoryCoordinatorTest>(
+       base::BindRepeating(&MemoryCoordinatorTestImpl::Bind),
+       base::SingleThreadTaskRunner::GetCurrentDefault());
+@@ -403,10 +417,12 @@
+ 
+ void ShellContentRendererClient::DidInitializeWorkerContextOnWorkerThread(
+     v8::Local<v8::Context> context) {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+           switches::kExposeInternalsForTesting)) {
+     blink::WebTestingSupport::InjectInternalsObject(context);
+   }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ }
+ 
+ std::unique_ptr<blink::URLLoaderThrottleProvider>
+--- a/content/shell/renderer/shell_render_frame_observer.cc
++++ b/content/shell/renderer/shell_render_frame_observer.cc
+@@ -11,7 +11,9 @@
+ #include "content/shell/common/render_frame_test_helper.mojom.h"
+ #include "content/shell/common/shell_switches.h"
+ #include "content/shell/renderer/render_frame_test_helper.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "third_party/blink/public/web/web_testing_support.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ 
+ namespace content {
+ 
+@@ -25,11 +27,13 @@
+ }
+ 
+ void ShellRenderFrameObserver::DidClearWindowObject() {
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   auto& cmd = *base::CommandLine::ForCurrentProcess();
+   if (cmd.HasSwitch(switches::kExposeInternalsForTesting)) {
+     blink::WebTestingSupport::InjectInternalsObject(
+         render_frame()->GetWebFrame());
+   }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ }
+ 
+ void ShellRenderFrameObserver::OnInterfaceRequestForFrame(
+--- a/content/shell/browser/shell_content_browser_client.cc
++++ b/content/shell/browser/shell_content_browser_client.cc
+@@ -18,6 +18,7 @@
+ #include "base/containers/fixed_flat_set.h"
+ #include "base/containers/flat_set.h"
+ #include "base/feature_list.h"
++#include "base/metrics/field_trial.h"
+ #include "base/files/file.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/logging.h"
+@@ -59,17 +60,22 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_contents_view_delegate.h"
+ #include "content/public/common/content_features.h"
++#include "content/public/common/content_switch_dependent_feature_overrides.h"
+ #include "content/public/common/content_switches.h"
+ #include "content/public/common/isolated_world_ids.h"
+ #include "content/public/common/url_constants.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/public/test/setup_field_trials.h"
+ #include "content/shell/browser/rust_test_service_ffi.rs.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/shell/browser/shell.h"
+ #include "content/shell/browser/shell_browser_context.h"
+ #include "content/shell/browser/shell_browser_main_parts.h"
+ #include "content/shell/browser/shell_devtools_manager_delegate.h"
+ #include "content/shell/browser/shell_web_contents_view_delegate_creator.h"
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/shell/common/rust_test.test-mojom.h"
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #include "content/shell/common/shell_controller.test-mojom.h"
+ #include "content/shell/common/shell_paths.h"
+ #include "content/shell/common/shell_switches.h"
+@@ -198,6 +204,7 @@
+   void ShutDown() override { Shell::Shutdown(); }
+ };
+ 
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+ void BindRustTestServiceReceiver(
+     RenderFrameHost* render_frame_host,
+     mojo::PendingReceiver<content::rust_test::mojom::RustTestService>
+@@ -206,6 +213,29 @@
+       receiver.PassPipe());
+   content::rust_test::BindRustTestService(std::move(pipe));
+ }
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
++
++#if !defined(CONTENT_SHELL_TEST_SUPPORT)
++// The features of the command line (--enable-features, --disable-features,
++// and those its other switches imply) and the field trials it forces, in
++// place of SetupFieldTrials(), which is test support and also applies
++// Chromium's testing configuration of field trials.
++void SetupFeatureList() {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  // Child processes are sent the trials in this list.
++  static base::NoDestructor<base::FieldTrialList> field_trial_list;
++  base::FieldTrialList::CreateTrialsFromString(
++      command_line.GetSwitchValueASCII(::switches::kForceFieldTrials));
++  auto feature_list = std::make_unique<base::FeatureList>();
++  feature_list->InitFromCommandLine(
++      command_line.GetSwitchValueASCII(::switches::kEnableFeatures),
++      command_line.GetSwitchValueASCII(::switches::kDisableFeatures));
++  feature_list->RegisterExtraFeatureOverrides(
++      GetSwitchDependentFeatureOverrides(command_line));
++  base::FeatureList::SetInstance(std::move(feature_list));
++}
++#endif  // !defined(CONTENT_SHELL_TEST_SUPPORT)
+ 
+ void BindNetworkHintsHandler(
+     content::RenderFrameHost* frame_host,
+@@ -637,8 +667,10 @@
+       ->GetBinders()
+       .ExposeInterfacesToRenderFrame(map);
+   map->Add<network_hints::mojom::NetworkHintsHandler>(&BindNetworkHintsHandler);
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   map->Add<content::rust_test::mojom::RustTestService>(
+       base::BindRepeating(&BindRustTestServiceReceiver));
++#endif  // defined(CONTENT_SHELL_TEST_SUPPORT)
+ #if BUILDFLAG(IS_WIN)
+   map->Add<media::mojom::MediaFoundationPreferences>(
+       &BindMediaFoundationPreferences);
+@@ -900,7 +932,11 @@
+ 
+ void ShellContentBrowserClient::CreateFeatureListAndFieldTrials() {
+   GetSharedState().local_state = CreateLocalState();
++#if defined(CONTENT_SHELL_TEST_SUPPORT)
+   SetupFieldTrials();
++#else
++  SetupFeatureList();
++#endif
+ }
+ 
+ std::unique_ptr<DigitalIdentityProvider>
