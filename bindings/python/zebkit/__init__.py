@@ -510,6 +510,8 @@ _pdf_set_metadata = _declare("zebkit_pdf_set_metadata", _B, _P, _S, _EP)
 _pdf_page_count = _declare("zebkit_pdf_page_count", _I, _P)
 _pdf_page = _declare("zebkit_pdf_page", _P, _P, _I, _EP)
 _pdf_render = _declare("zebkit_pdf_render", _P, _P, _I, ctypes.POINTER(_RenderOptions), _IP, _IP, _EP)
+_pdf_render_annotation = _declare("zebkit_pdf_render_annotation", _P, _P, _I, _I, _I,
+                                  ctypes.POINTER(_RenderOptions), _IP, _IP, _EP)
 _pdf_text = _declare("zebkit_pdf_text", _P, _P, _I, _EP)
 _pdf_text_layout = _declare("zebkit_pdf_text_layout", _P, _P, _I, _EP)
 _pdf_text_rects = _declare("zebkit_pdf_text_rects", _P, _P, _I, _I, _I, _EP)
@@ -595,6 +597,20 @@ class Pdf:
                           ctypes.byref(out_height), ctypes.byref(error))
         if not out:
             _raise(error, "the page cannot be rendered")
+        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
+
+    def render_annotation(self, index, annotation, mode=0, scale=1.0, rotation=0, background=0):
+        """(width, height, RGBA bytes) of an annotation's appearance alone (mode 0
+        normal, 1 rollover, 2 down), or None when it has no such appearance."""
+        options = _RenderOptions(scale, rotation, 0, background, 0, 0, 0, 0)
+        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
+        out = _pdf_render_annotation(self._handle, index, annotation, mode, ctypes.byref(options),
+                                     ctypes.byref(out_width), ctypes.byref(out_height), ctypes.byref(error))
+        if not out:
+            message = _string(error.value) if error.value else "the annotation cannot be rendered"
+            if message == "no appearance":
+                return None
+            raise Error(message)
         return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
 
     def text(self, index):

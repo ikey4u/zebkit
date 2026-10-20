@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <optional>
@@ -104,6 +105,43 @@ base::Value BytesValue(const uint8_t* data, size_t size) {
   return base::Value(base::Value::BlobStorage(data, data + size));
 }
 
+// Render options from a script's object, over these defaults.
+zebkit_pdf_render_options RenderOptions(const base::Value* given,
+                                        unsigned flags,
+                                        uint32_t background) {
+  zebkit_pdf_render_options options = {};
+  options.flags = flags;
+  options.background = background;
+  if (!given || !given->is_dict())
+    return options;
+  auto number = [&](const char* key, double fallback) {
+    const base::Value* value = given->GetDict().Find(key);
+    return value && (value->is_int() || value->is_double()) ? value->GetDouble()
+                                                            : fallback;
+  };
+  options.scale = static_cast<float>(number("scale", 1));
+  options.rotation = static_cast<int>(number("rotation", 0));
+  options.flags = static_cast<unsigned>(number("flags", options.flags));
+  options.background =
+      static_cast<uint32_t>(number("background", options.background));
+  options.x = static_cast<int>(number("x", 0));
+  options.y = static_cast<int>(number("y", 0));
+  options.width = static_cast<int>(number("width", 0));
+  options.height = static_cast<int>(number("height", 0));
+  return options;
+}
+
+// {width, height, data} of RGBA @pixels, which are freed.
+base::Value Image(uint8_t* pixels, int width, int height) {
+  base::DictValue image;
+  image.Set("width", width);
+  image.Set("height", height);
+  image.Set("data",
+            BytesValue(pixels, static_cast<size_t>(width) * height * 4));
+  free(pixels);
+  return base::Value(std::move(image));
+}
+
 // What a document is asked for, on the PDF sequence. @args are the call's
 // after the document's id.
 std::vector<int> IntList(const base::ListValue& args, size_t index) {
@@ -181,39 +219,76 @@ Answer Work(zebkit_pdf* pdf,
     return Json(zebkit_pdf_page(pdf, IntArg(args, 0), &error), error,
                 "no page");
   if (method == "render") {
-    zebkit_pdf_render_options options = {};
-    options.flags = ZEBKIT_PDF_RENDER_ANNOTATIONS;
-    options.background = 0xffffffff;
-    if (args.size() > 1 && args[1].is_dict()) {
-      const base::DictValue& given = args[1].GetDict();
-      auto number = [&](const char* key, double fallback) {
-        const base::Value* value = given.Find(key);
-        return value && (value->is_int() || value->is_double())
-                   ? value->GetDouble()
-                   : fallback;
-      };
-      options.scale = static_cast<float>(number("scale", 1));
-      options.rotation = static_cast<int>(number("rotation", 0));
-      options.flags = static_cast<unsigned>(number("flags", options.flags));
-      options.background =
-          static_cast<uint32_t>(number("background", options.background));
-      options.x = static_cast<int>(number("x", 0));
-      options.y = static_cast<int>(number("y", 0));
-      options.width = static_cast<int>(number("width", 0));
-      options.height = static_cast<int>(number("height", 0));
-    }
+    zebkit_pdf_render_options options = RenderOptions(
+        args.size() > 1 ? &args[1] : nullptr, ZEBKIT_PDF_RENDER_ANNOTATIONS,
+        0xffffffff);
     int width = 0, height = 0;
     uint8_t* pixels =
         zebkit_pdf_render(pdf, IntArg(args, 0), &options, &width, &height,
                           &error);
     if (!pixels)
       return Failed(error, "the page cannot be rendered");
-    base::DictValue image;
-    image.Set("width", width);
-    image.Set("height", height);
-    image.Set("data", BytesValue(pixels, static_cast<size_t>(width) * height * 4));
-    free(pixels);
-    return Ok(base::Value(std::move(image)));
+    return Ok(Image(pixels, width, height));
+  }
+  if (method == "renderAnnotation") {
+    zebkit_pdf_render_options options =
+        RenderOptions(args.size() > 3 ? &args[3] : nullptr, 0, 0);
+    int width = 0, height = 0;
+    uint8_t* pixels = zebkit_pdf_render_annotation(
+        pdf, IntArg(args, 0), IntArg(args, 1), IntArg(args, 2), &options,
+        &width, &height, &error);
+    if (!pixels) {
+      // An annotation without that appearance is not an error here.
+      if (error && std::string_view(error) == "no appearance") {
+        free(error);
+        return Ok(base::Value());
+      }
+      return Failed(error, "the annotation cannot be rendered");
+    }
+    return Ok(Image(pixels, width, height));
+  }
+  if (method == "renderAnnotations") {
+    // Every annotation's appearances, for a layer above a page rendered
+    // without them: [{index, name, rect, normal, rollover, down}].
+    const int page = IntArg(args, 0);
+    zebkit_pdf_render_options options =
+        RenderOptions(args.size() > 1 ? &args[1] : nullptr, 0, 0);
+    char* json = zebkit_pdf_annotations(pdf, page, &error);
+    if (!json)
+      return Failed(error, "no page");
+    std::optional<base::Value> annotations = base::JSONReader::Read(
+        json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    free(json);
+    base::ListValue layer;
+    if (!annotations || !annotations->is_list())
+      return Ok(base::Value(std::move(layer)));
+    for (const base::Value& annotation : annotations->GetList()) {
+      const base::DictValue& item = annotation.GetDict();
+      const base::ListValue* modes = item.FindList("appearances");
+      if (!modes || modes->empty())
+        continue;
+      base::DictValue entry;
+      entry.Set("index", item.FindInt("index").value_or(-1));
+      if (const std::string* name = item.FindString("name"))
+        entry.Set("name", *name);
+      if (const base::ListValue* rect = item.FindList("rect"))
+        entry.Set("rect", rect->Clone());
+      constexpr const char* kModes[] = {"normal", "rollover", "down"};
+      for (int mode = 0; mode < 3; ++mode) {
+        if (std::ranges::find(*modes, base::Value(kModes[mode])) ==
+            modes->end()) {
+          continue;
+        }
+        int width = 0, height = 0;
+        uint8_t* pixels = zebkit_pdf_render_annotation(
+            pdf, page, item.FindInt("index").value_or(-1), mode, &options,
+            &width, &height, nullptr);
+        if (pixels)
+          entry.Set(kModes[mode], Image(pixels, width, height));
+      }
+      layer.Append(std::move(entry));
+    }
+    return Ok(base::Value(std::move(layer)));
   }
   if (method == "text") {
     char* text = zebkit_pdf_text(pdf, IntArg(args, 0), &error);
@@ -277,6 +352,22 @@ Answer Work(zebkit_pdf* pdf,
     if (!zebkit_pdf_flatten(pdf, IntArg(args, 0), print, &error))
       return Failed(error, "the page cannot be flattened");
     return Ok(base::Value());
+  }
+  if (method == "redact") {
+    // (page, areas [[l, b, r, t], ...] or null for the page's marks, fill)
+    std::string areas;
+    if (args.size() > 1 && args[1].is_list())
+      areas = base::WriteJson(args[1]).value_or("[]");
+    const uint32_t fill =
+        args.size() > 2 && (args[2].is_int() || args[2].is_double())
+            ? static_cast<uint32_t>(args[2].GetDouble())
+            : 0x000000ff;
+    const int redacted = zebkit_pdf_redact(
+        pdf, IntArg(args, 0), areas.empty() ? nullptr : areas.c_str(), fill,
+        &error);
+    if (redacted < 0)
+      return Failed(error, "the page cannot be redacted");
+    return Ok(base::Value(redacted));
   }
   if (method == "attachments")
     return Json(zebkit_pdf_attachments(pdf, &error), error, "no attachments");

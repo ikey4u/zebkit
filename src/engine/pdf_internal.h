@@ -8,6 +8,7 @@
 
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "public/fpdf_annot.h"
@@ -53,6 +54,45 @@ int RedactObjects(FPDF_PAGE page, const std::vector<std::array<float, 4>>& areas
 // Generates the annotation's appearance again from its entries, for the
 // types PDFium makes appearances for; others keep theirs.
 void RegenerateAppearance(FPDF_DOCUMENT document, FPDF_ANNOTATION annot);
+
+// The appearances an annotation has: 1 normal, 2 rollover, 4 down.
+int AppearanceModes(FPDF_ANNOTATION annot);
+
+// Draws appearance @mode (0 normal, 1 rollover, 2 down) of the annotation
+// into @bitmap, R, G, B, A in memory, with @matrix (a, b, c, d, e, f) from
+// page space to its pixels. False when it has no such appearance, or is
+// hidden.
+bool DrawAnnotation(FPDF_PAGE page,
+                    FPDF_ANNOTATION annot,
+                    int mode,
+                    FPDF_BITMAP bitmap,
+                    const float matrix[6]);
+
+// The object number of the page's dictionary.
+int PageObjectNumber(FPDF_PAGE page);
+
+// A PDF object as plain values, between PDFium's objects and JSON
+// (pdf.cc): an indirect reference is its object number, not followed.
+struct Value {
+  enum class Kind { kNull, kBool, kNumber, kString, kName, kArray, kDict, kRef };
+  Kind kind = Kind::kNull;
+  bool boolean = false;
+  double number = 0;  // a number; the object number of a reference
+  std::string text;   // a string, UTF-8; a name, without its slash
+  std::vector<Value> items;
+  std::vector<std::pair<std::string, Value>> entries;
+};
+
+// The annotation dictionary's entries but its appearance (/AP) and its
+// page (/P).
+Value AnnotationEntries(FPDF_ANNOTATION annot);
+
+// Sets entry @key of the annotation dictionary to @value; null removes
+// it. A reference must be to an object of @document.
+bool SetAnnotationEntry(FPDF_DOCUMENT document,
+                        FPDF_ANNOTATION annot,
+                        const std::string& key,
+                        const Value& value);
 
 }  // namespace zebkit::pdf
 

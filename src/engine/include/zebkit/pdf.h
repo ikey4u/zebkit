@@ -59,6 +59,8 @@ ZEBKIT_API uint8_t *zebkit_pdf_save(zebkit_pdf *pdf, unsigned flags, size_t *siz
  *   {"pages": 12, "version": 17, "encrypted": false, "securityRevision": -1,
  *    "permissions": {"print", "modify", "copy", "annotate", "fillForms",
  *                    "extract", "assemble", "printHighQuality"} (booleans),
+ *    "permissionBits": 4294967292, "userPermissionBits": ... (the /P bits,
+ *                    with and without the owner's password),
  *    "form": "none" | "acro" | "xfa",
  *    "tagged": false, "language": "en-US",
  *    "metadata": {"title", "author", "subject", "keywords", "creator",
@@ -78,7 +80,7 @@ ZEBKIT_API int zebkit_pdf_page_count(zebkit_pdf *pdf);
 
 /*
  * A page, as JSON: {"width": 612, "height": 792, "rotation": 0 | 90 | 180 |
- * 270, "label": "iv", "mediaBox": [l, b, r, t], "cropBox", "bleedBox",
+ * 270, "objectNumber": 12, "label": "iv", "mediaBox": [l, b, r, t], "cropBox", "bleedBox",
  * "trimBox", "artBox" (those it has)}. Width and height are the page as it
  * is shown: its crop box, turned by its rotation, as zebkit_pdf_render()
  * draws it at scale 1.
@@ -114,6 +116,19 @@ typedef struct {
 ZEBKIT_API uint8_t *zebkit_pdf_render(zebkit_pdf *pdf, int page, const zebkit_pdf_render_options *options,
                                       int *width, int *height, char **error);
 
+/*
+ * Renders appearance @mode (0 normal, 1 rollover, 2 down: those
+ * zebkit_pdf_annotations() lists under "appearances") of annotation
+ * @annotation of the page, alone: an image of its rectangle at the
+ * options' scale, turned clockwise by their rotation (not by the page's),
+ * on their background, which here is transparent when @options is NULL.
+ * The tile and the flags are not used. Fails with "no appearance" when
+ * there is none to draw, as for a hidden annotation.
+ */
+ZEBKIT_API uint8_t *zebkit_pdf_render_annotation(zebkit_pdf *pdf, int page, int annotation, int mode,
+                                                 const zebkit_pdf_render_options *options, int *width, int *height,
+                                                 char **error);
+
 /* ---- Text ------------------------------------------------------------ */
 
 /* The page's text, in reading order as PDFium extracts it. */
@@ -121,10 +136,16 @@ ZEBKIT_API char *zebkit_pdf_text(zebkit_pdf *pdf, int page, char **error);
 
 /*
  * The page's characters, as JSON: {"text": "...", "chars": [{"c": "H",
- * "box": [l, b, r, t], "size": 18, "font": "Helvetica", "angle": 0}, ...]}.
- * Character i of "chars" is UTF-16 unit i of the page's text as PDFium
- * counts it, which the other text functions take as indexes; characters
- * PDFium makes up (spaces, line ends) have no box.
+ * "box": [l, b, r, t], "loose": [l, b, r, t], "size": 18, "font":
+ * "Helvetica", "angle": 0, "object": 0}, ...], "objects": [{"font":
+ * "Helvetica-Bold", "family": "Helvetica", "weight": 700, "italic": false,
+ * "monospaced": false, "embedded": false, "size": 12, "color": [r, g, b,
+ * a]}, ...]}. Character i of "chars" is UTF-16 unit i of the page's text as
+ * PDFium counts it, which the other text functions take as indexes;
+ * characters PDFium makes up (spaces, line ends) have no box. "box" is
+ * the glyph's own; "loose" the line's height at its advance, as a
+ * selection covers it. "object" is the text object that draws the
+ * character, an index of "objects", numbered as they first come.
  */
 ZEBKIT_API char *zebkit_pdf_text_layout(zebkit_pdf *pdf, int page, char **error);
 
@@ -179,8 +200,14 @@ ZEBKIT_API char *zebkit_pdf_links(zebkit_pdf *pdf, int page, char **error);
  *     "quads": [[x1, y1, x2, y2, x3, y3, x4, y4], ...],
  *     "ink": [[[x, y], ...], ...], "vertices": [[x, y], ...],
  *     "line": [x1, y1, x2, y2], "url": "...", "page": 3,
- *     "popup": 1, "inReplyTo": 0, "field": "name"}, ...]
- * with the keys an annotation has. Types: text, link, freeText, line,
+ *     "popup": 1, "inReplyTo": 0, "field": "name",
+ *     "appearances": ["normal", "rollover", "down"],
+ *     "entries": {"Subtype": "/Highlight", "BS": {"W": 1, "S": "/D"}, ...}},
+ *    ...]
+ * with the keys an annotation has. "entries" is the annotation's
+ * dictionary but its appearance (/AP) and page (/P), as plain values: a
+ * name is "/Name", a string that starts with "/" has another before it,
+ * an indirect reference is {"ref": its object number}. Types: text, link, freeText, line,
  * square, circle, polygon, polyline, highlight, underline, squiggly,
  * strikeOut, stamp, caret, ink, popup, fileAttachment, sound, movie,
  * widget, screen, printerMark, trapNet, watermark, threeD, richMedia,
@@ -193,8 +220,10 @@ ZEBKIT_API char *zebkit_pdf_annotations(zebkit_pdf *pdf, int page, char **error)
 
 /*
  * Adds an annotation to the page from @json, an object with the keys
- * above ("type" and "rect" at least; "index" and "popup" are not set this
- * way), and returns its index. Text markup (highlight, underline,
+ * above ("type" and "rect" at least; "index", "popup" and "appearances"
+ * are not set this way), and returns its index. "entries" sets entries
+ * of its dictionary as they are written there (null removes one); /AP,
+ * /P and /Subtype are not set so. Text markup (highlight, underline,
  * squiggly, strikeOut) takes "quads", ink takes "ink", polygon and
  * polyline "vertices", line "line", link "url" or "page". The types made
  * this way are those of the list above up to ink, and popup and redact;
@@ -205,7 +234,9 @@ ZEBKIT_API int zebkit_pdf_annotation_add(zebkit_pdf *pdf, int page, const char *
 /*
  * Changes annotation @index of the page: the keys @json has are set, null
  * removes one. Its appearance is generated again, for the types whose
- * appearance PDFium makes.
+ * appearance PDFium makes, when something it shows changes (not for
+ * "contents", "author", "subject", "name", the dates or the flags alone);
+ * "regenerate": true or false in @json says otherwise.
  */
 ZEBKIT_API bool zebkit_pdf_annotation_update(zebkit_pdf *pdf, int page, int index, const char *json, char **error);
 

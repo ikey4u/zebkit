@@ -203,14 +203,15 @@ int main(void) {
 
     char *info = zebkit_pdf_info(pdf);
     check(contains(info, "\"pages\":2") && contains(info, "\"language\":\"en-US\"") &&
-              contains(info, "\"encrypted\":false"),
+              contains(info, "\"encrypted\":false") && contains(info, "\"permissionBits\":"),
           "zebkit_pdf_info", info);
     zebkit_free(info);
     check(zebkit_pdf_page_count(pdf) == 2, "zebkit_pdf_page_count", NULL);
 
     char *page = zebkit_pdf_page(pdf, 1, &error);
     check(contains(page, "\"rotation\":90") && contains(page, "\"width\":200.0") && contains(page, "\"height\":300.0") &&
-              contains(page, "\"mediaBox\":[0.0,0.0,300.0,200.0]"),
+              contains(page, "\"mediaBox\":[0.0,0.0,300.0,200.0]") && contains(page, "\"objectNumber\":") &&
+              !contains(page, "\"objectNumber\":0"),
           "zebkit_pdf_page", page);
     zebkit_free(page);
     page = zebkit_pdf_page(pdf, 2, &error);
@@ -256,8 +257,10 @@ int main(void) {
     zebkit_free(text);
     char *layout = zebkit_pdf_text_layout(pdf, 0, &error);
     check(contains(layout, "\"c\":\"H\"") && contains(layout, "\"font\":\"Helvetica\"") &&
-              contains(layout, "\"size\":24.0"),
-          "zebkit_pdf_text_layout", NULL);
+              contains(layout, "\"size\":24.0") && contains(layout, "\"loose\":[") &&
+              contains(layout, "\"object\":0") && contains(layout, "\"objects\":[{") &&
+              contains(layout, "\"family\":\"") && contains(layout, "\"color\":[0,0,0,255]"),
+          "zebkit_pdf_text_layout", layout);
     zebkit_free(layout);
     char *rects = zebkit_pdf_text_rects(pdf, 0, 0, 5, &error);
     check(rects && rects[0] == '[' && rects[1] == '[', "zebkit_pdf_text_rects", rects);
@@ -363,6 +366,47 @@ int main(void) {
     snprintf(detail, sizeof(detail), "yellow %d, blue %d, red %d, green %d", yellow, blue, red, green);
     check(yellow > 1000 && blue > 50 && red > 200 && green > 200, "the annotations are drawn", detail);
     zebkit_free(pixels);
+
+    /* Each one's appearance alone, as an annotation layer draws it. */
+    annotations = zebkit_pdf_annotations(pdf, 0, &error);
+    check(contains(annotations, "\"appearances\":[\"normal\"]") &&
+              contains(annotations, "\"Subtype\":\"/Highlight\"") && contains(annotations, "\"QuadPoints\":["),
+          "zebkit_pdf_annotations: appearances and entries", annotations);
+    zebkit_free(annotations);
+    zebkit_pdf_render_options twice = {.scale = 2};
+    int w1 = 0, h1 = 0, w2 = 0, h2 = 0, opaque = 0;
+    pixels = zebkit_pdf_render_annotation(pdf, 0, 1, 0, &twice, &w1, &h1, &error);
+    for (size_t i = 0; pixels && i < (size_t)w1 * h1; i++)
+        opaque += pixels[i * 4 + 3] > 0;
+    zebkit_free(pixels);
+    twice.rotation = 90;
+    pixels = zebkit_pdf_render_annotation(pdf, 0, 1, 0, &twice, &w2, &h2, &error);
+    zebkit_free(pixels);
+    snprintf(detail, sizeof(detail), "%dx%d, turned %dx%d, %d drawn", w1, h1, w2, h2, opaque);
+    check(w1 > 200 && h1 > 40 && w2 == h1 && h2 == w1 && opaque > w1 * h1 / 4,
+          "zebkit_pdf_render_annotation", detail);
+    pixels = zebkit_pdf_render_annotation(pdf, 0, 1, 2, NULL, &w1, &h1, &error);
+    check(pixels == NULL && contains(error, "no appearance"),
+          "zebkit_pdf_render_annotation: none for a mode it has not", error);
+    zebkit_free(error);
+    error = NULL;
+
+    check(zebkit_pdf_annotation_update(pdf, 0, 1,
+                                       "{\"entries\": {\"IT\": \"/HighlightNote\", \"ZNote\": \"//slash\","
+                                       " \"ZList\": [1, 2.5, true, {\"ref\": 1}]}}",
+                                       &error),
+          "zebkit_pdf_annotation_update: entries", error);
+    annotations = zebkit_pdf_annotations(pdf, 0, &error);
+    check(contains(annotations, "\"IT\":\"/HighlightNote\"") && contains(annotations, "\"ZNote\":\"//slash\"") &&
+              contains(annotations, "\"ZList\":[1,2.5,true,{\"ref\":1}]"),
+          "the entries are there", annotations);
+    zebkit_free(annotations);
+    check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"ZNote\": null, \"ZList\": null}}", &error),
+          "zebkit_pdf_annotation_update: entries removed", error);
+    check(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"AP\": null}}", &error) && contains(error, "AP"),
+          "zebkit_pdf_annotation_update refuses /AP", error);
+    zebkit_free(error);
+    error = NULL;
 
     check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"color\": [255, 0, 255], \"contents\": null}", &error),
           "zebkit_pdf_annotation_update", error);

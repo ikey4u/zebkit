@@ -8,6 +8,7 @@
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
+#include "core/fpdfapi/parser/cpdf_boolean.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
@@ -22,6 +23,8 @@
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
 #include "core/fxcrt/widestring.h"
+#include "core/fxge/cfx_renderdevice.h"
+#include "core/fxge/dib/cfx_dibitmap.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 
 namespace zebkit::pdf {
@@ -314,6 +317,182 @@ void RegenerateAppearance(FPDF_DOCUMENT document, FPDF_ANNOTATION annot) {
   // Making the annotation generates its appearance, which stays in the
   // dictionary.
   CPDF_Annot generated(dict, pdf);
+}
+
+int AppearanceModes(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
+  RetainPtr<const CPDF_Dictionary> ap = dict ? dict->GetDictFor("AP") : nullptr;
+  if (!ap)
+    return 0;
+  int modes = 0;
+  if (ap->KeyExist("N"))
+    modes |= 1;
+  if (ap->KeyExist("R"))
+    modes |= 2;
+  if (ap->KeyExist("D"))
+    modes |= 4;
+  return modes;
+}
+
+bool DrawAnnotation(FPDF_PAGE page,
+                    FPDF_ANNOTATION annot,
+                    int mode,
+                    FPDF_BITMAP bitmap,
+                    const float matrix[6]) {
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
+  RetainPtr<CFX_DIBitmap> pixels(CFXDIBitmapFromFPDFBitmap(bitmap));
+  if (!pdf_page || !dict || !pixels || mode < 0 || mode > 2)
+    return false;
+  if (!(AppearanceModes(annot) & (1 << mode)))
+    return false;
+  constexpr CPDF_Annot::AppearanceMode kModes[] = {
+      CPDF_Annot::AppearanceMode::kNormal, CPDF_Annot::AppearanceMode::kRollover,
+      CPDF_Annot::AppearanceMode::kDown};
+  CPDF_Annot annotation(dict, pdf_page->GetDocument());
+#if defined(PDF_USE_SKIA)
+  CFX_DIBitmap::ScopedPremultiplier premultiplier(pixels);
+#endif
+  std::unique_ptr<CFX_RenderDevice> device =
+      CFX_RenderDevice::CreateForBitmap(pixels, /*rgb_byte_order=*/true);
+  if (!device)
+    return false;
+  const CFX_Matrix to_device(matrix[0], matrix[1], matrix[2], matrix[3],
+                             matrix[4], matrix[5]);
+  return annotation.DrawAppearance(pdf_page, device.get(), to_device,
+                                   kModes[mode]);
+}
+
+int PageObjectNumber(FPDF_PAGE page) {
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  RetainPtr<const CPDF_Dictionary> dict =
+      pdf_page ? pdf_page->GetDict() : nullptr;
+  return dict ? static_cast<int>(dict->GetObjNum()) : 0;
+}
+
+namespace {
+
+// Deep enough for an annotation's entries (/BS, /BE, /MK and the like).
+constexpr int kMaxDepth = 8;
+
+Value ToValue(const CPDF_Object* object, int depth) {
+  Value value;
+  if (!object || depth > kMaxDepth)
+    return value;
+  if (const CPDF_Reference* reference = object->AsReference()) {
+    value.kind = Value::Kind::kRef;
+    value.number = reference->GetRefObjNum();
+  } else if (const CPDF_Boolean* boolean = object->AsBoolean()) {
+    value.kind = Value::Kind::kBool;
+    value.boolean = boolean->GetInteger() != 0;
+  } else if (const CPDF_Number* number = object->AsNumber()) {
+    value.kind = Value::Kind::kNumber;
+    value.number = number->GetNumber();
+  } else if (const CPDF_String* string = object->AsString()) {
+    value.kind = Value::Kind::kString;
+    value.text = string->GetUnicodeText().ToUTF8().c_str();
+  } else if (const CPDF_Name* name = object->AsName()) {
+    value.kind = Value::Kind::kName;
+    value.text = name->GetString().c_str();
+  } else if (const CPDF_Array* array = object->AsArray()) {
+    value.kind = Value::Kind::kArray;
+    CPDF_ArrayLocker locker(array);
+    for (const auto& item : locker)
+      value.items.push_back(ToValue(item.Get(), depth + 1));
+  } else if (const CPDF_Dictionary* dict = object->AsDictionary()) {
+    value.kind = Value::Kind::kDict;
+    CPDF_DictionaryLocker locker(dict);
+    for (const auto& [key, item] : locker)
+      value.entries.emplace_back(key.c_str(), ToValue(item.Get(), depth + 1));
+  }
+  return value;
+}
+
+RetainPtr<CPDF_Object> ToObject(CPDF_Document* document,
+                                const Value& value,
+                                int depth) {
+  if (depth > kMaxDepth)
+    return nullptr;
+  switch (value.kind) {
+    case Value::Kind::kNull:
+      return pdfium::MakeRetain<CPDF_Null>();
+    case Value::Kind::kBool:
+      return pdfium::MakeRetain<CPDF_Boolean>(value.boolean);
+    case Value::Kind::kNumber:
+      if (value.number == static_cast<int>(value.number))
+        return pdfium::MakeRetain<CPDF_Number>(static_cast<int>(value.number));
+      return pdfium::MakeRetain<CPDF_Number>(static_cast<float>(value.number));
+    case Value::Kind::kString:
+      return pdfium::MakeRetain<CPDF_String>(
+          nullptr, WideString::FromUTF8(value.text.c_str()).AsStringView());
+    case Value::Kind::kName:
+      return pdfium::MakeRetain<CPDF_Name>(nullptr, value.text.c_str());
+    case Value::Kind::kRef: {
+      const uint32_t number = static_cast<uint32_t>(value.number);
+      if (!document || value.number < 1 ||
+          !document->GetIndirectObject(number)) {
+        return nullptr;
+      }
+      return pdfium::MakeRetain<CPDF_Reference>(document, number);
+    }
+    case Value::Kind::kArray: {
+      auto array = pdfium::MakeRetain<CPDF_Array>();
+      for (const Value& item : value.items) {
+        RetainPtr<CPDF_Object> object = ToObject(document, item, depth + 1);
+        if (!object)
+          return nullptr;
+        array->Append(std::move(object));
+      }
+      return array;
+    }
+    case Value::Kind::kDict: {
+      auto dict = pdfium::MakeRetain<CPDF_Dictionary>();
+      for (const auto& [key, item] : value.entries) {
+        RetainPtr<CPDF_Object> object = ToObject(document, item, depth + 1);
+        if (!object)
+          return nullptr;
+        dict->SetFor(key.c_str(), std::move(object));
+      }
+      return dict;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+Value AnnotationEntries(FPDF_ANNOTATION annot) {
+  Value value;
+  value.kind = Value::Kind::kDict;
+  RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
+  if (!dict)
+    return value;
+  CPDF_DictionaryLocker locker(dict);
+  for (const auto& [key, item] : locker) {
+    if (key == "AP" || key == "P")
+      continue;
+    value.entries.emplace_back(key.c_str(), ToValue(item.Get(), 1));
+  }
+  return value;
+}
+
+bool SetAnnotationEntry(FPDF_DOCUMENT document,
+                        FPDF_ANNOTATION annot,
+                        const std::string& key,
+                        const Value& value) {
+  RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
+  if (!dict || key.empty())
+    return false;
+  if (value.kind == Value::Kind::kNull) {
+    dict->RemoveFor(key.c_str());
+    return true;
+  }
+  RetainPtr<CPDF_Object> object =
+      ToObject(CPDFDocumentFromFPDFDocument(document), value, 1);
+  if (!object)
+    return false;
+  dict->SetFor(key.c_str(), std::move(object));
+  return true;
 }
 
 }  // namespace zebkit::pdf

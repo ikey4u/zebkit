@@ -366,6 +366,16 @@ extern "C" {
         height: *mut c_int,
         error: *mut *mut c_char,
     ) -> *mut u8;
+    pub fn zebkit_pdf_render_annotation(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        annotation: c_int,
+        mode: c_int,
+        options: *const zebkit_pdf_render_options,
+        width: *mut c_int,
+        height: *mut c_int,
+        error: *mut *mut c_char,
+    ) -> *mut u8;
     pub fn zebkit_pdf_text(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
     pub fn zebkit_pdf_text_layout(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
     pub fn zebkit_pdf_text_rects(

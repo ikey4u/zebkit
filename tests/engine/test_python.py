@@ -52,7 +52,10 @@ trailer << /Root 1 0 R >>
 with zebkit.Pdf(PDF) as pdf:
     width, height, rgba = pdf.render(0, scale=2)
     found = pdf.search("python")
-    added = pdf.add_annotation(0, {"type": "ink", "rect": [0, 0, 1, 1], "border": 2, "ink": [[[10, 10], [90, 90]]]})
+    added = pdf.add_annotation(0, {"type": "ink", "rect": [5, 5, 95, 95], "border": 2, "ink": [[[10, 10], [90, 90]]]})
+    appearance = pdf.render_annotation(0, added, scale=2)
+    check(appearance is not None and appearance[0] > 100 and pdf.render_annotation(0, added, mode=2) is None,
+          "Pdf: an annotation's appearance alone", appearance and appearance[:2])
     pdf.set_metadata(title="from Python")
     saved = pdf.save()
     check(pdf.page_count == 1 and (width, height, len(rgba)) == (400, 200, 400 * 200 * 4) and len(found) == 1

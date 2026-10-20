@@ -247,9 +247,10 @@ const url = await zebkit.url.parse('../x', location.href);
 | `zebkit.crypto` | `digest(algorithm, data)`, `hmac(algorithm, key, data)`, `randomBytes(count)` |
 | `zebkit.image` | `decode(bytes)`, `encode('png' \| 'jpeg' \| 'webp', {width, height, data}, quality)` |
 | `zebkit.url` | `parse(url, base)`, `registrableDomain(host)` |
-| `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `render(i, {scale, rotation, x, y, width, height})` (RGBA), `text`, `textLayout`, `textRects`, `charAt`, `search`, `outline`, `links`, `annotations`, `addAnnotation`, `updateAnnotation`, `removeAnnotation`, `flatten`, `formFields`, `setField`, `resetForm`, `rotatePage`, `deletePages`, `movePages`, `insertPage`, `importPages`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`; `zebkit.pdf.create()` for a new one: `<zebkit/pdf.h>` |
+| `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `render(i, {scale, rotation, x, y, width, height})` (RGBA), `renderAnnotation(i, a, {mode, scale, rotation})` and `renderAnnotations(i, {scale, rotation})` (each annotation's appearance alone, for a layer over the page), `text`, `textLayout`, `textRects`, `charAt`, `search`, `outline`, `links`, `annotations`, `addAnnotation`, `updateAnnotation`, `removeAnnotation` (annotations carry their dictionary's `entries`, which add and update also set), `flatten`, `redact(i, areas, fill)`, `formFields`, `setField`, `resetForm`, `rotatePage`, `deletePages`, `movePages`, `insertPage`, `importPages`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`; `zebkit.pdf.create()` for a new one: `<zebkit/pdf.h>` |
+| `zebkit.pathForFile(file)` | A dropped `File`'s path, when the application asked for drops (`zebkit_view_on_drop()`); otherwise `''`. Not a promise |
 
-Every function returns a promise; bytes are `Uint8Array`s, and a string is
+Every function but `pathForFile` returns a promise; bytes are `Uint8Array`s, and a string is
 taken as its UTF-8 where bytes are expected.
 
 **What a page may use is the application's to say**, per view, per origin

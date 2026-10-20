@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/fixed_flat_set.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
@@ -382,6 +383,11 @@ char* zebkit_pdf_info(zebkit_pdf* pdf) {
   permissions.Set("assemble", (bits & (1 << 10)) != 0);
   permissions.Set("printHighQuality", (bits & (1 << 11)) != 0);
   info.Set("permissions", std::move(permissions));
+  // The bits as they are, the owner's and the user's (without the owner
+  // password).
+  info.Set("permissionBits", static_cast<double>(bits));
+  info.Set("userPermissionBits",
+           static_cast<double>(FPDF_GetDocUserPermissions(document)));
   switch (FPDF_GetFormType(document)) {
     case FORMTYPE_ACRO_FORM:
       info.Set("form", "acro");
@@ -466,6 +472,7 @@ char* zebkit_pdf_page(zebkit_pdf* pdf, int index, char** error) {
   info.Set("width", size.width);
   info.Set("height", size.height);
   info.Set("rotation", FPDFPage_GetRotation(page.get()) * 90);
+  info.Set("objectNumber", zebkit::pdf::PageObjectNumber(page.get()));
   const std::string label = Utf16String([&](void* buffer, unsigned long n) {
     return FPDF_GetPageLabel(pdf->document, index, buffer, n);
   });
@@ -487,6 +494,43 @@ char* zebkit_pdf_page(zebkit_pdf* pdf, int index, char** error) {
   }
   return GiveJson(base::Value(std::move(info)));
 }
+
+namespace {
+
+// What FPDFBitmap_FillRect() takes for @rgba (0xRRGGBBAA): it writes
+// 0xAARRGGBB as B, G, R, A in memory, and pages are rendered as R, G, B, A
+// (FPDF_REVERSE_BYTE_ORDER), so red and blue change places here.
+uint32_t Argb(uint32_t rgba) {
+  return ((rgba & 0xff) << 24) | (((rgba >> 8) & 0xff) << 16) |
+         (((rgba >> 16) & 0xff) << 8) | (rgba >> 24);
+}
+
+// The bitmap's pixels, R, G, B, A in rows without padding, for the caller;
+// the bitmap is destroyed.
+uint8_t* TakePixels(FPDF_BITMAP bitmap, int* width, int* height, char** error) {
+  const int w = FPDFBitmap_GetWidth(bitmap);
+  const int h = FPDFBitmap_GetHeight(bitmap);
+  // Not premultiplied, as PDFium's bitmaps are.
+  const uint8_t* pixels =
+      static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+  const int stride = FPDFBitmap_GetStride(bitmap);
+  const size_t row = static_cast<size_t>(w) * 4;
+  uint8_t* out = static_cast<uint8_t*>(malloc(row * h));
+  if (out) {
+    for (int y = 0; y < h; ++y)
+      memcpy(out + row * y, pixels + static_cast<size_t>(stride) * y, row);
+  }
+  FPDFBitmap_Destroy(bitmap);
+  if (!out)
+    return Fail(error, "not enough memory for the image");
+  if (width)
+    *width = w;
+  if (height)
+    *height = h;
+  return out;
+}
+
+}  // namespace
 
 uint8_t* zebkit_pdf_render(zebkit_pdf* pdf,
                            int index,
@@ -529,13 +573,8 @@ uint8_t* zebkit_pdf_render(zebkit_pdf* pdf,
   FPDF_BITMAP bitmap = FPDFBitmap_Create(tile_width, tile_height, 1);
   if (!bitmap)
     return Fail(error, "not enough memory for the image");
-  // FPDFBitmap_FillRect writes 0xAARRGGBB as B, G, R, A in memory, and the
-  // page is rendered as R, G, B, A (FPDF_REVERSE_BYTE_ORDER): red and blue
-  // change places here, so that the background is the one asked for.
-  const uint32_t rgba = options.background;
-  const uint32_t fill = ((rgba & 0xff) << 24) | (((rgba >> 8) & 0xff) << 16) |
-                        (((rgba >> 16) & 0xff) << 8) | (rgba >> 24);
-  FPDFBitmap_FillRect(bitmap, 0, 0, tile_width, tile_height, fill);
+  FPDFBitmap_FillRect(bitmap, 0, 0, tile_width, tile_height,
+                      Argb(options.background));
   int flags = FPDF_REVERSE_BYTE_ORDER;
   if (options.flags & ZEBKIT_PDF_RENDER_ANNOTATIONS)
     flags |= FPDF_ANNOT;
@@ -559,24 +598,76 @@ uint8_t* zebkit_pdf_render(zebkit_pdf* pdf,
       FORM_OnBeforeClosePage(page.get(), form);
     }
   }
-  // RGBA in memory, not premultiplied, as PDFium's bitmaps are.
-  const uint8_t* pixels =
-      static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
-  const int stride = FPDFBitmap_GetStride(bitmap);
-  const size_t row = static_cast<size_t>(tile_width) * 4;
-  uint8_t* out = static_cast<uint8_t*>(malloc(row * tile_height));
-  if (out) {
-    for (int y = 0; y < tile_height; ++y)
-      memcpy(out + row * y, pixels + static_cast<size_t>(stride) * y, row);
+  return TakePixels(bitmap, width, height, error);
+}
+
+uint8_t* zebkit_pdf_render_annotation(zebkit_pdf* pdf,
+                                      int index,
+                                      int annotation,
+                                      int mode,
+                                      const zebkit_pdf_render_options* given,
+                                      int* width,
+                                      int* height,
+                                      char** error) {
+  zebkit_pdf_render_options options = {};
+  if (given)
+    options = *given;
+  const float scale = options.scale > 0 ? options.scale : 1;
+  if (options.rotation % 90)
+    return Fail(error, "the rotation is not a multiple of 90");
+  if (mode < 0 || mode > 2)
+    return Fail(error, "the mode is 0, 1 or 2");
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get())
+    return Fail(error, "no page " + std::to_string(index));
+  FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), annotation);
+  if (!annot)
+    return Fail(error, "no annotation " + std::to_string(annotation));
+  FS_RECTF rect = {};
+  if (!FPDFAnnot_GetRect(annot, &rect) ||
+      !(zebkit::pdf::AppearanceModes(annot) & (1 << mode))) {
+    FPDFPage_CloseAnnot(annot);
+    return Fail(error, "no appearance");
   }
-  FPDFBitmap_Destroy(bitmap);
-  if (!out)
+  const float l = std::min(rect.left, rect.right);
+  const float r = std::max(rect.left, rect.right);
+  const float b = std::min(rect.bottom, rect.top);
+  const float t = std::max(rect.bottom, rect.top);
+  const int upright_width = std::max(1, static_cast<int>((r - l) * scale + 0.5));
+  const int upright_height =
+      std::max(1, static_cast<int>((t - b) * scale + 0.5));
+  const int quarter_turns = ((options.rotation / 90) % 4 + 4) % 4;
+  const int image_width = quarter_turns % 2 ? upright_height : upright_width;
+  const int image_height = quarter_turns % 2 ? upright_width : upright_height;
+  if (static_cast<int64_t>(image_width) * image_height > (1 << 28)) {
+    FPDFPage_CloseAnnot(annot);
+    return Fail(error, "the image would be too large");
+  }
+  FPDF_BITMAP bitmap = FPDFBitmap_Create(image_width, image_height, 1);
+  if (!bitmap) {
+    FPDFPage_CloseAnnot(annot);
     return Fail(error, "not enough memory for the image");
-  if (width)
-    *width = tile_width;
-  if (height)
-    *height = tile_height;
-  return out;
+  }
+  FPDFBitmap_FillRect(bitmap, 0, 0, image_width, image_height,
+                      Argb(options.background));
+  // Page space to the image: the rectangle upright, y down, then turned
+  // clockwise about it.
+  const float W = upright_width, H = upright_height, k = scale;
+  const float matrices[4][6] = {
+      {k, 0, 0, -k, -l * k, t * k},
+      {0, k, k, 0, H - t * k, -l * k},
+      {-k, 0, 0, k, W + l * k, H - t * k},
+      {0, -k, -k, 0, t * k, W + l * k},
+  };
+  const bool drawn = zebkit::pdf::DrawAnnotation(page.get(), annot, mode, bitmap,
+                                                 matrices[quarter_turns]);
+  FPDFPage_CloseAnnot(annot);
+  if (!drawn) {
+    FPDFBitmap_Destroy(bitmap);
+    return Fail(error, "no appearance");
+  }
+  return TakePixels(bitmap, width, height, error);
 }
 
 char* zebkit_pdf_text(zebkit_pdf* pdf, int index, char** error) {
@@ -592,6 +683,53 @@ char* zebkit_pdf_text(zebkit_pdf* pdf, int index, char** error) {
   return Give(base::UTF16ToUTF8(text));
 }
 
+namespace {
+
+// A text object, for zebkit_pdf_text_layout(): its font, and the colour
+// its character @index is filled with.
+base::DictValue DescribeTextObject(FPDF_TEXTPAGE text_page,
+                                   FPDF_PAGEOBJECT object,
+                                   int index) {
+  base::DictValue item;
+  if (FPDF_FONT font = FPDFTextObj_GetFont(object)) {
+    std::string name(256, '\0');
+    size_t length = FPDFFont_GetBaseFontName(font, name.data(), name.size());
+    if (length > name.size()) {
+      name.assign(length, '\0');
+      length = FPDFFont_GetBaseFontName(font, name.data(), name.size());
+    }
+    name.resize(length > 0 ? length - 1 : 0);
+    item.Set("font", name);
+    std::string family(256, '\0');
+    length = FPDFFont_GetFamilyName(font, family.data(), family.size());
+    if (length > family.size()) {
+      family.assign(length, '\0');
+      length = FPDFFont_GetFamilyName(font, family.data(), family.size());
+    }
+    family.resize(length > 0 ? length - 1 : 0);
+    item.Set("family", family);
+    item.Set("weight", FPDFFont_GetWeight(font));
+    // The font descriptor's flags: 1 fixed pitch, 64 italic.
+    const int flags = FPDFFont_GetFlags(font);
+    item.Set("italic", flags >= 0 && (flags & 64) != 0);
+    item.Set("monospaced", flags >= 0 && (flags & 1) != 0);
+    item.Set("embedded", FPDFFont_GetIsEmbedded(font) == 1);
+  }
+  float size = 0;
+  if (FPDFTextObj_GetFontSize(object, &size))
+    item.Set("size", size);
+  unsigned int r = 0, g = 0, b = 0, a = 0;
+  if (FPDFText_GetFillColor(text_page, index, &r, &g, &b, &a)) {
+    base::ListValue color;
+    for (unsigned int channel : {r, g, b, a})
+      color.Append(static_cast<int>(channel));
+    item.Set("color", std::move(color));
+  }
+  return item;
+}
+
+}  // namespace
+
 char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
   base::AutoLock lock(PdfiumLock());
   Page page(pdf, index);
@@ -604,7 +742,10 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
       text_page, 0, count, reinterpret_cast<unsigned short*>(text.data()));
   text.resize(written > 0 ? written - 1 : 0);
   base::ListValue chars;
+  base::ListValue objects;
   std::string font;
+  // The text objects the characters are drawn by, numbered as they come.
+  std::map<FPDF_PAGEOBJECT, int> numbers;
   for (int i = 0; i < count; ++i) {
     base::DictValue item;
     const unsigned int unicode = FPDFText_GetUnicode(text_page, i);
@@ -614,6 +755,9 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
       double left = 0, right = 0, bottom = 0, top = 0;
       if (FPDFText_GetCharBox(text_page, i, &left, &right, &bottom, &top))
         item.Set("box", PdfRect(left, bottom, right, top));
+      FS_RECTF loose = {};
+      if (FPDFText_GetLooseCharBox(text_page, i, &loose))
+        item.Set("loose", PdfRect(loose.left, loose.bottom, loose.right, loose.top));
       item.Set("size", FPDFText_GetFontSize(text_page, i));
       const unsigned long size =
           FPDFText_GetFontInfo(text_page, i, nullptr, 0, nullptr);
@@ -625,11 +769,19 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
       }
       item.Set("angle", FPDFText_GetCharAngle(text_page, i));
     }
+    if (FPDF_PAGEOBJECT object = FPDFText_GetTextObject(text_page, i)) {
+      auto [it, added] =
+          numbers.emplace(object, static_cast<int>(numbers.size()));
+      if (added)
+        objects.Append(DescribeTextObject(text_page, object, i));
+      item.Set("object", it->second);
+    }
     chars.Append(std::move(item));
   }
   base::DictValue layout;
   layout.Set("text", base::UTF16ToUTF8(text));
   layout.Set("chars", std::move(chars));
+  layout.Set("objects", std::move(objects));
   return GiveJson(base::Value(std::move(layout)));
 }
 
@@ -808,6 +960,8 @@ constexpr struct {
     {"name", "NM"},           {"modified", "M"},       {"created", "CreationDate"},
 };
 
+constexpr const char* kAppearanceModes[] = {"normal", "rollover", "down"};
+
 base::ListValue Color(const float rgb[3]) {
   base::ListValue color;
   for (int i = 0; i < 3; ++i)
@@ -827,6 +981,98 @@ std::string AnnotationString(FPDF_ANNOTATION annot, const char* key) {
     return FPDFAnnot_GetStringValue(annot, key,
                                     static_cast<FPDF_WCHAR*>(buffer), size);
   });
+}
+
+// A PDF object's plain value as JSON (zebkit_pdf_annotations(), "entries"):
+// a name is "/Name", a string that starts with "/" has another before it,
+// a reference is {"ref": object number}.
+base::Value EntryToJson(const zebkit::pdf::Value& value) {
+  using Kind = zebkit::pdf::Value::Kind;
+  switch (value.kind) {
+    case Kind::kNull:
+      return base::Value();
+    case Kind::kBool:
+      return base::Value(value.boolean);
+    case Kind::kNumber:
+      if (value.number == static_cast<int>(value.number))
+        return base::Value(static_cast<int>(value.number));
+      return base::Value(value.number);
+    case Kind::kString:
+      return base::Value(value.text.starts_with("/") ? "/" + value.text
+                                                     : value.text);
+    case Kind::kName:
+      return base::Value("/" + value.text);
+    case Kind::kRef:
+      return base::Value(
+          base::DictValue().Set("ref", static_cast<int>(value.number)));
+    case Kind::kArray: {
+      base::ListValue list;
+      for (const auto& item : value.items)
+        list.Append(EntryToJson(item));
+      return base::Value(std::move(list));
+    }
+    case Kind::kDict: {
+      base::DictValue dict;
+      for (const auto& [key, item] : value.entries)
+        dict.Set(key, EntryToJson(item));
+      return base::Value(std::move(dict));
+    }
+  }
+  return base::Value();
+}
+
+std::optional<zebkit::pdf::Value> JsonToEntry(const base::Value& json,
+                                              int depth = 0) {
+  using Kind = zebkit::pdf::Value::Kind;
+  zebkit::pdf::Value value;
+  if (depth > 8)
+    return std::nullopt;
+  if (json.is_none()) {
+    value.kind = Kind::kNull;
+  } else if (json.is_bool()) {
+    value.kind = Kind::kBool;
+    value.boolean = json.GetBool();
+  } else if (json.is_int() || json.is_double()) {
+    value.kind = Kind::kNumber;
+    value.number = json.GetDouble();
+  } else if (json.is_string()) {
+    const std::string& text = json.GetString();
+    if (text.starts_with("//")) {
+      value.kind = Kind::kString;
+      value.text = text.substr(1);
+    } else if (text.starts_with("/")) {
+      value.kind = Kind::kName;
+      value.text = text.substr(1);
+    } else {
+      value.kind = Kind::kString;
+      value.text = text;
+    }
+  } else if (json.is_list()) {
+    value.kind = Kind::kArray;
+    for (const base::Value& item : json.GetList()) {
+      std::optional<zebkit::pdf::Value> entry = JsonToEntry(item, depth + 1);
+      if (!entry)
+        return std::nullopt;
+      value.items.push_back(std::move(*entry));
+    }
+  } else if (json.is_dict()) {
+    const base::DictValue& dict = json.GetDict();
+    if (dict.size() == 1 && dict.FindInt("ref")) {
+      value.kind = Kind::kRef;
+      value.number = *dict.FindInt("ref");
+      return value;
+    }
+    value.kind = Kind::kDict;
+    for (const auto [key, item] : dict) {
+      std::optional<zebkit::pdf::Value> entry = JsonToEntry(item, depth + 1);
+      if (!entry)
+        return std::nullopt;
+      value.entries.emplace_back(key, std::move(*entry));
+    }
+  } else {
+    return std::nullopt;
+  }
+  return value;
 }
 
 base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
@@ -933,6 +1179,16 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
                }));
     }
   }
+  base::ListValue appearances;
+  const int modes = zebkit::pdf::AppearanceModes(annot);
+  for (int mode = 0; mode < 3; ++mode) {
+    if (modes & (1 << mode))
+      appearances.Append(kAppearanceModes[mode]);
+  }
+  item.Set("appearances", std::move(appearances));
+  base::Value entries = EntryToJson(zebkit::pdf::AnnotationEntries(annot));
+  if (entries.is_dict())
+    item.Set("entries", std::move(entries.GetDict()));
   return item;
 }
 
@@ -977,17 +1233,44 @@ std::optional<std::vector<FS_POINTF>> Points(const base::Value* value) {
 
 // Sets what @json says on @annot; @creating for a new one. Returns "" or
 // what was wrong.
+// What an annotation has that its appearance does not show.
+constexpr auto kUndrawnKeys = base::MakeFixedFlatSet<std::string_view>(
+    {"contents", "author", "subject", "name", "modified", "created", "flags"});
+constexpr auto kUndrawnEntries = base::MakeFixedFlatSet<std::string_view>(
+    {"Contents", "T", "Subj", "NM", "M", "CreationDate", "F", "IRT", "RT",
+     "State", "StateModel", "Popup", "Open", "IT"});
+
 std::string ApplyAnnotation(zebkit_pdf* pdf,
                             FPDF_ANNOTATION annot,
                             const base::DictValue& json,
                             bool creating) {
   const int subtype = FPDFAnnot_GetSubtype(annot);
+  // Whether what changes is drawn: an appearance is only made again then,
+  // so that one made elsewhere stays when, say, a note's text changes.
+  bool drawn = creating;
   for (const auto [key, value] : json) {
     if (key == "index" || key == "type" || key == "popup" ||
-        key == "inReplyTo" || key == "field") {
+        key == "inReplyTo" || key == "field" || key == "appearances" ||
+        key == "regenerate") {
       continue;
     }
-    if (key == "rect") {
+    if (!kUndrawnKeys.contains(key))
+      drawn = true;
+    if (key == "entries") {
+      if (!value.is_dict())
+        return "entries is not an object";
+      for (const auto [name, item] : value.GetDict()) {
+        if (name == "AP" || name == "P" || name == "Subtype")
+          return "entry " + name + " is not set this way";
+        if (!kUndrawnEntries.contains(name))
+          drawn = true;
+        std::optional<zebkit::pdf::Value> entry = JsonToEntry(item);
+        if (!entry || !zebkit::pdf::SetAnnotationEntry(pdf->document, annot,
+                                                       name, *entry)) {
+          return "entry " + name + " cannot be set";
+        }
+      }
+    } else if (key == "rect") {
       std::optional<std::vector<float>> r = Numbers(&value, 4);
       if (!r)
         return "rect is not [left, bottom, right, top]";
@@ -1102,7 +1385,10 @@ std::string ApplyAnnotation(zebkit_pdf* pdf,
   }
   if (creating && !json.contains("flags"))
     FPDFAnnot_SetFlags(annot, FPDF_ANNOT_FLAG_PRINT);
-  zebkit::pdf::RegenerateAppearance(pdf->document, annot);
+  if (std::optional<bool> regenerate = json.FindBool("regenerate"))
+    drawn = *regenerate;
+  if (drawn)
+    zebkit::pdf::RegenerateAppearance(pdf->document, annot);
   return std::string();
 }
 

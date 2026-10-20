@@ -202,7 +202,9 @@ typedef void (*zebkit_drop_func)(zebkit_view *view, const char *paths_json, void
 /*
  * The paths of files dropped on the view, from the desktop or another
  * application, as a JSON array, to @func before the page gets the drop:
- * what a page cannot learn of a dropped file.
+ * what a page cannot learn of a dropped file. With @func set, the page's
+ * zebkit.pathForFile(file) gives a dropped File's path too (as Electron's
+ * webUtils.getPathForFile does): the page has the paths before the drop.
  */
 ZEBKIT_API void zebkit_view_on_drop(zebkit_view *view, zebkit_drop_func func, void *data);
 

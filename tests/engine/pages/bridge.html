@@ -74,6 +74,12 @@ async function runBridgeTests() {
     return response.status === 200 && text(response.body) === 'hello\n' &&
         /text\/plain/.test(response.headers['content-type']);
   });
+  await test('pathForFile: a dropped file', async () => {
+    // What the engine tells the page before a drop it lets through.
+    __zebkit_dropped(['/tmp/a/report.pdf']);
+    return zebkit.pathForFile(new File([], 'report.pdf')) === '/tmp/a/report.pdf' &&
+        zebkit.pathForFile(new File([], 'other.pdf')) === '' && zebkit.pathForFile('x') === '';
+  });
   return results;
 }
 </script>

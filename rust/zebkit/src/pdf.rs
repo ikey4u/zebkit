@@ -152,6 +152,48 @@ impl Document {
         }
     }
 
+    /// Appearance `mode` (0 normal, 1 rollover, 2 down) of annotation
+    /// `annotation` alone, over its rectangle, at the options' scale and
+    /// rotation on their background (the tile and flags are not used).
+    /// `Ok(None)` when it has no such appearance.
+    pub fn render_annotation(
+        &mut self,
+        page: usize,
+        annotation: usize,
+        mode: i32,
+        options: &RenderOptions,
+    ) -> Result<Option<Image>, Error> {
+        let raw = sys::zebkit_pdf_render_options {
+            scale: options.scale,
+            rotation: options.rotation,
+            flags: 0,
+            background: options.background,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let (mut out_width, mut out_height, mut error) = (0, 0, std::ptr::null_mut());
+        unsafe {
+            let pixels = sys::zebkit_pdf_render_annotation(
+                self.raw,
+                page_index(page),
+                page_index(annotation),
+                mode,
+                &raw,
+                &mut out_width,
+                &mut out_height,
+                &mut error,
+            );
+            if pixels.is_null() {
+                let error = take_error(error, "the annotation cannot be rendered");
+                return if error.message() == "no appearance" { Ok(None) } else { Err(error) };
+            }
+            let (width, height) = (out_width.max(0) as u32, out_height.max(0) as u32);
+            Ok(Some(Image { width, height, rgba: take_bytes(pixels, width as usize * height as usize * 4) }))
+        }
+    }
+
     pub fn text(&mut self, page: usize) -> Result<String, Error> {
         let mut error = std::ptr::null_mut();
         let answer = unsafe { sys::zebkit_pdf_text(self.raw, page_index(page), &mut error) };

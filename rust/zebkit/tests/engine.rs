@@ -85,6 +85,15 @@ fn services() {
     let added = document
         .add_annotation(0, r#"{"type": "square", "rect": [5, 5, 50, 50], "color": [255, 0, 0], "border": 2}"#)
         .unwrap();
+    let appearance = document
+        .render_annotation(0, added, 0, &RenderOptions { scale: 2.0, background: 0, ..Default::default() })
+        .unwrap();
+    check(
+        appearance.as_ref().is_some_and(|image| (image.width, image.height) == (90, 90))
+            && document.render_annotation(0, added, 2, &RenderOptions::default()).unwrap().is_none(),
+        "pdf: an annotation's appearance alone",
+        appearance.map(|image| (image.width, image.height)),
+    );
     let saved = document.save(false).unwrap();
     let mut again = Document::open(&saved, None).unwrap();
     check(

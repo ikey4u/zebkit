@@ -8,6 +8,7 @@
 namespace zebkit {
 
 inline constexpr char kPdfScript[] = R"js(((send) => {
+  const MODES = ['normal', 'rollover', 'down'];
   const FLAGS = {annotations: 1, forms: 2, lcdText: 4, grayscale: 8, printing: 16, noSmoothing: 32};
   class PdfDocument {
     #id;
@@ -31,6 +32,17 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
         x: options.x ?? 0, y: options.y ?? 0, width: options.width ?? 0, height: options.height ?? 0,
       });
     }
+    // One annotation's appearance alone ('normal', 'rollover', 'down'),
+    // over its rectangle: {width, height, data}, or null without one.
+    renderAnnotation(index, annotation, {mode = 'normal', scale = 1, rotation = 0, background = 0} = {}) {
+      return this.#call('renderAnnotation', index, annotation, MODES.indexOf(mode),
+                        {scale, rotation, background});
+    }
+    // Every annotation's appearances, for a layer over the page rendered
+    // without them: [{index, name, rect, normal, rollover, down}].
+    renderAnnotations(index, {scale = 1, rotation = 0} = {}) {
+      return this.#call('renderAnnotations', index, {scale, rotation});
+    }
     text(index) { return this.#call('text', index); }
     textLayout(index) { return this.#call('textLayout', index); }
     textRects(index, start, count) { return this.#call('textRects', index, start, count); }
@@ -47,6 +59,12 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     }
     removeAnnotation(index, annotation) { return this.#call('removeAnnotation', index, annotation); }
     flatten(index, {print = false} = {}) { return this.#call('flatten', index, print); }
+    // Takes what is under the areas ([[l, b, r, t], ...]; null for the
+    // page's redaction marks) out of the page for good, a box of fill
+    // (0xRRGGBBAA, 0 for none) over each. The number of areas.
+    redact(index, areas = null, fill = 0x000000ff) {
+      return this.#call('redact', index, areas ? [...areas].map((a) => [...a]) : null, fill);
+    }
     attachments() { return this.#call('attachments'); }
     attachment(index) { return this.#call('attachment', index); }
     attach(name, bytes) { return this.#call('attach', String(name), bytes); }

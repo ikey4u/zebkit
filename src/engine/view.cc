@@ -131,7 +131,21 @@ constexpr char kBridgeScript[] = R"js((() => {
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
     pdf: makePdf(send),
+    // The path of a file dropped on the page from another application, when
+    // the application asked for drops (zebkit_view_on_drop); otherwise ''.
+    pathForFile: (file) => {
+      if (!(file instanceof File)) return '';
+      if (filePaths.has(file)) return filePaths.get(file);
+      const path = dropped.find((p) => (p.split(/[\\/]/).pop() || p) === file.name) || '';
+      if (path) filePaths.set(file, path);
+      return path;
+    },
   };
+  const filePaths = new WeakMap();
+  let dropped = [];
+  Object.defineProperty(globalThis, '__zebkit_dropped', {
+    value: (paths) => { dropped = Array.isArray(paths) ? paths.map(String) : []; },
+  });
   Object.defineProperty(globalThis, 'zebkit', {value: Object.freeze(zebkit), enumerable: false});
 })();)js";
 
@@ -578,18 +592,31 @@ class ViewDelegate : public content::WebContentsViewDelegate {
   void OnPerformingDrop(const content::DropData& drop_data,
                         DropCompletionCallback callback) override {
     zebkit_view* view = ViewOf(contents_);
-    if (view && view->on_drop_ && !drop_data.filenames.empty()) {
-      base::ListValue paths;
-      for (const ui::FileInfo& file : drop_data.filenames)
-        paths.Append(file.path.AsUTF8Unsafe());
-      const std::string json =
-          base::WriteJson(base::Value(std::move(paths))).value_or("[]");
-      view->on_drop_(view, json.c_str(), view->on_drop_data_);
+    if (!view || !view->on_drop_ || drop_data.filenames.empty()) {
+      Drop(drop_data, std::move(callback));
+      return;
     }
-    if (inner_)
-      inner_->OnPerformingDrop(drop_data, std::move(callback));
-    else
-      std::move(callback).Run(drop_data);
+    base::ListValue paths;
+    for (const ui::FileInfo& file : drop_data.filenames)
+      paths.Append(file.path.AsUTF8Unsafe());
+    const std::string json =
+        base::WriteJson(base::Value(std::move(paths))).value_or("[]");
+    view->on_drop_(view, json.c_str(), view->on_drop_data_);
+    // The page's zebkit.pathForFile() knows the paths before the page gets
+    // the drop: the drop goes on when the page has them.
+    base::DictValue params;
+    params.Set("expression",
+               "globalThis.__zebkit_dropped && __zebkit_dropped(" + json + ")");
+    view->Send("Runtime.evaluate", std::move(params),
+               base::BindOnce(
+                   [](base::WeakPtr<ViewDelegate> self,
+                      content::DropData drop_data,
+                      DropCompletionCallback callback,
+                      const base::DictValue*, const std::string&) {
+                     if (self)
+                       self->Drop(drop_data, std::move(callback));
+                   },
+                   weak_factory_.GetWeakPtr(), drop_data, std::move(callback)));
   }
 
   // The rest is the content shell's.
@@ -632,8 +659,16 @@ class ViewDelegate : public content::WebContentsViewDelegate {
   }
 
  private:
+  void Drop(const content::DropData& drop_data, DropCompletionCallback callback) {
+    if (inner_)
+      inner_->OnPerformingDrop(drop_data, std::move(callback));
+    else
+      std::move(callback).Run(drop_data);
+  }
+
   const raw_ptr<content::WebContents> contents_;
   std::unique_ptr<content::WebContentsViewDelegate> inner_;
+  base::WeakPtrFactory<ViewDelegate> weak_factory_{this};
 };
 
 }  // namespace
