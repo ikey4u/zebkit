@@ -1,0 +1,7 @@
+{
+  "name": "electron-hello",
+  "version": "1.0.0",
+  "description": "Hello world in Electron: the size zebkit is measured against (scripts/electron-baseline.sh)",
+  "main": "main.js",
+  "private": true
+}
