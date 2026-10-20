@@ -286,6 +286,95 @@ impl Document {
         self.done(ok, error, "no attachment")
     }
 
+    /// An empty document, to build from others' pages.
+    pub fn new() -> Result<Document, Error> {
+        let mut error = std::ptr::null_mut();
+        let raw = unsafe { sys::zebkit_pdf_new(&mut error) };
+        if raw.is_null() {
+            return Err(unsafe { take_error(error, "the document cannot be made") });
+        }
+        Ok(Document { raw })
+    }
+
+    /// Takes what is under `areas_json` (a JSON array of [l, b, r, t]; `None`
+    /// for the page's redaction marks) out of the page for good, with
+    /// boxes of `fill` (0xRRGGBBAA, 0 for none) over it. Returns how many
+    /// areas.
+    pub fn redact(&mut self, page: usize, areas_json: Option<&str>, fill: u32) -> Result<usize, Error> {
+        let areas = areas_json.map(c_string);
+        let mut error = std::ptr::null_mut();
+        let count = unsafe {
+            sys::zebkit_pdf_redact(
+                self.raw,
+                page_index(page),
+                areas.as_ref().map_or(std::ptr::null(), |a| a.as_ptr()),
+                fill,
+                &mut error,
+            )
+        };
+        usize::try_from(count).map_err(|_| unsafe { take_error(error, "the page cannot be redacted") })
+    }
+
+    /// The form's fields, as JSON.
+    pub fn form_fields(&mut self) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_form_fields(self.raw, &mut error) };
+        self.json(answer, error)
+    }
+
+    /// Sets field `name` to `value` (text, an option, or a button's export value).
+    pub fn set_field(&mut self, name: &str, value: &str) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok =
+            unsafe { sys::zebkit_pdf_form_set(self.raw, c_string(name).as_ptr(), c_string(value).as_ptr(), &mut error) };
+        self.done(ok, error, "the field cannot be set")
+    }
+
+    pub fn reset_form(&mut self) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_form_reset(self.raw, &mut error) };
+        self.done(ok, error, "the form cannot be reset")
+    }
+
+    /// Sets a page's rotation: 0, 90, 180 or 270.
+    pub fn rotate_page(&mut self, page: usize, rotation: i32) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_page_rotate(self.raw, page_index(page), rotation, &mut error) };
+        self.done(ok, error, "the page cannot be turned")
+    }
+
+    pub fn delete_pages(&mut self, pages: &[i32]) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_pages_delete(self.raw, pages.as_ptr(), page_index(pages.len()), &mut error)
+        };
+        self.done(ok, error, "the pages cannot be deleted")
+    }
+
+    /// Moves pages, in the order given, to start at index `to`.
+    pub fn move_pages(&mut self, pages: &[i32], to: usize) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_pages_move(self.raw, pages.as_ptr(), page_index(pages.len()), page_index(to), &mut error)
+        };
+        self.done(ok, error, "the pages cannot be moved")
+    }
+
+    /// Inserts a blank page, `width` by `height` points, at index `at`.
+    pub fn insert_page(&mut self, at: usize, width: f64, height: f64) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_page_insert(self.raw, page_index(at), width, height, &mut error) };
+        self.done(ok, error, "the page cannot be made")
+    }
+
+    /// Copies pages of `from` (all for `None`) in at index `at`.
+    pub fn import_pages(&mut self, from: &mut Document, pages: Option<&[i32]>, at: usize) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let (pointer, count) = pages.map_or((std::ptr::null(), 0), |p| (p.as_ptr(), page_index(p.len())));
+        let ok = unsafe { sys::zebkit_pdf_pages_import(self.raw, from.raw, pointer, count, page_index(at), &mut error) };
+        self.done(ok, error, "the pages cannot be copied")
+    }
+
     /// The document as a file, whole or with its changes appended.
     pub fn save(&mut self, incremental: bool) -> Result<Vec<u8>, Error> {
         let flags = if incremental { sys::ZEBKIT_PDF_SAVE_INCREMENTAL } else { 0 };

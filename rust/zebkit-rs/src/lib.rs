@@ -249,6 +249,69 @@ extern "C" {
     );
 }
 
+pub type zebkit_capture_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, png: *const u8, size: usize, error: *const c_char, data: *mut c_void);
+pub type zebkit_url_func = unsafe extern "C" fn(view: *mut zebkit_view, url: *const c_char, data: *mut c_void);
+pub type zebkit_drop_func = unsafe extern "C" fn(view: *mut zebkit_view, paths_json: *const c_char, data: *mut c_void);
+
+extern "C" {
+    pub fn zebkit_view_set_title(view: *mut zebkit_view, title: *const c_char);
+    pub fn zebkit_view_focus(view: *mut zebkit_view);
+    pub fn zebkit_view_attach(
+        view: *mut zebkit_view,
+        parent: *mut zebkit_view,
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+    );
+    pub fn zebkit_view_set_bounds(view: *mut zebkit_view, x: c_int, y: c_int, width: c_int, height: c_int);
+    pub fn zebkit_view_set_visible(view: *mut zebkit_view, visible: bool);
+    pub fn zebkit_view_add_script(view: *mut zebkit_view, source: *const c_char);
+    pub fn zebkit_view_stop(view: *mut zebkit_view);
+    pub fn zebkit_view_is_loading(view: *mut zebkit_view) -> bool;
+    pub fn zebkit_view_set_user_agent(view: *mut zebkit_view, user_agent: *const c_char);
+    pub fn zebkit_view_capture(view: *mut zebkit_view, func: zebkit_capture_func, data: *mut c_void);
+    pub fn zebkit_view_on_new_window(view: *mut zebkit_view, func: Option<zebkit_url_func>, data: *mut c_void);
+    pub fn zebkit_view_on_drop(view: *mut zebkit_view, func: Option<zebkit_drop_func>, data: *mut c_void);
+    pub fn zebkit_pdf_redact(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        areas_json: *const c_char,
+        fill: u32,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub fn zebkit_pdf_form_fields(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_form_set(
+        pdf: *mut zebkit_pdf,
+        name: *const c_char,
+        value: *const c_char,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_form_reset(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_page_rotate(pdf: *mut zebkit_pdf, page: c_int, rotation: c_int, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_pages_delete(pdf: *mut zebkit_pdf, pages: *const c_int, count: c_int, error: *mut *mut c_char)
+        -> bool;
+    pub fn zebkit_pdf_pages_move(
+        pdf: *mut zebkit_pdf,
+        pages: *const c_int,
+        count: c_int,
+        to: c_int,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_page_insert(pdf: *mut zebkit_pdf, at: c_int, width: f64, height: f64, error: *mut *mut c_char)
+        -> bool;
+    pub fn zebkit_pdf_pages_import(
+        pdf: *mut zebkit_pdf,
+        from: *mut zebkit_pdf,
+        pages: *const c_int,
+        count: c_int,
+        at: c_int,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_new(error: *mut *mut c_char) -> *mut zebkit_pdf;
+}
+
 opaque!(zebkit_pdf);
 opaque!(zebkit_request);
 

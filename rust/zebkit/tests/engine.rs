@@ -98,6 +98,12 @@ fn services() {
         &found,
     );
     check(Document::open(b"not a pdf", None).is_err(), "pdf: what is not a PDF is refused", ());
+    let areas = again.redact(0, Some("[[5, 30, 70, 65]]"), 0x0000_00ff);
+    check(
+        areas.as_ref().is_ok_and(|n| *n == 1) && again.text(0).is_ok_and(|text| !text.contains("Hello")),
+        "pdf: redaction",
+        again.text(0),
+    );
 
     check(
         ffmpeg::has_decoder("h264") && ffmpeg::has_decoder("aac") && ffmpeg::has_decoder("libopus") && !ffmpeg::has_decoder("no-such-codec"),
@@ -210,6 +216,9 @@ fn engine(page_port: u16) {
                     &result,
                 );
                 let view4 = view3.clone();
+                view3.capture(|png| {
+                    check(png.as_ref().is_ok_and(|png| png.starts_with(b"\x89PNG")), "View::capture: a PNG", ());
+                });
                 view3.evaluate("throw new Error('broken')", move |result| {
                     check(
                         result.as_ref().is_err_and(|error| error.message().contains("broken")),

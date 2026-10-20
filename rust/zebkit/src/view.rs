@@ -65,6 +65,8 @@ struct Inner {
     on_load: Slot<LoadFunction>,
     on_title: Slot<dyn FnMut(&str)>,
     on_close: Slot<dyn FnOnce()>,
+    on_new_window: Slot<dyn FnMut(&str)>,
+    on_drop: Slot<dyn FnMut(&str)>,
     /// What each bound name calls. Boxed, so that the address the engine
     /// holds stays where it is.
     bindings: RefCell<HashMap<String, Box<Binding>>>,
@@ -108,6 +110,8 @@ impl View {
             on_load: RefCell::new(None),
             on_title: RefCell::new(None),
             on_close: RefCell::new(None),
+            on_new_window: RefCell::new(None),
+            on_drop: RefCell::new(None),
             bindings: RefCell::new(HashMap::new()),
             retired: RefCell::new(Vec::new()),
         });
@@ -200,6 +204,95 @@ impl View {
     /// thing the view does.
     pub fn on_close<F: FnOnce() + 'static>(&self, function: F) {
         *self.inner.on_close.borrow_mut() = Some(Box::new(function));
+    }
+
+    /// The title of the view's window; `None` for the page's.
+    pub fn set_title(&self, title: Option<&str>) {
+        let Some(raw) = self.raw() else { return };
+        let title = title.map(c_string);
+        unsafe { sys::zebkit_view_set_title(raw, title.as_ref().map_or(std::ptr::null(), |t| t.as_ptr())) }
+    }
+
+    /// Brings the view's window to the front, with the keyboard.
+    pub fn focus(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_focus(raw) }
+        }
+    }
+
+    /// Places this view inside `parent`'s window, over its page, at
+    /// (x, y), `width` by `height`; its own window is hidden.
+    pub fn attach(&self, parent: &View, x: i32, y: i32, width: i32, height: i32) {
+        if let (Some(raw), Some(parent)) = (self.raw(), parent.raw()) {
+            unsafe { sys::zebkit_view_attach(raw, parent, x, y, width, height) }
+        }
+    }
+
+    /// Where an attached view is in its parent's window.
+    pub fn set_bounds(&self, x: i32, y: i32, width: i32, height: i32) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_set_bounds(raw, x, y, width, height) }
+        }
+    }
+
+    /// Shows or hides an attached view.
+    pub fn set_visible(&self, visible: bool) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_set_visible(raw, visible) }
+        }
+    }
+
+    /// Runs `source` in every document the view loads from now on, before
+    /// the page's own script (a preload).
+    pub fn add_script(&self, source: &str) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_add_script(raw, c_string(source).as_ptr()) }
+        }
+    }
+
+    pub fn stop(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_stop(raw) }
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_is_loading(raw) })
+    }
+
+    /// The User-Agent of the view's requests and pages; `None` for the engine's.
+    pub fn set_user_agent(&self, user_agent: Option<&str>) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_set_user_agent(raw, c_string(user_agent.unwrap_or("")).as_ptr()) }
+        }
+    }
+
+    /// A PNG of what the view shows.
+    pub fn capture<F: FnOnce(Result<Vec<u8>, Error>) + 'static>(&self, done: F) {
+        let Some(raw) = self.raw() else {
+            done(Err(Error::new("the view is closed")));
+            return;
+        };
+        let data = Box::into_raw(Box::new(done));
+        unsafe { sys::zebkit_view_capture(raw, on_capture::<F>, data.cast()) }
+    }
+
+    /// What a page opens in a new window comes here as its URL, and no
+    /// window is made.
+    pub fn on_new_window<F: FnMut(&str) + 'static>(&self, function: F) {
+        let Some(raw) = self.raw() else { return };
+        *self.inner.on_new_window.borrow_mut() = Some(Box::new(function));
+        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_view_on_new_window(raw, Some(on_new_window), data) }
+    }
+
+    /// The paths of files dropped on the view, as a JSON array, before the
+    /// page gets the drop.
+    pub fn on_drop<F: FnMut(&str) + 'static>(&self, function: F) {
+        let Some(raw) = self.raw() else { return };
+        *self.inner.on_drop.borrow_mut() = Some(Box::new(function));
+        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_view_on_drop(raw, Some(on_drop), data) }
     }
 
     /// Runs `script` in the page's main frame, as the page's own script
@@ -346,8 +439,37 @@ unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     // What the closures hold may hold the view: let it go.
     inner.on_load.borrow_mut().take();
     inner.on_title.borrow_mut().take();
+    inner.on_new_window.borrow_mut().take();
+    inner.on_drop.borrow_mut().take();
     inner.bindings.borrow_mut().clear();
     inner.retired.borrow_mut().clear();
+}
+
+unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
+    _view: *mut sys::zebkit_view,
+    png: *const u8,
+    size: usize,
+    error: *const c_char,
+    data: *mut c_void,
+) {
+    let done = Box::from_raw(data.cast::<F>());
+    if png.is_null() {
+        done(Err(Error::new(string_from(error).unwrap_or_else(|| "no picture".to_string()))));
+    } else {
+        done(Ok(std::slice::from_raw_parts(png, size).to_vec()));
+    }
+}
+
+unsafe extern "C" fn on_new_window(_view: *mut sys::zebkit_view, url: *const c_char, data: *mut c_void) {
+    let inner = &*data.cast::<Inner>();
+    let url = string_from(url).unwrap_or_default();
+    call_slot(&inner.on_new_window, |function| function(&url));
+}
+
+unsafe extern "C" fn on_drop(_view: *mut sys::zebkit_view, paths: *const c_char, data: *mut c_void) {
+    let inner = &*data.cast::<Inner>();
+    let paths = string_from(paths).unwrap_or_else(|| "[]".to_string());
+    call_slot(&inner.on_drop, |function| function(&paths));
 }
 
 unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
