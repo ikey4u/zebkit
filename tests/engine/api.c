@@ -54,12 +54,30 @@ static void after_error(zebkit_view *v, const char *json, const char *error, voi
 static void after_title(zebkit_view *v, const char *json, const char *error, void *data);
 static void after_promise(zebkit_view *v, const char *json, const char *error, void *data);
 
+static int new_windows;
+
+static void on_new_window(zebkit_view *v, const char *url, void *data) {
+    (void)v, (void)data;
+    new_windows++;
+    check(strcmp(url, "https://example.invalid/popup") == 0, "zebkit_view_on_new_window: window.open's URL", url);
+}
+
+static void after_open(zebkit_view *v, const char *json, const char *error, void *data);
+
 static void after_capture(zebkit_view *v, const uint8_t *png, size_t size, const char *error, void *data) {
     (void)v, (void)data;
     char detail[64];
     snprintf(detail, sizeof(detail), "%zu bytes", size);
     check(png && size > 100 && memcmp(png, "\x89PNG", 4) == 0, "zebkit_view_capture: a PNG", error ? error : detail);
     check(!zebkit_view_is_loading(view), "zebkit_view_is_loading", NULL);
+    zebkit_view_on_new_window(view, on_new_window, NULL);
+    zebkit_view_evaluate(view, "window.open('https://example.invalid/popup') === null", after_open, NULL);
+}
+
+static void after_open(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    check(json && strcmp(json, "true") == 0 && new_windows == 1, "no window is made: window.open gives null",
+          json ? json : error);
     pthread_t thread;
     pthread_create(&thread, NULL, thread_main, NULL);
     pthread_join(thread, NULL);

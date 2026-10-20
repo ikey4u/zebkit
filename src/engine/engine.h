@@ -69,6 +69,8 @@ class BrowserClient : public content::ShellContentBrowserClient {
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
       bool is_integration_test) override;
   bool IsHandledURL(const GURL& url) override;
+  std::unique_ptr<content::WebContentsViewDelegate> GetWebContentsViewDelegate(
+      content::WebContents* web_contents) override;
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
                                       int child_process_id) override;
   mojo::PendingRemote<network::mojom::URLLoaderFactory>

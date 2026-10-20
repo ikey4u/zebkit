@@ -16,12 +16,14 @@
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_contents_view_delegate.h"
 #include "url/gurl.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace content {
 class RenderFrameHost;
 class Shell;
+class WebContents;
 }  // namespace content
 
 namespace url {
@@ -70,6 +72,18 @@ std::optional<std::string> GetBytes(const base::Value* value);
 // closed with it.
 void CallPdf(PageCall call);
 void ClosePdfsOf(const zebkit_view* view);
+
+// The view of a page, or null.
+zebkit_view* ViewOf(content::WebContents* contents);
+
+// A new window a page asks for: to its view's application when it said so
+// (content::Shell::SetNewWindowHandler()).
+bool HandleNewWindow(content::WebContents* opener, const GURL& url);
+
+// The content shell's view delegate, with the drop told to the application.
+std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
+    content::WebContents* contents,
+    std::unique_ptr<content::WebContentsViewDelegate> inner);
 
 }  // namespace zebkit
 
@@ -139,6 +153,10 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_title_data_ = nullptr;
   zebkit_view_func on_close_ = nullptr;
   void* on_close_data_ = nullptr;
+  zebkit_url_func on_new_window_ = nullptr;
+  void* on_new_window_data_ = nullptr;
+  zebkit_drop_func on_drop_ = nullptr;
+  void* on_drop_data_ = nullptr;
 
  private:
   struct GrantEntry {

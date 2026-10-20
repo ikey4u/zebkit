@@ -36,6 +36,8 @@
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_view_delegate.h"
+#include "content/public/common/drop_data.h"
 #include "content/shell/browser/shell.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
@@ -548,6 +550,99 @@ void CloseAllViews() {
   }
 }
 
+zebkit_view* ViewOf(content::WebContents* contents) {
+  for (zebkit_view* view : zebkit_view::Views()) {
+    if (view->web_contents() == contents)
+      return view;
+  }
+  return nullptr;
+}
+
+bool HandleNewWindow(content::WebContents* opener, const GURL& url) {
+  zebkit_view* view = ViewOf(opener);
+  if (!view || !view->on_new_window_)
+    return false;
+  view->on_new_window_(view, url.spec().c_str(), view->on_new_window_data_);
+  return true;
+}
+
+namespace {
+
+class ViewDelegate : public content::WebContentsViewDelegate {
+ public:
+  ViewDelegate(content::WebContents* contents,
+               std::unique_ptr<content::WebContentsViewDelegate> inner)
+      : contents_(contents), inner_(std::move(inner)) {}
+
+  void OnPerformingDrop(const content::DropData& drop_data,
+                        DropCompletionCallback callback) override {
+    zebkit_view* view = ViewOf(contents_);
+    if (view && view->on_drop_ && !drop_data.filenames.empty()) {
+      base::ListValue paths;
+      for (const ui::FileInfo& file : drop_data.filenames)
+        paths.Append(file.path.AsUTF8Unsafe());
+      const std::string json =
+          base::WriteJson(base::Value(std::move(paths))).value_or("[]");
+      view->on_drop_(view, json.c_str(), view->on_drop_data_);
+    }
+    if (inner_)
+      inner_->OnPerformingDrop(drop_data, std::move(callback));
+    else
+      std::move(callback).Run(drop_data);
+  }
+
+  // The rest is the content shell's.
+  gfx::NativeWindow GetNativeWindow() override {
+    return inner_ ? inner_->GetNativeWindow() : gfx::NativeWindow();
+  }
+  content::WebDragDestDelegate* GetDragDestDelegate() override {
+    return inner_ ? inner_->GetDragDestDelegate() : nullptr;
+  }
+  void ShowContextMenu(content::RenderFrameHost& render_frame_host,
+                       const content::ContextMenuParams& params) override {
+    if (inner_)
+      inner_->ShowContextMenu(render_frame_host, params);
+  }
+  void DismissContextMenu() override {
+    if (inner_)
+      inner_->DismissContextMenu();
+  }
+  void StoreFocus() override {
+    if (inner_)
+      inner_->StoreFocus();
+  }
+  bool RestoreFocus() override { return inner_ && inner_->RestoreFocus(); }
+  void ResetStoredFocus() override {
+    if (inner_)
+      inner_->ResetStoredFocus();
+  }
+  bool Focus() override { return inner_ && inner_->Focus(); }
+  bool TakeFocus(bool reverse) override {
+    return inner_ && inner_->TakeFocus(reverse);
+  }
+  void* GetDelegateForHost(content::RenderWidgetHost* render_widget_host,
+                           bool is_popup) override {
+    return inner_ ? inner_->GetDelegateForHost(render_widget_host, is_popup)
+                  : nullptr;
+  }
+  void WebContentsDragEnded() override {
+    if (inner_)
+      inner_->WebContentsDragEnded();
+  }
+
+ private:
+  const raw_ptr<content::WebContents> contents_;
+  std::unique_ptr<content::WebContentsViewDelegate> inner_;
+};
+
+}  // namespace
+
+std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
+    content::WebContents* contents,
+    std::unique_ptr<content::WebContentsViewDelegate> inner) {
+  return std::make_unique<ViewDelegate>(contents, std::move(inner));
+}
+
 }  // namespace zebkit
 
 extern "C" {
@@ -567,6 +662,18 @@ zebkit_view* zebkit_view_new(const char* url, int width, int height) {
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
   view->LoadUrl(GURL(url ? url : "about:blank"));
+}
+
+void zebkit_view_on_new_window(zebkit_view* view,
+                               zebkit_url_func func,
+                               void* data) {
+  view->on_new_window_ = func;
+  view->on_new_window_data_ = data;
+}
+
+void zebkit_view_on_drop(zebkit_view* view, zebkit_drop_func func, void* data) {
+  view->on_drop_ = func;
+  view->on_drop_data_ = data;
 }
 
 void zebkit_view_add_script(zebkit_view* view, const char* source) {

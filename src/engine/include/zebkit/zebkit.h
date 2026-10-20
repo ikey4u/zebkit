@@ -167,6 +167,25 @@ typedef void (*zebkit_capture_func)(zebkit_view *view, const uint8_t *png, size_
  */
 ZEBKIT_API void zebkit_view_capture(zebkit_view *view, zebkit_capture_func func, void *data);
 
+typedef void (*zebkit_url_func)(zebkit_view *view, const char *url, void *data);
+
+/*
+ * What a page of @view opens in a new window (window.open, a link with
+ * target=_blank) goes to @func as its URL, and no window is made: the
+ * application opens it where it wants. With no function the engine opens
+ * a window of its own, which the application has no view of.
+ */
+ZEBKIT_API void zebkit_view_on_new_window(zebkit_view *view, zebkit_url_func func, void *data);
+
+typedef void (*zebkit_drop_func)(zebkit_view *view, const char *paths_json, void *data);
+
+/*
+ * The paths of files dropped on the view, from the desktop or another
+ * application, as a JSON array, to @func before the page gets the drop:
+ * what a page cannot learn of a dropped file.
+ */
+ZEBKIT_API void zebkit_view_on_drop(zebkit_view *view, zebkit_drop_func func, void *data);
+
 /* ---- The page's script and the application -------------------------- */
 
 /*

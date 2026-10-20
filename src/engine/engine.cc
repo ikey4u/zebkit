@@ -43,6 +43,7 @@
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
 #include "zebkit/engine/scheme.h"
+#include "zebkit/engine/view.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_switches.h"
@@ -249,6 +250,14 @@ bool BrowserClient::IsHandledURL(const GURL& url) {
          content::ShellContentBrowserClient::IsHandledURL(url);
 }
 
+std::unique_ptr<content::WebContentsViewDelegate>
+BrowserClient::GetWebContentsViewDelegate(content::WebContents* web_contents) {
+  return WrapViewDelegate(
+      web_contents,
+      content::ShellContentBrowserClient::GetWebContentsViewDelegate(
+          web_contents));
+}
+
 void BrowserClient::AppendExtraCommandLineSwitches(
     base::CommandLine* command_line,
     int child_process_id) {
@@ -320,6 +329,7 @@ void BrowserMainParts::PreCreateMainMessageLoop() {
 int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   AllowSchemes();
+  content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
 #if BUILDFLAG(IS_MAC)
   SetUpViews();
 #endif
