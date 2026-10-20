@@ -37,6 +37,9 @@ __all__ = [
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
     "ALLOW_APP", "ALLOW_FETCH", "ALLOW_FILES", "ALLOW_COMPRESS", "ALLOW_CRYPTO", "ALLOW_IMAGE",
     "ALLOW_URL", "ALLOW_PDF", "ALLOW_ALL",
+    "Pdf", "RENDER_ANNOTATIONS", "RENDER_FORMS", "RENDER_LCD_TEXT", "RENDER_GRAYSCALE", "RENDER_PRINTING",
+    "RENDER_NO_SMOOTHING", "Request", "scheme_register", "scheme_handle",
+    "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -488,3 +491,239 @@ def image_encode(rgba, width, height, format="png", quality=-1):
 
 def icu_init():
     return bool(_icu_init())
+
+
+# ---- PDF: <zebkit/pdf.h> ----
+
+class _RenderOptions(ctypes.Structure):
+    _fields_ = [("scale", ctypes.c_float), ("rotation", ctypes.c_int), ("flags", ctypes.c_uint),
+                ("background", ctypes.c_uint32), ("x", ctypes.c_int), ("y", ctypes.c_int),
+                ("width", ctypes.c_int), ("height", ctypes.c_int)]
+
+
+_pdf_open = _declare("zebkit_pdf_open", _P, _P, _Z, _S, _EP)
+_pdf_open_file = _declare("zebkit_pdf_open_file", _P, _S, _S, _EP)
+_pdf_close = _declare("zebkit_pdf_close", None, _P)
+_pdf_save = _declare("zebkit_pdf_save", _P, _P, _U, _ZP, _EP)
+_pdf_info = _declare("zebkit_pdf_info", _P, _P)
+_pdf_set_metadata = _declare("zebkit_pdf_set_metadata", _B, _P, _S, _EP)
+_pdf_page_count = _declare("zebkit_pdf_page_count", _I, _P)
+_pdf_page = _declare("zebkit_pdf_page", _P, _P, _I, _EP)
+_pdf_render = _declare("zebkit_pdf_render", _P, _P, _I, ctypes.POINTER(_RenderOptions), _IP, _IP, _EP)
+_pdf_text = _declare("zebkit_pdf_text", _P, _P, _I, _EP)
+_pdf_text_layout = _declare("zebkit_pdf_text_layout", _P, _P, _I, _EP)
+_pdf_text_rects = _declare("zebkit_pdf_text_rects", _P, _P, _I, _I, _I, _EP)
+_pdf_char_at = _declare("zebkit_pdf_char_at", _I, _P, _I, ctypes.c_double, ctypes.c_double, ctypes.c_double)
+_pdf_search = _declare("zebkit_pdf_search", _P, _P, _S, _U, _I, _I, _EP)
+_pdf_outline = _declare("zebkit_pdf_outline", _P, _P, _EP)
+_pdf_links = _declare("zebkit_pdf_links", _P, _P, _I, _EP)
+_pdf_annotations = _declare("zebkit_pdf_annotations", _P, _P, _I, _EP)
+_pdf_annotation_add = _declare("zebkit_pdf_annotation_add", _I, _P, _I, _S, _EP)
+_pdf_annotation_update = _declare("zebkit_pdf_annotation_update", _B, _P, _I, _I, _S, _EP)
+_pdf_annotation_remove = _declare("zebkit_pdf_annotation_remove", _B, _P, _I, _I, _EP)
+_pdf_flatten = _declare("zebkit_pdf_flatten", _B, _P, _I, _B, _EP)
+_pdf_attachments = _declare("zebkit_pdf_attachments", _P, _P, _EP)
+_pdf_attachment = _declare("zebkit_pdf_attachment", _P, _P, _I, _ZP, _EP)
+_pdf_attach = _declare("zebkit_pdf_attach", _B, _P, _S, _P, _Z, _EP)
+_pdf_detach = _declare("zebkit_pdf_detach", _B, _P, _I, _EP)
+
+RENDER_ANNOTATIONS, RENDER_FORMS, RENDER_LCD_TEXT, RENDER_GRAYSCALE, RENDER_PRINTING, RENDER_NO_SMOOTHING = \
+    1, 2, 4, 8, 16, 32
+
+
+class Pdf:
+    """A PDF document on the engine's PDFium (<zebkit/pdf.h>), from bytes or
+    a path. Structured answers are Python values; coordinates are PDF page
+    space. Needs no main(); any thread may use it, one at a time."""
+
+    def __init__(self, source, password=None):
+        error = ctypes.c_void_p()
+        password = password.encode() if password else None
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            data = bytes(source)
+            self._handle = _pdf_open(data, len(data), password, ctypes.byref(error))
+        else:
+            self._handle = _pdf_open_file(os.fspath(source).encode(), password, ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the document cannot be opened")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        if getattr(self, "_handle", None):
+            _pdf_close(self._handle)
+            self._handle = None
+
+    def _json(self, function, *args, fallback="failed"):
+        error = ctypes.c_void_p()
+        out = function(self._handle, *args, ctypes.byref(error))
+        if not out:
+            _raise(error, fallback)
+        return json.loads(_string(out))
+
+    def _ok(self, function, *args, fallback="failed"):
+        error = ctypes.c_void_p()
+        if not function(self._handle, *args, ctypes.byref(error)):
+            _raise(error, fallback)
+
+    def info(self):
+        return json.loads(_string(_pdf_info(self._handle)))
+
+    def set_metadata(self, **entries):
+        self._ok(_pdf_set_metadata, json.dumps(entries).encode())
+
+    @property
+    def page_count(self):
+        return _pdf_page_count(self._handle)
+
+    def page(self, index):
+        return self._json(_pdf_page, index, fallback="no page")
+
+    def render(self, index, scale=1.0, rotation=0, flags=RENDER_ANNOTATIONS, background=0xFFFFFFFF,
+               x=0, y=0, width=0, height=0):
+        """(width, height, RGBA bytes) of a page, or of a tile of it."""
+        options = _RenderOptions(scale, rotation, flags, background, x, y, width, height)
+        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
+        out = _pdf_render(self._handle, index, ctypes.byref(options), ctypes.byref(out_width),
+                          ctypes.byref(out_height), ctypes.byref(error))
+        if not out:
+            _raise(error, "the page cannot be rendered")
+        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
+
+    def text(self, index):
+        error = ctypes.c_void_p()
+        out = _pdf_text(self._handle, index, ctypes.byref(error))
+        if not out:
+            _raise(error, "no text")
+        return _string(out)
+
+    def text_layout(self, index):
+        return self._json(_pdf_text_layout, index)
+
+    def text_rects(self, index, start, count):
+        return self._json(_pdf_text_rects, index, start, count)
+
+    def char_at(self, index, x, y, tolerance=2.0):
+        found = _pdf_char_at(self._handle, index, x, y, tolerance)
+        return None if found < 0 else found
+
+    def search(self, query, match_case=False, whole_word=False, first=0, limit=0):
+        flags = (1 if match_case else 0) | (2 if whole_word else 0)
+        return self._json(_pdf_search, query.encode(), flags, first, limit)
+
+    def outline(self):
+        return self._json(_pdf_outline)
+
+    def links(self, index):
+        return self._json(_pdf_links, index)
+
+    def annotations(self, index):
+        return self._json(_pdf_annotations, index)
+
+    def add_annotation(self, index, annotation):
+        error = ctypes.c_void_p()
+        added = _pdf_annotation_add(self._handle, index, json.dumps(annotation).encode(), ctypes.byref(error))
+        if added < 0:
+            _raise(error, "the annotation cannot be made")
+        return added
+
+    def update_annotation(self, index, annotation, changes):
+        self._ok(_pdf_annotation_update, index, annotation, json.dumps(changes).encode())
+
+    def remove_annotation(self, index, annotation):
+        self._ok(_pdf_annotation_remove, index, annotation)
+
+    def flatten(self, index, for_print=False):
+        self._ok(_pdf_flatten, index, for_print)
+
+    def attachments(self):
+        return self._json(_pdf_attachments)
+
+    def attachment(self, index):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_attachment(self._handle, index, ctypes.byref(size), ctypes.byref(error))
+        if not out:
+            _raise(error, "no attachment")
+        return _buffer(out, size.value)
+
+    def attach(self, name, data):
+        data = _bytes(data)
+        self._ok(_pdf_attach, name.encode(), data, len(data))
+
+    def detach(self, index):
+        self._ok(_pdf_detach, index)
+
+    def save(self, incremental=False, no_security=False):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_save(self._handle, (1 if incremental else 0) | (2 if no_security else 0), ctypes.byref(size),
+                        ctypes.byref(error))
+        if not out:
+            _raise(error, "the document cannot be saved")
+        return _buffer(out, size.value)
+
+
+# ---- URL schemes of the application's own ----
+
+SCHEME_STANDARD, SCHEME_SECURE, SCHEME_FETCH, SCHEME_BYPASS_CSP = 1, 2, 4, 8
+
+_SCHEME = ctypes.CFUNCTYPE(None, _P, _P)
+_scheme_register = _declare("zebkit_scheme_register", _B, _S, _U)
+_scheme_handle = _declare("zebkit_scheme_handle", None, _S, _SCHEME, _P)
+_request_url = _declare("zebkit_request_url", _S, _P)
+_request_method = _declare("zebkit_request_method", _S, _P)
+_request_headers = _declare("zebkit_request_headers", _S, _P)
+_request_body = _declare("zebkit_request_body", ctypes.POINTER(ctypes.c_uint8), _P, _ZP)
+_request_respond = _declare("zebkit_request_respond", None, _P, _I, _S, _P, _Z)
+_request_respond_file = _declare("zebkit_request_respond_file", None, _P, _S, _S)
+
+
+class Request:
+    """A request for a URL of the application's scheme. Answer it once, with
+    respond() or respond_file(), from any thread."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self.url = _request_url(handle).decode()
+        self.method = _request_method(handle).decode()
+        self.headers = {}
+        for line in _request_headers(handle).decode().split("\r\n"):
+            name, _, value = line.partition(":")
+            if name:
+                self.headers[name.strip()] = value.strip()
+        size = ctypes.c_size_t()
+        body = _request_body(handle, ctypes.byref(size))
+        self.body = ctypes.string_at(body, size.value) if body else None
+
+    def _take(self):
+        handle, self._handle = self._handle, None
+        if not handle:
+            raise Error("the request is answered already")
+        return handle
+
+    def respond(self, status=200, body=b"", headers=None):
+        body = _bytes(body)
+        lines = "\r\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+        _request_respond(self._take(), status, lines.encode(), body, len(body))
+
+    def respond_file(self, path, headers=None):
+        lines = "\r\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+        _request_respond_file(self._take(), os.fspath(path).encode(), lines.encode())
+
+
+def scheme_register(scheme, flags=SCHEME_STANDARD | SCHEME_SECURE | SCHEME_FETCH):
+    """Makes scheme one of the application's: before main()."""
+    return bool(_scheme_register(scheme.encode(), flags))
+
+
+def scheme_handle(scheme, function):
+    """function(Request) answers the scheme's requests, on the engine's thread."""
+    callback = _SCHEME(_guard(lambda handle, data: function(Request(handle))))
+    _alive.add(callback)
+    _scheme_handle(scheme.encode(), callback, None)

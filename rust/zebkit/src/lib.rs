@@ -20,7 +20,10 @@
 //! - [`cdp`] serves the Chrome DevTools Protocol, through which Puppeteer,
 //!   Playwright and other clients drive the views.
 //! - [`services`] is what the engine has for applications besides pages:
-//!   compression, digests and encryption, URLs, images and HTTP.
+//!   compression, digests and encryption, URLs, images and HTTP; [`pdf`]
+//!   is PDF documents on the engine's PDFium.
+//! - [`scheme`] makes URL schemes of the application's own, which it
+//!   answers: its interface and its files, without a server.
 //! - [`vendor`] is the libraries inside the engine: FFmpeg, so far.
 //!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
@@ -35,6 +38,8 @@
 
 pub mod cdp;
 mod engine;
+pub mod pdf;
+pub mod scheme;
 mod script;
 pub mod services;
 pub mod vendor;

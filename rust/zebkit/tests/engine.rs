@@ -9,7 +9,8 @@ use std::rc::Rc;
 use std::time::Duration;
 use zebkit::services::{self, Compression, Digest, ImageFormat, UrlPart};
 use zebkit::vendor::ffmpeg;
-use zebkit::{cdp, Allow, LoadEvent, Script, View};
+use zebkit::pdf::{Document, RenderOptions};
+use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
 
 thread_local! {
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -72,6 +73,32 @@ fn services() {
     let image = services::Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 128] };
     let png = services::encode_image(ImageFormat::Png, &image, 0).unwrap();
     check(services::decode_image(&png).as_ref() == Ok(&image), "PNG both ways", png.len());
+    let pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
+/Resources << /Font << /F1 5 0 R >> >> >> endobj\n\
+4 0 obj << >> stream\nBT /F1 18 Tf 10 40 Td (Hello Rust) Tj ET\nendstream endobj\n\
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n";
+    let mut document = Document::open(pdf, None).expect("the PDF opens");
+    let image = document.render(0, &RenderOptions { scale: 2.0, ..Default::default() }).unwrap();
+    let found = document.search("rust", false, false, 0, 0).unwrap();
+    let added = document
+        .add_annotation(0, r#"{"type": "square", "rect": [5, 5, 50, 50], "color": [255, 0, 0], "border": 2}"#)
+        .unwrap();
+    let saved = document.save(false).unwrap();
+    let mut again = Document::open(&saved, None).unwrap();
+    check(
+        document.page_count() == 1
+            && (image.width, image.height) == (400, 200)
+            && found.contains("\"count\":4")
+            && added == 0
+            && again.text(0).unwrap() == "Hello Rust"
+            && again.annotations(0).unwrap().contains("\"square\""),
+        "pdf: render, search, annotate, save",
+        &found,
+    );
+    check(Document::open(b"not a pdf", None).is_err(), "pdf: what is not a PDF is refused", ());
+
     check(
         ffmpeg::has_decoder("h264") && ffmpeg::has_decoder("aac") && ffmpeg::has_decoder("libopus") && !ffmpeg::has_decoder("no-such-codec"),
         &format!("FFmpeg {} decoders", ffmpeg::version()),
@@ -105,6 +132,30 @@ fn serve(page: &'static str) -> u16 {
 fn engine(page_port: u16) {
     check(zebkit::is_headless(), "headless", ());
     check(zebkit::engine_version().starts_with("Chromium "), "engine version", zebkit::engine_version());
+
+    // A page from a scheme of the application's own, and its fetch().
+    scheme::handle("rs", |request| {
+        if request.url() == "rs://test/index.html" {
+            request.respond(
+                200,
+                "Content-Type: text/html",
+                b"<script>fetch('/data').then(r => r.text()).then(t => document.title = t)</script>",
+            );
+        } else {
+            let answer = format!("{} from Rust", request.method());
+            request.respond(200, "Content-Type: text/plain", answer.as_bytes());
+        }
+    });
+    let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
+    {
+        let closing = scheme_view.clone();
+        scheme_view.on_title(move |title| {
+            if title == "GET from Rust" {
+                check(true, "a page from the application's scheme, and its fetch", ());
+                closing.close();
+            }
+        });
+    }
 
     // A page that calls the application and shows the answer in its title.
     let view = View::new(None, 800, 600);
@@ -253,6 +304,7 @@ fn main() {
         eprintln!("FAIL  the test did not finish in 120 s");
         std::process::exit(1);
     });
+    check(scheme::register("rs", scheme::STANDARD | scheme::FETCH), "scheme::register", ());
     let code = zebkit::run_with_args(args, move || engine(port));
     let _ = std::fs::remove_dir_all(&profile);
     check(code == 0, "the engine's exit code", code);

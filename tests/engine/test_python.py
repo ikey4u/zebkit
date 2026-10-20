@@ -38,7 +38,56 @@ pixels = bytes([10, 20, 30, 255]) * 6
 width, height, back = zebkit.image_decode(zebkit.image_encode(pixels, 3, 2, "png"))
 check((width, height, back) == (3, 2, pixels), "image encode and decode, PNG")
 
+PDF = b"""%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << >> stream
+BT /F1 18 Tf 10 40 Td (Hello Python) Tj ET
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF
+"""
+with zebkit.Pdf(PDF) as pdf:
+    width, height, rgba = pdf.render(0, scale=2)
+    found = pdf.search("python")
+    added = pdf.add_annotation(0, {"type": "ink", "rect": [0, 0, 1, 1], "border": 2, "ink": [[[10, 10], [90, 90]]]})
+    pdf.set_metadata(title="from Python")
+    saved = pdf.save()
+    check(pdf.page_count == 1 and (width, height, len(rgba)) == (400, 200, 400 * 200 * 4) and len(found) == 1
+          and added == 0, "Pdf: render, search, annotate", found)
+with zebkit.Pdf(saved) as again:
+    check(again.info()["metadata"]["title"] == "from Python" and again.text(0) == "Hello Python"
+          and again.annotations(0)[0]["type"] == "ink", "Pdf: saved and opened again")
+try:
+    zebkit.Pdf(b"not a pdf")
+    check(False, "Pdf refuses what is not a PDF")
+except zebkit.Error as e:
+    check(True, "Pdf refuses what is not a PDF", e)
+
+check(zebkit.scheme_register("py"), "scheme_register")
 state = {}
+
+
+def serve(request):
+    if request.url == "py://test/index.html":
+        request.respond(200, "<title>scheme</title><script>fetch('/data').then(r => r.text())"
+                        ".then(t => document.title = t)</script>", {"Content-Type": "text/html"})
+    else:
+        request.respond(200, f"{request.method} from Python", {"Content-Type": "text/plain"})
+
+
+def scheme_view():
+    zebkit.scheme_handle("py", serve)
+    view = zebkit.View("py://test/index.html", 320, 240)
+
+    def titled(title):
+        if title == "GET from Python":
+            check(True, "a page from the application's scheme, and its fetch")
+            view.close()
+    view.on_title(titled)
+    view.on_close(zebkit.quit)
 
 
 def ready():
@@ -67,7 +116,7 @@ def ready():
             view.evaluate("zebkit.app.twice(21)", after_twice)
 
     view.on_load(loaded)
-    view.on_close(lambda: (check(True, "on_close"), zebkit.quit()))
+    view.on_close(lambda: (check(True, "on_close"), scheme_view()))
 
 
 code = zebkit.main(ready)

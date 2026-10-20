@@ -249,6 +249,125 @@ extern "C" {
     );
 }
 
+opaque!(zebkit_pdf);
+opaque!(zebkit_request);
+
+/// `zebkit_pdf_render_options`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct zebkit_pdf_render_options {
+    pub scale: f32,
+    pub rotation: c_int,
+    pub flags: c_uint,
+    pub background: u32,
+    pub x: c_int,
+    pub y: c_int,
+    pub width: c_int,
+    pub height: c_int,
+}
+
+pub const ZEBKIT_PDF_SAVE_INCREMENTAL: c_uint = 1 << 0;
+pub const ZEBKIT_PDF_SAVE_NO_SECURITY: c_uint = 1 << 1;
+pub const ZEBKIT_PDF_RENDER_ANNOTATIONS: c_uint = 1 << 0;
+pub const ZEBKIT_PDF_RENDER_FORMS: c_uint = 1 << 1;
+pub const ZEBKIT_PDF_RENDER_LCD_TEXT: c_uint = 1 << 2;
+pub const ZEBKIT_PDF_RENDER_GRAYSCALE: c_uint = 1 << 3;
+pub const ZEBKIT_PDF_RENDER_PRINTING: c_uint = 1 << 4;
+pub const ZEBKIT_PDF_RENDER_NO_SMOOTHING: c_uint = 1 << 5;
+pub const ZEBKIT_PDF_SEARCH_CASE: c_uint = 1 << 0;
+pub const ZEBKIT_PDF_SEARCH_WHOLE_WORD: c_uint = 1 << 1;
+
+pub const ZEBKIT_SCHEME_STANDARD: c_uint = 1 << 0;
+pub const ZEBKIT_SCHEME_SECURE: c_uint = 1 << 1;
+pub const ZEBKIT_SCHEME_FETCH: c_uint = 1 << 2;
+pub const ZEBKIT_SCHEME_BYPASS_CSP: c_uint = 1 << 3;
+
+pub type zebkit_scheme_func = unsafe extern "C" fn(request: *mut zebkit_request, data: *mut c_void);
+
+extern "C" {
+    pub fn zebkit_pdf_open(data: *const c_void, size: usize, password: *const c_char, error: *mut *mut c_char)
+        -> *mut zebkit_pdf;
+    pub fn zebkit_pdf_open_file(path: *const c_char, password: *const c_char, error: *mut *mut c_char)
+        -> *mut zebkit_pdf;
+    pub fn zebkit_pdf_close(pdf: *mut zebkit_pdf);
+    pub fn zebkit_pdf_save(pdf: *mut zebkit_pdf, flags: c_uint, size: *mut usize, error: *mut *mut c_char) -> *mut u8;
+    pub fn zebkit_pdf_info(pdf: *mut zebkit_pdf) -> *mut c_char;
+    pub fn zebkit_pdf_set_metadata(pdf: *mut zebkit_pdf, json: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_page_count(pdf: *mut zebkit_pdf) -> c_int;
+    pub fn zebkit_pdf_page(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_render(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        options: *const zebkit_pdf_render_options,
+        width: *mut c_int,
+        height: *mut c_int,
+        error: *mut *mut c_char,
+    ) -> *mut u8;
+    pub fn zebkit_pdf_text(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_text_layout(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_text_rects(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        start: c_int,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    pub fn zebkit_pdf_char_at(pdf: *mut zebkit_pdf, page: c_int, x: f64, y: f64, tolerance: f64) -> c_int;
+    pub fn zebkit_pdf_search(
+        pdf: *mut zebkit_pdf,
+        query: *const c_char,
+        flags: c_uint,
+        first: c_int,
+        limit: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    pub fn zebkit_pdf_outline(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_links(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_annotations(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_annotation_add(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        json: *const c_char,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub fn zebkit_pdf_annotation_update(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        json: *const c_char,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_annotation_remove(pdf: *mut zebkit_pdf, page: c_int, index: c_int, error: *mut *mut c_char)
+        -> bool;
+    pub fn zebkit_pdf_flatten(pdf: *mut zebkit_pdf, page: c_int, for_print: bool, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_attachments(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_attachment(pdf: *mut zebkit_pdf, index: c_int, size: *mut usize, error: *mut *mut c_char)
+        -> *mut u8;
+    pub fn zebkit_pdf_attach(
+        pdf: *mut zebkit_pdf,
+        name: *const c_char,
+        data: *const c_void,
+        size: usize,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_detach(pdf: *mut zebkit_pdf, index: c_int, error: *mut *mut c_char) -> bool;
+
+    pub fn zebkit_scheme_register(scheme: *const c_char, flags: c_uint) -> bool;
+    pub fn zebkit_scheme_handle(scheme: *const c_char, func: Option<zebkit_scheme_func>, data: *mut c_void);
+    pub fn zebkit_request_url(request: *mut zebkit_request) -> *const c_char;
+    pub fn zebkit_request_method(request: *mut zebkit_request) -> *const c_char;
+    pub fn zebkit_request_headers(request: *mut zebkit_request) -> *const c_char;
+    pub fn zebkit_request_body(request: *mut zebkit_request, size: *mut usize) -> *const u8;
+    pub fn zebkit_request_respond(
+        request: *mut zebkit_request,
+        status: c_int,
+        headers: *const c_char,
+        body: *const c_void,
+        size: usize,
+    );
+    pub fn zebkit_request_respond_file(request: *mut zebkit_request, path: *const c_char, headers: *const c_char);
+}
+
 /// The FFmpeg inside the engine. The engine exports each of its functions
 /// as `zebkit_vendor_ffmpeg_<name>`; here they have FFmpeg's names.
 pub mod ffmpeg {

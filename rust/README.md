@@ -93,6 +93,8 @@ On a Mac the profile is `slim-macos`.
 | Script outside any page | `Script`: `run_module`, `evaluate`, `on_idle` |
 | CDP | `cdp::listen`, `port`, `url`, `stop` |
 | Services | `services`: compression (gzip, zlib, raw deflate, Brotli, Zstandard), digests, HMAC, random bytes, AES-GCM, URL parts, registrable domains, image decoding and encoding, `fetch` through the engine's network stack |
+| PDF | `pdf::Document`: open, render (whole or tiles), text and its layout, search, outline, links, annotations, attachments, metadata, save |
+| URL schemes | `scheme::register`, `scheme::handle`, `Request` with `respond` and `respond_file` (ranges) |
 | FFmpeg | `vendor::ffmpeg`: version and decoders |
 
 The other libraries inside the engine (`<zebkit/vendor/*.h>`) are not
