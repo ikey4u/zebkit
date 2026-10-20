@@ -838,12 +838,12 @@ Read from the application's code (`src/pc/desktop`, `src/crates/media`):
 | Phase | What | State |
 |---|---|---|
 | M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there | Building, on Linux against the macOS SDK |
-| P1-P2 | Chromium's PDFium in the engine by default; its C API | Done 2026-10-20: 2.9 MiB; the package is 145.9 MiB |
+| P1-P2 | Chromium's PDFium in the engine by default; its C API | Done 2026-10-20: 2.9 MiB; the package is 147.0 MiB with FFmpeg's additions |
 | S | URL schemes, scripts before the page's, the larger FFmpeg | Schemes done 2026-10-20 (`zebkit_scheme_*`, ranges for media) |
-| P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests | Documents, rendering, text, search, outline, links, annotations, attachments, metadata done 2026-10-20, in C, JavaScript, Python and Rust (`patches/1014`, `1015`); forms, page editing, redaction and signatures next |
-| F1 | the application's host on the Blink engine (the Rust crates of section 7), its interface as it is | |
-| F2 | the application's reader on `zebkit.pdf` in place of EmbedPDF; its media on zebkit's FFmpeg | |
-| F3 | the application's interface remade | |
+| P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests | Documents, rendering, text, search, outline, links, annotations, attachments, metadata, forms, page editing, redaction done 2026-10-20, in C, JavaScript, Python and Rust (`patches/1014`, `1015`); annotations' appearances alone and their dictionary entries, text objects. Next: signatures; outline editing; an annotation's object number, indirect entries followed, the AcroForm's /DA and /DR; appearances for stamps, carets and redaction marks, and EmbedPDF's free-text and line-ending drawing |
+| F1 | the application's host on the Blink engine (the Rust crates of section 7), its interface as it is | Done on Linux 2026-10-20 (the application branch `blink`): one platform module over the `zebkit` crate; the bridge, embedded browser views, `app:` and `asset:` with ranges, dropped files' paths (`zebkit.pathForFile`). The application menu on macOS next |
+| F2 | the application's reader on `zebkit.pdf` in place of EmbedPDF; its media on zebkit's FFmpeg | Reader done 2026-10-20: EmbedPDF's plugins over an executor on `zebkit.pdf`, held to EmbedPDF's own engine by tests; its WebAssembly PDFium no longer shipped. Media next |
+| F3 | the application's interface remade | Known: text markup made elsewhere covers the text, its multiply blending kept inside the annotation layer |
 
 The 150 MiB limit leaves 4.1 MiB after PDFium: the larger FFmpeg and what
 else the application needs have to fit in it, or be paid for elsewhere.
