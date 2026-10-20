@@ -196,6 +196,18 @@ static void on_title(zebkit_view *v, const char *title, void *data) {
         check(1, "on_title", title);
 }
 
+static void on_menu(const char *id, void *data) {
+    (void)id, (void)data;
+}
+
+static void on_open_files(const char *paths_json, void *data) {
+    (void)paths_json, (void)data;
+}
+
+static void on_app(void *data) {
+    (void)data;
+}
+
 static void ready(void *data) {
     (void)data;
     check(strncmp(zebkit_engine_version(), "Chromium ", 9) == 0, "zebkit_engine_version", zebkit_engine_version());
@@ -214,6 +226,28 @@ static void ready(void *data) {
         }
     }
     zebkit_free(url);
+
+    /* The application's menu: checked, and taken. */
+    check(!zebkit_app_set_menu("{}", on_menu, NULL, &error) && error, "zebkit_app_set_menu refuses what is not a list",
+          error);
+    zebkit_free(error);
+    error = NULL;
+    check(!zebkit_app_set_menu("[{\"title\": \"Edit\", \"items\": [{\"role\": \"juggle\"}]}]", on_menu, NULL,
+                               &error) &&
+              error && strstr(error, "juggle"),
+          "zebkit_app_set_menu refuses an unknown role", error);
+    zebkit_free(error);
+    error = NULL;
+    check(zebkit_app_set_menu("[{\"title\": \"File\", \"items\": [{\"title\": \"Open\", \"id\": \"open\", \"key\": "
+                              "\"o\"}, {\"separator\": true}, {\"title\": \"Zoom\", \"items\": [{\"title\": \"In\", "
+                              "\"id\": \"in\", \"key\": \"=\", \"modifiers\": [\"shift\"]}]}]}, {\"title\": \"Edit\", "
+                              "\"items\": [{\"role\": \"copy\"}, {\"role\": \"selectAll\", \"title\": \"All\"}]}]",
+                              on_menu, NULL, &error),
+          "zebkit_app_set_menu", error);
+    zebkit_app_on_open_files(on_open_files, NULL);
+    zebkit_app_on_reopen(on_app, NULL);
+    zebkit_app_on_quit_request(on_app, NULL);
+
     view = zebkit_view_new("data:text/html,<title>first</title><p>hello</p>", 800, 600);
     check(view != NULL, "zebkit_view_new", NULL);
     zebkit_view_on_load(view, on_load, NULL);

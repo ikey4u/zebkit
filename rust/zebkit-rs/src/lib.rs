@@ -346,6 +346,9 @@ pub const ZEBKIT_SCHEME_FETCH: c_uint = 1 << 2;
 pub const ZEBKIT_SCHEME_BYPASS_CSP: c_uint = 1 << 3;
 
 pub type zebkit_scheme_func = unsafe extern "C" fn(request: *mut zebkit_request, data: *mut c_void);
+pub type zebkit_menu_func = unsafe extern "C" fn(id: *const c_char, data: *mut c_void);
+pub type zebkit_paths_func = unsafe extern "C" fn(paths_json: *const c_char, data: *mut c_void);
+pub type zebkit_app_func = unsafe extern "C" fn(data: *mut c_void);
 
 extern "C" {
     pub fn zebkit_pdf_open(data: *const c_void, size: usize, password: *const c_char, error: *mut *mut c_char)
@@ -427,6 +430,16 @@ extern "C" {
 
     pub fn zebkit_scheme_register(scheme: *const c_char, flags: c_uint) -> bool;
     pub fn zebkit_scheme_handle(scheme: *const c_char, func: Option<zebkit_scheme_func>, data: *mut c_void);
+
+    pub fn zebkit_app_set_menu(
+        json: *const c_char,
+        func: Option<zebkit_menu_func>,
+        data: *mut c_void,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_app_on_open_files(func: Option<zebkit_paths_func>, data: *mut c_void);
+    pub fn zebkit_app_on_reopen(func: Option<zebkit_app_func>, data: *mut c_void);
+    pub fn zebkit_app_on_quit_request(func: Option<zebkit_app_func>, data: *mut c_void);
     pub fn zebkit_request_url(request: *mut zebkit_request) -> *const c_char;
     pub fn zebkit_request_method(request: *mut zebkit_request) -> *const c_char;
     pub fn zebkit_request_headers(request: *mut zebkit_request) -> *const c_char;

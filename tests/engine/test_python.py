@@ -94,6 +94,15 @@ def scheme_view():
 
 
 def ready():
+    try:
+        zebkit.app_set_menu([{"title": "Edit", "items": [{"role": "juggle"}]}], print)
+        refused = False
+    except zebkit.Error as e:
+        refused = "juggle" in str(e)
+    zebkit.app_set_menu([{"title": "File", "items": [{"title": "Open", "id": "open", "key": "o"},
+                                                     {"separator": True}, {"role": "quit"}]}], print)
+    zebkit.app_on_open_files(print)
+    check(refused, "app_set_menu refuses an unknown role, and takes a menu")
     check(zebkit.engine_version().startswith("Chromium "), "engine_version", zebkit.engine_version())
     view = zebkit.View("data:text/html,<title>python</title>", 640, 480)
     view.grant("*", zebkit.ALLOW_APP | zebkit.ALLOW_CRYPTO)

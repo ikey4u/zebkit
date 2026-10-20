@@ -86,6 +86,55 @@ ZEBKIT_API void zebkit_post_delayed_task(zebkit_task_func func, void *data, uint
 /* Whether views are without windows: no display, or --headless. */
 ZEBKIT_API bool zebkit_is_headless(void);
 
+/* ---- The application ------------------------------------------------- */
+
+typedef void (*zebkit_menu_func)(const char *id, void *data);
+
+/*
+ * The application's menu, from @json: [{"title": "File", "items": [...]},
+ * ...], where an item is
+ *   {"title": "Open…", "id": "open", "key": "o", "modifiers": ["shift"]}:
+ *       @func gets "open" when it is chosen;
+ *   {"role": "undo"}: a standard command, which also takes "title" (roles:
+ *       undo, redo, cut, copy, paste, pasteAndMatchStyle, selectAll,
+ *       minimize, zoom, close,
+ *       fullscreen, front, quit, hide, hideOthers, showAll, about,
+ *       services);
+ *   {"title": "Zoom", "items": [...]}: a submenu; or {"separator": true}.
+ * A first menu {"role": "appMenu", "items": [...]} is the application menu
+ * on macOS, in place of zebkit's (About, Services, Hide, Quit).
+ * "key" is with the command key, ⌘ on macOS and Ctrl elsewhere: a
+ * character, or "f1" to "f24"; "modifiers" adds "shift", "alt" and "ctrl"
+ * (Control, on macOS). On macOS it is the menu bar, after the application
+ * menu zebkit makes (About, Services, Hide, Quit), with the window menu
+ * the menu titled "Window". Elsewhere, where windows have no menu bar, the
+ * items' keys work the same in the application's windows when the page
+ * does not take them. On the engine's thread; again to change it.
+ */
+ZEBKIT_API bool zebkit_app_set_menu(const char *json, zebkit_menu_func func, void *data, char **error);
+
+typedef void (*zebkit_paths_func)(const char *paths_json, void *data);
+
+/*
+ * Files the system asks the running application to open, as a JSON array
+ * of paths: on macOS from the Finder or the Dock, also the ones it was
+ * started with, which are kept until @func is set. Elsewhere they are
+ * program arguments.
+ */
+ZEBKIT_API void zebkit_app_on_open_files(zebkit_paths_func func, void *data);
+
+typedef void (*zebkit_app_func)(void *data);
+
+/* The application's icon in the Dock was clicked while no window was shown (macOS). */
+ZEBKIT_API void zebkit_app_on_reopen(zebkit_app_func func, void *data);
+
+/*
+ * The user asked the application to quit (⌘Q, the Dock, logging out, on
+ * macOS): @func decides, calling zebkit_quit() or not. Without it zebkit
+ * quits.
+ */
+ZEBKIT_API void zebkit_app_on_quit_request(zebkit_app_func func, void *data);
+
 /* ---- Views ----------------------------------------------------------- */
 
 typedef struct zebkit_view zebkit_view;

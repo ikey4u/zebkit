@@ -77,6 +77,18 @@ int main(int argc, char **argv) {
   URL loader factory per scheme in the browser process), and Electron's
   `protocol.handle`. The same from the command line:
   `--zebkit-scheme=app,standard,secure,fetch`.
+- **The application.** `zebkit_app_set_menu()` takes the application's
+  menu as JSON: items with an id, which the application's function gets,
+  standard roles (undo, copy, minimize, quit, ...), submenus and
+  separators, each with a key. On macOS it is the menu bar (a first
+  `appMenu` menu is the application menu); on Linux and Windows, whose
+  windows have no menu bar, the same keys, with Ctrl for ⌘, work in the
+  application's windows when the page does not take them.
+  `zebkit_app_on_open_files()` gets the files the system opens with the
+  application (the Finder, the Dock), `zebkit_app_on_reopen()` the Dock
+  icon clicked with no window shown, and `zebkit_app_on_quit_request()`
+  ⌘Q and logging out, to quit (`zebkit_quit()`) or not. In Rust
+  `zebkit::app`; in Python `zebkit.app_*`.
 
 ## 1. The libraries inside the engine
 

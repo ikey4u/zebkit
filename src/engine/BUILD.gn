@@ -136,6 +136,8 @@ source_set("pdf") {
 }
 
 _sources = [
+  "app.cc",
+  "app.h",
   "bridge.cc",
   "cdp.cc",
   "engine.cc",
@@ -160,6 +162,7 @@ _deps = [
   ":vendor",
   "//base",
   "//base/version_info",
+  "//components/input",
   "//components/viz/common",
   "//content/public/app",
   "//content/public/browser",

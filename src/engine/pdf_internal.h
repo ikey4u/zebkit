@@ -84,8 +84,16 @@ struct Value {
 };
 
 // The annotation dictionary's entries but its appearance (/AP) and its
-// page (/P).
+// page (/P). Indirect objects are followed, but for annotations and pages,
+// which stay references, and for one already being followed.
 Value AnnotationEntries(FPDF_ANNOTATION annot);
+
+// The object number of the annotation's dictionary; 0 for a direct one.
+int AnnotationObjectNumber(FPDF_ANNOTATION annot);
+
+// The document's interactive form's default appearance (/AcroForm /DA);
+// empty without one.
+std::string FormDefaultAppearance(FPDF_DOCUMENT document);
 
 // Sets entry @key of the annotation dictionary to @value; null removes
 // it. A reference must be to an object of @document.

@@ -40,6 +40,7 @@ __all__ = [
     "Pdf", "RENDER_ANNOTATIONS", "RENDER_FORMS", "RENDER_LCD_TEXT", "RENDER_GRAYSCALE", "RENDER_PRINTING",
     "RENDER_NO_SMOOTHING", "Request", "scheme_register", "scheme_handle",
     "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
+    "app_set_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -743,3 +744,52 @@ def scheme_handle(scheme, function):
     callback = _SCHEME(_guard(lambda handle, data: function(Request(handle))))
     _alive.add(callback)
     _scheme_handle(scheme.encode(), callback, None)
+
+
+# ---- The application ---------------------------------------------------
+
+_MENU = ctypes.CFUNCTYPE(None, ctypes.c_char_p, _P)
+_PATHS = ctypes.CFUNCTYPE(None, ctypes.c_char_p, _P)
+_APP = ctypes.CFUNCTYPE(None, _P)
+_app_set_menu = _declare("zebkit_app_set_menu", _B, _S, _MENU, _P, _EP)
+_app_on_open_files = _declare("zebkit_app_on_open_files", None, _PATHS, _P)
+_app_on_reopen = _declare("zebkit_app_on_reopen", None, _APP, _P)
+_app_on_quit_request = _declare("zebkit_app_on_quit_request", None, _APP, _P)
+# The application's callbacks, one of each, as the engine holds them.
+_app_callbacks = {}
+
+
+def app_set_menu(menu, function):
+    """The application's menu: a list of {"title", "items"} (or its JSON),
+    where an item is {"title", "id", "key", "modifiers"}, {"role"},
+    {"title", "items"} or {"separator": True}; function(id) is called when
+    an item with an id is chosen. The menu bar on macOS; elsewhere the
+    items' keys work in the application's windows. On the engine's thread."""
+    text = menu if isinstance(menu, str) else json.dumps(menu)
+    callback = _MENU(_guard(lambda item, data: function(item.decode())))
+    error = ctypes.c_void_p()
+    if not _app_set_menu(text.encode(), callback, None, ctypes.byref(error)):
+        _raise(error, "the menu was refused")
+    _app_callbacks["menu"] = callback
+
+
+def app_on_open_files(function):
+    """function(paths) for files the system asks the running application to
+    open (macOS: the Finder and the Dock); elsewhere they are arguments."""
+    callback = _PATHS(_guard(lambda paths, data: function(json.loads(paths.decode()))))
+    _app_callbacks["open"] = callback
+    _app_on_open_files(callback, None)
+
+
+def app_on_reopen(function):
+    """function() when the application's icon in the Dock is clicked with no window shown."""
+    callback = _APP(_guard(lambda data: function()))
+    _app_callbacks["reopen"] = callback
+    _app_on_reopen(callback, None)
+
+
+def app_on_quit_request(function):
+    """function() when the user asks the application to quit; it calls quit() or not."""
+    callback = _APP(_guard(lambda data: function()))
+    _app_callbacks["quit"] = callback
+    _app_on_quit_request(callback, None)

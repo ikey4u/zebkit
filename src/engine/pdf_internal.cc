@@ -2,6 +2,8 @@
 
 #include "zebkit/engine/pdf_internal.h"
 
+#include <algorithm>
+
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
@@ -375,14 +377,40 @@ namespace {
 // Deep enough for an annotation's entries (/BS, /BE, /MK and the like).
 constexpr int kMaxDepth = 8;
 
-Value ToValue(const CPDF_Object* object, int depth) {
+// Whether @dict is an annotation's or a page's, which entries refer to
+// rather than contain.
+bool IsAnnotationOrPage(const CPDF_Dictionary* dict) {
+  if (!dict)
+    return false;
+  const ByteString type = dict->GetNameFor("Type");
+  if (type == "Page" || type == "Pages" || type == "Annot")
+    return true;
+  return dict->KeyExist("Subtype") && dict->KeyExist("Rect");
+}
+
+// @followed holds the object numbers being followed, against cycles.
+Value ToValue(const CPDF_Object* object,
+              int depth,
+              std::vector<uint32_t>& followed) {
   Value value;
   if (!object || depth > kMaxDepth)
     return value;
   if (const CPDF_Reference* reference = object->AsReference()) {
-    value.kind = Value::Kind::kRef;
-    value.number = reference->GetRefObjNum();
-  } else if (const CPDF_Boolean* boolean = object->AsBoolean()) {
+    const uint32_t number = reference->GetRefObjNum();
+    RetainPtr<const CPDF_Object> target = reference->GetDirect();
+    const bool cycle =
+        std::find(followed.begin(), followed.end(), number) != followed.end();
+    if (!target || cycle || IsAnnotationOrPage(target->AsDictionary())) {
+      value.kind = Value::Kind::kRef;
+      value.number = number;
+      return value;
+    }
+    followed.push_back(number);
+    value = ToValue(target.Get(), depth, followed);
+    followed.pop_back();
+    return value;
+  }
+  if (const CPDF_Boolean* boolean = object->AsBoolean()) {
     value.kind = Value::Kind::kBool;
     value.boolean = boolean->GetInteger() != 0;
   } else if (const CPDF_Number* number = object->AsNumber()) {
@@ -398,12 +426,14 @@ Value ToValue(const CPDF_Object* object, int depth) {
     value.kind = Value::Kind::kArray;
     CPDF_ArrayLocker locker(array);
     for (const auto& item : locker)
-      value.items.push_back(ToValue(item.Get(), depth + 1));
+      value.items.push_back(ToValue(item.Get(), depth + 1, followed));
   } else if (const CPDF_Dictionary* dict = object->AsDictionary()) {
     value.kind = Value::Kind::kDict;
     CPDF_DictionaryLocker locker(dict);
-    for (const auto& [key, item] : locker)
-      value.entries.emplace_back(key.c_str(), ToValue(item.Get(), depth + 1));
+    for (const auto& [key, item] : locker) {
+      value.entries.emplace_back(key.c_str(),
+                                 ToValue(item.Get(), depth + 1, followed));
+    }
   }
   return value;
 }
@@ -471,9 +501,24 @@ Value AnnotationEntries(FPDF_ANNOTATION annot) {
   for (const auto& [key, item] : locker) {
     if (key == "AP" || key == "P")
       continue;
-    value.entries.emplace_back(key.c_str(), ToValue(item.Get(), 1));
+    std::vector<uint32_t> followed = {dict->GetObjNum()};
+    value.entries.emplace_back(key.c_str(), ToValue(item.Get(), 1, followed));
   }
   return value;
+}
+
+int AnnotationObjectNumber(FPDF_ANNOTATION annot) {
+  RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
+  return dict ? static_cast<int>(dict->GetObjNum()) : 0;
+}
+
+std::string FormDefaultAppearance(FPDF_DOCUMENT document) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  const CPDF_Dictionary* root = pdf ? pdf->GetRoot() : nullptr;
+  RetainPtr<const CPDF_Dictionary> form =
+      root ? root->GetDictFor("AcroForm") : nullptr;
+  return form ? std::string(form->GetByteStringFor("DA").c_str())
+              : std::string();
 }
 
 bool SetAnnotationEntry(FPDF_DOCUMENT document,

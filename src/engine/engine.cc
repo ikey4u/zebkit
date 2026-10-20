@@ -45,6 +45,7 @@
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
 #include "ui/views/widget/widget.h"
+#include "zebkit/engine/app.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
 
@@ -322,6 +323,17 @@ class PlatformDelegate : public content::ShellPlatformDelegate {
   }
 };
 
+// A key the page did not take: the application menu's, where windows have
+// no menu bar (app.h).
+bool HandleKey(content::Shell* shell,
+               const input::NativeWebKeyboardEvent& event) {
+  const std::string id = MenuItemForKey(event);
+  if (id.empty())
+    return false;
+  RunMenuItem(id);
+  return true;
+}
+
 // The shell's platform delegate, for the windows' titles.
 content::ShellPlatformDelegate* g_platform = nullptr;
 
@@ -368,6 +380,7 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
+  content::Shell::SetKeyboardEventHandler(base::BindRepeating(&HandleKey));
 #if BUILDFLAG(IS_MAC)
   SetUpViews();
 #endif

@@ -251,6 +251,16 @@ fn script_and_cdp(view: View) {
         drop(held);
     });
 
+    let refused = zebkit::app::set_menu(r#"[{"title": "Edit", "items": [{"role": "juggle"}]}]"#, |_| {});
+    check(refused.as_ref().is_err_and(|e| e.message().contains("juggle")), "app: a menu with an unknown role is refused", &refused);
+    let menu = zebkit::app::set_menu(
+        r#"[{"title": "File", "items": [{"title": "Open", "id": "open", "key": "o"}, {"separator": true}, {"role": "quit"}]}]"#,
+        |_| {},
+    );
+    check(menu.is_ok(), "app: the menu", &menu);
+    zebkit::app::on_open_files(|_| {});
+    zebkit::app::on_reopen(|| {});
+
     let port = cdp::listen(None, 0);
     check(port.is_ok(), "CDP listens", &port);
     let Ok(port) = port else {

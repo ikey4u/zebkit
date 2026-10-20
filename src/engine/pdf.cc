@@ -399,6 +399,9 @@ char* zebkit_pdf_info(zebkit_pdf* pdf) {
     default:
       info.Set("form", "none");
   }
+  const std::string form_da = zebkit::pdf::FormDefaultAppearance(document);
+  if (!form_da.empty())
+    info.Set("formDefaultAppearance", form_da);
   info.Set("tagged", static_cast<bool>(FPDFCatalog_IsTagged(document)));
   const std::string language =
       Utf16String([&](void* buffer, unsigned long size) {
@@ -1081,6 +1084,8 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
                                    int index) {
   base::DictValue item;
   item.Set("index", index);
+  if (const int object = zebkit::pdf::AnnotationObjectNumber(annot))
+    item.Set("object", object);
   const int subtype = FPDFAnnot_GetSubtype(annot);
   item.Set("type", subtype >= 0 && subtype < static_cast<int>(std::size(
                                                  kAnnotationTypes))

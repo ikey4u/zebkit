@@ -9,20 +9,66 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "base/apple/bundle_locations.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
+#include "base/strings/sys_string_conversions.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_paths.h"
 #include "content/shell/browser/shell.h"
-#include "zebkit/engine/view.h"
 #include "sandbox/mac/seatbelt_exec.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
+#include "zebkit/engine/app.h"
+#include "zebkit/engine/view.h"
+
+// Menu items of the application's (zebkit_app_set_menu()).
+@interface ZebkitMenuTarget : NSObject
+- (void)menuItem:(NSMenuItem*)item;
+@end
+
+@implementation ZebkitMenuTarget
+- (void)menuItem:(NSMenuItem*)item {
+  zebkit::RunMenuItem(base::SysNSStringToUTF8(item.representedObject));
+}
+@end
+
+// What the system asks of the application (app.h).
+@interface ZebkitAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation ZebkitAppDelegate
+- (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
+  std::vector<std::string> paths;
+  for (NSURL* url in urls) {
+    if (url.isFileURL)
+      paths.push_back(base::SysNSStringToUTF8(url.path));
+  }
+  if (!paths.empty())
+    zebkit::OpenFiles(paths);
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)application
+                    hasVisibleWindows:(BOOL)visible {
+  if (!visible)
+    zebkit::Reopen();
+  return YES;
+}
+
+// The application quits through zebkit_quit(), which closes its views
+// first, or not at all, as the application decides.
+- (NSApplicationTerminateReply)applicationShouldTerminate:
+    (NSApplication*)application {
+  zebkit::QuitRequested();
+  return NSTerminateCancel;
+}
+@end
 
 namespace zebkit {
 
@@ -62,7 +108,7 @@ bool EnterHelperSandbox(int argc, char** argv) {
 
 namespace {
 
-NSMenuItem* MenuItem(NSString* title, SEL action, NSString* key) {
+NSMenuItem* NewMenuItem(NSString* title, SEL action, NSString* key) {
   return [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key];
 }
 
@@ -74,6 +120,96 @@ NSMenu* Submenu(NSMenu* main, NSString* title) {
   item.submenu = menu;
   [main addItem:item];
   return menu;
+}
+
+// The selector of a standard command (zebkit_app_set_menu()'s roles).
+SEL RoleAction(const std::string& role) {
+  static const struct {
+    const char* role;
+    SEL action;
+  } kRoles[] = {
+      {"undo", @selector(undo:)},
+      {"redo", @selector(redo:)},
+      {"cut", @selector(cut:)},
+      {"copy", @selector(copy:)},
+      {"paste", @selector(paste:)},
+      {"pasteAndMatchStyle", @selector(pasteAsPlainText:)},
+      {"selectAll", @selector(selectAll:)},
+      {"minimize", @selector(performMiniaturize:)},
+      {"zoom", @selector(performZoom:)},
+      {"close", @selector(performClose:)},
+      {"fullscreen", @selector(toggleFullScreen:)},
+      {"front", @selector(arrangeInFront:)},
+      {"quit", @selector(terminate:)},
+      {"hide", @selector(hide:)},
+      {"hideOthers", @selector(hideOtherApplications:)},
+      {"showAll", @selector(unhideAllApplications:)},
+      {"about", @selector(orderFrontStandardAboutPanel:)},
+  };
+  for (const auto& entry : kRoles) {
+    if (role == entry.role)
+      return entry.action;
+  }
+  return nullptr;
+}
+
+// A menu item's key for Cocoa: a character, or a function key's.
+NSString* KeyEquivalent(const std::string& key) {
+  if (key.size() >= 2 && (key[0] == 'f' || key[0] == 'F')) {
+    const int n = atoi(key.c_str() + 1);
+    if (n >= 1 && n <= 24) {
+      const unichar c = static_cast<unichar>(NSF1FunctionKey + n - 1);
+      return [NSString stringWithCharacters:&c length:1];
+    }
+  }
+  return base::SysUTF8ToNSString(base::ToLowerASCII(key));
+}
+
+void AddItems(NSMenu* menu, const std::vector<MenuItem>& items) {
+  static ZebkitMenuTarget* target = [[ZebkitMenuTarget alloc] init];
+  for (const MenuItem& item : items) {
+    if (item.separator) {
+      [menu addItem:[NSMenuItem separatorItem]];
+      continue;
+    }
+    if (item.role == "services") {
+      NSMenuItem* services = NewMenuItem(
+          base::SysUTF8ToNSString(item.title.empty() ? "Services" : item.title),
+          nullptr, @"");
+      services.submenu = NSApp.servicesMenu;
+      [menu addItem:services];
+      continue;
+    }
+    std::string title = item.title;
+    if (title.empty() && !item.role.empty()) {
+      title = item.role;
+      title[0] = base::ToUpperASCII(title[0]);
+    }
+    NSMenuItem* entry = NewMenuItem(base::SysUTF8ToNSString(title), nullptr,
+                                 KeyEquivalent(item.key));
+    if (!item.items.empty()) {
+      entry.submenu =
+          [[NSMenu alloc] initWithTitle:base::SysUTF8ToNSString(title)];
+      AddItems(entry.submenu, item.items);
+    } else if (!item.role.empty()) {
+      entry.action = RoleAction(item.role);
+    } else {
+      entry.target = target;
+      entry.action = @selector(menuItem:);
+      entry.representedObject = base::SysUTF8ToNSString(item.id);
+    }
+    if (!item.key.empty()) {
+      NSEventModifierFlags mask = NSEventModifierFlagCommand;
+      if (item.modifiers & kMenuShift)
+        mask |= NSEventModifierFlagShift;
+      if (item.modifiers & kMenuAlt)
+        mask |= NSEventModifierFlagOption;
+      if (item.modifiers & kMenuCtrl)
+        mask |= NSEventModifierFlagControl;
+      entry.keyEquivalentModifierMask = mask;
+    }
+    [menu addItem:entry];
+  }
 }
 
 // The views delegate, which on macOS nothing else makes: zebkit.ui's
@@ -155,36 +291,71 @@ void SetUpApplication(bool headless) {
   // stays out of the Dock.
   if (!headless)
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+  // Files from the Finder, the Dock's reopen and quit (app.h). Content
+  // sets no delegate of its own.
+  static ZebkitAppDelegate* delegate = [[ZebkitAppDelegate alloc] init];
+  app.delegate = delegate;
+  SetUpMenuBar();
+}
 
+void SetUpMenuBar() {
+  NSApplication* app = NSApplication.sharedApplication;
   NSString* name = NSProcessInfo.processInfo.processName;
   NSMenu* main = [[NSMenu alloc] initWithTitle:@""];
   NSMenu* application = Submenu(main, name);
-  [application addItem:MenuItem([@"Hide " stringByAppendingString:name],
-                                @selector(hide:), @"h")];
-  NSMenuItem* others =
-      MenuItem(@"Hide Others", @selector(hideOtherApplications:), @"h");
-  others.keyEquivalentModifierMask =
-      NSEventModifierFlagOption | NSEventModifierFlagCommand;
-  [application addItem:others];
-  [application addItem:MenuItem(@"Show All",
-                                @selector(unhideAllApplications:), @"")];
-  [application addItem:[NSMenuItem separatorItem]];
-  [application addItem:MenuItem([@"Quit " stringByAppendingString:name],
-                                @selector(terminate:), @"q")];
-  // Text fields in pages and in zebkit.ui take these from the menu.
-  NSMenu* edit = Submenu(main, @"Edit");
-  [edit addItem:MenuItem(@"Undo", @selector(undo:), @"z")];
-  [edit addItem:MenuItem(@"Redo", @selector(redo:), @"Z")];
-  [edit addItem:[NSMenuItem separatorItem]];
-  [edit addItem:MenuItem(@"Cut", @selector(cut:), @"x")];
-  [edit addItem:MenuItem(@"Copy", @selector(copy:), @"c")];
-  [edit addItem:MenuItem(@"Paste", @selector(paste:), @"v")];
-  [edit addItem:MenuItem(@"Select All", @selector(selectAll:), @"a")];
-  NSMenu* window = Submenu(main, @"Window");
-  [window addItem:MenuItem(@"Minimize", @selector(performMiniaturize:), @"m")];
-  [window addItem:MenuItem(@"Zoom", @selector(performZoom:), @"")];
-  [window addItem:MenuItem(@"Close", @selector(performClose:), @"w")];
-  app.windowsMenu = window;
+  NSMenuItem* services = NewMenuItem(@"Services", nullptr, @"");
+  services.submenu = [[NSMenu alloc] initWithTitle:@"Services"];
+  app.servicesMenu = services.submenu;
+  const std::vector<MenuItem>& menu = AppMenu();
+  // The application's own application menu ("appMenu"), or zebkit's.
+  const bool own = !menu.empty() && menu[0].role == "appMenu";
+  if (own) {
+    AddItems(application, menu[0].items);
+  } else {
+    [application addItem:NewMenuItem([@"About " stringByAppendingString:name],
+                                     @selector(orderFrontStandardAboutPanel:),
+                                     @"")];
+    [application addItem:[NSMenuItem separatorItem]];
+    [application addItem:services];
+    [application addItem:[NSMenuItem separatorItem]];
+    [application addItem:NewMenuItem([@"Hide " stringByAppendingString:name],
+                                     @selector(hide:), @"h")];
+    NSMenuItem* others =
+        NewMenuItem(@"Hide Others", @selector(hideOtherApplications:), @"h");
+    others.keyEquivalentModifierMask =
+        NSEventModifierFlagOption | NSEventModifierFlagCommand;
+    [application addItem:others];
+    [application addItem:NewMenuItem(@"Show All",
+                                     @selector(unhideAllApplications:), @"")];
+    [application addItem:[NSMenuItem separatorItem]];
+    [application addItem:NewMenuItem([@"Quit " stringByAppendingString:name],
+                                     @selector(terminate:), @"q")];
+  }
+
+  if (menu.size() == (own ? 1u : 0u)) {
+    // Text fields in pages and in zebkit.ui take these from the menu.
+    NSMenu* edit = Submenu(main, @"Edit");
+    [edit addItem:NewMenuItem(@"Undo", @selector(undo:), @"z")];
+    [edit addItem:NewMenuItem(@"Redo", @selector(redo:), @"Z")];
+    [edit addItem:[NSMenuItem separatorItem]];
+    [edit addItem:NewMenuItem(@"Cut", @selector(cut:), @"x")];
+    [edit addItem:NewMenuItem(@"Copy", @selector(copy:), @"c")];
+    [edit addItem:NewMenuItem(@"Paste", @selector(paste:), @"v")];
+    [edit addItem:NewMenuItem(@"Select All", @selector(selectAll:), @"a")];
+    NSMenu* window = Submenu(main, @"Window");
+    [window addItem:NewMenuItem(@"Minimize", @selector(performMiniaturize:), @"m")];
+    [window addItem:NewMenuItem(@"Zoom", @selector(performZoom:), @"")];
+    [window addItem:NewMenuItem(@"Close", @selector(performClose:), @"w")];
+    app.windowsMenu = window;
+  } else {
+    for (size_t i = own ? 1 : 0; i < menu.size(); ++i) {
+      const MenuItem& item = menu[i];
+      NSMenu* submenu = Submenu(main, base::SysUTF8ToNSString(item.title));
+      AddItems(submenu, item.items);
+      if (item.title == "Window")
+        app.windowsMenu = submenu;
+    }
+  }
   app.mainMenu = main;
 }
 

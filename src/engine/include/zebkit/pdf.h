@@ -61,7 +61,8 @@ ZEBKIT_API uint8_t *zebkit_pdf_save(zebkit_pdf *pdf, unsigned flags, size_t *siz
  *                    "extract", "assemble", "printHighQuality"} (booleans),
  *    "permissionBits": 4294967292, "userPermissionBits": ... (the /P bits,
  *                    with and without the owner's password),
- *    "form": "none" | "acro" | "xfa",
+ *    "form": "none" | "acro" | "xfa", "formDefaultAppearance": "/Helv 0 Tf
+ *    0 g" (the form's /DA, which fields without their own take),
  *    "tagged": false, "language": "en-US",
  *    "metadata": {"title", "author", "subject", "keywords", "creator",
  *                 "producer", "creationDate", "modDate"} (those it has)}
@@ -192,7 +193,7 @@ ZEBKIT_API char *zebkit_pdf_links(zebkit_pdf *pdf, int page, char **error);
 
 /*
  * The page's annotations, in their order on the page, as JSON:
- *   [{"index": 0, "type": "highlight", "rect": [l, b, r, t],
+ *   [{"index": 0, "object": 12, "type": "highlight", "rect": [l, b, r, t],
  *     "color": [r, g, b], "interiorColor": [r, g, b],
  *     "opacity": 0.5, "border": 1, "flags": 4,
  *     "contents": "...", "author": "...", "subject": "...", "name": "...",
@@ -207,7 +208,10 @@ ZEBKIT_API char *zebkit_pdf_links(zebkit_pdf *pdf, int page, char **error);
  * with the keys an annotation has. "entries" is the annotation's
  * dictionary but its appearance (/AP) and page (/P), as plain values: a
  * name is "/Name", a string that starts with "/" has another before it,
- * an indirect reference is {"ref": its object number}. Types: text, link, freeText, line,
+ * indirect objects are followed, but annotations and pages (and an object
+ * already being followed), which are {"ref": their object number}.
+ * "object" is the annotation's own object number, absent when it is direct.
+ * Types: text, link, freeText, line,
  * square, circle, polygon, polyline, highlight, underline, squiggly,
  * strikeOut, stamp, caret, ink, popup, fileAttachment, sound, movie,
  * widget, screen, printerMark, trapNet, watermark, threeD, richMedia,

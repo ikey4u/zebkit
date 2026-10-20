@@ -393,15 +393,17 @@ int main(void) {
 
     check(zebkit_pdf_annotation_update(pdf, 0, 1,
                                        "{\"entries\": {\"IT\": \"/HighlightNote\", \"ZNote\": \"//slash\","
-                                       " \"ZList\": [1, 2.5, true, {\"ref\": 1}]}}",
+                                       " \"ZList\": [1, 2.5, true, {\"ref\": 3}], \"ZFont\": {\"ref\": 5}}}",
                                        &error),
           "zebkit_pdf_annotation_update: entries", error);
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
     check(contains(annotations, "\"IT\":\"/HighlightNote\"") && contains(annotations, "\"ZNote\":\"//slash\"") &&
-              contains(annotations, "\"ZList\":[1,2.5,true,{\"ref\":1}]"),
-          "the entries are there", annotations);
+              contains(annotations, "\"ZList\":[1,2.5,true,{\"ref\":3}]") &&
+              contains(annotations, "\"ZFont\":{\"BaseFont\":\"/Helvetica\"") &&
+              contains(annotations, "\"object\":8"),
+          "the entries are there: a page referred to, a font followed", annotations);
     zebkit_free(annotations);
-    check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"ZNote\": null, \"ZList\": null}}", &error),
+    check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"ZNote\": null, \"ZList\": null, \"ZFont\": null}}", &error),
           "zebkit_pdf_annotation_update: entries removed", error);
     check(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"AP\": null}}", &error) && contains(error, "AP"),
           "zebkit_pdf_annotation_update refuses /AP", error);

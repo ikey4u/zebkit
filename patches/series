@@ -15,3 +15,4 @@
 1017-ffmpeg-zebkit-configuration.patch
 0013-mac-iosurface-without-dawn.patch
 0014-mac-shell-geolocation-without-test-support.patch
+1018-content-shell-keys-to-the-embedder.patch

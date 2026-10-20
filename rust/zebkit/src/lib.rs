@@ -36,6 +36,7 @@
 //! scripts are neither `Send` nor `Sync`, so the compiler holds a program to
 //! that; [`post`] runs a closure there from any thread.
 
+pub mod app;
 pub mod cdp;
 mod engine;
 pub mod pdf;
