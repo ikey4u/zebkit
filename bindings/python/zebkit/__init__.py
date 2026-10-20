@@ -15,8 +15,9 @@ The services work without the engine running:
     zebkit.digest(b"abc", "sha256").hex()
     zebkit.url_part("../b", "https://example.com/a/", "spec")
 
-The library is libzebkit.so.1 in $ZEBKIT_DIR, or beside this package, or in
-the zebkit repository's out/blink/slim/package.
+The library is libzebkit.so.1 (Zebkit.framework on macOS) in $ZEBKIT_DIR,
+or beside this package, or in the zebkit repository's package of the slim
+profile (slim-macos on macOS).
 
 Threads: everything is for the thread that called main(), and callbacks
 run on it; post() runs a function there from any thread.
@@ -54,16 +55,20 @@ class Error(Exception):
 
 
 def _find_library():
+    if sys.platform == "darwin":
+        library, profile = "Zebkit.framework/Zebkit", "slim-macos"
+    else:
+        library, profile = "libzebkit.so.1", "slim"
     names = []
     if os.environ.get("ZEBKIT_DIR"):
-        names.append(pathlib.Path(os.environ["ZEBKIT_DIR"]) / "libzebkit.so.1")
+        names.append(pathlib.Path(os.environ["ZEBKIT_DIR"]) / library)
     here = pathlib.Path(__file__).resolve().parent
-    names.append(here / "libzebkit.so.1")
-    names.append(here.parents[2] / "out" / "blink" / "slim" / "package" / "libzebkit.so.1")
+    names.append(here / library)
+    names.append(here.parents[2] / "out" / "blink" / profile / "package" / library)
     for name in names:
         if name.exists():
             return str(name)
-    raise ImportError("libzebkit.so.1 not found; set ZEBKIT_DIR to the engine's directory")
+    raise ImportError(f"{library} not found; set ZEBKIT_DIR to the engine's directory")
 
 
 _lib = ctypes.CDLL(_find_library())

@@ -1,11 +1,12 @@
-Size: the ML size inliner for Linux too.
+Size: the ML size inliner for Linux and macOS too.
 
 Chromium inlines with a model trained for size when it builds 32-bit
 Android (use_ml_inliner), and asserts that nothing else asks for it,
 because it was not known whether the model helps other targets. On x86-64
 it does: twelve large engine sources (Blink, V8, content, net, Skia, cc)
-compiled 21.6% smaller with it at -Os. This lets Linux builds use it, from
-a Linux host as before. On in profiles/slim.gn.
+compiled 21.6% smaller with it at -Os. This lets Linux builds use it, and
+macOS builds, which zebkit makes on Linux too, from a Linux host as
+before. On in profiles/slim.gn.
 
 Chromium's -Os configuration then passes the model to the compiler, which
 does all of the engine's inlining: the engine is linked without LTO
@@ -15,16 +16,17 @@ paths that file lets a profile name.
 
 --- a/build/config/compiler/BUILD.gn
 +++ b/build/config/compiler/BUILD.gn
-@@ -1210,9 +1210,10 @@
+@@ -1210,9 +1210,11 @@
    #    non-Android targets.
    # MLGO is only officially supported on linux.
    if (use_ml_inliner && is_a_target_toolchain) {
-+    # zebkit: also for Linux. The size model makes x86-64 code smaller too.
++    # zebkit: also for Linux and macOS. The size model makes x86-64 code
++    # smaller too.
      assert(
 -        is_android && host_os == "linux",
 -        "MLGO is currently only supported for targeting Android on a linux host")
-+        (is_android || is_linux) && host_os == "linux",
-+        "MLGO is currently only supported for targeting Android or Linux on a linux host")
++        (is_android || is_linux || is_mac) && host_os == "linux",
++        "MLGO is currently only supported for targeting Android, Linux or macOS on a linux host")
      if (use_thin_lto) {
        ldflags += [ "-Wl,-mllvm,-enable-ml-inliner=release" ]
        if (is_high_end_android) {

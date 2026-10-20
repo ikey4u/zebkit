@@ -8,6 +8,7 @@
 #include "zebkit/engine/engine.h"
 
 #include <dlfcn.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +28,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/version_info/version_info.h"
+#include "build/build_config.h"
 #include "content/public/app/content_main.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -38,11 +40,17 @@
 #include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_paths.h"
+#include "ui/gfx/switches.h"
+
+#if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_switches.h"
+#endif
 
 namespace zebkit {
 
-// Where libzebkit is: the engine's data files and zebkit-helper are beside it.
+// Where libzebkit is: the engine's data files and zebkit-helper are beside
+// it. On macOS, the framework's version directory, which has them inside.
 base::FilePath LibraryDirectory() {
   Dl_info info;
   if (!dladdr(reinterpret_cast<void*>(&zebkit_main), &info) || !info.dli_fname)
@@ -54,6 +62,12 @@ base::FilePath LibraryDirectory() {
   free(real);
   return path.DirName();
 }
+
+#if !BUILDFLAG(IS_MAC)
+base::FilePath HelperPath(const base::FilePath& library) {
+  return library.Append("zebkit-helper");
+}
+#endif
 
 namespace {
 
@@ -80,26 +94,39 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
   const base::FilePath library = LibraryDirectory();
   if (!HasSwitch(argc, argv, switches::kBrowserSubprocessPath)) {
     args.push_back(std::string("--") + switches::kBrowserSubprocessPath + "=" +
-                   library.Append("zebkit-helper").value());
+                   HelperPath(library).value());
   }
   if (!HasSwitch(argc, argv, switches::kContentShellUserDataDir)) {
     std::string config;
+#if BUILDFLAG(IS_MAC)
+    if (const char* home = getenv("HOME"); home && *home)
+      config = std::string(home) + "/Library/Application Support";
+#else
     if (const char* xdg = getenv("XDG_CONFIG_HOME"); xdg && *xdg)
       config = xdg;
     else if (const char* home = getenv("HOME"); home && *home)
       config = std::string(home) + "/.config";
+#endif
     if (!config.empty()) {
       const std::string program = base::FilePath(args[0]).BaseName().value();
       args.push_back(std::string("--") + switches::kContentShellUserDataDir +
                      "=" + config + "/zebkit/" + program);
     }
   }
+#if BUILDFLAG(IS_OZONE)
   if (!HasSwitch(argc, argv, switches::kOzonePlatform)) {
     const char* wayland = getenv("WAYLAND_DISPLAY");
     const char* x11 = getenv("DISPLAY");
     const bool display = (wayland && *wayland) || (x11 && *x11);
-    if (!display || HasSwitch(argc, argv, "headless"))
+    if (!display || HasSwitch(argc, argv, switches::kHeadless))
       args.push_back(std::string("--") + switches::kOzonePlatform + "=headless");
+  }
+#endif
+  // The log goes to stderr, not to a file beside the executable, which for
+  // the engine is in its package, perhaps read-only or shared.
+  if (!HasSwitch(argc, argv, switches::kEnableLogging) &&
+      !HasSwitch(argc, argv, switches::kLogFile)) {
+    args.push_back(std::string("--") + switches::kEnableLogging + "=stderr");
   }
   args.push_back(std::string("--") + switches::kContentShellHideToolbar);
   return args;
@@ -129,8 +156,10 @@ MainDelegate::~MainDelegate() = default;
 
 std::optional<int> MainDelegate::BasicStartupComplete() {
   // Chromium finds its data files beside the executable, which for an
-  // application is not where the engine is.
+  // application is not where the engine is. (On macOS, in the framework
+  // bundle: SetUpBundle(), before the engine starts.)
   const base::FilePath library = LibraryDirectory();
+#if !BUILDFLAG(IS_MAC)
   if (!library.empty()) {
     base::PathService::OverrideAndCreateIfNeeded(
         base::DIR_MODULE, library, /*is_absolute=*/true, /*create=*/false);
@@ -138,9 +167,15 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
     // --browser-subprocess-path: it must be zebkit-helper, whatever the
     // application's executable is (python3, for one).
     base::PathService::OverrideAndCreateIfNeeded(
-        base::FILE_EXE, library.Append("zebkit-helper"), /*is_absolute=*/true,
+        base::FILE_EXE, HelperPath(library), /*is_absolute=*/true,
+        /*create=*/false);
+    // Translations would be in locales/, which Chromium creates when it is
+    // not there; zebkit has none, and leaves its package as it is.
+    base::PathService::OverrideAndCreateIfNeeded(
+        ui::DIR_LOCALES, library.Append("locales"), /*is_absolute=*/true,
         /*create=*/false);
   }
+#endif
   return content::ShellMainDelegate::BasicStartupComplete();
 }
 
@@ -202,11 +237,24 @@ class PlatformDelegate : public content::ShellPlatformDelegate {
 
 std::unique_ptr<content::ShellPlatformDelegate>
 BrowserMainParts::CreateShellPlatformDelegate() {
+#if BUILDFLAG(IS_MAC)
+  if (zebkit_is_headless())
+    return CreateHeadlessPlatformDelegate();
+#endif
   return std::make_unique<PlatformDelegate>();
 }
 
+#if BUILDFLAG(IS_MAC)
+void BrowserMainParts::PreCreateMainMessageLoop() {
+  SetUpApplication(zebkit_is_headless());
+}
+#endif
+
 int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
+#if BUILDFLAG(IS_MAC)
+  SetUpViews();
+#endif
   content::Shell::Initialize(CreateShellPlatformDelegate());
   net::NetModule::SetResourceProvider(&NetResourceProvider);
   StartCdpFromCommandLine();
@@ -243,6 +291,9 @@ void zebkit_free(void* pointer) {
 }
 
 int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
+#if BUILDFLAG(IS_MAC)
+  zebkit::SetUpBundle(zebkit::LibraryDirectory());
+#endif
   std::vector<std::string> args = zebkit::EngineArguments(argc, argv);
   std::vector<char*> engine_argv;
   for (std::string& arg : args)
@@ -254,6 +305,13 @@ int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
 }
 
 int zebkit_helper_main(int argc, char** argv) {
+#if BUILDFLAG(IS_MAC)
+  if (!zebkit::EnterHelperSandbox(argc, argv)) {
+    fprintf(stderr, "zebkit: the sandbox could not be entered\n");
+    abort();
+  }
+  zebkit::SetUpBundle(zebkit::LibraryDirectory());
+#endif
   static base::NoDestructor<zebkit::MainDelegate> delegate(nullptr, nullptr);
   return zebkit::RunContent(argc, argv, delegate.get());
 }
@@ -281,8 +339,12 @@ void zebkit_post_delayed_task(zebkit_task_func func,
 }
 
 bool zebkit_is_headless(void) {
+#if BUILDFLAG(IS_OZONE)
   return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
              switches::kOzonePlatform) == "headless";
+#else
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kHeadless);
+#endif
 }
 
 }  // extern "C"

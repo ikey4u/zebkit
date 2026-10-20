@@ -610,7 +610,7 @@ process, where layer 2 does the work, so the renderer stays sandboxed.
 | N1 | The engine as `libzebkit.so.1` and `zebkit-helper`; layer 0 | Done 2026-10-20 |
 | N2 | Layer 1: the generator and the libraries above | Done 2026-10-20: 14 libraries, 6,686 functions; FreeType not yet |
 | N3 | Layer 2: `net`, `url`, `image`, `compress`, `crypto` | Done 2026-10-20, in one header, `<zebkit/services.h>` |
-| N4 | Layer 3: Python, then Rust | Python done 2026-10-20; Rust next |
+| N4 | Layer 3: Python, then Rust | Python done 2026-10-20; Rust 2026-10-20 (`rust/`, the crates rewritten for this API) |
 | N5 | Layer 4: `zebkit.app`, then the capabilities | Done 2026-10-20 |
 | N6 | Script outside a page; later areas of layer 2 | Script done 2026-10-20: `zebkit_script_*`, `zebkit-js` |
 | N7 | Native UI from JavaScript: `zebkit.ui` on `ui/views` (below) | First version done 2026-10-20: elements, signals, Tailwind classes, automation, capture; the measurement against a page is next |
@@ -735,7 +735,98 @@ window more again. What native toolkits do about long lists is what
   Shell's list do.
 - **A light button** beside the Material one, for rows of many.
 
-## 8. Costs to plan for
+## 8. PDF, and the application as the first product
+
+Asked for by the owner on 2026-10-20: PDF is used often, so zebkit gets a
+full-featured PDF API, with what EmbedPDF
+(github.com/embedpdf/embed-pdf-viewer) does as the reference. And the application
+ becomes the first product on zebkit: it was on the
+WebKit engine; it moves to Blink, with its interface and its PDF reader
+remade, and its audio and video on the FFmpeg inside zebkit.
+
+### What EmbedPDF covers, the reference
+
+A viewer made of plugins over one engine interface (Engine v3,
+Apache-2.0): rendering and tiling, scroll, zoom, text selection, search,
+annotations (highlight, underline, strikeout, squiggly, ink, free text,
+notes, lines, shapes, polygons, stamps), redaction, forms, signatures,
+attachments, outline, thumbnails, page editing (insert, delete, move,
+rotate, merge, extract), measurement, metadata, security and permissions,
+print, export, history. It runs on its own fork of PDFium, compiled to
+WebAssembly, which adds 531 functions to PDFium's own; the JavaScript
+calls 964 C functions in all. It is what zebkit's PDF API is measured
+against: what it can do, zebkit can do.
+
+### The design
+
+Decided by the owner on 2026-10-20: **Chromium's own PDFium**
+(`third_party/pdfium`, at the revision Chromium pins), in the engine by
+default, with zebkit's own patches where PDFium lacks something, and
+zebkit's own API over it. EmbedPDF's code is not used; its feature list is
+the reference.
+
+Chromium's PDFium is in the tree but not yet in the engine: the content
+layer has no PDF viewer (Chrome's is in `//chrome`, `//pdf` and the
+extensions system), and nothing of zebkit links it.
+
+- **P1. PDFium in the engine, by default.** Linked into the library
+  without XFA and without PDFium's own V8 (`pdf_enable_xfa`,
+  `pdf_enable_v8`), measured against the 150 MiB limit; PDFium is about
+  5-8 MiB.
+- **P2. Its C API**: `<zebkit/vendor/pdfium.h>`, every `FPDF*` function,
+  as the other libraries are exported (layer 1).
+- **P3. zebkit's PDF API**, `<zebkit/pdf.h>`: documents (open from bytes
+  or a file, passwords, permissions, metadata, save), pages (sizes, boxes,
+  rotation, insert, delete, move, import, merge, extract), rendering
+  (scale, rotation, a tile of a page, with or without annotations and
+  forms, to RGBA or PNG), text (characters and their boxes, selection
+  rectangles, search over the document), outline, links, attachments,
+  annotations (read every kind; create, change and delete the kinds
+  above, with appearances), forms (fields, values, flattening), redaction
+  (marked areas, then the text, images and paths under them removed),
+  signatures (read and verify their details), thumbnails. Where PDFium
+  has no function for it (redaction, appearance streams for some kinds,
+  editing the outline), zebkit patches PDFium (`patches/series`).
+- **P4. In JavaScript**: `zebkit.pdf` with the same functions, in pages
+  granted `ZEBKIT_ALLOW_PDF` and in script outside any page; Python and
+  Rust over `<zebkit/pdf.h>`. A PDF is untrusted input: for pages, the
+  work runs in a sandboxed utility process, as Chrome's printing runs
+  PDFium, with rendered pages handed to the page without base64.
+- **P5. Tests and measurement**: a test for each function, on PDFium's own
+  test documents; rendering compared with PDFium's reference images; speed
+  compared with EmbedPDF's WebAssembly engine on the same documents.
+
+### What the application needs of zebkit besides PDF
+
+Read from the application's code (`src/pc/desktop`, `src/crates/media`):
+
+- **URL schemes of the application's own**: `app://` for its interface and
+  `asset://` for local files, with range requests, which `<video>` and
+  `<audio>` use to seek. Chromium's way is a URL loader factory for a
+  scheme; this is also the fast way to move large bytes from the
+  application to a page (the open item of section 7).
+- **Scripts that run before the page's own** (`zebkit_view_add_script`).
+- **FFmpeg for applications.** the application probes, decodes audio for Whisper,
+  takes frames and remuxes: it needs FFmpeg's muxers, libswscale and
+  libswresample, which Chromium's configuration of FFmpeg leaves out.
+  zebkit's configuration adds them (and the decoders an application needs
+  beyond a browser's), generated with Chromium's own
+  `third_party/ffmpeg/chromium/scripts`, for Linux and macOS. Measured
+  against the limit.
+
+### Order of work
+
+| Phase | What |
+|---|---|
+| M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there |
+| P1-P2 | Chromium's PDFium in the engine by default; its C API |
+| S | URL schemes, scripts before the page's, the larger FFmpeg |
+| P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests |
+| F1 | the application's host on the Blink engine (the Rust crates of section 7), its interface as it is |
+| F2 | the application's reader on `zebkit.pdf` in place of EmbedPDF; its media on zebkit's FFmpeg |
+| F3 | the application's interface remade |
+
+## 9. Costs to plan for
 
 - **Builds.** The checkout is about 30 GB without history; a full build of
   the engine takes hours on this machine (24 cores, 94 GB of memory), and a
@@ -748,7 +839,7 @@ window more again. What native toolkits do about long lists is what
   stable releases closely, which is one more reason to keep the patch set
   small.
 
-## 9. For the owner to decide
+## 10. For the owner to decide
 
 1. Decided 2026-10-19: the limit is 150 MiB, and 134.8 MiB is accepted.
    No lever of section 6, part B, is taken.

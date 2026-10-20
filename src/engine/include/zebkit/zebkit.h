@@ -61,10 +61,12 @@ typedef void (*zebkit_task_func)(void *data);
  * Chrome serves it), --user-data-dir, --no-sandbox, --headless and
  * --enable-logging=stderr.
  *
- * Views have windows when the machine has a display (Wayland or X11) and
- * none otherwise; a page loads, runs and can be driven over CDP either way.
- * Profile data is kept in --user-data-dir, by default
- * $XDG_CONFIG_HOME/zebkit/<program name>.
+ * Views have windows when the machine has a display (Wayland or X11 on
+ * Linux; on macOS always) and none otherwise or with --headless; a page
+ * loads, runs and can be driven over CDP either way. Profile data is kept
+ * in --user-data-dir, by default $XDG_CONFIG_HOME/zebkit/<program name>,
+ * on macOS ~/Library/Application Support/zebkit/<program name>. The log
+ * goes to stderr unless --enable-logging or --log-file says otherwise.
  *
  * The loop runs until zebkit_quit(), also with no view open: closing the
  * last window is the application's to act on (zebkit_view_on_close()).

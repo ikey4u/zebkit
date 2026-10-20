@@ -1,0 +1,33 @@
+# zebkit-base: slim
+#
+# The slim profile on macOS, for Apple silicon: Zebkit.framework, with the
+# same functions as on Linux. Built on Linux against the macOS SDK copied
+# from a Mac (scripts/fetch-macos-sdk.sh), as Chromium's own builders
+# compile for macOS on Linux machines.
+
+target_os = "mac"
+target_cpu = "arm64"
+
+# The SDK and Xcode's version, in build/mac_files/xcode_binaries, where
+# Chromium looks for its own copy of Xcode.
+use_system_xcode = false
+mac_sdk_official_version = "27.0"
+
+# Linux's alone: packed ELF relocations applied by the engine, and the
+# thread-local model of an ELF library.
+zebkit_pack_relocations = false
+zebkit_v8_tls_local_dynamic = false
+
+# No debug information is built (symbol_level = 0), so there is nothing
+# for a dSYM; official builds make one with Xcode's dsymutil, which only a
+# Mac checkout fetches. Stripping, with llvm-strip, stays.
+enable_dsyms = false
+
+# V8's instance types from Torque, its other way of making them, instead of
+# from metagen, which reads the build graph again with gn desc and so
+# without --root-pattern, and finds Chrome's targets in it (scripts/build.sh).
+v8_use_metagen_instance_types = false
+
+# Vtables as offsets need COMDATs for their type information, which Mach-O
+# does not have: the linker stops at the first library that uses them.
+use_relative_vtables_abi = false

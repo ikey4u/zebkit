@@ -1,10 +1,18 @@
 # The engine as a library: libzebkit.so.1, with zebkit-helper for its child
-# processes. This directory is zebkit's src/engine, linked into the
+# processes, on Linux; Zebkit.framework, with Zebkit Helper.app inside it,
+# on macOS. This directory is zebkit's src/engine, linked into the
 # Chromium tree as //zebkit/engine by scripts/fetch-upstream.sh.
 
 import("//build/config/clang/clang.gni")
 import("//build/config/sysroot.gni")
+import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
+import("//v8/gni/v8.gni")
 import("//zebkit/relr/relr.gni")
+if (is_mac) {
+  import("//build/config/mac/mac_sdk.gni")
+  import("//build/config/mac/rules.gni")
+  import("//ui/gl/features.gni")
+}
 
 _version = read_file("VERSION", "trim string")
 
@@ -39,6 +47,7 @@ _vendored = [
   "libjpeg",
   "libxml",
   "ffmpeg",
+  "pdfium",
 ]
 
 _vendored_libraries = [
@@ -56,11 +65,18 @@ _vendored_libraries = [
   "//third_party/libwebp:libwebp_mux",
   "//third_party/libxml",
   "//third_party/opus",
+  "//third_party/pdfium",
   "//third_party/sqlite",
   "//third_party/zlib",
   "//third_party/zstd:compress",
   "//third_party/zstd:decompress",
 ]
+
+if (is_mac) {
+  _sysroot = mac_sdk_path
+} else {
+  _sysroot = sysroot
+}
 
 action("vendor_sources") {
   testonly = true
@@ -76,6 +92,8 @@ action("vendor_sources") {
     ]
   }
   args = [
+           "--target",
+           current_os,
            "--src",
            rebase_path("//", root_build_dir),
            "--clang",
@@ -83,7 +101,7 @@ action("vendor_sources") {
            "--nm",
            rebase_path("$clang_base_path/bin/llvm-nm", root_build_dir),
            "--sysroot",
-           rebase_path(sysroot, root_build_dir),
+           rebase_path(_sysroot, root_build_dir),
            "--out",
            rebase_path(target_gen_dir, root_build_dir),
            "--stamp",
@@ -97,92 +115,235 @@ source_set("vendor") {
   deps = [ ":vendor_sources" ]
 }
 
-shared_library("zebkit") {
-  # The content shell's browser classes, which are test-only in Chromium,
-  # until zebkit has its own.
-  testonly = true
-
-  output_name = "zebkit"
-  output_extension = "so.1"
-
+# <zebkit/pdf.h>, with PDFium's configuration: it uses PDFium's classes
+# where its public API does not reach.
+source_set("pdf") {
   sources = [
-    "bridge.cc",
-    "cdp.cc",
-    "engine.cc",
-    "engine.h",
-    "include/zebkit/services.h",
-    "include/zebkit/zebkit.h",
-    "script.cc",
-    "services.cc",
-    "ui.cc",
-    "ui.h",
-    "ui_script.h",
-    "view.cc",
-    "view.h",
+    "include/zebkit/pdf.h",
+    "pdf.cc",
+    "pdf_internal.cc",
+    "pdf_internal.h",
   ]
-
-  configs += [ ":implementation" ]
+  configs += [
+    ":implementation",
+    "//third_party/pdfium:pdfium_common_config",
+  ]
   public_configs = [ ":public" ]
-
   deps = [
     "//base",
-    "//base/version_info",
-    "//content/public/app",
-    "//content/public/browser",
-    "//content/public/common",
-    "//content/shell:content_shell_app",
-    "//content/shell:content_shell_lib",
-    "//content/shell:pak",
-    "//gin",
-    "//net",
-    "//net:net_resources",
-    "//services/network/public/cpp",
-    "//services/network/public/mojom",
-    "//skia",
-    "//ui/base",
-    "//ui/gfx/codec",
-    "//ui/snapshot",
-    "//ui/views",
-    "//ui/views/controls/webview",
-    "//ui/gfx",
-    "//ui/ozone",
-    "//url",
-    "//v8",
+    "//third_party/pdfium",
   ]
+}
 
-  data_deps = [
-    "//content/shell:pak",
-    "//tools/v8_context_snapshot",
-  ]
+_sources = [
+  "bridge.cc",
+  "cdp.cc",
+  "engine.cc",
+  "engine.h",
+  "include/zebkit/services.h",
+  "include/zebkit/zebkit.h",
+  "script.cc",
+  "services.cc",
+  "ui.cc",
+  "ui.h",
+  "ui_script.h",
+  "view.cc",
+  "view.h",
+]
 
-  inputs = [ "zebkit.ver" ]
-  ldflags = [
-    "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
-    "-Wl,-soname,libzebkit.so.1",
-  ]
+_deps = [
+  ":pdf",
+  ":vendor",
+  "//base",
+  "//base/version_info",
+  "//components/viz/common",
+  "//content/public/app",
+  "//content/public/browser",
+  "//content/public/common",
+  "//content/shell:content_shell_app",
+  "//content/shell:content_shell_lib",
+  "//content/shell:pak",
+  "//gin",
+  "//net",
+  "//net:net_resources",
+  "//services/network/public/cpp",
+  "//services/network/public/mojom",
+  "//skia",
+  "//ui/base",
+  "//ui/compositor",
+  "//ui/gfx/codec",
+  "//ui/views",
+  "//ui/views/controls/webview",
+  "//ui/gfx",
+  "//url",
+  "//v8",
+]
+_deps += _vendored_libraries
 
-  deps += [ ":vendor" ] + _vendored_libraries
+if (!is_mac) {
+  shared_library("zebkit") {
+    # The content shell's browser classes, which are test-only in Chromium,
+    # until zebkit has its own.
+    testonly = true
 
-  if (zebkit_pack_relocations) {
-    deps += [ "//zebkit/relr:relr_shared" ]
-    configs += [
-      "//zebkit/relr:link",
-      "//zebkit/relr:link_shared",
+    output_name = "zebkit"
+    output_extension = "so.1"
+
+    sources = _sources
+    configs += [ ":implementation" ]
+    public_configs = [ ":public" ]
+    deps = _deps + [ "//ui/ozone" ]
+
+    data_deps = [
+      "//content/shell:pak",
+      "//tools/v8_context_snapshot",
+    ]
+
+    inputs = [ "zebkit.ver" ]
+    ldflags = [
+      "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
+      "-Wl,-soname,libzebkit.so.1",
+    ]
+
+    if (zebkit_pack_relocations) {
+      deps += [ "//zebkit/relr:relr_shared" ]
+      configs += [
+        "//zebkit/relr:link",
+        "//zebkit/relr:link_shared",
+      ]
+    }
+  }
+
+  executable("zebkit-helper") {
+    testonly = true
+    sources = [ "helper.c" ]
+    deps = [ ":zebkit" ]
+    configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
+  }
+
+  group("engine") {
+    testonly = true
+    deps = [
+      ":zebkit",
+      ":zebkit-helper",
     ]
   }
-}
+} else {
+  # Zebkit.framework/Versions/A:
+  #   Zebkit                  the engine
+  #   Resources/              its data files, found through the framework
+  #   Helpers/Zebkit Helper.app   its renderer, GPU and utility processes
+  #   Libraries/              ANGLE's and SwiftShader's libraries, where
+  #                           Chromium looks for them in a framework
+  # An application links the framework and finds the rest through it,
+  # wherever the framework is.
+  _framework_name = "Zebkit"
+  _helper_name = "Zebkit Helper"
 
-executable("zebkit-helper") {
-  testonly = true
-  sources = [ "helper.c" ]
-  deps = [ ":zebkit" ]
-  configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
-}
+  bundle_data("zebkit_resources") {
+    testonly = true
+    sources = [
+      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/icudtl.dat",
+      "//ui/gl/resources/angle-metal/gpu_shader_cache.bin",
+    ]
+    public_deps = [
+      "//content/shell:pak",
+      "//third_party/icu:icudata",
+    ]
+    if (v8_use_external_startup_data) {
+      public_deps += [ "//v8" ]
+      if (use_v8_context_snapshot) {
+        sources += [ "$root_out_dir/$v8_context_snapshot_filename" ]
+        public_deps += [ "//tools/v8_context_snapshot" ]
+      }
+      if (!use_v8_context_snapshot || include_both_v8_snapshots) {
+        sources += [ "$root_out_dir/snapshot_blob.bin" ]
+      }
+    }
+    outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
+  }
 
-group("engine") {
-  testonly = true
-  deps = [
-    ":zebkit",
-    ":zebkit-helper",
-  ]
+  bundle_data("zebkit_libraries") {
+    testonly = true
+    sources = [
+      "$root_out_dir/vk_intermediates/libvk_swiftshader.dylib",
+      "$root_out_dir/vk_intermediates/vk_swiftshader_icd.json",
+      "$root_out_dir/vulkan_intermediates/libvulkan.dylib",
+    ]
+    public_deps = [
+      "//ui/gl:swiftshader_vk_library_copy",
+      "//ui/gl:vulkan_loader_library_copy",
+    ]
+    if (!use_static_angle) {
+      sources += [
+        "$root_out_dir/egl_intermediates/libEGL.dylib",
+        "$root_out_dir/egl_intermediates/libGLESv2.dylib",
+      ]
+      public_deps += [ "//ui/gl:angle_library_copy" ]
+    }
+    outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+  }
+
+  bundle_data("zebkit_helpers") {
+    testonly = true
+    sources = [ "$root_out_dir/$_helper_name.app" ]
+    public_deps = [ ":zebkit_helper" ]
+    outputs = [ "{{bundle_contents_dir}}/Helpers/{{source_file_part}}" ]
+  }
+
+  mac_framework_bundle("zebkit") {
+    testonly = true
+    output_name = _framework_name
+    framework_version = "A"
+    framework_contents = [
+      "Helpers",
+      "Libraries",
+      "Resources",
+    ]
+    info_plist = "mac/framework-Info.plist"
+
+    sources = _sources + [ "engine_mac.mm" ]
+    configs += [ ":implementation" ]
+    public_configs = [ ":public" ]
+    deps = _deps + [
+             "//sandbox/mac:seatbelt",
+             "//ui/display",
+           ]
+    frameworks = [
+      "AppKit.framework",
+      "Foundation.framework",
+    ]
+    bundle_deps = [
+      ":zebkit_helpers",
+      ":zebkit_libraries",
+      ":zebkit_resources",
+    ]
+
+    inputs = [ "mac/exports.txt" ]
+    ldflags = [
+      "-Wl,-install_name,@rpath/$_framework_name.framework/Versions/A/$_framework_name",
+      "-Wl,-exported_symbols_list," + rebase_path("mac/exports.txt", root_build_dir),
+    ]
+  }
+
+  # One helper for every kind of child process: the engine names it with
+  # --browser-subprocess-path, so the variants a signed Chrome has for its
+  # entitlements (Renderer, GPU) are not looked for.
+  mac_app_bundle("zebkit_helper") {
+    testonly = true
+    output_name = _helper_name
+    info_plist = "mac/helper-Info.plist"
+    sources = [ "helper.c" ]
+    deps = [ ":zebkit+link_nested" ]
+
+    # Zebkit.framework/Versions/A/Helpers/Zebkit Helper.app/Contents/MacOS:
+    # seven steps up is the directory the framework is in.
+    ldflags = [ "-Wl,-rpath,@executable_path/../../../../../../.." ]
+  }
+
+  group("engine") {
+    testonly = true
+    deps = [ ":zebkit" ]
+  }
 }

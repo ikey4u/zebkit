@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expose the C libraries inside the engine to applications.
 
-    gen_vendor.py --src <chromium src> --clang <clang> --sysroot <dir>
+    gen_vendor.py [--target linux|mac] --src <chromium src> --clang <clang> --sysroot <dir>
                   --nm <llvm-nm> --out <gen dir> --stamp <file> <library>...
 
 Run by //zebkit/engine:vendor from the build directory, once the libraries
@@ -238,6 +238,22 @@ LIBRARIES = {
         ],
         "objects": ["third_party/libxml"],
     },
+    "pdfium": {
+        "title": "PDFium",
+        "version": None,
+        "roots": {"": "third_party/pdfium/public"},
+        "ship": ["*.h"],
+        # Built without XFA forms and without PDFium's own JavaScript
+        # (profiles/_common.gn): the headers' XFA parts stay out.
+        "include": [
+            "fpdfview.h", "fpdf_annot.h", "fpdf_attachment.h", "fpdf_catalog.h", "fpdf_dataavail.h",
+            "fpdf_doc.h", "fpdf_edit.h", "fpdf_ext.h", "fpdf_flatten.h", "fpdf_formfill.h",
+            "fpdf_javascript.h", "fpdf_ppo.h", "fpdf_progressive.h", "fpdf_save.h", "fpdf_searchex.h",
+            "fpdf_signature.h", "fpdf_structtree.h", "fpdf_sysfontinfo.h", "fpdf_text.h",
+            "fpdf_thumbnail.h", "fpdf_transformpage.h",
+        ],
+        "objects": ["third_party/pdfium"],
+    },
     "ffmpeg": {
         "title": "FFmpeg",
         "version": ("libavutil/ffversion.h", r'#define FFMPEG_VERSION "([^"]+)"'),
@@ -323,7 +339,7 @@ def posix_dir(name):
     return name.rpartition("/")[0]
 
 
-def defined_functions(nm, objects_dirs):
+def defined_functions(nm, objects_dirs, underscore):
     names = set()
     objects = [str(p) for d in objects_dirs for p in pathlib.Path("obj", d).rglob("*.o")]
     for start in range(0, len(objects), 500):
@@ -332,12 +348,18 @@ def defined_functions(nm, objects_dirs):
         for line in out.splitlines():
             fields = line.split()
             if len(fields) == 3 and fields[1] == "T":
-                names.add(fields[2])
+                # Mach-O puts an underscore before every C name.
+                names.add(fields[2][1:] if underscore else fields[2])
     return names
 
 
+TRIPLES = {"linux": "x86_64-unknown-linux-gnu", "mac": "arm64-apple-macos13"}
+TARGET = "linux"
+
+
 def preprocess(clang, sysroot, include_dir, defines, text, extra=()):
-    args = [clang, "-x", "c", "-std=c11", "-E", "--sysroot", sysroot, "-I", str(include_dir)]
+    args = [clang, "-x", "c", "-std=c11", "-E", "--target=" + TRIPLES[TARGET],
+            "-isysroot" if TARGET == "mac" else "--sysroot", sysroot, "-I", str(include_dir)]
     args += [f"-D{k}={v}" for k, v in defines.items()]
     args += list(extra) + ["-"]
     result = subprocess.run(args, input=text, capture_output=True, text=True)
@@ -395,7 +417,7 @@ def generate(name, spec, args):
             (include_root / relative).unlink(missing_ok=True)
             del files[relative]
 
-    defined = defined_functions(args.nm, spec["objects"])
+    defined = defined_functions(args.nm, spec["objects"], TARGET == "mac")
     functions = []
     for symbol in sorted(defined):
         if re.search(rf"\b{re.escape(symbol)}\s*\(", declared):
@@ -461,6 +483,14 @@ def generate(name, spec, args):
     ]
     for function, symbol in functions:
         entry = prefix + function
+        if TARGET == "mac":
+            asm += [
+                f".globl _{entry}",
+                ".p2align 2",
+                f"_{entry}:",
+                f"\tb _{symbol}",
+            ]
+            continue
         asm += [
             f".globl {entry}",
             f".type {entry},@function",
@@ -470,7 +500,9 @@ def generate(name, spec, args):
             f"\tjmp {symbol}",
             f".size {entry},.-{entry}",
         ]
-    asm += ['.section .note.GNU-stack,"",@progbits', ""]
+    if TARGET != "mac":
+        asm += ['.section .note.GNU-stack,"",@progbits']
+    asm += [""]
     write_if_changed(out / "vendor" / f"{name}.S", "\n".join(asm))
     write_if_changed(out / "vendor" / f"{name}.txt", "".join(f"{f}\n" for f, _ in functions))
     return len(functions)
@@ -485,6 +517,7 @@ def write_if_changed(path, text):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--target", choices=sorted(TRIPLES), default="linux")
     parser.add_argument("--src", required=True)
     parser.add_argument("--clang", required=True)
     parser.add_argument("--sysroot", required=True)
@@ -493,6 +526,8 @@ def main():
     parser.add_argument("--stamp", required=True)
     parser.add_argument("libraries", nargs="+")
     args = parser.parse_args()
+    global TARGET
+    TARGET = args.target
     report = []
     for name in args.libraries:
         report.append(f"{name} {generate(name, LIBRARIES[name], args)}")

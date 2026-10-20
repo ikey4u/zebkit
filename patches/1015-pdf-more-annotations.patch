@@ -1,0 +1,190 @@
+PDF: line, polygon, polyline and redaction annotations made and drawn.
+
+zebkit's PDF API makes every kind of annotation a reader adds
+(<zebkit/pdf.h>). PDFium makes only some, and generates appearances only for
+those: this lets FPDFPage_CreateAnnot() make lines, polygons, polylines and
+redaction marks, adds FPDFAnnot_SetVertices() and FPDFAnnot_SetLine() beside
+their getters, and generates the appearance of lines, polygons and
+polylines from their points, colours and border, as PDFium does for ink.
+
+--- a/third_party/pdfium/core/fpdfdoc/cpdf_generateap.cpp
++++ b/third_party/pdfium/core/fpdfdoc/cpdf_generateap.cpp
+@@ -1230,6 +1230,67 @@ bool GenerateInkAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict) {
+   return true;
+ }
+ 
++// zebkit: lines, polygons and polylines: the points of their /L or
++// /Vertices, stroked in /C with the border's width and dashes; a polygon
++// closed, and filled with /IC when it has one.
++bool GeneratePathAP(CPDF_Document* doc,
++                    CPDF_Dictionary* annot_dict,
++                    const char* key,
++                    bool closed) {
++  RetainPtr<const CPDF_Array> points = annot_dict->GetArrayFor(key);
++  if (!points || points->size() < 4) {
++    return false;
++  }
++
++  float border_width = GetBorderWidth(annot_dict);
++  const bool is_stroke = border_width > 0;
++  RetainPtr<const CPDF_Array> interior_color = annot_dict->GetArrayFor("IC");
++  const bool is_fill = closed && interior_color && !interior_color->IsEmpty();
++  if (!is_stroke && !is_fill) {
++    return false;
++  }
++
++  fxcrt::ostringstream app_stream;
++  app_stream << "/" << kGSDictName << " gs ";
++  if (is_fill) {
++    app_stream << GetColorStringWithDefault(interior_color.Get(),
++                                            CFX_Color::MakeTransparent(),
++                                            PaintOperation::kFill);
++  }
++  app_stream << GetColorStringWithDefault(
++      annot_dict->GetArrayFor(pdfium::annotation::kC).Get(),
++      CFX_Color::MakeRGB(0.0f, 0.0f, 0.0f), PaintOperation::kStroke);
++  if (is_stroke) {
++    app_stream << border_width << " w ";
++    app_stream << GetDashPatternString(annot_dict);
++  }
++
++  // The rectangle covers the points, and the stroke around them.
++  CFX_FloatRect bounds(points->GetFloatAt(0), points->GetFloatAt(1),
++                       points->GetFloatAt(0), points->GetFloatAt(1));
++  for (size_t i = 0; i + 1 < points->size(); i += 2) {
++    const float x = points->GetFloatAt(i);
++    const float y = points->GetFloatAt(i + 1);
++    bounds.left = std::min(bounds.left, x);
++    bounds.right = std::max(bounds.right, x);
++    bounds.bottom = std::min(bounds.bottom, y);
++    bounds.top = std::max(bounds.top, y);
++    app_stream << x << " " << y << (i == 0 ? " m " : " l ");
++  }
++  if (closed) {
++    app_stream << "h ";
++  }
++  app_stream << GetPaintOperatorString(is_stroke, is_fill) << "\n";
++  bounds.Inflate(border_width / 2 + 1, border_width / 2 + 1);
++  annot_dict->SetRectFor(pdfium::annotation::kRect, bounds);
++
++  auto gs_dict = GenerateExtGStateDict(*annot_dict, "Normal");
++  auto resources_dict = GenerateResourcesDict(doc, std::move(gs_dict), nullptr);
++  GenerateAndSetAPDict(doc, annot_dict, &app_stream, std::move(resources_dict),
++                       false /*IsTextMarkupAnnotation*/);
++  return true;
++}
++
+ bool GenerateTextAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict) {
+   fxcrt::ostringstream app_stream;
+   app_stream << "/" << kGSDictName << " gs ";
+@@ -1605,6 +1666,15 @@ bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
+       return GenerateHighlightAP(doc, annot_dict);
+     case CPDF_Annot::Subtype::INK:
+       return GenerateInkAP(doc, annot_dict);
++    // zebkit
++    case CPDF_Annot::Subtype::LINE:
++      return GeneratePathAP(doc, annot_dict, pdfium::annotation::kL, false);
++    case CPDF_Annot::Subtype::POLYGON:
++      return GeneratePathAP(doc, annot_dict, pdfium::annotation::kVertices,
++                            true);
++    case CPDF_Annot::Subtype::POLYLINE:
++      return GeneratePathAP(doc, annot_dict, pdfium::annotation::kVertices,
++                            false);
+     case CPDF_Annot::Subtype::POPUP:
+       return GeneratePopupAP(doc, annot_dict);
+     case CPDF_Annot::Subtype::SQUARE:
+--- a/third_party/pdfium/fpdfsdk/fpdf_annot.cpp
++++ b/third_party/pdfium/fpdfsdk/fpdf_annot.cpp
+@@ -388,8 +388,13 @@ FPDFAnnot_IsSupportedSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
+     case FPDF_ANNOT_FREETEXT:
+     case FPDF_ANNOT_HIGHLIGHT:
+     case FPDF_ANNOT_INK:
++    // zebkit: lines, polygons, polylines and redaction marks too.
++    case FPDF_ANNOT_LINE:
+     case FPDF_ANNOT_LINK:
++    case FPDF_ANNOT_POLYGON:
++    case FPDF_ANNOT_POLYLINE:
+     case FPDF_ANNOT_POPUP:
++    case FPDF_ANNOT_REDACT:
+     case FPDF_ANNOT_SQUARE:
+     case FPDF_ANNOT_SQUIGGLY:
+     case FPDF_ANNOT_STAMP:
+@@ -1034,6 +1039,52 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_GetLine(FPDF_ANNOTATION annot,
+   return true;
+ }
+ 
++// zebkit
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
++                      const FS_POINTF* points,
++                      unsigned long count) {
++  FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
++  if ((subtype != FPDF_ANNOT_POLYGON && subtype != FPDF_ANNOT_POLYLINE) ||
++      !points || count < 2) {
++    return false;
++  }
++  RetainPtr<CPDF_Dictionary> annot_dict =
++      GetMutableAnnotDictFromFPDFAnnotation(annot);
++  if (!annot_dict) {
++    return false;
++  }
++  // SAFETY: required from caller.
++  auto points_span = UNSAFE_BUFFERS(pdfium::span(points, count));
++  auto vertices =
++      annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kVertices);
++  for (const FS_POINTF& point : points_span) {
++    vertices->AppendNew<CPDF_Number>(point.x);
++    vertices->AppendNew<CPDF_Number>(point.y);
++  }
++  return true;
++}
++
++// zebkit
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetLine(FPDF_ANNOTATION annot,
++                                                      const FS_POINTF* start,
++                                                      const FS_POINTF* end) {
++  if (!start || !end || FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_LINE) {
++    return false;
++  }
++  RetainPtr<CPDF_Dictionary> annot_dict =
++      GetMutableAnnotDictFromFPDFAnnotation(annot);
++  if (!annot_dict) {
++    return false;
++  }
++  auto line = annot_dict->SetNewFor<CPDF_Array>(pdfium::annotation::kL);
++  line->AppendNew<CPDF_Number>(start->x);
++  line->AppendNew<CPDF_Number>(start->y);
++  line->AppendNew<CPDF_Number>(end->x);
++  line->AppendNew<CPDF_Number>(end->y);
++  return true;
++}
++
+ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetBorder(FPDF_ANNOTATION annot,
+                                                         float horizontal_radius,
+                                                         float vertical_radius,
+--- a/third_party/pdfium/public/fpdf_annot.h
++++ b/third_party/pdfium/public/fpdf_annot.h
+@@ -456,6 +456,23 @@ FPDFAnnot_GetInkListPath(FPDF_ANNOTATION annot,
+                          FS_POINTF* buffer,
+                          unsigned long length);
+ 
++// zebkit: Sets the vertices of a polygon or polyline annotation, |count|
++// points at |points|. The annotation's appearance is not changed.
++//
++// Returns true on success.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
++FPDFAnnot_SetVertices(FPDF_ANNOTATION annot,
++                      const FS_POINTF* points,
++                      unsigned long count);
++
++// zebkit: Sets the starting and ending coordinates of a line annotation.
++// The annotation's appearance is not changed.
++//
++// Returns true on success.
++FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFAnnot_SetLine(FPDF_ANNOTATION annot,
++                                                      const FS_POINTF* start,
++                                                      const FS_POINTF* end);
++
+ // Experimental API.
+ // Get the starting and ending coordinates of a line annotation.
+ //

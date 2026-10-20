@@ -8,6 +8,7 @@
 #include <string>
 #include <variant>
 
+#include "build/build_config.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/shell/app/shell_main_delegate.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
@@ -58,6 +59,10 @@ class BrowserMainParts : public content::ShellBrowserMainParts {
   int PreMainMessageLoopRun() override;
   void PostMainMessageLoopRun() override;
 
+#if BUILDFLAG(IS_MAC)
+  void PreCreateMainMessageLoop() override;
+#endif
+
  protected:
   void InitializeMessageLoopContext() override {}
   std::unique_ptr<content::ShellPlatformDelegate> CreateShellPlatformDelegate()
@@ -66,6 +71,20 @@ class BrowserMainParts : public content::ShellBrowserMainParts {
 
 // The directory libzebkit is in, which has the engine's data files.
 base::FilePath LibraryDirectory();
+
+// The program the engine's child processes run.
+base::FilePath HelperPath(const base::FilePath& library);
+
+#if BUILDFLAG(IS_MAC)
+// engine_mac.mm: the framework as the bundle Chromium finds its files in;
+// the helper's sandbox; the application's menu and its place in the Dock;
+// the views delegate; views without windows.
+void SetUpBundle(const base::FilePath& library);
+bool EnterHelperSandbox(int argc, char** argv);
+void SetUpApplication(bool headless);
+void SetUpViews();
+std::unique_ptr<content::ShellPlatformDelegate> CreateHeadlessPlatformDelegate();
+#endif
 
 // The browser context views are created in.
 content::BrowserContext* GetBrowserContext();

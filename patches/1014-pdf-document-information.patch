@@ -1,0 +1,57 @@
+PDF: document information for a document that has none.
+
+zebkit's PDF API sets a document's title, author and the rest
+(zebkit_pdf_set_metadata(), <zebkit/pdf.h>). PDFium reads the information
+dictionary but makes none: CPDF_Document::GetOrCreateInfo() does, and the
+writer refers to it from the trailer of a document that was parsed without
+one.
+
+--- a/third_party/pdfium/core/fpdfapi/edit/cpdf_creator.cpp
++++ b/third_party/pdfium/core/fpdfapi/edit/cpdf_creator.cpp
+@@ -487,6 +487,18 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
+         return Stage::kInvalid;
+       }
+     }
++    // zebkit: an information dictionary made for a document that had none
++    // (CPDF_Document::GetOrCreateInfo()).
++    if (!parser_->GetCombinedTrailer()->KeyExist("Info")) {
++      RetainPtr<CPDF_Dictionary> info = document_->GetInfo();
++      if (info && info->GetObjNum()) {
++        if (!archive_->WriteString("/Info ") ||
++            !archive_->WriteDWord(info->GetObjNum()) ||
++            !archive_->WriteString(" 0 R\r\n")) {
++          return Stage::kInvalid;
++        }
++      }
++    }
+   } else {
+     if (!archive_->WriteString("\r\n/Root ") ||
+         !archive_->WriteDWord(document_->GetRoot()->GetObjNum()) ||
+--- a/third_party/pdfium/core/fpdfapi/parser/cpdf_document.cpp
++++ b/third_party/pdfium/core/fpdfapi/parser/cpdf_document.cpp
+@@ -624,6 +624,14 @@ RetainPtr<CPDF_Dictionary> CPDF_Document::GetInfo() {
+   return info_dict_;
+ }
+ 
++RetainPtr<CPDF_Dictionary> CPDF_Document::GetOrCreateInfo() {
++  if (RetainPtr<CPDF_Dictionary> info = GetInfo()) {
++    return info;
++  }
++  info_dict_ = NewIndirect<CPDF_Dictionary>();
++  return info_dict_;
++}
++
+ RetainPtr<const CPDF_Array> CPDF_Document::GetFileIdentifier() const {
+   return parser_ ? parser_->GetIDArray() : nullptr;
+ }
+--- a/third_party/pdfium/core/fpdfapi/parser/cpdf_document.h
++++ b/third_party/pdfium/core/fpdfapi/parser/cpdf_document.h
+@@ -98,6 +98,8 @@ class CPDF_Document : public Observable,
+   const CPDF_Dictionary* GetRoot() const { return root_dict_.Get(); }
+   RetainPtr<CPDF_Dictionary> GetMutableRoot() { return root_dict_; }
+   RetainPtr<CPDF_Dictionary> GetInfo();
++  // zebkit: the information dictionary, made when the document has none.
++  RetainPtr<CPDF_Dictionary> GetOrCreateInfo();
+   RetainPtr<const CPDF_Array> GetFileIdentifier() const;
+ 
+   // Returns the object number for the deleted page, or 0 on failure.

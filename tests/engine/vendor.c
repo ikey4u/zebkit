@@ -19,6 +19,7 @@
 #include <zebkit/vendor/libwebp.h>
 #include <zebkit/vendor/libxml.h>
 #include <zebkit/vendor/opus.h>
+#include <zebkit/vendor/pdfium.h>
 #include <zebkit/vendor/sqlite.h>
 #include <zebkit/vendor/zlib.h>
 #include <zebkit/vendor/zstd.h>
@@ -172,6 +173,59 @@ static void test_images(void) {
     hb_buffer_destroy(buffer);
 }
 
+/* A one-page PDF with "Hello zebkit" on it, its cross-reference table
+ * left for PDFium to rebuild. */
+static const char pdf[] =
+    "%PDF-1.4\n"
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R"
+    " /Resources << /Font << /F1 5 0 R >> >> >> endobj\n"
+    "4 0 obj << /Length 44 >> stream\n"
+    "BT /F1 18 Tf 20 40 Td (Hello zebkit) Tj ET\n"
+    "endstream endobj\n"
+    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+    "trailer << /Root 1 0 R >>\n"
+    "%%EOF\n";
+
+static void test_pdfium(void) {
+    FPDF_InitLibrary();
+    FPDF_DOCUMENT document = FPDF_LoadMemDocument(pdf, (int)sizeof(pdf) - 1, NULL);
+    check(document != NULL, "pdfium: FPDF_LoadMemDocument", NULL);
+    if (!document) {
+        FPDF_DestroyLibrary();
+        return;
+    }
+    check(FPDF_GetPageCount(document) == 1, "pdfium: FPDF_GetPageCount", NULL);
+    FPDF_PAGE page = FPDF_LoadPage(document, 0);
+    check(page && FPDF_GetPageWidthF(page) == 200 && FPDF_GetPageHeightF(page) == 100,
+          "pdfium: FPDF_LoadPage, 200 by 100 points", NULL);
+    FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
+    unsigned short utf16[32] = {0};
+    int count = FPDFText_GetText(text, 0, 12, utf16);
+    char found[16] = {0};
+    for (int i = 0; i < 12 && i < count; i++)
+        found[i] = (char)utf16[i];
+    check(strcmp(found, "Hello zebkit") == 0, "pdfium: FPDFText_GetText", found);
+    FPDFText_ClosePage(text);
+    FPDF_BITMAP bitmap = FPDFBitmap_Create(200, 100, 0);
+    FPDFBitmap_FillRect(bitmap, 0, 0, 200, 100, 0xFFFFFFFF);
+    FPDF_RenderPageBitmap(bitmap, page, 0, 0, 200, 100, 0, FPDF_ANNOT);
+    const unsigned char *pixels = FPDFBitmap_GetBuffer(bitmap);
+    int stride = FPDFBitmap_GetStride(bitmap), dark = 0;
+    for (int y = 0; y < 100; y++)
+        for (int x = 0; x < 200; x++)
+            if (pixels[y * stride + x * 4] < 128)
+                dark++;
+    char detail[32];
+    snprintf(detail, sizeof(detail), "%d dark pixels", dark);
+    check(dark > 100, "pdfium: FPDF_RenderPageBitmap draws the text", detail);
+    FPDFBitmap_Destroy(bitmap);
+    FPDF_ClosePage(page);
+    FPDF_CloseDocument(document);
+    FPDF_DestroyLibrary();
+}
+
 int main(void) {
     test_zlib();
     test_zstd();
@@ -182,6 +236,7 @@ int main(void) {
     test_libxml();
     test_media();
     test_images();
+    test_pdfium();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

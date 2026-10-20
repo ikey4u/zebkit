@@ -20,15 +20,19 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/viz/common/frame_sinks/copy_output_request.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/models/image_model.h"
+#include "ui/compositor/layer.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
@@ -44,7 +48,6 @@
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/snapshot/snapshot.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -696,6 +699,48 @@ base::Value UiTree::Dump(int id) {
   return base::Value(std::move(dump));
 }
 
+namespace {
+
+// A copy of what @widget's layer shows in @area, as PNG; tried again a few
+// times, as the first frame of a window can come back empty.
+void RequestCopy(base::WeakPtr<views::Widget> widget,
+                 const gfx::Rect& area,
+                 base::OnceCallback<void(std::vector<uint8_t>)> done,
+                 int attempt) {
+  ui::Layer* layer = widget ? widget->GetLayer() : nullptr;
+  if (!layer) {
+    std::move(done).Run({});
+    return;
+  }
+  auto request = std::make_unique<viz::CopyOutputRequest>(
+      viz::CopyOutputRequest::ResultFormat::RGBA,
+      viz::CopyOutputRequest::ResultDestination::kSystemMemory,
+      base::BindOnce(
+          [](base::WeakPtr<views::Widget> widget, const gfx::Rect& area,
+             base::OnceCallback<void(std::vector<uint8_t>)> done, int attempt,
+             std::unique_ptr<viz::CopyOutputResult> result) {
+            if (result->IsEmpty()) {
+              if (attempt < 5)
+                RequestCopy(widget, area, std::move(done), attempt + 1);
+              else
+                std::move(done).Run({});
+              return;
+            }
+            auto scoped = result->ScopedAccessSkBitmap();
+            std::optional<std::vector<uint8_t>> png =
+                gfx::PNGCodec::EncodeBGRASkBitmap(scoped.bitmap(),
+                                                  /*discard_transparency=*/false);
+            std::move(done).Run(png ? std::move(*png) : std::vector<uint8_t>());
+          },
+          widget, area, std::move(done), attempt));
+  request->set_area(area);
+  request->set_result_task_runner(
+      base::SingleThreadTaskRunner::GetCurrentDefault());
+  layer->RequestCopyOfOutput(std::move(request));
+}
+
+}  // namespace
+
 void UiTree::Capture(
     int id,
     base::OnceCallback<void(std::vector<uint8_t> png)> done) {
@@ -709,18 +754,11 @@ void UiTree::Capture(
   view->GetWidget()->LayoutRootViewIfNecessary();
   // What the compositor shows: views paints some controls, buttons among
   // them, into layers of their own, which painting the tree would miss.
-  ui::GrabWindowSnapshotAsPNG(
-      view->GetWidget()->GetNativeWindow(),
-      view->ConvertRectToWidget(view->GetLocalBounds()),
-      base::BindOnce(
-          [](base::OnceCallback<void(std::vector<uint8_t>)> done,
-             scoped_refptr<base::RefCountedMemory> png) {
-            std::vector<uint8_t> bytes;
-            if (png)
-              bytes.assign(png->data(), png->data() + png->size());
-            std::move(done).Run(std::move(bytes));
-          },
-          std::move(done)));
+  // Copied from the widget's layer, on every system: on macOS a picture of
+  // the screen would need the user's permission to record it.
+  RequestCopy(view->GetWidget()->GetWeakPtr(),
+              view->ConvertRectToWidget(view->GetLocalBounds()),
+              std::move(done), 0);
 }
 
 std::string UiTree::Act(int id, const std::string& action,

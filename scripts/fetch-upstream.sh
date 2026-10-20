@@ -26,6 +26,17 @@ want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash"
 link_engine() {
     mkdir -p "$SRC_DIR/zebkit"
     ln -sfn "$ZEBKIT_ROOT/src/engine" "$SRC_DIR/zebkit/engine"
+    # What scripts/macos-toolchain.sh set up for building macOS on Linux:
+    # Apple's SDK in a copy of Xcode, and what DEPS fetches for a macOS
+    # checkout.
+    local macos="$CACHE_DIR/macos"
+    if [[ -d "$macos/xcode" ]]; then
+        mkdir -p "$SRC_DIR/build/mac_files"
+        ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
+        ln -sfn "$macos/cipd/mig" "$SRC_DIR/third_party/mig/bin"
+        ln -sfn "$macos/cipd/angle-metal" "$SRC_DIR/ui/gl/resources/angle-metal"
+        cp -R "$macos/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
+    fi
 }
 
 if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then

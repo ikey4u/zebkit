@@ -9,3 +9,5 @@
 1011-v8-optimized-for-size.patch
 1012-zebkit-engine-in-the-build.patch
 1013-libraries-visible-to-zebkit.patch
+1014-pdf-document-information.patch
+1015-pdf-more-annotations.patch

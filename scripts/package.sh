@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Assemble what a profile ships into one flat directory, out/blink/<profile>/package,
+# Assemble what a profile ships into one directory, out/blink/<profile>/package,
 # with every binary stripped.
 #
 #   scripts/package.sh <profile>
 #
 # The engine is libzebkit.so.1, with zebkit-helper for its child processes,
-# and the headers an application builds against in include/. Its run-time
+# and the headers an application builds against in include/. For macOS
+# (slim-macos), the engine is Zebkit.framework, with its helper, its data
+# files and the libraries it loads inside, and include/ beside it. Its run-time
 # dependencies, as GN lists them, include the content shell's test fonts,
 # test data, mock Vulkan drivers, validation layers and a crash reporter;
 # the list below is what the engine needs to run, and nothing else is
@@ -20,6 +22,42 @@ require_profile "$profile"
 
 build_dir="$SRC_DIR/out/$profile"
 package="$OUT_DIR/$profile/package"
+
+# The API: <zebkit/zebkit.h> and what the build generated beside it.
+copy_headers() {
+    mkdir -p "$package/include"
+    cp -R "$ZEBKIT_ROOT/src/engine/include/zebkit" "$package/include/"
+    if [[ -d "$build_dir/gen/zebkit/engine/include/zebkit" ]]; then
+        cp -R "$build_dir/gen/zebkit/engine/include/zebkit" "$package/include/"
+    fi
+}
+
+# The resource pack less the DevTools front end and the browser's internal
+# pages (scripts/trim-pak.py), and ICU's data for the languages zebkit
+# supports (scripts/build-icu-data.sh) in place of Chromium's for all of them.
+copy_data() {
+    python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/content_shell.pak" \
+        "$build_dir/content_shell.pak.info" "$1/content_shell.pak" >&2
+    "$ZEBKIT_ROOT/scripts/build-icu-data.sh"
+    cp "$OUT_DIR/icu/icudtl.dat" "$1/icudtl.dat"
+}
+
+if grep -q '^target_os = "mac"' <<< "$(profile_args "$profile")"; then
+    framework="$build_dir/Zebkit.framework"
+    [[ -f "$framework/Versions/A/Zebkit" ]] || die "profile '$profile' is not built; run scripts/build.sh $profile"
+    rm -rf "$package"
+    mkdir -p "$package"
+    # As built, with its links (Zebkit -> Versions/Current/Zebkit, ...).
+    cp -R "$framework" "$package/"
+    copy_data "$package/Zebkit.framework/Versions/A/Resources"
+    copy_headers
+    # The linker signs what it links for Apple silicon, and strips it with
+    # llvm-strip, which signs again (enable_stripping): nothing is changed
+    # here that would need signing again.
+    log "package: $package"
+    exit 0
+fi
+
 [[ -f "$build_dir/libzebkit.so.1" ]] || die "profile '$profile' is not built; run scripts/build.sh $profile"
 
 files=(
@@ -42,20 +80,8 @@ for file in "${files[@]}"; do
     cp "$build_dir/$file" "$package/"
 done
 
-# The resource pack less the DevTools front end and the browser's internal
-# pages (scripts/trim-pak.py), and ICU's data for the languages zebkit
-# supports (scripts/build-icu-data.sh) in place of Chromium's for all of them.
-python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/content_shell.pak" \
-    "$build_dir/content_shell.pak.info" "$package/content_shell.pak" >&2
-"$ZEBKIT_ROOT/scripts/build-icu-data.sh"
-cp "$OUT_DIR/icu/icudtl.dat" "$package/icudtl.dat"
-
-# The API: <zebkit/zebkit.h> and what the build generated beside it.
-mkdir -p "$package/include"
-cp -R "$ZEBKIT_ROOT/src/engine/include/zebkit" "$package/include/"
-if [[ -d "$build_dir/gen/zebkit/engine/include/zebkit" ]]; then
-    cp -R "$build_dir/gen/zebkit/engine/include/zebkit" "$package/include/"
-fi
+copy_data "$package"
+copy_headers
 
 is_elf() { [[ "$(od -An -tx1 -N4 "$1" | tr -d ' ')" == 7f454c46 ]]; }
 

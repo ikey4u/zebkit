@@ -8,6 +8,8 @@
 # - tests/engine/vendor.c, vendor.cc: the libraries inside the engine
 #   (<zebkit/vendor/*.h>), from C and from C++.
 # - tests/engine/services.c: <zebkit/services.h> without the engine running.
+# - tests/engine/pdf.c: <zebkit/pdf.h>, a document opened, read, rendered,
+#   searched, changed and saved.
 # - tests/engine/api.c: the C API (zebkit.h). Starts the engine, serves
 #   CDP, loads a page, runs script in it, follows its events, posts tasks
 #   from another thread, closes the view and quits.
@@ -28,7 +30,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 profile="${1:-}"
 require_profile "$profile"
 package="$OUT_DIR/$profile/package"
-[[ -f "$package/libzebkit.so.1" ]] || die "no engine in $package; run scripts/package.sh $profile first"
+library="$(engine_library "$package")"
+[[ -f "$library" ]] || die "no engine in $package; run scripts/package.sh $profile first"
 
 work="$(mktemp -d)"
 pids=()
@@ -37,9 +40,11 @@ trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; rm -rf 
 log "building the test programs against $package"
 tests="$ZEBKIT_ROOT/tests/engine"
 build_against_package "$package" "$work/vendor" "$tests/vendor.c"
+# shellcheck disable=SC2046
 c++ -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
-    -L"$package" -l:libzebkit.so.1 -Wl,-rpath,"$package" -o "$work/vendor-cxx"
+    $(engine_link_options "$package") -o "$work/vendor-cxx"
 build_against_package "$package" "$work/services" "$tests/services.c"
+build_against_package "$package" "$work/pdf" "$tests/pdf.c"
 build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
@@ -63,7 +68,12 @@ run() {
 }
 
 log "what the engine exports"
-exported="$(nm -D --defined-only "$package/libzebkit.so.1" | awk '{ print $3 }')"
+if [[ "$(uname)" == Darwin ]]; then
+    # Mach-O puts an underscore before every C name.
+    exported="$(nm -gU "$library" | awk '{ print substr($3, 2) }')"
+else
+    exported="$(nm -D --defined-only "$library" | awk '{ print $3 }')"
+fi
 foreign="$(grep -v '^zebkit_' <<< "$exported" | grep -v '^$' || true)"
 if [[ -n "$foreign" ]]; then
     echo "FAIL exports names that are not zebkit's: $(head -5 <<< "$foreign" | paste -sd' ' -)"; failed=1
@@ -74,6 +84,7 @@ fi
 run vendor "$work/vendor"
 run vendor-cxx "$work/vendor-cxx"
 run services "$work/services"
+run pdf "$work/pdf"
 run api "$work/api" "${engine_switches[@]}"
 
 port="${ENGINE_TEST_PORT:-8796}"

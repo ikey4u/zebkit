@@ -3,11 +3,26 @@ Build: zebkit's engine library in the build.
 zebkit's own engine code is its src/engine directory, which
 scripts/fetch-upstream.sh links into the tree as //zebkit/engine. GN reads
 only the build files the root one leads to; this adds that directory to
-the group of everything.
+the group of everything, and a group of its own, //:zebkit, for builds that
+define nothing else (macOS, where the group of everything lists Chrome).
 
 --- a/BUILD.gn
 +++ b/BUILD.gn
-@@ -96,6 +96,8 @@ group("gn_all") {
+@@ -85,6 +85,13 @@
+ # `all`, and no tooling should depend directly on this target. Tools should
+ # should depend on either an explicit list of targets, or `all`.
+ 
++# zebkit's engine and what it needs, for builds limited to it
++# (gn gen --root-pattern=//:zebkit).
++group("zebkit") {
++  testonly = true
++  deps = [ "//zebkit/engine" ]
++}
++
+ group("gn_all") {
+   testonly = true
+ 
+@@ -96,6 +103,8 @@
      }
    } else {
      deps = [

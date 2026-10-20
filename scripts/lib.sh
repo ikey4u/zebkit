@@ -50,6 +50,15 @@ sha256() {
     if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
 }
 
+# profile_args <name>: a profile's GN arguments, on top of _common.gn and of
+# the profile it is based on ("# zebkit-base: <name>").
+profile_args() {
+    local base
+    base="$(sed -n 's/^# zebkit-base: *//p' "$PROFILES_DIR/$1.gn")"
+    if [[ -n "$base" ]]; then profile_args "$base"; else cat "$PROFILES_DIR/_common.gn"; fi
+    cat "$PROFILES_DIR/$1.gn"
+}
+
 # require_profile <name>: fail unless there is a profile of that name.
 require_profile() {
     [[ -n "${1:-}" ]] || die "usage: $(basename "$0") <profile>   (one of: $(list_profiles))"
@@ -59,11 +68,12 @@ require_profile() {
 # compressed_size <xz|zip> <dir>: the bytes a download of the directory
 # takes. xz is a tar compressed with xz -6, as scripts/release.sh makes
 # zebkit's archives; zip is the highest deflate level, the form Electron is
-# distributed in.
+# distributed in. Symbolic links, which a macOS framework has, are kept as
+# links in both.
 compressed_size() {
     case "$1" in
         xz) tar -C "$2" --sort=name --owner=0 --group=0 --numeric-owner -cf - . | xz -6 -T0 | wc -c ;;
-        zip) (cd "$2" && zip -q -9 -r -X - .) | wc -c ;;
+        zip) (cd "$2" && zip -q -9 -r -X -y - .) | wc -c ;;
         *) die "compressed_size: unknown method $1" ;;
     esac
 }
@@ -73,8 +83,30 @@ list_profiles() {
 }
 
 # limited <seconds> <command...>: run a command, and end it if it is still
-# running after that long.
-limited() { timeout "$@"; }
+# running after that long. macOS has no timeout(1); an alarm that survives
+# exec does the same.
+limited() {
+    if command -v timeout >/dev/null; then
+        timeout "$@"
+    else
+        perl -e 'alarm shift; exec @ARGV or die "$ARGV[0]: $!\n"' "$@"
+    fi
+}
+
+# engine_library <package dir>: the file an application links, on this
+# system: libzebkit.so.1, or the framework's library on macOS.
+engine_library() {
+    if [[ "$(uname)" == Darwin ]]; then echo "$1/Zebkit.framework/Zebkit"; else echo "$1/libzebkit.so.1"; fi
+}
+
+# engine_link_options <package dir>: how a program links the engine.
+engine_link_options() {
+    if [[ "$(uname)" == Darwin ]]; then
+        echo "-F$1 -framework Zebkit -Wl,-rpath,$1"
+    else
+        echo "-L$1 -l:libzebkit.so.1 -Wl,-rpath,$1"
+    fi
+}
 
 # build_against_package <package dir> <output> <source...> [-- cc options]:
 # compile a C program that uses the engine, the way an application does:
@@ -88,6 +120,7 @@ build_against_package() {
     (( $# )) && shift
     options=("$@")
     mkdir -p "$(dirname "$output")"
+    # shellcheck disable=SC2046
     cc -std=c11 -O1 -Wall -Werror -I"$package/include" "${sources[@]}" "${options[@]}" \
-        -L"$package" -l:libzebkit.so.1 -Wl,-rpath,"$package" -o "$output"
+        $(engine_link_options "$package") -o "$output"
 }

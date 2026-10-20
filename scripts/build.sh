@@ -3,7 +3,9 @@
 #
 #   scripts/build.sh <profile> [--configure-only] [targets...]
 #
-# The arguments are profiles/_common.gn followed by profiles/<profile>.gn.
+# The arguments are profiles/_common.gn followed by profiles/<profile>.gn,
+# and before it the profile it names on a line "# zebkit-base: <profile>"
+# (slim-macos is slim, for macOS).
 # The default target is the engine: libzebkit.so.1 and zebkit-helper.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -26,11 +28,16 @@ mkdir -p "$build_dir"
 
 # How many links run at once is not set here: with ThinLTO Chromium works
 # it out from the machine's memory (build/toolchain/concurrent_links.gni).
-args="$(cat "$PROFILES_DIR/_common.gn" "$PROFILES_DIR/$profile.gn")"
+args="$(profile_args "$profile")"
 if [[ ! -f "$build_dir/args.gn" || "$(cat "$build_dir/args.gn")" != "$args" ]]; then
     printf '%s\n' "$args" > "$build_dir/args.gn"
     log "configuring $profile"
-    (cd "$SRC_DIR" && gn gen "out/$profile")
+    # On macOS, Chromium's root build lists Chrome itself, which does not
+    # configure with what zebkit leaves out: only zebkit's targets, and
+    # what they depend on, are defined.
+    roots=()
+    if grep -q '^target_os = "mac"' <<< "$args"; then roots=(--root-pattern=//:zebkit); fi
+    (cd "$SRC_DIR" && gn gen "${roots[@]}" "out/$profile")
 fi
 (( configure_only )) && exit 0
 

@@ -25,3 +25,9 @@ ffmpeg_branding = "Chrome"
 # Nothing here builds remotely.
 use_remoteexec = false
 treat_warnings_as_errors = false
+
+# PDFium is in the engine, for applications (<zebkit/vendor/pdfium.h>):
+# without XFA forms and without PDFium's own JavaScript, which Chromium
+# turns on for Chrome's viewer. A PDF's scripts are not run.
+pdf_enable_xfa = false
+pdf_enable_v8 = false
