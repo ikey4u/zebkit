@@ -17,3 +17,4 @@
 0014-mac-shell-geolocation-without-test-support.patch
 1018-content-shell-keys-to-the-embedder.patch
 1019-content-shell-window-size-limits.patch
+1020-pdf-nested-signature-fields.patch

@@ -13,6 +13,7 @@
 
 #include "public/fpdf_annot.h"
 #include "public/fpdf_formfill.h"
+#include "public/fpdf_signature.h"
 #include "public/fpdfview.h"
 
 namespace zebkit::pdf {
@@ -67,6 +68,9 @@ bool DrawAnnotation(FPDF_PAGE page,
                     int mode,
                     FPDF_BITMAP bitmap,
                     const float matrix[6]);
+
+// A signature's field, by its full name ("Signatures.Approval"), UTF-8.
+std::string SignatureFieldName(FPDF_SIGNATURE signature);
 
 // The object number of the page's dictionary.
 int PageObjectNumber(FPDF_PAGE page);

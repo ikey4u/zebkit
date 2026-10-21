@@ -200,6 +200,26 @@ impl Document {
         self.json(answer, error)
     }
 
+    /// The digital signatures, as JSON: field, subFilter, reason, time,
+    /// byteRange, docMDP, size and the signer's certificate.
+    pub fn signatures(&mut self) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_signatures(self.raw, &mut error) };
+        self.json(answer, error)
+    }
+
+    /// Signature `index`'s contents: the DER-encoded PKCS#7 it holds.
+    pub fn signature_contents(&mut self, index: usize) -> Result<Vec<u8>, Error> {
+        let (mut size, mut error) = (0, std::ptr::null_mut());
+        unsafe {
+            let data = sys::zebkit_pdf_signature_contents(self.raw, page_index(index), &mut size, &mut error);
+            if data.is_null() {
+                return Err(take_error(error, "no such signature"));
+            }
+            Ok(take_bytes(data, size))
+        }
+    }
+
     /// Image `image` of the page, as [`Document::images`] lists them: its
     /// JPEG as stored (and true), or its pixels as PNG (and false).
     pub fn image_data(&mut self, page: usize, image: usize) -> Result<(Vec<u8>, bool), Error> {

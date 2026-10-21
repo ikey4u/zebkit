@@ -199,6 +199,25 @@ ZEBKIT_API char *zebkit_pdf_images(zebkit_pdf *pdf, int page, char **error);
 ZEBKIT_API uint8_t *zebkit_pdf_image_data(zebkit_pdf *pdf, int page, int image, size_t *size, bool *jpeg,
                                           char **error);
 
+/* ---- Signatures ---------------------------------------------------- */
+
+/*
+ * The document's digital signatures, in its form's order, as JSON:
+ *   [{"field": "Signatures.Approval", "subFilter": "adbe.pkcs7.detached",
+ *     "reason": "...", "time": "D:20261021120000+02'00'",
+ *     "byteRange": [0, 840, 960, 2400], "docMDP": 0, "size": 8192,
+ *     "signer": {"name": "...", "issuer": "...", "serial": "0a1b...",
+ *                "notBefore": "2026-01-01T00:00:00Z", "notAfter": "..."}}]
+ * "docMDP" is the changes the signer allowed after it (1-3; 0 for none
+ * said), "size" the contents' bytes; "signer" the certificate of the
+ * signer among those the signature carries, when it can be read. That the
+ * signature is valid is not checked here.
+ */
+ZEBKIT_API char *zebkit_pdf_signatures(zebkit_pdf *pdf, char **error);
+
+/* Signature @index's contents: the DER-encoded PKCS#7 or time stamp it holds. */
+ZEBKIT_API uint8_t *zebkit_pdf_signature_contents(zebkit_pdf *pdf, int index, size_t *size, char **error);
+
 /* ---- Navigation ------------------------------------------------------ */
 
 /*

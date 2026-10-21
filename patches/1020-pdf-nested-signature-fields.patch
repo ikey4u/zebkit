@@ -1,0 +1,76 @@
+PDF: signature fields where a form nests them.
+
+FPDF_GetSignatureCount() and FPDF_GetSignatureObject() look only at the
+AcroForm's top-level fields, and only at those with /FT /Sig of their own:
+a signature field under a parent ("Signatures.Approval"), or one whose
+/FT its parent gives, is not found, and a reader shows a signed document
+as unsigned. Signatures are now the terminal fields of the whole tree
+whose type, their own or inherited, is /Sig, in the tree's order.
+
+--- a/third_party/pdfium/fpdfsdk/fpdf_signature.cpp
++++ b/third_party/pdfium/fpdfsdk/fpdf_signature.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "public/fpdf_signature.h"
+ 
++#include <set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -21,6 +22,39 @@
+ 
+ namespace {
+ 
++// The signature fields under @field, @field too: a terminal field whose
++// type, its own or inherited from its parents, is /Sig. Fields may be
++// nested ("Signatures.Approval"), and a document's tree may loop.
++void CollectSignatureFields(
++    RetainPtr<const CPDF_Dictionary> field,
++    ByteString inherited_type,
++    int depth,
++    std::set<const CPDF_Dictionary*>& seen,
++    std::vector<RetainPtr<const CPDF_Dictionary>>& signatures) {
++  if (!field || depth > 32 || !seen.insert(field.Get()).second) {
++    return;
++  }
++  const ByteString type = field->KeyExist(pdfium::form_fields::kFT)
++                              ? field->GetNameFor(pdfium::form_fields::kFT)
++                              : inherited_type;
++  bool has_field_kids = false;
++  if (RetainPtr<const CPDF_Array> kids = field->GetArrayFor("Kids")) {
++    CPDF_ArrayLocker locker(std::move(kids));
++    for (auto& kid : locker) {
++      RetainPtr<const CPDF_Dictionary> kid_dict = kid->GetDict();
++      // A kid with a name is a field; one without is the field's widget.
++      if (kid_dict && kid_dict->KeyExist(pdfium::form_fields::kT)) {
++        has_field_kids = true;
++        CollectSignatureFields(std::move(kid_dict), type, depth + 1, seen,
++                               signatures);
++      }
++    }
++  }
++  if (!has_field_kids && type == pdfium::form_fields::kSig) {
++    signatures.push_back(std::move(field));
++  }
++}
++
+ std::vector<RetainPtr<const CPDF_Dictionary>> CollectSignatures(
+     CPDF_Document* doc) {
+   std::vector<RetainPtr<const CPDF_Dictionary>> signatures;
+@@ -40,13 +74,11 @@
+     return signatures;
+   }
+ 
++  std::set<const CPDF_Dictionary*> seen;
+   CPDF_ArrayLocker locker(std::move(fields));
+   for (auto& field : locker) {
+-    RetainPtr<const CPDF_Dictionary> field_dict = field->GetDict();
+-    if (field_dict && field_dict->GetNameFor(pdfium::form_fields::kFT) ==
+-                          pdfium::form_fields::kSig) {
+-      signatures.push_back(std::move(field_dict));
+-    }
++    CollectSignatureFields(field->GetDict(), ByteString(), 0, seen,
++                           signatures);
+   }
+   return signatures;
+ }

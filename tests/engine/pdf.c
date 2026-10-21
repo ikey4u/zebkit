@@ -54,6 +54,40 @@ static const char picture[] =
     "trailer << /Root 1 0 R >>\n"
     "%%EOF\n";
 
+/* A form whose signature field is nested ("Signatures.Approval") and takes
+ * /FT /Sig from its parent, holding a detached PKCS#7 by "zebkit test
+ * signer" (serial 1234). It is read, not verified: its byte range is made
+ * up. */
+static const char signed_form[] =
+    "%PDF-1.7\n"
+    "1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >> endobj\n"
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [6 0 R] >> endobj\n"
+    "5 0 obj << /T (Signatures) /FT /Sig /Kids [6 0 R] >> endobj\n"
+    "6 0 obj << /Type /Annot /Subtype /Widget /T (Approval) /Parent 5 0 R /Rect [0 0 0 0] /P 3 0 R"
+    " /V 7 0 R >> endobj\n"
+    "7 0 obj << /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /Reason (Approved)"
+    " /M (D:20261021120000Z) /ByteRange [0 100 200 300] /Contents <"
+    "3082024706092a864886f70d010702a082023830820234020101310d300b0609608648016503"
+    "040201300b06092a864886f70d010701a08201813082017d30820123a0030201020202123430"
+    "0a06082a8648ce3d040302301d311b301906035504030c127a65626b69742074657374207369"
+    "676e6572301e170d3236313032313138323335335a170d3336313031383138323335335a301d"
+    "311b301906035504030c127a65626b69742074657374207369676e65723059301306072a8648"
+    "ce3d020106082a8648ce3d03010703420004c15b0ce1abe03a69f1bcdceb9a8c83bdbb996c8b"
+    "d98ce891da7647058833b9e7289496db00be938af9beec316cd2e400fcccbc653df51d53d6f3"
+    "986a11652ec6a3533051301d0603551d0e04160414fdb9a5b35a61f2729dd842a3812395c490"
+    "99fa76301f0603551d23041830168014fdb9a5b35a61f2729dd842a3812395c49099fa76300f"
+    "0603551d130101ff040530030101ff300a06082a8648ce3d040302034800304502205787a508"
+    "83bf4aecde44154b2302122511ed358ad87e5ae449d115c823a1913b022100b343fcb75a93b7"
+    "a94f10f168b60c518477412e0a5715b67e392a3ca5a1de842231818d30818a0201013023301d"
+    "311b301906035504030c127a65626b69742074657374207369676e657202021234300b060960"
+    "8648016503040201300a06082a8648ce3d04030204473045022064f927c54ed44be5f7bdde50"
+    "9d96f81e86f6a11cfa1b0aa0ddd03a3737d69a25022100c0266d3fda7fcf1ae705d1bf84d2dc"
+    "92a4bf7926cfb8a3b2b78c82d8b9466db8"
+    "> >> endobj\n"
+    "trailer << /Root 1 0 R >>\n"
+    "%%EOF\n";
+
 static int contains(const char *text, const char *part) {
     return text && strstr(text, part) != NULL;
 }
@@ -490,6 +524,28 @@ int main(void) {
     zebkit_free(error);
     error = NULL;
     zebkit_pdf_close(pictured);
+
+    zebkit_pdf *signed_pdf = zebkit_pdf_open(signed_form, sizeof(signed_form) - 1, NULL, &error);
+    char *signatures = signed_pdf ? zebkit_pdf_signatures(signed_pdf, &error) : NULL;
+    check(contains(signatures, "\"field\":\"Signatures.Approval\"") &&
+              contains(signatures, "\"subFilter\":\"adbe.pkcs7.detached\"") &&
+              contains(signatures, "\"reason\":\"Approved\"") &&
+              contains(signatures, "\"time\":\"D:20261021120000Z\"") &&
+              contains(signatures, "\"byteRange\":[0,100,200,300]") &&
+              contains(signatures, "\"name\":\"zebkit test signer\"") &&
+              contains(signatures, "\"serial\":\"1234\"") && contains(signatures, "\"notAfter\":\"2036-"),
+          "zebkit_pdf_signatures: a nested field, its signer", signatures);
+    zebkit_free(signatures);
+    size_t signature_size = 0;
+    uint8_t *signature = signed_pdf ? zebkit_pdf_signature_contents(signed_pdf, 0, &signature_size, &error) : NULL;
+    check(signature && signature_size >= 587 && signature[0] == 0x30, "zebkit_pdf_signature_contents: the DER",
+          error);
+    zebkit_free(signature);
+    signatures = zebkit_pdf_signatures(pdf, &error);
+    check(signatures && strcmp(signatures, "[]") == 0, "zebkit_pdf_signatures: none in an unsigned document",
+          signatures);
+    zebkit_free(signatures);
+    zebkit_pdf_close(signed_pdf);
 
     check(zebkit_pdf_attach(pdf, "data.csv", "a,b\n1,2\n", 8, &error), "zebkit_pdf_attach", error);
     char *attachments = zebkit_pdf_attachments(pdf, &error);
