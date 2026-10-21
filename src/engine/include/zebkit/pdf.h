@@ -184,11 +184,20 @@ ZEBKIT_API char *zebkit_pdf_search(zebkit_pdf *pdf, const char *query, unsigned 
 
 /*
  * The images the page draws, inside forms too: JSON [{"width": 2480,
- * "height": 3508, "rect": [l, b, r, t]}, ...], "width" and "height" in
- * pixels, "rect" where it is drawn on the page. A page that is one large
- * image is a scan.
+ * "height": 3508, "rect": [l, b, r, t], "jpeg": true}, ...], "width" and
+ * "height" in pixels, "rect" where it is drawn on the page, "jpeg" whether
+ * it is stored as a JPEG file. A page that is one large image is a scan.
  */
 ZEBKIT_API char *zebkit_pdf_images(zebkit_pdf *pdf, int page, char **error);
+
+/*
+ * Image @image of the page, numbered as zebkit_pdf_images() lists them: a
+ * JPEG file as the document stores it ("jpeg": true there, and *@jpeg set),
+ * otherwise its pixels decoded, as PNG. NULL with *@error when there is no
+ * such image or it cannot be decoded; zebkit_free() frees it.
+ */
+ZEBKIT_API uint8_t *zebkit_pdf_image_data(zebkit_pdf *pdf, int page, int image, size_t *size, bool *jpeg,
+                                          char **error);
 
 /* ---- Navigation ------------------------------------------------------ */
 

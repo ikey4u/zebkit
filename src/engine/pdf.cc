@@ -8,6 +8,7 @@
 #endif
 
 #include "zebkit/engine/include/zebkit/pdf.h"
+#include "zebkit/engine/include/zebkit/services.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -845,27 +846,34 @@ char* zebkit_pdf_text_lines(zebkit_pdf* pdf, int index, char** error) {
 
 namespace {
 
-// The images among @objects, and in the forms among them.
-void CollectImages(FPDF_PAGEOBJECT object, base::ListValue& images) {
+// The image objects among @object and in it, when it is a form, in order.
+void CollectImages(FPDF_PAGEOBJECT object, std::vector<FPDF_PAGEOBJECT>& images) {
   const int type = FPDFPageObj_GetType(object);
   if (type == FPDF_PAGEOBJ_FORM) {
     const int count = FPDFFormObj_CountObjects(object);
     for (int i = 0; i < count; ++i)
       CollectImages(FPDFFormObj_GetObject(object, i), images);
-    return;
+  } else if (type == FPDF_PAGEOBJ_IMAGE) {
+    images.push_back(object);
   }
-  if (type != FPDF_PAGEOBJ_IMAGE)
-    return;
-  unsigned int width = 0, height = 0;
-  if (!FPDFImageObj_GetImagePixelSize(object, &width, &height))
-    return;
-  base::DictValue image;
-  image.Set("width", static_cast<int>(width));
-  image.Set("height", static_cast<int>(height));
-  float left = 0, bottom = 0, right = 0, top = 0;
-  if (FPDFPageObj_GetBounds(object, &left, &bottom, &right, &top))
-    image.Set("rect", PdfRect(left, bottom, right, top));
-  images.Append(std::move(image));
+}
+
+// An image stored as a JPEG file and nothing else (DCTDecode its only
+// filter), which can be handed over as it is.
+bool IsJpeg(FPDF_PAGEOBJECT image) {
+  if (FPDFImageObj_GetImageFilterCount(image) != 1)
+    return false;
+  char filter[16] = {};
+  FPDFImageObj_GetImageFilter(image, 0, filter, sizeof(filter));
+  return std::string_view(filter) == "DCTDecode";
+}
+
+std::vector<FPDF_PAGEOBJECT> PageImages(FPDF_PAGE page) {
+  std::vector<FPDF_PAGEOBJECT> images;
+  const int count = FPDFPage_CountObjects(page);
+  for (int i = 0; i < count; ++i)
+    CollectImages(FPDFPage_GetObject(page, i), images);
+  return images;
 }
 
 }  // namespace
@@ -876,10 +884,87 @@ char* zebkit_pdf_images(zebkit_pdf* pdf, int index, char** error) {
   if (!page.get())
     return Fail(error, "no page " + std::to_string(index));
   base::ListValue images;
-  const int count = FPDFPage_CountObjects(page.get());
-  for (int i = 0; i < count; ++i)
-    CollectImages(FPDFPage_GetObject(page.get(), i), images);
+  for (FPDF_PAGEOBJECT object : PageImages(page.get())) {
+    base::DictValue image;
+    unsigned int width = 0, height = 0;
+    FPDFImageObj_GetImagePixelSize(object, &width, &height);
+    image.Set("width", static_cast<int>(width));
+    image.Set("height", static_cast<int>(height));
+    float left = 0, bottom = 0, right = 0, top = 0;
+    if (FPDFPageObj_GetBounds(object, &left, &bottom, &right, &top))
+      image.Set("rect", PdfRect(left, bottom, right, top));
+    image.Set("jpeg", IsJpeg(object));
+    images.Append(std::move(image));
+  }
   return GiveJson(base::Value(std::move(images)));
+}
+
+uint8_t* zebkit_pdf_image_data(zebkit_pdf* pdf,
+                               int index,
+                               int image,
+                               size_t* size,
+                               bool* jpeg,
+                               char** error) {
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get()) {
+    Fail(error, "no page " + std::to_string(index));
+    return nullptr;
+  }
+  const std::vector<FPDF_PAGEOBJECT> images = PageImages(page.get());
+  if (image < 0 || image >= static_cast<int>(images.size())) {
+    Fail(error, "no image " + std::to_string(image));
+    return nullptr;
+  }
+  FPDF_PAGEOBJECT object = images[image];
+  if (IsJpeg(object)) {
+    // The JPEG file as the document has it.
+    const unsigned long length =
+        FPDFImageObj_GetImageDataRaw(object, nullptr, 0);
+    auto* bytes = static_cast<uint8_t*>(malloc(std::max(length, 1ul)));
+    FPDFImageObj_GetImageDataRaw(object, bytes, length);
+    *size = length;
+    if (jpeg)
+      *jpeg = true;
+    return bytes;
+  }
+  // Its pixels, decoded, as PNG.
+  FPDF_BITMAP bitmap = FPDFImageObj_GetBitmap(object);
+  if (!bitmap) {
+    Fail(error, "the image cannot be decoded");
+    return nullptr;
+  }
+  const int width = FPDFBitmap_GetWidth(bitmap);
+  const int height = FPDFBitmap_GetHeight(bitmap);
+  const int stride = FPDFBitmap_GetStride(bitmap);
+  const int format = FPDFBitmap_GetFormat(bitmap);
+  const auto* in = static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+  std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* row = in + static_cast<size_t>(y) * stride;
+    uint8_t* out = rgba.data() + static_cast<size_t>(y) * width * 4;
+    for (int x = 0; x < width; ++x, out += 4) {
+      switch (format) {
+        case FPDFBitmap_Gray:
+          out[0] = out[1] = out[2] = row[x];
+          out[3] = 255;
+          break;
+        case FPDFBitmap_BGR:
+          out[0] = row[x * 3 + 2], out[1] = row[x * 3 + 1], out[2] = row[x * 3];
+          out[3] = 255;
+          break;
+        default:  // BGRx, BGRA
+          out[0] = row[x * 4 + 2], out[1] = row[x * 4 + 1], out[2] = row[x * 4];
+          out[3] = format == FPDFBitmap_BGRA ? row[x * 4 + 3] : 255;
+          break;
+      }
+    }
+  }
+  FPDFBitmap_Destroy(bitmap);
+  if (jpeg)
+    *jpeg = false;
+  return zebkit_image_encode(ZEBKIT_IMAGE_PNG, rgba.data(), width, height, 0,
+                             size, error);
 }
 
 namespace {

@@ -342,6 +342,20 @@ Answer Work(zebkit_pdf* pdf,
   if (method == "images")
     return Json(zebkit_pdf_images(pdf, IntArg(args, 0), &error), error,
                 "no images");
+  if (method == "imageData") {
+    size_t size = 0;
+    bool jpeg = false;
+    uint8_t* data = zebkit_pdf_image_data(pdf, IntArg(args, 0),
+                                          IntArg(args, 1), &size, &jpeg,
+                                          &error);
+    if (!data)
+      return Failed(error, "no such image");
+    base::DictValue image;
+    image.Set("data", base::Value(base::Value::BlobStorage(data, data + size)));
+    image.Set("type", jpeg ? "image/jpeg" : "image/png");
+    free(data);
+    return Ok(base::Value(std::move(image)));
+  }
   if (method == "annotations")
     return Json(zebkit_pdf_annotations(pdf, IntArg(args, 0), &error), error,
                 "no annotations");
