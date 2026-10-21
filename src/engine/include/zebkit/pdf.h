@@ -210,8 +210,13 @@ ZEBKIT_API uint8_t *zebkit_pdf_image_data(zebkit_pdf *pdf, int page, int image, 
  *                "notBefore": "2026-01-01T00:00:00Z", "notAfter": "..."}}]
  * "docMDP" is the changes the signer allowed after it (1-3; 0 for none
  * said), "size" the contents' bytes; "signer" the certificate of the
- * signer among those the signature carries, when it can be read. That the
- * signature is valid is not checked here.
+ * signer among those the signature carries, when it can be read.
+ * Each is checked against the document as it was opened: "intact" true
+ * when the bytes it covers are those it signed ("digest" the algorithm)
+ * and the signature is by the key of the signer's certificate, otherwise
+ * false and "problem" why; "coversDocument" whether its byte range runs to
+ * the end of the file, so that nothing was added after it. Whether the
+ * certificate is one to trust is not checked.
  */
 ZEBKIT_API char *zebkit_pdf_signatures(zebkit_pdf *pdf, char **error);
 

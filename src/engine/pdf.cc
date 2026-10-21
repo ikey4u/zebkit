@@ -26,6 +26,8 @@
 #include <vector>
 
 #include "base/containers/fixed_flat_set.h"
+#include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
@@ -37,6 +39,11 @@
 #include "public/fpdf_annot.h"
 #include "third_party/boringssl/src/include/openssl/bn.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/digest.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
+#include "third_party/boringssl/src/include/openssl/nid.h"
+#include "third_party/boringssl/src/include/openssl/obj.h"
+#include "third_party/boringssl/src/include/openssl/rsa.h"
 #include "third_party/boringssl/src/include/openssl/mem.h"
 #include "third_party/boringssl/src/include/openssl/pkcs7.h"
 #include "third_party/boringssl/src/include/openssl/x509.h"
@@ -58,6 +65,9 @@ struct zebkit_pdf {
   // The file, for a document opened from memory: PDFium reads it as it
   // needs to, for as long as the document is open.
   std::vector<uint8_t> bytes;
+  // The file's path, for one opened from a file: signatures are checked
+  // against the bytes it had.
+  std::string path;
   FPDF_DOCUMENT document = nullptr;
   // The form-fill environment, made when it is first needed: for form
   // fields' names and values, and to draw them as filled in.
@@ -335,6 +345,7 @@ zebkit_pdf* zebkit_pdf_open_file(const char* path,
   base::AutoLock lock(PdfiumLock());
   InitializeOnce();
   auto pdf = std::make_unique<zebkit_pdf>();
+  pdf->path = path;
   pdf->document = FPDF_LoadDocument(path, password);
   if (!pdf->document)
     return Fail(error, LastError());
@@ -1151,6 +1162,8 @@ base::Value Signer(const std::vector<uint8_t>& contents) {
   return base::Value(std::move(out));
 }
 
+// The PKCS#7 a signature holds: its DER element alone, without the zeros
+// that pad /Contents to the room the signer left for it.
 std::vector<uint8_t> SignatureContents(FPDF_SIGNATURE signature) {
   std::vector<uint8_t> contents(
       FPDFSignatureObj_GetContents(signature, nullptr, 0));
@@ -1158,7 +1171,262 @@ std::vector<uint8_t> SignatureContents(FPDF_SIGNATURE signature) {
     FPDFSignatureObj_GetContents(signature, contents.data(),
                                  contents.size());
   }
+  CBS cbs, element;
+  CBS_init(&cbs, contents.data(), contents.size());
+  if (CBS_get_any_asn1_element(&cbs, &element, nullptr, nullptr))
+    contents.resize(CBS_len(&element));
   return contents;
+}
+
+}  // namespace
+
+namespace {
+
+// The document's bytes from @offset, @length of them, as it was opened.
+bool ReadOpened(const zebkit_pdf* pdf,
+                int64_t offset,
+                int64_t length,
+                std::vector<uint8_t>& out) {
+  if (offset < 0 || length < 0)
+    return false;
+  if (!pdf->bytes.empty()) {
+    if (offset + length > static_cast<int64_t>(pdf->bytes.size()))
+      return false;
+    out.insert(out.end(), pdf->bytes.begin() + offset,
+               pdf->bytes.begin() + offset + length);
+    return true;
+  }
+  base::File file(base::FilePath::FromUTF8Unsafe(pdf->path),
+                  base::File::FLAG_OPEN | base::File::FLAG_READ);
+  if (!file.IsValid())
+    return false;
+  const size_t at = out.size();
+  out.resize(at + static_cast<size_t>(length));
+  return file.Read(offset, base::span(out).subspan(at)) ==
+         std::optional<size_t>(static_cast<size_t>(length));
+}
+
+int64_t OpenedSize(const zebkit_pdf* pdf) {
+  if (!pdf->bytes.empty())
+    return static_cast<int64_t>(pdf->bytes.size());
+  base::File file(base::FilePath::FromUTF8Unsafe(pdf->path),
+                  base::File::FLAG_OPEN | base::File::FLAG_READ);
+  return file.IsValid() ? file.GetLength() : -1;
+}
+
+// What is learned of a CMS SignedData's first signer: the digest it
+// names, its signed attributes (as DER, a SET), the messageDigest among
+// them, the signature algorithm and value, and who it is.
+struct SignerInfo {
+  const EVP_MD* digest = nullptr;
+  std::vector<uint8_t> signed_attributes;
+  std::vector<uint8_t> message_digest;
+  int signature_nid = NID_undef;
+  std::vector<uint8_t> signature;
+  // issuerAndSerialNumber, or a subjectKeyIdentifier.
+  std::vector<uint8_t> issuer;
+  std::vector<uint8_t> serial;
+  std::vector<uint8_t> key_id;
+};
+
+std::vector<uint8_t> Bytes(const CBS& cbs) {
+  return std::vector<uint8_t>(CBS_data(&cbs), CBS_data(&cbs) + CBS_len(&cbs));
+}
+
+int Nid(CBS oid) {
+  return OBJ_cbs2nid(&oid);
+}
+
+// ContentInfo { signedData, SignedData { version, digestAlgorithms,
+// encapContentInfo, [0] certificates, [1] crls, signerInfos } }, RFC 5652.
+std::optional<SignerInfo> ParseSigner(const std::vector<uint8_t>& contents) {
+  CBS in, content_info, type, wrapped, signed_data, skip, signers, signer;
+  CBS_init(&in, contents.data(), contents.size());
+  if (!CBS_get_asn1(&in, &content_info, CBS_ASN1_SEQUENCE) ||
+      !CBS_get_asn1(&content_info, &type, CBS_ASN1_OBJECT) ||
+      Nid(type) != NID_pkcs7_signed ||
+      !CBS_get_asn1(&content_info, &wrapped,
+                    CBS_ASN1_CONTEXT_SPECIFIC | CBS_ASN1_CONSTRUCTED | 0) ||
+      !CBS_get_asn1(&wrapped, &signed_data, CBS_ASN1_SEQUENCE) ||
+      !CBS_get_asn1(&signed_data, &skip, CBS_ASN1_INTEGER) ||
+      !CBS_get_asn1(&signed_data, &skip, CBS_ASN1_SET) ||
+      !CBS_get_asn1(&signed_data, &skip, CBS_ASN1_SEQUENCE)) {
+    return std::nullopt;
+  }
+  // Certificates and CRLs, which come before the signers when there.
+  while (CBS_peek_asn1_tag(&signed_data, CBS_ASN1_CONTEXT_SPECIFIC |
+                                             CBS_ASN1_CONSTRUCTED | 0) ||
+         CBS_peek_asn1_tag(&signed_data, CBS_ASN1_CONTEXT_SPECIFIC |
+                                             CBS_ASN1_CONSTRUCTED | 1)) {
+    if (!CBS_get_any_asn1(&signed_data, &skip, nullptr))
+      return std::nullopt;
+  }
+  CBS digest_algorithm, digest_oid, signature_algorithm, signature_oid,
+      signature, sid;
+  CBS_ASN1_TAG sid_tag = 0;
+  if (!CBS_get_asn1(&signed_data, &signers, CBS_ASN1_SET) ||
+      !CBS_get_asn1(&signers, &signer, CBS_ASN1_SEQUENCE) ||
+      !CBS_get_asn1(&signer, &skip, CBS_ASN1_INTEGER) ||
+      !CBS_get_any_asn1(&signer, &sid, &sid_tag) ||
+      !CBS_get_asn1(&signer, &digest_algorithm, CBS_ASN1_SEQUENCE) ||
+      !CBS_get_asn1(&digest_algorithm, &digest_oid, CBS_ASN1_OBJECT)) {
+    return std::nullopt;
+  }
+  SignerInfo info;
+  info.digest = EVP_get_digestbynid(Nid(digest_oid));
+  // The signer by issuer and serial, or [0] its key's identifier.
+  CBS issuer, serial;
+  if (sid_tag == CBS_ASN1_CONTEXT_SPECIFIC) {
+    info.key_id = Bytes(sid);
+  } else if (sid_tag == CBS_ASN1_SEQUENCE &&
+             CBS_get_asn1(&sid, &issuer, CBS_ASN1_SEQUENCE) &&
+             CBS_get_asn1(&sid, &serial, CBS_ASN1_INTEGER)) {
+    info.issuer = Bytes(issuer);
+    info.serial = Bytes(serial);
+  }
+  // [0] IMPLICIT signedAttrs: signed as a SET (RFC 5652, 5.4).
+  if (CBS_peek_asn1_tag(&signer,
+                        CBS_ASN1_CONTEXT_SPECIFIC | CBS_ASN1_CONSTRUCTED | 0)) {
+    CBS attributes_element, attributes;
+    size_t header = 0;
+    if (!CBS_get_any_asn1_element(&signer, &attributes_element, nullptr,
+                                  &header)) {
+      return std::nullopt;
+    }
+    // Retagged as the SET OF it is signed as: 0x31 (CBS's tag constants
+    // are not the DER byte).
+    info.signed_attributes = Bytes(attributes_element);
+    info.signed_attributes[0] = 0x31;
+    attributes = attributes_element;
+    CBS_skip(&attributes, header);
+    while (CBS_len(&attributes)) {
+      CBS attribute, oid, values, value;
+      if (!CBS_get_asn1(&attributes, &attribute, CBS_ASN1_SEQUENCE) ||
+          !CBS_get_asn1(&attribute, &oid, CBS_ASN1_OBJECT) ||
+          !CBS_get_asn1(&attribute, &values, CBS_ASN1_SET)) {
+        return std::nullopt;
+      }
+      if (Nid(oid) == NID_pkcs9_messageDigest &&
+          CBS_get_asn1(&values, &value, CBS_ASN1_OCTETSTRING)) {
+        info.message_digest = Bytes(value);
+      }
+    }
+  }
+  if (!CBS_get_asn1(&signer, &signature_algorithm, CBS_ASN1_SEQUENCE) ||
+      !CBS_get_asn1(&signature_algorithm, &signature_oid, CBS_ASN1_OBJECT) ||
+      !CBS_get_asn1(&signer, &signature, CBS_ASN1_OCTETSTRING)) {
+    return std::nullopt;
+  }
+  info.signature_nid = Nid(signature_oid);
+  info.signature = Bytes(signature);
+  return info;
+}
+
+// The certificate the signer names.
+X509* FindSigner(STACK_OF(X509) * certificates, const SignerInfo& info) {
+  for (X509* certificate : certificates) {
+    if (!info.serial.empty()) {
+      const ASN1_INTEGER* serial = X509_get0_serialNumber(certificate);
+      uint8_t* der = nullptr;
+      const int length = i2d_ASN1_INTEGER(serial, &der);
+      CBS whole, value;
+      CBS_init(&whole, der, length > 0 ? length : 0);
+      const bool same =
+          CBS_get_asn1(&whole, &value, CBS_ASN1_INTEGER) &&
+          Bytes(value) == info.serial;
+      OPENSSL_free(der);
+      if (same)
+        return certificate;
+    } else if (!info.key_id.empty()) {
+      const ASN1_OCTET_STRING* key_id = X509_get0_subject_key_id(certificate);
+      if (key_id && static_cast<size_t>(ASN1_STRING_length(key_id)) ==
+                        info.key_id.size() &&
+          std::equal(info.key_id.begin(), info.key_id.end(),
+                     ASN1_STRING_get0_data(key_id))) {
+        return certificate;
+      }
+    }
+  }
+  return nullptr;
+}
+
+// Whether the signature is of the bytes it covers, by the key of the
+// certificate it carries: "intact", or the reason not, in @out.
+void CheckSignature(const zebkit_pdf* pdf,
+                    const std::vector<int>& range,
+                    const std::vector<uint8_t>& contents,
+                    base::DictValue& out) {
+  auto problem = [&](const char* why) {
+    out.Set("intact", false);
+    out.Set("problem", why);
+  };
+  const int64_t size = OpenedSize(pdf);
+  out.Set("coversDocument",
+          range.size() == 4 && range[0] == 0 && size >= 0 &&
+              static_cast<int64_t>(range[2]) + range[3] == size);
+  std::optional<SignerInfo> info = ParseSigner(contents);
+  if (!info) {
+    problem("the signature is not a CMS signature zebkit reads");
+    return;
+  }
+  if (!info->digest) {
+    problem("the signature's digest algorithm is not known");
+    return;
+  }
+  out.Set("digest", OBJ_nid2sn(EVP_MD_type(info->digest)));
+  if (range.size() % 2 || range.empty()) {
+    problem("the byte range is not pairs of offsets and lengths");
+    return;
+  }
+  std::vector<uint8_t> covered;
+  for (size_t i = 0; i < range.size(); i += 2) {
+    if (!ReadOpened(pdf, range[i], range[i + 1], covered)) {
+      problem("the byte range reaches outside the file");
+      return;
+    }
+  }
+  uint8_t digest[EVP_MAX_MD_SIZE];
+  unsigned int digest_size = 0;
+  EVP_Digest(covered.data(), covered.size(), digest, &digest_size,
+             info->digest, nullptr);
+  if (info->signed_attributes.empty() || info->message_digest.empty()) {
+    problem("the signature has no signed message digest");
+    return;
+  }
+  if (info->message_digest !=
+      std::vector<uint8_t>(digest, digest + digest_size)) {
+    problem("the document was changed after it was signed");
+    return;
+  }
+  bssl::UniquePtr<STACK_OF(X509)> certificates(sk_X509_new_null());
+  CBS cbs;
+  CBS_init(&cbs, contents.data(), contents.size());
+  X509* signer = certificates &&
+                         PKCS7_get_certificates(certificates.get(), &cbs)
+                     ? FindSigner(certificates.get(), *info)
+                     : nullptr;
+  EVP_PKEY* key = signer ? X509_get0_pubkey(signer) : nullptr;
+  if (!key) {
+    problem("the signer's certificate is not in the signature");
+    return;
+  }
+  bssl::ScopedEVP_MD_CTX context;
+  EVP_PKEY_CTX* key_context = nullptr;
+  bool ok = EVP_DigestVerifyInit(context.get(), &key_context, info->digest,
+                                 nullptr, key);
+  if (ok && info->signature_nid == NID_rsassaPss) {
+    ok = EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PSS_PADDING) &&
+         EVP_PKEY_CTX_set_rsa_pss_saltlen(key_context, -1);
+  }
+  ok = ok && EVP_DigestVerify(context.get(), info->signature.data(),
+                              info->signature.size(),
+                              info->signed_attributes.data(),
+                              info->signed_attributes.size());
+  if (!ok) {
+    problem("the signature does not match the signer's key");
+    return;
+  }
+  out.Set("intact", true);
 }
 
 }  // namespace
@@ -1194,6 +1462,7 @@ char* zebkit_pdf_signatures(zebkit_pdf* pdf, char** error) {
     item.Set("size", static_cast<int>(contents.size()));
     if (base::Value signer = Signer(contents); !signer.is_none())
       item.Set("signer", std::move(signer));
+    CheckSignature(pdf, range, contents, item);
     signatures.Append(std::move(item));
   }
   return GiveJson(base::Value(std::move(signatures)));
