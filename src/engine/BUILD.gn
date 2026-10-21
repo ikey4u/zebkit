@@ -274,25 +274,37 @@ if (!is_mac) {
     outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
   }
 
-  bundle_data("zebkit_libraries") {
-    testonly = true
-    sources = [
+  # Libraries beside the engine: SwiftShader, and the Vulkan loader that
+  # runs it, when the profile has it (slim-macos does not: every Mac has a
+  # Metal GPU); ANGLE when it is not linked in.
+  _libraries = []
+  _library_deps = []
+  if (enable_swiftshader) {
+    _libraries += [
       "$root_out_dir/vk_intermediates/libvk_swiftshader.dylib",
       "$root_out_dir/vk_intermediates/vk_swiftshader_icd.json",
       "$root_out_dir/vulkan_intermediates/libvulkan.dylib",
     ]
-    public_deps = [
+    _library_deps += [
       "//ui/gl:swiftshader_vk_library_copy",
       "//ui/gl:vulkan_loader_library_copy",
     ]
-    if (!use_static_angle) {
-      sources += [
-        "$root_out_dir/egl_intermediates/libEGL.dylib",
-        "$root_out_dir/egl_intermediates/libGLESv2.dylib",
-      ]
-      public_deps += [ "//ui/gl:angle_library_copy" ]
+  }
+  if (!use_static_angle) {
+    _libraries += [
+      "$root_out_dir/egl_intermediates/libEGL.dylib",
+      "$root_out_dir/egl_intermediates/libGLESv2.dylib",
+    ]
+    _library_deps += [ "//ui/gl:angle_library_copy" ]
+  }
+  not_needed([ "_library_deps" ])
+  if (_libraries != []) {
+    bundle_data("zebkit_libraries") {
+      testonly = true
+      sources = _libraries
+      public_deps = _library_deps
+      outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
     }
-    outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
   }
 
   bundle_data("zebkit_helpers") {
@@ -327,9 +339,11 @@ if (!is_mac) {
     ]
     bundle_deps = [
       ":zebkit_helpers",
-      ":zebkit_libraries",
       ":zebkit_resources",
     ]
+    if (_libraries != []) {
+      bundle_deps += [ ":zebkit_libraries" ]
+    }
 
     inputs = [ "mac/exports.txt" ]
     ldflags = [

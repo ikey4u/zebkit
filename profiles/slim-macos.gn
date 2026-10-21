@@ -31,3 +31,9 @@ v8_use_metagen_instance_types = false
 # Vtables as offsets need COMDATs for their type information, which Mach-O
 # does not have: the linker stops at the first library that uses them.
 use_relative_vtables_abi = false
+
+# No SwiftShader: Chromium's software Vulkan, its renderer when the GPU
+# cannot be used. Every Mac has a Metal GPU, which ANGLE draws with, and
+# on Apple silicon SwiftShader is built on LLVM rather than its small JIT:
+# 13.6 MiB with the Vulkan loader. Nothing of the web goes with it.
+enable_swiftshader = false
