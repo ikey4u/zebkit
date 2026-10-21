@@ -23,6 +23,8 @@
 #include "content/public/common/content_paths.h"
 #include "content/shell/browser/shell.h"
 #include "sandbox/mac/seatbelt_exec.h"
+#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
+#include "services/device/public/cpp/geolocation/system_geolocation_source_apple.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
 #include "zebkit/engine/app.h"
@@ -296,6 +298,12 @@ void SetUpApplication(bool headless) {
   static ZebkitAppDelegate* delegate = [[ZebkitAppDelegate alloc] init];
   app.delegate = delegate;
   SetUpMenuBar();
+  // Location permission is the system's, as in Chrome (patches/0014).
+  if (!device::GeolocationSystemPermissionManager::GetInstance()) {
+    device::GeolocationSystemPermissionManager::SetInstance(
+        device::SystemGeolocationSourceApple::
+            CreateGeolocationSystemPermissionManager());
+  }
 }
 
 void SetUpMenuBar() {

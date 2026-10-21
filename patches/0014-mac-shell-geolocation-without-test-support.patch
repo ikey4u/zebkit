@@ -3,7 +3,8 @@ Fix: the content shell on macOS without Chromium's test support.
 On macOS the shell gives content a fake location permission manager from
 the device service's test support, which content_shell_test_support =
 false (1009) leaves out: the engine did not link. Without the test
-support it is the system's own, as Chrome's is.
+support it gives the global one, which zebkit sets to the system's, as
+Chrome does (src/engine/engine_mac.mm).
 
 --- a/content/shell/browser/shell_content_browser_client.cc
 +++ b/content/shell/browser/shell_content_browser_client.cc
@@ -15,13 +16,13 @@ support it is the system's own, as Chrome's is.
 +#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
  #include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"
 +#elif BUILDFLAG(IS_MAC)
-+// zebkit: without the test support, the system's own, as Chrome has it.
++// zebkit: without the test support, the global one, which the embedder
++// sets as Chrome does (the system's).
 +#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
-+#include "services/device/public/cpp/geolocation/system_geolocation_source_apple.h"
  #endif
  
  #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
-@@ -284,17 +288,22 @@
+@@ -284,7 +288,7 @@
  // needed should be added here so that it's shared between the instances.
  struct SharedState {
    SharedState() {
@@ -30,10 +31,7 @@ support it is the system's own, as Chrome's is.
      location_manager =
          std::make_unique<device::FakeGeolocationSystemPermissionManager>();
      location_manager->SetSystemPermission(
-         device::LocationSystemPermissionStatus::kAllowed);
-+#elif BUILDFLAG(IS_MAC)
-+    location_manager = device::SystemGeolocationSourceApple::
-+        CreateGeolocationSystemPermissionManager();
+@@ -292,7 +296,7 @@
  #endif
    }
  
@@ -41,11 +39,19 @@ support it is the system's own, as Chrome's is.
 +#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
    std::unique_ptr<device::FakeGeolocationSystemPermissionManager>
        location_manager;
-+#elif BUILDFLAG(IS_MAC)
-+  std::unique_ptr<device::GeolocationSystemPermissionManager> location_manager;
  #endif
+@@ -537,8 +541,10 @@
  
-   // Owned by content::BrowserMainLoop.
+ device::GeolocationSystemPermissionManager*
+ ShellContentBrowserClient::GetGeolocationSystemPermissionManager() {
+-#if BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC) && defined(CONTENT_SHELL_TEST_SUPPORT)
+   return GetSharedState().location_manager.get();
++#elif BUILDFLAG(IS_MAC)
++  return device::GeolocationSystemPermissionManager::GetInstance();
+ #elif BUILDFLAG(IS_IOS)
+   // TODO(crbug.com/1431447, 1411704): Unify this to
+   // FakeGeolocationSystemPermissionManager once exploring browser features in
 --- a/content/shell/BUILD.gn
 +++ b/content/shell/BUILD.gn
 @@ -365,6 +365,10 @@

@@ -318,6 +318,7 @@ if (!is_mac) {
     public_configs = [ ":public" ]
     deps = _deps + [
              "//sandbox/mac:seatbelt",
+             "//services/device/public/cpp/geolocation",
              "//ui/display",
            ]
     frameworks = [
