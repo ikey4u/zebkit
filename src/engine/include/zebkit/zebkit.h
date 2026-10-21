@@ -156,6 +156,13 @@ ZEBKIT_API void zebkit_view_go_forward(zebkit_view *view);
 ZEBKIT_API void zebkit_view_resize(zebkit_view *view, int width, int height);
 
 /*
+ * The smallest the view's window may be made, its content @min_width by
+ * @min_height (0 for no limit), and whether it may be resized at all:
+ * Electron's minWidth, minHeight and resizable.
+ */
+ZEBKIT_API void zebkit_view_set_size_limits(zebkit_view *view, int min_width, int min_height, bool resizable);
+
+/*
  * Places @view inside @parent's window, over @parent's page, at (@x, @y),
  * @width by @height, in @parent's coordinates (CSS pixels at zoom 1); its
  * own window is hidden. A browser inside an application's window. The view

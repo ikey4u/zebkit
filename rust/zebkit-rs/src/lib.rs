@@ -130,6 +130,7 @@ extern "C" {
     pub fn zebkit_view_go_back(view: *mut zebkit_view);
     pub fn zebkit_view_go_forward(view: *mut zebkit_view);
     pub fn zebkit_view_resize(view: *mut zebkit_view, width: c_int, height: c_int);
+    pub fn zebkit_view_set_size_limits(view: *mut zebkit_view, min_width: c_int, min_height: c_int, resizable: bool);
     pub fn zebkit_view_close(view: *mut zebkit_view);
     pub fn zebkit_view_get_url(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_view_get_title(view: *mut zebkit_view) -> *mut c_char;

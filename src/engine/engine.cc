@@ -361,6 +361,17 @@ void FocusWindow(content::Shell* shell) {
     shell->web_contents()->Focus();
 }
 
+void SetWindowSizeLimits(content::Shell* shell,
+                         const gfx::Size& minimum,
+                         bool resizable) {
+#if BUILDFLAG(IS_MAC)
+  SetNativeWindowSizeLimits(shell->window(), minimum, resizable);
+#else
+  if (g_platform)
+    g_platform->SetWindowSizeLimits(shell, minimum, resizable);
+#endif
+}
+
 std::unique_ptr<content::ShellPlatformDelegate>
 BrowserMainParts::CreateShellPlatformDelegate() {
   std::unique_ptr<content::ShellPlatformDelegate> platform;

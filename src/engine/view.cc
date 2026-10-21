@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <utility>
@@ -641,6 +642,17 @@ void zebkit_view_set_title(zebkit_view* view, const char* title) {
     view->window_title_.reset();
   if (content::Shell* shell = view->shell())
     zebkit::UpdateWindowTitle(shell);
+}
+
+void zebkit_view_set_size_limits(zebkit_view* view,
+                                 int min_width,
+                                 int min_height,
+                                 bool resizable) {
+  if (content::Shell* shell = view->shell()) {
+    zebkit::SetWindowSizeLimits(
+        shell, gfx::Size(std::max(min_width, 0), std::max(min_height, 0)),
+        resizable);
+  }
 }
 
 void zebkit_view_focus(zebkit_view* view) {

@@ -171,6 +171,21 @@ impl View {
         }
     }
 
+    /// The smallest the window may be made (0 for no limit), and whether it
+    /// may be resized: Electron's `minWidth`, `minHeight` and `resizable`.
+    pub fn set_size_limits(&self, min_width: u32, min_height: u32, resizable: bool) {
+        if let Some(raw) = self.raw() {
+            unsafe {
+                sys::zebkit_view_set_size_limits(
+                    raw,
+                    c_int::try_from(min_width).unwrap_or(c_int::MAX),
+                    c_int::try_from(min_height).unwrap_or(c_int::MAX),
+                    resizable,
+                )
+            }
+        }
+    }
+
     /// Closes the view, once the current callback has returned; the
     /// [`View::on_close`] closure is called then.
     pub fn close(&self) {
