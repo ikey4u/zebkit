@@ -39,6 +39,21 @@ static const char document[] =
     "trailer << /Root 1 0 R >>\n"
     "%%EOF\n";
 
+/* A page that draws a 2 by 2 RGB image over (50, 50)-(150, 150). */
+static const char picture[] =
+    "%PDF-1.7\n"
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R"
+    " /Resources << /XObject << /Im1 5 0 R >> >> >> endobj\n"
+    "4 0 obj << /Length 32 >> stream\nq 100 0 0 100 50 50 cm /Im1 Do Q\nendstream endobj\n"
+    "5 0 obj << /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB"
+    " /BitsPerComponent 8 /Length 12 >> stream\n"
+    "\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\xff"
+    "\nendstream endobj\n"
+    "trailer << /Root 1 0 R >>\n"
+    "%%EOF\n";
+
 static int contains(const char *text, const char *part) {
     return text && strstr(text, part) != NULL;
 }
@@ -450,6 +465,31 @@ int main(void) {
     char *images = zebkit_pdf_images(pdf, 0, &error);
     check(images && strcmp(images, "[]") == 0, "zebkit_pdf_images: a page of text has none", images);
     zebkit_free(images);
+
+    /* A page with a 2 by 2 picture, red, green, blue and white. */
+    zebkit_pdf *pictured = zebkit_pdf_open(picture, sizeof(picture) - 1, NULL, &error);
+    images = pictured ? zebkit_pdf_images(pictured, 0, &error) : NULL;
+    check(contains(images, "\"width\":2") && contains(images, "\"height\":2") &&
+              contains(images, "\"jpeg\":false") && contains(images, "\"rect\":[50.0,50.0,150.0,150.0]"),
+          "zebkit_pdf_images", images);
+    zebkit_free(images);
+    size_t png_size = 0;
+    bool jpeg = true;
+    uint8_t *png = pictured ? zebkit_pdf_image_data(pictured, 0, 0, &png_size, &jpeg, &error) : NULL;
+    int png_width = 0, png_height = 0;
+    uint8_t *decoded = png ? zebkit_image_decode(png, png_size, &png_width, &png_height, &error) : NULL;
+    snprintf(detail, sizeof(detail), "%dx%d, first pixel %d,%d,%d", png_width, png_height,
+             decoded ? decoded[0] : -1, decoded ? decoded[1] : -1, decoded ? decoded[2] : -1);
+    check(decoded && !jpeg && png_width == 2 && png_height == 2 && decoded[0] == 255 && decoded[1] == 0 &&
+              decoded[4] == 0 && decoded[5] == 255,
+          "zebkit_pdf_image_data: its pixels as PNG", detail);
+    zebkit_free(decoded);
+    zebkit_free(png);
+    check(pictured && !zebkit_pdf_image_data(pictured, 0, 1, &png_size, &jpeg, &error) && error,
+          "zebkit_pdf_image_data refuses an image not there", error);
+    zebkit_free(error);
+    error = NULL;
+    zebkit_pdf_close(pictured);
 
     check(zebkit_pdf_attach(pdf, "data.csv", "a,b\n1,2\n", 8, &error), "zebkit_pdf_attach", error);
     char *attachments = zebkit_pdf_attachments(pdf, &error);

@@ -49,6 +49,8 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     textLayout(index) { return this.#call('textLayout', index); }
     textLines(index) { return this.#call('textLines', index); }
     images(index) { return this.#call('images', index); }
+    // {data, type}: the JPEG as stored, or the pixels as PNG.
+    imageData(index, image) { return this.#call('imageData', index, image); }
     textRects(index, start, count) { return this.#call('textRects', index, start, count); }
     charAt(index, x, y, tolerance = 2) { return this.#call('charAt', index, x, y, tolerance); }
     search(query, {matchCase = false, wholeWord = false, first = 0, limit = 0} = {}) {

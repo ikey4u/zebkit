@@ -200,6 +200,20 @@ impl Document {
         self.json(answer, error)
     }
 
+    /// Image `image` of the page, as [`Document::images`] lists them: its
+    /// JPEG as stored (and true), or its pixels as PNG (and false).
+    pub fn image_data(&mut self, page: usize, image: usize) -> Result<(Vec<u8>, bool), Error> {
+        let (mut size, mut jpeg, mut error) = (0, false, std::ptr::null_mut());
+        unsafe {
+            let data =
+                sys::zebkit_pdf_image_data(self.raw, page_index(page), page_index(image), &mut size, &mut jpeg, &mut error);
+            if data.is_null() {
+                return Err(take_error(error, "no such image"));
+            }
+            Ok((take_bytes(data, size), jpeg))
+        }
+    }
+
     /// The text as lines, each with its box and how many of its characters
     /// have no Unicode of their own.
     pub fn text_lines(&mut self, page: usize) -> Result<String, Error> {
