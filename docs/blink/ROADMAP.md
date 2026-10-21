@@ -837,7 +837,7 @@ Read from the application's code (`src/pc/desktop`, `src/crates/media`):
 
 | Phase | What | State |
 |---|---|---|
-| M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there | Building, on Linux against the macOS SDK |
+| M | macOS: the engine as `Zebkit.framework`, every test of `scripts/engine-test.sh` passing there | Done 2026-10-21: built on Linux against the macOS SDK, every test passing on the Mac; 142.9 MiB (`docs/blink/MACOS.md`). Real windows and the application there next |
 | P1-P2 | Chromium's PDFium in the engine by default; its C API | Done 2026-10-20: 2.9 MiB; the package is 147.0 MiB with FFmpeg's additions |
 | S | URL schemes, scripts before the page's, the larger FFmpeg | Schemes done 2026-10-20 (`zebkit_scheme_*`, ranges for media) |
 | P3-P5 | `<zebkit/pdf.h>` with PDFium patched where needed; `zebkit.pdf` in pages and scripts; the tests | Documents, rendering, text, search, outline, links, annotations, attachments, metadata, forms, page editing, redaction done 2026-10-20, in C, JavaScript, Python and Rust (`patches/1014`, `1015`); annotations' appearances alone and their dictionary entries, text objects. Next: signatures; outline editing; an annotation's object number, indirect entries followed, the AcroForm's /DA and /DR; appearances for stamps, carets and redaction marks, and EmbedPDF's free-text and line-ending drawing |

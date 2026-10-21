@@ -1,5 +1,8 @@
 # macOS
 
+> The engine is Chromium's Blink now (2026-10-17): its macOS port is
+> `docs/blink/MACOS.md`. This is the record of the WebKit port.
+
 zebkit on macOS: what was decided, what is done, how large and how fast
 it is, what is left, and where to start on a Mac. `docs/PROGRESS.md` has
 the project as a whole; this is the part that is macOS's alone. Whoever
