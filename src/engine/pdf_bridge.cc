@@ -331,6 +331,24 @@ Answer Work(zebkit_pdf* pdf,
                                   IntArg(args, 2), IntArg(args, 3), &error),
                 error, "the search failed");
   }
+  if (method == "signatures") {
+    // With each one's contents, the PKCS#7 it holds, as bytes.
+    Answer answer =
+        Json(zebkit_pdf_signatures(pdf, &error), error, "no signatures");
+    if (!answer.ok || !answer.value.is_list())
+      return answer;
+    int index = 0;
+    for (base::Value& item : answer.value.GetList()) {
+      size_t size = 0;
+      if (uint8_t* data =
+              zebkit_pdf_signature_contents(pdf, index++, &size, nullptr)) {
+        item.GetDict().Set(
+            "contents", base::Value(base::Value::BlobStorage(data, data + size)));
+        free(data);
+      }
+    }
+    return answer;
+  }
   if (method == "outline")
     return Json(zebkit_pdf_outline(pdf, &error), error, "no outline");
   if (method == "links")

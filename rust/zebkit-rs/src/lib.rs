@@ -383,6 +383,10 @@ extern "C" {
     pub fn zebkit_pdf_text(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
     pub fn zebkit_pdf_text_lines(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
     pub fn zebkit_pdf_images(pdf: *mut zebkit_pdf, page: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_signatures(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_signature_contents(
+        pdf: *mut zebkit_pdf, index: c_int, size: *mut usize, error: *mut *mut c_char,
+    ) -> *mut u8;
     pub fn zebkit_pdf_image_data(
         pdf: *mut zebkit_pdf, page: c_int, image: c_int, size: *mut usize, jpeg: *mut bool, error: *mut *mut c_char,
     ) -> *mut u8;

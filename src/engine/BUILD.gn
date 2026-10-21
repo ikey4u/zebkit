@@ -131,6 +131,7 @@ source_set("pdf") {
   public_configs = [ ":public" ]
   deps = [
     "//base",
+    "//third_party/boringssl",
     "//third_party/pdfium",
   ]
 }

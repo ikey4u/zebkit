@@ -365,6 +365,12 @@ bool DrawAnnotation(FPDF_PAGE page,
                                    kModes[mode]);
 }
 
+std::string SignatureFieldName(FPDF_SIGNATURE signature) {
+  const CPDF_Dictionary* field = CPDFDictionaryFromFPDFSignature(signature);
+  return field ? CPDF_FormField::GetFullNameForDict(field).ToUTF8().c_str()
+               : std::string();
+}
+
 FPDF_PAGE LoadPageUnparsed(FPDF_DOCUMENT document, int index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
   if (!pdf || index < 0 || index >= pdf->GetPageCount())

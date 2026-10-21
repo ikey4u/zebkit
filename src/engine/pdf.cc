@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <algorithm>
 #include <array>
@@ -28,11 +29,17 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "public/fpdf_annot.h"
+#include "third_party/boringssl/src/include/openssl/bn.h"
+#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/mem.h"
+#include "third_party/boringssl/src/include/openssl/pkcs7.h"
+#include "third_party/boringssl/src/include/openssl/x509.h"
 #include "public/fpdf_attachment.h"
 #include "public/fpdf_ppo.h"
 #include "public/fpdf_flatten.h"
@@ -41,6 +48,7 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdf_formfill.h"
 #include "public/fpdf_save.h"
+#include "public/fpdf_signature.h"
 #include "public/fpdf_text.h"
 #include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
@@ -1063,6 +1071,151 @@ char* zebkit_pdf_search(zebkit_pdf* pdf,
       break;
   }
   return GiveJson(base::Value(std::move(matches)));
+}
+
+namespace {
+
+std::string AsciiString(FPDF_SIGNATURE signature,
+                        unsigned long (*get)(FPDF_SIGNATURE, char*, unsigned long)) {
+  const unsigned long size = get(signature, nullptr, 0);
+  if (size <= 1)
+    return std::string();
+  std::string text(size, '\0');
+  get(signature, text.data(), size);
+  text.resize(size - 1);
+  return text;
+}
+
+std::string CertificateName(const X509_NAME* name) {
+  char text[256] = {};
+  if (X509_NAME_get_text_by_NID(name, NID_commonName, text, sizeof(text)) > 0)
+    return text;
+  char* line = X509_NAME_oneline(name, nullptr, 0);
+  std::string out = line ? line : "";
+  OPENSSL_free(line);
+  return out;
+}
+
+std::string CertificateTime(const ASN1_TIME* time) {
+  int64_t seconds = 0;
+  if (!time || !ASN1_TIME_to_posix(time, &seconds))
+    return std::string();
+  const time_t when = static_cast<time_t>(seconds);
+  struct tm utc = {};
+  char text[32] = {};
+  if (!gmtime_r(&when, &utc) ||
+      !strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc)) {
+    return std::string();
+  }
+  return text;
+}
+
+// The signer's certificate among those the PKCS#7 carries: the one that
+// issued none of the others.
+base::Value Signer(const std::vector<uint8_t>& contents) {
+  bssl::UniquePtr<STACK_OF(X509)> certificates(sk_X509_new_null());
+  CBS cbs;
+  CBS_init(&cbs, contents.data(), contents.size());
+  if (!certificates || !PKCS7_get_certificates(certificates.get(), &cbs) ||
+      sk_X509_num(certificates.get()) == 0) {
+    return base::Value();
+  }
+  X509* signer = nullptr;
+  for (X509* candidate : certificates.get()) {
+    bool issuer = false;
+    for (X509* other : certificates.get()) {
+      if (other != candidate &&
+          X509_NAME_cmp(X509_get_issuer_name(other),
+                        X509_get_subject_name(candidate)) == 0) {
+        issuer = true;
+      }
+    }
+    if (!issuer) {
+      signer = candidate;
+      break;
+    }
+  }
+  if (!signer)
+    signer = sk_X509_value(certificates.get(), 0);
+  base::DictValue out;
+  out.Set("name", CertificateName(X509_get_subject_name(signer)));
+  out.Set("issuer", CertificateName(X509_get_issuer_name(signer)));
+  if (bssl::UniquePtr<BIGNUM> serial{
+          ASN1_INTEGER_to_BN(X509_get0_serialNumber(signer), nullptr)}) {
+    char* hex = BN_bn2hex(serial.get());
+    out.Set("serial", hex ? base::ToLowerASCII(hex) : std::string());
+    OPENSSL_free(hex);
+  }
+  out.Set("notBefore", CertificateTime(X509_get0_notBefore(signer)));
+  out.Set("notAfter", CertificateTime(X509_get0_notAfter(signer)));
+  return base::Value(std::move(out));
+}
+
+std::vector<uint8_t> SignatureContents(FPDF_SIGNATURE signature) {
+  std::vector<uint8_t> contents(
+      FPDFSignatureObj_GetContents(signature, nullptr, 0));
+  if (!contents.empty()) {
+    FPDFSignatureObj_GetContents(signature, contents.data(),
+                                 contents.size());
+  }
+  return contents;
+}
+
+}  // namespace
+
+char* zebkit_pdf_signatures(zebkit_pdf* pdf, char** error) {
+  base::AutoLock lock(PdfiumLock());
+  if (!pdf || !pdf->document)
+    return Fail(error, "no document");
+  base::ListValue signatures;
+  const int count = FPDF_GetSignatureCount(pdf->document);
+  for (int i = 0; i < count; ++i) {
+    FPDF_SIGNATURE signature = FPDF_GetSignatureObject(pdf->document, i);
+    if (!signature)
+      continue;
+    base::DictValue item;
+    item.Set("field", zebkit::pdf::SignatureFieldName(signature));
+    item.Set("subFilter",
+             AsciiString(signature, &FPDFSignatureObj_GetSubFilter));
+    item.Set("reason", Utf16String([&](void* buffer, unsigned long size) {
+               return FPDFSignatureObj_GetReason(signature, buffer, size);
+             }));
+    item.Set("time", AsciiString(signature, &FPDFSignatureObj_GetTime));
+    std::vector<int> range(FPDFSignatureObj_GetByteRange(signature, nullptr, 0));
+    if (!range.empty())
+      FPDFSignatureObj_GetByteRange(signature, range.data(), range.size());
+    base::ListValue byte_range;
+    for (int offset : range)
+      byte_range.Append(offset);
+    item.Set("byteRange", std::move(byte_range));
+    item.Set("docMDP",
+             static_cast<int>(FPDFSignatureObj_GetDocMDPPermission(signature)));
+    const std::vector<uint8_t> contents = SignatureContents(signature);
+    item.Set("size", static_cast<int>(contents.size()));
+    if (base::Value signer = Signer(contents); !signer.is_none())
+      item.Set("signer", std::move(signer));
+    signatures.Append(std::move(item));
+  }
+  return GiveJson(base::Value(std::move(signatures)));
+}
+
+uint8_t* zebkit_pdf_signature_contents(zebkit_pdf* pdf,
+                                       int index,
+                                       size_t* size,
+                                       char** error) {
+  base::AutoLock lock(PdfiumLock());
+  FPDF_SIGNATURE signature =
+      pdf && pdf->document ? FPDF_GetSignatureObject(pdf->document, index)
+                           : nullptr;
+  if (!signature) {
+    Fail(error, "no signature " + std::to_string(index));
+    return nullptr;
+  }
+  const std::vector<uint8_t> contents = SignatureContents(signature);
+  auto* bytes = static_cast<uint8_t*>(malloc(std::max<size_t>(contents.size(), 1)));
+  std::copy(contents.begin(), contents.end(), bytes);
+  *size = contents.size();
+  return bytes;
 }
 
 char* zebkit_pdf_outline(zebkit_pdf* pdf, char** error) {
