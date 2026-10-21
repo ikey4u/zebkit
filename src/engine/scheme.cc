@@ -50,6 +50,7 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_security_policy.h"
+#include "zebkit/engine/call.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 struct zebkit_request {
@@ -99,7 +100,7 @@ bool IsReservedScheme(const std::string& name) {
       "http",  "https",      "ws",          "wss",   "file",  "data",
       "blob",  "about",      "javascript",  "chrome", "chrome-untrusted",
       "devtools", "filesystem", "ftp",      "mailto", "content", "view-source",
-      "chrome-error", "chrome-extension",
+      "chrome-error", "chrome-extension", kCallScheme,
   };
   for (const char* reserved : kReserved) {
     if (name == reserved)
@@ -358,6 +359,11 @@ const std::vector<Scheme>& Schemes() {
 }
 
 void AddSchemes(content::ContentClient::Schemes* schemes) {
+  // zebkit://call: fetched by zebkit.* from any page, whatever its policy.
+  schemes->standard_schemes.push_back(kCallScheme);
+  schemes->secure_schemes.push_back(kCallScheme);
+  schemes->cors_enabled_schemes.push_back(kCallScheme);
+  schemes->csp_bypassing_schemes.push_back(kCallScheme);
   for (const Scheme& scheme : Schemes()) {
     if (scheme.flags & ZEBKIT_SCHEME_STANDARD)
       schemes->standard_schemes.push_back(scheme.name);
@@ -372,6 +378,8 @@ void AddSchemes(content::ContentClient::Schemes* schemes) {
 }
 
 void RegisterSchemesInRenderer() {
+  blink::WebSecurityPolicy::RegisterURLSchemeAsSupportingFetchAPI(
+      blink::WebString::FromLatin1(kCallScheme));
   for (const Scheme& scheme : Schemes()) {
     // What bypasses a page's Content-Security-Policy, Blink takes from
     // content's list of schemes (AddSchemes()).
@@ -398,6 +406,8 @@ void AppendSchemeSwitch(base::CommandLine* command_line) {
 }
 
 void AllowSchemes() {
+  content::ChildProcessSecurityPolicy::GetInstance()->RegisterWebSafeScheme(
+      kCallScheme);
   for (const Scheme& scheme : Schemes()) {
     content::ChildProcessSecurityPolicy::GetInstance()->RegisterWebSafeScheme(
         scheme.name);
@@ -424,6 +434,28 @@ void AddSchemeLoaderFactories(
     content::ContentBrowserClient::NonNetworkURLLoaderFactoryMap* factories) {
   for (const Scheme& scheme : Schemes())
     factories->emplace(scheme.name, CreateSchemeLoaderFactory(scheme.name));
+}
+
+void RespondToLoader(
+    mojo::PendingReceiver<network::mojom::URLLoader> loader,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    int status,
+    std::string headers,
+    std::string body) {
+  auto request = std::make_unique<zebkit_request>();
+  request->loader = std::move(loader);
+  request->client = std::move(client);
+  AnswerSequence()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](std::unique_ptr<zebkit_request> request, int status,
+                        std::string headers, std::string body) {
+                       const int64_t length = static_cast<int64_t>(body.size());
+                       Send(std::move(request),
+                            MakeHead(status, headers, length), nullptr,
+                            std::move(body), length);
+                     },
+                     std::move(request), status, std::move(headers),
+                     std::move(body)));
 }
 
 }  // namespace zebkit

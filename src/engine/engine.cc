@@ -46,6 +46,7 @@
 #include "ui/gfx/switches.h"
 #include "ui/views/widget/widget.h"
 #include "zebkit/engine/app.h"
+#include "zebkit/engine/call.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
 
@@ -290,6 +291,9 @@ void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
           render_process_id, render_frame_id, request_initiator_origin,
           factories);
   AddSchemeLoaderFactories(factories);
+  // zebkit.* calls: from frames, which these factories are for.
+  factories->emplace(kCallScheme, CreateCallLoaderFactory(render_process_id,
+                                                          render_frame_id));
 }
 
 void BrowserClient::RegisterNonNetworkWorkerMainResourceURLLoaderFactories(

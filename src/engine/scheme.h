@@ -10,7 +10,9 @@
 
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/network/public/mojom/url_loader.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 
 namespace base {
@@ -48,6 +50,15 @@ mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateSchemeLoaderFactory(
     const std::string& scheme);
 void AddSchemeLoaderFactories(
     content::ContentBrowserClient::NonNetworkURLLoaderFactoryMap* factories);
+
+// Answers a load with @status, "Name: value" @headers and @body, for the
+// engine's own loaders (call.cc). Any thread.
+void RespondToLoader(
+    mojo::PendingReceiver<network::mojom::URLLoader> loader,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    int status,
+    std::string headers,
+    std::string body);
 
 }  // namespace zebkit
 

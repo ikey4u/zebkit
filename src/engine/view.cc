@@ -51,73 +51,77 @@ char* Copy(const std::string& text) {
   return strdup(text.c_str());
 }
 
-// The page's side of zebkit.*: built on a binding the DevTools session
-// adds (Runtime.addBinding, as Playwright's exposeFunction is), before any
-// of the page's own script runs. Bytes travel as {"$bytes": base64}.
+// The page's side of zebkit.*, before any of the page's own script runs:
+// a call is a POST to zebkit://call, which the frame's own loader factory
+// answers (call.cc). Bytes go as they are, in the frame after the JSON.
 constexpr char kBridgeScript[] = R"js((() => {
   // zebkit.pdf's wrapper, put before this script (pdf_script.h).
   const makePdf = globalThis.__zebkit_pdf;
   delete globalThis.__zebkit_pdf;
-  const call = globalThis.__zebkit_call;
-  if (typeof call !== 'function' || globalThis.zebkit) return;
-  delete globalThis.__zebkit_call;
-  const pending = new Map();
-  let next = 1;
-  const toBase64 = (bytes) => {
-    if (bytes.toBase64) return bytes.toBase64();
-    let text = '';
-    for (let i = 0; i < bytes.length; i += 0x8000)
-      text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    return btoa(text);
-  };
-  const fromBase64 = (text) => {
-    if (Uint8Array.fromBase64) return Uint8Array.fromBase64(text);
-    const raw = atob(text);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; ++i) bytes[i] = raw.charCodeAt(i);
-    return bytes;
-  };
-  const encode = (value) => {
-    if (value instanceof ArrayBuffer) return {$bytes: toBase64(new Uint8Array(value))};
-    if (ArrayBuffer.isView(value))
-      return {$bytes: toBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))};
-    if (Array.isArray(value)) return value.map(encode);
-    if (value && typeof value === 'object') {
-      const out = {};
-      for (const [k, v] of Object.entries(value)) out[k] = encode(v);
-      return out;
+  if (typeof makePdf !== 'function' || globalThis.zebkit) return;
+  // The page's own script may change these later.
+  const post = globalThis.fetch.bind(globalThis);
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const {isView} = ArrayBuffer;
+  const {stringify, parse} = JSON;
+  const frame = (call) => {
+    const parts = [];
+    let size = 0;
+    const encode = (value) => {
+      if (value instanceof ArrayBuffer || isView(value)) {
+        const bytes = value instanceof ArrayBuffer ? new Uint8Array(value)
+            : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+        parts.push(bytes);
+        size += bytes.length;
+        return {$part: [size - bytes.length, bytes.length]};
+      }
+      if (Array.isArray(value)) return value.map(encode);
+      if (value && typeof value === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) out[k] = encode(v);
+        return out;
+      }
+      return value === undefined ? null : value;
+    };
+    const json = encoder.encode(stringify({...call, args: encode(call.args)}));
+    const body = new Uint8Array(4 + json.length + size);
+    new DataView(body.buffer).setUint32(0, json.length, true);
+    body.set(json, 4);
+    let at = 4 + json.length;
+    for (const part of parts) {
+      body.set(part, at);
+      at += part.length;
     }
-    return value === undefined ? null : value;
+    return body;
   };
-  const decode = (value) => {
-    if (Array.isArray(value)) return value.map(decode);
-    if (value && typeof value === 'object') {
-      if (typeof value.$bytes === 'string' && Object.keys(value).length === 1)
-        return fromBase64(value.$bytes);
-      const out = {};
-      for (const [k, v] of Object.entries(value)) out[k] = decode(v);
-      return out;
-    }
+  const unframe = (buffer) => {
+    const length = new DataView(buffer).getUint32(0, true);
+    const start = 4 + length;
+    const decode = (value) => {
+      if (Array.isArray(value)) return value.map(decode);
+      if (value && typeof value === 'object') {
+        const part = value.$part;
+        if (Array.isArray(part) && Object.keys(value).length === 1)
+          return new Uint8Array(buffer, start + part[0], part[1]);
+        const out = {};
+        for (const [k, v] of Object.entries(value)) out[k] = decode(v);
+        return out;
+      }
+      return value;
+    };
+    const answer = parse(decoder.decode(new Uint8Array(buffer, 4, length)));
+    return {ok: answer.ok, value: decode(answer.value)};
+  };
+  const send = async (module, method, args) => {
+    const response = await post('zebkit://call', {
+      method: 'POST', body: frame({module, method, args}), cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('zebkit is not available in this frame');
+    const {ok, value} = unframe(await response.arrayBuffer());
+    if (!ok) throw new Error(value);
     return value;
   };
-  Object.defineProperty(globalThis, '__zebkit_reply', {
-    value: (id, ok, value) => {
-      const p = pending.get(id);
-      if (!p) return;
-      pending.delete(id);
-      if (ok) p.resolve(decode(value)); else p.reject(new Error(value));
-    },
-  });
-  const send = (module, method, args) => new Promise((resolve, reject) => {
-    const id = next++;
-    pending.set(id, {resolve, reject});
-    try {
-      call(JSON.stringify({id, module, method, args: encode(args)}));
-    } catch (e) {
-      pending.delete(id);
-      reject(e);
-    }
-  });
   const api = (module, methods) => Object.freeze(Object.fromEntries(
       methods.map((m) => [m, (...args) => send(module, m, args)])));
   const zebkit = {
@@ -287,12 +291,7 @@ void zebkit_view::InstallBridge() {
   if (bridge_installed_)
     return;
   bridge_installed_ = true;
-  // Execution contexts, for the frame (and so the origin) a call comes from.
-  Send("Runtime.enable", base::DictValue());
   Send("Page.enable", base::DictValue());
-  base::DictValue binding;
-  binding.Set("name", "__zebkit_call");
-  Send("Runtime.addBinding", std::move(binding));
   SendScript(base::StrCat({"Object.defineProperty(globalThis, '__zebkit_pdf', "
                            "{value: ",
                            zebkit::kPdfScript,
@@ -344,57 +343,10 @@ const zebkit_view::GrantEntry* zebkit_view::GrantFor(
   return it != grants_.end() ? &it->second : nullptr;
 }
 
-content::RenderFrameHost* zebkit_view::FrameForContext(int context_id) {
-  auto it = contexts_.find(context_id);
-  if (it == contexts_.end() || !web_contents())
-    return nullptr;
-  content::RenderFrameHost* found = nullptr;
-  web_contents()->ForEachRenderFrameHost([&](content::RenderFrameHost* rfh) {
-    if (!found && rfh->GetDevToolsFrameToken().ToString() == it->second)
-      found = rfh;
-  });
-  return found;
-}
-
-void zebkit_view::OnBindingCalled(const base::DictValue& params) {
-  const std::string* name = params.FindString("name");
-  const std::string* payload = params.FindString("payload");
-  std::optional<int> context_id = params.FindInt("executionContextId");
-  if (!name || *name != "__zebkit_call" || !payload || !context_id)
-    return;
-  std::optional<base::Value> parsed =
-      base::JSONReader::Read(*payload, base::JSON_PARSE_RFC);
-  if (!parsed || !parsed->is_dict())
-    return;
-  base::DictValue& request = parsed->GetDict();
-  std::optional<int> call_id = request.FindInt("id");
-  const std::string* module = request.FindString("module");
-  const std::string* method = request.FindString("method");
-  base::ListValue* args = request.FindList("args");
-  if (!call_id || !module || !method || !args)
-    return;
-  zebkit::PageCall call;
-  call.view = this;
-  call.context_id = *context_id;
-  call.call_id = *call_id;
-  call.reply = base::BindOnce(
-      [](base::WeakPtr<zebkit_view> view, int context_id, int call_id,
-         bool ok, base::Value value) {
-        if (view)
-          view->ReplyToPage(context_id, call_id, ok, std::move(value));
-      },
-      GetWeakPtr(), *context_id, *call_id);
-  call.module = *module;
-  call.method = *method;
-  call.args = std::move(*args);
+void zebkit_view::TakeCall(content::RenderFrameHost* frame,
+                           zebkit::PageCall call) {
   // The origin is the browser's record of the frame, not what its script
-  // says, and only a frame of the page itself, in its main world, is heard.
-  content::RenderFrameHost* frame = FrameForContext(*context_id);
-  if (!frame) {
-    std::move(call.reply).Run(
-        false, base::Value("zebkit is not available in this frame"));
-    return;
-  }
+  // says.
   const url::Origin origin = frame->GetLastCommittedOrigin();
   call.origin =
       origin.scheme() == "file" ? std::string("file://") : origin.Serialize();
@@ -405,20 +357,6 @@ void zebkit_view::OnBindingCalled(const base::DictValue& params) {
   zebkit::HandlePageCall(std::move(call));
 }
 
-void zebkit_view::ReplyToPage(int context_id,
-                              int call_id,
-                              bool ok,
-                              base::Value value) {
-  const std::string json =
-      base::WriteJson(zebkit::ToPageValue(std::move(value))).value_or("null");
-  base::DictValue params;
-  params.Set("expression", "globalThis.__zebkit_reply && __zebkit_reply(" +
-                               base::NumberToString(call_id) + ", " +
-                               (ok ? "true" : "false") + ", " + json + ")");
-  params.Set("contextId", context_id);
-  Send("Runtime.evaluate", std::move(params));
-}
-
 void zebkit_view::CallApp(zebkit::PageCall call) {
   auto it = bindings_.find(call.method);
   if (it == bindings_.end()) {
@@ -427,11 +365,12 @@ void zebkit_view::CallApp(zebkit::PageCall call) {
                            " is not bound by the application"));
     return;
   }
-  const std::string args = base::WriteJson(call.args).value_or("[]");
+  // The application has the arguments as JSON: bytes as {"$bytes": base64}.
+  const std::string args =
+      base::WriteJson(zebkit::ToPageValue(base::Value(std::move(call.args))))
+          .value_or("[]");
   auto* pending = new zebkit_call;
-  pending->view = weak_factory_.GetWeakPtr();
-  pending->context_id = call.context_id;
-  pending->call_id = call.call_id;
+  pending->reply = std::move(call.reply);
   it->second.func(this, call.origin.c_str(), args.c_str(), pending,
                   it->second.data);
 }
@@ -459,38 +398,12 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
     } else {
       std::move(callback).Run(nullptr, "no result");
     }
-    return;
-  }
-  const std::string* method = reply.FindString("method");
-  const base::DictValue* params = reply.FindDict("params");
-  if (!method || !params)
-    return;
-  if (*method == "Runtime.bindingCalled") {
-    OnBindingCalled(*params);
-  } else if (*method == "Runtime.executionContextCreated") {
-    const base::DictValue* context = params->FindDict("context");
-    if (!context)
-      return;
-    std::optional<int> id = context->FindInt("id");
-    const base::DictValue* aux = context->FindDict("auxData");
-    if (!id || !aux)
-      return;
-    const std::string* frame = aux->FindString("frameId");
-    std::optional<bool> is_default = aux->FindBool("isDefault");
-    if (frame && is_default.value_or(false))
-      contexts_[*id] = *frame;
-  } else if (*method == "Runtime.executionContextDestroyed") {
-    if (std::optional<int> id = params->FindInt("executionContextId"))
-      contexts_.erase(*id);
-  } else if (*method == "Runtime.executionContextsCleared") {
-    contexts_.clear();
   }
 }
 
 void zebkit_view::AgentHostClosed(content::DevToolsAgentHost* agent_host) {
   devtools_ = nullptr;
   bridge_installed_ = false;
-  contexts_.clear();
   FailPending("the page was closed");
 }
 
@@ -893,18 +806,14 @@ void zebkit_call_resolve(zebkit_call* call, const char* json) {
       return;
     }
   }
-  if (call->view) {
-    call->view->ReplyToPage(call->context_id, call->call_id, true,
-                            value ? std::move(*value) : base::Value());
-  }
+  std::move(call->reply).Run(
+      true, value ? zebkit::FromPageValue(std::move(*value)) : base::Value());
   delete call;
 }
 
 void zebkit_call_reject(zebkit_call* call, const char* message) {
-  if (call->view) {
-    call->view->ReplyToPage(call->context_id, call->call_id, false,
-                            base::Value(message ? message : "rejected"));
-  }
+  std::move(call->reply).Run(false,
+                             base::Value(message ? message : "rejected"));
   delete call;
 }
 
