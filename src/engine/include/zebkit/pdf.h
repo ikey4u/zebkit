@@ -265,6 +265,15 @@ ZEBKIT_API bool zebkit_pdf_annotation_update(zebkit_pdf *pdf, int page, int inde
 ZEBKIT_API bool zebkit_pdf_annotation_remove(zebkit_pdf *pdf, int page, int index, char **error);
 
 /*
+ * Makes an image the appearance of stamp annotation @index: @rgba, @width
+ * by @height pixels, R, G, B, A in rows top to bottom, drawn over the
+ * annotation's rectangle. What an image stamp ("Approved", a signature
+ * drawn by hand) is.
+ */
+ZEBKIT_API bool zebkit_pdf_annotation_set_image(zebkit_pdf *pdf, int page, int index, const uint8_t *rgba, int width,
+                                                int height, char **error);
+
+/*
  * Makes the page's annotations and form fields part of its content, as
  * they are shown (@for_print false) or printed: they are no longer
  * annotations. Links, which draw nothing, go too.

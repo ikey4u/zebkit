@@ -1599,6 +1599,74 @@ bool zebkit_pdf_annotation_remove(zebkit_pdf* pdf,
   return true;
 }
 
+bool zebkit_pdf_annotation_set_image(zebkit_pdf* pdf,
+                                     int index,
+                                     int annotation,
+                                     const uint8_t* rgba,
+                                     int width,
+                                     int height,
+                                     char** error) {
+  if (!rgba || width <= 0 || height <= 0 || width > (1 << 14) ||
+      height > (1 << 14)) {
+    return FailFalse(error, "the image has no pixels");
+  }
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get())
+    return FailFalse(error, "no page " + std::to_string(index));
+  FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), annotation);
+  if (!annot)
+    return FailFalse(error, "no annotation " + std::to_string(annotation));
+  std::string failure;
+  FS_RECTF rect = {};
+  FPDF_PAGEOBJECT image = nullptr;
+  FPDF_BITMAP bitmap = nullptr;
+  if (FPDFAnnot_GetSubtype(annot) != FPDF_ANNOT_STAMP) {
+    failure = "only a stamp takes an image";
+  } else if (!FPDFAnnot_GetRect(annot, &rect)) {
+    failure = "the annotation has no rectangle";
+  } else {
+    // PDFium's bitmaps are B, G, R, A.
+    bitmap = FPDFBitmap_Create(width, height, /*alpha=*/1);
+    auto* out = static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+    const int stride = FPDFBitmap_GetStride(bitmap);
+    for (int y = 0; y < height; ++y) {
+      const uint8_t* from = rgba + static_cast<size_t>(y) * width * 4;
+      uint8_t* to = out + static_cast<size_t>(y) * stride;
+      for (int x = 0; x < width; ++x) {
+        to[x * 4] = from[x * 4 + 2];
+        to[x * 4 + 1] = from[x * 4 + 1];
+        to[x * 4 + 2] = from[x * 4];
+        to[x * 4 + 3] = from[x * 4 + 3];
+      }
+    }
+    image = FPDFPageObj_NewImageObj(pdf->document);
+    FPDF_PAGE pages[] = {page.get()};
+    if (!FPDFImageObj_SetBitmap(pages, 1, image, bitmap) ||
+        !FPDFImageObj_SetMatrix(image, rect.right - rect.left, 0, 0,
+                                rect.top - rect.bottom, rect.left,
+                                rect.bottom)) {
+      failure = "the image cannot be made";
+    } else {
+      // The stamp's appearance is made of its objects from here on.
+      while (FPDFAnnot_GetObjectCount(annot) > 0)
+        FPDFAnnot_RemoveObject(annot, 0);
+      if (FPDFAnnot_AppendObject(annot, image))
+        image = nullptr;  // the annotation's now
+      else
+        failure = "the image cannot be drawn in the stamp";
+    }
+  }
+  if (image)
+    FPDFPageObj_Destroy(image);
+  if (bitmap)
+    FPDFBitmap_Destroy(bitmap);
+  FPDFPage_CloseAnnot(annot);
+  if (!failure.empty())
+    return FailFalse(error, failure);
+  return true;
+}
+
 bool zebkit_pdf_flatten(zebkit_pdf* pdf,
                         int index,
                         bool for_print,

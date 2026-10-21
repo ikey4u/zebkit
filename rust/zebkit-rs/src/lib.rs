@@ -417,6 +417,10 @@ extern "C" {
     ) -> bool;
     pub fn zebkit_pdf_annotation_remove(pdf: *mut zebkit_pdf, page: c_int, index: c_int, error: *mut *mut c_char)
         -> bool;
+    pub fn zebkit_pdf_annotation_set_image(
+        pdf: *mut zebkit_pdf, page: c_int, index: c_int, rgba: *const u8, width: c_int, height: c_int,
+        error: *mut *mut c_char,
+    ) -> bool;
     pub fn zebkit_pdf_flatten(pdf: *mut zebkit_pdf, page: c_int, for_print: bool, error: *mut *mut c_char) -> bool;
     pub fn zebkit_pdf_attachments(pdf: *mut zebkit_pdf, error: *mut *mut c_char) -> *mut c_char;
     pub fn zebkit_pdf_attachment(pdf: *mut zebkit_pdf, index: c_int, size: *mut usize, error: *mut *mut c_char)
