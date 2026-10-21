@@ -84,6 +84,21 @@ else
     echo "ok   $(wc -l <<< "$exported") names, all zebkit_*: $(grep -c '^zebkit_vendor_' <<< "$exported") of the libraries'"
 fi
 
+log "what the engine loads"
+if [[ "$(uname)" == Darwin ]]; then
+    # The system's frameworks and libraries, and the framework itself.
+    loads="$(otool -L "$library" | tail -n +2 | awk '{ print $1 }')"
+    stray="$(grep -v -e '^/System/Library/' -e '^/usr/lib/' -e '^@rpath/Zebkit.framework/' <<< "$loads" || true)"
+else
+    # Whatever the dynamic linker cannot find beside it or on the system.
+    stray="$(ldd "$library" | grep 'not found' || true)"
+fi
+if [[ -n "$stray" ]]; then
+    echo "FAIL loads what the package does not have: $(paste -sd' ' - <<< "$stray")"; failed=1
+else
+    echo "ok   only the system's libraries"
+fi
+
 run vendor "$work/vendor"
 run vendor-cxx "$work/vendor-cxx"
 run services "$work/services"

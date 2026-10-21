@@ -4,7 +4,8 @@ On macOS the shell gives content a fake location permission manager from
 the device service's test support, which content_shell_test_support =
 false (1009) leaves out: the engine did not link. Without the test
 support it gives the global one, which zebkit sets to the system's, as
-Chrome does (src/engine/engine_mac.mm).
+Chrome does (src/engine/engine_mac.mm). Nor does it link the display test
+support, which brought Perfetto's test library as a dylib of its own.
 
 --- a/content/shell/browser/shell_content_browser_client.cc
 +++ b/content/shell/browser/shell_content_browser_client.cc
@@ -65,3 +66,13 @@ Chrome does (src/engine/engine_mac.mm).
    }
  
    public_deps = [
+@@ -468,7 +472,8 @@
+     deps += [ "//ui/linux:linux_ui_factory" ]
+   }
+ 
+-  if (is_mac) {
++  if (is_mac && content_shell_test_support) {
++    # For the browser tests; it brings Perfetto's test library, a dylib.
+     deps += [ "//ui/display:test_support" ]
+   }
+ 
