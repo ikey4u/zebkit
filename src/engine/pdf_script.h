@@ -17,6 +17,8 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     info() { return this.#call('info'); }
     setMetadata(metadata) { return this.#call('setMetadata', metadata); }
     page(index) { return this.#call('page', index); }
+    // Every page's page(), in order.
+    pages() { return this.#call('pages'); }
     // {width, height, data}: data is RGBA, rows top to bottom.
     render(index, options = {}) {
       let flags = options.flags;
@@ -45,6 +47,8 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     }
     text(index) { return this.#call('text', index); }
     textLayout(index) { return this.#call('textLayout', index); }
+    textLines(index) { return this.#call('textLines', index); }
+    images(index) { return this.#call('images', index); }
     textRects(index, start, count) { return this.#call('textRects', index, start, count); }
     charAt(index, x, y, tolerance = 2) { return this.#call('charAt', index, x, y, tolerance); }
     search(query, {matchCase = false, wholeWord = false, first = 0, limit = 0} = {}) {
@@ -53,6 +57,8 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     outline() { return this.#call('outline'); }
     links(index) { return this.#call('links', index); }
     annotations(index) { return this.#call('annotations', index); }
+    // annotations() of each of the pages, in one call.
+    annotationsOfPages(pages) { return this.#call('annotationsOfPages', [...pages]); }
     addAnnotation(index, annotation) { return this.#call('addAnnotation', index, annotation); }
     updateAnnotation(index, annotation, changes) {
       return this.#call('updateAnnotation', index, annotation, changes);

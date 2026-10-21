@@ -218,6 +218,19 @@ Answer Work(zebkit_pdf* pdf,
   if (method == "page")
     return Json(zebkit_pdf_page(pdf, IntArg(args, 0), &error), error,
                 "no page");
+  if (method == "pages") {
+    // Every page's page(), in one call.
+    base::ListValue pages;
+    const int count = zebkit_pdf_page_count(pdf);
+    for (int index = 0; index < count; ++index) {
+      Answer page =
+          Json(zebkit_pdf_page(pdf, index, &error), error, "no page");
+      if (!page.ok)
+        return page;
+      pages.Append(std::move(page.value));
+    }
+    return Ok(base::Value(std::move(pages)));
+  }
   if (method == "render") {
     zebkit_pdf_render_options options = RenderOptions(
         args.size() > 1 ? &args[1] : nullptr, ZEBKIT_PDF_RENDER_ANNOTATIONS,
@@ -323,9 +336,27 @@ Answer Work(zebkit_pdf* pdf,
   if (method == "links")
     return Json(zebkit_pdf_links(pdf, IntArg(args, 0), &error), error,
                 "no links");
+  if (method == "textLines")
+    return Json(zebkit_pdf_text_lines(pdf, IntArg(args, 0), &error), error,
+                "no text");
+  if (method == "images")
+    return Json(zebkit_pdf_images(pdf, IntArg(args, 0), &error), error,
+                "no images");
   if (method == "annotations")
     return Json(zebkit_pdf_annotations(pdf, IntArg(args, 0), &error), error,
                 "no annotations");
+  if (method == "annotationsOfPages") {
+    // annotations() of each page given, in one call.
+    base::ListValue pages;
+    for (int index : IntList(args, 0)) {
+      Answer page = Json(zebkit_pdf_annotations(pdf, index, &error), error,
+                         "no annotations");
+      if (!page.ok)
+        return page;
+      pages.Append(std::move(page.value));
+    }
+    return Ok(base::Value(std::move(pages)));
+  }
   if (method == "addAnnotation") {
     const int index = zebkit_pdf_annotation_add(
         pdf, IntArg(args, 0), JsonArg(args, 1).c_str(), &error);

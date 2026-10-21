@@ -365,6 +365,18 @@ bool DrawAnnotation(FPDF_PAGE page,
                                    kModes[mode]);
 }
 
+FPDF_PAGE LoadPageUnparsed(FPDF_DOCUMENT document, int index) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  if (!pdf || index < 0 || index >= pdf->GetPageCount())
+    return nullptr;
+  RetainPtr<CPDF_Dictionary> dict = pdf->GetMutablePageDictionary(index);
+  if (!CPDF_Page::IsValidPageDictLoose(dict))
+    return nullptr;
+  auto page = pdfium::MakeRetain<CPDF_Page>(pdf, std::move(dict));
+  page->AddPageImageCache();
+  return FPDFPageFromIPDFPage(page.Leak());
+}
+
 int PageObjectNumber(FPDF_PAGE page) {
   CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
   RetainPtr<const CPDF_Dictionary> dict =

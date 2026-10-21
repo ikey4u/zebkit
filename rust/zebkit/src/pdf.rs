@@ -200,6 +200,21 @@ impl Document {
         self.json(answer, error)
     }
 
+    /// The text as lines, each with its box and how many of its characters
+    /// have no Unicode of their own.
+    pub fn text_lines(&mut self, page: usize) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_text_lines(self.raw, page_index(page), &mut error) };
+        self.json(answer, error)
+    }
+
+    /// The images the page draws: pixel size and where.
+    pub fn images(&mut self, page: usize) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_images(self.raw, page_index(page), &mut error) };
+        self.json(answer, error)
+    }
+
     /// Each character with its box, font, size and angle.
     pub fn text_layout(&mut self, page: usize) -> Result<String, Error> {
         let mut error = std::ptr::null_mut();

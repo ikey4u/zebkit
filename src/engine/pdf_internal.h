@@ -71,6 +71,12 @@ bool DrawAnnotation(FPDF_PAGE page,
 // The object number of the page's dictionary.
 int PageObjectNumber(FPDF_PAGE page);
 
+// Page @index as FPDF_LoadPage() has it, but without its content parsed:
+// for what its dictionary says (size, boxes, rotation, annotations), which
+// is all most pages are asked. FPDF_ClosePage() closes it. Not for
+// rendering, text or objects.
+FPDF_PAGE LoadPageUnparsed(FPDF_DOCUMENT document, int index);
+
 // A PDF object as plain values, between PDFium's objects and JSON
 // (pdf.cc): an indirect reference is its object number, not followed.
 struct Value {

@@ -154,10 +154,15 @@ base::ListValue PdfRect(double left, double bottom, double right, double top) {
 // A page, loaded for one call.
 class Page {
  public:
-  Page(zebkit_pdf* pdf, int index)
+  // A page whose content is parsed, for rendering, text and objects; or,
+  // with @parse false, one for its dictionary and annotations alone, which
+  // costs far less to open.
+  Page(zebkit_pdf* pdf, int index, bool parse = true)
       : page_(pdf && pdf->document && index >= 0 &&
                       index < FPDF_GetPageCount(pdf->document)
-                  ? FPDF_LoadPage(pdf->document, index)
+                  ? (parse ? FPDF_LoadPage(pdf->document, index)
+                           : zebkit::pdf::LoadPageUnparsed(pdf->document,
+                                                           index))
                   : nullptr) {}
   ~Page() {
     if (text_)
@@ -466,7 +471,7 @@ int zebkit_pdf_page_count(zebkit_pdf* pdf) {
 
 char* zebkit_pdf_page(zebkit_pdf* pdf, int index, char** error) {
   base::AutoLock lock(PdfiumLock());
-  Page page(pdf, index);
+  Page page(pdf, index, /*parse=*/false);
   if (!page.get())
     return Fail(error, "no page " + std::to_string(index));
   base::DictValue info;
@@ -786,6 +791,95 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
   layout.Set("chars", std::move(chars));
   layout.Set("objects", std::move(objects));
   return GiveJson(base::Value(std::move(layout)));
+}
+
+char* zebkit_pdf_text_lines(zebkit_pdf* pdf, int index, char** error) {
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  FPDF_TEXTPAGE text_page = page.text();
+  if (!text_page)
+    return Fail(error, "no page " + std::to_string(index));
+  base::ListValue lines;
+  std::u16string text;
+  double left = 0, bottom = 0, right = 0, top = 0;
+  bool boxed = false;
+  int unmapped = 0;
+  auto end_line = [&] {
+    if (!text.empty() && boxed) {
+      base::DictValue line;
+      line.Set("text", base::UTF16ToUTF8(text));
+      line.Set("box", PdfRect(left, bottom, right, top));
+      line.Set("unmapped", unmapped);
+      lines.Append(std::move(line));
+    }
+    text.clear();
+    boxed = false;
+    unmapped = 0;
+  };
+  const int count = FPDFText_CountChars(text_page);
+  for (int i = 0; i < count; ++i) {
+    const char16_t c = static_cast<char16_t>(FPDFText_GetUnicode(text_page, i));
+    if (c == u'\r' || c == u'\n') {
+      end_line();
+      continue;
+    }
+    text.push_back(c);
+    if (FPDFText_IsGenerated(text_page, i) == 1)
+      continue;
+    if (FPDFText_HasUnicodeMapError(text_page, i) == 1)
+      ++unmapped;
+    double l = 0, r = 0, b = 0, t = 0;
+    if (!FPDFText_GetCharBox(text_page, i, &l, &r, &b, &t) || (l == r && b == t))
+      continue;
+    if (!boxed) {
+      left = l, bottom = b, right = r, top = t;
+      boxed = true;
+    } else {
+      left = std::min(left, l), bottom = std::min(bottom, b);
+      right = std::max(right, r), top = std::max(top, t);
+    }
+  }
+  end_line();
+  return GiveJson(base::Value(std::move(lines)));
+}
+
+namespace {
+
+// The images among @objects, and in the forms among them.
+void CollectImages(FPDF_PAGEOBJECT object, base::ListValue& images) {
+  const int type = FPDFPageObj_GetType(object);
+  if (type == FPDF_PAGEOBJ_FORM) {
+    const int count = FPDFFormObj_CountObjects(object);
+    for (int i = 0; i < count; ++i)
+      CollectImages(FPDFFormObj_GetObject(object, i), images);
+    return;
+  }
+  if (type != FPDF_PAGEOBJ_IMAGE)
+    return;
+  unsigned int width = 0, height = 0;
+  if (!FPDFImageObj_GetImagePixelSize(object, &width, &height))
+    return;
+  base::DictValue image;
+  image.Set("width", static_cast<int>(width));
+  image.Set("height", static_cast<int>(height));
+  float left = 0, bottom = 0, right = 0, top = 0;
+  if (FPDFPageObj_GetBounds(object, &left, &bottom, &right, &top))
+    image.Set("rect", PdfRect(left, bottom, right, top));
+  images.Append(std::move(image));
+}
+
+}  // namespace
+
+char* zebkit_pdf_images(zebkit_pdf* pdf, int index, char** error) {
+  base::AutoLock lock(PdfiumLock());
+  Page page(pdf, index);
+  if (!page.get())
+    return Fail(error, "no page " + std::to_string(index));
+  base::ListValue images;
+  const int count = FPDFPage_CountObjects(page.get());
+  for (int i = 0; i < count; ++i)
+    CollectImages(FPDFPage_GetObject(page.get(), i), images);
+  return GiveJson(base::Value(std::move(images)));
 }
 
 namespace {
@@ -1409,7 +1503,7 @@ std::optional<base::DictValue> ParseObject(const char* json) {
 
 char* zebkit_pdf_annotations(zebkit_pdf* pdf, int index, char** error) {
   base::AutoLock lock(PdfiumLock());
-  Page page(pdf, index);
+  Page page(pdf, index, /*parse=*/false);
   if (!page.get())
     return Fail(error, "no page " + std::to_string(index));
   base::ListValue list;
