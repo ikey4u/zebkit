@@ -409,8 +409,8 @@ def generate(name, spec, args):
     # Not the library's own headers: ICU's unicode/uchar.h is not the C
     # library's <uchar.h>, which macOS does not have.
     root = str(include_root.resolve())
-    opened = {p for p in opened if not os.path.realpath(p).startswith(root + os.sep)}
-    system = {h for h in system if any(p.endswith("/" + h) for p in opened)} | set(prelude)
+    outside = {p for p in opened if not os.path.realpath(p).startswith(root + os.sep)}
+    system = {h for h in system if any(p.endswith("/" + h) for p in outside)} | set(prelude)
 
     # Only the library's headers that the one header reaches are shipped:
     # the rest are its internals (FFmpeg has hundreds), and the package's
