@@ -1,6 +1,11 @@
 # Shared paths and helpers. Source this; do not execute it.
 
 set -euo pipefail
+# macOS's bash (3.2) takes an empty array for an unset variable under -u,
+# which bash 4.4 stopped doing; the scripts expand arrays that may be empty.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+    set +u
+fi
 
 # Work from the physical path, so that the same build tree is not reached
 # under two spellings.
