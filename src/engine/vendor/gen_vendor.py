@@ -461,7 +461,10 @@ def generate(name, spec, args):
         lines += [""]
     lines += [f"#include <{h}>" for h in sorted(system)]
     lines += [""]
-    lines += [f"#pragma redefine_extname {symbol} {prefix}{function}" for function, symbol in functions]
+    # The pragma's name is the symbol as it is written, which on macOS has
+    # the underscore Mach-O puts before every C name.
+    mangle = "_" if TARGET == "mac" else ""
+    lines += [f"#pragma redefine_extname {symbol} {mangle}{prefix}{function}" for function, symbol in functions]
     lines += [
         "",
         "#ifdef __cplusplus",
