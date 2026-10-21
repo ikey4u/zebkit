@@ -403,8 +403,16 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
   if (!view || !parent || view == parent || !view->shell() || !parent->shell())
     return false;
   NSWindow* parent_window = parent->shell()->window().GetNativeNSWindow();
-  if (!parent_window)
-    return false;
+  if (!parent_window) {
+    // Without windows (--headless) there is nothing to be inside; the view
+    // takes the size it is given, as it does inside a window.
+    if (!zebkit_is_headless())
+      return false;
+    DetachView(view);
+    AttachedViews()[view] = {parent->GetWeakPtr(), nil};
+    view->shell()->ResizeWebContentForTests(bounds.size());
+    return true;
+  }
   DetachView(view);
   NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
   NSWindow* own_window = page.window;
@@ -420,7 +428,13 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
 
 void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
   auto it = AttachedViews().find(view);
-  if (it != AttachedViews().end() && it->second.parent && it->second.view.superview)
+  if (it == AttachedViews().end() || !it->second.parent)
+    return;
+  if (!it->second.view) {
+    view->shell()->ResizeWebContentForTests(bounds.size());
+    return;
+  }
+  if (it->second.view.superview)
     it->second.view.frame = Frame(it->second.view.superview, bounds);
 }
 

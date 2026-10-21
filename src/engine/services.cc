@@ -21,6 +21,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
@@ -609,6 +610,11 @@ bool zebkit_icu_init(void) {
     if (!library.empty()) {
       base::PathService::OverrideAndCreateIfNeeded(
           base::DIR_MODULE, library, /*is_absolute=*/true, /*create=*/false);
+#if BUILDFLAG(IS_MAC)
+      // On macOS ICU's data is in the framework's resources, which base
+      // finds through the bundle zebkit_main() would have set.
+      zebkit::SetUpBundle(library);
+#endif
     }
     return base::i18n::InitializeICU();
   }();
