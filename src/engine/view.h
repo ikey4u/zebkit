@@ -47,8 +47,6 @@ struct PageCall {
 
   // The page's view, for zebkit.app; null for the application's script.
   zebkit_view* view = nullptr;
-  int context_id = 0;
-  int call_id = 0;
   CallReply reply;
   std::string origin;
   unsigned allow = 0;
@@ -61,8 +59,10 @@ struct PageCall {
 // Answers a call (bridge.cc), now or later, on the UI thread.
 void HandlePageCall(PageCall call);
 
-// The page's form of a value: bytes as {"$bytes": base64}, for JSON.
+// Bytes as {"$bytes": base64}, the form the application's JSON has them
+// in, and back.
 base::Value ToPageValue(base::Value value);
+base::Value FromPageValue(base::Value value);
 
 // Bytes in a call: a binary value from the application's script, {$bytes}
 // from a page, or a string, taken as its UTF-8.
@@ -89,7 +89,8 @@ std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
 
 // A view is the observer of its page, and a DevTools client of it: for
 // zebkit_view_evaluate() (Runtime.evaluate, which waits for a promise and
-// reports an exception as Chrome does) and for zebkit.* in the page.
+// reports an exception as Chrome does) and for the scripts every new
+// document starts with, zebkit.* among them.
 struct zebkit_view : public content::WebContentsObserver,
                      public content::DevToolsAgentHostClient {
   using Reply = base::OnceCallback<void(const base::DictValue* result,
@@ -121,9 +122,9 @@ struct zebkit_view : public content::WebContentsObserver,
              const std::string& files_root);
   void Bind(const std::string& name, zebkit_bind_func func, void* data);
 
-  // Settles the promise of call @call_id in the page's context @context_id
-  // with @value, or rejects it with @value as the message.
-  void ReplyToPage(int context_id, int call_id, bool ok, base::Value value);
+  // A call from @frame of the page (call.cc): with the origin the browser
+  // has for the frame and what the application granted it.
+  void TakeCall(content::RenderFrameHost* frame, zebkit::PageCall call);
 
   // zebkit.app.<name>(): to the application's bound function.
   void CallApp(zebkit::PageCall call);
@@ -174,8 +175,6 @@ struct zebkit_view : public content::WebContentsObserver,
   void SendScript(const std::string& source);
   void InstallBridge();
   const GrantEntry* GrantFor(const url::Origin& origin) const;
-  content::RenderFrameHost* FrameForContext(int context_id);
-  void OnBindingCalled(const base::DictValue& params);
   void Load(zebkit_load_event event, const GURL& url);
   void FailPending(const std::string& why);
 
@@ -188,20 +187,15 @@ struct zebkit_view : public content::WebContentsObserver,
   // without them.
   int scripts_pending_ = 0;
   std::optional<GURL> deferred_load_;
-  // The main-world execution contexts of the page's frames, by id, with
-  // the DevTools id of their frame.
-  std::map<int, std::string> contexts_;
   std::map<std::string, GrantEntry> grants_;
   std::map<std::string, Binding> bindings_;
   base::WeakPtrFactory<zebkit_view> weak_factory_{this};
 };
 
 // A pending zebkit.app call, answered by zebkit_call_resolve() or
-// zebkit_call_reject(); it survives its view, and then answers nobody.
+// zebkit_call_reject(); it survives its page, and then answers nobody.
 struct zebkit_call {
-  base::WeakPtr<zebkit_view> view;
-  int context_id = 0;
-  int call_id = 0;
+  zebkit::CallReply reply;
 };
 
 #endif  // ZEBKIT_ENGINE_VIEW_H_

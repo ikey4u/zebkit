@@ -513,6 +513,28 @@ base::Value ToPageValue(base::Value value) {
   return value;
 }
 
+base::Value FromPageValue(base::Value value) {
+  if (value.is_list()) {
+    for (base::Value& item : value.GetList())
+      item = FromPageValue(std::move(item));
+    return value;
+  }
+  if (!value.is_dict())
+    return value;
+  base::DictValue& dict = value.GetDict();
+  if (dict.size() == 1) {
+    const std::string* encoded = dict.FindString("$bytes");
+    std::string decoded;
+    if (encoded && base::Base64Decode(*encoded, &decoded)) {
+      return base::Value(base::Value::BlobStorage(decoded.begin(),
+                                                  decoded.end()));
+    }
+  }
+  for (auto [key, item] : dict)
+    item = FromPageValue(std::move(item));
+  return value;
+}
+
 void HandlePageCall(PageCall call) {
   const unsigned needs = Needs(call.module);
   if (!needs) {

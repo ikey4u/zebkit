@@ -277,20 +277,20 @@ another origin has the object, and every call it makes is refused.
   DevTools targets, which the view's session does not attach to.
 - **`zebkit.fs` stays in its directory**: a path with `..`, a symbolic
   link, or one that resolves outside is refused.
-- **Isolated worlds are not heard**; only the page's own main world.
 
-How it works: the view's internal DevTools session adds a binding
-(`Runtime.addBinding`, as Playwright's `exposeFunction` does) and a script
-that runs before the page's own (`Page.addScriptToEvaluateOnNewDocument`);
-the script makes the `zebkit` object (a load asked for right after the
-first grant waits until the browser has the script, so that the new
-document cannot miss it), each call goes to the browser
-process as JSON, and the answer comes back by `Runtime.evaluate` in the
-calling context. The renderer stays sandboxed; the work is done in the
-browser process, files and compression on Chromium's thread pool. Bytes
-travel as base64, which is fine for what a page usually moves and slow for
-hundreds of megabytes; a Mojo channel is the way to go faster, if it is
-needed.
+How it works: the view's internal DevTools session adds a script that runs
+before the page's own (`Page.addScriptToEvaluateOnNewDocument`); the script
+makes the `zebkit` object (a load asked for right after the first grant
+waits until the browser has the script, so that the new document cannot
+miss it). A call is a `POST` to `zebkit://call`, a scheme of the engine's
+own that every frame's loader factory serves for that frame alone, so the
+browser knows the calling frame and its origin from the factory, not from
+the request. The call and its answer are each JSON followed by their bytes
+as they are, through Mojo's data pipes: no base64, and many calls under
+way at once. The renderer stays sandboxed; the work is done in the browser
+process, PDFs, files and compression on Chromium's thread pool.
+`zebkit.app` hands the application JSON, with bytes as `{"$bytes":
+base64}` both ways.
 
 ## Script outside any page
 
