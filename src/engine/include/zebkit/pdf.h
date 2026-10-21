@@ -156,6 +156,14 @@ ZEBKIT_API char *zebkit_pdf_text_layout(zebkit_pdf *pdf, int page, char **error)
  */
 ZEBKIT_API char *zebkit_pdf_text_rects(zebkit_pdf *pdf, int page, int start, int count, char **error);
 
+/*
+ * The page's text as lines, as PDFium breaks it: JSON [{"text": "...",
+ * "box": [l, b, r, t], "unmapped": 0}, ...], "box" covering the line's
+ * glyphs, "unmapped" how many of its characters have no Unicode of their
+ * font's own (PDFium's guess stands for them: text to OCR instead).
+ */
+ZEBKIT_API char *zebkit_pdf_text_lines(zebkit_pdf *pdf, int page, char **error);
+
 /* The index of the character at (@x, @y), within @tolerance points; -1 for none. */
 ZEBKIT_API int zebkit_pdf_char_at(zebkit_pdf *pdf, int page, double x, double y, double tolerance);
 
@@ -171,6 +179,16 @@ typedef enum {
  */
 ZEBKIT_API char *zebkit_pdf_search(zebkit_pdf *pdf, const char *query, unsigned flags, int first, int limit,
                                    char **error);
+
+/* ---- Images -------------------------------------------------------- */
+
+/*
+ * The images the page draws, inside forms too: JSON [{"width": 2480,
+ * "height": 3508, "rect": [l, b, r, t]}, ...], "width" and "height" in
+ * pixels, "rect" where it is drawn on the page. A page that is one large
+ * image is a scan.
+ */
+ZEBKIT_API char *zebkit_pdf_images(zebkit_pdf *pdf, int page, char **error);
 
 /* ---- Navigation ------------------------------------------------------ */
 
