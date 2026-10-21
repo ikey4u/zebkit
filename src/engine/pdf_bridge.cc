@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -17,7 +18,9 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/weak_ptr.h"
+#include "base/containers/circular_deque.h"
 #include "base/no_destructor.h"
+#include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
@@ -520,8 +523,70 @@ Opened Open(bool create,
   return opened;
 }
 
+// Calls on documents wait here, by how soon they are wanted, and the PDF
+// sequence takes the soonest each time: a page to show first, then the
+// rest, then what reads a whole document (all its annotations, a search),
+// so that a reader's first page is not drawn after its document's links.
+enum Urgency { kNow, kSoon, kLater, kUrgencies };
+
+Urgency UrgencyOf(const std::string& method) {
+  static constexpr const char* kNowMethods[] = {
+      "render", "renderAnnotation", "renderAnnotations", "charAt",
+      "textRects", "page"};
+  static constexpr const char* kLaterMethods[] = {
+      "annotationsOfPages", "pages", "search", "formFields", "save",
+      "attachments"};
+  for (const char* name : kNowMethods) {
+    if (method == name)
+      return kNow;
+  }
+  for (const char* name : kLaterMethods) {
+    if (method == name)
+      return kLater;
+  }
+  return kSoon;
+}
+
+struct Waiting {
+  base::Lock lock;
+  std::array<base::circular_deque<base::OnceClosure>, kUrgencies> calls;
+};
+
+Waiting& Calls() {
+  static base::NoDestructor<Waiting> waiting;
+  return *waiting;
+}
+
+void RunSoonest() {
+  base::OnceClosure work;
+  {
+    base::AutoLock lock(Calls().lock);
+    for (auto& calls : Calls().calls) {
+      if (!calls.empty()) {
+        work = std::move(calls.front());
+        calls.pop_front();
+        break;
+      }
+    }
+  }
+  if (work)
+    std::move(work).Run();
+}
+
+// One task on the sequence for each call waiting: each runs the soonest
+// call there is when it runs. Calls of the same urgency keep their order.
+void Enqueue(Urgency urgency, base::OnceClosure work) {
+  {
+    base::AutoLock lock(Calls().lock);
+    Calls().calls[urgency].push_back(std::move(work));
+  }
+  PdfSequence()->PostTask(FROM_HERE, base::BindOnce(&RunSoonest));
+}
+
+// After every call already waiting for the document: last of all, and
+// none can come for it after (it is no longer among Documents()).
 void CloseOnSequence(zebkit_pdf* pdf) {
-  PdfSequence()->PostTask(FROM_HERE, base::BindOnce(&zebkit_pdf_close, pdf));
+  Enqueue(kLater, base::BindOnce(&zebkit_pdf_close, pdf));
 }
 
 }  // namespace
@@ -613,10 +678,21 @@ void CallPdf(PageCall call) {
     args.Append(call.args[i].Clone());
   if (other)
     args.Insert(args.begin(), base::Value());
-  PdfSequence()->PostTaskAndReplyWithResult(
-      FROM_HERE,
-      base::BindOnce(&Work, pdf, other, call.method, std::move(args)),
-      base::BindOnce(&Reply, std::move(call.reply)));
+  const Urgency urgency = UrgencyOf(call.method);
+  Enqueue(urgency,
+          base::BindOnce(
+              [](zebkit_pdf* pdf, zebkit_pdf* other, std::string method,
+                 base::ListValue args,
+                 scoped_refptr<base::SequencedTaskRunner> caller,
+                 CallReply reply) {
+                caller->PostTask(
+                    FROM_HERE,
+                    base::BindOnce(&Reply, std::move(reply),
+                                   Work(pdf, other, method, std::move(args))));
+              },
+              pdf, other, call.method, std::move(args),
+              base::SequencedTaskRunner::GetCurrentDefault(),
+              std::move(call.reply)));
 }
 
 void ClosePdfsOf(const zebkit_view* view) {
