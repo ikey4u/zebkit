@@ -18,6 +18,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
+#include "content/public/browser/context_factory.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_paths.h"
@@ -215,8 +216,13 @@ void AddItems(NSMenu* menu, const std::vector<MenuItem>& items) {
 }
 
 // The views delegate, which on macOS nothing else makes: zebkit.ui's
-// windows are views widgets.
-class ViewsDelegate : public views::ViewsDelegate {};
+// windows are views widgets, which draw with content's compositor.
+class ViewsDelegate : public views::ViewsDelegate {
+ public:
+  ui::ContextFactory* GetContextFactory() override {
+    return content::GetContextFactory();
+  }
+};
 
 // Windows without a window: each view's page is laid out and drawn at the
 // size it is given, as Chromium's headless mode does on macOS.
