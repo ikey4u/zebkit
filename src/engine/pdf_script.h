@@ -64,6 +64,10 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
       return this.#call('updateAnnotation', index, annotation, changes);
     }
     removeAnnotation(index, annotation) { return this.#call('removeAnnotation', index, annotation); }
+    // A stamp's appearance as an image, {width, height, data} in RGBA.
+    setAnnotationImage(index, annotation, {width, height, data}) {
+      return this.#call('setAnnotationImage', index, annotation, {width, height, data});
+    }
     flatten(index, {print = false} = {}) { return this.#call('flatten', index, print); }
     // Takes what is under the areas ([[l, b, r, t], ...]; null for the
     // page's redaction marks) out of the page for good, a box of fill

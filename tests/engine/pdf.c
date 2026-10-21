@@ -425,6 +425,32 @@ int main(void) {
     check(!contains(annotations, "sticky"), "the note is gone", NULL);
     zebkit_free(annotations);
 
+    /* An image as a stamp's appearance: red, over its rectangle. */
+    int stamp = zebkit_pdf_annotation_add(pdf, 0, "{\"type\": \"stamp\", \"rect\": [230, 150, 290, 190]}", &error);
+    check(stamp >= 0, "zebkit_pdf_annotation_add: stamp", error);
+    static const uint8_t stamp_pixels[16] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
+    check(zebkit_pdf_annotation_set_image(pdf, 0, stamp, stamp_pixels, 2, 2, &error), "zebkit_pdf_annotation_set_image",
+          error);
+    pixels = zebkit_pdf_render(pdf, 0, NULL, &width, &height, &error);
+    /* (260, 170) in the page, from the top left of 300 by 200. */
+    const uint8_t *there = pixels ? pixels + (30 * width + 260) * 4 : NULL;
+    snprintf(detail, sizeof(detail), "%d,%d,%d", there ? there[0] : -1, there ? there[1] : -1, there ? there[2] : -1);
+    check(there && there[0] > 200 && there[1] < 60 && there[2] < 60, "the stamp draws its image", detail);
+    zebkit_free(pixels);
+    check(!zebkit_pdf_annotation_set_image(pdf, 0, 0, stamp_pixels, 2, 2, &error) && contains(error, "stamp"),
+          "zebkit_pdf_annotation_set_image refuses what is not a stamp", error);
+    zebkit_free(error);
+    error = NULL;
+
+    char *lines = zebkit_pdf_text_lines(pdf, 0, &error);
+    check(contains(lines, "\"text\":\"Hello zebkit\"") && contains(lines, "\"box\":[") &&
+              contains(lines, "\"unmapped\":0"),
+          "zebkit_pdf_text_lines", lines);
+    zebkit_free(lines);
+    char *images = zebkit_pdf_images(pdf, 0, &error);
+    check(images && strcmp(images, "[]") == 0, "zebkit_pdf_images: a page of text has none", images);
+    zebkit_free(images);
+
     check(zebkit_pdf_attach(pdf, "data.csv", "a,b\n1,2\n", 8, &error), "zebkit_pdf_attach", error);
     char *attachments = zebkit_pdf_attachments(pdf, &error);
     check(contains(attachments, "\"name\":\"data.csv\"") && contains(attachments, "\"size\":8"),

@@ -378,6 +378,24 @@ Answer Work(zebkit_pdf* pdf,
     }
     return Ok(base::Value());
   }
+  if (method == "setAnnotationImage") {
+    // {width, height, data}: RGBA, rows top to bottom.
+    const base::DictValue* image =
+        args.size() > 2 && args[2].is_dict() ? &args[2].GetDict() : nullptr;
+    std::optional<std::string> data =
+        image ? GetBytes(image->Find("data")) : std::nullopt;
+    const int width = image ? image->FindInt("width").value_or(0) : 0;
+    const int height = image ? image->FindInt("height").value_or(0) : 0;
+    if (!data || data->size() != static_cast<size_t>(width) * height * 4)
+      return Failed(nullptr, "an image is {width, height, data} in RGBA");
+    if (!zebkit_pdf_annotation_set_image(
+            pdf, IntArg(args, 0), IntArg(args, 1),
+            reinterpret_cast<const uint8_t*>(data->data()), width, height,
+            &error)) {
+      return Failed(error, "the stamp's image cannot be set");
+    }
+    return Ok(base::Value());
+  }
   if (method == "flatten") {
     const bool print = args.size() > 1 && args[1].is_bool() && args[1].GetBool();
     if (!zebkit_pdf_flatten(pdf, IntArg(args, 0), print, &error))

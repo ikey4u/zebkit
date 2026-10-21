@@ -306,6 +306,21 @@ impl Document {
         self.done(ok, error, "the annotation cannot be removed")
     }
 
+    /// A stamp's appearance as an image: `rgba`, `width` by `height`, rows
+    /// top to bottom.
+    pub fn set_annotation_image(&mut self, page: usize, index: usize, rgba: &[u8], width: u32, height: u32)
+        -> Result<(), Error> {
+        if rgba.len() != width as usize * height as usize * 4 {
+            return Err(Error::new("the image is not width by height RGBA"));
+        }
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_annotation_set_image(self.raw, page_index(page), page_index(index), rgba.as_ptr(),
+                                                 width as i32, height as i32, &mut error)
+        };
+        self.done(ok, error, "the stamp's image cannot be set")
+    }
+
     pub fn flatten(&mut self, page: usize, for_print: bool) -> Result<(), Error> {
         let mut error = std::ptr::null_mut();
         let ok = unsafe { sys::zebkit_pdf_flatten(self.raw, page_index(page), for_print, &mut error) };
