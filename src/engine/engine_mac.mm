@@ -381,6 +381,19 @@ void FocusNativeWindow(gfx::NativeWindow window) {
   [NSApp activateIgnoringOtherApps:YES];
 }
 
+void SetNativeWindowSizeLimits(gfx::NativeWindow window,
+                               const gfx::Size& minimum,
+                               bool resizable) {
+  NSWindow* ns_window = window.GetNativeNSWindow();
+  if (!ns_window)
+    return;
+  ns_window.contentMinSize = NSMakeSize(minimum.width(), minimum.height());
+  if (resizable)
+    ns_window.styleMask |= NSWindowStyleMaskResizable;
+  else
+    ns_window.styleMask &= ~NSWindowStyleMaskResizable;
+}
+
 namespace {
 
 struct Attached {

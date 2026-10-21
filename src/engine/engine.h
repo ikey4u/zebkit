@@ -124,6 +124,10 @@ bool EnterHelperSandbox(int argc, char** argv);
 void SetUpApplication(bool headless);
 void SetUpViews();
 void FocusNativeWindow(gfx::NativeWindow window);
+// The smallest content size the window may have, and whether it resizes.
+void SetNativeWindowSizeLimits(gfx::NativeWindow window,
+                               const gfx::Size& minimum,
+                               bool resizable);
 std::unique_ptr<content::ShellPlatformDelegate> CreateHeadlessPlatformDelegate();
 #endif
 
@@ -143,6 +147,10 @@ void StartCdpFromCommandLine();
 // page's; brought to the front.
 void UpdateWindowTitle(content::Shell* shell);
 void FocusWindow(content::Shell* shell);
+// zebkit_view_set_size_limits().
+void SetWindowSizeLimits(content::Shell* shell,
+                         const gfx::Size& minimum,
+                         bool resizable);
 
 // A view's page in another view's window (attach.cc; engine_mac.mm).
 bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds);
