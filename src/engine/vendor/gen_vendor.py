@@ -406,6 +406,10 @@ def generate(name, spec, args):
     # #if branches name, are the ones the preprocessor really opens here.
     opened = preprocess(args.clang, args.sysroot, include_root, defines, umbrella_includes, ["-M", "-MT", "x"])
     opened = {p for p in re.split(r"[\s\\]+", opened) if p and p != "x:"}
+    # Not the library's own headers: ICU's unicode/uchar.h is not the C
+    # library's <uchar.h>, which macOS does not have.
+    root = str(include_root.resolve())
+    opened = {p for p in opened if not os.path.realpath(p).startswith(root + os.sep)}
     system = {h for h in system if any(p.endswith("/" + h) for p in opened)} | set(prelude)
 
     # Only the library's headers that the one header reaches are shipped:
