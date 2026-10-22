@@ -45,7 +45,7 @@ application framework.
 | ICU data for at least English, Chinese, Japanese and Korean | Owner |
 | Linux: glibc 2.31 first, then 2.17 | Owner, 2026-10-17 |
 | The same functions on Linux, macOS and Windows | Owner |
-| Size: at most 150 MiB uncompressed, everything the package ships. 134.8 MiB is accepted (2026-10-19); the earlier 80 MiB target is dropped. | Owner, 2026-10-19 |
+| Size: at most 150 MiB uncompressed, everything the package ships. 134.8 MiB is accepted (2026-10-19); the earlier 80 MiB target is dropped. Given up for speed on 2026-10-21 ("push the size limit to get the speed"): the size-oriented build laid out text twice as slowly as Chrome's own; slim is now 157.3 MiB with PGO, layout code at -O2 and link-time optimization. | Owner, 2026-10-19 and 2026-10-21 |
 | A large size advantage over Electron, which is the baseline (section 3); the 150 MiB limit is what is checked | Owner, 2026-10-18 and 2026-10-19 |
 | The libraries inside Chromium, and what else in it is useful, exported for applications as a C API, with bindings for other languages and for a page's JavaScript (section 7) | Owner, 2026-10-19 |
 | Compressed size counts as well as the uncompressed one | Owner, 2026-10-18 |
@@ -134,9 +134,9 @@ The trimmed numbers are the baseline: 255.7 MiB uncompressed and 85.3 MiB
 as `.tar.xz`. They are what an Electron application can ship without
 building Electron itself.
 
-The size requirement is a limit of 150 MiB uncompressed (owner,
-2026-10-19), 59% of the baseline; there is no separate bar against
-Electron. The engine at 134.8 MiB is just over half of the baseline.
+The size requirement was a limit of 150 MiB uncompressed (owner,
+2026-10-19), 59% of the baseline; on 2026-10-21 the owner put speed first
+and let the limit go. The engine at 157.3 MiB is 62% of the baseline.
 
 ### zebkit
 
@@ -456,9 +456,10 @@ should turn it on, is open.
 
 ## 6. Budget
 
-The limit is 150 MiB uncompressed (owner, 2026-10-19), and the 134.8 MiB
-build is accepted. That leaves 15 MiB of headroom for zebkit's own embedder
-and for Chromium's growth from release to release.
+The limit was 150 MiB uncompressed (owner, 2026-10-19), and the 134.8 MiB
+build was accepted. On 2026-10-21 speed came first (section 8, F4): what is
+measured now is speed against Chrome's own build of the same version, and
+size against Electron.
 
 ### A. What costs no web feature: done for size
 
@@ -846,8 +847,8 @@ Read from the application's code (`src/pc/desktop`, `src/crates/media`):
 | F4 | the application measured against its Electron app, and on par with it | 2026-10-21 (the application branch `electron-blink`: both apps from one tree, `scripts/bench/desktop.mjs`). Against Electron, medians of 5 runs on Linux: start 0.56 s (1.03), idle CPU 0.35 % (37 %) and memory 289 MiB (1104), the 756-page PDF spec's first page 1.6 s (126 s), its longest freeze 0.2 s (65 s) and memory after scrolling it 842 MiB (10.9 GiB). Its PDF work (context, classification, metadata, page kinds, text, rendering for OCR, reflow, images) on zebkit's PDFium, not lopdf or a PDFium of its own; windows with Electron's sizes and limits (`zebkit_view_set_size_limits`, `patches/1019`) |
 | F3 | the application's interface remade | Known: text markup made elsewhere covers the text, its multiply blending kept inside the annotation layer |
 
-The 150 MiB limit leaves 4.1 MiB after PDFium: the larger FFmpeg and what
-else the application needs have to fit in it, or be paid for elsewhere.
+The 150 MiB limit left 4.1 MiB after PDFium; it gave way to speed on
+2026-10-21 (F4).
 
 ## 9. Costs to plan for
 

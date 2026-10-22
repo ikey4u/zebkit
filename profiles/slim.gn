@@ -7,7 +7,9 @@
 # Compile for size. Chromium's own size-optimized configuration does the
 # same and leaves PGO off, which makes the binary larger.
 optimize_for_size = true
-chrome_pgo_phase = 0
+# Chromium's profile-guided optimization, from the Chrome release this
+# builds from (chrome/build/pgo_profiles): layout 16% faster for 9 MiB.
+chrome_pgo_phase = 2
 
 # Vtables as offsets rather than pointers, as on Android and Fuchsia: they
 # are half the size and need no relocation at load time. Relocations were
@@ -160,6 +162,15 @@ zebkit_min_size_patterns = [
 # page goes through. With the model, laying out 20,000 lines of text took a
 # third longer; without it there, as long as before, for 2.4 MiB. Blink's
 # platform library, ICU and HarfBuzz showed no difference.
+# The code that lays out and shapes text at -O2: at -Os Blink laid out
+# text about twice as slowly as Chrome's own build of the same version.
+zebkit_max_speed_patterns = [
+  "//third_party/blink/renderer/core/*",
+  "//third_party/blink/renderer/platform/*",
+  "//third_party/harfbuzz-ng/*",
+]
+# The engine optimized across its files at link time, as Chrome's binary is.
+zebkit_lto_optimize = true
 zebkit_speed_patterns = [
   "//third_party/blink/renderer/core/*",
   "//third_party/blink/renderer/bindings/*",

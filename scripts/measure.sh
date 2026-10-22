@@ -10,7 +10,9 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-GOAL_BYTES=$(( 150 * 1024 * 1024 ))
+# Electron 44.9.0 trimmed (docs/blink/ROADMAP.md, section 3), the baseline;
+# the 150 MiB limit gave way to speed on 2026-10-21.
+GOAL_BYTES=$(( 2557 * 1024 * 1024 / 10 ))
 
 profile="${1:-}"
 require_profile "$profile"
@@ -39,7 +41,7 @@ zip_bytes=$(compressed_size zip "$package")
     echo
     echo "- Upstream: Chromium $CHROMIUM_VERSION, content shell"
     echo "- Measured: $(date -u +%Y-%m-%d) on $(uname -sm), from the package directory \`scripts/package.sh\` assembles"
-    echo "- **Total: $(mib "$total") MiB** ($verdict the $(mib "$GOAL_BYTES") MiB limit)"
+    echo "- **Total: $(mib "$total") MiB** ($verdict the $(mib "$GOAL_BYTES") MiB of Electron, the baseline)"
     echo "- Compressed: $(mib "$xz_bytes") MiB as \`.tar.xz\` (xz -6, as releases ship), $(mib "$zip_bytes") MiB as \`.zip\` (deflate -9, as Electron ships)"
     echo "- Oldest glibc it can run on: $(field 'oldest usable glibc')"
     echo "- Expects from the system: $(field 'expects from the system')"
