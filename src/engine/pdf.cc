@@ -698,6 +698,24 @@ uint8_t* zebkit_pdf_render_annotation(zebkit_pdf* pdf,
   return TakePixels(bitmap, width, height, error);
 }
 
+namespace {
+
+// A character as a reader should have it: PDFium marks a hyphen it found
+// where a word is broken across lines with U+0002 (and U+FFFE in its text),
+// which is text to no one; a hyphen, the character in its place, keeps
+// characters and their indexes one for one.
+char16_t ReadableChar(char16_t c) {
+  return c == 0x2 || c == 0xfffe ? u'-' : c;
+}
+
+std::u16string ReadableText(std::u16string text) {
+  for (char16_t& c : text)
+    c = ReadableChar(c);
+  return text;
+}
+
+}  // namespace
+
 char* zebkit_pdf_text(zebkit_pdf* pdf, int index, char** error) {
   base::AutoLock lock(PdfiumLock());
   Page page(pdf, index);
@@ -708,7 +726,7 @@ char* zebkit_pdf_text(zebkit_pdf* pdf, int index, char** error) {
   const int written = FPDFText_GetText(
       page.text(), 0, count, reinterpret_cast<unsigned short*>(text.data()));
   text.resize(written > 0 ? written - 1 : 0);
-  return Give(base::UTF16ToUTF8(text));
+  return Give(base::UTF16ToUTF8(ReadableText(std::move(text))));
 }
 
 namespace {
@@ -777,7 +795,7 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
   for (int i = 0; i < count; ++i) {
     base::DictValue item;
     const unsigned int unicode = FPDFText_GetUnicode(text_page, i);
-    std::u16string one(1, static_cast<char16_t>(unicode));
+    std::u16string one(1, ReadableChar(static_cast<char16_t>(unicode)));
     item.Set("c", base::UTF16ToUTF8(one));
     if (FPDFText_IsGenerated(text_page, i) != 1) {
       double left = 0, right = 0, bottom = 0, top = 0;
@@ -807,7 +825,7 @@ char* zebkit_pdf_text_layout(zebkit_pdf* pdf, int index, char** error) {
     chars.Append(std::move(item));
   }
   base::DictValue layout;
-  layout.Set("text", base::UTF16ToUTF8(text));
+  layout.Set("text", base::UTF16ToUTF8(ReadableText(std::move(text))));
   layout.Set("chars", std::move(chars));
   layout.Set("objects", std::move(objects));
   return GiveJson(base::Value(std::move(layout)));
@@ -838,7 +856,8 @@ char* zebkit_pdf_text_lines(zebkit_pdf* pdf, int index, char** error) {
   };
   const int count = FPDFText_CountChars(text_page);
   for (int i = 0; i < count; ++i) {
-    const char16_t c = static_cast<char16_t>(FPDFText_GetUnicode(text_page, i));
+    const char16_t c =
+        ReadableChar(static_cast<char16_t>(FPDFText_GetUnicode(text_page, i)));
     if (c == u'\r' || c == u'\n') {
       end_line();
       continue;
@@ -1072,7 +1091,7 @@ char* zebkit_pdf_search(zebkit_pdf* pdf,
           FPDFText_GetText(text_page, from, to - from,
                            reinterpret_cast<unsigned short*>(context.data()));
       context.resize(written > 0 ? written - 1 : 0);
-      match.Set("context", base::UTF16ToUTF8(context));
+      match.Set("context", base::UTF16ToUTF8(ReadableText(std::move(context))));
       matches.Append(std::move(match));
       if (limit > 0 && static_cast<int>(matches.size()) >= limit)
         break;
