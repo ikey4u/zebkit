@@ -191,6 +191,13 @@ _deps = [
 ]
 _deps += _vendored_libraries
 
+declare_args() {
+  # Optimize the engine across its object files as it is linked (ThinLTO
+  # at -O2), as Chrome's own binary is: Blink's small functions are inlined
+  # from file to file. Costs link time and some size.
+  zebkit_lto_optimize = false
+}
+
 if (!is_mac) {
   _sources += [ "attach.cc" ]
 
@@ -204,6 +211,10 @@ if (!is_mac) {
 
     sources = _sources
     configs += [ ":implementation" ]
+    if (zebkit_lto_optimize) {
+      configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
+      configs += [ "//build/config/compiler:thinlto_optimize_max" ]
+    }
     public_configs = [ ":public" ]
     deps = _deps + [ "//ui/ozone" ]
 

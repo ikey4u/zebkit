@@ -11,11 +11,13 @@ Targets that choose their own optimization keep it.
 A second argument, zebkit_speed_patterns, names hot code that keeps -Os
 with LLVM's own inliner (optimize_size_default_inliner) when use_ml_inliner
 would have a model trained for size decide what is inlined
-(patches/1008-ml-size-inliner-for-linux.patch).
+(patches/1008-ml-size-inliner-for-linux.patch). A third,
+zebkit_max_speed_patterns, names the hottest code, compiled at -O2
+(optimize_max) whatever optimize_for_size says.
 
 --- a/build/config/BUILDCONFIG.gn
 +++ b/build/config/BUILDCONFIG.gn
-@@ -172,6 +172,20 @@
+@@ -172,6 +172,25 @@ declare_args() {
                         current_os != "ios" && current_os != "watchos"
  }
  
@@ -31,12 +33,17 @@ would have a model trained for size decide what is inlined
 +  # that keep -Os with LLVM's own inliner where use_ml_inliner would have
 +  # the size model decide what is inlined.
 +  zebkit_speed_patterns = []
++
++  # zebkit: patterns, matched the same way, of the hottest code (layout,
++  # text shaping), compiled at -O2 (//build/config/compiler:optimize_max)
++  # whatever optimize_for_size says.
++  zebkit_max_speed_patterns = []
 +}
 +
  assert(!(is_debug && is_official_build), "Can't do official debug builds")
  assert(!(current_os == "ios" && is_component_build),
         "Can't use component build on iOS")
-@@ -620,6 +634,27 @@
+@@ -620,6 +639,37 @@ foreach(_target_type,
          use_libcxx_modules = false
        }
  
@@ -49,6 +56,16 @@ would have a model trained for size decide what is inlined
 +          []) {
 +        configs -= [ "//build/config/compiler:default_optimization" ]
 +        configs += [ "//build/config/compiler:optimize_min_size" ]
++      } else if (zebkit_max_speed_patterns != [] &&
++                 filter_include(
++                     [ get_label_info(":$target_name", "dir") + "/" ],
++                     zebkit_max_speed_patterns) != [] &&
++                 filter_include(
++                     configs,
++                     [ "//build/config/compiler:default_optimization" ]) !=
++                 []) {
++        configs -= [ "//build/config/compiler:default_optimization" ]
++        configs += [ "//build/config/compiler:optimize_max" ]
 +      } else if (zebkit_speed_patterns != [] &&
 +                 filter_include(
 +                     [ get_label_info(":$target_name", "dir") + "/" ],
