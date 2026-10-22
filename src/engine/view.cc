@@ -455,6 +455,11 @@ void zebkit_view::WebContentsDestroyed() {
 }
 
 void zebkit_view::Load(zebkit_load_event event, const GURL& url) {
+  if (quiet_blank_) {
+    if (url.IsAboutBlank())
+      return;
+    quiet_blank_ = false;
+  }
   if (on_load_)
     on_load_(this, event, url.spec().c_str(), on_load_data_);
 }
@@ -606,6 +611,10 @@ zebkit_view* zebkit_view_new(const char* url, int width, int height) {
   if (!shell)
     return nullptr;
   zebkit_view* view = new zebkit_view(shell);
+  // Without a URL, about:blank: it gives the view a renderer, which the
+  // scripts for new documents are registered with, but its loading is not
+  // the application's to hear of (a new WebContents has no navigation).
+  view->quiet_blank_ = !(url && *url);
   shell->LoadURL(GURL(url && *url ? url : "about:blank"));
   return view;
 }

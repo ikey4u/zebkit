@@ -140,7 +140,8 @@ ZEBKIT_API void zebkit_app_on_quit_request(zebkit_app_func func, void *data);
 typedef struct zebkit_view zebkit_view;
 
 /*
- * A view loading @url (NULL for about:blank), @width by @height pixels, or
+ * A view loading @url (NULL for none: about:blank, whose loading is not
+ * reported, until zebkit_view_load_url()), @width by @height pixels, or
  * a default size when either is 0. It lives until it is closed, by
  * zebkit_view_close(), by the user closing its window, by the page's
  * window.close(), or by zebkit_quit(); the on_close callback is the last
