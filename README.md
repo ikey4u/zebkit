@@ -51,7 +51,8 @@ cc app.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG
 ```
 
 `$PKG` is a package directory, `out/blink/slim/package` after a build
-(`docs/BUILD.md`). The same in Rust is `rust/README.md`.
+(`docs/BUILD.md`), or `dist/release` after `mise run r`. The same in Rust
+is `rust/README.md`; `mise example:linux:basic` runs a browser window.
 
 ## Documentation
 
@@ -81,7 +82,7 @@ cc app.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG
 | `tools/` | `zebkit-run` (open pages, serve CDP) and `zebkit-js` (run an application written in JavaScript) |
 | `tests/engine/` | Programs that test every layer of the API against a package |
 | `tests/bench/` | The speed workloads of `scripts/bench.sh` |
-| `examples/` | `ui/todo.mjs` (`zebkit.ui`), `ffmpeg.cpp` (a library inside the engine), `electron-hello` (the Electron baseline) |
+| `examples/` | `window.c` (a browser window), `ui/todo.mjs` (`zebkit.ui`), `ffmpeg.cpp` (a library inside the engine), `electron-hello` (the Electron baseline) |
 | `scripts/` | Every step, one script each (`docs/BUILD.md`) |
 
 `upstream/` (Chromium's tree, about 30 GB), `out/` and `.cache/` are

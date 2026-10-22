@@ -81,10 +81,9 @@ camera and microphone capture, and the device APIs.
 
 ### Releases
 
-- `scripts/dist.sh` and `scripts/release.sh` made to build the Blink
-  engine (they still call the WebKit build's toolchain and libraries), and
-  the first Blink engine published, so that the Rust crates can download
-  it. A release the crates download needs a repository anyone can read.
+- The first Blink engine published (0.0.1-alpha.3 is built by `mise run r`),
+  so that the Rust crates can download it. A release the crates download
+  needs a repository anyone can read.
 
 ### The API
 

@@ -3,17 +3,15 @@
 # run it.
 #
 #   scripts/example.sh linux-basic [URL]          # examples/window.c: a small browser window
-#   scripts/example.sh macos-basic [URL]          # examples/window.m: the same window on macOS
+#   scripts/example.sh macos-basic [URL]          # the same program on macOS
 #   scripts/example.sh ffmpeg [IN.mp3 [OUT.wav]]  # examples/ffmpeg.cpp: decode with the engine's FFmpeg
 #
-# Uses dist/release, which scripts/dist.sh release makes (it is built first
-# if it is not there). EXAMPLE_DIST=debug uses dist/debug. The executable
-# goes to dist/example/ and finds the engine through a relative run path,
-# the way a shipped application finds the one beside it.
-#
-# On macOS the engine is Zebkit.framework in dist/release. A program finds
-# it through a run path as well, and names the frameworks inside it to the
-# loader, which takes them in place of the system's WebKit.
+# On Linux it uses dist/release, which scripts/dist.sh release makes (it is
+# built first if it is not there); EXAMPLE_DIST=debug uses dist/debug. The
+# executable goes to dist/example/ and finds the engine through a relative
+# run path, the way a shipped application finds the one beside it. On a
+# Mac it uses the macOS package built on Linux (docs/MACOS.md), in
+# out/blink/slim-macos/package or ZEBKIT_DIR.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -29,47 +27,35 @@ case "$example-$ZEBKIT_HOST" in
 esac
 
 kind="${EXAMPLE_DIST:-release}"
-case "$kind" in
-    release) profile=slim ;;
-    debug) profile=slim-dev ;;
-    *) die "EXAMPLE_DIST is release or debug" ;;
-esac
-dist="$ZEBKIT_ROOT/dist/$kind"
-engine=libzebkit.so.1
-[[ "$ZEBKIT_HOST" == macos ]] && engine=Zebkit.framework
-[[ -e "$dist/$engine" ]] || "$ZEBKIT_ROOT/scripts/dist.sh" "$kind"
+[[ "$kind" == release || "$kind" == debug ]] || die "EXAMPLE_DIST is release or debug"
+# The engine: dist/<kind>, which scripts/dist.sh makes on Linux. On a Mac,
+# the macOS package built on Linux (docs/MACOS.md), copied to the same
+# place, or ZEBKIT_DIR.
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    dist="${ZEBKIT_DIR:-$OUT_DIR/slim-macos/package}"
+    [[ -e "$dist/Zebkit.framework" ]] || die "no Zebkit.framework in $dist: build it on Linux (scripts/build.sh slim-macos, scripts/package.sh slim-macos) and copy the package here, or set ZEBKIT_DIR"
+else
+    dist="$ZEBKIT_ROOT/dist/$kind"
+    [[ -e "$dist/libzebkit.so.1" ]] || "$ZEBKIT_ROOT/scripts/dist.sh" "$kind"
+fi
 
 out="$ZEBKIT_ROOT/dist/example"
 binary="$out/$example"
 mkdir -p "$out"
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    link=(-F"$dist" -framework Zebkit -Wl,-rpath,"@executable_path/../$kind"
-          -Wl,-dyld_env,DYLD_FRAMEWORK_PATH="@executable_path/../$kind/Zebkit.framework/Versions/A/Frameworks")
+    link=(-F"$dist" -framework Zebkit -Wl,-rpath,"$dist")
 else
     link=(-L"$dist" -l:libzebkit.so.1 -Wl,-rpath,"\$ORIGIN/../$kind")
 fi
 
 case "$example" in
-    macos-basic)
-        log "building examples/window.m against dist/$kind"
-        clang -fobjc-arc -O1 -Wall -Wno-deprecated-declarations -o "$binary" "$ZEBKIT_ROOT/examples/window.m" \
-            "${link[@]}" -framework Cocoa
-        ;;
-    linux-basic)
-        # WebKit's headers are not part of the package yet; they are in the
-        # build's stage.
-        stage="$OUT_DIR/$profile/stage"
-        pc_path="$stage/lib/pkgconfig:$OUT_DIR/deps/prefix/lib/pkgconfig"
-        [[ -f "$stage/lib/pkgconfig/wpe-webkit-2.0.pc" ]] || die "no headers in $stage; run scripts/dist.sh $kind"
-        log "building examples/window.c against dist/$kind"
-        # shellcheck disable=SC2046
-        cc -O1 -Wall -Wno-unused-parameter -o "$binary" "$ZEBKIT_ROOT/examples/window.c" \
-            $(PKG_CONFIG_PATH="$pc_path" pkg-config --cflags wpe-webkit-2.0) \
-            "${link[@]}" -l:libgobject-2.0.so.0 -l:libglib-2.0.so.0
+    linux-basic|macos-basic)
+        log "building examples/window.c against $dist"
+        cc -std=c11 -O1 -Wall -Wextra -o "$binary" "$ZEBKIT_ROOT/examples/window.c" -I"$dist/include" "${link[@]}"
         ;;
     ffmpeg)
-        [[ -f "$dist/include/zebkit/vendor/ffmpeg.h" ]] || die "dist/$kind does not expose FFmpeg; run scripts/dist.sh $kind"
-        log "building examples/ffmpeg.cpp against dist/$kind"
+        [[ -f "$dist/include/zebkit/vendor/ffmpeg.h" ]] || die "$dist does not expose FFmpeg"
+        log "building examples/ffmpeg.cpp against $dist"
         c++ -std=c++17 -O1 -Wall -o "$binary" "$ZEBKIT_ROOT/examples/ffmpeg.cpp" -I"$dist/include" "${link[@]}"
         # With nothing named, the sample the media test plays.
         (( $# )) || set -- "$ZEBKIT_ROOT/tests/media/sample.mp3"
@@ -77,5 +63,11 @@ case "$example" in
         ;;
 esac
 
+# Chromium's sandbox needs unprivileged user namespaces; where the system
+# gives none, the example runs without it.
+if [[ "$example" != ffmpeg && "$ZEBKIT_HOST" == linux ]] && ! unshare --user true 2> /dev/null; then
+    log "no user namespaces here: running with --no-sandbox"
+    set -- --no-sandbox "$@"
+fi
 log "running $binary $*"
 exec "$binary" "$@"

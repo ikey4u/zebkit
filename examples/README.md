@@ -6,6 +6,7 @@ below, `$PKG` is that directory.
 
 | Example | What it shows |
 |---|---|
+| `window.c` | A small browser window: a page with a back button, a forward button and an address box above it, the bar a script in the page that calls the program through `zebkit.app`. One file for Linux and macOS |
 | `ui/todo.mjs` | An application in JavaScript with native widgets: `zebkit.ui`, Chromium's views driven by signals, no web page (`docs/API.md`, "Native interface") |
 | `ffmpeg.cpp` | A library inside the engine: an MP3 decoded to WAV with the engine's FFmpeg, through `zebkit::vendor::ffmpeg`, with no FFmpeg of the program's own |
 | `../rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
@@ -20,6 +21,10 @@ program's own; `pdf.c` opens, renders, searches and edits a PDF.
 ## Running them
 
 ```sh
+# window.c
+cc -std=c11 -I$PKG/include examples/window.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o window
+./window https://example.com/
+
 # ui/todo.mjs, with zebkit-js built against the package
 cc -std=c11 -I$PKG/include tools/zebkit-js/zebkit-js.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o zebkit-js
 ./zebkit-js examples/ui/todo.mjs
@@ -38,8 +43,6 @@ machines), add `--no-sandbox` to the engine's arguments. On macOS the
 package holds `Zebkit.framework`: link with
 `-F$PKG -framework Zebkit -Wl,-rpath,$PKG` instead.
 
-`window.c`, `window.m` and `window-bar.h` are the WebKit engine's
-examples, on WPE's API and `WKWebView`; they do not build against the Blink
-engine and are to be removed (`docs/ARCHITECTURE.md`, "What is left of
-WebKit"), as are the `mise example:linux:basic` and `example:macos:basic`
-tasks that run them.
+`mise example:linux:basic` builds and runs `window.c` (`scripts/example.sh`),
+`mise example:ffmpeg` the FFmpeg example, `mise example:rust:window` and
+`example:rust:codecs` the Rust ones.

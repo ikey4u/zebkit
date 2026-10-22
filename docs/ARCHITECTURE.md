@@ -181,7 +181,6 @@ that engine and are not used by the Blink build; they are to be removed
 - `scripts/build-macos.sh`, `scripts/build-windows.sh`, `scripts/package-macos.sh`, `scripts/wine.sh`, `scripts/codesize.py`
 - `scripts/smoke.sh`, `scripts/media.sh`, `scripts/display.sh`, `scripts/cdp.sh`, `scripts/compat.sh`, `scripts/compat-report.py`, `scripts/vendor.sh`, `tests/smoke`, `tests/display`, `tests/vendor`, and `tests/media` but its `sample.mp3`, which the FFmpeg example decodes
 - `tools/pageprobe/`, `tools/cdphost/`, `tools/syslib-stubs/`
-- `examples/window.c`, `examples/window.m`, `examples/window-bar.h`, and the `example:linux:basic` and `example:macos:basic` tasks in `mise.toml`
 - `docs/archive/webkit/`, the record of that engine, which stays
 
 Kept, for either engine: `tools/crashsite` with `scripts/symbolize.py` (where

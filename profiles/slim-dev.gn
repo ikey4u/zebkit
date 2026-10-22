@@ -1,0 +1,11 @@
+# zebkit-base: slim
+#
+# slim for working on the engine: the same code, with the debug
+# information a debugger and a profiler need, and linked without the
+# link-time optimization pass, so that a change relinks in minutes. What
+# scripts/dist.sh debug (mise run d) builds into dist/debug.
+
+symbol_level = 1
+blink_symbol_level = 1
+v8_symbol_level = 1
+zebkit_lto_optimize = false

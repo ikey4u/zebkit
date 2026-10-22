@@ -19,6 +19,13 @@ unset LD_PRELOAD
 # shellcheck source=../upstream.lock
 source "$ZEBKIT_ROOT/upstream.lock"
 
+# The system this runs on: linux or macos.
+case "$(uname -s)" in
+    Darwin) ZEBKIT_HOST=macos ;;
+    *) ZEBKIT_HOST=linux ;;
+esac
+export ZEBKIT_HOST
+
 log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 

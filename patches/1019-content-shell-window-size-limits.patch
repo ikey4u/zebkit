@@ -10,7 +10,7 @@ name, which an application's desktop entry names (StartupWMClass), not
 
 --- a/content/shell/browser/shell_platform_delegate.h
 +++ b/content/shell/browser/shell_platform_delegate.h
-@@ -132,6 +132,14 @@
+@@ -132,6 +132,14 @@ class ShellPlatformDelegate {
    virtual gfx::NativeWindow GetNativeWindow(Shell* shell);
  #endif
  
@@ -27,13 +27,17 @@ name, which an application's desktop entry names (StartupWMClass), not
    virtual void ActivateContents(Shell* shell, WebContents* contents);
 --- a/content/shell/browser/shell_platform_delegate_views.cc
 +++ b/content/shell/browser/shell_platform_delegate_views.cc
-@@ -270,11 +270,14 @@
-     return false;
-   }
+@@ -85,6 +85,9 @@ class ShellView : public views::BoxLayoutView,
+   METADATA_HEADER(ShellView, views::BoxLayoutView)
  
+  public:
 +  // zebkit: the smallest the embedder lets the window be.
 +  void set_minimum_size(const gfx::Size& size) { minimum_size_ = size; }
 +
+   enum UIControl { BACK_BUTTON, FORWARD_BUTTON, STOP_BUTTON };
+ 
+   explicit ShellView(Shell* shell) : shell_(shell) { InitShellWindow(); }
+@@ -273,8 +276,8 @@ class ShellView : public views::BoxLayoutView,
    // Overridden from View
    gfx::Size GetMinimumSize() const override {
      // We want to be able to make the window smaller than its initial
@@ -44,7 +48,7 @@ name, which an application's desktop entry names (StartupWMClass), not
    }
    void AddedToWidget() override { InitAccelerators(); }
  
-@@ -297,6 +300,7 @@
+@@ -297,6 +300,7 @@ class ShellView : public views::BoxLayoutView,
  
   private:
    std::unique_ptr<Shell> shell_;
@@ -52,7 +56,7 @@ name, which an application's desktop entry names (StartupWMClass), not
  
    // Window title
    std::u16string title_;
-@@ -323,6 +327,19 @@
+@@ -323,6 +327,19 @@ ShellView* ShellViewForWidget(views::Widget* widget) {
  
  }  // namespace
  
@@ -72,7 +76,7 @@ name, which an application's desktop entry names (StartupWMClass), not
  ShellPlatformDelegate::ShellPlatformDelegate() = default;
  
  void ShellPlatformDelegate::Initialize(const gfx::Size& default_window_size) {
-@@ -375,7 +392,12 @@
+@@ -375,7 +392,12 @@ void ShellPlatformDelegate::CreatePlatformWindow(
    params.bounds = gfx::Rect(initial_size);
    params.delegate = delegate.release();
  #if BUILDFLAG(IS_LINUX)

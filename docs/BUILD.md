@@ -70,6 +70,7 @@ Not built yet on Blink. The target is the same profile and the same API
 |---|---|
 | `slim` | The product: the engine as a library, without what an embedder does not need, optimized for speed where speed is spent (`docs/SIZE_AND_SPEED.md`) |
 | `slim-macos` | `slim` for macOS on arm64; without PGO until Chromium's macOS profile is fetched |
+| `slim-dev` | `slim` with debug information and without the link-time optimization pass, for debuggers and profilers (`mise run d`) |
 | `baseline` | Chromium's content shell with its release defaults, the "before" of every measurement |
 
 `profiles/_common.gn` is what every profile has: an official release
@@ -112,17 +113,28 @@ in a profile is preferred to a patch wherever one exists.
 Size counts uncompressed and as a download (`.tar.xz` at `xz -6`, `.zip` at
 deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 
+## With mise
+
+| Task | What it does |
+|---|---|
+| `mise run r` | `scripts/release.sh`: the release package in `dist/release`, its archive `dist/zebkit-<version>-<target>.tar.xz`, and the archive's SHA-256 in `rust/zebkit-rs/engines.txt` |
+| `mise run r:github` | The same, then the GitHub release `v<version>` with the archive (`gh`, logged in; the tree committed) |
+| `mise run d` | `scripts/dist.sh debug`: the `slim-dev` profile into `dist/debug`, with debug information |
+| `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
+| `mise example:macos:basic` | The same on a Mac, against the macOS package built on Linux |
+| `mise example:ffmpeg` | Builds and runs `examples/ffmpeg.cpp` |
+| `mise example:rust:window`, `example:rust:codecs` | The Rust crate's examples |
+
+The examples add `--no-sandbox` where the system has no unprivileged
+user namespaces for Chromium's sandbox. `mise d` works as a short form of
+`mise run d`; `mise r` alone is mise's own short form of `mise run`, so the
+release is `mise r r` or `mise run r`.
+
 ## Releases
 
-`scripts/release.sh` (`mise run r`) is to build the release package and its
-archive, `dist/zebkit-<version>-<target>.tar.xz`, and write its SHA-256 into
-`rust/zebkit-rs/engines.txt`, where the Rust crate looks it up;
-`--publish` (`mise run r:github`) makes the GitHub release. The crates and
-the engine share the version in `VERSION`.
-
-Not working for Blink yet: `scripts/dist.sh`, which `release.sh` runs,
-still calls two steps of the WebKit build (`fetch-toolchain.sh`,
-`build-deps.sh`), and its `debug` kind names a profile, `slim-dev`, that
-exists only for WebKit. No Blink engine has been released; until one is,
-build with the four commands above and point an application's
-`ZEBKIT_DIR` at the package.
+A release is one archive per system, built on Linux, whose SHA-256 goes
+into `rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
+downloads; the crates and the engine share the version in `VERSION`. Build
+(`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).
+Crates download only from a release anyone can read, so the repository
+has to be public for that.

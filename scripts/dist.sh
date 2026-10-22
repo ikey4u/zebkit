@@ -6,16 +6,15 @@
 #   scripts/dist.sh debug      # slim-dev, with debug information  -> dist/debug
 #
 # Runs the whole pipeline, each step of which does nothing when it is up to
-# date: toolchain, upstream source and patches, third-party libraries, the
-# engine, the package. The first build takes hours; later ones minutes.
-# Host tools and headers come from scripts/bootstrap-linux.sh, once.
+# date: Chromium's source with the patches, the engine, the package. The
+# first build takes hours; later ones minutes.
 #
-# "debug" is not an unoptimized build. It is the release configuration
-# without link-time optimization and with symbols left in, which is what a
-# debugger and a profiler need and what relinks in seconds after a change.
+# "debug" is not an unoptimized build: it is slim with debug information
+# and without the link-time optimization pass (profiles/slim-dev.gn), which
+# is what a debugger and a profiler need and what relinks in minutes.
 #
-# On macOS (Apple Silicon) the steps are the same without the toolchain,
-# which is Xcode's, and there is the release kind only so far.
+# The macOS engine is not built on a Mac: it is cross-built on Linux
+# (docs/MACOS.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -29,16 +28,11 @@ esac
 host="$(uname -s)-$(uname -m)"
 case "$host" in
     Linux-x86_64) engine=libzebkit.so.1 ;;
-    Darwin-arm64)
-        engine=Zebkit.framework
-        [[ "$kind" == release ]] || die "there is no profile for a debug build on macOS yet; scripts/dist.sh release"
-        ;;
-    *) die "zebkit builds on Linux x86_64 and on macOS on Apple Silicon so far; this is $host" ;;
+    Darwin-*) die "the macOS engine is built on Linux: scripts/build.sh slim-macos, then scripts/package.sh slim-macos (docs/MACOS.md)" ;;
+    *) die "zebkit builds on Linux x86_64 so far; this is $host" ;;
 esac
 
-[[ "$ZEBKIT_HOST" == macos ]] || "$ZEBKIT_ROOT/scripts/fetch-toolchain.sh"
 "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
-"$ZEBKIT_ROOT/scripts/build-deps.sh"
 "$ZEBKIT_ROOT/scripts/build.sh" "$profile"
 PACKAGE_STRIP="$strip" "$ZEBKIT_ROOT/scripts/package.sh" "$profile"
 
