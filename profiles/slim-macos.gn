@@ -37,3 +37,6 @@ use_relative_vtables_abi = false
 # on Apple silicon SwiftShader is built on LLVM rather than its small JIT:
 # 13.6 MiB with the Vulkan loader. Nothing of the web goes with it.
 enable_swiftshader = false
+# Chromium's PGO profile for macOS is not in the tree yet (only Linux's is
+# fetched): without PGO until it is.
+chrome_pgo_phase = 0
