@@ -39,6 +39,21 @@ static const char document[] =
     "trailer << /Root 1 0 R >>\n"
     "%%EOF\n";
 
+/* "two-" at the end of a line and "dimensional" at the start of the next,
+ * which PDFium joins with a hyphen of its own (U+0002 inside it). */
+static const char hyphenated[] =
+    "%PDF-1.7\n"
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R"
+    " /Resources << /Font << /F1 5 0 R >> >> >> endobj\n"
+    "4 0 obj << >> stream\n"
+    "BT /F1 12 Tf 20 150 Td (the one two-) Tj 0 -14 Td (dimensional array) Tj ET\n"
+    "endstream endobj\n"
+    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+    "trailer << /Root 1 0 R >>\n"
+    "%%EOF\n";
+
 /* A page that draws a 2 by 2 RGB image over (50, 50)-(150, 150). */
 static const char picture[] =
     "%PDF-1.7\n"
@@ -610,6 +625,17 @@ int main(void) {
     char *images = zebkit_pdf_images(pdf, 0, &error);
     check(images && strcmp(images, "[]") == 0, "zebkit_pdf_images: a page of text has none", images);
     zebkit_free(images);
+
+    /* PDFium's mark for a broken word's hyphen, given as a hyphen. */
+    zebkit_pdf *broken = zebkit_pdf_open(hyphenated, sizeof(hyphenated) - 1, NULL, &error);
+    char *broken_text = broken ? zebkit_pdf_text(broken, 0, &error) : NULL;
+    char *broken_lines = broken ? zebkit_pdf_text_lines(broken, 0, &error) : NULL;
+    check(broken_text && !strchr(broken_text, 0x2) && strstr(broken_text, "two-") && broken_lines &&
+              !strstr(broken_lines, "\\u0002") && strstr(broken_lines, "two-"),
+          "zebkit_pdf_text and _text_lines: a hyphen, not U+0002", broken_lines);
+    zebkit_free(broken_text);
+    zebkit_free(broken_lines);
+    zebkit_pdf_close(broken);
 
     /* A page with a 2 by 2 picture, red, green, blue and white. */
     zebkit_pdf *pictured = zebkit_pdf_open(picture, sizeof(picture) - 1, NULL, &error);
