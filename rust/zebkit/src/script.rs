@@ -11,7 +11,7 @@ use std::path::Path;
 /// V8 with all of `zebkit.*`, with no grants needed (it is the
 /// application's code, as an Electron application's main process is),
 /// and `zebkit.View` to make views and answer their pages' calls.
-/// `docs/blink/API.md` in the repository is the script's reference.
+/// `docs/API.md` in the repository is the script's reference.
 ///
 /// Dropping it ends the script: its timers stop; its views stay.
 pub struct Script {

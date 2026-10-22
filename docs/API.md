@@ -1,7 +1,7 @@
-# zebkit's API on Blink
+# zebkit's API
 
-What an application gets from the engine: the plan is section 7 of
-`docs/blink/ROADMAP.md`; this is what is built. The engine is
+What an application gets from the engine. How it works inside is
+`docs/ARCHITECTURE.md`; what is still to come, `docs/ROADMAP.md`. The engine is
 `libzebkit.so.1`, with `zebkit-helper` beside it for the renderer, GPU and
 utility processes, and the headers in the package's `include/`.
 
@@ -14,7 +14,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 | 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
 | 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, over Chromium's own code |
-| 3. Bindings | `bindings/python/zebkit` | Layers 0 and 2 for Python |
+| 3. Bindings | `rust/`, `bindings/python/zebkit` | Layers 0 and 2 for Rust and Python |
 | 4. JavaScript | `zebkit.*` in a page | Layers 0 and 2 for the page's script, as the application grants it |
 
 `scripts/engine-test.sh <profile>` tests every layer from programs built
@@ -90,6 +90,27 @@ int main(int argc, char **argv) {
   ⌘Q and logging out, to quit (`zebkit_quit()`) or not. In Rust
   `zebkit::app`; in Python `zebkit.app_*`.
 
+Every function of `<zebkit/zebkit.h>`, whose comments are the full
+reference:
+
+| Functions | What |
+|---|---|
+| `zebkit_main`, `zebkit_quit`, `zebkit_post_task`, `zebkit_post_delayed_task`, `zebkit_is_headless` | The engine, its loop, its thread |
+| `zebkit_version`, `zebkit_engine_version`, `zebkit_free` | Versions; freeing what the engine returns |
+| `zebkit_app_set_menu`, `zebkit_app_on_open_files`, `zebkit_app_on_reopen`, `zebkit_app_on_quit_request` | The application's menu and its part in the system |
+| `zebkit_view_new`, `_close`, `_load_url`, `_reload`, `_stop`, `_go_back`, `_go_forward`, `_is_loading`, `_get_url`, `_get_title` | A view and its page |
+| `zebkit_view_resize`, `_set_size_limits`, `_set_title`, `_focus` | Its window: size, smallest size and whether it may be resized (Electron's `minWidth`, `minHeight`, `resizable`), title, raising |
+| `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
+| `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
+| `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
+| `zebkit_view_on_drop` | Paths of files dropped on the view; `zebkit.pathForFile()` in the page |
+| `zebkit_view_evaluate`, `_add_script` | Script in the page; script in every document before the page's own (a preload) |
+| `zebkit_view_set_user_agent`, `zebkit_view_capture` | The User-Agent; the view as PNG, with or without a window |
+| `zebkit_view_grant`, `_bind`, `zebkit_call_resolve`, `zebkit_call_reject` | What a page may use of `zebkit.*`; the application's functions it may call |
+| `zebkit_script_new`, `_run_module`, `_evaluate`, `_on_idle`, `_destroy` | Script outside any page |
+| `zebkit_cdp_listen`, `_get_port`, `_get_url`, `_stop` | The DevTools endpoint |
+| `zebkit_scheme_register`, `_handle`, `zebkit_request_url`, `_method`, `_headers`, `_body`, `zebkit_request_respond`, `_respond_file` | URL schemes of the application's own |
+
 ## 1. The libraries inside the engine
 
 The application includes the library's header and writes the library's own
@@ -161,7 +182,7 @@ All but `zebkit_fetch()` work without the engine running.
 
 `<zebkit/pdf.h>` is documents on Chromium's own PDFium, which is in the
 engine (without XFA forms and without PDFium's JavaScript). What it covers
-is measured against EmbedPDF's viewer (`docs/blink/ROADMAP.md`, section 8).
+is measured against EmbedPDF's viewer (`docs/ROADMAP.md`).
 
 ```c
 zebkit_pdf *pdf = zebkit_pdf_open_file("report.pdf", NULL, &error);
@@ -179,11 +200,11 @@ uint8_t *bytes = zebkit_pdf_save(pdf, ZEBKIT_PDF_SAVE_INCREMENTAL, &size, &error
 | `zebkit_pdf_open`, `_open_file`, `_close`, `_save` | Bytes or a file, a password; saved whole or incrementally, with or without its encryption |
 | `zebkit_pdf_info`, `_set_metadata` | Pages, version, encryption, permissions, form type, language, the document information |
 | `zebkit_pdf_page_count`, `_page` | A page's size as shown, rotation, label and boxes |
-| `zebkit_pdf_render` | RGBA at a scale and rotation, the whole page or a tile, with annotations and form fields, on a background |
+| `zebkit_pdf_render`, `_render_annotation` | RGBA at a scale and rotation, the whole page or a tile, with annotations and form fields, on a background; one annotation's appearance alone, for a layer over the page |
 | `zebkit_pdf_text`, `_text_layout`, `_text_lines`, `_text_rects`, `_char_at` | The text; each character's box, font, size and angle; lines with their boxes and unmapped characters; selection rectangles; hit testing |
 | `zebkit_pdf_images`, `_image_data` | The images a page draws, with their pixel sizes and places (a page that is one image is a scan); one's bytes, its JPEG as stored or its pixels as PNG |
 | `zebkit_pdf_search` | Every match in the document, with its rectangles and the text around it |
-| `zebkit_pdf_signatures`, `_signature_contents` | The digital signatures, nested form fields too ([`patches/1020`](../../patches/1020-pdf-nested-signature-fields.patch)): reason, time, byte range, permissions, the signer's certificate, and whether each is intact: the bytes it covers are those signed, by the signer's key, and it covers the whole file; the PKCS#7 itself. Trust in the certificate is the application's to judge |
+| `zebkit_pdf_signatures`, `_signature_contents` | The digital signatures, nested form fields too ([`patches/1020`](../patches/1020-pdf-nested-signature-fields.patch)): reason, time, byte range, permissions, the signer's certificate, and whether each is intact: the bytes it covers are those signed, by the signer's key, and it covers the whole file; the PKCS#7 itself. Trust in the certificate is the application's to judge |
 | `zebkit_pdf_outline`, `_links` | Bookmarks, link annotations and addresses written in the text |
 | `zebkit_pdf_annotations`, `_annotation_add`, `_update`, `_remove`, `_set_image`, `zebkit_pdf_flatten` | Every kind read; highlights, underlines, squiggles, strikeouts, ink, lines, polygons, polylines, squares, circles, notes, free text, links and redaction marks made, changed and removed, with their appearances generated; an image as a stamp's appearance |
 | `zebkit_pdf_redact` | What is under the page's redaction marks, or areas given, taken out for good: text character by character, image pixels blacked out, paths and annotations that reach in; boxes drawn over |
@@ -195,7 +216,8 @@ Structured answers are JSON. Coordinates are PDF page space: points, the
 origin at the bottom left, before the page's rotation. PDFium is not
 thread-safe; the functions take one lock, so any thread may call them.
 Where PDFium had nothing for it, zebkit patches PDFium (`patches/1014`,
-`1015`). Still to come: signatures, editing the outline.
+`1015`, `1020`). Still to come: editing the outline, and trust in a
+signer's certificate (`docs/ROADMAP.md`).
 
 In JavaScript the same is `zebkit.pdf` (layer 4), for pages granted
 `ZEBKIT_ALLOW_PDF` and for the application's script. A page's documents are
@@ -359,7 +381,7 @@ window({title: 'To do', width: 420, height: 440}, () =>
     h('text', {class: 'text-sm text-gray-500'}, () => `${todos().length} things`)));
 ```
 
-![examples/ui/todo.mjs, captured with zebkit.ui.capture](zebkit-ui-todo.png)
+![examples/ui/todo.mjs, captured with zebkit.ui.capture](images/zebkit-ui-todo.png)
 
 `examples/ui/todo.mjs` is the whole example above, and the picture is it
 captured headless with `zebkit.ui.capture()`.
@@ -394,18 +416,7 @@ application's executable is.
 
 ## Size and speed
 
-Measured on Linux x86-64 (`scripts/measure.sh`, `scripts/bench.sh`):
-
-| | Content shell, before | Library, now |
-|---|---:|---:|
-| Package | 134.8 MiB | 142.5 MiB |
-| As `.tar.xz` | 43.2 MiB | 44.6 MiB |
-| The engine's binary | 122.8 MiB | 123.6 MiB |
-| Headers (`include/`) | none | 7.6 MiB |
-
-The library is 0.8 MiB larger than the content shell for all of the
-above: the libraries were inside it already, and exporting them keeps
-only what the engine had left out of them. The rest of the growth is the
-libraries' headers. Speed is the same within the spread of
-`scripts/bench.sh`, although PartitionAlloc no longer takes `malloc` over
-and V8 and Blink's heap use the thread-local model of a library.
+Exporting the libraries and the API cost 0.8 MiB of the engine over the
+content shell it replaced, the headers 7.6 MiB of the package; speed is the
+same within the spread of `scripts/bench.sh`. The engine's size and speed
+as a whole are `docs/SIZE_AND_SPEED.md`.

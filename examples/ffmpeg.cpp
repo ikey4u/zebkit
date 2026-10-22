@@ -4,7 +4,7 @@
 //
 // The application has no FFmpeg of its own. It includes one header, uses the
 // library's ordinary API in the namespace zebkit::vendor::ffmpeg, and links
-// against the engine and nothing else (docs/VENDOR.md). On Linux:
+// against the engine and nothing else (docs/API.md, "The libraries inside the engine"). On Linux:
 //
 //   c++ -std=c++17 ffmpeg.cpp -o ffmpeg -I<package>/include -L<package> -l:libzebkit.so.1
 //

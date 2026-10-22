@@ -1,7 +1,7 @@
 # slim: zebkit for Windows. The same functions as slim on Linux
 # (profiles/slim.cmake) and on macOS (profiles/macos/slim.xcconfig), from
 # WebKit's Windows port, whose own defaults are a different set. Where this
-# file and Linux's differ, the reason is written here; docs/WINDOWS.md has
+# file and Linux's differ, the reason is written here; docs/archive/webkit/WINDOWS.md has
 # what is still missing.
 #
 # Size comes later: this is the feature set, built as the port builds
@@ -16,7 +16,7 @@ zeb_string(CMAKE_BUILD_TYPE Release)
 # Not on yet, and on in Linux's slim: Web Audio and Media Source Extensions.
 # The port has no implementation of either to switch on (no audio output,
 # no decoder for audio files, nothing behind MediaSource); see
-# docs/WINDOWS.md, "Media".
+# docs/archive/webkit/WINDOWS.md, "Media".
 zeb_option(ENABLE_VIDEO ON)
 zeb_option(ENABLE_MEDIA_SESSION ON)
 zeb_option(ENABLE_MEDIA_STREAM OFF)
@@ -30,7 +30,7 @@ zeb_option(ENABLE_MEDIA_STATISTICS OFF)
 # --- JavaScriptCore -----------------------------------------------------------
 # Every JIT tier, as the port has them and as on macOS. Linux drops the top
 # tiers for size after measuring what that costs; nothing is measured here
-# yet (docs/WINDOWS.md).
+# yet (docs/archive/webkit/WINDOWS.md).
 zeb_option(ENABLE_SAMPLING_PROFILER OFF)
 
 # --- Graphics ---------------------------------------------------------------
@@ -67,7 +67,7 @@ zeb_option(ENABLE_SPELLCHECK OFF)
 zeb_option(ENABLE_ATTACHMENT_ELEMENT OFF)
 zeb_option(ENABLE_APPLICATION_MANIFEST OFF)
 
-# The Chrome DevTools Protocol endpoint (src/cdp, docs/CDP.md). It drives the
+# The Chrome DevTools Protocol endpoint (src/cdp, docs/archive/webkit/CDP.md). It drives the
 # page through WebKit's inspector backend, which therefore stays in; the
 # remote inspector server and WebDriver do not.
 zeb_string(ZEBKIT_CDP_DIR "${CMAKE_CURRENT_LIST_DIR}/../../src/cdp")

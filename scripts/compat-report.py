@@ -4,7 +4,7 @@
 Reads out/compat/<profile>/ and out/compat/<reference>/ (written by
 scripts/compat.sh) and writes docs/reports/compat.md (on macOS,
 docs/reports/macos/compat.md). Exits non-zero unless every
-site passes. The rules are explained in docs/COMPAT.md; in short, a site
+site passes. The rules are explained in docs/archive/webkit/COMPAT.md; in short, a site
 passes when the profile loads it without crashing, paints it, builds a DOM
 about as large as the reference build does, and throws no script error the
 reference build does not also throw.
@@ -147,7 +147,7 @@ def main():
         f"- **Pass: {counts['PASS']}, fail: {counts['FAIL']}, blocked: {counts['BLOCKED']}**",
         "- Blocked means the reference build did not get the real site from the test machine either",
         "  (unreachable, or a bot challenge or error page), so the comparison says nothing about this profile.",
-        "- Columns show this profile / the reference. Rules are in `docs/COMPAT.md`.",
+        "- Columns show this profile / the reference. Rules are in `docs/archive/webkit/COMPAT.md`.",
         "",
     ]
     for wanted, title in (("FAIL", "Failing"), ("BLOCKED", "Blocked")):

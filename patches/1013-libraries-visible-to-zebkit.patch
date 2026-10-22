@@ -1,8 +1,8 @@
 Build: the libraries zebkit exposes may be linked by //zebkit.
 
 zebkit exposes the C libraries inside the engine to applications
-(//zebkit/engine:vendor, docs/VENDOR.md) and links each of them whole into
-libzebkit for that. Chromium restricts which targets may depend on
+(//zebkit/engine:vendor; docs/API.md, "The libraries inside the engine")
+and links each of them whole into libzebkit for that. Chromium restricts which targets may depend on
 libxml and libwebp; this adds //zebkit/* to those lists.
 
 --- a/third_party/libwebp/visibility.gni

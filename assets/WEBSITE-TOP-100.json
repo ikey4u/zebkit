@@ -1,5 +1,5 @@
 {
-  "description": "The 100 most-visited websites worldwide, used as the compatibility test set for zebkit (see docs/COMPAT.md).",
+  "description": "The 100 most-visited websites worldwide, used as the compatibility test set for zebkit (see docs/archive/webkit/COMPAT.md).",
   "compiled": "2026-10-10",
   "method": "Semrush's ranking in order, minus the exclusions below; then filled to 100 from Similarweb's ranking, then Ahrefs', each in order, skipping sites already present. 'rank' is the position in this file; 'source_rank' is the position in the named source. 'url' is https://<domain>/ unless the bare domain does not serve the site, in which case it is the address the site redirects visitors to.",
   "sources": {

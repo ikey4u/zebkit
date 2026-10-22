@@ -30,7 +30,7 @@ config("public") {
 
 # The C libraries inside the engine, for applications: each function under
 # zebkit's own link name, and a header that maps the library's names to
-# those (vendor/gen_vendor.py, docs/VENDOR.md). Each is linked whole, so
+# those (vendor/gen_vendor.py, docs/API.md, "The libraries inside the engine"). Each is linked whole, so
 # that every function its headers declare is there.
 _vendored = [
   "zlib",

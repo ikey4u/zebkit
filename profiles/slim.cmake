@@ -159,12 +159,12 @@ zeb_option(ENABLE_WPE_PLATFORM_HEADLESS ON)
 zeb_option(ENABLE_WPE_PLATFORM_DRM OFF)
 zeb_option(ENABLE_WPE_LEGACY_API OFF)
 
-# The Chrome DevTools Protocol endpoint (src/cdp, docs/CDP.md). It drives the
+# The Chrome DevTools Protocol endpoint (src/cdp, docs/archive/webkit/CDP.md). It drives the
 # page through WebKit's inspector backend, which therefore stays in; the
 # remote inspector server and WebDriver do not.
 zeb_string(ZEBKIT_CDP_DIR "${CMAKE_CURRENT_LIST_DIR}/../src/cdp")
 
-# Libraries inside the engine that applications may use too (docs/VENDOR.md):
+# Libraries inside the engine that applications may use too (docs/archive/webkit/VENDOR.md):
 # FFmpeg so far, as zebkit::vendor::ffmpeg. scripts/gen-vendor.py writes the
 # entry points; with them every function of the library's API is linked in,
 # not only what the engine itself calls.

@@ -147,7 +147,7 @@ def generate(name, spec):
         " * one and does no harm.",
         " * Preprocessor macros and inline functions are the library's own.",
         " *",
-        " * Only what the engine was built with is there. See docs/VENDOR.md. */",
+        " * Only what the engine was built with is there. See docs/archive/webkit/VENDOR.md. */",
         "",
         f"#ifndef {guard}",
         f"#define {guard}",

@@ -3,8 +3,8 @@
 //! Once it listens, every [`crate::View`] of the process is a page that
 //! Puppeteer, Playwright and other CDP clients can drive, at
 //! `http://127.0.0.1:<port>`. The `--remote-debugging-port` argument to
-//! [`crate::run`] starts it too. `docs/CDP.md` in the repository says what
-//! is covered.
+//! [`crate::run`] starts it too. It is Chromium's own DevTools server
+//! (`docs/ARCHITECTURE.md` in the repository).
 //!
 //! The endpoint has no password: anything that can reach the port can
 //! drive the pages. It listens on this machine only unless told otherwise.

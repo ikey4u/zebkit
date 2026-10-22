@@ -3,7 +3,7 @@
 //! The engine has whole libraries linked into it. An application that
 //! needs one of them does not have to bring a second copy: it is reachable
 //! through the engine, under link names of zebkit's own, so that another
-//! copy elsewhere in the process cannot collide with it. `docs/VENDOR.md`
+//! copy elsewhere in the process cannot collide with it. `docs/API.md, "The libraries inside the engine"`
 //! in the repository has the details.
 
 /// The FFmpeg inside the engine.

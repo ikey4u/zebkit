@@ -14,7 +14,7 @@ opt in with `zeb_use_deps()` (see `profiles/_common.cmake`).
 `windows/` has no recipes either. The libraries of the Windows engine are
 built by vcpkg from WebKit's own list, for now as WebKit builds them; the
 directory holds zebkit's vcpkg triplet (which compiler, which SDK) and a
-fix for ICU's data library (`docs/WINDOWS.md`).
+fix for ICU's data library (`docs/archive/webkit/WINDOWS.md`).
 
 `devtools-protocol/` is not a library and has no recipe: it is Chrome's
 definition of the DevTools Protocol, copied unchanged. The CDP endpoint's

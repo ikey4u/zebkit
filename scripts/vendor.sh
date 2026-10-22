@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Check that an application can use the libraries inside the engine
-# (docs/VENDOR.md): FFmpeg, as zebkit::vendor::ffmpeg.
+# (docs/archive/webkit/VENDOR.md): FFmpeg, as zebkit::vendor::ffmpeg.
 #
 #   scripts/vendor.sh <profile>
 #

@@ -8,3 +8,7 @@ __pycache__/
 
 # Private notes, never tracked.
 /inner/
+
+# Editor files.
+*.swp
+*~

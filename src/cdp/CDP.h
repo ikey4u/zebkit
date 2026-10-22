@@ -9,7 +9,7 @@
  * expect, answers what it can natively through the WebKit API, and
  * translates the rest to and from the Web Inspector Protocol.
  *
- * docs/CDP.md lists what is covered.
+ * docs/archive/webkit/CDP.md lists what is covered.
  *
  * This header is what WebKit's own sources see of the endpoint: the calls
  * the patches in patches/ add to them.

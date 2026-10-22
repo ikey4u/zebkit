@@ -1,6 +1,6 @@
 # FFmpeg: the audio and video decoders behind media playback, reached through
 # GStreamer's libav plugin, and a library applications use through the
-# engine as zebkit::vendor::ffmpeg (docs/VENDOR.md).
+# engine as zebkit::vendor::ffmpeg (docs/archive/webkit/VENDOR.md).
 #
 # On macOS the engine plays media with the system's decoders, and this is
 # built, the same way, for applications alone.

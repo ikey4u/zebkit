@@ -17,7 +17,7 @@ are compiled. For each library named, it writes into <gen dir>:
 The application writes the library's own API. The header maps each
 function's name to zebkit's link name, so the engine does not export the
 library's names, and another copy of the library in the same process
-cannot be confused with it (docs/VENDOR.md). In C++ the API is also in the
+cannot be confused with it (docs/API.md). In C++ the API is also in the
 namespace zebkit::vendor::<library>.
 
 Nothing is listed by hand: a function is exposed when the library's public
@@ -449,7 +449,7 @@ def generate(name, spec, args):
         " * the library in the same process is a different one and does no harm.",
         " * Macros and inline functions are the library's own.",
         " *",
-        " * What is there is what the engine was built with. See docs/VENDOR.md. */",
+        " * What is there is what the engine was built with. See docs/API.md. */",
         "",
         f"#ifndef {guard}",
         f"#define {guard}",

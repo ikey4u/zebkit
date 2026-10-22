@@ -7,7 +7,7 @@
 // with -O3, WebCore with -O2 and WebKit with -Os. -Oz everywhere takes a
 // quarter off the binaries and makes JSON and DOM work about two and a
 // half times slower; -Os would be as fast as upstream's build and 25 MiB
-// larger (docs/MACOS.md). The owner chose size, as on Linux.
+// larger (docs/archive/webkit/MACOS.md). The owner chose size, as on Linux.
 //
 // The exception is the JavaScript engine with what it stands on (strings
 // and collections, the allocator), which is where JSON, regular
@@ -40,7 +40,7 @@ WK_COMMON_OTHER_CFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_SANITIZER_OTHER_C
 WK_COMMON_OTHER_CPLUSPLUSFLAGS = $(WK_AVAILABILITY_OVERLAY_FLAGS) $(WK_LIBCPP_ASSERTIONS_CFLAGS) $(ZEBKIT_PREFIX_MAP) $(ZEBKIT_INLINE_$(PROJECT_NAME));
 
 // FFmpeg, for applications to use through the engine as on Linux
-// (docs/VENDOR.md), for 5.4 MiB. The engine itself plays media with the
+// (docs/archive/webkit/VENDOR.md), for 5.4 MiB. The engine itself plays media with the
 // system's decoders. scripts/build-deps.sh builds the library and its
 // entry points, zebkit_vendor_ffmpeg_<function>; they go into
 // WebKit.framework whole, and the library behind them with its own names

@@ -2,7 +2,7 @@
  *
  *     zebkit-js [chromium switches] app.mjs [arguments]
  *
- * app.mjs is an ES module, with zebkit.* (docs/blink/API.md): views to
+ * app.mjs is an ES module, with zebkit.* (docs/API.md): views to
  * make, the engine's services, timers and console. The program ends when
  * the script calls zebkit.quit(), or once nothing of it is pending and no
  * view is open, as Node ends. Its exit status is 1 when the module threw. */

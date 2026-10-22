@@ -338,7 +338,7 @@ ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
  * engine's thread: V8 with the whole of zebkit.* (no grants: it is the
  * application's code, as an Electron application's main process is), and
  * zebkit.View to make views, load pages in them and answer their calls.
- * <zebkit/zebkit.h>'s script reference is docs/blink/API.md.
+ * <zebkit/zebkit.h>'s script reference is docs/API.md.
  */
 typedef struct zebkit_script zebkit_script;
 

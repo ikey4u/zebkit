@@ -2,7 +2,7 @@
 # Load every site in assets/WEBSITE-TOP-100.json with one built profile and
 # record what tools/pageprobe sees. Results go to out/compat/<profile>/:
 # <domain>.json (the probe's report) and <domain>.png (the viewport).
-# scripts/compat-report.py then compares two profiles. See docs/COMPAT.md.
+# scripts/compat-report.py then compares two profiles. See docs/archive/webkit/COMPAT.md.
 #
 #   scripts/compat.sh <profile> [domain...]     # all sites, or just the named ones
 #

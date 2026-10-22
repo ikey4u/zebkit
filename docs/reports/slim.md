@@ -1,17 +1,17 @@
 # Size report: `slim`
 
 - Upstream: Chromium 155.0.8059.84, content shell
-- Measured: 2026-10-20 on Linux x86_64, from the package directory `scripts/package.sh` assembles
-- **Total: 142.6 MiB** (within the 150.0 MiB limit)
-- Compressed: 44.7 MiB as `.tar.xz` (xz -6, as releases ship), 60.3 MiB as `.zip` (deflate -9, as Electron ships)
+- Measured: 2026-10-22 on Linux x86_64, from the package directory `scripts/package.sh` assembles
+- **Total: 157.3 MiB** (within the 255.7 MiB of Electron, the baseline)
+- Compressed: 53.9 MiB as `.tar.xz` (xz -6, as releases ship), 71.8 MiB as `.zip` (deflate -9, as Electron ships)
 - Oldest glibc it can run on: 2.25
 - Expects from the system: ld-linux-x86-64.so.2 libasound.so.2 libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0 libc.so.6 libdbus-1.so.3 libdl.so.2 libexpat.so.1 libgbm.so.1 libgcc_s.so.1 libglib-2.0.so.0 libgobject-2.0.so.0 libm.so.6 libnspr4.so libnss3.so libnssutil3.so libpthread.so.0 libudev.so.1 libX11.so.6 libxcb.so.1 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libxkbcommon.so.0 libXrandr.so.2
 
 | File | MiB |
 |---|---:|
-| `libzebkit.so.1` | 123.7 |
+| `libzebkit.so.1` | 137.6 |
 | `icudtl.dat` | 6.5 |
-| `libvk_swiftshader.so` | 3.0 |
+| `libvk_swiftshader.so` | 3.3 |
 | `v8_context_snapshot.bin` | 0.7 |
 | `include/zebkit/vendor/sqlite/src/amalgamation/sqlite3.h` | 0.7 |
 | `libvulkan.so.1` | 0.6 |
@@ -33,12 +33,15 @@
 | `include/zebkit/vendor/icu/unicode/ubidi.h` | 0.1 |
 | `include/zebkit/vendor/libxml.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/ucnv.h` | 0.1 |
+| `include/zebkit/vendor/pdfium/fpdf_formfill.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/uspoof.h` | 0.1 |
 | `include/zebkit/vendor/icu.h` | 0.1 |
 | `include/zebkit/vendor/boringssl/openssl/evp.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/ustring.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/uregex.h` | 0.1 |
+| `include/zebkit/vendor/pdfium/fpdf_edit.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/ucol.h` | 0.1 |
+| `include/zebkit/vendor/pdfium/fpdfview.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/ucal.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/uset.h` | 0.1 |
 | `include/zebkit/vendor/icu/unicode/udat.h` | 0.1 |
@@ -49,15 +52,17 @@
 | `include/zebkit/vendor/icu/unicode/unum.h` | 0.1 |
 | `include/zebkit/vendor/libjpeg/jpeglib.h` | 0.1 |
 | `include/zebkit/vendor/harfbuzz/hb-paint.h` | 0.1 |
+| `include/zebkit/vendor/ffmpeg.h` | 0.1 |
 | `include/zebkit/vendor/harfbuzz.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/pixfmt.h` | 0.0 |
-| `include/zebkit/vendor/ffmpeg.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/utf_old.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/opt.h` | 0.0 |
+| `include/zebkit/vendor/pdfium.h` | 0.0 |
 | `include/zebkit/vendor/libvpx/vpx/vpx_encoder.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/bio.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/bn.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/frame.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_annot.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-font.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/rsa.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/tree.h` | 0.0 |
@@ -77,11 +82,13 @@
 | `include/zebkit/vendor/ffmpeg/libavcodec/packet.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/utf8.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-buffer.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_text.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavformat/avio.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/udatpg.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/aead.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uscript.h` | 0.0 |
 | `include/zebkit/vendor/libwebp/webp/encode.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswscale/swscale.h` | 0.0 |
 | `include/zebkit/vendor/sqlite.h` | 0.0 |
 | `include/zebkit/vendor/sqlite/src/amalgamation/rename_exports.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/platform.h` | 0.0 |
@@ -89,6 +96,7 @@
 | `include/zebkit/vendor/libwebp/webp/mux.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/unorm2.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/utrans.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_structtree.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ubrk.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/ec.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/hwcontext.h` | 0.0 |
@@ -96,16 +104,20 @@
 | `include/zebkit/vendor/icu/unicode/uiter.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-unicode.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/mldsa.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswresample/swresample.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ucnv_err.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/unorm.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/mem.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlwriter.h` | 0.0 |
+| `include/zebkit/zebkit.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-script-list.h` | 0.0 |
 | `include/zebkit/vendor/brotli/brotli/encode.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/hpke.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/base.h` | 0.0 |
 | `include/zebkit/vendor/libvpx/vpx/vpx_ext_ratectrl.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_doc.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-ot-layout.h` | 0.0 |
+| `include/zebkit/pdf.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/codec_id.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ushape.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xpathInternals.h` | 0.0 |
@@ -140,15 +152,16 @@
 | `include/zebkit/vendor/harfbuzz/hb-deprecated.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/defs.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uconfig.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_sysfontinfo.h` | 0.0 |
 | `include/zebkit/vendor/dav1d/dav1d/dav1d.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlreader.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/pkcs8.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_transformpage.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/buffer.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/codec.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/valid.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlIO.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ulocdata.h` | 0.0 |
-| `include/zebkit/zebkit.h` | 0.0 |
 | `include/zebkit/vendor/libjpeg/jpeglibmangler.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uclean.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-subset.h` | 0.0 |
@@ -166,12 +179,14 @@
 | `include/zebkit/vendor/libxml/libxml/encoding.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/mathematics.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/dict.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_attachment.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/obj.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/mlkem.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/pkcs7.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/crypto.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/mem.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/utf.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libavutil/bprint.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/avutil.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/target.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/codec_par.h` | 0.0 |
@@ -179,15 +194,18 @@
 | `include/zebkit/vendor/boringssl/openssl/curve25519.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/aes.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uenum.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_dataavail.h` | 0.0 |
 | `include/zebkit/vendor/opus.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/sha2.h` | 0.0 |
 | `include/zebkit/vendor/zlib/chromeconf.h` | 0.0 |
 | `include/zebkit/vendor/zlib.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_progressive.h` | 0.0 |
 | `include/zebkit/vendor/libvpx/vpx/vp8dx.h` | 0.0 |
 | `include/zebkit/services.h` | 0.0 |
 | `include/zebkit/vendor/libjpeg.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/hash.h` | 0.0 |
 | `include/zebkit/vendor/libwebp/webp/types.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_signature.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/attributes.h` | 0.0 |
 | `include/zebkit/vendor/zstd.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/uvernum.h` | 0.0 |
@@ -218,6 +236,7 @@
 | `zebkit-helper` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/ex_data.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-blob.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_ppo.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/ufieldpositer.h` | 0.0 |
 | `include/zebkit/vendor/dav1d/dav1d/data.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/entities.h` | 0.0 |
@@ -235,15 +254,18 @@
 | `include/zebkit/vendor/harfbuzz/hb-shape-plan.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlversion.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlautomata.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_ext.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/sha.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-ot-fetch.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/engine.h` | 0.0 |
 | `include/zebkit/vendor/brotli/brotli/shared_dictionary.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/x509v3_errors.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libavutil/display.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/xmlsave.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-map.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-style.h` | 0.0 |
 | `include/zebkit/vendor/dav1d/dav1d/common.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_save.h` | 0.0 |
 | `include/zebkit/vendor/libwebp/webp/mux_types.h` | 0.0 |
 | `include/zebkit/vendor/libvpx/vpx/vpx_frame_buffer.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/parseerr.h` | 0.0 |
@@ -255,6 +277,7 @@
 | `include/zebkit/vendor/boringssl/openssl/hkdf.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/x509v3.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/uri.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_javascript.h` | 0.0 |
 | `include/zebkit/vendor/brotli/brotli/types.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/ecdh.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-version.h` | 0.0 |
@@ -270,22 +293,30 @@
 | `include/zebkit/vendor/icu/unicode/ptypes.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/md5.h` | 0.0 |
 | `include/zebkit/vendor/libjpeg/jconfig.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_catalog.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavformat/version_major.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_thumbnail.h` | 0.0 |
 | `include/zebkit/vendor/dav1d/dav1d/version.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/poly1305.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/dict.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/chacha.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/intfloat.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswresample/version.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavformat/version.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/version_major.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavcodec/version.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswscale/version.h` | 0.0 |
 | `include/zebkit/vendor/libxml/libxml/threads.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-ot.h` | 0.0 |
 | `include/zebkit/vendor/sqlite/sqlite3.h` | 0.0 |
 | `include/zebkit/vendor/harfbuzz/hb-ot-font.h` | 0.0 |
 | `include/zebkit/vendor/icu/unicode/umisc.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_searchex.h` | 0.0 |
 | `include/zebkit/vendor/libvpx/vpx/vpx_integer.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswscale/version_major.h` | 0.0 |
+| `include/zebkit/vendor/pdfium/fpdf_flatten.h` | 0.0 |
+| `include/zebkit/vendor/ffmpeg/libswresample/version_major.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/buffer.h` | 0.0 |
 | `include/zebkit/vendor/boringssl/openssl/is_boringssl.h` | 0.0 |
 | `include/zebkit/vendor/ffmpeg/libavutil/avconfig.h` | 0.0 |

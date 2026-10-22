@@ -1,7 +1,7 @@
 # zebkit for Rust
 
 Three crates, over the engine's C API (`<zebkit/zebkit.h>`,
-`<zebkit/services.h>`; `docs/blink/API.md`):
+`<zebkit/services.h>`; `docs/API.md`):
 
 | Crate | What it is |
 |---|---|
@@ -114,6 +114,6 @@ panics elsewhere.
 The crates and the engine have one version, in `VERSION` and
 `rust/Cargo.toml`. A release is an archive of the engine's package for each
 system, whose SHA-256 goes into `zebkit-rs/engines.txt`, published on
-GitHub before the crates. `scripts/release.sh` still makes the WebKit
-engine's archive; making the Blink engine's is on the roadmap
-(`docs/blink/ROADMAP.md`).
+GitHub before the crates. `scripts/release.sh` cannot build the Blink
+engine's archive yet (`docs/BUILD.md`, "Releases"); until it can, point
+`ZEBKIT_DIR` at a package you built.

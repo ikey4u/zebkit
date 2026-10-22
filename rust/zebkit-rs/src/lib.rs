@@ -9,7 +9,7 @@
 //! - [`ffmpeg`]: the FFmpeg inside the engine (`<zebkit/vendor/ffmpeg.h>`),
 //!   the part of it the `zebkit` crate uses.
 //!
-//! Names, types and rules are the C headers'; `docs/blink/API.md` in the
+//! Names, types and rules are the C headers'; `docs/API.md` in the
 //! repository is their reference. Strings and buffers the engine returns
 //! are freed with [`zebkit_free`].
 
