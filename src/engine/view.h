@@ -149,6 +149,8 @@ struct zebkit_view : public content::WebContentsObserver,
   void WebContentsDestroyed() override;
 
   zebkit_load_func on_load_ = nullptr;
+  // Made without a URL: the about:blank it starts on is not reported.
+  bool quiet_blank_ = false;
   void* on_load_data_ = nullptr;
   zebkit_title_func on_title_ = nullptr;
   void* on_title_data_ = nullptr;

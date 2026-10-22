@@ -93,7 +93,7 @@ pub struct View {
 }
 
 impl View {
-    /// A view loading `url` (`None` for `about:blank`), `width` by `height`
+    /// A view loading `url` (`None` for none, until [`View::load_url`]), `width` by `height`
     /// pixels, or a default size when either is 0.
     pub fn new(url: Option<&str>, width: u32, height: u32) -> View {
         require_engine_thread("View::new()");
