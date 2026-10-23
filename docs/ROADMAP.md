@@ -180,6 +180,37 @@ camera and microphone capture, and the device APIs.
   Every appearance checked against Acrobat's and PDF.js's rendering of
   the same file; patches to PDFium where it lacks a generator, as
   `patches/1015` does for lines and polygons.
+- **TODO: PDF extensible by applications, with hooks everywhere.** The
+  PDF library is the application's to extend, not a closed set of calls:
+  the same hooks in C (`zebkit_pdf_hook_*`), Rust, Python and
+  `zebkit.pdf` (`zebkit.pdf.use(plugin)` for a plugin of several).
+  - **Custom annotation types**: an application registers a kind of its
+    own (`/Subtype` or an application prefix): its properties and their
+    checks, the drawing of its appearance (a canvas API on Skia, written
+    into the appearance stream), its hit testing, and its data, kept in
+    the document under the application's prefix and carried through save,
+    copy, flatten and XFDF.
+  - **Appearance providers**: any type's appearance drawn by the
+    application instead of the built-in generator (its own stamps, fonts,
+    arrowheads), per document or for all.
+  - **Events, before and after**: opening, saving, a page rendered, an
+    annotation added, changed or removed, a form field changed, a
+    redaction applied, pages inserted, moved or deleted. A "before" hook
+    may change what is about to happen or refuse it; an "after" hook sees
+    what changed. Changes come as operations, so that an application can
+    keep an undo history or send them to collaborators.
+  - **Render layers**: drawing above or below a page's content when it is
+    rendered, in page space, for selections, search results, a
+    collaborator's cursor or a watermark.
+  - **Providers for what the library does not decide**: text for scanned
+    pages (an OCR engine of the application's), fonts for appearances and
+    free text, trust in a signer's certificate, and actions (links,
+    named, launch, JavaScript) handled by the application.
+  - **Tools for viewers**: input filters for drawing (smoothing ink,
+    snapping lines, constraining shapes) that a viewer's tools run through.
+  - **Checked by:** an example plugin that adds an annotation kind with
+    its own appearance, keeps an undo history and supplies OCR text, the
+    same in C and in JavaScript, with tests for every hook.
 - **PDF, beyond annotations**: trust in a signer's certificate (the chain,
   revocation), editing the outline, encrypted documents saved with new
   permissions, form fields renamed, a page's JavaScript actions. PDFium in
