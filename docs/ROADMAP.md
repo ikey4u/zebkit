@@ -1,7 +1,9 @@
 # Roadmap
 
 Where zebkit stands and what comes next. How the engine is made is
-`docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`.
+`docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`. The
+UI layer, applications in React, Solid or Vue drawn natively with each
+system's look, and iOS, has its own roadmap: `docs/ROADMAP_UI.md`.
 
 ## Requirements
 
@@ -38,7 +40,6 @@ camera and microphone capture, and the device APIs.
 | Bindings | Rust (`zebkit`, `zebkit-rs`, `zebkit-build`), Python (`ctypes`) | 2026-10-20 |
 | Page API | `zebkit.*` in pages the application grants, per origin and capability; calls over `zebkit://call`, bytes as they are | 2026-10-20, 2026-10-21 |
 | Script outside a page | `zebkit_script_*` and `zebkit-js`: an application in JavaScript on V8, without Node | 2026-10-20 |
-| Native UI | `zebkit.ui`: Chromium's views from JavaScript, signals, JSX, Tailwind classes, automation and capture | 2026-10-20 |
 | Schemes | The application's own URL schemes, answered by it, files in ranges for media | 2026-10-20 |
 | Views | Windows with titles, sizes and limits, views attached in another's window, profiles, user agents, pop-ups and drops to the application, the application's menu, files opened by the system | 2026-10-20, 2026-10-21 |
 | PDF | Chromium's PDFium in the engine; `<zebkit/pdf.h>` and `zebkit.pdf`: documents, rendering, text, search, outline, links, annotations with appearances, forms, redaction, page editing, attachments, metadata, images, signatures checked for integrity; PDFium patched where it had nothing | 2026-10-20, 2026-10-21 |
@@ -91,9 +92,6 @@ camera and microphone capture, and the device APIs.
   JavaScript actions, flattening or exporting one annotation, stamps made
   from another document's pages. PDFium in a sandboxed utility process for
   pages' documents, as Chrome's printing runs it.
-- **`zebkit.ui`**: a virtual list (widgets only for the rows in sight) and
-  a light button, so that long lists build as fast as a page does;
-  an application's frame on it.
 - **Services, later areas**: 2D drawing on Skia's canvas, shaping a line of
   text, decoding media frames, a key-value store; the desktop's
   clipboard, notifications, file dialogs, screens, power and keychain.
@@ -113,7 +111,6 @@ camera and microphone capture, and the device APIs.
 | The size limit is 150 MiB; 134.8 MiB accepted, no feature cut for size | 2026-10-19 |
 | Speed before the 150 MiB limit | 2026-10-21 |
 | PDF on Chromium's own PDFium, patched where needed; EmbedPDF's feature list is the reference, not its code | 2026-10-20 |
-| Native UI on Chromium's views, not Native Shell as a library (a second JavaScript engine, GTK 4, duplicates of the engine's libraries) | 2026-10-20 |
 | Porting Android's engine: not done (`docs/SIZE_AND_SPEED.md`) | 2026-10-18 |
 
 ## Costs to plan for
