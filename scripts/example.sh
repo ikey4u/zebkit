@@ -57,8 +57,8 @@ case "$example" in
         [[ -f "$dist/include/zebkit/vendor/ffmpeg.h" ]] || die "$dist does not expose FFmpeg"
         log "building examples/ffmpeg.cpp against $dist"
         c++ -std=c++17 -O1 -Wall -o "$binary" "$ZEBKIT_ROOT/examples/ffmpeg.cpp" -I"$dist/include" "${link[@]}"
-        # With nothing named, the sample the media test plays.
-        (( $# )) || set -- "$ZEBKIT_ROOT/tests/media/sample.mp3"
+        # With nothing named, the sample beside the example.
+        (( $# )) || set -- "$ZEBKIT_ROOT/examples/sample.mp3"
         (( $# > 1 )) || set -- "$1" "$out/$(basename "${1%.*}").wav"
         ;;
 esac

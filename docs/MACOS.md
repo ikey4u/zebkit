@@ -1,8 +1,7 @@
 # macOS
 
 zebkit for macOS: `Zebkit.framework`, for Apple silicon (arm64), with the
-same functions as on Linux, built on the Linux machine. The WebKit
-engine's port is recorded in `docs/archive/webkit/MACOS.md`.
+same functions as on Linux, built on the Linux machine.
 
 ## The package
 

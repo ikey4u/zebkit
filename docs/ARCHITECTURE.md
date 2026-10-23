@@ -167,23 +167,3 @@ browser target's WebSocket address (`zebkit_cdp_get_url()`).
 | `src/engine/vendor/gen_vendor.py` | The libraries' entry points and headers |
 | `src/engine/include/zebkit/` | The public headers |
 | `src/engine/BUILD.gn` | The library, the helper, the framework; linked into Chromium's tree as `//zebkit/engine` |
-
-## What is left of WebKit
-
-zebkit was a trimmed WebKit build until 2026-10-17. These files belong to
-that engine and are not used by the Blink build; they are to be removed
-(`docs/ROADMAP.md`):
-
-- `profiles/*.cmake`, `profiles/macos/`, `profiles/windows/`, `profiles/include/`
-- `patches/0001` to `0012`, `patches/2001` to `2015`, `patches/series.macos`, `patches/series.windows`
-- `deps/` and `scripts/build-deps.sh`, `scripts/fetch-toolchain.sh`, `scripts/fetch-toolchain-windows.sh`, `toolchain.lock`
-- `src/cdp/`, `src/view/`, `src/framework/`, `scripts/gen-cdp-protocol.py`, `deps/devtools-protocol/`
-- `scripts/build-macos.sh`, `scripts/build-windows.sh`, `scripts/package-macos.sh`, `scripts/wine.sh`, `scripts/codesize.py`
-- `scripts/smoke.sh`, `scripts/media.sh`, `scripts/display.sh`, `scripts/cdp.sh`, `scripts/compat.sh`, `scripts/compat-report.py`, `scripts/vendor.sh`, `tests/smoke`, `tests/display`, `tests/vendor`, and `tests/media` but its `sample.mp3`, which the FFmpeg example decodes
-- `tools/pageprobe/`, `tools/cdphost/`, `tools/syslib-stubs/`
-- `docs/archive/webkit/`, the record of that engine, which stays
-
-Kept, for either engine: `tools/crashsite` with `scripts/symbolize.py` (where
-a process crashed, in function names), and `tests/cdp`, the raw protocol
-checks `scripts/cdp-reference.sh` runs against Chrome, to be run against
-zebkit's Blink endpoint too.

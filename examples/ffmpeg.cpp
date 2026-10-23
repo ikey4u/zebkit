@@ -4,7 +4,8 @@
 //
 // The application has no FFmpeg of its own. It includes one header, uses the
 // library's ordinary API in the namespace zebkit::vendor::ffmpeg, and links
-// against the engine and nothing else (docs/API.md, "The libraries inside the engine"). On Linux:
+// against the engine and nothing else (docs/API.md, "The libraries inside
+// the engine"). On Linux:
 //
 //   c++ -std=c++17 ffmpeg.cpp -o ffmpeg -I<package>/include -L<package> -l:libzebkit.so.1
 //
@@ -13,9 +14,10 @@
 //   c++ -std=c++17 ffmpeg.cpp -o ffmpeg -I<package>/include -F<package> -framework Zebkit
 //
 // This one works on the codec level: an MP3 file is a bare audio stream,
-// which the codec's parser splits into frames. The engine's FFmpeg can also
-// open container files (MP4, WebM, Ogg, WAV) with libavformat, scale video
-// and encode; tests/vendor/ffmpeg-files.cpp does all three.
+// which the codec's parser splits into frames. The engine's FFmpeg also
+// opens container files (MP4, WebM, Matroska) with libavformat, writes them
+// with its muxers, scales video with libswscale and resamples audio with
+// libswresample; it has no encoders.
 
 #include <zebkit/vendor/ffmpeg.h>
 

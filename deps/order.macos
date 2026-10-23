@@ -1,4 +1,0 @@
-# Build order for scripts/build-deps.sh on macOS: one recipe name per line.
-# The system supplies what the engine itself needs there; this is what is
-# built for applications to use through the engine (docs/archive/webkit/VENDOR.md).
-ffmpeg

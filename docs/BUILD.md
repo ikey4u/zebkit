@@ -98,7 +98,6 @@ in a profile is preferred to a patch wherever one exists.
 |---|---|
 | `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
 | `cd rust && cargo test` | The Rust crates against the real engine |
-| `scripts/cdp-reference.sh` | The raw protocol checks against Chrome itself, for comparison |
 
 ## Measuring
 

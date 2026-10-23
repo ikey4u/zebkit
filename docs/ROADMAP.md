@@ -67,10 +67,9 @@ camera and microphone capture, and the device APIs.
   and build machines often lack; the engine then refuses to start without
   `--no-sandbox`. Agents run in such places: zebkit needs a stated answer
   (ship the helper, document `--no-sandbox` for containers, or both).
-- **CDP checked against Puppeteer and Playwright** on Blink, with
-  Chrome's results as the reference. The engine serves Chromium's own
-  DevTools endpoint; the client tests in `tests/cdp` are still the WebKit
-  engine's.
+- **CDP checked against Puppeteer and Playwright**, with Chrome's
+  results as the reference: the engine serves Chromium's own DevTools
+  endpoint, and a suite of client tests against it is still to be written.
 
 ### Platforms
 
@@ -106,16 +105,11 @@ camera and microphone capture, and the device APIs.
   of `base`'s thread-local pointers goes stale); linking it, or loading it
   first, is what works now.
 
-### The repository
-
-- The WebKit engine's files (`docs/ARCHITECTURE.md`, "What is left of
-  WebKit") removed.
-
 ## Decided
 
 | Decision | When |
 |---|---|
-| Blink in place of WebKit, for one engine on every system | 2026-10-17 |
+| Chromium's content layer and Blink, one engine on every system | 2026-10-17 |
 | The engine is a library with a helper program, started by the application | 2026-10-19 |
 | The size limit is 150 MiB; 134.8 MiB accepted, no feature cut for size | 2026-10-19 |
 | Speed before the 150 MiB limit | 2026-10-21 |

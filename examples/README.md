@@ -32,7 +32,7 @@ cc -std=c11 -I$PKG/include tools/zebkit-js/zebkit-js.c -L$PKG -l:libzebkit.so.1 
 
 # ffmpeg.cpp
 c++ -std=c++17 examples/ffmpeg.cpp -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o ffmpeg-example
-./ffmpeg-example tests/media/sample.mp3 out.wav
+./ffmpeg-example examples/sample.mp3 out.wav
 
 # the Rust examples
 cd rust && ZEBKIT_DIR=$PKG cargo run --example window -- https://example.com/
