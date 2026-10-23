@@ -244,6 +244,18 @@ static void ready(void *data) {
                               "\"items\": [{\"role\": \"copy\"}, {\"role\": \"selectAll\", \"title\": \"All\"}]}]",
                               on_menu, NULL, &error),
           "zebkit_app_set_menu", error);
+    /* An application menu of the application's own, with the system's
+     * Services in it, taken twice: on macOS the Services menu goes into it
+     * (AppKit throws for a menu put in two items). */
+    for (int i = 0; i < 2; i++) {
+        zebkit_free(error);
+        error = NULL;
+        check(zebkit_app_set_menu("[{\"role\": \"appMenu\", \"items\": [{\"role\": \"about\"}, {\"separator\": "
+                                  "true}, {\"role\": \"services\"}, {\"separator\": true}, {\"role\": \"quit\"}]}, "
+                                  "{\"title\": \"Edit\", \"items\": [{\"role\": \"copy\"}]}]",
+                                  on_menu, NULL, &error),
+              "zebkit_app_set_menu with an application menu and Services", error);
+    }
     zebkit_app_on_open_files(on_open_files, NULL);
     zebkit_app_on_reopen(on_app, NULL);
     zebkit_app_on_quit_request(on_app, NULL);

@@ -115,6 +115,22 @@ NSMenuItem* NewMenuItem(NSString* title, SEL action, NSString* key) {
   return [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key];
 }
 
+// The system's Services menu, taken out of the item it is in: a menu bar
+// set again still has it, and AppKit throws for a menu put in two items.
+NSMenu* ServicesMenu() {
+  NSMenu* services = NSApp.servicesMenu;
+  if (!services) {
+    services = [[NSMenu alloc] initWithTitle:@"Services"];
+    NSApp.servicesMenu = services;
+  }
+  if (NSMenu* holder = services.supermenu) {
+    NSInteger index = [holder indexOfItemWithSubmenu:services];
+    if (index >= 0)
+      [holder itemAtIndex:index].submenu = nil;
+  }
+  return services;
+}
+
 NSMenu* Submenu(NSMenu* main, NSString* title) {
   NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                 action:nullptr
@@ -179,7 +195,7 @@ void AddItems(NSMenu* menu, const std::vector<MenuItem>& items) {
       NSMenuItem* services = NewMenuItem(
           base::SysUTF8ToNSString(item.title.empty() ? "Services" : item.title),
           nullptr, @"");
-      services.submenu = NSApp.servicesMenu;
+      services.submenu = ServicesMenu();
       [menu addItem:services];
       continue;
     }
@@ -317,9 +333,6 @@ void SetUpMenuBar() {
   NSString* name = NSProcessInfo.processInfo.processName;
   NSMenu* main = [[NSMenu alloc] initWithTitle:@""];
   NSMenu* application = Submenu(main, name);
-  NSMenuItem* services = NewMenuItem(@"Services", nullptr, @"");
-  services.submenu = [[NSMenu alloc] initWithTitle:@"Services"];
-  app.servicesMenu = services.submenu;
   const std::vector<MenuItem>& menu = AppMenu();
   // The application's own application menu ("appMenu"), or zebkit's.
   const bool own = !menu.empty() && menu[0].role == "appMenu";
@@ -330,6 +343,8 @@ void SetUpMenuBar() {
                                      @selector(orderFrontStandardAboutPanel:),
                                      @"")];
     [application addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* services = NewMenuItem(@"Services", nullptr, @"");
+    services.submenu = ServicesMenu();
     [application addItem:services];
     [application addItem:[NSMenuItem separatorItem]];
     [application addItem:NewMenuItem([@"Hide " stringByAppendingString:name],
