@@ -25,6 +25,9 @@
 //! - [`scheme`] makes URL schemes of the application's own, which it
 //!   answers: its interface and its files, without a server.
 //! - [`vendor`] is the libraries inside the engine: FFmpeg, so far.
+//! - [`offscreen`] is views without a window, whose frames the application
+//!   draws itself (shared surfaces: IOSurfaces, shared memory, dmabufs) and
+//!   whose input it sends: [`View::new_offscreen`].
 //!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
 //! re-exports as [`sys`] for whatever is not wrapped here yet. The C API it
@@ -39,6 +42,7 @@
 pub mod app;
 pub mod cdp;
 mod engine;
+pub mod offscreen;
 pub mod pdf;
 pub mod scheme;
 mod script;

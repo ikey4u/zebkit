@@ -56,12 +56,12 @@ impl BitOr for Allow {
     }
 }
 
-type Slot<T> = RefCell<Option<Box<T>>>;
+pub(crate) type Slot<T> = RefCell<Option<Box<T>>>;
 type LoadFunction = dyn FnMut(LoadEvent, &str);
 
-struct Inner {
+pub(crate) struct Inner {
     /// Null once the view is closed.
-    raw: Cell<*mut sys::zebkit_view>,
+    pub(crate) raw: Cell<*mut sys::zebkit_view>,
     on_load: Slot<LoadFunction>,
     on_title: Slot<dyn FnMut(&str)>,
     on_close: Slot<dyn FnOnce()>,
@@ -74,6 +74,8 @@ struct Inner {
     /// may be running. Boxed: the engine held their addresses.
     #[allow(clippy::vec_box)]
     retired: RefCell<Vec<Box<Binding>>>,
+    /// An off-screen view's (offscreen.rs).
+    pub(crate) offscreen: crate::offscreen::Slots,
 }
 
 struct Binding {
@@ -89,7 +91,7 @@ struct Binding {
 /// clone is the same view. What a closed view is asked to do is not done.
 #[derive(Clone)]
 pub struct View {
-    inner: Rc<Inner>,
+    pub(crate) inner: Rc<Inner>,
 }
 
 impl View {
@@ -105,6 +107,11 @@ impl View {
                 c_int::try_from(height).unwrap_or(c_int::MAX),
             )
         };
+        View::wrap(raw)
+    }
+
+    /// The view the engine made, with the callbacks every view has.
+    pub(crate) fn wrap(raw: *mut sys::zebkit_view) -> View {
         let inner = Rc::new(Inner {
             raw: Cell::new(raw),
             on_load: RefCell::new(None),
@@ -114,6 +121,7 @@ impl View {
             on_drop: RefCell::new(None),
             bindings: RefCell::new(HashMap::new()),
             retired: RefCell::new(Vec::new()),
+            offscreen: Default::default(),
         });
         // The engine holds one reference until the view closes.
         let data = Rc::into_raw(inner.clone()).cast_mut().cast::<c_void>();
@@ -125,7 +133,7 @@ impl View {
         View { inner }
     }
 
-    fn raw(&self) -> Option<*mut sys::zebkit_view> {
+    pub(crate) fn raw(&self) -> Option<*mut sys::zebkit_view> {
         let raw = self.inner.raw.get();
         (!raw.is_null()).then_some(raw)
     }
@@ -411,7 +419,7 @@ impl Drop for Call {
 
 /// Calls the closure in `slot` without holding it borrowed, so that the
 /// closure may replace it; put back unless it was.
-fn call_slot<T: ?Sized>(slot: &Slot<T>, call: impl FnOnce(&mut T)) {
+pub(crate) fn call_slot<T: ?Sized>(slot: &Slot<T>, call: impl FnOnce(&mut T)) {
     let Some(mut function) = slot.borrow_mut().take() else { return };
     call(&mut function);
     let mut current = slot.borrow_mut();
@@ -458,6 +466,7 @@ unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     inner.on_drop.borrow_mut().take();
     inner.bindings.borrow_mut().clear();
     inner.retired.borrow_mut().clear();
+    inner.offscreen.clear();
 }
 
 unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(

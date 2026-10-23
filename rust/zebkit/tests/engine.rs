@@ -10,9 +10,11 @@ use std::time::Duration;
 use zebkit::services::{self, Compression, Digest, ImageFormat, UrlPart};
 use zebkit::vendor::ffmpeg;
 use zebkit::pdf::{Document, RenderOptions};
+use zebkit::offscreen::{FrameBuffer, Modifiers, MouseButton, MouseEvent};
 use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
 
 thread_local! {
+    static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
     static FAILED: Cell<u32> = const { Cell::new(0) };
     static PASSED: Cell<u32> = const { Cell::new(0) };
 }
@@ -150,7 +152,15 @@ fn engine(page_port: u16) {
 
     // A page from a scheme of the application's own, and its fetch().
     scheme::handle("rs", |request| {
-        if request.url() == "rs://test/index.html" {
+        if request.url() == "rs://test/offscreen.html" {
+            request.respond(
+                200,
+                "Content-Type: text/html",
+                b"<body style='margin:0;background:rgb(0,128,255)'>\
+                  <button style='position:absolute;left:10px;top:10px;width:100px;height:40px' \
+                  onclick='document.title = \"clicked\"'>x</button></body>",
+            );
+        } else if request.url() == "rs://test/index.html" {
             request.respond(
                 200,
                 "Content-Type: text/html",
@@ -161,6 +171,7 @@ fn engine(page_port: u16) {
             request.respond(200, "Content-Type: text/plain", answer.as_bytes());
         }
     });
+    offscreen();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -242,6 +253,56 @@ fn engine(page_port: u16) {
     view.load_url(&format!("http://127.0.0.1:{page_port}/"));
 }
 
+/// An off-screen view: its frames, shared memory or an IOSurface, and a
+/// click sent to it.
+fn offscreen() {
+    let Some(view) = View::new_offscreen(Some("rs://test/offscreen.html"), 200, 100, 2.0) else {
+        check(false, "View::new_offscreen", "none");
+        OFFSCREEN_DONE.with(|done| done.set(true));
+        return;
+    };
+    check(view.is_offscreen(), "View::new_offscreen", ());
+    let clicked = Rc::new(Cell::new(false));
+    {
+        let (view2, clicked) = (view.clone(), clicked.clone());
+        view.on_frame(move |frame| {
+            if clicked.get() {
+                return;
+            }
+            let blue = match frame.buffer() {
+                // (150, 45) in CSS pixels, at a scale of 2: B, G, R, A.
+                FrameBuffer::SharedMemory { pixels, stride, .. } => {
+                    let at = 90 * stride + 300 * 4;
+                    pixels.get(at..at + 4) == Some(&[255, 128, 0, 255][..])
+                }
+                FrameBuffer::IoSurface(surface) => !surface.is_null(),
+                FrameBuffer::Dmabuf { fds, .. } => !fds.is_empty(),
+            };
+            if !blue {
+                return;
+            }
+            check(
+                frame.width() == 400 && frame.height() == 200 && frame.scale() == 2.0 && !frame.damage().is_empty(),
+                "an off-screen frame, at its scale",
+                &frame,
+            );
+            clicked.set(true);
+            view2.send_mouse(MouseEvent::Down, 50.0, 30.0, MouseButton::Left, 1, Modifiers::NONE);
+            view2.send_mouse(MouseEvent::Up, 50.0, 30.0, MouseButton::Left, 1, Modifiers::NONE);
+        });
+    }
+    {
+        let view2 = view.clone();
+        view.on_title(move |title| {
+            if title == "clicked" {
+                check(true, "a click sent to the off-screen view", ());
+                view2.close();
+                OFFSCREEN_DONE.with(|done| done.set(true));
+            }
+        });
+    }
+}
+
 fn script_and_cdp(view: View) {
     let script = Script::new(&["one", "two"]);
     let script = Rc::new(script);
@@ -283,7 +344,7 @@ fn script_and_cdp(view: View) {
         text
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
-        if !client.is_finished() {
+        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

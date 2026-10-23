@@ -6,6 +6,8 @@
 //!   outside any page and CDP: `<zebkit/zebkit.h>`.
 //! - What the engine has for applications besides: compression, digests and
 //!   encryption, URLs, images and HTTP (`<zebkit/services.h>`).
+//! - Off-screen views, whose frames are shared surfaces and whose input
+//!   the application sends (`<zebkit/offscreen.h>`).
 //! - [`ffmpeg`]: the FFmpeg inside the engine (`<zebkit/vendor/ffmpeg.h>`),
 //!   the part of it the `zebkit` crate uses.
 //!
@@ -466,6 +468,189 @@ extern "C" {
         size: usize,
     );
     pub fn zebkit_request_respond_file(request: *mut zebkit_request, path: *const c_char, headers: *const c_char);
+}
+
+// ---- Off-screen views: <zebkit/offscreen.h> --------------------------------
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct zebkit_rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// `zebkit_frame_kind`.
+pub type zebkit_frame_kind = c_int;
+pub const ZEBKIT_FRAME_SHARED_MEMORY: zebkit_frame_kind = 1;
+pub const ZEBKIT_FRAME_IOSURFACE: zebkit_frame_kind = 2;
+pub const ZEBKIT_FRAME_DMABUF: zebkit_frame_kind = 3;
+
+/// `zebkit_frame_layer`.
+pub type zebkit_frame_layer = c_int;
+pub const ZEBKIT_LAYER_VIEW: zebkit_frame_layer = 0;
+pub const ZEBKIT_LAYER_POPUP: zebkit_frame_layer = 1;
+
+/// `zebkit_pixel_format`.
+pub type zebkit_pixel_format = c_int;
+pub const ZEBKIT_FORMAT_BGRA8: zebkit_pixel_format = 1;
+pub const ZEBKIT_FORMAT_RGBA8: zebkit_pixel_format = 2;
+
+#[repr(C)]
+pub struct zebkit_frame {
+    pub sequence: u64,
+    pub layer: zebkit_frame_layer,
+    pub bounds: zebkit_rect,
+    pub width: i32,
+    pub height: i32,
+    pub scale: f32,
+    pub damage: *const zebkit_rect,
+    pub damage_count: usize,
+    pub drawn_us: i64,
+    pub ready_us: i64,
+    pub kind: zebkit_frame_kind,
+    pub format: zebkit_pixel_format,
+    pub buffer_id: u64,
+    pub pixels: *const u8,
+    pub stride: usize,
+    pub fd: c_int,
+    pub size: usize,
+    pub offset: usize,
+    pub iosurface: *mut c_void,
+    pub plane_count: c_int,
+    pub fds: [c_int; 4],
+    pub strides: [u32; 4],
+    pub offsets: [u32; 4],
+    pub modifier: u64,
+    pub fourcc: u32,
+}
+
+/// `zebkit_frame_buffers`.
+pub type zebkit_frame_buffers = c_int;
+pub const ZEBKIT_BUFFERS_AUTO: zebkit_frame_buffers = 0;
+pub const ZEBKIT_BUFFERS_SHARED_MEMORY: zebkit_frame_buffers = 1;
+pub const ZEBKIT_BUFFERS_GPU: zebkit_frame_buffers = 2;
+
+/// `zebkit_modifiers` bits.
+pub const ZEBKIT_MODIFIER_SHIFT: c_uint = 1 << 0;
+pub const ZEBKIT_MODIFIER_CONTROL: c_uint = 1 << 1;
+pub const ZEBKIT_MODIFIER_ALT: c_uint = 1 << 2;
+pub const ZEBKIT_MODIFIER_META: c_uint = 1 << 3;
+pub const ZEBKIT_MODIFIER_CAPS_LOCK: c_uint = 1 << 4;
+pub const ZEBKIT_MODIFIER_NUM_LOCK: c_uint = 1 << 5;
+pub const ZEBKIT_MODIFIER_LEFT_BUTTON: c_uint = 1 << 6;
+pub const ZEBKIT_MODIFIER_MIDDLE_BUTTON: c_uint = 1 << 7;
+pub const ZEBKIT_MODIFIER_RIGHT_BUTTON: c_uint = 1 << 8;
+pub const ZEBKIT_MODIFIER_KEYPAD: c_uint = 1 << 9;
+pub const ZEBKIT_MODIFIER_AUTO_REPEAT: c_uint = 1 << 10;
+
+/// `zebkit_mouse_type`.
+pub type zebkit_mouse_type = c_int;
+pub const ZEBKIT_MOUSE_MOVE: zebkit_mouse_type = 0;
+pub const ZEBKIT_MOUSE_DOWN: zebkit_mouse_type = 1;
+pub const ZEBKIT_MOUSE_UP: zebkit_mouse_type = 2;
+pub const ZEBKIT_MOUSE_LEAVE: zebkit_mouse_type = 3;
+
+/// `zebkit_mouse_button`.
+pub type zebkit_mouse_button = c_int;
+pub const ZEBKIT_BUTTON_NONE: zebkit_mouse_button = 0;
+pub const ZEBKIT_BUTTON_LEFT: zebkit_mouse_button = 1;
+pub const ZEBKIT_BUTTON_MIDDLE: zebkit_mouse_button = 2;
+pub const ZEBKIT_BUTTON_RIGHT: zebkit_mouse_button = 3;
+pub const ZEBKIT_BUTTON_BACK: zebkit_mouse_button = 4;
+pub const ZEBKIT_BUTTON_FORWARD: zebkit_mouse_button = 5;
+
+/// `zebkit_wheel_phase`.
+pub type zebkit_wheel_phase = c_int;
+pub const ZEBKIT_WHEEL_PHASE_NONE: zebkit_wheel_phase = 0;
+pub const ZEBKIT_WHEEL_PHASE_BEGAN: zebkit_wheel_phase = 1;
+pub const ZEBKIT_WHEEL_PHASE_CHANGED: zebkit_wheel_phase = 2;
+pub const ZEBKIT_WHEEL_PHASE_ENDED: zebkit_wheel_phase = 3;
+pub const ZEBKIT_WHEEL_PHASE_MOMENTUM: zebkit_wheel_phase = 4;
+
+/// `zebkit_key_type`.
+pub type zebkit_key_type = c_int;
+pub const ZEBKIT_KEY_DOWN: zebkit_key_type = 0;
+pub const ZEBKIT_KEY_UP: zebkit_key_type = 1;
+pub const ZEBKIT_KEY_CHAR: zebkit_key_type = 2;
+
+#[repr(C)]
+pub struct zebkit_key_event {
+    pub type_: zebkit_key_type,
+    pub modifiers: c_uint,
+    pub key_code: c_int,
+    pub native_key_code: c_int,
+    pub code: *const c_char,
+    pub key: *const c_char,
+    pub text: *const c_char,
+    pub unmodified_text: *const c_char,
+}
+
+#[repr(C)]
+pub struct zebkit_cursor_image {
+    pub pixels: *const u8,
+    pub width: i32,
+    pub height: i32,
+    pub hot_x: i32,
+    pub hot_y: i32,
+    pub scale: f32,
+}
+
+pub type zebkit_frame_func = unsafe extern "C" fn(view: *mut zebkit_view, frame: *const zebkit_frame, data: *mut c_void);
+pub type zebkit_caret_func = unsafe extern "C" fn(view: *mut zebkit_view, caret: *const zebkit_rect, data: *mut c_void);
+pub type zebkit_cursor_func = unsafe extern "C" fn(
+    view: *mut zebkit_view,
+    cursor: *const c_char,
+    image: *const zebkit_cursor_image,
+    data: *mut c_void,
+);
+pub type zebkit_popup_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, shown: bool, bounds: *const zebkit_rect, data: *mut c_void);
+
+extern "C" {
+    pub fn zebkit_view_new_offscreen(url: *const c_char, width: c_int, height: c_int, scale: f32) -> *mut zebkit_view;
+    pub fn zebkit_view_is_offscreen(view: *mut zebkit_view) -> bool;
+    pub fn zebkit_view_set_size(view: *mut zebkit_view, width: c_int, height: c_int, scale: f32);
+    pub fn zebkit_view_on_frame(view: *mut zebkit_view, func: Option<zebkit_frame_func>, data: *mut c_void);
+    pub fn zebkit_frame_release(frame: *const zebkit_frame);
+    pub fn zebkit_view_set_frame_rate(view: *mut zebkit_view, fps: f64);
+    pub fn zebkit_view_set_max_frames_in_flight(view: *mut zebkit_view, count: c_int);
+    pub fn zebkit_view_set_frame_buffers(view: *mut zebkit_view, buffers: zebkit_frame_buffers);
+    pub fn zebkit_view_request_frame(view: *mut zebkit_view);
+    pub fn zebkit_frame_iosurface_mach_port(frame: *const zebkit_frame) -> u32;
+    pub fn zebkit_view_send_mouse(
+        view: *mut zebkit_view,
+        type_: zebkit_mouse_type,
+        x: f32,
+        y: f32,
+        button: zebkit_mouse_button,
+        click_count: c_int,
+        modifiers: c_uint,
+    );
+    pub fn zebkit_view_send_wheel(
+        view: *mut zebkit_view,
+        x: f32,
+        y: f32,
+        delta_x: f32,
+        delta_y: f32,
+        precise: bool,
+        phase: zebkit_wheel_phase,
+        modifiers: c_uint,
+    );
+    pub fn zebkit_view_send_key(view: *mut zebkit_view, event: *const zebkit_key_event);
+    pub fn zebkit_view_ime_set_composition(
+        view: *mut zebkit_view,
+        text: *const c_char,
+        selection_start: c_int,
+        selection_end: c_int,
+    );
+    pub fn zebkit_view_ime_commit(view: *mut zebkit_view, text: *const c_char);
+    pub fn zebkit_view_ime_cancel(view: *mut zebkit_view);
+    pub fn zebkit_view_on_caret(view: *mut zebkit_view, func: Option<zebkit_caret_func>, data: *mut c_void);
+    pub fn zebkit_view_set_focus(view: *mut zebkit_view, focused: bool);
+    pub fn zebkit_view_on_cursor(view: *mut zebkit_view, func: Option<zebkit_cursor_func>, data: *mut c_void);
+    pub fn zebkit_view_on_popup(view: *mut zebkit_view, func: Option<zebkit_popup_func>, data: *mut c_void);
 }
 
 /// The FFmpeg inside the engine. The engine exports each of its functions
