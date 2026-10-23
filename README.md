@@ -246,10 +246,9 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
 
 ## Benchmark
 
-Every comparison is with the latest stable Electron, 44.9 (Chromium 152),
-unless it says otherwise.
-
-### The engine
+Every comparison is with the latest stable Electron, 44.9 (Chromium 152).
+A comparison of whole applications, the same one on both, is still to be
+made (`docs/ROADMAP.md`).
 
 | | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
 |---|---:|---:|---:|
@@ -268,32 +267,6 @@ unless it says otherwise.
   link-time optimization but optimizes part of the engine for size;
   closing the gap is on the roadmap (`docs/ROADMAP.md`).
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
-
-### An application
-
-A desktop document reader with PDF, EPUB and OCR, moved from Electron to
-zebkit. The same harness, production builds, medians of five runs on
-Linux. **The Electron column is the application as it shipped, on
-Electron 36**; it has not been measured on 44.9 yet (`docs/ROADMAP.md`).
-
-| | zebkit | Electron 36 | |
-|---|---:|---:|---:|
-| Start | **0.50 s** | 1.08 s | 2.2× faster |
-| CPU at idle | **0.35%** | 51.5% | 147× less |
-| Memory at idle | **290 MB** | 958 MB | 3.3× less |
-| 756-page PDF: first page | **1.12 s** | 5.3 s | 4.7× faster |
-| PDF: fully loaded | **3.2 s** | 11.8 s | 3.7× faster |
-| PDF: longest freeze | **0.10 s** | 2.9 s | 29× shorter |
-| PDF: scroll frames p50 / p95 / max | **22 / 48 / 66 ms** | 170 / 456 / 1,412 ms | 8–21× smoother |
-| PDF: CPU time | **24 s** | 163 s | 6.8× less |
-| PDF: memory | **1.37 GB** | 3.1 GB | 2.3× less |
-| EPUB: CPU time | **1.1 s** | 89 s | 81× less |
-| Installed size | **262 MiB** | 1,490 MiB | 5.7× smaller |
-
-These gains are not the engine's text layout, where the latest Electron is
-ahead. They come mostly from how the application is built on zebkit: no
-Node, PDF in the engine, bytes passed without base64. How much of each is
-not measured separately.
 
 ## Reference
 

@@ -45,7 +45,6 @@ camera and microphone capture, and the device APIs.
 | PDF | Chromium's PDFium in the engine; `<zebkit/pdf.h>` and `zebkit.pdf`: documents, rendering, text, search, outline, links, annotations with appearances, forms, redaction, page editing, attachments, metadata, images, signatures checked for integrity; PDFium patched where it had nothing | 2026-10-20, 2026-10-21 |
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
-| An application | A document reader moved from Electron to zebkit. Against its Electron version on Linux, medians of five runs: start 0.50 s (1.08), idle CPU 0.35% (51.5%), idle memory 290 MB (958); a 756-page PDF's first page 1.1 s (5.3), its longest freeze 0.10 s (2.9), its scrolling frames 22 ms at the median (170) | 2026-10-22 |
 
 ## Next
 
@@ -72,13 +71,41 @@ camera and microphone capture, and the device APIs.
   (`docs/SIZE_AND_SPEED.md`). What is left at `-Os` for size, and the
   inliner trained for size at the link (8.2 ms without it, 14 MiB more),
   are where to look; every comparison is with the latest stable Electron.
-- **The application measured against the latest Electron.** The document
-  reader's comparison (`README.md`) is against its build on Electron 36;
-  it is to be measured again with its Electron build moved to the latest
-  stable release.
 - **CDP checked against Puppeteer and Playwright**, with Chrome's
   results as the reference: the engine serves Chromium's own DevTools
   endpoint, and a suite of client tests against it is still to be written.
+
+### Measurements
+
+- **TODO: a fully equal comparison with Electron.** The comparison of
+  whole applications that was published (a document reader against its
+  build on Electron 36) was withdrawn on 2026-10-23: an old Electron, and
+  two builds of an application that differed in more than the runtime. To
+  be made again, and published only when every condition below holds:
+  - **One application, two hosts.** The same interface and the same work
+    on both: one source for the pages and their logic, and two thin hosts
+    that do the same things, Electron's main process and zebkit's. What
+    the application calls (files, PDF, HTTP, bytes between page and
+    host) is the same call on both, or both use the same library.
+  - **The latest stable Electron** at the time of measuring, named with its
+    Chromium version beside zebkit's.
+  - **Production builds of both**, packaged as they ship, on the same
+    machine, at rest, the same display and the same files.
+  - **The same harness** drives both and reads both: the same steps, the
+    same clock, medians of at least five runs with the spread, cold start
+    and warm start apart.
+  - **What is measured:** start to the first frame; CPU and memory at rest
+    (every process counted); page work (text layout, JavaScript, DOM);
+    heavy documents (a long PDF and an EPUB: first page, fully loaded,
+    longest freeze, scrolling frames at p50, p95 and max, CPU time,
+    memory); calls between page and host (latency and throughput, small
+    and large bytes); the download and the installed size.
+  - **Linux and macOS**, each on its own machine; Windows when zebkit
+    runs there.
+  - **Repeatable:** the application, both hosts and the harness in
+    `tests/bench/`, one command to run it; the results with the date, the
+    versions and the machine in `docs/SIZE_AND_SPEED.md`, losses shown as
+    plainly as wins.
 
 ### Platforms
 
