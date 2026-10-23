@@ -100,7 +100,8 @@ for platform in "${PLATFORMS[@]}"; do
                 libavformat/muxer_list.c libavformat/protocol_list.c; do
         [[ -f "$from/$file" ]] || continue
         mkdir -p "$to/$(dirname "$file")"
-        cp "$from/$file" "$to/$file"
+        # The configure line names the checkout; it is written relative to it.
+        sed "s|$ZEBKIT_ROOT/||g" "$from/$file" > "$to/$file"
     done
 done
 cp "$copy/ffmpeg_generated.gni" "$out/ffmpeg_generated.gni"
