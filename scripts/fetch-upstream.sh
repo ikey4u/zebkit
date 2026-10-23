@@ -37,7 +37,10 @@ link_engine() {
         ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
         ln -sfn "$macos/cipd/mig" "$SRC_DIR/third_party/mig/bin"
         ln -sfn "$macos/cipd/angle-metal" "$SRC_DIR/ui/gl/resources/angle-metal"
-        cp -R "$macos/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
+        # With their times, and only what is not there yet: a compiler's
+        # runtime with new times is a new toolchain to the build, which
+        # then compiles the whole macOS engine again.
+        cp -a -u "$macos/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
     fi
 }
 
