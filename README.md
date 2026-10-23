@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-<p align="center"><b>Chrome's web engine as a library, for applications that would otherwise ship Electron.</b></p>
+<p align="center"><b>All of Chrome's power. None of its weight.</b></p>
 
 ## Introduction
 
