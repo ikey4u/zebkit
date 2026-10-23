@@ -67,6 +67,15 @@ camera and microphone capture, and the device APIs.
   and build machines often lack; the engine then refuses to start without
   `--no-sandbox`. Agents run in such places: zebkit needs a stated answer
   (ship the helper, document `--no-sandbox` for containers, or both).
+- **Text layout at Chrome's speed.** An EPUB chapter takes 8.7 ms in
+  zebkit and 6.8 ms in Electron 44.9, Chrome's own build
+  (`docs/SIZE_AND_SPEED.md`). What is left at `-Os` for size, and the
+  inliner trained for size at the link (8.2 ms without it, 14 MiB more),
+  are where to look; every comparison is with the latest stable Electron.
+- **The application measured against the latest Electron.** The document
+  reader's comparison (`README.md`) is against its build on Electron 36;
+  it is to be measured again with its Electron build moved to the latest
+  stable release.
 - **CDP checked against Puppeteer and Playwright**, with Chrome's
   results as the reference: the engine serves Chromium's own DevTools
   endpoint, and a suite of client tests against it is still to be written.

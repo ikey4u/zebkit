@@ -14,14 +14,14 @@ the engine's own V8.
 
 ## Against Electron
 
-### The engine: a third smaller, the same speed class
+### The engine: a third smaller; text layout still behind
 
 | | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
 |---|---:|---:|---:|
 | Uncompressed | **157.3 MiB** | 255.7 MiB | 38% smaller |
 | `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
 | `.zip` | **71.8 MiB** | 112.6 MiB | 36% smaller |
-| Text layout benchmark | **8.7 ms** | 9.7 ms (Electron 36) | 10% faster |
+| Text layout (an EPUB chapter) | 8.7 ms | **6.8 ms** | 28% slower |
 
 Electron as shipped is 283.3 MiB; "trimmed" is a hello world with its
 locales and extras removed, the fairest baseline we could make
@@ -30,11 +30,17 @@ whole web platform that applications use (HTML, CSS, JavaScript with every
 JIT tier, WebAssembly, WebGL, media with H.264 and AAC, HTTP/3) and is
 built with Chromium's PGO profile and link-time optimization.
 
+Both columns are the latest stable Electron, 44.9 (Chromium 152). Its text
+layout is Chrome's own build, with every hot path optimized for speed;
+zebkit optimizes part of the engine for size, and closing that gap is on
+the roadmap (`docs/SIZE_AND_SPEED.md`, "Speed").
+
 ### A real application
 
 A desktop document reader with PDF, EPUB and OCR, moved from Electron to
 zebkit. The same harness, production builds, medians of five runs on
-Linux:
+Linux. The Electron column is the application as it shipped, on Electron
+36; it has not been measured on the latest Electron yet:
 
 | | zebkit | Electron | |
 |---|---:|---:|---:|
@@ -50,8 +56,10 @@ Linux:
 | EPUB: CPU time | **1.1 s** | 89 s | 81× less |
 | Installed size | **262 MiB** | 1,490 MiB | 5.7× smaller |
 
-The gains are not only the engine's size. They come from what an
-application stops doing when its runtime is not Electron.
+These gains are not the engine's text layout, where the latest Electron
+is ahead. They come mostly from how the application is built on zebkit: no
+Node, PDF in the engine, bytes passed without base64. How much of each is
+not measured separately.
 
 ## Why zebkit
 

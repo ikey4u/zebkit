@@ -135,7 +135,7 @@ as a reader does:
 | Build | ms | Package, MiB |
 |---|---:|---:|
 | Electron 44.9.0 (Chrome's own build of Chromium 152) | 6.8 | |
-| Electron 36 | 9.7 | |
+| Electron 36, an older release, for reference | 9.7 | |
 | `slim`, size-built | 13.2 | 147.1 |
 | with Chromium's PGO profile | 11.1 | |
 | and Blink core, Blink's platform and HarfBuzz at `-O2` | 9.2 | |
