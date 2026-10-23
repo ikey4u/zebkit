@@ -8,6 +8,7 @@ below, `$PKG` is that directory.
 |---|---|
 | `window.c` | A small browser window: a page with a back button, a forward button and an address box above it, the bar a script in the page that calls the program through `zebkit.app`. One file for Linux and macOS |
 | `ui/todo.mjs` | An application in JavaScript with native widgets: `zebkit.ui`, Chromium's views driven by signals, no web page (`docs/API.md`, "Native interface") |
+| `offscreen-host/` | A page drawn off-screen in one process (`render.c`) and shown in another that links nothing of zebkit's (`show.c`): frames as IOSurfaces or shared memory passed over a socket, input sent back, the reference protocol in `protocol.h` (`docs/API.md`, "Off-screen views") |
 | `ffmpeg.cpp` | A library inside the engine: an MP3 decoded to WAV with the engine's FFmpeg, through `zebkit::vendor::ffmpeg`, with no FFmpeg of the program's own |
 | `../rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
 | `../rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust |
@@ -29,6 +30,11 @@ cc -std=c11 -I$PKG/include examples/window.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath
 cc -std=c11 -I$PKG/include tools/zebkit-js/zebkit-js.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o zebkit-js
 ./zebkit-js examples/ui/todo.mjs
 ./zebkit-js --headless examples/ui/todo.mjs --capture todo.png    # no display: a picture of it
+
+# offscreen-host: the renderer against the package, the host with nothing of it
+cc -std=c11 -I$PKG/include examples/offscreen-host/render.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -pthread -o render
+cc -std=c11 examples/offscreen-host/show.c -o show
+./show --renderer=./render --url=https://example.com/ --size=800x600@1 --shots=shots -- --no-sandbox
 
 # ffmpeg.cpp
 c++ -std=c++17 examples/ffmpeg.cpp -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o ffmpeg-example

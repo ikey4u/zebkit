@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- tests/engine/offscreen.c and examples/offscreen-host: a page whose
+     every part is where the tests look for it, in CSS pixels. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>offscreen</title>
+<style>
+  html, body { margin: 0; background: rgb(16, 32, 48); font: 16px sans-serif; }
+  #box { position: absolute; left: 20px; top: 20px; width: 40px; height: 30px; background: rgb(255, 0, 0); }
+  #button { position: absolute; left: 100px; top: 20px; width: 120px; height: 40px; cursor: pointer; }
+  #field { position: absolute; left: 20px; top: 100px; width: 200px; height: 30px; font-size: 16px; }
+  #pick { position: absolute; left: 20px; top: 160px; width: 160px; height: 30px; font-size: 16px; }
+  #text { position: absolute; left: 240px; top: 100px; width: 120px; height: 30px; cursor: text; }
+  #tall { position: absolute; left: 0; top: 0; width: 1px; height: 3000px; }
+  #mark { position: absolute; left: 0; top: 1000px; width: 100%; height: 50px; background: rgb(0, 255, 0); }
+</style>
+</head>
+<body>
+<div id="tall"></div>
+<div id="box"></div>
+<button id="button" onclick="document.body.dataset.clicks = Number(document.body.dataset.clicks || 0) + 1">Click</button>
+<input id="field" autocomplete="off">
+<select id="pick"><option value="a">Apple</option><option value="b">Banana</option><option value="c">Cherry</option></select>
+<div id="text">some text</div>
+<div id="mark"></div>
+<script>
+  // The box changes colour every frame for @ms milliseconds: frames for the
+  // tests that need many.
+  window.animate = (ms) => new Promise((done) => {
+    const box = document.getElementById('box');
+    const end = performance.now() + ms;
+    let n = 0;
+    const step = () => {
+      box.style.background = `rgb(${(n++ * 37) % 256}, 0, 0)`;
+      if (performance.now() < end) requestAnimationFrame(step);
+      else { box.style.background = 'rgb(255, 0, 0)'; done(n); }
+    };
+    requestAnimationFrame(step);
+  });
+</script>
+</body>
+</html>

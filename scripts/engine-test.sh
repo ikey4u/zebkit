@@ -15,6 +15,15 @@
 #   from another thread, closes the view and quits.
 # - tests/engine/bridge.c: zebkit.* in a page the application grants it
 #   to, refused to one it does not; zebkit_fetch().
+# - tests/engine/offscreen.c: off-screen views (<zebkit/offscreen.h>):
+#   frames in shared surfaces, their damage, size and scale, input, a
+#   <select>'s list as a popup layer, no frames while idle, frames held
+#   back while the application holds its allowance, the frame rate limit.
+#   ENGINE_TEST_SHOTS=<dir> keeps pictures of the frames there.
+# - examples/offscreen-host: the same page drawn in one process and shown
+#   in another, which links nothing of zebkit's: the frames' buffers passed
+#   over a socket, the pixels the host gets checked, its input sent back,
+#   what the frames cost measured.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -50,6 +59,15 @@ build_against_package "$package" "$work/pdf" "$tests/pdf.c"
 build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
 build_against_package "$package" "$work/scheme" "$tests/scheme.c"
+offscreen_options=()
+[[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
+build_against_package "$package" "$work/offscreen" "$tests/offscreen.c" -- "${offscreen_options[@]}"
+render_options=(-pthread)
+[[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
+build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
+host_options=()
+[[ "$(uname)" == Darwin ]] && host_options=(-framework CoreVideo -framework IOSurface -framework CoreFoundation)
+cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$work/offscreen-show"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 build_against_package "$package" "$OUT_DIR/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
 
@@ -112,6 +130,14 @@ sleep 1
 mkdir -p "$work/files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
     ZEBKIT_TEST_FILES="$work/files" run bridge "$work/bridge" "${engine_switches[@]}"
+
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_SHOTS="${ENGINE_TEST_SHOTS:-}" \
+    run offscreen "$work/offscreen" "${engine_switches[@]}"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen.log" || { echo "FAIL the off-screen test did not finish"; failed=1; }
+run offscreen-host "$work/offscreen-show" --renderer="$work/offscreen-render" \
+    --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \
+    --test -- --no-sandbox --user-data-dir="$work/profile-host"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen-host.log" || { echo "FAIL the off-screen host did not finish"; failed=1; }
 
 mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
