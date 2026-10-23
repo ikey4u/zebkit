@@ -116,8 +116,8 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 
 | Task | What it does |
 |---|---|
-| `mise run r` | `scripts/release.sh`: the release package in `dist/release`, its archive `dist/zebkit-<version>-<target>.tar.xz`, and the archive's SHA-256 in `rust/zebkit-rs/engines.txt` |
-| `mise run r:github` | The same, then the GitHub release `v<version>` with the archive (`gh`, logged in; the tree committed) |
+| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release` and macOS in `dist/release-macos` (cross-built, `docs/MACOS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `rust/zebkit-rs/engines.txt` |
+| `mise run r:github` | The same, then the GitHub release `v<version>` with both archives (`gh`, logged in; the tree committed) |
 | `mise run d` | `scripts/dist.sh debug`: the `slim-dev` profile into `dist/debug`, with debug information |
 | `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
 | `mise example:macos:basic` | The same on a Mac, against the macOS package built on Linux |
@@ -131,7 +131,8 @@ release is `mise r r` or `mise run r`.
 
 ## Releases
 
-A release is one archive per system, built on Linux, whose SHA-256 goes
+A release is one archive per system, `x86_64-unknown-linux-gnu` and
+`aarch64-apple-darwin`, both built on Linux, whose SHA-256 goes
 into `rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
 downloads; the crates and the engine share the version in `VERSION`. Build
 (`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).

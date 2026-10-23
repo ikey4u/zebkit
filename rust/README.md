@@ -55,8 +55,8 @@ ZEBKIT_DIR=/path/to/package cargo run
   repository makes it (`out/blink/slim/package`, `out/blink/slim-macos/package`).
   Inside the repository the crates find it there; elsewhere `ZEBKIT_DIR`
   names it. Released engines are downloaded once, checked against the
-  SHA-256 in `zebkit-rs/engines.txt`; the first Blink engine,
-  0.0.1-alpha.4, is built but not published yet.
+  SHA-256 in `zebkit-rs/engines.txt`; the first Blink engine is
+  0.0.1-alpha.4, for Linux and macOS.
 - **`zebkit_build::bundle()` puts the engine beside the executable**, in
   `target/<profile>/zebkit/`, and makes the executable look for it there.
 - **To ship the application**, copy the executable and that `zebkit`
@@ -115,5 +115,5 @@ The crates and the engine have one version, in `VERSION` and
 `rust/Cargo.toml`. A release is an archive of the engine's package for each
 system, whose SHA-256 goes into `zebkit-rs/engines.txt`, published on
 GitHub before the crates (`mise run r`, then `mise run r:github`;
-`docs/BUILD.md`, "Releases"). Until a Blink engine is published, point
+`docs/BUILD.md`, "Releases"). While the repository is private, point
 `ZEBKIT_DIR` at a package you built.

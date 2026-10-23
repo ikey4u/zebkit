@@ -25,7 +25,7 @@ gh = "2.102.0"
 "conda:xz-tools" = "5.8.3"
 
 [tasks.r]
-description = "Build the release zebkit for this machine into dist/release, and the archive of it the Rust crates download"
+description = "Build the release zebkit for Linux (dist/release) and macOS (dist/release-macos, cross-built), and the archives the Rust crates download"
 run = "scripts/release.sh"
 
 [tasks."r:github"]
