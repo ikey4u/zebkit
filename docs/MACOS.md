@@ -95,6 +95,48 @@ checks is signing with real certificates; ad hoc signing does for tests.
 - **The helper** enters the seatbelt sandbox itself, as Chrome's helpers
   do; `--no-sandbox` turns it off.
 
+## Off-screen views and IOSurfaces
+
+An off-screen view (`<zebkit/offscreen.h>`, `docs/API.md`) is, on macOS, a
+headless view: its `NSView` is in no window, and its compositor draws for
+itself. Its frames are IOSurfaces. viz's `FrameSinkVideoCapturer` reads
+each frame back into shared memory in the GPU process, and the engine
+copies what changed since a surface last held a frame into an IOSurface
+of a pool of its own (as many as the frames out, and one), so nothing is
+encoded and an idle page copies nothing. viz can blit into IOSurfaces
+itself (`kPreferMappableSharedImage`, `ZEBKIT_BUFFERS_GPU`), which would
+save the read-back; for a page in no window it delivers no frame at all on
+the Mac it was tried on (macOS 27, an M-series laptop), and a window, even
+an unseen one, is what macOS counts as occluded behind others and stops
+drawing. Making viz's own path work headless is on the roadmap.
+
+- **In the process.** `frame->iosurface` is the `IOSurfaceRef`, the
+  engine's until the frame is released. A host wraps it in a
+  `CVPixelBuffer` (`CVPixelBufferCreateWithIOSurface()`, once per
+  `buffer_id`: a pool is a few surfaces, used again) and draws that, as
+  gpui's `paint_surface` does, or makes a Metal texture of it
+  (`newTextureWithDescriptor:iosurface:plane:`, BGRA8). It releases the
+  frame once its GPU work that reads the surface is done.
+- **In another process.** `zebkit_frame_iosurface_mach_port()` makes a
+  send right to the surface (`IOSurfaceCreateMachPort()`), which goes in a
+  mach message; the other process's `IOSurfaceLookupFromMachPort()` gives
+  it the same surface. A global IOSurface ID (`kIOSurfaceIsGlobal`) is not
+  used: it is deprecated, and any process could look the surface up.
+  `examples/offscreen-host` registers the host's port with launchd
+  (`bootstrap_check_in()` under a name with its pid), the renderer looks
+  it up (`bootstrap_look_up()`), and sends each buffer's right once,
+  before the first frame that names it; frames, input and releases go over
+  a Unix socket.
+- **`<select>`.** A `<select>`'s list is the system's menu in a window of
+  Chrome's, which an off-screen view has no place for: its views forbid
+  external popup menus, so the list is a popup widget drawn by the page's
+  renderer, like a date picker's. That widget has a borderless window of
+  its own, made transparent and blind to the mouse so that it is not seen
+  on the screen while it draws the popup layer's frames.
+- **The scale** is the headless screen's, which zebkit sets for its
+  off-screen views (`zebkit_view_set_size()`): whole, 1, 2 or 3, as a
+  Mac's screens are; a fractional one is not taken by a headless `NSView`.
+
 ## State
 
 `scripts/engine-test.sh slim-macos`, on the Mac against the package built
@@ -106,6 +148,7 @@ on Linux, 2026-10-21:
 | vendor (32), services (25), PDF (83), C API (26) | all passed |
 | bridge, schemes (10), script outside a page (15), `zebkit.ui` (11) | all passed |
 | Python, CDP from the command line | all passed |
+| Off-screen views (30) and a host in another process (13), on 2026-10-23: IOSurfaces read in the process and through mach ports, damage, input, `<select>`, scale 2 | all passed |
 
 What macOS needed beyond Linux, found by those tests: the vendor headers'
 `#pragma redefine_extname` takes Mach-O's leading underscore; ICU's data

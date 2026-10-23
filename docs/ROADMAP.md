@@ -24,6 +24,7 @@ application framework.
 | Chromium's libraries, and what else in it is useful, exported for applications as a C API, with bindings and a JavaScript API | Owner, 2026-10-19 |
 | A full PDF API on Chromium's PDFium, with EmbedPDF's features as the reference | Owner, 2026-10-20 |
 | For agents, a general MCP tool with the engine's capabilities, not only a CDP endpoint for browser drivers | Owner, 2026-10-23 |
+| Off-screen views: frames as shared surfaces (IOSurfaces, shared memory, dmabufs) with their damage, input sent by the application, popups drawn off-screen, frames passable to another process | Owner, 2026-10-23 |
 
 Kept by zebkit's own choice, open to the owner's overrule: WebGL,
 WebAssembly, HTTP/3 and SwiftShader. Removed by zebkit's choice: WebRTC's
@@ -46,6 +47,7 @@ camera and microphone capture, and the device APIs.
 | PDF | Chromium's PDFium in the engine; `<zebkit/pdf.h>` and `zebkit.pdf`: documents, rendering, text, search, outline, links, annotations with appearances, forms, redaction, page editing, attachments, metadata, images, signatures checked for integrity; PDFium patched where it had nothing | 2026-10-20, 2026-10-21 |
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
+| Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
 
 ## Next
 
@@ -75,6 +77,28 @@ camera and microphone capture, and the device APIs.
 - **CDP checked against Puppeteer and Playwright**, with Chrome's
   results as the reference: the engine serves Chromium's own DevTools
   endpoint, and a suite of client tests against it is still to be written.
+
+### Off-screen views
+
+- **Off-screen views in a process with windows.** They need `--headless`
+  now: a view is a content shell window, drawn by the headless screen. A
+  `RenderWidgetHostView` of zebkit's own with its own compositor, as
+  CEF's and Electron's off-screen views have, would let one process have
+  both.
+- **A scale for each view.** The off-screen views of a process share the
+  headless screen's scale; a display of its own for each needs the
+  headless screen to place a display's DIPs apart from its pixels.
+- **viz's own IOSurfaces on macOS.** Frames are read back and copied into
+  IOSurfaces of the engine's; viz's blit into mappable shared images
+  (`ZEBKIT_BUFFERS_GPU`) gives no frame for a page in no window. With it,
+  the read-back and the copy go.
+- **dmabufs checked on a GPU.** The path is there (`ZEBKIT_BUFFERS_GPU` on
+  Linux, the planes, strides and modifier passed on), but the build
+  machine has no GPU: it has only been seen to fall back to shared
+  memory.
+- **What a window does besides:** drags and drops in and out, the context
+  menu (`ShowContextMenu` to the application), touch, accessibility, and
+  editing commands on macOS (⌘A, ⌘C) as the system sends them.
 
 ### Agents
 

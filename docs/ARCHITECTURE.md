@@ -158,6 +158,7 @@ browser target's WebSocket address (`zebkit_cdp_get_url()`).
 | `src/engine/engine_mac.mm` | macOS: the framework's and helper's places, the helper's sandbox, the menu bar, headless views |
 | `src/engine/view.cc`, `view.h` | `zebkit_view`: the window and its page, grants, bindings, the page's script |
 | `src/engine/attach.cc` | Views inside another view's window (Linux) |
+| `src/engine/offscreen.cc`, `offscreen_mac.mm` | `<zebkit/offscreen.h>`: views drawn off-screen, their frames from viz's video capturer, their input, popups and cursor (from `patches/1021`'s hooks) |
 | `src/engine/call.cc`, `call.h` | `zebkit://call`: the page's calls and their answers as frames of bytes |
 | `src/engine/bridge.cc` | What `zebkit.*` calls do once the browser has checked them |
 | `src/engine/pdf.cc`, `pdf_internal.cc`, `pdf_bridge.cc`, `pdf_script.h` | `<zebkit/pdf.h>`, PDFium's classes, `zebkit.pdf` and its queue |

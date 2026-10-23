@@ -96,7 +96,7 @@ in a profile is preferred to a patch wherever one exists.
 
 | Script | What it checks |
 |---|---|
-| `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
+| `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, off-screen views and their frames in another process (`tests/engine/offscreen.c`, `examples/offscreen-host`; `ENGINE_TEST_SHOTS=<dir>` keeps their pictures), URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
 | `cd rust && cargo test` | The Rust crates against the real engine |
 
 ## Measuring

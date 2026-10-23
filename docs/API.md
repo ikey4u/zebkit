@@ -11,7 +11,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 
 | Layer | Header | What |
 |---|---|---|
-| 0. Core | `<zebkit/zebkit.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application |
+| 0. Core | `<zebkit/zebkit.h>`, `<zebkit/offscreen.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; views drawn off-screen into shared surfaces |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
 | 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, over Chromium's own code |
 | 3. Bindings | `rust/`, `bindings/python/zebkit` | Layers 0 and 2 for Rust and Python |
@@ -401,6 +401,139 @@ A property given as a function is read in an effect: `text: () =>
 \`${count()}\`` sets the text again when `count` changes, and nothing
 else. Layout is views' box layout (one direction, gap, padding,
 alignment, grow); a window's content fills it.
+
+## Off-screen views
+
+`<zebkit/offscreen.h>`: a view without a window, whose frames the
+application draws itself and whose input it sends: a page inside a window
+of another toolkit, or of another process. Electron's `offscreen: true`
+with its shared texture, CEF's off-screen rendering.
+
+```c
+#include <zebkit/offscreen.h>
+
+static void on_frame(zebkit_view *view, const zebkit_frame *frame, void *data) {
+    /* frame->width x frame->height BGRA pixels at frame->scale, the whole
+     * picture; frame->damage[0 .. damage_count) changed since the last. */
+    upload(frame->pixels, frame->stride, frame->damage, frame->damage_count);  /* Linux */
+    zebkit_frame_release(frame);                                               /* any thread */
+}
+
+static void ready(void *data) {
+    zebkit_view *view = zebkit_view_new_offscreen("https://example.com/", 800, 600, 2);
+    zebkit_view_on_frame(view, on_frame, NULL);
+    zebkit_view_set_focus(view, true);
+    zebkit_view_send_mouse(view, ZEBKIT_MOUSE_DOWN, 40, 30, ZEBKIT_BUTTON_LEFT, 1, 0);
+}
+
+int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }  /* run with --headless */
+```
+
+- **Where.** In a process without windows: `--headless`, or Linux without
+  a display; elsewhere `zebkit_view_new_offscreen()` returns NULL. It is
+  made for an application's helper process that draws pages for it
+  (`examples/offscreen-host`); views of a process with windows draw in
+  them.
+- **Frames are shared surfaces, never encoded.** The engine captures the
+  view's compositor frames with viz's `FrameSinkVideoCapturer`, as Chrome's
+  tab capture and Electron's shared texture do: the GPU process copies a
+  frame into a buffer of a pool, off the browser's main thread, and the
+  application gets that buffer. On macOS the frame is read back from the
+  GPU and the part that changed is copied into an IOSurface of a small
+  pool of the engine's (viz's own IOSurfaces, `ZEBKIT_BUFFERS_GPU`, are
+  not drawn into for a page in no window yet: `docs/MACOS.md`).
+
+  | | Buffer | For another process |
+  |---|---|---|
+  | macOS | an IOSurface (`ZEBKIT_FRAME_IOSURFACE`) | `zebkit_frame_iosurface_mach_port()`: a send right, for a mach message; `IOSurfaceLookupFromMachPort()` there |
+  | Linux | BGRA in shared memory (`ZEBKIT_FRAME_SHARED_MEMORY`): `pixels` here, `fd` (a memfd) to map | the fd, with `SCM_RIGHTS` |
+  | Linux, `ZEBKIT_BUFFERS_GPU` | a dmabuf (`ZEBKIT_FRAME_DMABUF`): planes' fds, strides, offsets, the modifier, where the GPU makes them; shared memory where it does not | the fds, with `SCM_RIGHTS` |
+
+  `buffer_id` names a buffer for as long as it lives, so a host maps it
+  (or makes its texture of it) once; a pool is a few buffers, made again
+  when the size changes.
+- **What changed.** Every frame is the whole picture, with its sequence
+  number, its size in pixels, its scale, and the rectangles that changed
+  since the layer's previous frame: a small change of the page is a small
+  copy for a host that keeps its own texture.
+- **Given back.** Each frame is released once (`zebkit_frame_release()`,
+  any thread, also after the view closed). While the application holds as
+  many as `zebkit_view_set_max_frames_in_flight()` allows (2), the engine
+  keeps only the newest of the rest, with the damage of those it dropped.
+- **Only when something changes.** An idle page sends no frames;
+  `zebkit_view_set_frame_rate()` limits a busy one;
+  `zebkit_view_request_frame()` asks for one again.
+- **Size and scale.** `zebkit_view_set_size(view, width, height, scale)`
+  lays the page out again and the next frame has the new size, and the
+  page's `devicePixelRatio` is the scale. The views are on the headless
+  screen's display, which takes their scale: the off-screen views of a
+  process share one, the last one given (a host window that moves to a
+  screen of another scale sets it for all its views). On macOS it is
+  whole (1, 2, 3), as a Mac's screens are.
+- **Input** goes to the page's widgets as a window's events would:
+  `zebkit_view_send_mouse()` (moves, presses with their click count,
+  leaving), `zebkit_view_send_wheel()` (a trackpad's precise deltas with
+  their phases, or a wheel's notches), `zebkit_view_send_key()` (down,
+  the character typed, up, with the DOM's `code` and `key`),
+  `zebkit_view_set_focus()`. An input method composes with
+  `zebkit_view_ime_set_composition()`, `_commit()` and `_cancel()`, and
+  places its window by `zebkit_view_on_caret()`.
+  `zebkit_view_on_cursor()` gives the cursor the page asks for, by its CSS
+  name, or its image.
+- **Popups.** A `<select>`'s list, a date or colour picker is a widget of
+  its own: `zebkit_view_on_popup()` says where it is in the view, its
+  frames are `ZEBKIT_LAYER_POPUP` with that place in `bounds`, the
+  application draws them over the page's, and input over that place (and
+  the keys while it is open) goes to it. A press outside closes it. On
+  macOS a `<select>` uses this widget rather than a menu of the system's.
+
+| Functions | What |
+|---|---|
+| `zebkit_view_new_offscreen`, `_is_offscreen`, `_set_size` | A view without a window, its size and scale |
+| `zebkit_view_on_frame`, `zebkit_frame_release`, `zebkit_frame_iosurface_mach_port` | Frames, given back; an IOSurface for another process |
+| `zebkit_view_set_frame_rate`, `_set_max_frames_in_flight`, `_set_frame_buffers`, `_request_frame` | How many, how often, in what |
+| `zebkit_view_send_mouse`, `_send_wheel`, `_send_key`, `_set_focus` | Input |
+| `zebkit_view_ime_set_composition`, `_ime_commit`, `_ime_cancel`, `_on_caret` | An input method |
+| `zebkit_view_on_cursor`, `_on_popup` | The cursor; popup widgets |
+
+In Rust, `View::new_offscreen()` and the `zebkit::offscreen` module: a
+`Frame` is `Send` and gives its buffer back when it is dropped.
+
+### Another process
+
+The process that draws needs the engine; the one that shows needs only a
+socket. `examples/offscreen-host` is both, in C, over a reference protocol
+(`protocol.h`): the host starts the renderer with one end of a
+`socketpair()`; each frame is a message of 232 bytes that names its
+buffer, with the buffer's fd (`SCM_RIGHTS`) the first time on Linux, and
+on macOS the IOSurface's send right in a mach message to a port the host
+registered (`bootstrap_check_in()`) the first time; the host answers
+`RELEASE` for each frame and sends input and resizes the other way.
+`scripts/engine-test.sh` runs it headless and checks the pixels the host
+gets.
+
+### In a host window
+
+What a window of another toolkit does with an off-screen view, in the
+renderer's process or another:
+
+- **macOS.** Wrap the IOSurface in a `CVPixelBuffer`
+  (`CVPixelBufferCreateWithIOSurface()`, once per `buffer_id`) and draw
+  it: gpui's `paint_surface`, a `CALayer`'s `contents`, a Metal texture
+  (`newTextureWithDescriptor:iosurface:plane:`). Draw it in `bounds`
+  (CSS pixels, the frame `scale` times as many pixels). Release the frame
+  once the GPU has drawn it (for a layer's `contents`, when the next frame
+  replaces it).
+- **Linux.** Map the fd once per `buffer_id` (`mmap(size, PROT_READ,
+  MAP_SHARED)`, the pixels at `offset`, `stride` a row), copy the damage
+  rectangles into the window's texture (BGRA, premultiplied), release the
+  frame; or import the dmabuf as an EGLImage
+  (`EGL_LINUX_DMA_BUF_EXT` with the modifier) and draw it.
+- **Both.** Send the window's events in the view's CSS pixels; the focus
+  when the window gains and loses it; the input method's composition and
+  commit, its window placed at the caret; set the cursor the view asks
+  for; draw a popup's layer over the page while it is shown; on a change
+  of size or of the window's scale, `zebkit_view_set_size()`.
 
 ## Loading the library
 
