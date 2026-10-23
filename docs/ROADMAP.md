@@ -23,6 +23,7 @@ application framework.
 | Far smaller than Electron, uncompressed and compressed. The 150 MiB limit of 2026-10-19 gave way to speed on 2026-10-21 | Owner, 2026-10-18 to 2026-10-21 |
 | Chromium's libraries, and what else in it is useful, exported for applications as a C API, with bindings and a JavaScript API | Owner, 2026-10-19 |
 | A full PDF API on Chromium's PDFium, with EmbedPDF's features as the reference | Owner, 2026-10-20 |
+| For agents, a general MCP tool with the engine's capabilities, not only a CDP endpoint for browser drivers | Owner, 2026-10-23 |
 
 Kept by zebkit's own choice, open to the owner's overrule: WebGL,
 WebAssembly, HTTP/3 and SwiftShader. Removed by zebkit's choice: WebRTC's
@@ -74,6 +75,34 @@ camera and microphone capture, and the device APIs.
 - **CDP checked against Puppeteer and Playwright**, with Chrome's
   results as the reference: the engine serves Chromium's own DevTools
   endpoint, and a suite of client tests against it is still to be written.
+
+### Agents
+
+- **TODO: zebkit as an MCP server.** One program, `tools/zebkit-mcp`,
+  that gives an AI agent the engine's capabilities as MCP tools, over
+  standard input and over HTTP, on Linux and macOS alike. CDP stays for
+  clients that speak it; MCP is what agents are given.
+  - **Pages:** open, navigate, wait for a load; read a page as text,
+    Markdown or its accessibility tree, with references to its elements;
+    click, type, select, scroll and upload by those references; run
+    script; a capture of the page or an element; the network's requests;
+    several pages and profiles at once, with or without windows.
+  - **PDF:** open, read text with its layout, search, render pages, the
+    outline and links, fill forms, annotate, redact, edit pages, check
+    signatures, and print a page to PDF.
+  - **Files and data:** read and write within the directories granted,
+    fetch through the engine's network stack, compress, hash, decode and
+    encode images, parse URLs.
+  - **Media:** probe, cut, convert and extract audio and frames with the
+    FFmpeg in the engine.
+  - **Native windows:** `zebkit.ui`'s tree read, clicked, typed into and
+    captured, as pages are.
+  - **Bounds set by whoever runs it:** which tools, which origins, which
+    directories, with or without a window; every tool's arguments
+    checked, as `zebkit.*` checks a page's calls.
+  - **Checked by:** an MCP client's own test suite and an agent doing
+    real tasks (research on the web, filling a form, reading a long PDF),
+    with every tool covered by `tests/engine/`.
 
 ### Measurements
 

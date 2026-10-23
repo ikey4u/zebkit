@@ -35,9 +35,11 @@ native code, or JavaScript on the engine's own V8.
   views toolkit: signals, JSX, Tailwind classes, and automation for tests
   and agents. Its successor, React, Solid or Vue drawn natively with each
   system's look, is planned in `docs/ROADMAP_UI.md`.
-- **Made for agents.** CDP is Chromium's own DevTools server, what Chrome
-  serves, for Puppeteer, Playwright and raw clients. Headless or windowed,
-  the same views.
+- **Made for agents.** zebkit is to be a general MCP tool: one server
+  giving an AI agent the engine's whole reach, pages to read and act on,
+  PDFs, files, media, images, capture and native windows (planned,
+  `docs/ROADMAP.md`). Today agents drive it over CDP, Chromium's own
+  DevTools server, headless or windowed.
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
@@ -226,15 +228,17 @@ window({title: 'To do', width: 420, height: 440}, () =>
 
 ![examples/ui/todo.mjs](docs/images/zebkit-ui-todo.png)
 
-### Agents over CDP
+### Agents
+
+An MCP server that gives agents zebkit's capabilities as tools is planned
+(`docs/ROADMAP.md`, "Agents"). Today an agent drives zebkit over CDP, as it
+would drive Chrome:
 
 ```sh
 tools/zebkit-run --headless --remote-debugging-port=9222 https://example.com/
 ```
 
-```js
-const browser = await puppeteer.connect({browserURL: 'http://127.0.0.1:9222'});
-```
+Any CDP client connects to `http://127.0.0.1:9222`.
 
 ### The examples
 

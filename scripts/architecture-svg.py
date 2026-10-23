@@ -63,14 +63,15 @@ for i, (a, b) in enumerate([("C / C++", "zebkit.h"), ("Rust", "zebkit crate"), (
     text(x + 66, 84, a, "ink", 13, 600, "middle")
     text(x + 66, 101, b, "muted", 11, anchor="middle")
 rect(648, 24, 288, 100, "box")
-text(668, 52, "Agents and tests", "ink", 15, 700)
-for i, a in enumerate(["Puppeteer", "Playwright"]):
+text(668, 52, "AI agents", "ink", 15, 700)
+for i, (a, b, cls) in enumerate([("MCP", "tools, planned", "plan"), ("CDP", "pages, as Chrome", "chip")]):
     x = 668 + i * 128
-    rect(x, 66, 116, 44, "chip", 8)
-    text(x + 58, 93, a, "ink", 13, 600, "middle")
+    rect(x, 66, 116, 44, cls, 8)
+    text(x + 58, 84, a, "ink", 13, 600, "middle")
+    text(x + 58, 101, b, "muted", 11, anchor="middle")
 
 arrow(324, 124, 156, "links one library: a C API")
-arrow(792, 124, 156, "CDP, as Chrome serves it", "end")
+arrow(792, 124, 156, "pages, PDF, files, media, capture", "end")
 
 # Row 2: zebkit itself.
 top, h = 156, 262
