@@ -3,69 +3,19 @@
 **Chrome's web engine as a library, for applications that would otherwise
 ship Electron.**
 
+## Introduction
+
 zebkit is Chromium's content layer and Blink built as one shared library
 with a helper program, and nothing of Chrome's browser. An application
 links it, opens web pages in its windows, serves the Chrome DevTools
 Protocol to agents, and calls the libraries Chromium already carries
-(SQLite, BoringSSL, ICU, FFmpeg, PDFium and more) through a C API, with
-bindings for Rust, Python and the pages' own JavaScript. There is no Node
-and no second runtime: the application is native code, or JavaScript on
-the engine's own V8.
+through a C API, with bindings for Rust, Python and the pages' own
+JavaScript. There is no Node and no second runtime: the application is
+native code, or JavaScript on the engine's own V8.
 
-## Against Electron
-
-### The engine: a third smaller; text layout still behind
-
-| | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
-|---|---:|---:|---:|
-| Uncompressed | **157.3 MiB** | 255.7 MiB | 38% smaller |
-| `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
-| `.zip` | **71.8 MiB** | 112.6 MiB | 36% smaller |
-| Text layout (an EPUB chapter) | 8.7 ms | **6.8 ms** | 28% slower |
-
-Electron as shipped is 283.3 MiB; "trimmed" is a hello world with its
-locales and extras removed, the fairest baseline we could make
-(`examples/electron-hello`, `docs/SIZE_AND_SPEED.md`). zebkit keeps the
-whole web platform that applications use (HTML, CSS, JavaScript with every
-JIT tier, WebAssembly, WebGL, media with H.264 and AAC, HTTP/3) and is
-built with Chromium's PGO profile and link-time optimization.
-
-Both columns are the latest stable Electron, 44.9 (Chromium 152). Its text
-layout is Chrome's own build, with every hot path optimized for speed;
-zebkit optimizes part of the engine for size, and closing that gap is on
-the roadmap (`docs/SIZE_AND_SPEED.md`, "Speed").
-
-### A real application
-
-A desktop document reader with PDF, EPUB and OCR, moved from Electron to
-zebkit. The same harness, production builds, medians of five runs on
-Linux. The Electron column is the application as it shipped, on Electron
-36; it has not been measured on the latest Electron yet:
-
-| | zebkit | Electron | |
-|---|---:|---:|---:|
-| Start | **0.50 s** | 1.08 s | 2.2× faster |
-| CPU at idle | **0.35%** | 51.5% | 147× less |
-| Memory at idle | **290 MB** | 958 MB | 3.3× less |
-| 756-page PDF: first page | **1.12 s** | 5.3 s | 4.7× faster |
-| PDF: fully loaded | **3.2 s** | 11.8 s | 3.7× faster |
-| PDF: longest freeze | **0.10 s** | 2.9 s | 29× shorter |
-| PDF: scroll frames p50 / p95 / max | **22 / 48 / 66 ms** | 170 / 456 / 1,412 ms | 8–21× smoother |
-| PDF: CPU time | **24 s** | 163 s | 6.8× less |
-| PDF: memory | **1.37 GB** | 3.1 GB | 2.3× less |
-| EPUB: CPU time | **1.1 s** | 89 s | 81× less |
-| Installed size | **262 MiB** | 1,490 MiB | 5.7× smaller |
-
-These gains are not the engine's text layout, where the latest Electron
-is ahead. They come mostly from how the application is built on zebkit: no
-Node, PDF in the engine, bytes passed without base64. How much of each is
-not measured separately.
-
-## Why zebkit
-
-- **No Node.** No second JavaScript runtime, no IPC between a main
-  process and the renderer through it. The application is native code, or
-  JavaScript run by `zebkit-js` on the engine's V8.
+- **No Node.** No second JavaScript runtime and no IPC through one. The
+  application is native code, or JavaScript run by `zebkit-js` on the
+  engine's V8.
 - **Bytes as they are.** A page's calls to the application go over a
   scheme of the engine's own, through Mojo's data pipes: no base64, no JSON
   around binary data, many calls under way at once.
@@ -81,11 +31,12 @@ not measured separately.
   loads, `fetch()` and media alike, with files served in ranges so that a
   `<video>` seeks.
 - **Native UI from JavaScript.** `zebkit.ui` draws windows with Chromium's
-  own views toolkit (what Chrome's interface is made of): signals, JSX,
-  Tailwind classes, and automation for tests and agents.
-- **Made for agents.** CDP is Chromium's own DevTools server, exactly
-  what Chrome serves, for Puppeteer, Playwright and raw clients. Headless
-  or windowed, the same views.
+  views toolkit: signals, JSX, Tailwind classes, and automation for tests
+  and agents. Its successor, React, Solid or Vue drawn natively with each
+  system's look, is planned in `docs/ROADMAP_UI.md`.
+- **Made for agents.** CDP is Chromium's own DevTools server, what Chrome
+  serves, for Puppeteer, Playwright and raw clients. Headless or windowed,
+  the same views.
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
@@ -94,35 +45,82 @@ not measured separately.
   (`patches/`), rebuilt from source; where Chromium lacks something, zebkit
   patches it rather than working around it.
 
-## Platforms
-
 | | |
 |---|---|
-| Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 |
+| Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
 | Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
 | Version | `VERSION`: 0.0.1-alpha.4 |
 
-## Using zebkit in an application
+## Quick start
+
+### Get the engine
 
 A package is a directory with the library, the helper, the engine's data
-and `include/`. Build one (`docs/BUILD.md`, then `out/blink/slim/package`)
-or make a release with `mise run r` (`dist/release`). Below, `$PKG` is that
-directory.
+and `include/`. Either unpack a release's archive
+(`zebkit-<version>-<target>.tar.xz` from GitHub's releases), or build one:
 
-### C
+```sh
+mise run r      # dist/release (Linux) and dist/release-macos (macOS); hours the first time
+```
+
+Building needs about 30 GB for Chromium's tree (`docs/BUILD.md`). Below,
+`$PKG` is the package directory.
+
+### A first program in C
 
 ```c
 #include <stdio.h>
 #include <zebkit/zebkit.h>
 
+static void printed(zebkit_view *view, const char *json, const char *error, void *data) {
+    printf("%s\n", json ? json : error);
+    zebkit_quit();
+}
+
+static void loaded(zebkit_view *view, zebkit_load_event event, const char *url, void *data) {
+    if (event == ZEBKIT_LOAD_FINISHED)
+        zebkit_view_evaluate(view, "document.title", printed, NULL);
+}
+
+static void ready(void *data) {
+    zebkit_view *view = zebkit_view_new("https://example.com/", 1024, 768);
+    zebkit_view_on_load(view, loaded, NULL);
+}
+
+int main(int argc, char **argv) {
+    return zebkit_main(argc, argv, ready, NULL);
+}
+```
+
+```sh
+cc app.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o app   # Linux
+cc app.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o app   # macOS
+./app --remote-debugging-port=9222     # with CDP for Puppeteer and Playwright
+```
+
+In a container without unprivileged user namespaces, add `--no-sandbox`.
+
+### The page and the application
+
+The application serves its own pages from a scheme and gives them
+functions to call; a page has nothing of `zebkit` unless it is granted.
+
+```c
 /* The page calls zebkit.app.greet("Ada"). */
 static void greet(zebkit_view *view, const char *origin, const char *args_json,
                   zebkit_call *call, void *data) {
     char answer[256];
     snprintf(answer, sizeof answer, "{\"hello\": %s}", args_json);
     zebkit_call_resolve(call, answer);
+}
+
+/* app://main/... from ./ui, in ranges for media. A real handler refuses "..". */
+static void serve(zebkit_request *request, void *data) {
+    char path[1024];
+    snprintf(path, sizeof path, "ui%s", zebkit_request_url(request) + sizeof "app://main" - 1);
+    zebkit_request_respond_file(request, path, NULL);
 }
 
 static void closed(zebkit_view *view, void *data) { zebkit_quit(); }
@@ -134,13 +132,6 @@ static void ready(void *data) {
     zebkit_view_on_close(view, closed, NULL);
 }
 
-/* app://main/... is served from ./ui, in ranges for media. */
-static void serve(zebkit_request *request, void *data) {
-    char path[1024];
-    snprintf(path, sizeof path, "ui%s", zebkit_request_url(request) + sizeof "app://main" - 1);
-    zebkit_request_respond_file(request, path, NULL);
-}
-
 int main(int argc, char **argv) {
     zebkit_scheme_register("app", ZEBKIT_SCHEME_STANDARD | ZEBKIT_SCHEME_SECURE | ZEBKIT_SCHEME_FETCH);
     zebkit_scheme_handle("app", serve, NULL);
@@ -148,13 +139,16 @@ int main(int argc, char **argv) {
 }
 ```
 
-```sh
-cc app.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o app
-./app --remote-debugging-port=9222     # and CDP for Puppeteer or Playwright
-```
+In the page, every call is a promise and bytes are `Uint8Array`s:
 
-(A real handler checks the path for `..`; `examples/window.c` is a complete
-browser window.)
+```js
+const reply = await zebkit.app.greet('Ada');            // the application's function
+const pdf = await zebkit.pdf.open(await (await fetch('report.pdf')).bytes());
+const rgba = await pdf.render(0, {scale: 2});           // a page as pixels
+const hits = await pdf.search('revenue');
+const packed = await zebkit.compress('zstd', bytes, 19);
+const hash = await zebkit.crypto.digest('SHA-256', 'abc');
+```
 
 ### Rust
 
@@ -167,11 +161,9 @@ zebkit-build = "0.0.1-alpha.4"
 ```
 
 ```rust
-// build.rs
+// build.rs: puts the engine beside the executable
 fn main() { zebkit_build::bundle(); }
-```
 
-```rust
 // main.rs
 fn main() {
     std::process::exit(zebkit::run(|| {
@@ -186,9 +178,7 @@ fn main() {
 }
 ```
 
-`ZEBKIT_DIR` points the build at a package; `zebkit-build` puts the engine
-beside the executable. Callbacks are closures, and the engine's thread is
-enforced by the types (`rust/README.md`).
+`ZEBKIT_DIR` points the build at a package (`rust/README.md`).
 
 ### Python
 
@@ -203,25 +193,10 @@ def ready():
 zebkit.main(ready)                 # the engine is found in $ZEBKIT_DIR
 ```
 
-### The page's JavaScript
-
-A page the application has granted gets a global `zebkit`; every call is a
-promise, and bytes are `Uint8Array`s:
-
-```js
-const reply = await zebkit.app.greet('Ada');            // the application's function
-const pdf = await zebkit.pdf.open(await (await fetch('report.pdf')).bytes());
-const rgba = await pdf.render(0, {scale: 2});           // a page as pixels
-const hits = await pdf.search('revenue');
-const packed = await zebkit.compress('zstd', bytes, 19);
-const hash = await zebkit.crypto.digest('SHA-256', 'abc');
-await zebkit.fs.writeFile('notes.txt', 'text');         // inside the directory granted
-```
-
-### An application in JavaScript, without Node
+### JavaScript, without Node
 
 `zebkit-js` runs an ES module on the engine's V8, as Electron's main
-process would run, with views, the same APIs, and no grants needed:
+process would, with views, the same APIs, and native windows:
 
 ```js
 // zebkit-js main.mjs
@@ -234,10 +209,8 @@ view.bind('save', async (name, text) => {
 view.on('close', () => zebkit.quit());
 ```
 
-### Native windows: `zebkit.ui`
-
 ```js
-// zebkit-js todo.mjs
+// zebkit-js todo.mjs: a window of native widgets
 const {h, signal, For, window} = zebkit.ui;
 const [todos, setTodos] = signal([]);
 const [draft, setDraft] = signal('');
@@ -262,33 +235,84 @@ tools/zebkit-run --headless --remote-debugging-port=9222 https://example.com/
 const browser = await puppeteer.connect({browserURL: 'http://127.0.0.1:9222'});
 ```
 
-In a container without unprivileged user namespaces, add `--no-sandbox`.
-
-### Try it
+### The examples
 
 ```sh
-mise run r                  # build the release package
-mise example:linux:basic    # a browser window on it
+mise example:linux:basic    # examples/window.c: a browser window
 mise example:rust:window    # the same in Rust
+mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
 ```
 
-## Documentation
+## Benchmark
+
+Every comparison is with the latest stable Electron, 44.9 (Chromium 152),
+unless it says otherwise.
+
+### The engine
+
+| | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
+|---|---:|---:|---:|
+| Uncompressed | **157.3 MiB** | 255.7 MiB | 38% smaller |
+| `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
+| `.zip` | **71.8 MiB** | 112.6 MiB | 36% smaller |
+| Text layout (an EPUB chapter) | 8.7 ms | **6.8 ms** | 28% slower |
+
+- **Size.** Electron as shipped is 283.3 MiB; "trimmed" is a hello world
+  with its locales and extras removed, the fairest baseline we could make
+  (`examples/electron-hello`). zebkit keeps the whole web platform that
+  applications use: HTML, CSS, JavaScript with every JIT tier,
+  WebAssembly, WebGL, media with H.264 and AAC, HTTP/3.
+- **Text layout.** Electron's is Chrome's own build, every hot path
+  optimized for speed. zebkit is built with Chromium's PGO profile and
+  link-time optimization but optimizes part of the engine for size;
+  closing the gap is on the roadmap (`docs/ROADMAP.md`).
+- How each number is made: `docs/SIZE_AND_SPEED.md`.
+
+### An application
+
+A desktop document reader with PDF, EPUB and OCR, moved from Electron to
+zebkit. The same harness, production builds, medians of five runs on
+Linux. **The Electron column is the application as it shipped, on
+Electron 36**; it has not been measured on 44.9 yet (`docs/ROADMAP.md`).
+
+| | zebkit | Electron 36 | |
+|---|---:|---:|---:|
+| Start | **0.50 s** | 1.08 s | 2.2× faster |
+| CPU at idle | **0.35%** | 51.5% | 147× less |
+| Memory at idle | **290 MB** | 958 MB | 3.3× less |
+| 756-page PDF: first page | **1.12 s** | 5.3 s | 4.7× faster |
+| PDF: fully loaded | **3.2 s** | 11.8 s | 3.7× faster |
+| PDF: longest freeze | **0.10 s** | 2.9 s | 29× shorter |
+| PDF: scroll frames p50 / p95 / max | **22 / 48 / 66 ms** | 170 / 456 / 1,412 ms | 8–21× smoother |
+| PDF: CPU time | **24 s** | 163 s | 6.8× less |
+| PDF: memory | **1.37 GB** | 3.1 GB | 2.3× less |
+| EPUB: CPU time | **1.1 s** | 89 s | 81× less |
+| Installed size | **262 MiB** | 1,490 MiB | 5.7× smaller |
+
+These gains are not the engine's text layout, where the latest Electron is
+ahead. They come mostly from how the application is built on zebkit: no
+Node, PDF in the engine, bytes passed without base64. How much of each is
+not measured separately.
+
+## Reference
+
+### Documentation
 
 | Document | What it covers |
 |---|---|
 | [docs/API.md](docs/API.md) | Everything an application can call, in C, Rust, Python and JavaScript |
-| [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing and measuring; profiles and patches |
+| [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing, measuring and releasing; profiles and patches |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine is made, and what in this repository is what |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, built on Linux |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Requirements, what is done, what is next |
-| [docs/ROADMAP_UI.md](docs/ROADMAP_UI.md) | The UI layer: React, Solid or Vue drawn natively with each system's look, on the desktop and on iOS and Android |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | The engine: requirements, what is done, what is next |
+| [docs/ROADMAP_UI.md](docs/ROADMAP_UI.md) | The UI layer: React, Solid or Vue drawn natively with each system's look, on the desktop, iOS and Android |
 | [rust/README.md](rust/README.md) | The Rust crates |
 | `docs/reports/` | Size reports, regenerated by the scripts |
 
-## Repository
+### Repository
 
-| Directory | What it holds |
+| Path | What it holds |
 |---|---|
 | `upstream.lock` | The Chromium release built, the pinned depot_tools, the Electron release measured against |
 | `profiles/` | Build flavours as GN arguments: `slim.gn` (the product), `slim-macos.gn`, `baseline.gn` (Chromium's defaults) |
@@ -299,7 +323,7 @@ mise example:rust:window    # the same in Rust
 | `tools/` | `zebkit-run` (open pages, serve CDP) and `zebkit-js` (applications in JavaScript) |
 | `tests/` | Programs that test every layer of the API against a package; speed workloads |
 | `examples/` | A browser window in C, `zebkit.ui`, a library inside the engine, the Electron baseline |
-| `scripts/` | Every step, one script each |
+| `scripts/` | Every step, one script each; `mise tasks` lists the short forms |
 
-`upstream/` (Chromium's tree, about 30 GB), `out/` and `.cache/` are
-generated and not tracked.
+`upstream/` (Chromium's tree, about 30 GB), `out/`, `dist/` and `.cache/`
+are generated and not tracked.
