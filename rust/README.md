@@ -16,10 +16,10 @@ program written for one builds and runs on the other.
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.3"
+zebkit = "0.0.1-alpha.4"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.3"
+zebkit-build = "0.0.1-alpha.4"
 ```
 
 ```rust
@@ -56,7 +56,7 @@ ZEBKIT_DIR=/path/to/package cargo run
   Inside the repository the crates find it there; elsewhere `ZEBKIT_DIR`
   names it. Released engines are downloaded once, checked against the
   SHA-256 in `zebkit-rs/engines.txt`; the first Blink engine,
-  0.0.1-alpha.3, is built but not published yet.
+  0.0.1-alpha.4, is built but not published yet.
 - **`zebkit_build::bundle()` puts the engine beside the executable**, in
   `target/<profile>/zebkit/`, and makes the executable look for it there.
 - **To ship the application**, copy the executable and that `zebkit`

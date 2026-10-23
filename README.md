@@ -16,7 +16,7 @@ the engine's own V8.
 
 ### The engine: a third smaller, the same speed class
 
-| | zebkit 0.0.1-alpha.3 | Electron 44.9, trimmed | zebkit is |
+| | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
 |---|---:|---:|---:|
 | Uncompressed | **157.3 MiB** | 255.7 MiB | 38% smaller |
 | `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
@@ -94,7 +94,7 @@ application stops doing when its runtime is not Electron.
 | Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
-| Version | `VERSION`: 0.0.1-alpha.3 |
+| Version | `VERSION`: 0.0.1-alpha.4 |
 
 ## Using zebkit in an application
 
@@ -152,10 +152,10 @@ browser window.)
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.3"
+zebkit = "0.0.1-alpha.4"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.3"
+zebkit-build = "0.0.1-alpha.4"
 ```
 
 ```rust
@@ -259,7 +259,7 @@ In a container without unprivileged user namespaces, add `--no-sandbox`.
 ### Try it
 
 ```sh
-mise r                      # build the release package
+mise run r                  # build the release package
 mise example:linux:basic    # a browser window on it
 mise example:rust:window    # the same in Rust
 ```

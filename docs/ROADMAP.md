@@ -79,7 +79,7 @@ camera and microphone capture, and the device APIs.
 
 ### Releases
 
-- The first Blink engine published (0.0.1-alpha.3 is built by `mise run r`),
+- The first Blink engine published (0.0.1-alpha.4 is built by `mise run r`),
   so that the Rust crates can download it. A release the crates download
   needs a repository anyone can read.
 
