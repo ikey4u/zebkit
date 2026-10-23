@@ -151,12 +151,40 @@ camera and microphone capture, and the device APIs.
 
 ### The API
 
-- **PDF**: trust in a signer's certificate (the chain, revocation), editing
-  the outline, encrypted documents saved with new permissions, appearances
-  for stamps, carets and redaction marks, form fields renamed, a page's
-  JavaScript actions, flattening or exporting one annotation, stamps made
-  from another document's pages. PDFium in a sandboxed utility process for
-  pages' documents, as Chrome's printing runs it.
+- **TODO: annotations as a full PDF editor has them.** Today every type
+  is read, the common ones are made with their appearance, and redaction
+  removes content for good; what an editor needs beyond that, in this
+  order, each in `<zebkit/pdf.h>`, `zebkit.pdf` and its tests:
+  1. **Appearance**: line endings (open and closed arrows, circle,
+     square, diamond, butt, slash), leader lines and captions on lines;
+     dashed and cloudy borders on squares, circles and polygons; opacity,
+     fill and blend drawn into every generated appearance; an
+     annotation's own rotation.
+  2. **Free text**: font, size, colour and alignment (`/DA`, `/Q`), rich
+     text (`/RC`, `/DS`), background and border, the callout line with its
+     ending (`/CL`, `/LE`), rotation; the appearance drawn from all of it.
+  3. **Stamps and the rest made**: the standard stamps (Approved, Draft,
+     Confidential, ...) drawn, text stamps, stamps from another
+     document's page as vectors; carets; notes with each icon; file
+     attachments with the file embedded.
+  4. **Discussion**: replies (`/IRT`), review and marking states
+     (accepted, rejected, completed), groups (`/RT /Group`), and their
+     popups, read and made.
+  5. **Measurement**: distance, perimeter and area, with a scale
+     (`/Measure`) and the value as the caption.
+  6. **For viewers and editors**: the annotation at a point; markup made
+     from a range of the text; the order on the page changed; copying to
+     another page or document; one annotation flattened or exported.
+  7. **Interchange**: XFDF and FDF in and out, the formats Acrobat and
+     other tools exchange annotations in.
+  Every appearance checked against Acrobat's and PDF.js's rendering of
+  the same file; patches to PDFium where it lacks a generator, as
+  `patches/1015` does for lines and polygons.
+- **PDF, beyond annotations**: trust in a signer's certificate (the chain,
+  revocation), editing the outline, encrypted documents saved with new
+  permissions, form fields renamed, a page's JavaScript actions. PDFium in
+  a sandboxed utility process for pages' documents, as Chrome's printing
+  runs it.
 - **Services, later areas**: 2D drawing on Skia's canvas, shaping a line of
   text, decoding media frames, a key-value store; the desktop's
   clipboard, notifications, file dialogs, screens, power and keychain.
