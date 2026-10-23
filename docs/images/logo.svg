@@ -1,29 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 128" width="420" height="128" role="img" aria-label="zebkit">
+  <defs>
+    <linearGradient id="zebkit-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#0E7490"/>
+    </linearGradient>
+    <clipPath id="zebkit-top"><path d="M64 22 L100 43 L64 64 L28 43Z"/></clipPath>
+    <clipPath id="zebkit-left"><path d="M28 43 L64 64 L64 106 L28 85Z"/></clipPath>
+    <clipPath id="zebkit-right"><path d="M64 64 L100 43 L100 85 L64 106Z"/></clipPath>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#zebkit-tile)"/>
+  <path d="M64 22 L100 43 L64 64 L28 43Z" fill="#FFFFFF"/>
+  <path d="M28 43 L64 64 L64 106 L28 85Z" fill="#E2E8F0"/>
+  <path d="M64 64 L100 43 L100 85 L64 106Z" fill="#CBD5E1"/>
+  <g fill="#0F172A">
+    <g clip-path="url(#zebkit-top)"><path d="M31.6 45.1 L67.6 24.1 L73.72 27.67 L37.72 48.67Z"/><path d="M43.12 51.82 L79.12 30.82 L85.24 34.39 L49.24 55.39Z"/><path d="M54.64 58.54 L90.64 37.54 L96.76 41.11 L60.76 62.11Z"/></g>
+    <g clip-path="url(#zebkit-left)"><path d="M31.6 45.1 L37.72 48.67 L34.72 90.67 L28.6 87.1Z"/><path d="M43.12 51.82 L49.24 55.39 L46.24 97.39 L40.12 93.82Z"/><path d="M54.64 58.54 L60.76 62.11 L57.76 104.11 L51.64 100.54Z"/></g>
+    <g clip-path="url(#zebkit-right)"><path d="M68.32 61.48 L74.8 57.7 L80.8 99.7 L74.32 103.48Z"/><path d="M80.56 54.34 L87.04 50.56 L93.04 92.56 L86.56 96.34Z"/><path d="M92.8 47.2 L99.28 43.42 L105.28 85.42 L98.8 89.2Z"/></g>
+  </g>
   <style>
     .zebkit-word { fill: #0B1120; }
     @media (prefers-color-scheme: dark) { .zebkit-word { fill: #F8FAFC; } }
   </style>
-  <defs>
-    <linearGradient id="zebkit-tile" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1E293B"/>
-      <stop offset="1" stop-color="#0B1120"/>
-    </linearGradient>
-    <clipPath id="zebkit-z">
-      <rect x="30" y="28" width="68" height="72"/>
-    </clipPath>
-  </defs>
-  <rect width="128" height="128" rx="30" fill="url(#zebkit-tile)"/>
-  <g fill="#F8FAFC">
-    <rect x="30" y="28" width="68" height="16" rx="4"/>
-    <rect x="30" y="84" width="68" height="16" rx="4"/>
-    <!-- The diagonal as three stripes: the zebra in the Z. -->
-    <g clip-path="url(#zebkit-z)">
-      <path d="M74 40h7l-48 48h-7z"/>
-      <path d="M84.5 40h7l-48 48h-7z"/>
-      <path d="M95 40h7l-48 48h-7z"/>
-    </g>
-  </g>
-  <circle cx="104" cy="104" r="8" fill="#22D3EE"/>
-
   <text class="zebkit-word" x="150" y="90" font-family="Inter, 'SF Pro Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="78" font-weight="700" letter-spacing="-2.5">zebkit</text>
 </svg>

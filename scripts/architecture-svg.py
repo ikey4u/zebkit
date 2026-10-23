@@ -75,12 +75,9 @@ arrow(792, 124, 156, "CDP, as Chrome serves it", "end")
 # Row 2: zebkit itself.
 top, h = 156, 262
 rect(24, top, 912, h, "zeb", 14)
-add(f'<g transform="translate(44 {top + 16}) scale(0.25)">'
-    '<rect width="128" height="128" rx="30" fill="#0B1120"/><g fill="#F8FAFC">'
-    '<rect x="30" y="28" width="68" height="16" rx="4"/><rect x="30" y="84" width="68" height="16" rx="4"/>'
-    '<clipPath id="arch-z"><rect x="30" y="28" width="68" height="72"/></clipPath><g clip-path="url(#arch-z)">'
-    '<path d="M74 40h7l-48 48h-7z"/><path d="M84.5 40h7l-48 48h-7z"/><path d="M95 40h7l-48 48h-7z"/></g></g>'
-    '<circle cx="104" cy="104" r="8" fill="#22D3EE"/></g>')
+mark = (ROOT / "docs/images/logo-mark.svg").read_text()
+mark = mark[mark.index(">") + 1:mark.rindex("</svg>")].replace("zebkit-", "arch-")
+add(f'<g transform="translate(44 {top + 16}) scale(0.25)">{mark}</g>')
 text(86, top + 30, "zebkit", "ink", 18, 800)
 text(86, top + 47, "libzebkit.so.1 on Linux, Zebkit.framework on macOS: inside your process", "muted", 12)
 text(916, top + 30, "no Node, no Chrome browser UI", "accent", 12, 600, "end")
