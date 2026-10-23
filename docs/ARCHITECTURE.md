@@ -3,6 +3,10 @@
 How zebkit is made: what runs where, and which part of this repository
 does it. The API itself is `docs/API.md`.
 
+![zebkit's architecture](images/architecture.svg)
+
+(`scripts/architecture-svg.py` draws the picture.)
+
 ## The engine as a library
 
 Chromium's content layer is the multi-process browser without Chrome:

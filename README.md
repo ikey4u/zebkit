@@ -1,7 +1,6 @@
-# zebkit
+<h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-**Chrome's web engine as a library, for applications that would otherwise
-ship Electron.**
+<p align="center"><b>Chrome's web engine as a library, for applications that would otherwise ship Electron.</b></p>
 
 ## Introduction
 
@@ -12,6 +11,8 @@ Protocol to agents, and calls the libraries Chromium already carries
 through a C API, with bindings for Rust, Python and the pages' own
 JavaScript. There is no Node and no second runtime: the application is
 native code, or JavaScript on the engine's own V8.
+
+<p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; Linux and macOS today, Windows planned"></p>
 
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the

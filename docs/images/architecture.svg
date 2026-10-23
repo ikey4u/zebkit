@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" width="960" height="640" role="img" aria-label="zebkit's architecture: the application links one library, which runs Chromium's content layer, Blink and V8 in the application's process, with sandboxed helper processes, on Linux and macOS">
+<style>
+  .card { fill: #FFFFFF; stroke: #D0D7DE; }
+  .box { fill: #F6F8FA; stroke: #D0D7DE; }
+  .chip { fill: #FFFFFF; stroke: #D0D7DE; }
+  .zeb { fill: #ECFEFF; stroke: #0891B2; stroke-width: 1.5; }
+  .pill { fill: #E0F2FE; stroke: none; }
+  .os { fill: #F1F5F9; stroke: #CBD5E1; }
+  .plan { fill: none; stroke: #94A3B8; stroke-dasharray: 5 4; }
+  .ink { fill: #0F172A; }
+  .muted { fill: #57606A; }
+  .accent { fill: #0E7490; }
+  .wire { stroke: #64748B; stroke-width: 1.5; }
+  .head { fill: #64748B; }
+  @media (prefers-color-scheme: dark) {
+    .card { fill: #0D1117; stroke: #30363D; }
+    .box { fill: #161B22; stroke: #30363D; }
+    .chip { fill: #0D1117; stroke: #30363D; }
+    .zeb { fill: #082F3A; stroke: #22D3EE; }
+    .pill { fill: #0E3A47; }
+    .os { fill: #161B22; stroke: #30363D; }
+    .plan { stroke: #6E7681; }
+    .ink { fill: #E6EDF3; }
+    .muted { fill: #8B949E; }
+    .accent { fill: #67E8F9; }
+    .wire { stroke: #8B949E; }
+    .head { fill: #8B949E; }
+  }
+</style>
+<rect x="0.5" y="0.5" width="959" height="639" rx="16" class="card" />
+<rect x="24" y="24" width="600" height="100" rx="10" class="box" />
+<text x="44" y="52" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="start">Your application</text>
+<text x="604" y="52" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">native code or JavaScript, no Node</text>
+<rect x="44" y="66" width="132" height="44" rx="8" class="chip" />
+<text x="110" y="84" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">C / C++</text>
+<text x="110" y="101" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="middle">zebkit.h</text>
+<rect x="188" y="66" width="132" height="44" rx="8" class="chip" />
+<text x="254" y="84" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">Rust</text>
+<text x="254" y="101" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="middle">zebkit crate</text>
+<rect x="332" y="66" width="132" height="44" rx="8" class="chip" />
+<text x="398" y="84" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">Python</text>
+<text x="398" y="101" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="middle">ctypes binding</text>
+<rect x="476" y="66" width="132" height="44" rx="8" class="chip" />
+<text x="542" y="84" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">JavaScript</text>
+<text x="542" y="101" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="middle">zebkit-js on V8</text>
+<rect x="648" y="24" width="288" height="100" rx="10" class="box" />
+<text x="668" y="52" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="start">Agents and tests</text>
+<rect x="668" y="66" width="116" height="44" rx="8" class="chip" />
+<text x="726" y="93" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">Puppeteer</text>
+<rect x="796" y="66" width="116" height="44" rx="8" class="chip" />
+<text x="854" y="93" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle">Playwright</text>
+<line x1="324" y1="124" x2="324" y2="149" class="wire"/>
+<path d="M319 148l5 8 5-8z" class="head"/>
+<text x="334" y="144.0" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">links one library: a C API</text>
+<line x1="792" y1="124" x2="792" y2="149" class="wire"/>
+<path d="M787 148l5 8 5-8z" class="head"/>
+<text x="782" y="144.0" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">CDP, as Chrome serves it</text>
+<rect x="24" y="156" width="912" height="262" rx="14" class="zeb" />
+<g transform="translate(44 172) scale(0.25)"><rect width="128" height="128" rx="30" fill="#0B1120"/><g fill="#F8FAFC"><rect x="30" y="28" width="68" height="16" rx="4"/><rect x="30" y="84" width="68" height="16" rx="4"/><clipPath id="arch-z"><rect x="30" y="28" width="68" height="72"/></clipPath><g clip-path="url(#arch-z)"><path d="M74 40h7l-48 48h-7z"/><path d="M84.5 40h7l-48 48h-7z"/><path d="M95 40h7l-48 48h-7z"/></g></g><circle cx="104" cy="104" r="8" fill="#22D3EE"/></g>
+<text x="86" y="186" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="800" text-anchor="start">zebkit</text>
+<text x="86" y="203" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">libzebkit.so.1 on Linux, Zebkit.framework on macOS: inside your process</text>
+<text x="916" y="186" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="end">no Node, no Chrome browser UI</text>
+<rect x="44" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="56" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">zebkit.h</text>
+<text x="56" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">views and windows</text>
+<rect x="191" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="203" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">schemes</text>
+<text x="203" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">your own app://</text>
+<rect x="338" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="350" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">pdf.h</text>
+<text x="350" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">PDF on PDFium</text>
+<rect x="485" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="497" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">services.h</text>
+<text x="497" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">HTTP, crypto, images</text>
+<rect x="632" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="644" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">vendor/*.h</text>
+<text x="644" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">15 libraries, 7,230 fns</text>
+<rect x="779" y="220" width="137" height="52" rx="8" class="chip" />
+<text x="791" y="242" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">zebkit.ui</text>
+<text x="791" y="260" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">native windows in JS</text>
+<text x="44" y="300" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="start">Chromium 155, built as a library</text>
+<rect x="44" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="112.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">content layer</text>
+<rect x="191" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="259.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Blink</text>
+<rect x="338" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="406.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">V8 + JIT</text>
+<rect x="485" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="553.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Skia</text>
+<rect x="632" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="700.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">compositor</text>
+<rect x="779" y="314" width="137" height="30" rx="15" class="pill" />
+<text x="847.5" y="334" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">network stack</text>
+<rect x="44" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="112.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">DevTools / CDP</text>
+<rect x="191" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="259.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">PDFium</text>
+<rect x="338" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="406.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">FFmpeg</text>
+<rect x="485" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="553.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">ICU</text>
+<rect x="632" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="700.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">SQLite</text>
+<rect x="779" y="352" width="137" height="30" rx="15" class="pill" />
+<text x="847.5" y="372" class="accent" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle">BoringSSL</text>
+<line x1="244" y1="418" x2="244" y2="449" class="wire"/>
+<path d="M239 448l5 8 5-8z" class="head"/>
+<text x="254" y="441.0" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">Mojo IPC; a page's calls are bytes, not base64</text>
+<rect x="24" y="456" width="440" height="76" rx="10" class="box" />
+<text x="42" y="486" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Renderer: Blink + V8</text>
+<text x="42" y="508" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">your pages; zebkit.* only where you grant it</text>
+<rect x="476" y="456" width="224" height="76" rx="10" class="box" />
+<text x="494" y="486" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">GPU</text>
+<text x="494" y="508" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">Skia on GL, Vulkan or Metal</text>
+<rect x="712" y="456" width="224" height="76" rx="10" class="box" />
+<text x="730" y="486" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Utility</text>
+<text x="730" y="508" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">network, audio, storage</text>
+<text x="936" y="446" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">zebkit-helper processes, sandboxed</text>
+<rect x="24" y="560" width="296" height="56" rx="10" class="os" />
+<text x="42" y="594" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Linux</text>
+<text x="302" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">x86-64 · X11 · Wayland</text>
+<rect x="332" y="560" width="296" height="56" rx="10" class="os" />
+<text x="350" y="594" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">macOS</text>
+<text x="610" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">Apple silicon · AppKit · Metal</text>
+<rect x="640" y="560" width="296" height="56" rx="10" class="plan" />
+<text x="658" y="594" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Windows</text>
+<text x="918" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">planned, same API</text>
+</svg>

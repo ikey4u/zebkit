@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 128" width="420" height="128" role="img" aria-label="zebkit">
+  <style>
+    .zebkit-word { fill: #0B1120; }
+    @media (prefers-color-scheme: dark) { .zebkit-word { fill: #F8FAFC; } }
+  </style>
+  <defs>
+    <linearGradient id="zebkit-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#0B1120"/>
+    </linearGradient>
+    <clipPath id="zebkit-z">
+      <rect x="30" y="28" width="68" height="72"/>
+    </clipPath>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#zebkit-tile)"/>
+  <g fill="#F8FAFC">
+    <rect x="30" y="28" width="68" height="16" rx="4"/>
+    <rect x="30" y="84" width="68" height="16" rx="4"/>
+    <!-- The diagonal as three stripes: the zebra in the Z. -->
+    <g clip-path="url(#zebkit-z)">
+      <path d="M74 40h7l-48 48h-7z"/>
+      <path d="M84.5 40h7l-48 48h-7z"/>
+      <path d="M95 40h7l-48 48h-7z"/>
+    </g>
+  </g>
+  <circle cx="104" cy="104" r="8" fill="#22D3EE"/>
+
+  <text class="zebkit-word" x="150" y="90" font-family="Inter, 'SF Pro Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="78" font-weight="700" letter-spacing="-2.5">zebkit</text>
+</svg>
