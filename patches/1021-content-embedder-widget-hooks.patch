@@ -1,0 +1,126 @@
+Feature: the cursor and popup widgets, to an embedder that draws off-screen.
+
+zebkit's off-screen views (<zebkit/offscreen.h>) have no window: the
+application draws their frames and sends them input. Two things a page
+asks of its window have no public way out of content: the cursor it wants
+over itself, and a popup widget it shows (a <select>'s list, a date or
+colour picker), whose frames the embedder captures and draws over the page.
+content::SetEmbedderWidgetHooks() gives the embedder both, from
+RenderWidgetHostImpl::SetCursor() and WebContentsImpl::ShowCreatedWidget().
+A new header, so that only the two files that call the hooks build again.
+
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -99,6 +99,7 @@
+ #include "content/public/browser/content_browser_client.h"
+ #include "content/public/browser/device_service.h"
+ #include "content/public/browser/disallow_activation_reason.h"
++#include "content/public/browser/embedder_widget_hooks.h"
+ #include "content/public/browser/global_dom_node_id.h"
+ #include "content/public/browser/gpu_data_manager.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+@@ -2189,6 +2190,9 @@
+ }
+ 
+ void RenderWidgetHostImpl::SetCursor(const ui::Cursor& cursor) {
++  if (GetEmbedderWidgetHooks().cursor_changed) {
++    GetEmbedderWidgetHooks().cursor_changed(this, cursor);
++  }
+   if (view_) {
+     view_->UpdateCursor(cursor);
+   }
+@@ -4544,4 +4548,17 @@
+   }
+ }
+ 
++namespace {
++// Function pointers only: trivially destructible, set on the UI thread.
++EmbedderWidgetHooks g_embedder_widget_hooks;
++}  // namespace
++
++void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks) {
++  g_embedder_widget_hooks = hooks;
++}
++
++const EmbedderWidgetHooks& GetEmbedderWidgetHooks() {
++  return g_embedder_widget_hooks;
++}
++
+ }  // namespace content
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -154,6 +154,7 @@
+ #include "content/public/browser/document_picture_in_picture_window_controller.h"
+ #include "content/public/browser/document_user_data.h"
+ #include "content/public/browser/download_manager.h"
++#include "content/public/browser/embedder_widget_hooks.h"
+ #include "content/public/browser/file_select_listener.h"
+ #include "content/public/browser/focused_node_details.h"
+ #include "content/public/browser/frame_type.h"
+@@ -6181,6 +6182,11 @@
+   // Renderer-owned popup widgets wait for the renderer to request for them
+   // to be shown. We signal that this condition is satisfied by calling Init().
+   render_widget_host_impl->Init();
++
++  if (GetEmbedderWidgetHooks().popup_shown) {
++    GetEmbedderWidgetHooks().popup_shown(this, render_widget_host_impl,
++                                         transformed_rect);
++  }
+ }
+ 
+ std::optional<CreatedWindow> WebContentsImpl::GetCreatedWindow(
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -175,6 +175,7 @@
+     "download_request_utils.h",
+     "download_utils.h",
+     "editable_level.h",
++    "embedder_widget_hooks.h",
+     "error_navigation_trigger.h",
+     "eye_dropper.h",
+     "eye_dropper_listener.h",
+--- /dev/null
++++ b/content/public/browser/embedder_widget_hooks.h
+@@ -0,0 +1,42 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
++#define CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
++
++#include "content/common/content_export.h"
++
++namespace gfx {
++class Rect;
++}
++
++namespace ui {
++class Cursor;
++}
++
++namespace content {
++
++class RenderWidgetHost;
++class WebContents;
++
++// What a page's widgets ask of the window they are in, for an embedder that
++// draws them without one (off-screen rendering) and shows the result
++// itself. Called on the UI thread.
++struct EmbedderWidgetHooks {
++  // The cursor `widget` asks for changed.
++  void (*cursor_changed)(RenderWidgetHost* widget,
++                         const ui::Cursor& cursor) = nullptr;
++  // `contents` showed a popup widget (a <select>'s list, a date or colour
++  // picker), `popup`, at `bounds_in_screen` (DIPs).
++  void (*popup_shown)(WebContents* contents,
++                      RenderWidgetHost* popup,
++                      const gfx::Rect& bounds_in_screen) = nullptr;
++};
++
++CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
++CONTENT_EXPORT const EmbedderWidgetHooks& GetEmbedderWidgetHooks();
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_

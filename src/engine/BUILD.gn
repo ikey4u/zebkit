@@ -145,8 +145,10 @@ _sources = [
   "cdp.cc",
   "engine.cc",
   "engine.h",
+  "include/zebkit/offscreen.h",
   "include/zebkit/services.h",
   "include/zebkit/zebkit.h",
+  "offscreen.cc",
   "pdf_bridge.cc",
   "pdf_script.h",
   "scheme.cc",
@@ -167,6 +169,11 @@ _deps = [
   "//base/version_info",
   "//components/input",
   "//components/viz/common",
+  "//components/viz/host",
+  "//media",
+  "//media/capture/mojom:video_capture_buffer",
+  "//mojo/public/cpp/bindings",
+  "//services/viz/privileged/mojom/compositing",
   "//content/public/app",
   "//content/public/browser",
   "//content/public/common",
@@ -182,6 +189,9 @@ _deps = [
   "//skia",
   "//ui/base",
   "//ui/compositor",
+  "//ui/display",
+  "//ui/events",
+  "//ui/events:events_base",
   "//ui/gfx/codec",
   "//ui/views",
   "//ui/views/controls/webview",
@@ -339,17 +349,21 @@ if (!is_mac) {
     ]
     info_plist = "mac/framework-Info.plist"
 
-    sources = _sources + [ "engine_mac.mm" ]
+    sources = _sources + [
+      "engine_mac.mm",
+      "offscreen_mac.h",
+      "offscreen_mac.mm",
+    ]
     configs += [ ":implementation" ]
     public_configs = [ ":public" ]
     deps = _deps + [
              "//sandbox/mac:seatbelt",
              "//services/device/public/cpp/geolocation",
-             "//ui/display",
            ]
     frameworks = [
       "AppKit.framework",
       "Foundation.framework",
+      "IOSurface.framework",
     ]
     bundle_deps = [
       ":zebkit_helpers",

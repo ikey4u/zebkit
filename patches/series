@@ -18,3 +18,4 @@
 1018-content-shell-keys-to-the-embedder.patch
 1019-content-shell-window-size-limits.patch
 1020-pdf-nested-signature-fields.patch
+1021-content-embedder-widget-hooks.patch
