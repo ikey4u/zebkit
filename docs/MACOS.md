@@ -118,6 +118,5 @@ for an unset variable.
 
 - Real windows: views attached in another's window, files dropped on a
   view, the menu bar's items and keys, with a person at the Mac.
-- the application on macOS (its phase F1 is done on Linux).
 - Signing for distribution (Developer ID) and notarization.
 - Intel Macs (x86-64), if they are wanted.

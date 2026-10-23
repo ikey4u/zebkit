@@ -130,12 +130,12 @@ regular expressions 55%, parsing 70% and JIT compilation 30%, and was not
 taken. Maglev stays: 2.4 MiB for a JIT tier.
 
 Text layout was what the size build lost. Laying out a chapter of an EPUB,
-as the application's reader does:
+as a reader does:
 
 | Build | ms | Package, MiB |
 |---|---:|---:|
 | Electron 44.9.0 (Chrome's own build of Chromium 152) | 6.8 | |
-| Electron 36, which the application shipped | 9.7 | |
+| Electron 36 | 9.7 | |
 | `slim`, size-built | 13.2 | 147.1 |
 | with Chromium's PGO profile | 11.1 | |
 | and Blink core, Blink's platform and HarfBuzz at `-O2` | 9.2 | |

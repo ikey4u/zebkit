@@ -21,7 +21,6 @@ application framework.
 | Far smaller than Electron, uncompressed and compressed. The 150 MiB limit of 2026-10-19 gave way to speed on 2026-10-21 | Owner, 2026-10-18 to 2026-10-21 |
 | Chromium's libraries, and what else in it is useful, exported for applications as a C API, with bindings and a JavaScript API | Owner, 2026-10-19 |
 | A full PDF API on Chromium's PDFium, with EmbedPDF's features as the reference | Owner, 2026-10-20 |
-| the application, the first product, faster and lighter than its Electron app | Owner, 2026-10-21 |
 
 Kept by zebkit's own choice, open to the owner's overrule: WebGL,
 WebAssembly, HTTP/3 and SwiftShader. Removed by zebkit's choice: WebRTC's
@@ -45,7 +44,7 @@ camera and microphone capture, and the device APIs.
 | PDF | Chromium's PDFium in the engine; `<zebkit/pdf.h>` and `zebkit.pdf`: documents, rendering, text, search, outline, links, annotations with appearances, forms, redaction, page editing, attachments, metadata, images, signatures checked for integrity; PDFium patched where it had nothing | 2026-10-20, 2026-10-21 |
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
-| the application | On zebkit alone: Electron removed from it. Against its Electron app on Linux, medians of five runs: start 0.50 s (1.08), idle CPU 0.35% (51.5%), idle memory 290 MB (958); a 756-page PDF's first page 1.1 s (5.3), its longest freeze 0.10 s (2.9), its scrolling frames 22 ms at the median (170) | 2026-10-22 |
+| An application | A document reader moved from Electron to zebkit. Against its Electron version on Linux, medians of five runs: start 0.50 s (1.08), idle CPU 0.35% (51.5%), idle memory 290 MB (958); a 756-page PDF's first page 1.1 s (5.3), its longest freeze 0.10 s (2.9), its scrolling frames 22 ms at the median (170) | 2026-10-22 |
 
 ## Next
 
@@ -57,7 +56,7 @@ camera and microphone capture, and the device APIs.
   started from the shell without its test hooks; Electron's
   `native_window_views.cc` is the reference for the windows.
 - **A window's native handle**, so that an application can parent the
-  system's dialogs to it (the application's file dialogs through the XDG portal need
+  system's dialogs to it (file dialogs through the XDG portal need
   it).
 - **Linux on older systems.** The package runs on glibc 2.25 and newer; the
   requirement is 2.17. What is left is building on an older sysroot and
@@ -76,7 +75,7 @@ camera and microphone capture, and the device APIs.
 - **Windows**: the same profile and the same API.
 - **macOS**: real windows checked with a person at the Mac (attached
   views, drops, the menu bar's keys); Chromium's PGO profile for macOS;
-  signing with a Developer ID and notarization; the application there.
+  signing with a Developer ID and notarization.
 
 ### Releases
 
@@ -93,8 +92,8 @@ camera and microphone capture, and the device APIs.
   from another document's pages. PDFium in a sandboxed utility process for
   pages' documents, as Chrome's printing runs it.
 - **`zebkit.ui`**: a virtual list (widgets only for the rows in sight) and
-  a light button, so that long lists build as fast as a page does; the application's
-  frame on it.
+  a light button, so that long lists build as fast as a page does;
+  an application's frame on it.
 - **Services, later areas**: 2D drawing on Skia's canvas, shaping a line of
   text, decoding media frames, a key-value store; the desktop's
   clipboard, notifications, file dialogs, screens, power and keychain.

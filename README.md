@@ -30,9 +30,9 @@ whole web platform that applications use (HTML, CSS, JavaScript with every
 JIT tier, WebAssembly, WebGL, media with H.264 and AAC, HTTP/3) and is
 built with Chromium's PGO profile and link-time optimization.
 
-### A real application: the application
+### A real application
 
-the application, a document reader with PDF, EPUB and OCR, was moved from Electron to
+A desktop document reader with PDF, EPUB and OCR, moved from Electron to
 zebkit. The same harness, production builds, medians of five runs on
 Linux:
 

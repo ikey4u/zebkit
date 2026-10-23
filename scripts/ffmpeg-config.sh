@@ -7,7 +7,7 @@
 # --no-build takes FFmpeg's builds already in the tree, from a run before.
 #
 # Chromium's FFmpeg has what a browser plays. Applications need more of it
-# (the application: audio resampled for Whisper, frames scaled, files remuxed, VP8 and
+# (audio resampled for Whisper, frames scaled, files remuxed, VP8 and
 # VP9 frames), so zebkit's adds, to Chrome's configuration:
 #
 #   libswresample and libswscale, the file protocol, the MP4, MOV, Matroska
