@@ -185,7 +185,9 @@ if [[ -z "$url" ]]; then
 else
     port="${url#ws://*:}"; port="${port%%/*}"
     version="$(curl -fsS "http://127.0.0.1:$port/json/version")" || version=""
-    if grep -q '"webSocketDebuggerUrl": *"ws://127.0.0.1:'"$port"'/devtools/browser/' <<< "$version"; then
+    # The product as Chrome names it, which tools read to know what they drive.
+    if grep -q '"webSocketDebuggerUrl": *"ws://127.0.0.1:'"$port"'/devtools/browser/' <<< "$version" \
+        && grep -q '"Browser": *"Chrome/[0-9.]*"' <<< "$version"; then
         echo "ok   /json/version: $(grep -o '"Browser": *"[^"]*"' <<< "$version")"
     else
         echo "FAIL /json/version: $version"; failed=1

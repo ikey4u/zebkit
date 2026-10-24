@@ -32,6 +32,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
+#include "components/version_info/version_info_with_user_agent.h"
 #include "content/public/app/content_main.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -288,6 +289,13 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
   AppendSchemeSwitch(command_line);
+}
+
+// The product CDP names in /json/version and Browser.getVersion, as
+// Chrome names it ("Chrome/155.0.8059.84"): the content shell names none,
+// and tools read it to know what they drive.
+std::string BrowserClient::GetProduct() {
+  return std::string(version_info::GetProductNameAndVersionForUserAgent());
 }
 
 // Third-party cookies are blocked, as Safari and Firefox block them: an
