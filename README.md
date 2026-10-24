@@ -54,7 +54,7 @@ native code, or JavaScript on the engine's own V8.
 | Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
-| Version | `VERSION`: 0.0.1-alpha.4 |
+| Version | `VERSION`: 0.0.1-alpha.5 |
 
 ## Quick start
 
@@ -157,10 +157,10 @@ const hash = await zebkit.crypto.digest('SHA-256', 'abc');
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.4"
+zebkit = "0.0.1-alpha.5"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.4"
+zebkit-build = "0.0.1-alpha.5"
 ```
 
 ```rust
@@ -254,7 +254,7 @@ Every comparison is with the latest stable Electron, 44.9 (Chromium 152).
 A comparison of whole applications, the same one on both, is still to be
 made (`docs/ROADMAP.md`).
 
-| | zebkit 0.0.1-alpha.4 | Electron 44.9, trimmed | zebkit is |
+| | zebkit 0.0.1-alpha.5 | Electron 44.9, trimmed | zebkit is |
 |---|---:|---:|---:|
 | Uncompressed | **157.3 MiB** | 255.7 MiB | 38% smaller |
 | `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
