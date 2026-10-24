@@ -76,6 +76,8 @@ pub(crate) struct Inner {
     retired: RefCell<Vec<Box<Binding>>>,
     /// An off-screen view's (offscreen.rs).
     pub(crate) offscreen: crate::offscreen::Slots,
+    /// Dialogs, drags (page.rs).
+    pub(crate) page: crate::page::Slots,
 }
 
 struct Binding {
@@ -122,6 +124,7 @@ impl View {
             bindings: RefCell::new(HashMap::new()),
             retired: RefCell::new(Vec::new()),
             offscreen: Default::default(),
+            page: Default::default(),
         });
         // The engine holds one reference until the view closes.
         let data = Rc::into_raw(inner.clone()).cast_mut().cast::<c_void>();
@@ -467,6 +470,7 @@ unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     inner.bindings.borrow_mut().clear();
     inner.retired.borrow_mut().clear();
     inner.offscreen.clear();
+    inner.page.clear();
 }
 
 unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
