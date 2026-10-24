@@ -66,6 +66,7 @@ target macOS; what only a Mac has is Apple's SDK.
 | `v8_use_metagen_instance_types = false` | metagen reads the build graph without zebkit's root pattern |
 | `use_relative_vtables_abi = false` | relative vtables need COMDATs, which Mach-O has not |
 | `enable_swiftshader = false` | see below |
+| `use_cups = true` | `//printing`'s macOS print context needs CUPS, the system's `libcups.2.dylib`, for printing to PDF |
 
 What upstream does not build, and patches make work: Chrome always has
 Dawn on macOS and the content shell's test support; the slim profile has
@@ -149,6 +150,7 @@ on Linux, 2026-10-21:
 | bridge, schemes (10), script outside a page (15), `zebkit.ui` (11) | all passed |
 | Python, CDP from the command line | all passed |
 | Off-screen views (30) and a host in another process (13), on 2026-10-23: IOSurfaces read in the process and through mach ports, damage, input, `<select>`, scale 2 | all passed |
+| Dialogs, PDF, drag and drop (`page.c`, 101; `cdp_page.py`, 14) and off-screen views again (30), on 2026-10-24, macOS 27.0.1 | all passed |
 
 What macOS needed beyond Linux, found by those tests: the vendor headers'
 `#pragma redefine_extname` takes Mach-O's leading underscore; ICU's data

@@ -40,3 +40,9 @@ enable_swiftshader = false
 # Chromium's PGO profile for macOS is not in the tree yet (only Linux's is
 # fetched): without PGO until it is.
 chrome_pgo_phase = 0
+
+# Printing to PDF (Page.printToPDF, <zebkit/page.h>) links //printing, whose
+# macOS print context is written against CUPS, as Chrome on macOS always
+# has it: libcups is the system's (/usr/lib/libcups.2.dylib). slim leaves
+# it off on Linux, where nothing needs it.
+use_cups = true
