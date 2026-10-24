@@ -24,6 +24,13 @@
 #   in another, which links nothing of zebkit's: the frames' buffers passed
 #   over a socket, the pixels the host gets checked, its input sent back,
 #   what the frames cost measured.
+# - tests/engine/page.c: what a page asks of its window (<zebkit/page.h>):
+#   dialogs held and answered, beforeunload, window.print(); the page
+#   printed to PDF and read back; drags in the page from the mouse, drags
+#   the application takes, files and text dropped from outside, a slider.
+# - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
+#   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
+#   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -62,6 +69,7 @@ build_against_package "$package" "$work/scheme" "$tests/scheme.c"
 offscreen_options=()
 [[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen" "$tests/offscreen.c" -- "${offscreen_options[@]}"
+build_against_package "$package" "$work/page" "$tests/page.c"
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -138,6 +146,13 @@ run offscreen-host "$work/offscreen-show" --renderer="$work/offscreen-render" \
     --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \
     --test -- --no-sandbox --user-data-dir="$work/profile-host"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen-host.log" || { echo "FAIL the off-screen host did not finish"; failed=1; }
+
+mkdir -p "$work/page-files"
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
+    run page "$work/page" "${engine_switches[@]}"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
+run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
+    "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
 
 mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
