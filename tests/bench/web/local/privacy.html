@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>privacy: running</title>
+<!-- What a site can learn without asking, as browserleaks.com checks it,
+     computed in the page; the result becomes the title, as JSON, for
+     tests/bench/web/privacy.c. -->
+<script>
+(async () => {
+  const result = {};
+  for (const name of ['geolocation', 'camera', 'microphone', 'notifications', 'midi', 'idle-detection',
+                      'accelerometer', 'gyroscope', 'magnetometer', 'background-sync', 'payment-handler',
+                      'clipboard-read', 'local-fonts', 'screen-wake-lock']) {
+    try { result['permission:' + name] = (await navigator.permissions.query({ name })).state; }
+    catch (e) { result['permission:' + name] = 'unsupported'; }
+  }
+  result.userAgent = navigator.userAgent;
+  result.brands = (navigator.userAgentData?.brands || []).map(b => `${b.brand}/${b.version}`);
+  result.platform = navigator.userAgentData?.platform || '';
+  result.webdriver = navigator.webdriver;
+  // WebRTC: the addresses ICE gathering reveals, without a server.
+  const addresses = new Set();
+  try {
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel('x');
+    pc.onicecandidate = e => { if (e.candidate) { const a = e.candidate.candidate.split(' ')[4]; if (a) addresses.add(a); } };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(r => setTimeout(r, 2500));
+    pc.close();
+  } catch (e) { addresses.add('error:' + e.name); }
+  result.iceAddresses = [...addresses];
+  document.title = JSON.stringify(result);
+})();
+</script>
+</html>

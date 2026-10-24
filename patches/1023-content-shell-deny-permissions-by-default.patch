@@ -1,0 +1,53 @@
+Content shell: deny by default what a browser would ask about.
+
+The shell grants geolocation, motion sensors, payment handlers, background
+sync and fetch, idle detection, NFC and MIDI to every site without asking,
+for Chromium's browser tests. zebkit is the shell's: every page it showed
+could read the device's location (Wi-Fi networks were looked up for it)
+and whether the person was at the machine. A browser asks; an engine has
+no prompt, so these are now denied unless the application or an agent
+grants them (CDP's Browser.setPermission overrides this). The screen wake
+lock, which tells a site nothing, stays granted.
+
+--- a/content/shell/browser/shell_permission_manager.cc
++++ b/content/shell/browser/shell_permission_manager.cc
+@@ -26,29 +26,26 @@
+ 
+ bool IsAllowlistedPermissionType(PermissionType permission) {
+   switch (permission) {
++    // zebkit: only what tells nothing about the person or their machine is
++    // granted without asking. A browser would ask; an engine has no prompt,
++    // so the rest is denied unless the application or an agent grants it
++    // (CDP's Browser.setPermission, which overrides this).
++    case PermissionType::WAKE_LOCK_SCREEN:
++      return true;
++
++    // zebkit: denied by default. Location (the device's Wi-Fi networks are
++    // looked up for it), motion sensors, whether the person is idle, NFC,
++    // payment handlers, work after the page is closed, MIDI devices.
+     case PermissionType::GEOLOCATION:
+     case PermissionType::GEOLOCATION_APPROXIMATE:
+     case PermissionType::SENSORS:
+     case PermissionType::PAYMENT_HANDLER:
+-    case PermissionType::WAKE_LOCK_SCREEN:
+-
+-    // Background Sync and Background Fetch browser tests require
+-    // permission to be granted by default.
+     case PermissionType::BACKGROUND_SYNC:
+     case PermissionType::BACKGROUND_FETCH:
+     case PermissionType::PERIODIC_BACKGROUND_SYNC:
+-
+     case PermissionType::IDLE_DETECTION:
+-
+-    // WebNFC browser tests require permission to be granted by default.
+     case PermissionType::NFC:
+-      return true;
+-
+     case PermissionType::MIDI:
+-      if (base::FeatureList::IsEnabled(blink::features::kBlockMidiByDefault)) {
+-        return false;
+-      }
+-      return true;
+     case PermissionType::MIDI_SYSEX:
+     case PermissionType::NOTIFICATIONS:
+     case PermissionType::PROTECTED_MEDIA_IDENTIFIER:

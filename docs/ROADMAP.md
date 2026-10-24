@@ -103,6 +103,32 @@ camera and microphone capture, and the device APIs.
 
 ### Agents
 
+- **TODO: every setting changeable at runtime, by the application and by
+  agents** (owner, 2026-10-24), per view and for the whole engine, in the C
+  API, the bindings, CDP where Chromium has a method and the MCP server:
+  - What Chromium's CDP already changes, checked to work in zebkit: user
+    agent and client hints (`Emulation.setUserAgentOverride` with
+    `userAgentMetadata`), language, time zone, geolocation, screen and
+    device metrics, permissions (`Browser.setPermission`), cookies,
+    extra headers, blocked URLs, offline and throttled networks.
+  - What zebkit decides and Chromium's CDP does not change: third-party
+    cookies (`Network.setCookieControls` only marks issues in Chromium
+    155), the spare renderer, JavaScript dialogs held or dismissed (being
+    built), downloads, new windows; each gets a runtime setting.
+  - Defaults chosen for privacy (third-party cookies blocked, location,
+    sensors, idle detection, NFC, MIDI, payment handlers and background
+    work denied) stay defaults: changing them is the application's or the
+    agent's explicit act.
+- **TODO: PDF in pages**, on zebkit's PDFium: a page that opens a PDF shows
+  it, as Chrome's viewer does, and `navigator.pdfViewerEnabled` and
+  `navigator.plugins` then say what Chrome says. Today both are empty,
+  which browserleaks.com shows and bot checks read as a headless browser.
+- **TODO: network quality estimates**: `navigator.connection` reports `rtt`
+  0 and `downlink` 10, fixed values, where Chrome reports measured ones.
+- **The privacy defaults tested on every change**: browserleaks.com's
+  checks (WebRTC, permissions, client hints, TLS, JavaScript) in
+  scripts/web-bench.sh, against what zebkit's defaults promise.
+
 - **TODO: zebkit as an MCP server.** One program, `tools/zebkit-mcp`,
   that gives an AI agent the engine's capabilities as MCP tools, over
   standard input and over HTTP, on Linux and macOS alike. CDP stays for

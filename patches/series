@@ -20,3 +20,4 @@
 1020-pdf-nested-signature-fields.patch
 1021-content-embedder-widget-hooks.patch
 1022-content-shell-chromium-user-agent.patch
+1023-content-shell-deny-permissions-by-default.patch

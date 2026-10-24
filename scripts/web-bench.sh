@@ -12,7 +12,11 @@
 # The report goes to docs/reports/web-bench.md and .json (not with --check).
 # --check fails when zebkit is over a limit: a page costs more CPU or
 # memory, or more processes, than it did when the limits were set. Raising
-# a limit is a decision to write in the commit that does it.
+# a limit is a decision to write in the commit that does it. --check also
+# holds zebkit to its privacy defaults, as browserleaks.com checks them,
+# with tests/bench/web/local/privacy.html: no permission a site would have
+# to ask for is granted, the user agent and client hints are Chromium's for
+# this version, WebRTC shows no private address.
 #
 # Needs Xvfb, Python 3, out/blink/<profile>/package (scripts/package.sh) and
 # Electron unpacked by scripts/electron-baseline.sh. Each page is shown for
@@ -119,11 +123,45 @@ with open(sys.argv[1], "w") as out:
 PY
 
 if (( check )); then
-    python3 -I - "$results" "$bench/limits.json" <<'PY'
-import json, sys
+    build_against_package "$package" "$work/privacy" "$bench/privacy.c"
+    log "privacy defaults"
+    rm -rf "$work/profile-privacy"
+    timeout 60 "$work/privacy" --no-sandbox --user-data-dir="$work/profile-privacy" \
+        "file://$bench/local/privacy.html" 2>/dev/null | tail -1 > "$work/privacy.json"
+    python3 -I - "$results" "$bench/limits.json" "$work/privacy.json" "${CHROMIUM_VERSION%%.*}" <<'PY'
+import ipaddress, json, sys
 results = [json.loads(line) for line in open(sys.argv[1])]
 limits = json.load(open(sys.argv[2]))
 failed = 0
+def check(ok, what, value):
+    global failed
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} privacy          {what:28s} {value}")
+try:
+    privacy = json.load(open(sys.argv[3]))
+except ValueError:
+    privacy = {"error": "no result"}
+major = sys.argv[4]
+if "error" in privacy:
+    check(False, "privacy page", privacy["error"])
+else:
+    for name, state in privacy.items():
+        if name.startswith("permission:") and name != "permission:screen-wake-lock":
+            check(state in ("denied", "prompt", "unsupported"), name, state)
+    check(f"Chrome/{major}.0.0.0" in privacy["userAgent"] and "content_shell" not in privacy["userAgent"],
+          "user agent", privacy["userAgent"])
+    check(f"Chromium/{major}" in privacy["brands"] and not any("content_shell" in b for b in privacy["brands"]),
+          "client hints brands", privacy["brands"])
+    check(privacy.get("webdriver") is False, "navigator.webdriver", privacy.get("webdriver"))
+    private = []
+    for address in privacy["iceAddresses"]:
+        try:
+            ip = ipaddress.ip_address(address)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                private.append(address)
+        except ValueError:
+            pass  # an mDNS name (*.local) hides the address, as Chrome does
+    check(not private, "WebRTC private addresses", privacy["iceAddresses"])
 for r in results:
     page = r["label"].split("|", 1)[1]
     for key, limit in limits.get(page, {}).items():
