@@ -11,7 +11,7 @@ slimming Chromium disagrees with what was measured, the measurement wins.
 
 | | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| zebkit `slim`, 2026-10-22 | **157.3 MiB** | **53.9 MiB** | **71.8 MiB** |
+| zebkit `slim`, 0.0.1-alpha.6, 2026-10-24 | **157.5 MiB** | **53.9 MiB** | **71.9 MiB** |
 | Electron 44.9.0, trimmed (the baseline) | 255.7 MiB | 85.3 MiB | 112.6 MiB |
 | zebkit of Electron | 62% | 63% | 64% |
 
@@ -135,7 +135,6 @@ as a reader does:
 | Build | ms | Package, MiB |
 |---|---:|---:|
 | Electron 44.9.0 (Chrome's own build of Chromium 152) | 6.8 | |
-| Electron 36, an older release, for reference | 9.7 | |
 | `slim`, size-built | 13.2 | 147.1 |
 | with Chromium's PGO profile | 11.1 | |
 | and Blink core, Blink's platform and HarfBuzz at `-O2` | 9.2 | |
@@ -145,6 +144,42 @@ as a reader does:
 `zebkit_max_speed_patterns` in `profiles/slim.gn` is the list of
 directories at `-O2` (a third tier in `patches/1007`). `slim-macos` is
 built without PGO until Chromium's profile for macOS is fetched.
+
+### Web pages
+
+What pages cost to load and to keep showing, against Electron 44.9.0 on
+the same display, with the same user agent, measured by
+`scripts/web-bench.sh --sites` (`docs/reports/web-bench.md` has every page).
+Fifteen pages: three local ones and twelve popular sites (Wikipedia,
+Google, YouTube, GitHub, Amazon, Reddit, The New York Times, BBC News, The
+Verge, Stack Overflow, Apple, MDN). Each is loaded for 10 s and shown for
+20 s more; the CPU and the memory (PSS) of every process are counted, and
+the median of 3 runs is taken. 2026-10-24, zebkit 0.0.1-alpha.6:
+
+| All 15 pages | zebkit `slim` | Electron 44.9.0 | zebkit |
+|---|---:|---:|---:|
+| CPU, loading and at rest | **73 s** | 92 s | 21% less |
+| Memory | **6.1 GB** | 7.4 GB | 17% less |
+
+zebkit costs less CPU on 12 of the 15 pages and less memory on 13. BBC
+News and the local animation are level. Stack Overflow costs more (10.2 s
+of CPU against 8.4 s, 672 MB against 650 MB, with 11 renderers against 9),
+and so does YouTube's memory (680 MB against 596 MB, 2 renderers against
+1); these are the next
+to look at. Two defaults account for much of the lead: third-party cookies
+are blocked, which keeps advertising frames, and with site isolation their
+processes, from syncing (The Verge: 3 renderers against 16), and no spare
+renderer is kept waiting.
+
+Compiling for speed was measured on the same pages: `slim-speed`
+(`profiles/slim-speed.gn`, `-O2` and Chromium's full PGO, `-Oz` only for
+cold code) took 69 s of CPU against `slim`'s 73, with 2% more memory and
+a package 27 MB larger (186 MB). Since `slim` already costs less than
+Electron, `slim` stays the release build (owner, 2026-10-24).
+
+`scripts/web-bench.sh --check` runs the local pages against the limits in
+`tests/bench/web/limits.json`, so that a change that makes pages cost
+more fails.
 
 ## Advice checked against the measurements
 

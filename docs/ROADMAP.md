@@ -157,6 +157,13 @@ camera and microphone capture, and the device APIs.
 
 ### Measurements
 
+- **Web pages against Electron 44.9: done for 15 pages, two left over.**
+  0.0.1-alpha.6 costs 21% less CPU and 17% less memory over the 15 pages
+  of `scripts/web-bench.sh --sites` (`docs/SIZE_AND_SPEED.md`).
+  - **TODO: Stack Overflow**: 10.2 s of CPU against 8.4 s, 672 MB against
+    650 MB, 11 renderers against 9.
+  - **TODO: YouTube's memory**: 680 MB against 596 MB, 2 renderers
+    against 1.
 - **TODO: a fully equal comparison with Electron.** The comparison of
   whole applications that was published (a document reader against its
   build on Electron 36) was withdrawn on 2026-10-23: an old Electron, and
