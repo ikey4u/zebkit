@@ -25,6 +25,7 @@ class FilePath;
 
 namespace content {
 class BrowserContext;
+class RenderFrame;
 class Shell;
 }
 
@@ -60,6 +61,9 @@ class ContentClient : public content::ShellContentClient {
  public:
   void AddAdditionalSchemes(Schemes* schemes) override;
 };
+
+// window.chrome in the frame's pages (chrome_object.cc).
+void InstallChromeObject(content::RenderFrame* render_frame);
 
 class RendererClient : public content::ShellContentRendererClient {
  public:
@@ -99,6 +103,19 @@ class BrowserClient : public content::ShellContentBrowserClient {
           cert_verifier_creation_params) override;
   std::string GetProduct() override;
   std::string GetUserAgent() override;
+  bool CanCreateWindow(content::RenderFrameHost* opener,
+                       const GURL& opener_url,
+                       const GURL& opener_top_level_frame_url,
+                       const url::Origin& source_origin,
+                       content::mojom::WindowContainerType container_type,
+                       const GURL& target_url,
+                       const content::Referrer& referrer,
+                       const std::string& frame_name,
+                       WindowOpenDisposition disposition,
+                       const blink::mojom::WindowFeatures& features,
+                       bool user_gesture,
+                       bool opener_suppressed,
+                       bool* no_javascript_access) override;
   // Page.printToPDF and the clients of each page (devtools.cc).
   std::unique_ptr<content::DevToolsManagerDelegate>
   CreateDevToolsManagerDelegate() override;

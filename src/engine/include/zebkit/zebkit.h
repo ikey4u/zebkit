@@ -214,7 +214,9 @@ typedef void (*zebkit_result_func)(zebkit_view *view, const char *json, const ch
 /*
  * Runs @script in the page's main frame, as the page's own script would
  * run, and calls @func with its value. A promise is waited for. @func may
- * be NULL.
+ * be NULL. It runs as the person's act, as DevTools' console runs script:
+ * it may open a window, which the page's own script may only do while the
+ * person clicks or types (popups are blocked as Chrome blocks them).
  */
 ZEBKIT_API void zebkit_view_evaluate(zebkit_view *view, const char *script, zebkit_result_func func, void *data);
 

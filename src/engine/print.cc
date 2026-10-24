@@ -217,6 +217,7 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
   // Deletes itself with the frame.
   new printing::PrintRenderFrameHelper(render_frame,
                                        std::make_unique<PrintDelegate>());
+  InstallChromeObject(render_frame);
 }
 
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(

@@ -1,0 +1,24 @@
+<!doctype html>
+<title>browser</title>
+<script>
+// What sites read to know they run in Chrome, and what a page could see of
+// a CDP client: tests/engine/cdp_browser.py reads window.results.
+const results = window.results = {nameReads: 0, prepared: 0};
+class Named extends Error {}
+Object.defineProperty(Named.prototype, "name", {get() { results.nameReads++; return "Named"; }});
+setTimeout(() => {
+  const previous = Error.prepareStackTrace;
+  Error.prepareStackTrace = () => { results.prepared++; return "prepared"; };
+  function thrower() { return new Error("logged"); }
+  console.log(thrower());
+  console.error(new Named("named"));
+  console.debug({error: new Error("in an object")});
+  Error.prepareStackTrace = previous;
+  results.chrome = typeof window.chrome === "object" && typeof chrome.loadTimes === "function" &&
+      typeof chrome.csi === "function";
+  results.popupWithoutClick = window.open("about:blank", "_blank", "popup") !== null;
+  results.screen = [screen.width, screen.height];
+  results.webdriver = navigator.webdriver;
+  results.done = true;
+}, 300);
+</script>

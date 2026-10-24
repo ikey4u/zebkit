@@ -1,0 +1,254 @@
+V8 inspector: describing an error runs none of the page's code.
+
+When a CDP client has Runtime enabled, every error a page logs is
+described for it: its name, message and stack, and a preview of its
+properties. Reading the stack through V8's own accessor formats a stack
+nothing has read yet, and formatting calls the page's
+Error.prepareStackTrace; reading the name called a getter the page put on
+the error's prototype. A page could tell from those calls that a debugger
+was attached (bot detectors check exactly this, and Chrome and Electron
+show it too). A debugger that watches must not change what it watches:
+the description and the preview now take the stack V8 alone formats,
+without keeping it, and the name lookup stops at a getter of the page's
+anywhere on the prototype chain.
+
+--- a/v8/src/debug/debug-interface.cc
++++ b/v8/src/debug/debug-interface.cc
+@@ -21,6 +21,7 @@
+ #include "src/debug/debug-property-iterator.h"
+ #include "src/debug/debug-stack-trace-iterator.h"
+ #include "src/debug/debug.h"
++#include "src/execution/messages.h"
+ #include "src/execution/vm-state-inl.h"
+ #include "src/heap/heap.h"
+ #include "src/objects/js-generator-inl.h"
+@@ -1510,6 +1511,15 @@ MaybeLocal<Message> GetMessageFromPromise(Local<Promise> p) {
+   return ToApiHandle<Message>(i::Cast<i::JSMessageObject>(maybeMessage));
+ }
+ 
++Local<Value> GetErrorStackForInspector(Isolate* v8_isolate,
++                                       Local<Object> error) {
++  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
++  i::DirectHandle<i::JSReceiver> receiver = Utils::OpenDirectHandle(*error);
++  if (!IsJSObject(*receiver)) return Undefined(v8_isolate);
++  return Utils::ToLocal(i::ErrorUtils::GetStackForInspector(
++      isolate, i::Cast<i::JSObject>(receiver)));
++}
++
+ void RecordAsyncStackTaggingCreateTaskCall(v8::Isolate* v8_isolate) {
+   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
+   isolate->CountUsage(v8::Isolate::kAsyncStackTaggingCreateTaskCall);
+--- a/v8/src/debug/debug-interface.h
++++ b/v8/src/debug/debug-interface.h
+@@ -696,6 +696,10 @@ AccessorPair* AccessorPair::Cast(v8::Value* value) {
+ 
+ MaybeLocal<Message> GetMessageFromPromise(Local<Promise> promise);
+ 
++// An error's stack for the inspector, without running the page's code
++// (ErrorUtils::GetStackForInspector).
++Local<Value> GetErrorStackForInspector(Isolate* isolate, Local<Object> error);
++
+ void RecordAsyncStackTaggingCreateTaskCall(v8::Isolate* isolate);
+ 
+ uint64_t GetIsolateId(v8::Isolate* isolate);
+--- a/v8/src/execution/messages.cc
++++ b/v8/src/execution/messages.cc
+@@ -1193,6 +1193,49 @@ MaybeDirectHandle<Object> ErrorUtils::GetFormattedStack(
+   return lookup.error_stack;
+ }
+ 
++// static
++DirectHandle<Object> ErrorUtils::GetStackForInspector(
++    Isolate* isolate, DirectHandle<JSObject> maybe_error_object) {
++  ErrorUtils::StackPropertyLookupResult lookup =
++      ErrorUtils::GetErrorStackProperty(isolate, maybe_error_object);
++  Handle<FixedArray> raw_data;
++  if (IsErrorStackData(*lookup.error_stack)) {
++    auto error_stack_data = Cast<ErrorStackData>(lookup.error_stack);
++    if (error_stack_data->HasFormattedStack()) {
++      return direct_handle(error_stack_data->formatted_stack(), isolate);
++    }
++    raw_data =
++        handle(error_stack_data->raw_data_for_call_site_infos(), isolate);
++  } else if (IsFixedArray(*lookup.error_stack)) {
++    raw_data = handle(Cast<FixedArray>(*lookup.error_stack), isolate);
++  } else {
++    return lookup.error_stack;
++  }
++
++  Handle<FixedArray> expanded =
++      CallSiteInfo::ExpandDeferredFrames(isolate, raw_data);
++  IncrementalStringBuilder builder(isolate);
++  uint32_t elems_len =
++      expanded->ulength().value() / CallSiteInfo::Fields::kCount;
++  v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
++  for (uint32_t i = 0; i < elems_len; ++i) {
++    builder.AppendCStringLiteral("\n    at ");
++    DirectHandle<CallSiteInfo> frame =
++        CallSiteInfo::ConstructFromRawData(isolate, expanded, i);
++    SerializeCallSiteInfo(isolate, frame, &builder);
++    if (isolate->has_exception()) {
++      try_catch.Reset();
++      return isolate->factory()->undefined_value();
++    }
++  }
++  DirectHandle<String> frames;
++  if (!builder.Finish().ToHandle(&frames)) {
++    try_catch.Reset();
++    return isolate->factory()->undefined_value();
++  }
++  return frames;
++}
++
+ // static
+ void ErrorUtils::SetFormattedStack(Isolate* isolate,
+                                    DirectHandle<JSObject> maybe_error_object,
+--- a/v8/src/execution/messages.h
++++ b/v8/src/execution/messages.h
+@@ -142,6 +142,14 @@ class ErrorUtils : public AllStatic {
+ 
+   static MaybeDirectHandle<Object> GetFormattedStack(
+       Isolate* isolate, DirectHandle<JSObject> maybe_error_object);
++  // The stack for the inspector, which must not run the page's code: the
++  // formatted stack if the page has had it formatted, and otherwise only
++  // its frames ("\n    at ..."), formatted by V8 without calling
++  // Error.prepareStackTrace and without keeping the result, so that the page
++  // formats it as before when it asks. Undefined if a frame cannot be
++  // formatted without the page's code.
++  static DirectHandle<Object> GetStackForInspector(
++      Isolate* isolate, DirectHandle<JSObject> maybe_error_object);
+   static void SetFormattedStack(Isolate* isolate,
+                                 DirectHandle<JSObject> maybe_error_object,
+                                 DirectHandle<JSAny> formatted_stack);
+--- a/v8/src/inspector/value-mirror.cc
++++ b/v8/src/inspector/value-mirror.cc
+@@ -268,6 +268,10 @@ bool isBuiltinGetter(v8::Local<v8::Function> function) {
+   return function->ScriptId() == v8::UnboundScript::kNoScriptId;
+ }
+ 
++// A property of an error for its description, found along the prototype
++// chain without running the page's code: a data property is taken as it is,
++// V8's own accessors are called, a getter of the page's or a proxy ends the
++// search. A page could otherwise count the reads an inspector adds.
+ v8::MaybeLocal<v8::Value> getErrorProperty(v8::Local<v8::Context> context,
+                                            v8::Local<v8::Object> object,
+                                            v8::Local<v8::String> name) {
+@@ -275,32 +279,66 @@ v8::MaybeLocal<v8::Value> getErrorProperty(v8::Local<v8::Context> context,
+   v8::TryCatch tryCatch(isolate);
+   v8::MicrotasksScope microtasksScope(context,
+                                       v8::MicrotasksScope::kDoNotRunMicrotasks);
+-  v8::Local<v8::Value> descriptor;
+-  if (!object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor)) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
+-  }
+-  if (!descriptor->IsObject()) return object->Get(context, name);
+-
+-  v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
+-  v8::Local<v8::Value> getDescriptor;
+-  if (!descriptorObject->HasOwnProperty(context, toV8String(isolate, "get"))
+-           .FromJust()) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
+-  }
+-  if (!descriptorObject->Get(context, toV8String(isolate, "get"))
+-           .ToLocal(&getDescriptor)) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
++  v8::Local<v8::Value> current = object;
++  for (int depth = 0; depth < 64 && current->IsObject(); ++depth) {
++    if (current->IsProxy()) return v8::MaybeLocal<v8::Value>();
++    v8::Local<v8::Object> holder = current.As<v8::Object>();
++    v8::Local<v8::Value> descriptor;
++    if (!holder->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor))
++      return v8::MaybeLocal<v8::Value>();
++    if (descriptor->IsObject()) {
++      v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
++      if (descriptorObject
++              ->HasOwnProperty(context, toV8String(isolate, "value"))
++              .FromMaybe(false)) {
++        return descriptorObject->Get(context, toV8String(isolate, "value"));
++      }
++      v8::Local<v8::Value> getter;
++      if (!descriptorObject->Get(context, toV8String(isolate, "get"))
++               .ToLocal(&getter) ||
++          !getter->IsFunction() ||
++          !isBuiltinGetter(getter.As<v8::Function>())) {
++        return v8::MaybeLocal<v8::Value>();
++      }
++      return object->Get(context, name);
++    }
++    current = holder->GetPrototype();
+   }
++  return v8::MaybeLocal<v8::Value>();
++}
+ 
+-  if (getDescriptor->IsFunction() &&
+-      !isBuiltinGetter(getDescriptor.As<v8::Function>())) {
+-    return v8::MaybeLocal<v8::Value>();
++// An error's stack for its description, without running the page's code.
++// Reading "stack" through V8's own accessor formats a stack that nothing has
++// read yet, and formatting calls the page's Error.prepareStackTrace: a page
++// could tell from that call that an inspector (a CDP client with Runtime
++// enabled) is describing the errors it logs. A value the page assigned is
++// taken as it is, a getter of the page's is not called, and V8's accessor is
++// replaced by the stack as V8 alone formats it.
++v8::MaybeLocal<v8::Value> getErrorStack(v8::Local<v8::Context> context,
++                                        v8::Local<v8::Object> object) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  v8::TryCatch tryCatch(isolate);
++  v8::Local<v8::String> name = toV8String(isolate, "stack");
++  v8::Local<v8::Value> descriptor;
++  if (object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor) &&
++      descriptor->IsObject()) {
++    v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
++    v8::Local<v8::Value> value;
++    if (descriptorObject->HasOwnProperty(context, toV8String(isolate, "value"))
++            .FromMaybe(false) &&
++        descriptorObject->Get(context, toV8String(isolate, "value"))
++            .ToLocal(&value)) {
++      return value;
++    }
++    v8::Local<v8::Value> getter;
++    if (descriptorObject->Get(context, toV8String(isolate, "get"))
++            .ToLocal(&getter) &&
++        getter->IsFunction() &&
++        !isBuiltinGetter(getter.As<v8::Function>())) {
++      return v8::MaybeLocal<v8::Value>();
++    }
+   }
+-
+-  return object->Get(context, name);
++  return v8::debug::GetErrorStackForInspector(isolate, object);
+ }
+ 
+ // Build a description from an exception using the following pattern:
+@@ -331,8 +369,7 @@ String16 descriptionForError(v8::Local<v8::Context> context,
+   std::optional<String16> stack;
+   {
+     v8::Local<v8::Value> stackValue;
+-    if (getErrorProperty(context, object, toV8String(isolate, "stack"))
+-            .ToLocal(&stackValue) &&
++    if (getErrorStack(context, object).ToLocal(&stackValue) &&
+         stackValue->IsString()) {
+       String16 stackString =
+           toProtocolString(isolate, stackValue.As<v8::String>());
+@@ -1636,7 +1673,17 @@ bool ValueMirror::getProperties(v8::Local<v8::Context> context,
+             setterMirror = ValueMirror::create(context, descriptor.set);
+           }
+           isAccessorProperty = getterMirror || setterMirror;
+-          if (name != "__proto__" && !getterFunction.IsEmpty() &&
++          if (name == "stack" && object->IsNativeError() &&
++              !getterFunction.IsEmpty() && isBuiltinGetter(getterFunction)) {
++            // V8's stack accessor would format the stack, which calls the
++            // page's Error.prepareStackTrace (getErrorStack): the stack as
++            // V8 alone formats it, under the error's description.
++            valueMirror = ValueMirror::create(
++                context,
++                toV8String(isolate, descriptionForError(context, object)));
++            setterMirror = nullptr;
++            getterMirror = nullptr;
++          } else if (name != "__proto__" && !getterFunction.IsEmpty() &&
+               isBuiltinGetter(getterFunction) &&
+               !doesAttributeHaveObservableSideEffectOnGet(context, object,
+                                                           v8Name)) {

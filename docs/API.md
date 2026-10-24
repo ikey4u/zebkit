@@ -60,6 +60,21 @@ int main(int argc, char **argv) {
   to people and sites take HeadlessChrome for a bot.
   `--zebkit-headless-user-agent` gives Chrome's headless string;
   `--user-agent` replaces it.
+- **What sites read to know it is Chrome.** `window.chrome` has
+  `chrome.loadTimes()` and `chrome.csi()`, by Chrome's own renderer code
+  (`chrome.app` is the extension system's, which zebkit has not). Popups
+  are blocked as Chrome blocks them: a page opens a window or a tab only
+  while the person clicks or types; `--disable-popup-blocking` lets every
+  one open. A headless view's screen is `--window-size`, or 1920 by 1080,
+  not Ozone's 1 by 1 pixel. `navigator.webdriver` is as Chrome sets it:
+  true with `--enable-automation` or `--remote-debugging-port=0`, the
+  ports ChromeDriver uses, false otherwise.
+- **A CDP client changes nothing the page sees.** Describing the errors a
+  page logs runs none of the page's code (`patches/1026`): Chrome's V8
+  calls the page's `Error.prepareStackTrace` and getters on an error when a
+  client has `Runtime` enabled, which pages and bot checks read as a
+  debugger attached. The client still has each error with its stack
+  (`tests/engine/cdp_browser.py`).
 - **Notice: signing in to Google.** Google refuses sign-in in embedded
   browsers and in browsers it takes for automated ones ("Couldn't sign
   you in. This browser or app may not be secure"), and zebkit is an

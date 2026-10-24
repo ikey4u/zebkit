@@ -223,6 +223,10 @@ void zebkit_view::Evaluate(const char* script,
   params.Set("expression", script ? script : "");
   params.Set("awaitPromise", true);
   params.Set("returnByValue", true);
+  // The application's script acts for the person, as DevTools' console and
+  // Puppeteer's evaluate do: it may open a window, which a page's own
+  // script may not without a click (BrowserClient::CanCreateWindow).
+  params.Set("userGesture", true);
   Send("Runtime.evaluate", std::move(params),
        base::BindOnce(
            [](zebkit_view* view, zebkit_result_func func, void* data,

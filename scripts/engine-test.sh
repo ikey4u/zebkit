@@ -31,6 +31,9 @@
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
+# - tests/engine/cdp_browser.py: what a page sees of the browser and of a
+#   CDP client: nothing of the client (errors described without the
+#   page's code), window.chrome, popups blocked, a real headless screen.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -153,6 +156,8 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
 run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
+run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
+    --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 
 mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"

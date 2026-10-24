@@ -3,7 +3,9 @@
 Where zebkit stands and what comes next. How the engine is made is
 `docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`. The
 UI layer, applications in React, Solid or Vue drawn natively with each
-system's look, and iOS, has its own roadmap: `docs/ROADMAP_UI.md`.
+system's look, and iOS, has its own roadmap: `docs/ROADMAP_UI.md`. How an
+application decides what the engine does, through hooks rather than
+patches, has its own: `docs/ROADMAP_HOOKS.md`.
 
 ## Requirements
 
@@ -103,6 +105,11 @@ camera and microphone capture, and the device APIs.
 
 ### Agents
 
+- **TODO: hooks for every decision the engine makes** (owner,
+  2026-10-24): permissions, popups, navigation, network requests,
+  downloads, certificates and the rest, each with zebkit's default, from
+  native code and without patching zebkit: `docs/ROADMAP_HOOKS.md`. The
+  settings below are its first part.
 - **TODO: every setting changeable at runtime, by the application and by
   agents** (owner, 2026-10-24), per view and for the whole engine, in the C
   API, the bindings, CDP where Chromium has a method and the MCP server:
@@ -119,6 +126,14 @@ camera and microphone capture, and the device APIs.
     sensors, idle detection, NFC, MIDI, payment handlers and background
     work denied) stay defaults: changing them is the application's or the
     agent's explicit act.
+- **Chrome as sites see it, and nothing of a CDP client: done**
+  (2026-10-24, measured against rebrowser-bot-detector's checks and
+  Electron 44.9): `window.chrome` by Chrome's own code, popups blocked
+  without a click, a real screen under `--headless`, and V8's inspector
+  running none of the page's code when it describes the page's errors
+  (`patches/1026`; Chrome and Electron still do). Held by
+  `tests/engine/cdp_browser.py`.
+  - **TODO: `chrome.app`**, which comes from Chrome's extension system.
 - **TODO: PDF in pages**, on zebkit's PDFium: a page that opens a PDF shows
   it, as Chrome's viewer does, and `navigator.pdfViewerEnabled` and
   `navigator.plugins` then say what Chrome says. Today both are empty,

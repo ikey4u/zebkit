@@ -23,3 +23,4 @@
 1023-content-shell-deny-permissions-by-default.patch
 1024-content-embedder-drag-hook.patch
 1025-content-shell-beforeunload-keeps-the-page.patch
+1026-v8-inspector-runs-no-page-code-for-errors.patch

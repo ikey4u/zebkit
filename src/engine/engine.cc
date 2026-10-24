@@ -100,6 +100,19 @@ bool HasSwitch(int argc, char** argv, const char* name) {
   return false;
 }
 
+// The value of --name=value, or "" when it is not given.
+std::string SwitchValue(int argc, char** argv, const char* name) {
+  const size_t length = strlen(name);
+  for (int i = 1; i < argc; ++i) {
+    const char* arg = argv[i];
+    if (arg[0] == '-' && arg[1] == '-' && strncmp(arg + 2, name, length) == 0 &&
+        arg[2 + length] == '=') {
+      return arg + 3 + length;
+    }
+  }
+  return "";
+}
+
 // The arguments Chromium sees: the application's, and what the engine
 // needs that the application did not say.
 std::vector<std::string> EngineArguments(int argc, char** argv) {
@@ -135,6 +148,26 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
     const bool display = (wayland && *wayland) || (x11 && *x11);
     if (!display || HasSwitch(argc, argv, switches::kHeadless))
       args.push_back(std::string("--") + switches::kOzonePlatform + "=headless");
+  }
+  // Ozone's headless screen is 1 by 1 pixel, which no person's screen is:
+  // pages that lay out by screen.width break, and sites take it for a bot.
+  // Chrome's headless shell gives its window's size; zebkit gives the size
+  // of --window-size, or else the most common desktop screen, 1920 by 1080,
+  // since its headless views are shown to people. --ozone-override-screen-size
+  // and --screen-info still decide.
+  const bool headless_ozone =
+      SwitchValue(argc, argv, switches::kOzonePlatform) == "headless" ||
+      std::find(args.begin(), args.end(),
+                std::string("--") + switches::kOzonePlatform + "=headless") !=
+          args.end();
+  if (headless_ozone &&
+      !HasSwitch(argc, argv, switches::kOzoneOverrideScreenSize) &&
+      !HasSwitch(argc, argv, "screen-info")) {
+    std::string size = SwitchValue(argc, argv, "window-size");
+    if (size.empty())
+      size = "1920,1080";
+    args.push_back(std::string("--") + switches::kOzoneOverrideScreenSize +
+                   "=" + size);
   }
 #endif
   // The log goes to stderr, not to a file beside the executable, which for
@@ -308,6 +341,48 @@ std::string BrowserClient::GetUserAgent() {
                                            "Chrome/");
   }
   return agent;
+}
+
+// Popups are blocked as Chrome blocks them: a page opens a window or a tab
+// only while the person acts (a click, a key), not from a timer or on load
+// (blocked_content::ShouldBlockPopup and ConsiderForPopupBlocking, whose
+// rule this is). --disable-popup-blocking lets every one open, as in Chrome.
+bool BrowserClient::CanCreateWindow(
+    content::RenderFrameHost* opener,
+    const GURL& opener_url,
+    const GURL& opener_top_level_frame_url,
+    const url::Origin& source_origin,
+    content::mojom::WindowContainerType container_type,
+    const GURL& target_url,
+    const content::Referrer& referrer,
+    const std::string& frame_name,
+    WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& features,
+    bool user_gesture,
+    bool opener_suppressed,
+    bool* no_javascript_access) {
+  bool opens_window = false;
+  switch (disposition) {
+    case WindowOpenDisposition::NEW_POPUP:
+    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+    case WindowOpenDisposition::NEW_WINDOW:
+    case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
+    case WindowOpenDisposition::NEW_SPLIT_VIEW:
+      opens_window = true;
+      break;
+    default:
+      break;
+  }
+  if (opens_window && !user_gesture &&
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
+          embedder_support::kDisablePopupBlocking)) {
+    return false;
+  }
+  return content::ShellContentBrowserClient::CanCreateWindow(
+      opener, opener_url, opener_top_level_frame_url, source_origin,
+      container_type, target_url, referrer, frame_name, disposition, features,
+      user_gesture, opener_suppressed, no_javascript_access);
 }
 
 // The product CDP names in /json/version and Browser.getVersion, as
