@@ -9,6 +9,11 @@
 # service used about twice Electron's CPU, and slim builds both at -Oz
 # (scripts/web-bench.sh, 2026-10-23). The size this costs is measured
 # against what it saves, page by page.
+#
+# Measured 2026-10-24, 15 pages, 3 runs, beside slim: 5% less CPU (69 s
+# against 73 s; Electron 44.9 took 90), 2% more memory, 27 MB larger
+# (186 MB against 159). slim already costs less than Electron, so slim
+# stays the release build; this profile is kept to measure with.
 
 optimize_for_size = false
 use_ml_inliner = false
