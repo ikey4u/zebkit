@@ -60,6 +60,17 @@ int main(int argc, char **argv) {
   to people and sites take HeadlessChrome for a bot.
   `--zebkit-headless-user-agent` gives Chrome's headless string;
   `--user-agent` replaces it.
+- **Notice: signing in to Google.** Google refuses sign-in in embedded
+  browsers and in browsers it takes for automated ones ("Couldn't sign
+  you in. This browser or app may not be secure"), and zebkit is an
+  embedded engine whose pages can be driven over CDP, as Electron and
+  app webviews are. zebkit does not work around this check; it is
+  Google's protection of its accounts. An application that needs a
+  Google account signs in through the person's own browser, as Google
+  asks of native applications: OAuth with PKCE, the redirect coming back
+  to the application at a loopback address or its own scheme
+  (`zebkit_scheme_register()`), then Google's APIs with the tokens.
+  Other providers may refuse embedded browsers the same way.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,
   and every callback runs on it; `zebkit_post_task()` is for any thread.
 - **Windows.** A view has a window when there is a display (Wayland or
