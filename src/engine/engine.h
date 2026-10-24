@@ -26,6 +26,7 @@ class FilePath;
 namespace content {
 class BrowserContext;
 class RenderFrame;
+class WebContents;
 class Shell;
 }
 
@@ -61,6 +62,15 @@ class ContentClient : public content::ShellContentClient {
  public:
   void AddAdditionalSchemes(Schemes* schemes) override;
 };
+
+// The client hints delegate of the browser contexts (client_hints.cc).
+void InstallClientHints();
+
+// The languages pages and servers are told, as Chrome has them: the
+// system's locale, then its language ("en-US,en"), or --accept-lang.
+std::string AcceptLanguages();
+// Them in a page's renderer preferences (navigator.languages).
+void ApplyLanguages(content::WebContents* contents);
 
 // window.chrome in the frame's pages (chrome_object.cc).
 void InstallChromeObject(content::RenderFrame* render_frame);
@@ -103,6 +113,7 @@ class BrowserClient : public content::ShellContentBrowserClient {
           cert_verifier_creation_params) override;
   std::string GetProduct() override;
   std::string GetUserAgent() override;
+  std::string GetAcceptLangs(content::BrowserContext* context) override;
   bool CanCreateWindow(content::RenderFrameHost* opener,
                        const GURL& opener_url,
                        const GURL& opener_top_level_frame_url,

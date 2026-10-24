@@ -144,6 +144,7 @@ _sources = [
   "call.h",
   "cdp.cc",
   "chrome_object.cc",
+  "client_hints.cc",
   # window.chrome, by Chrome's own code (chrome_object.cc).
   "//chrome/renderer/loadtimes_bindings.cc",
   "//chrome/renderer/loadtimes_bindings.h",

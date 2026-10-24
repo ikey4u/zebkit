@@ -254,6 +254,12 @@ class HeadlessPlatformDelegate : public content::ShellPlatformDelegate {
   }
   void CleanUp(content::Shell* shell) override { sizes_.erase(shell); }
   void DidCloseLastWindow() override {}
+  void DidCreateOrAttachWebContents(content::Shell* shell,
+                                    content::WebContents* contents) override {
+    content::ShellPlatformDelegate::DidCreateOrAttachWebContents(shell,
+                                                                 contents);
+    ApplyLanguages(contents);
+  }
   void SetContents(content::Shell* shell) override {
     NSView* view = shell->web_contents()->GetNativeView().GetNativeNSView();
     view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;

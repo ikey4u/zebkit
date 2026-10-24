@@ -34,6 +34,9 @@
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "components/embedder_support/switches.h"
+#include "net/http/http_util.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+#include "third_party/icu/source/common/unicode/locid.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info_with_user_agent.h"
 #include "content/public/app/content_main.h"
@@ -340,6 +343,39 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   AppendSchemeSwitch(command_line);
 }
 
+std::string AcceptLanguages() {
+  static const base::NoDestructor<std::string> languages([] {
+    const std::string given =
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            "accept-lang");
+    if (!given.empty())
+      return given;
+    // As Chrome's default for the system's locale (from LANGUAGE, LC_ALL,
+    // LANG; ICU's): the locale, then its language, "en-US" without one.
+    // (l10n_util's needs Chrome's locale packs, which zebkit has not.)
+    const icu::Locale& system = icu::Locale::getDefault();
+    std::string language = system.getLanguage();
+    const std::string country = system.getCountry();
+    if (language.empty() || language == "c" || language == "posix")
+      return std::string("en-US,en");
+    if (country.empty())
+      return language;
+    return language + "-" + country + "," + language;
+  }());
+  return *languages;
+}
+
+void ApplyLanguages(content::WebContents* contents) {
+  contents->GetMutableRendererPrefs()->accept_languages = AcceptLanguages();
+  contents->SyncRendererPrefs();
+}
+
+// The content shell's are "en-us,en", whatever the system's, and pages were
+// told "en-US" alone (navigator.languages). Chrome's, from the locale.
+std::string BrowserClient::GetAcceptLangs(content::BrowserContext* context) {
+  return AcceptLanguages();
+}
+
 // The user agent is Chrome's with --headless too, not "HeadlessChrome":
 // headless views are shown to people in applications, and sites take
 // HeadlessChrome for a bot. Client hints never name it. Chrome's headless
@@ -423,6 +459,10 @@ void BrowserClient::ConfigureNetworkContextParamsForShell(
   context_params->cookie_manager_params->block_third_party_cookies =
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
           "zebkit-allow-third-party-cookies");
+  // Accept-Language as Chrome sends it: each language with its weight
+  // ("en-US,en;q=0.9"), not the list as it is.
+  context_params->accept_language = net::HttpUtil::GenerateAcceptLanguageHeader(
+      net::HttpUtil::ExpandLanguageList(AcceptLanguages()));
 }
 
 // A browser starts a renderer ahead of the next navigation; an application
@@ -492,6 +532,12 @@ std::u16string WindowTitle(content::Shell* shell, const std::u16string& page) {
 class PlatformDelegate : public content::ShellPlatformDelegate {
  public:
   void DidCloseLastWindow() override {}
+  void DidCreateOrAttachWebContents(content::Shell* shell,
+                                    content::WebContents* contents) override {
+    content::ShellPlatformDelegate::DidCreateOrAttachWebContents(shell,
+                                                                 contents);
+    ApplyLanguages(contents);
+  }
   void SetTitle(content::Shell* shell, const std::u16string& title) override {
     content::ShellPlatformDelegate::SetTitle(shell, WindowTitle(shell, title));
   }
@@ -568,6 +614,7 @@ void BrowserMainParts::PreCreateMainMessageLoop() {
 
 int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
+  InstallClientHints();
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
   content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
