@@ -174,12 +174,14 @@ PY
     exit $?
 fi
 
-python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" <<'PY'
+python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" "$ZEBKIT_ROOT" <<'PY'
 import json, sys, datetime
-results, reports, electron = sys.argv[1], sys.argv[2], sys.argv[3]
+results, reports, electron, root = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 rows = {}
 for line in open(results):
     r = json.loads(line)
+    # The local pages by their place in the repository, not this machine's path.
+    r["url"] = r["url"].replace(f"file://{root}/", "file://./")
     engine, page = r["label"].split("|", 1)
     rows.setdefault(page, {})[engine] = r
 json.dump(rows, open(f"{reports}/web-bench.json", "w"), indent=1)
