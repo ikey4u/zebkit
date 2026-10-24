@@ -187,8 +187,10 @@ else
     version="$(curl -fsS "http://127.0.0.1:$port/json/version")" || version=""
     # The product as Chrome names it, which tools read to know what they drive.
     if grep -q '"webSocketDebuggerUrl": *"ws://127.0.0.1:'"$port"'/devtools/browser/' <<< "$version" \
-        && grep -q '"Browser": *"Chrome/[0-9.]*"' <<< "$version"; then
-        echo "ok   /json/version: $(grep -o '"Browser": *"[^"]*"' <<< "$version")"
+        && grep -q '"Browser": *"Chrome/[0-9.]*"' <<< "$version" \
+        && grep -q '"User-Agent": *"[^"]* Chrome/[0-9]*\.0\.0\.0 ' <<< "$version"; then
+        # The user agent is Chrome's under --headless too, not HeadlessChrome's.
+        echo "ok   /json/version: $(grep -o '"Browser": *"[^"]*"' <<< "$version"), $(grep -o 'Chrome/[0-9.]*' <<< "$version" | tail -1) in the user agent"
     else
         echo "FAIL /json/version: $version"; failed=1
     fi

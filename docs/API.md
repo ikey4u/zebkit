@@ -55,7 +55,11 @@ int main(int argc, char **argv) {
   `--zebkit-allow-third-party-cookies` allows them. No spare renderer is
   kept warm for the next navigation, as Electron keeps none;
   `--zebkit-spare-renderer` keeps one. The user agent and client hints are
-  Chromium's own for its version.
+  Chromium's own for its version, with `--headless` too: Chrome's
+  `Chrome/155.0.0.0`, not `HeadlessChrome`, since headless views are shown
+  to people and sites take HeadlessChrome for a bot.
+  `--zebkit-headless-user-agent` gives Chrome's headless string;
+  `--user-agent` replaces it.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,
   and every callback runs on it; `zebkit_post_task()` is for any thread.
 - **Windows.** A view has a window when there is a display (Wayland or

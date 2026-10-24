@@ -158,7 +158,7 @@ camera and microphone capture, and the device APIs.
 ### Measurements
 
 - **Web pages against Electron 44.9: done for 15 pages, two left over.**
-  0.0.1-alpha.6 costs 21% less CPU and 17% less memory over the 15 pages
+  0.0.1-alpha.6 costs 21% less CPU and 17% less memory on a page, over the 15 pages
   of `scripts/web-bench.sh --sites` (`docs/SIZE_AND_SPEED.md`).
   - **TODO: Stack Overflow**: 10.2 s of CPU against 8.4 s, 672 MB against
     650 MB, 11 renderers against 9.

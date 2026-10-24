@@ -29,9 +29,12 @@
 #include "base/process/current_process.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
+#include "components/embedder_support/switches.h"
+#include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info_with_user_agent.h"
 #include "content/public/app/content_main.h"
 #include "content/public/browser/browser_main_runner.h"
@@ -289,6 +292,22 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
   AppendSchemeSwitch(command_line);
+}
+
+// The user agent is Chrome's with --headless too, not "HeadlessChrome":
+// headless views are shown to people in applications, and sites take
+// HeadlessChrome for a bot. Client hints never name it. Chrome's headless
+// string with --zebkit-headless-user-agent; --user-agent always wins.
+std::string BrowserClient::GetUserAgent() {
+  std::string agent = embedder_support::GetUserAgent();
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
+  if (!command_line.HasSwitch(embedder_support::kUserAgent) &&
+      !command_line.HasSwitch("zebkit-headless-user-agent")) {
+    base::ReplaceFirstSubstringAfterOffset(&agent, 0, "HeadlessChrome/",
+                                           "Chrome/");
+  }
+  return agent;
 }
 
 // The product CDP names in /json/version and Browser.getVersion, as

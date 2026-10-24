@@ -260,8 +260,8 @@ made (`docs/ROADMAP.md`).
 | `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
 | `.zip` | **71.9 MiB** | 112.6 MiB | 36% smaller |
 | Text layout (an EPUB chapter) | 8.7 ms | **6.8 ms** | 28% slower |
-| Web pages: CPU, 15 pages | **73 s** | 92 s | 21% less |
-| Web pages: memory, 15 pages | **6.1 GB** | 7.4 GB | 17% less |
+| A web page: CPU in its first 30 s, on average | **4.9 s** | 6.1 s | 21% less |
+| A web page: memory, on average | **409 MB** | 492 MB | 17% less |
 
 - **Size.** Electron as shipped is 283.3 MiB; "trimmed" is a hello world
   with its locales and extras removed, the fairest baseline we could make
@@ -274,8 +274,10 @@ made (`docs/ROADMAP.md`).
   closing the gap is on the roadmap (`docs/ROADMAP.md`).
 - **Web pages.** Twelve popular sites (Wikipedia, YouTube, Amazon, The New
   York Times, GitHub and others) and three local pages, each loaded for
-  10 s and shown for 20 s more, the median of 3 runs, CPU and memory of
-  every process. zebkit costs less CPU on 12 of the 15 and less memory on
+  10 s and shown for 20 s more, each alone in a freshly started engine,
+  the median of 3 runs, CPU and memory of every process (the averages
+  above are over the 15). A simple page takes 171 MB, two thirds of it
+  the engine's own code, which every further page shares. zebkit costs less CPU on 12 of the 15 and less memory on
   13; Stack Overflow is where it costs more (`docs/reports/web-bench.md`,
   `scripts/web-bench.sh`).
 - How each number is made: `docs/SIZE_AND_SPEED.md`.

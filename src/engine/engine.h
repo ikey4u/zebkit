@@ -98,6 +98,7 @@ class BrowserClient : public content::ShellContentBrowserClient {
       cert_verifier::mojom::CertVerifierCreationParams*
           cert_verifier_creation_params) override;
   std::string GetProduct() override;
+  std::string GetUserAgent() override;
   // Page.printToPDF and the clients of each page (devtools.cc).
   std::unique_ptr<content::DevToolsManagerDelegate>
   CreateDevToolsManagerDelegate() override;

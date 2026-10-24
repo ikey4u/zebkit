@@ -173,6 +173,7 @@ _deps = [
   ":vendor",
   "//base",
   "//base/version_info",
+  "//components/embedder_support",
   "//components/input",
   "//components/version_info:version_info_with_user_agent",
   # Printing to PDF, as headless Chrome prints (print.cc).

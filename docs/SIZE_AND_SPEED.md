@@ -156,10 +156,26 @@ Verge, Stack Overflow, Apple, MDN). Each is loaded for 10 s and shown for
 20 s more; the CPU and the memory (PSS) of every process are counted, and
 the median of 3 runs is taken. 2026-10-24, zebkit 0.0.1-alpha.6:
 
-| All 15 pages | zebkit `slim` | Electron 44.9.0 | zebkit |
+Each page is opened alone, in an engine started for it, so the totals are
+sums of 15 separate runs, not one engine with 15 pages:
+
+| 15 pages, one at a time | zebkit `slim` | Electron 44.9.0 | zebkit |
 |---|---:|---:|---:|
-| CPU, loading and at rest | **73 s** | 92 s | 21% less |
-| Memory | **6.1 GB** | 7.4 GB | 17% less |
+| CPU, loading and at rest, all pages | **73 s** | 92 s | 21% less |
+| CPU, a page on average | **4.9 s** | 6.1 s | |
+| Memory, a page on average | **409 MB** | 492 MB | 17% less |
+| Memory, the smallest page (a static article) | **179 MB** | 262 MB | 32% less |
+
+Of a simple page's memory, about two thirds is the engine's own code: each
+process maps the same library and PSS divides those pages among them, so
+it is counted once and a second page does not add it again. For the
+static article, 171 MB in all: the GPU process 61 MB (rendering in
+software, SwiftShader, on a display without a GPU), the browser 40, the
+page's renderer 37, the network and storage services 25, the two zygotes
+10; of it 58 MB is memory the processes allocated and 113 MB their share
+of the code. Busy sites cost more in their renderers' heaps: script,
+images and advertising, one renderer for each site's frames (The New
+York Times: 14).
 
 zebkit costs less CPU on 12 of the 15 pages and less memory on 13. BBC
 News and the local animation are level. Stack Overflow costs more (10.2 s
