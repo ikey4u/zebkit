@@ -11,7 +11,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 
 | Layer | Header | What |
 |---|---|---|
-| 0. Core | `<zebkit/zebkit.h>`, `<zebkit/offscreen.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; views drawn off-screen into shared surfaces |
+| 0. Core | `<zebkit/zebkit.h>`, `<zebkit/offscreen.h>`, `<zebkit/page.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; views drawn off-screen into shared surfaces; dialogs, printing to PDF, drag and drop |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
 | 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, over Chromium's own code |
 | 3. Bindings | `rust/`, `bindings/python/zebkit` | Layers 0 and 2 for Rust and Python |
@@ -542,6 +542,96 @@ renderer's process or another:
   commit, its window placed at the caret; set the cursor the view asks
   for; draw a popup's layer over the page while it is shown; on a change
   of size or of the window's scale, `zebkit_view_set_size()`.
+
+## Dialogs, PDF, drag and drop
+
+`<zebkit/page.h>`: what a page asks of its window, for the application
+(or a CDP client) to answer. Any view, with a window or off-screen.
+
+```c
+#include <zebkit/page.h>
+
+static void on_dialog(zebkit_view *view, const zebkit_dialog *dialog, void *data) {
+    /* alert, confirm, prompt, beforeunload, print: show it, answer later */
+    if (dialog->held)
+        zebkit_view_dialog_respond(view, dialog->id, true, "an answer");
+}
+
+static void printed(zebkit_view *view, const uint8_t *pdf, size_t size, const char *error, void *data) {
+    /* the PDF's bytes, or NULL and the error */
+}
+
+zebkit_view_on_dialog(view, on_dialog, NULL);
+zebkit_view_print_to_pdf(view, "{\"landscape\": true, \"printBackground\": true}", printed, NULL);
+zebkit_view_drag_enter(view, "{\"files\": [\"/home/me/report.pdf\"]}", 120, 80, ZEBKIT_DRAG_COPY, 0);
+zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
+```
+
+- **Dialogs are held, not dismissed.** `alert()`, `confirm()`,
+  `prompt()`, a beforeunload handler's "leave this page?" (on a
+  navigation, a reload, or `zebkit_view_request_close()`, which closes a
+  view as a tab is closed) and `window.print()` are reported to
+  `zebkit_view_on_dialog()`'s function, with their type, message, a
+  prompt's default text and the frame's URL, and the page waits until
+  `zebkit_view_dialog_respond()` answers (but for print, which waits for
+  nothing: answering only closes it). `zebkit_view_dialogs()` lists the
+  open ones as JSON; `zebkit_view_on_dialog_closed()` hears how each
+  closed.
+- **CDP answers them too.** Every session with the Page domain gets
+  `Page.javascriptDialogOpening` and `Page.javascriptDialogClosed`, and may
+  answer with `Page.handleJavaScriptDialog`; the application hears of it
+  as closed. Whoever answers first does.
+- **The policy is the view's, and may change at any time**
+  (`zebkit_view_set_dialog_policy()`):
+
+  | Policy | A dialog is |
+  |---|---|
+  | `ZEBKIT_DIALOG_POLICY_DEFAULT` | held for the application when it set a function; else held for a CDP client attached to the page, as headless Chrome holds it; else the content shell's: a macOS window's system alert, and elsewhere dismissed at once (confirm false, prompt null, beforeunload leaves), as before |
+  | `ZEBKIT_DIALOG_POLICY_HOLD` | always held until answered |
+  | `ZEBKIT_DIALOG_POLICY_ACCEPT` | answered OK at once (confirm true, prompt its default, beforeunload leaves), and reported |
+  | `ZEBKIT_DIALOG_POLICY_DISMISS` | answered Cancel at once (confirm false, prompt null, beforeunload stays), and reported |
+
+- **Printing to PDF** is Chrome's: `zebkit_view_print_to_pdf()` and CDP's
+  `Page.printToPDF` take the same parameters (landscape,
+  displayHeaderFooter, printBackground, scale, paperWidth and paperHeight
+  in inches, the margins, pageRanges, headerTemplate and footerTemplate,
+  preferCSSPageSize, generateTaggedPDF, generateDocumentOutline; over CDP
+  also `transferMode: "ReturnAsStream"`, read with `IO.read`). The page is
+  laid out for print (`@media print`) and drawn into a PDF by Skia in the
+  renderer, as headless Chrome does it, without a print compositor: frames
+  of other sites in the page are left blank.
+- **A page's drags.** `zebkit_view_on_drag_start()` gets each drag the
+  page starts: what it carries as JSON (`text`, `html`, `urls`, `files`,
+  `custom` types, an image's `fileContents`), the operations it allows,
+  where it started, and its picture (BGRA) with the cursor's place in it.
+  Return false and the engine runs it: in an off-screen view the mouse
+  events the application sends are then the drag's, over the page
+  (dragenter, dragover, drop, dragend), until the button is released or
+  Escape is pressed, so that a sortable list or a drop zone works as in a
+  window. Return true to run it yourself (the system's drag and drop) and
+  end it with `zebkit_view_drag_source_end()`. A window's drags are the
+  system's unless the application takes them.
+- **Drags into the page.** `zebkit_view_drag_enter()`, `_drag_over()`
+  (whose function gets the operation the page chose), `_drag_leave()` and
+  `_drop()` bring what the application drags (files from the system's file
+  manager by path, text, links, custom types) over the page with the
+  keyboard's modifiers. A dropped file is the page's to read, as from the
+  system's drag and drop; `zebkit.pathForFile()` knows its path.
+- **Over CDP**, content's own: `Input.dispatchDragEvent`,
+  `Input.setInterceptDrags` and `Input.dragIntercepted`, and drags of the
+  mouse events `Input.dispatchMouseEvent` sends, which come before the
+  application's.
+
+| Functions | What |
+|---|---|
+| `zebkit_view_on_dialog`, `_on_dialog_closed`, `_set_dialog_policy`, `_get_dialog_policy`, `_dialog_respond`, `zebkit_view_dialogs`, `zebkit_view_request_close` | JavaScript dialogs; closing as a tab |
+| `zebkit_view_print_to_pdf` | The page as PDF |
+| `zebkit_view_on_drag_start`, `_on_drag_end`, `_is_dragging`, `_drag_source_end` | The page's drags |
+| `zebkit_view_drag_enter`, `_drag_over`, `_drag_leave`, `_drop` | Drags into the page |
+
+In Rust, `zebkit::page` and the `View` methods it adds (`on_dialog`,
+`set_dialog_policy`, `respond_dialog`, `print_to_pdf`, `on_drag_start`,
+`drag_enter`, `drop_data`, ...).
 
 ## Loading the library
 
