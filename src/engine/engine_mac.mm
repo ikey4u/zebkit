@@ -311,10 +311,11 @@ class HeadlessPlatformDelegate : public content::ShellPlatformDelegate {
 void SetUpApplication(bool headless) {
   NSApplication* app = NSApplication.sharedApplication;
   // A program that is not in an application bundle may not come to the
-  // front unless it says it is a regular application; without windows it
-  // stays out of the Dock.
-  if (!headless)
-    [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+  // front unless it says it is a regular application. Without windows it
+  // has no Dock icon and no menu bar, whatever its bundle says, as Chromium's
+  // headless shell does (headless_content_main_delegate_mac.mm).
+  [app setActivationPolicy:headless ? NSApplicationActivationPolicyAccessory
+                                    : NSApplicationActivationPolicyRegular];
   // Files from the Finder, the Dock's reopen and quit (app.h). Content
   // sets no delegate of its own.
   static ZebkitAppDelegate* delegate = [[ZebkitAppDelegate alloc] init];
