@@ -65,6 +65,8 @@ class RendererClient : public content::ShellContentRendererClient {
  public:
   RendererClient() : content::ShellContentRendererClient(false) {}
   void RenderThreadStarted() override;
+  // Printing in the page (print.cc).
+  void RenderFrameCreated(content::RenderFrame* render_frame) override;
 };
 
 class BrowserClient : public content::ShellContentBrowserClient {
@@ -95,6 +97,13 @@ class BrowserClient : public content::ShellContentBrowserClient {
       network::mojom::NetworkContextParams* context_params,
       cert_verifier::mojom::CertVerifierCreationParams*
           cert_verifier_creation_params) override;
+  // Page.printToPDF and the clients of each page (devtools.cc).
+  std::unique_ptr<content::DevToolsManagerDelegate>
+  CreateDevToolsManagerDelegate() override;
+  // The page's printing reaches the browser (print.cc).
+  void RegisterAssociatedInterfaceBindersForRenderFrameHost(
+      content::RenderFrameHost& render_frame_host,
+      blink::AssociatedInterfaceRegistry& associated_registry) override;
   bool ShouldUseSpareRenderProcessHost(
       content::BrowserContext* browser_context,
       const GURL& site_url,

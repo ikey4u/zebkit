@@ -243,7 +243,10 @@ typedef enum {
 /*
  * A mouse event at (@x, @y) in the view, CSS pixels from its top left.
  * @click_count is 1 for a click, 2 for a double click, ... (for DOWN and
- * UP; 0 otherwise). Over a popup widget it goes to the widget.
+ * UP; 0 otherwise). Over a popup widget it goes to the widget. A move
+ * with a button held has that button in @modifiers
+ * (ZEBKIT_MODIFIER_LEFT_BUTTON, ...), or as @button: it drags (a slider's
+ * thumb, a selection, a drag and drop, <zebkit/page.h>).
  */
 ZEBKIT_API void zebkit_view_send_mouse(zebkit_view *view, zebkit_mouse_type type, float x, float y,
                                        zebkit_mouse_button button, int click_count, unsigned modifiers);

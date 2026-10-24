@@ -6,6 +6,7 @@
 #endif
 
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/page_internal.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -378,6 +379,11 @@ class PlatformDelegate : public content::ShellPlatformDelegate {
   void DidCloseLastWindow() override {}
   void SetTitle(content::Shell* shell, const std::u16string& title) override {
     content::ShellPlatformDelegate::SetTitle(shell, WindowTitle(shell, title));
+  }
+  // Dialogs held for the application or a CDP client (dialog.cc).
+  std::unique_ptr<content::JavaScriptDialogManager>
+  CreateJavaScriptDialogManager(content::Shell* shell) override {
+    return CreateDialogManager(shell);
   }
 };
 

@@ -93,6 +93,7 @@
 #include "ui/gfx/gpu_memory_buffer_handle.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/offscreen.h"
+#include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -817,7 +818,7 @@ void InstallHooks() {
   if (installed)
     return;
   installed = true;
-  content::EmbedderWidgetHooks hooks;
+  content::EmbedderWidgetHooks hooks = content::GetEmbedderWidgetHooks();
   hooks.cursor_changed = &OnCursorChanged;
   hooks.popup_shown = &OnPopupShown;
   content::SetEmbedderWidgetHooks(hooks);
@@ -841,6 +842,9 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
       size_(size) {
   All()[view] = this;
   InstallHooks();
+  // A drag the page starts is run over the page from the application's
+  // mouse events (drag.cc).
+  InstallDragHook();
 #if BUILDFLAG(IS_MAC)
   // A <select>'s list as a popup widget, which is drawn off-screen with the
   // page, rather than a menu of the system's.
@@ -1225,6 +1229,10 @@ void Offscreen::SendMouse(zebkit_mouse_type type,
                           zebkit_mouse_button button,
                           int click_count,
                           unsigned modifiers) {
+  // While the page drags, its mouse events are the drag's (drag.cc).
+  NoteMousePosition(view_, x, y);
+  if (DragTakesMouse(view_, type, x, y, modifiers))
+    return;
   blink::WebInputEvent::Type kind;
   switch (type) {
     case ZEBKIT_MOUSE_DOWN:
@@ -1242,9 +1250,19 @@ void Offscreen::SendMouse(zebkit_mouse_type type,
   }
   blink::WebMouseEvent event(kind, BlinkModifiers(modifiers),
                              base::TimeTicks::Now());
-  event.button = (type == ZEBKIT_MOUSE_DOWN || type == ZEBKIT_MOUSE_UP)
-                     ? BlinkButton(button)
-                     : blink::WebPointerProperties::Button::kNoButton;
+  event.button = BlinkButton(button);
+  // A move with a button held is a drag of that button, as the platforms'
+  // events say and as Blink's dragging (a slider's thumb, a text
+  // selection, a drag and drop) requires.
+  if (type == ZEBKIT_MOUSE_MOVE && button == ZEBKIT_BUTTON_NONE) {
+    using Button = blink::WebPointerProperties::Button;
+    event.button = (modifiers & ZEBKIT_MODIFIER_LEFT_BUTTON)     ? Button::kLeft
+                   : (modifiers & ZEBKIT_MODIFIER_MIDDLE_BUTTON) ? Button::kMiddle
+                   : (modifiers & ZEBKIT_MODIFIER_RIGHT_BUTTON)  ? Button::kRight
+                                                                 : Button::kNoButton;
+  } else if (type == ZEBKIT_MOUSE_LEAVE) {
+    event.button = blink::WebPointerProperties::Button::kNoButton;
+  }
   // The button pressed is down in the event's own modifiers, as the
   // platforms' events have it.
   event.UpdateEventModifiersToMatchButton();
@@ -1357,6 +1375,8 @@ void CopyText(const char* utf8, char16_t* out, size_t cap) {
 }
 
 void Offscreen::SendKey(const zebkit_key_event& in) {
+  if (DragTakesKey(view_, in))
+    return;
   content::RenderWidgetHost* target = KeyTarget();
   if (!target)
     return;
