@@ -169,6 +169,44 @@ camera and microphone capture, and the device APIs.
   - **Checked by:** an MCP client's own test suite and an agent doing
     real tasks (research on the web, filling a form, reading a long PDF),
     with every tool covered by `tests/engine/`.
+- **TODO: signing in without a screen: OAuth's device flow** (owner,
+  2026-10-24). An application or agent that runs headless, on a server or
+  without a display, gets an account's tokens without a browser on its
+  own machine (RFC 8628): it asks the provider for a code, shows the
+  person a short code and a URL, the person approves on their phone or
+  laptop, and the tokens come back. This is how Google, Microsoft and
+  GitHub let a device with no browser sign in; it gives access to the
+  account's APIs, not a session on the provider's website (see the notice
+  on Google in `docs/API.md`).
+  - **One function for every provider.** `zebkit_oauth_device_start()`
+    takes the provider's two endpoints (device authorization and token),
+    the application's client ID and the scopes, as JSON, with presets for
+    Google, Microsoft and GitHub. It calls back with the code to show
+    (`user_code`, `verification_uri`, `verification_uri_complete` when the
+    provider has it, and when it expires), then polls at the provider's
+    `interval`, slowing down on `slow_down`, and calls back once with the
+    tokens or with why not (`access_denied`, `expired_token`). A refresh
+    function renews an access token from its refresh token.
+  - **Through the engine's network stack**, as `fetch` from zebkit's
+    script outside pages goes: its proxy settings, certificates and
+    HTTP/3. Cancelled with a handle; nothing is kept on disk by zebkit,
+    the tokens are the application's.
+  - **Shown as the application likes:** the code and URL as text, and a
+    QR code of `verification_uri_complete` as a PNG from zebkit's image
+    encoder, for a panel, a terminal or a message to the person.
+  - **The application's own registration.** Each provider wants a client
+    ID registered for devices ("TVs and limited input devices" at Google,
+    a public client at Microsoft, device flow turned on at GitHub); zebkit
+    ships none. Google allows only some scopes in this flow (its sign-in,
+    Drive's files the application made, YouTube and a few more): the
+    document says which, and the browser flow (`docs/API.md`) is for the
+    rest.
+  - **In C, Rust, Python and JavaScript** (`zebkit.oauth.device()` in
+    script outside pages, a promise and an event for the code), and an
+    MCP tool, so that an agent asks its person to approve and goes on.
+  - **Checked by:** a test provider in `tests/engine/` that answers as
+    RFC 8628 says (pending, slow down, denied, expired, granted), and once
+    by hand against Google, Microsoft and GitHub with test clients.
 
 ### Measurements
 
