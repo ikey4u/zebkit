@@ -17,6 +17,8 @@ use_ml_inliner = false
 # reporting, metrics and field trials, credential storage. The browser
 # process, networking, services and the window toolkit are hot on real
 # pages and compile for speed.
+# (GN replaces a non-empty list only after it is emptied.)
+zebkit_min_size_patterns = []
 zebkit_min_size_patterns = [
   "//printing/*",
   "//components/crash/*",
