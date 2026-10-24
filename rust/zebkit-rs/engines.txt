@@ -11,3 +11,5 @@
 0.0.1-alpha.5 x86_64-unknown-linux-gnu 50cdc4bbeb193399273dc325b28c8b6d6b2410ca993ed9fe18bb654983ae883a
 0.0.1-alpha.6 aarch64-apple-darwin 7c337fa2e9fc6d1c976da8366554ad6d96eba7f2a03d6f366545928312fa782c
 0.0.1-alpha.6 x86_64-unknown-linux-gnu 0f13105c1a8fe59ed83637eeffc70e749c965fb3560ad1bb06e3273be338f805
+0.0.1-alpha.7 aarch64-apple-darwin a34dc0099dc7e5adfaa8df0772302f068eead2c041999053314f382f3caa876c
+0.0.1-alpha.7 x86_64-unknown-linux-gnu e0a57402dc9ae5b43b4173c853e3e1b8a7f189e515c32e6de328e9f0fc27a710
