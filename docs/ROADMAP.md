@@ -24,6 +24,7 @@ application framework.
 | Chromium's libraries, and what else in it is useful, exported for applications as a C API, with bindings and a JavaScript API | Owner, 2026-10-19 |
 | A full PDF API on Chromium's PDFium, with EmbedPDF's features as the reference | Owner, 2026-10-20 |
 | For agents, a general MCP tool with the engine's capabilities, not only a CDP endpoint for browser drivers | Owner, 2026-10-23 |
+| Real web pages cost less than in the latest stable Electron, and less still over time: CPU while loading and at rest, memory, processes. A medium page in an application is not a browser's workload | Owner, 2026-10-23 |
 | Off-screen views: frames as shared surfaces (IOSurfaces, shared memory, dmabufs) with their damage, input sent by the application, popups drawn off-screen, frames passable to another process | Owner, 2026-10-23 |
 
 Kept by zebkit's own choice, open to the owner's overrule: WebGL,

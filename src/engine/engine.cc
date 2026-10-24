@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -136,6 +137,21 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
     args.push_back(std::string("--") + switches::kEnableLogging + "=stderr");
   }
   args.push_back(std::string("--") + switches::kContentShellHideToolbar);
+  // Features a browser wants and an application showing its pages does not,
+  // as Electron leaves them out (its shell/browser/feature_list.cc): a spare
+  // renderer kept warm for the next navigation, a process with its memory.
+  // --zebkit-spare-renderer keeps it. Added to any --disable-features given.
+  if (!HasSwitch(argc, argv, "zebkit-spare-renderer")) {
+    const std::string disabled = "SpareRendererForSitePerProcess";
+    const std::string prefix = "--disable-features=";
+    auto given = std::find_if(args.begin(), args.end(), [&](const std::string& arg) {
+      return arg.starts_with(prefix);
+    });
+    if (given == args.end())
+      args.push_back(prefix + disabled);
+    else
+      *given += "," + disabled;
+  }
   return args;
 }
 
@@ -269,6 +285,22 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
   AppendSchemeSwitch(command_line);
+}
+
+// A browser starts a renderer ahead of the next navigation; an application
+// showing its pages mostly pays for one in memory, as Electron does not by
+// default. --zebkit-spare-renderer asks for it.
+bool BrowserClient::ShouldUseSpareRenderProcessHost(
+    content::BrowserContext* browser_context,
+    const GURL& site_url,
+    std::optional<SpareProcessRefusedByEmbedderReason>& refused_reason) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          "zebkit-spare-renderer")) {
+    refused_reason = std::nullopt;
+    return true;
+  }
+  refused_reason = SpareProcessRefusedByEmbedderReason::DefaultDisabled;
+  return false;
 }
 
 mojo::PendingRemote<network::mojom::URLLoaderFactory>

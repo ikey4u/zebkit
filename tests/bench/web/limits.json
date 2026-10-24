@@ -1,0 +1,5 @@
+{
+  "local:static": {"rest_cpu_pct": 1.0, "pss_mb": 230, "renderers": 1},
+  "local:animation": {"rest_cpu_pct": 15.0, "pss_mb": 260, "renderers": 1},
+  "local:heavy": {"load_cpu_s": 2.0, "rest_cpu_pct": 2.0, "pss_mb": 420, "renderers": 1}
+}

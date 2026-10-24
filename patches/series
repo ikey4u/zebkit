@@ -19,3 +19,4 @@
 1019-content-shell-window-size-limits.patch
 1020-pdf-nested-signature-fields.patch
 1021-content-embedder-widget-hooks.patch
+1022-content-shell-chromium-user-agent.patch

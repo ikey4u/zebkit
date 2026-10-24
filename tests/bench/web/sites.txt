@@ -1,0 +1,15 @@
+# Well-known sites for scripts/web-bench.sh --sites: one URL a line.
+# A mix of what applications show: reference pages, search, video, code,
+# shops, forums, news with advertising, documentation.
+https://en.wikipedia.org/wiki/Charles_Darwin
+https://www.google.com/
+https://www.youtube.com/
+https://github.com/torvalds/linux
+https://www.amazon.com/
+https://www.reddit.com/r/programming/
+https://www.nytimes.com/
+https://www.bbc.com/news
+https://www.theverge.com/
+https://stackoverflow.com/questions/11227809
+https://www.apple.com/
+https://developer.mozilla.org/en-US/docs/Web/JavaScript

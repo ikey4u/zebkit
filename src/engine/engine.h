@@ -90,6 +90,11 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const std::optional<url::Origin>& request_initiator,
       network::mojom::RequestDestination request_destination,
       NonNetworkURLLoaderFactoryMap* factories) override;
+  bool ShouldUseSpareRenderProcessHost(
+      content::BrowserContext* browser_context,
+      const GURL& site_url,
+      std::optional<SpareProcessRefusedByEmbedderReason>& refused_reason)
+      override;
 };
 
 // The content shell's, without its first window and without a DevTools

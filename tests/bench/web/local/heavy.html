@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Heavy page</title>
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #1f2937; background: #f8fafc; }
+  header { position: sticky; top: 0; background: #0f172a; color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; padding: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); overflow: hidden; }
+  .card img { width: 100%; height: 120px; display: block; }
+  .card p { margin: 10px 12px; }
+  table { border-collapse: collapse; margin: 0 20px 20px; width: calc(100% - 40px); background: #fff; }
+  td, th { border-bottom: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+  iframe { width: 300px; height: 120px; border: 1px solid #e5e7eb; margin: 0 0 20px 20px; }
+</style>
+<!-- A page with the weight of a busy site but no network: a large DOM,
+     generated images, frames, script work while loading, and a clock that
+     ticks once a second after, as pages with live content do. -->
+<header><b>Heavy page</b><span id="clock"></span></header>
+<div class="grid" id="grid"></div>
+<table id="table"><tr><th>#</th><th>Name</th><th>Value</th><th>Change</th></tr></table>
+<div id="frames"></div>
+<script>
+  // Images drawn once on a canvas, as decoded photos would be.
+  const canvas = document.createElement('canvas'); canvas.width = 440; canvas.height = 240;
+  const g = canvas.getContext('2d'); const images = [];
+  for (let i = 0; i < 12; i++) {
+    const grad = g.createLinearGradient(0, 0, 440, 240);
+    grad.addColorStop(0, `hsl(${i * 30}, 70%, 55%)`); grad.addColorStop(1, `hsl(${i * 30 + 60}, 70%, 35%)`);
+    g.fillStyle = grad; g.fillRect(0, 0, 440, 240);
+    for (let j = 0; j < 40; j++) { g.fillStyle = `rgba(255,255,255,${(j % 7) / 20})`; g.beginPath(); g.arc((j * 53) % 440, (j * 97) % 240, 8 + j % 30, 0, 7); g.fill(); }
+    images.push(canvas.toDataURL('image/png'));
+  }
+  const grid = document.getElementById('grid'); let html = '';
+  for (let i = 0; i < 300; i++) html += `<div class="card"><img alt="" src="${images[i % 12]}"><p><b>Item ${i}</b><br>${'Lorem ipsum dolor sit amet. '.repeat(1 + i % 3)}</p></div>`;
+  grid.innerHTML = html;
+  const table = document.getElementById('table'); const rows = [];
+  for (let i = 0; i < 2000; i++) rows.push(`<tr><td>${i}</td><td>Row ${i.toString(36)}</td><td>${(Math.sin(i) * 1000).toFixed(2)}</td><td>${(Math.cos(i) * 5).toFixed(2)}%</td></tr>`);
+  table.insertAdjacentHTML('beforeend', rows.join(''));
+  // Script work while loading: sort and summarise a large array.
+  const data = Array.from({ length: 200000 }, (_, i) => Math.sin(i) * 1e6);
+  data.sort((a, b) => a - b);
+  document.title = `Heavy page (${Math.round(data[100000])})`;
+  // Five frames of their own.
+  const frames = document.getElementById('frames');
+  for (let i = 0; i < 5; i++) { const f = document.createElement('iframe'); f.srcdoc = `<body style="font:13px sans-serif;margin:8px">Frame ${i}<ul>${'<li>entry</li>'.repeat(20)}</ul></body>`; frames.append(f); }
+  // Live content: a clock, once a second.
+  const clock = document.getElementById('clock');
+  setInterval(() => { clock.textContent = new Date().toLocaleTimeString(); }, 1000);
+</script>
+</html>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Animation</title>
+<style>
+  body { margin: 0; display: grid; place-items: center; height: 100vh; background: #f4f6f8; }
+  .spinner { width: 160px; height: 160px; border-radius: 24px; background: linear-gradient(135deg, #22d3ee, #6366f1);
+             animation: spin 2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+<!-- One compositor animation and a requestAnimationFrame counter, as a
+     loading indicator does: the cost of drawing frames at the screen's rate. -->
+<div class="spinner"></div>
+<p id="frames">0</p>
+<script>
+  let frames = 0;
+  (function tick() { frames++; if (frames % 30 === 0) document.getElementById('frames').textContent = frames; requestAnimationFrame(tick); })();
+</script>
+</html>

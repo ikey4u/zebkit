@@ -32,6 +32,10 @@ run = "scripts/release.sh"
 description = "Build the release and publish it as the GitHub release v<VERSION>"
 run = "scripts/release.sh --publish"
 
+[tasks."bench:web"]
+description = "What web pages cost in zebkit against Electron; --check fails on a regression past tests/bench/web/limits.json (pass --sites for the well-known sites)"
+run = "scripts/web-bench.sh"
+
 [tasks.d]
 description = "Build zebkit with debug information for this machine into dist/debug"
 run = "scripts/dist.sh debug"

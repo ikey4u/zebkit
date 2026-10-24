@@ -108,6 +108,7 @@ in a profile is preferred to a patch wherever one exists.
 | `scripts/electron-baseline.sh` | `docs/reports/electron.md`: Electron's hello world, packaged and counted the same way |
 | `scripts/bench.sh <profile> [before=<dir>]` | JavaScript and DOM workloads, best of three, against a saved package |
 | `scripts/ui-bench.sh <profile> [rows]` | The same interface as `zebkit.ui` widgets and as a page: layout time, update time, memory |
+| `scripts/web-bench.sh [--sites] [--check]` | What pages cost in zebkit and in the pinned Electron: CPU loading and at rest, memory, processes; `docs/reports/web-bench.md`. `--check` fails when zebkit goes over `tests/bench/web/limits.json` (`mise run bench:web`) |
 
 Size counts uncompressed and as a download (`.tar.xz` at `xz -6`, `.zip` at
 deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
