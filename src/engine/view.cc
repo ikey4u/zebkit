@@ -488,6 +488,20 @@ void CloseAllViews() {
   }
 }
 
+void HandlePopup(content::WebContents* opener,
+                 content::Shell* popup,
+                 const GURL& url) {
+  zebkit_view* view = ViewOf(opener);
+  if (!view || !view->on_window_open_ || !popup)
+    return;
+  zebkit_view* made = new zebkit_view(popup);
+  MakeOffscreenLike(view, made);
+  const GURL opened = view->opening_url_.is_empty() ? url : view->opening_url_;
+  view->opening_url_ = GURL();
+  view->on_window_open_(view, made, opened.spec().c_str(),
+                        view->on_window_open_data_);
+}
+
 zebkit_view* ViewOf(content::WebContents* contents) {
   for (zebkit_view* view : zebkit_view::Views()) {
     if (view->web_contents() == contents)
@@ -498,6 +512,8 @@ zebkit_view* ViewOf(content::WebContents* contents) {
 
 bool HandleNewWindow(content::WebContents* opener, const GURL& url) {
   zebkit_view* view = ViewOf(opener);
+  if (view)
+    view->opening_url_ = url;
   if (!view || !view->on_new_window_)
     return false;
   view->on_new_window_(view, url.spec().c_str(), view->on_new_window_data_);
@@ -678,6 +694,13 @@ void zebkit_view_on_new_window(zebkit_view* view,
                                void* data) {
   view->on_new_window_ = func;
   view->on_new_window_data_ = data;
+}
+
+void zebkit_view_on_window_open(zebkit_view* view,
+                                zebkit_window_open_func func,
+                                void* data) {
+  view->on_window_open_ = func;
+  view->on_window_open_data_ = data;
 }
 
 void zebkit_view_on_drop(zebkit_view* view, zebkit_drop_func func, void* data) {

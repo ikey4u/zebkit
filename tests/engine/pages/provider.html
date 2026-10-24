@@ -1,0 +1,10 @@
+<!doctype html>
+<title>provider</title>
+<script>
+// The provider's page, on another origin: the code to its opener, then closed.
+setTimeout(() => {
+  if (window.opener)
+    window.opener.postMessage({code: "from the provider", size: [innerWidth, innerHeight]}, "*");
+  window.close();
+}, 300);
+</script>

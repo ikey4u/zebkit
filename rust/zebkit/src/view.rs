@@ -66,6 +66,7 @@ pub(crate) struct Inner {
     on_title: Slot<dyn FnMut(&str)>,
     on_close: Slot<dyn FnOnce()>,
     on_new_window: Slot<dyn FnMut(&str)>,
+    on_window_open: Slot<dyn FnMut(View, &str)>,
     on_drop: Slot<dyn FnMut(&str)>,
     /// What each bound name calls. Boxed, so that the address the engine
     /// holds stays where it is.
@@ -120,6 +121,7 @@ impl View {
             on_title: RefCell::new(None),
             on_close: RefCell::new(None),
             on_new_window: RefCell::new(None),
+            on_window_open: RefCell::new(None),
             on_drop: RefCell::new(None),
             bindings: RefCell::new(HashMap::new()),
             retired: RefCell::new(Vec::new()),
@@ -312,6 +314,19 @@ impl View {
         unsafe { sys::zebkit_view_on_new_window(raw, Some(on_new_window), data) }
     }
 
+    /// A window a page opens comes here as a view of its own, with the URL
+    /// it opened, still linked to the page that opened it (`window.opener`,
+    /// `postMessage()`, `window.closed`), as a site's sign-in through a
+    /// popup needs. Off-screen when this view is. The application shows it
+    /// and closes it; [`View::on_new_window`], when set, takes the URL
+    /// instead.
+    pub fn on_window_open<F: FnMut(View, &str) + 'static>(&self, function: F) {
+        let Some(raw) = self.raw() else { return };
+        *self.inner.on_window_open.borrow_mut() = Some(Box::new(function));
+        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_view_on_window_open(raw, Some(on_window_open), data) }
+    }
+
     /// The paths of files dropped on the view, as a JSON array, before the
     /// page gets the drop.
     pub fn on_drop<F: FnMut(&str) + 'static>(&self, function: F) {
@@ -466,6 +481,7 @@ unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     inner.on_load.borrow_mut().take();
     inner.on_title.borrow_mut().take();
     inner.on_new_window.borrow_mut().take();
+    inner.on_window_open.borrow_mut().take();
     inner.on_drop.borrow_mut().take();
     inner.bindings.borrow_mut().clear();
     inner.retired.borrow_mut().clear();
@@ -492,6 +508,18 @@ unsafe extern "C" fn on_new_window(_view: *mut sys::zebkit_view, url: *const c_c
     let inner = &*data.cast::<Inner>();
     let url = string_from(url).unwrap_or_default();
     call_slot(&inner.on_new_window, |function| function(&url));
+}
+
+unsafe extern "C" fn on_window_open(
+    _opener: *mut sys::zebkit_view,
+    opened: *mut sys::zebkit_view,
+    url: *const c_char,
+    data: *mut c_void,
+) {
+    let inner = &*data.cast::<Inner>();
+    let url = string_from(url).unwrap_or_default();
+    let opened = View::wrap(opened);
+    call_slot(&inner.on_window_open, |function| function(opened.clone(), &url));
 }
 
 unsafe extern "C" fn on_drop(_view: *mut sys::zebkit_view, paths: *const c_char, data: *mut c_void) {

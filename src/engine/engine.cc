@@ -180,17 +180,30 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
   // Features a browser wants and an application showing its pages does not,
   // as Electron leaves them out (its shell/browser/feature_list.cc): a spare
   // renderer kept warm for the next navigation, a process with its memory.
-  // --zebkit-spare-renderer keeps it. Added to any --disable-features given.
-  if (!HasSwitch(argc, argv, "zebkit-spare-renderer")) {
-    const std::string disabled = "SpareRendererForSitePerProcess";
+  // --zebkit-spare-renderer keeps it.
+  //
+  // And FedCM, which signs in with an identity provider through dialogs of
+  // the browser's own: the content shell has none and turns every request
+  // down as dismissed, so a site's "Sign in with Google" fails, and is held
+  // back for a while after. Without FedCM, sites sign in through a popup,
+  // as in Firefox, which has no FedCM; zebkit opens it from the person's
+  // click with its opener (docs/API.md). --zebkit-fedcm keeps it, for an
+  // application that answers its dialogs (docs/ROADMAP_HOOKS.md).
+  // Both are added to any --disable-features given.
+  std::vector<std::string> disabled;
+  if (!HasSwitch(argc, argv, "zebkit-spare-renderer"))
+    disabled.push_back("SpareRendererForSitePerProcess");
+  if (!HasSwitch(argc, argv, "zebkit-fedcm"))
+    disabled.push_back("FedCm");
+  for (const std::string& feature : disabled) {
     const std::string prefix = "--disable-features=";
     auto given = std::find_if(args.begin(), args.end(), [&](const std::string& arg) {
       return arg.starts_with(prefix);
     });
     if (given == args.end())
-      args.push_back(prefix + disabled);
+      args.push_back(prefix + feature);
     else
-      *given += "," + disabled;
+      *given += "," + feature;
   }
   return args;
 }
@@ -557,6 +570,7 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
+  content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
   content::Shell::SetKeyboardEventHandler(base::BindRepeating(&HandleKey));
 #if BUILDFLAG(IS_MAC)
   SetUpViews();

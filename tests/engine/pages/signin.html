@@ -1,0 +1,20 @@
+<!doctype html>
+<title>signin</title>
+<script>
+// A site's "Sign in with ...": a popup to the provider, which answers with
+// postMessage() to its opener and closes (tests/engine/popup.c).
+window.result = {};
+addEventListener("message", event => { result.message = event.data; result.origin = event.origin; });
+function openSignIn(provider) {
+  const popup = window.open(provider, "signin", "popup,width=420,height=520");
+  result.opened = popup !== null;
+  if (popup) {
+    const timer = setInterval(() => { if (popup.closed) { result.closed = true; clearInterval(timer); } }, 50);
+  }
+  return result.opened;
+}
+// A popup without the person's act, as the page loads: blocked, as in
+// Chrome. (After a click, Chrome lets the page open one window within a few
+// seconds, a timer's too: the test asks before any.)
+result.fromTimer = window.open("about:blank", "_blank", "popup") !== null;
+</script>

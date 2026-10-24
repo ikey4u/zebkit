@@ -86,6 +86,17 @@ int main(int argc, char **argv) {
   to the application at a loopback address or its own scheme
   (`zebkit_scheme_register()`), then Google's APIs with the tokens.
   Other providers may refuse embedded browsers the same way.
+- **A site's "Sign in with ..." popup.** Sites sign in with Google and
+  other providers through a popup, as in Firefox: FedCM, which Chrome
+  answers with dialogs of its own and the content shell turns down, is off
+  (`--zebkit-fedcm` keeps it). The popup opens from the person's click; an
+  application that shows it itself takes it with
+  `zebkit_view_on_window_open()`, a view still linked to the site
+  (`window.opener`, `postMessage()`, `window.closed`), off-screen when the
+  site's view is, its frames to draw for the person. Whether the provider
+  accepts the sign-in in it is the provider's decision (the notice above);
+  once signed in, the session is the profile's (`--user-data-dir`), and a
+  headless run with the same profile has it.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,
   and every callback runs on it; `zebkit_post_task()` is for any thread.
 - **Windows.** A view has a window when there is a display (Wayland or
@@ -141,6 +152,7 @@ reference:
 | `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
 | `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
 | `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
+| `zebkit_view_on_window_open` | A window a page opens, to the application as a view still linked to its opener (a site's sign-in popup); off-screen when its opener is |
 | `zebkit_view_on_drop` | Paths of files dropped on the view; `zebkit.pathForFile()` in the page |
 | `zebkit_view_evaluate`, `_add_script` | Script in the page; script in every document before the page's own (a preload) |
 | `zebkit_view_set_user_agent`, `zebkit_view_capture` | The User-Agent; the view as PNG, with or without a window |

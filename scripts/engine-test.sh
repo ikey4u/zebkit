@@ -31,6 +31,9 @@
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
+# - tests/engine/popup.c: a site's sign-in through a popup: the popup as a
+#   view of the application's (zebkit_view_on_window_open), off-screen, still
+#   linked to its opener; a popup from a timer blocked.
 # - tests/engine/cdp_browser.py: what a page sees of the browser and of a
 #   CDP client: nothing of the client (errors described without the
 #   page's code), window.chrome, popups blocked, a real headless screen.
@@ -73,6 +76,7 @@ offscreen_options=()
 [[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen" "$tests/offscreen.c" -- "${offscreen_options[@]}"
 build_against_package "$package" "$work/page" "$tests/page.c"
+build_against_package "$package" "$work/popup" "$tests/popup.c"
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -156,6 +160,8 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
 run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$work/popup" "${engine_switches[@]}"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/popup.log" || { echo "FAIL the popup test did not finish"; failed=1; }
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 

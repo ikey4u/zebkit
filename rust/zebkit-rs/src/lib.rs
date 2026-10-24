@@ -255,6 +255,8 @@ extern "C" {
 pub type zebkit_capture_func =
     unsafe extern "C" fn(view: *mut zebkit_view, png: *const u8, size: usize, error: *const c_char, data: *mut c_void);
 pub type zebkit_url_func = unsafe extern "C" fn(view: *mut zebkit_view, url: *const c_char, data: *mut c_void);
+pub type zebkit_window_open_func =
+    unsafe extern "C" fn(opener: *mut zebkit_view, opened: *mut zebkit_view, url: *const c_char, data: *mut c_void);
 pub type zebkit_drop_func = unsafe extern "C" fn(view: *mut zebkit_view, paths_json: *const c_char, data: *mut c_void);
 
 extern "C" {
@@ -276,6 +278,7 @@ extern "C" {
     pub fn zebkit_view_set_user_agent(view: *mut zebkit_view, user_agent: *const c_char);
     pub fn zebkit_view_capture(view: *mut zebkit_view, func: zebkit_capture_func, data: *mut c_void);
     pub fn zebkit_view_on_new_window(view: *mut zebkit_view, func: Option<zebkit_url_func>, data: *mut c_void);
+    pub fn zebkit_view_on_window_open(view: *mut zebkit_view, func: Option<zebkit_window_open_func>, data: *mut c_void);
     pub fn zebkit_view_on_drop(view: *mut zebkit_view, func: Option<zebkit_drop_func>, data: *mut c_void);
     pub fn zebkit_pdf_redact(
         pdf: *mut zebkit_pdf,

@@ -79,6 +79,13 @@ zebkit_view* ViewOf(content::WebContents* contents);
 // A new window a page asks for: to its view's application when it said so
 // (content::Shell::SetNewWindowHandler()).
 bool HandleNewWindow(content::WebContents* opener, const GURL& url);
+// The window the shell made for it, to the application as a view
+// (content::Shell::SetPopupHandler()).
+void HandlePopup(content::WebContents* opener,
+                 content::Shell* popup,
+                 const GURL& url);
+// A popup of an off-screen view off the screen too (offscreen.cc).
+void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup);
 
 // The content shell's view delegate, with the drop told to the application.
 std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
@@ -160,6 +167,11 @@ struct zebkit_view : public content::WebContentsObserver,
   std::optional<std::string> window_title_;
   zebkit_url_func on_new_window_ = nullptr;
   void* on_new_window_data_ = nullptr;
+  zebkit_window_open_func on_window_open_ = nullptr;
+  void* on_window_open_data_ = nullptr;
+  // The URL of the window a page is opening, between the shell asking
+  // whether to make it and making it (which starts it on about:blank).
+  GURL opening_url_;
   zebkit_drop_func on_drop_ = nullptr;
   void* on_drop_data_ = nullptr;
 

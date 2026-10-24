@@ -256,6 +256,23 @@ typedef void (*zebkit_url_func)(zebkit_view *view, const char *url, void *data);
  */
 ZEBKIT_API void zebkit_view_on_new_window(zebkit_view *view, zebkit_url_func func, void *data);
 
+typedef void (*zebkit_window_open_func)(zebkit_view *opener, zebkit_view *opened, const char *url, void *data);
+
+/*
+ * A window a page of @view opens (window.open, a link to a new window) is
+ * made as a view of its own and given to @func, still linked to the page
+ * that opened it: window.opener, postMessage() and window.closed work
+ * between the two, as a site's sign-in through a popup needs ("Sign in
+ * with Google"). The popup is as @view is: a window, or off the screen
+ * (<zebkit/offscreen.h>), its frames for the application to show. It is
+ * the application's to show and to close; the page closing it
+ * (window.close()) calls its zebkit_view_on_close(). A page opens
+ * one only while the person clicks or types, as in Chrome.
+ * zebkit_view_on_new_window(), when set, takes the URL instead, and no
+ * popup is made.
+ */
+ZEBKIT_API void zebkit_view_on_window_open(zebkit_view *view, zebkit_window_open_func func, void *data);
+
 typedef void (*zebkit_drop_func)(zebkit_view *view, const char *paths_json, void *data);
 
 /*

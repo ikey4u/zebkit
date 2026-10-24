@@ -24,3 +24,4 @@
 1024-content-embedder-drag-hook.patch
 1025-content-shell-beforeunload-keeps-the-page.patch
 1026-v8-inspector-runs-no-page-code-for-errors.patch
+1027-content-shell-popups-to-the-embedder.patch

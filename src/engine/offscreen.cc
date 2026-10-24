@@ -1535,6 +1535,18 @@ void OnPopupShown(content::WebContents* contents,
 
 }  // namespace
 
+void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup) {
+  Offscreen* offscreen = Offscreen::Of(opener);
+  if (!offscreen || !popup->web_contents())
+    return;
+  // The size the page asked for (window.open's features), or the opener's.
+  gfx::Size size = popup->web_contents()->GetContainerBounds().size();
+  if (size.width() < 2 || size.height() < 2)
+    size = offscreen->size();
+  // Deleted with the page (Offscreen::WebContentsDestroyed).
+  new Offscreen(popup, size, offscreen->scale());
+}
+
 }  // namespace zebkit
 
 using zebkit::Offscreen;
