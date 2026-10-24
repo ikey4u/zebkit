@@ -1,0 +1,27 @@
+# zebkit-base: slim
+#
+# slim compiled for speed, as Chrome compiles itself on the desktop: -O2
+# everywhere, with Chromium's profile-guided optimization doing its full
+# work (it is weak at -Os), and no size-trained inliner. What slim leaves
+# out stays out; only how the code is compiled changes.
+#
+# Why: on pages with advertising, zebkit's browser process and network
+# service used about twice Electron's CPU, and slim builds both at -Oz
+# (scripts/web-bench.sh, 2026-10-23). The size this costs is measured
+# against what it saves, page by page.
+
+optimize_for_size = false
+use_ml_inliner = false
+
+# The smallest code only where the engine seldom runs: printing, crash
+# reporting, metrics and field trials, credential storage. The browser
+# process, networking, services and the window toolkit are hot on real
+# pages and compile for speed.
+zebkit_min_size_patterns = [
+  "//printing/*",
+  "//components/crash/*",
+  "//components/metrics/*",
+  "//components/ukm/*",
+  "//components/variations/*",
+  "//components/os_crypt/*",
+]

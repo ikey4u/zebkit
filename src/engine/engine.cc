@@ -42,6 +42,8 @@
 #include "content/shell/common/shell_switches.h"
 #include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
@@ -285,6 +287,26 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
   AppendSchemeSwitch(command_line);
+}
+
+// Third-party cookies are blocked, as Safari and Firefox block them: an
+// application's pages rarely need them, and advertising opens a frame, and
+// with site isolation a process, for each network that would sync one
+// (53 such frames on one news site, 2 without). The application allows them
+// with --zebkit-allow-third-party-cookies.
+void BrowserClient::ConfigureNetworkContextParamsForShell(
+    content::BrowserContext* context,
+    network::mojom::NetworkContextParams* context_params,
+    cert_verifier::mojom::CertVerifierCreationParams*
+        cert_verifier_creation_params) {
+  content::ShellContentBrowserClient::ConfigureNetworkContextParamsForShell(
+      context, context_params, cert_verifier_creation_params);
+  if (!context_params->cookie_manager_params)
+    context_params->cookie_manager_params =
+        network::mojom::CookieManagerParams::New();
+  context_params->cookie_manager_params->block_third_party_cookies =
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
+          "zebkit-allow-third-party-cookies");
 }
 
 // A browser starts a renderer ahead of the next navigation; an application

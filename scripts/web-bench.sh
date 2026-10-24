@@ -16,7 +16,9 @@
 #
 # Needs Xvfb, Python 3, out/blink/<profile>/package (scripts/package.sh) and
 # Electron unpacked by scripts/electron-baseline.sh. Each page is shown for
-# BENCH_LOAD (10) seconds of loading and BENCH_REST (20) seconds at rest.
+# BENCH_LOAD (10) seconds of loading and BENCH_REST (20) seconds at rest,
+# BENCH_RUNS (3) times in each engine; the report and the check take the
+# median of the runs, since live sites differ from one load to the next.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -68,6 +70,7 @@ unset WAYLAND_DISPLAY
 export BENCH_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_VERSION%%.*}.0.0.0 Safari/537.36"
 load="${BENCH_LOAD:-10}"
 rest="${BENCH_REST:-20}"
+runs="${BENCH_RUNS:-3}"
 
 pages=()
 for page in static animation heavy; do pages+=("local:$page|file://$bench/local/$page.html"); done
@@ -81,9 +84,10 @@ fi
 results="$work/results.jsonl"
 : > "$results"
 for entry in "${pages[@]}"; do
-    name="${entry%%|*}"
-    url="${entry#*|}"
-    log "$name"
+  name="${entry%%|*}"
+  url="${entry#*|}"
+  for run in $(seq "$runs"); do
+    log "$name ($run of $runs)"
     rm -rf "$work/profile-zebkit" "$work/profile-electron"
     python3 -I "$bench/measure.py" --label "zebkit|$name" --port 9411 --load "$load" --rest "$rest" -- \
         "$work/zebkit-run" --no-sandbox --remote-debugging-port=9411 --user-data-dir="$work/profile-zebkit" \
@@ -92,7 +96,27 @@ for entry in "${pages[@]}"; do
     BENCH_URL="$url" python3 -I "$bench/measure.py" --label "electron|$name" --port 9412 --load "$load" --rest "$rest" -- \
         "$work/electron/electron" --no-sandbox --ozone-platform=x11 --remote-debugging-port=9412 \
         --user-data-dir="$work/profile-electron" >> "$results"
+  done
 done
+
+# One row per engine and page: the median of each measure over the runs.
+python3 -I - "$results" <<'PY'
+import json, statistics, sys
+rows = {}
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    rows.setdefault(r["label"], []).append(r)
+with open(sys.argv[1], "w") as out:
+    for label, runs in rows.items():
+        middle = sorted(runs, key=lambda r: r["rest_cpu_pct"])[len(runs) // 2]
+        median = dict(middle)
+        for key in ("load_cpu_s", "rest_cpu_pct", "pss_mb", "processes"):
+            median[key] = statistics.median(r[key] for r in runs)
+        median["pss_mb"] = round(median["pss_mb"])
+        median["runs"] = len(runs)
+        median["rest_cpu_pct_runs"] = [r["rest_cpu_pct"] for r in runs]
+        out.write(json.dumps(median) + "\n")
+PY
 
 if (( check )); then
     python3 -I - "$results" "$bench/limits.json" <<'PY'
@@ -126,7 +150,7 @@ def cell(z, e, key, fmt):
     win = "**" if zv < ev else ""
     return f"{win}{fmt.format(zv)}{win} / {fmt.format(ev)}"
 lines = [f"# Web pages: zebkit and Electron {electron}", "",
-         f"scripts/web-bench.sh, {datetime.date.today()}. Each cell is zebkit / Electron; bold where zebkit costs less.",
+         f"scripts/web-bench.sh, {datetime.date.today()}. Each cell is zebkit / Electron, the median of {next(iter(rows.values()))['zebkit'].get('runs', 1)} runs; bold where zebkit costs less.",
          "Loading: CPU seconds in the first 10 s. At rest: share of one core in the 20 s after. Memory: PSS of every process.", "",
          "| Page | Loaded (title) | Loading, s | At rest, % | Memory, MB | Renderers |", "|---|---|---:|---:|---:|---:|"]
 totals = {"zebkit": [0, 0, 0], "electron": [0, 0, 0]}

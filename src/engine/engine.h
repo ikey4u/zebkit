@@ -90,6 +90,11 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const std::optional<url::Origin>& request_initiator,
       network::mojom::RequestDestination request_destination,
       NonNetworkURLLoaderFactoryMap* factories) override;
+  void ConfigureNetworkContextParamsForShell(
+      content::BrowserContext* context,
+      network::mojom::NetworkContextParams* context_params,
+      cert_verifier::mojom::CertVerifierCreationParams*
+          cert_verifier_creation_params) override;
   bool ShouldUseSpareRenderProcessHost(
       content::BrowserContext* browser_context,
       const GURL& site_url,

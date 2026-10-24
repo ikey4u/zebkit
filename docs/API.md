@@ -48,6 +48,14 @@ int main(int argc, char **argv) {
   act on. Chromium's switches in `argv` are
   honoured: `--remote-debugging-port`, `--user-data-dir`, `--no-sandbox`,
   `--headless`, `--enable-logging=stderr` and the rest.
+- **Lighter than a browser by default.** Third-party cookies are blocked,
+  as Safari and Firefox block them: on pages with advertising each network
+  that would sync a cookie opens a frame, and with site isolation a
+  process (one news site: 63 such frames, 3 without).
+  `--zebkit-allow-third-party-cookies` allows them. No spare renderer is
+  kept warm for the next navigation, as Electron keeps none;
+  `--zebkit-spare-renderer` keeps one. The user agent and client hints are
+  Chromium's own for its version.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,
   and every callback runs on it; `zebkit_post_task()` is for any thread.
 - **Windows.** A view has a window when there is a display (Wayland or
