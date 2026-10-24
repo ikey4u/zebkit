@@ -653,6 +653,119 @@ extern "C" {
     pub fn zebkit_view_on_popup(view: *mut zebkit_view, func: Option<zebkit_popup_func>, data: *mut c_void);
 }
 
+// <zebkit/page.h>: dialogs, printing to PDF, drag and drop.
+
+/// `zebkit_dialog_type`.
+pub type zebkit_dialog_type = c_int;
+pub const ZEBKIT_DIALOG_ALERT: zebkit_dialog_type = 0;
+pub const ZEBKIT_DIALOG_CONFIRM: zebkit_dialog_type = 1;
+pub const ZEBKIT_DIALOG_PROMPT: zebkit_dialog_type = 2;
+pub const ZEBKIT_DIALOG_BEFOREUNLOAD: zebkit_dialog_type = 3;
+pub const ZEBKIT_DIALOG_PRINT: zebkit_dialog_type = 4;
+
+/// `zebkit_dialog_policy`.
+pub type zebkit_dialog_policy = c_int;
+pub const ZEBKIT_DIALOG_POLICY_DEFAULT: zebkit_dialog_policy = 0;
+pub const ZEBKIT_DIALOG_POLICY_HOLD: zebkit_dialog_policy = 1;
+pub const ZEBKIT_DIALOG_POLICY_ACCEPT: zebkit_dialog_policy = 2;
+pub const ZEBKIT_DIALOG_POLICY_DISMISS: zebkit_dialog_policy = 3;
+
+#[repr(C)]
+pub struct zebkit_dialog {
+    pub id: u64,
+    pub type_: zebkit_dialog_type,
+    pub message: *const c_char,
+    pub default_prompt: *const c_char,
+    pub url: *const c_char,
+    pub is_reload: bool,
+    pub held: bool,
+}
+
+pub type zebkit_dialog_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, dialog: *const zebkit_dialog, data: *mut c_void);
+pub type zebkit_dialog_closed_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, id: u64, accepted: bool, user_input: *const c_char, data: *mut c_void);
+pub type zebkit_pdf_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, pdf: *const u8, size: usize, error: *const c_char, data: *mut c_void);
+
+pub const ZEBKIT_DRAG_NONE: c_uint = 0;
+pub const ZEBKIT_DRAG_COPY: c_uint = 1;
+pub const ZEBKIT_DRAG_LINK: c_uint = 2;
+pub const ZEBKIT_DRAG_MOVE: c_uint = 16;
+pub const ZEBKIT_DRAG_ALL: c_uint = ZEBKIT_DRAG_COPY | ZEBKIT_DRAG_LINK | ZEBKIT_DRAG_MOVE;
+
+#[repr(C)]
+pub struct zebkit_drag {
+    pub data_json: *const c_char,
+    pub operations: c_uint,
+    pub x: f32,
+    pub y: f32,
+    pub image: *const u8,
+    pub image_width: c_int,
+    pub image_height: c_int,
+    pub image_stride: c_int,
+    pub image_scale: f32,
+    pub image_offset_x: f32,
+    pub image_offset_y: f32,
+}
+
+pub type zebkit_drag_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, drag: *const zebkit_drag, data: *mut c_void) -> bool;
+pub type zebkit_drag_end_func = unsafe extern "C" fn(view: *mut zebkit_view, operation: c_uint, data: *mut c_void);
+pub type zebkit_drag_operation_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, operation: c_uint, data: *mut c_void);
+
+extern "C" {
+    pub fn zebkit_view_on_dialog(view: *mut zebkit_view, func: Option<zebkit_dialog_func>, data: *mut c_void);
+    pub fn zebkit_view_on_dialog_closed(
+        view: *mut zebkit_view,
+        func: Option<zebkit_dialog_closed_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_view_set_dialog_policy(view: *mut zebkit_view, policy: zebkit_dialog_policy);
+    pub fn zebkit_view_get_dialog_policy(view: *mut zebkit_view) -> zebkit_dialog_policy;
+    pub fn zebkit_view_dialog_respond(view: *mut zebkit_view, id: u64, accept: bool, prompt_text: *const c_char)
+        -> bool;
+    pub fn zebkit_view_dialogs(view: *mut zebkit_view) -> *mut c_char;
+    pub fn zebkit_view_request_close(view: *mut zebkit_view);
+    pub fn zebkit_view_print_to_pdf(
+        view: *mut zebkit_view,
+        options_json: *const c_char,
+        func: zebkit_pdf_func,
+        data: *mut c_void,
+    );
+    pub fn zebkit_view_on_drag_start(view: *mut zebkit_view, func: Option<zebkit_drag_func>, data: *mut c_void);
+    pub fn zebkit_view_on_drag_end(view: *mut zebkit_view, func: Option<zebkit_drag_end_func>, data: *mut c_void);
+    pub fn zebkit_view_is_dragging(view: *mut zebkit_view) -> bool;
+    pub fn zebkit_view_drag_enter(
+        view: *mut zebkit_view,
+        data_json: *const c_char,
+        x: f32,
+        y: f32,
+        operations: c_uint,
+        modifiers: c_uint,
+    );
+    pub fn zebkit_view_drag_over(
+        view: *mut zebkit_view,
+        x: f32,
+        y: f32,
+        operations: c_uint,
+        modifiers: c_uint,
+        func: Option<zebkit_drag_operation_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_view_drag_leave(view: *mut zebkit_view);
+    pub fn zebkit_view_drop(
+        view: *mut zebkit_view,
+        x: f32,
+        y: f32,
+        modifiers: c_uint,
+        func: Option<zebkit_drag_operation_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_view_drag_source_end(view: *mut zebkit_view, x: f32, y: f32, operation: c_uint);
+}
+
 /// The FFmpeg inside the engine. The engine exports each of its functions
 /// as `zebkit_vendor_ffmpeg_<name>`; here they have FFmpeg's names.
 pub mod ffmpeg {

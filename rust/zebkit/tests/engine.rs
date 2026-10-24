@@ -296,11 +296,36 @@ fn offscreen() {
         view.on_title(move |title| {
             if title == "clicked" {
                 check(true, "a click sent to the off-screen view", ());
-                view2.close();
-                OFFSCREEN_DONE.with(|done| done.set(true));
+                page(view2.clone());
             }
         });
     }
+}
+
+/// <zebkit/page.h>: a confirm() answered by the application, the page
+/// printed to PDF; then the view closes.
+fn page(view: View) {
+    {
+        let answering = view.clone();
+        view.on_dialog(move |dialog| {
+            check(
+                dialog.kind == zebkit::page::DialogType::Confirm && dialog.message == "rust?" && dialog.held,
+                "page: a confirm, held",
+                dialog,
+            );
+            answering.respond_dialog(dialog.id, true, None);
+        });
+    }
+    let printing = view.clone();
+    view.evaluate("confirm('rust?')", move |answer| {
+        check(answer.as_deref() == Ok("true"), "page: answered OK", &answer);
+        let closing = printing.clone();
+        printing.print_to_pdf(r#"{"printBackground": true}"#, move |pdf| {
+            check(pdf.as_ref().is_ok_and(|bytes| bytes.starts_with(b"%PDF-")), "page: printed to PDF", pdf.as_ref().map(Vec::len));
+            closing.close();
+            OFFSCREEN_DONE.with(|done| done.set(true));
+        });
+    });
 }
 
 fn script_and_cdp(view: View) {

@@ -28,6 +28,10 @@
 //! - [`offscreen`] is views without a window, whose frames the application
 //!   draws itself (shared surfaces: IOSurfaces, shared memory, dmabufs) and
 //!   whose input it sends: [`View::new_offscreen`].
+//! - [`page`] is what a page asks of its window: JavaScript dialogs, held
+//!   for the application to answer ([`View::on_dialog`]); the page printed
+//!   to PDF ([`View::print_to_pdf`]); drag and drop, from the page and into
+//!   it ([`View::on_drag_start`], [`View::drop_data`]).
 //!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
 //! re-exports as [`sys`] for whatever is not wrapped here yet. The C API it
@@ -43,6 +47,7 @@ pub mod app;
 pub mod cdp;
 mod engine;
 pub mod offscreen;
+pub mod page;
 pub mod pdf;
 pub mod scheme;
 mod script;

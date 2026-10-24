@@ -3,6 +3,7 @@
 // not in a window when there is to be none (--headless).
 
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/page_internal.h"
 
 #import <Cocoa/Cocoa.h>
 #include <mach-o/dyld.h>
@@ -273,6 +274,10 @@ class HeadlessPlatformDelegate : public content::ShellPlatformDelegate {
                        bool is_enabled) override {}
   void SetAddressBarURL(content::Shell* shell, const GURL& url) override {}
   void SetIsLoading(content::Shell* shell, bool loading) override {}
+  std::unique_ptr<content::JavaScriptDialogManager>
+  CreateJavaScriptDialogManager(content::Shell* shell) override {
+    return CreateDialogManager(shell);
+  }
   void SetTitle(content::Shell* shell, const std::u16string& title) override {}
   bool DestroyShell(content::Shell* shell) override { return false; }
   void ActivateContents(content::Shell* shell,

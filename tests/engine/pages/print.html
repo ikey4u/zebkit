@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- tests/engine/page.c and cdp_page.py: three pages to print. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Printed by zebkit</title>
+<style>
+  section { break-after: page; font: 24px serif; }
+  section:last-child { break-after: auto; }
+  .screen-only { background: rgb(255, 0, 0); }
+  @media print { .screen-only { display: none; } }
+</style>
+</head>
+<body>
+<section>First page of three</section>
+<section>Second page of three</section>
+<section>Third page of three</section>
+<div class="screen-only">not printed</div>
+</body>
+</html>

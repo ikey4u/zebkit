@@ -1,0 +1,85 @@
+Feature: a page's drags, to an embedder that draws off-screen.
+
+zebkit's off-screen views have no window, so a drag the page starts
+(RenderWidgetHostImpl::StartDragging) goes to a WebContentsView with no
+drag-and-drop client of the system's, and ends at once. The embedder
+needs it instead: to report what is dragged, with its picture, to the
+application (<zebkit/page.h>), and to run the drag over the page from the
+mouse events the application sends, as a window's drag-and-drop loop
+would. A third hook of patches/1021's EmbedderWidgetHooks, called after
+the DevTools interception (Input.setInterceptDrags, and drags of CDP's
+own mouse events, keep precedence) with the drop data as filtered for the
+renderer. When it takes the drag, the embedder ends it.
+
+--- a/content/public/browser/embedder_widget_hooks.h
++++ b/content/public/browser/embedder_widget_hooks.h
+@@ -7,8 +7,12 @@
+ 
+ #include "content/common/content_export.h"
+ 
++class SkBitmap;
++
+ namespace gfx {
++class Point;
+ class Rect;
++class Vector2d;
+ }
+ 
+ namespace ui {
+@@ -19,6 +23,7 @@
+ 
+ class RenderWidgetHost;
+ class WebContents;
++struct DropData;
+ 
+ // What a page's widgets ask of the window they are in, for an embedder that
+ // draws them without one (off-screen rendering) and shows the result
+@@ -32,6 +37,20 @@
+   void (*popup_shown)(WebContents* contents,
+                       RenderWidgetHost* popup,
+                       const gfx::Rect& bounds_in_screen) = nullptr;
++  // A page of `contents` started dragging `data` from `widget`, allowing
++  // `operations` (a blink::DragOperationsMask), with the picture `image`
++  // (`scale` pixels per DIP) and the cursor `cursor_offset` DIPs into it,
++  // from `location` (DIPs, in the screen). Return true to take the drag:
++  // the embedder then ends it with `widget`'s DragSourceEndedAt() and
++  // DragSourceSystemDragEnded(). False lets the window run it.
++  bool (*drag_started)(WebContents* contents,
++                       RenderWidgetHost* widget,
++                       const DropData& data,
++                       int operations,
++                       const SkBitmap& image,
++                       float scale,
++                       const gfx::Vector2d& cursor_offset,
++                       const gfx::Point& location) = nullptr;
+ };
+ 
+ CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -100,6 +100,7 @@
+ #include "content/public/browser/device_service.h"
+ #include "content/public/browser/disallow_activation_reason.h"
+ #include "content/public/browser/embedder_widget_hooks.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/global_dom_node_id.h"
+ #include "content/public/browser/gpu_data_manager.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+@@ -3187,6 +3188,17 @@
+       return;
+     }
+   }
++
++  if (GetEmbedderWidgetHooks().drag_started) {
++    WebContents* contents = WebContents::FromRenderFrameHost(&source_rfh);
++    if (contents &&
++        GetEmbedderWidgetHooks().drag_started(
++            contents, this, filtered_data, drag_operations_mask, bitmap,
++            GetView() ? GetScaleFactorForView(GetView()) : 1.f,
++            cursor_offset_in_dip, event_info->location)) {
++      return;
++    }
++  }
+ 
+   RenderViewHostDelegateView* view = delegate_->GetDelegateView();
+   if (!view || !GetView()) {
