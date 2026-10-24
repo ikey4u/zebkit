@@ -14,9 +14,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 stamp="$GCLIENT_DIR/.zebkit-stamp"
 synced="$GCLIENT_DIR/.zebkit-synced"
 applied="$GCLIENT_DIR/.zebkit-applied"
+# The patches applied, in order, each with its SHA-256: when the series
+# only grows at its end, the new patches are applied on top, without
+# undoing the others (which would give every patched file a new time, and
+# the build hours of work).
+applied_series="$GCLIENT_DIR/.zebkit-applied-series"
 series="$PATCHES_DIR/series"
 
 patch_list() { [[ -f "$series" ]] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$series" || true; }
+series_now() { patch_list | while read -r p; do echo "$p $(sha256 "$PATCHES_DIR/$p" | cut -d' ' -f1)"; done; }
 patches_hash="$(patch_list | while read -r p; do sha256 "$PATCHES_DIR/$p"; done | sha256 | cut -d' ' -f1)"
 want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash"
 
@@ -44,10 +50,38 @@ link_engine() {
     fi
 }
 
+apply_patch() {
+    log "applying $1"
+    patch -d "$SRC_DIR" -p1 --no-backup-if-mismatch < "$PATCHES_DIR/$1"
+    awk '/^--- / { created = ($2 == "/dev/null"); next }
+         /^\+\+\+ / { file = $2; sub(/^b\//, "", file); print (created ? "new " : "changed ") file }' \
+        "$PATCHES_DIR/$1" >> "$applied"
+    echo "$1 $(sha256 "$PATCHES_DIR/$1" | cut -d' ' -f1)" >> "$applied_series"
+}
+
 if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+    # A tree patched before the record of the series was kept.
+    [[ -f "$applied_series" ]] || series_now > "$applied_series"
     link_engine
     log "upstream tree is up to date: $SRC_DIR"
     exit 0
+fi
+
+# The same Chromium and depot_tools, and the series applied so far is the
+# start of the series now: only the patches after it are applied.
+if [[ -f "$stamp" && -f "$applied_series" && -f "$applied" ]] \
+    && [[ "$(cut -d' ' -f1-2 "$stamp")" == "$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT" ]]; then
+    have="$(cat "$applied_series")"
+    now="$(series_now)"
+    count="$(printf '%s\n' "$have" | grep -c .)"
+    if [[ -n "$have" && "$(printf '%s\n' "$now" | head -n "$count")" == "$have" ]]; then
+        rm -f "$stamp"
+        printf '%s\n' "$now" | tail -n +"$((count + 1))" | while read -r p _; do apply_patch "$p"; done
+        link_engine
+        echo "$want" > "$stamp"
+        log "upstream tree ready, the new patches applied on top: $SRC_DIR"
+        exit 0
+    fi
 fi
 rm -f "$stamp"
 
@@ -96,6 +130,7 @@ if [[ -f "$applied" ]]; then
     done < "$applied"
     rm -f "$applied"
 fi
+rm -f "$applied_series"
 
 if [[ ! -f "$synced" || "$(cat "$synced")" != "$CHROMIUM_VERSION" ]]; then
     log "syncing Chromium $CHROMIUM_VERSION into $SRC_DIR"
@@ -108,13 +143,7 @@ log "running Chromium's hooks"
 
 # Patch paths are relative to src/ and may reach into its other
 # repositories (v8/, third_party/skia/ and the like).
-patch_list | while read -r p; do
-    log "applying $p"
-    patch -d "$SRC_DIR" -p1 --no-backup-if-mismatch < "$PATCHES_DIR/$p"
-    awk '/^--- / { created = ($2 == "/dev/null"); next }
-         /^\+\+\+ / { file = $2; sub(/^b\//, "", file); print (created ? "new " : "changed ") file }' \
-        "$PATCHES_DIR/$p" >> "$applied"
-done
+patch_list | while read -r p; do apply_patch "$p"; done
 
 link_engine
 echo "$want" > "$stamp"
