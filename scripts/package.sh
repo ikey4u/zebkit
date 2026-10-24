@@ -36,8 +36,11 @@ copy_headers() {
 # pages (scripts/trim-pak.py), and ICU's data for the languages zebkit
 # supports (scripts/build-icu-data.sh) in place of Chromium's for all of them.
 copy_data() {
+    local components="$build_dir/gen/components/components_resources.pak"
+    local more=()
+    [[ -f "$components" ]] && more=("$components" "$components.info")
     python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/content_shell.pak" \
-        "$build_dir/content_shell.pak.info" "$1/content_shell.pak" >&2
+        "$build_dir/content_shell.pak.info" "$1/content_shell.pak" ${more[@]+"${more[@]}"} >&2
     "$ZEBKIT_ROOT/scripts/build-icu-data.sh"
     cp "$OUT_DIR/icu/icudtl.dat" "$1/icudtl.dat"
 }
