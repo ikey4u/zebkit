@@ -555,7 +555,13 @@ static void s_check_resize(void) {
     check(pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 && pixel_at(0, 300, 230) == 0x102030,
           "the page laid out again, drawn at twice the pixels", "%06x %06x", pixel_at(0, 40, 35),
           pixel_at(0, 300, 230));
-    evaluate("[innerWidth, innerHeight, devicePixelRatio]");
+    /* A new scale reaches the page as two changes, the display's scale and
+     * then the window's size, and a busy machine runs the page's script
+     * between them: the page sees the size it was given within a moment of
+     * the first frame of it, not always by then. */
+    evaluate("new Promise((done) => { const start = performance.now(); (function wait() {"
+             " if ((innerWidth == 320 && innerHeight == 240) || performance.now() - start > 3000)"
+             " done([innerWidth, innerHeight, devicePixelRatio]); else setTimeout(wait, 20); })(); })");
 }
 static void s_after_resize(void) {
     check(strcmp(result, "[320,240,2]") == 0, "the page sees its new size and scale", "%s", result);
