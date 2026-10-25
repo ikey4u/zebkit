@@ -20,6 +20,10 @@
 //
 // A track whose configuration changes starts another file (a part), since
 // a track of MP4 and Matroska has one configuration.
+//
+// What comes from the renderer is not trusted: a track keeps the kind of
+// its first configuration, and what a capture holds is limited (tracks,
+// configurations, files, packets, bytes, times).
 
 #include "zebkit/engine/media_capture_writer.h"
 
@@ -35,6 +39,7 @@
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "build/build_config.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/video_codecs.h"
 #include "media/ffmpeg/ffmpeg_common.h"
@@ -46,6 +51,24 @@ namespace {
 constexpr int64_t kUnknown = mojom::kUnknown;
 // Packets' times are microseconds.
 constexpr AVRational kMicroseconds = {1, 1000000};
+
+// What a capture holds at most. A player has a few tracks, and changes
+// configuration a few times (adaptive streams); a page that sends more is
+// not playing media.
+constexpr size_t kMaxTracks = 8;
+constexpr size_t kMaxConfigs = 32;
+constexpr size_t kMaxParts = 32;
+constexpr size_t kMaxExtraData = 1 << 20;
+constexpr size_t kMaxPackets = 4'000'000;
+// Separate stretches captured (seeks) in a track.
+constexpr size_t kMaxRanges = 4096;
+// Times beyond about 142 years are not media's, and would overflow what
+// is made of them.
+constexpr int64_t kMaxTime = int64_t{1} << 52;
+
+bool ValidTime(int64_t us) {
+  return us >= -kMaxTime && us <= kMaxTime;
+}
 
 double ToSeconds(int64_t us) {
   return static_cast<double>(us) / 1e6;
@@ -321,9 +344,25 @@ bool ParseCaptureOptions(const std::string& json,
   }
   *include_buffered = dict.FindBool("includeBuffered").value_or(false);
   if (std::optional<double> gaps = dict.FindDouble("closeGaps")) {
-    options->close_gaps = base::Seconds(std::max(0.0, *gaps));
+    options->close_gaps = base::Seconds(std::clamp(*gaps, 0.0, 1e9));
   } else if (std::optional<bool> close = dict.FindBool("closeGaps")) {
     options->close_gaps = *close ? base::Seconds(1) : base::TimeDelta();
+  }
+  if (const base::Value* bytes = dict.Find("maxBytes")) {
+    const std::optional<double> value = bytes->GetIfDouble();
+    if (!value || !(*value >= 1) || *value > 9e18) {
+      *error = "maxBytes is a number of bytes";
+      return false;
+    }
+    options->max_bytes = static_cast<int64_t>(*value);
+  }
+  if (const base::Value* duration = dict.Find("maxDuration")) {
+    const std::optional<double> value = duration->GetIfDouble();
+    if (!value || !(*value > 0) || *value > 1e9) {
+      *error = "maxDuration is a number of seconds";
+      return false;
+    }
+    options->max_duration = base::Seconds(*value);
   }
   return true;
 }
@@ -343,21 +382,26 @@ CaptureWriter::CaptureWriter(
       std::string("the page went away"), std::string()));
   spool_path_ = path_.AddExtensionASCII("capture");
   base::CreateDirectory(path_.DirName());
-  spool_.Initialize(spool_path_, base::File::FLAG_CREATE_ALWAYS |
-                                     base::File::FLAG_READ |
-                                     base::File::FLAG_WRITE);
+  // Nothing of it is left behind, whatever happens to the capture or the
+  // engine: Windows deletes it when it is closed, and elsewhere it has no
+  // name once it is open.
+  uint32_t flags = base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_READ |
+                   base::File::FLAG_WRITE;
+#if BUILDFLAG(IS_WIN)
+  flags |= base::File::FLAG_DELETE_ON_CLOSE | base::File::FLAG_WIN_SHARE_DELETE;
+#endif
+  spool_.Initialize(spool_path_, flags);
   if (!spool_.IsValid()) {
     error_ = "cannot write " + spool_path_.AsUTF8Unsafe() + ": " +
              base::File::ErrorToString(spool_.error_details());
+    return;
   }
+#if !BUILDFLAG(IS_WIN)
+  base::DeleteFile(spool_path_);
+#endif
 }
 
-CaptureWriter::~CaptureWriter() {
-  if (spool_.IsValid()) {
-    spool_.Close();
-    base::DeleteFile(spool_path_);
-  }
-}
+CaptureWriter::~CaptureWriter() = default;
 
 void CaptureWriter::Fail(const std::string& error) {
   if (error_.empty()) {
@@ -376,17 +420,28 @@ void CaptureWriter::OnAudioConfig(uint32_t track,
          "captured");
     return;
   }
-  Track& entry = tracks_[track];
-  entry.audio = true;
+  if (!config.IsValidConfig() ||
+      config.extra_data().size() > kMaxExtraData) {
+    Fail("the player gave an audio configuration that is not valid");
+    return;
+  }
+  Track* entry = TrackOf(track, /*audio=*/true);
+  if (!entry) {
+    return;
+  }
   int index = -1;
-  for (size_t i = 0; i < entry.audio_configs.size(); ++i) {
-    if (entry.audio_configs[i].Matches(config)) {
+  for (size_t i = 0; i < entry->audio_configs.size(); ++i) {
+    if (entry->audio_configs[i].Matches(config)) {
       index = static_cast<int>(i);
     }
   }
   if (index < 0) {
-    entry.audio_configs.push_back(config);
-    index = static_cast<int>(entry.audio_configs.size()) - 1;
+    if (entry->audio_configs.size() >= kMaxConfigs) {
+      Fail("a track changed its configuration too often");
+      return;
+    }
+    entry->audio_configs.push_back(config);
+    index = static_cast<int>(entry->audio_configs.size()) - 1;
   }
   SwitchConfig(track, index);
 }
@@ -401,18 +456,70 @@ void CaptureWriter::OnVideoConfig(uint32_t track,
          "captured");
     return;
   }
-  Track& entry = tracks_[track];
+  if (!config.IsValidConfig() ||
+      config.extra_data().size() > kMaxExtraData) {
+    Fail("the player gave a video configuration that is not valid");
+    return;
+  }
+  Track* entry = TrackOf(track, /*audio=*/false);
+  if (!entry) {
+    return;
+  }
   int index = -1;
-  for (size_t i = 0; i < entry.video_configs.size(); ++i) {
-    if (entry.video_configs[i].Matches(config)) {
+  for (size_t i = 0; i < entry->video_configs.size(); ++i) {
+    if (entry->video_configs[i].Matches(config)) {
       index = static_cast<int>(i);
     }
   }
   if (index < 0) {
-    entry.video_configs.push_back(config);
-    index = static_cast<int>(entry.video_configs.size()) - 1;
+    if (entry->video_configs.size() >= kMaxConfigs) {
+      Fail("a track changed its configuration too often");
+      return;
+    }
+    entry->video_configs.push_back(config);
+    index = static_cast<int>(entry->video_configs.size()) - 1;
   }
   SwitchConfig(track, index);
+}
+
+CaptureWriter::Track* CaptureWriter::TrackOf(uint32_t id, bool audio) {
+  auto it = tracks_.find(id);
+  if (it == tracks_.end()) {
+    if (tracks_.size() >= kMaxTracks) {
+      Fail("the player gave more tracks than a capture takes");
+      return nullptr;
+    }
+    it = tracks_.emplace(id, Track()).first;
+    it->second.audio = audio;
+  } else if (it->second.audio != audio) {
+    // Each kind's configurations are numbered apart: a track that changed
+    // kind would read the other's.
+    Fail("a track changed from audio to video, or video to audio");
+    return nullptr;
+  }
+  return &it->second;
+}
+
+// static
+const media::AudioDecoderConfig* CaptureWriter::AudioConfig(
+    const Track& track,
+    int index) {
+  if (!track.audio || index < 0 ||
+      static_cast<size_t>(index) >= track.audio_configs.size()) {
+    return nullptr;
+  }
+  return &track.audio_configs[index];
+}
+
+// static
+const media::VideoDecoderConfig* CaptureWriter::VideoConfig(
+    const Track& track,
+    int index) {
+  if (track.audio || index < 0 ||
+      static_cast<size_t>(index) >= track.video_configs.size()) {
+    return nullptr;
+  }
+  return &track.video_configs[index];
 }
 
 void CaptureWriter::SwitchConfig(uint32_t track, int config) {
@@ -434,12 +541,23 @@ void CaptureWriter::SwitchConfig(uint32_t track, int config) {
       return;
     }
   }
+  if (parts_.size() >= kMaxParts) {
+    Fail("the media changed its configuration too often");
+    return;
+  }
   parts_.push_back(std::move(next));
   current_part_ = static_cast<int>(parts_.size()) - 1;
 }
 
 void CaptureWriter::OnPacket(mojom::MediaPacketPtr packet) {
   if (finished_ || !spool_.IsValid() || packet->pts_us == kUnknown) {
+    return;
+  }
+  // Times nothing plays at, which would overflow what is made of them.
+  if (!ValidTime(packet->pts_us) ||
+      (packet->dts_us != kUnknown && !ValidTime(packet->dts_us)) ||
+      (packet->duration_us != kUnknown &&
+       (packet->duration_us < 0 || packet->duration_us > kMaxTime))) {
     return;
   }
   auto track = tracks_.find(packet->track);
@@ -449,6 +567,19 @@ void CaptureWriter::OnPacket(mojom::MediaPacketPtr packet) {
   }
   base::span<const uint8_t> data(packet->data);
   if (data.empty()) {
+    return;
+  }
+  if (static_cast<int64_t>(data.size()) > options_.max_bytes - spool_size_) {
+    Fail("the capture reached its maxBytes, " +
+         base::NumberToString(options_.max_bytes) + " bytes");
+    return;
+  }
+  if (packets_.size() >= kMaxPackets) {
+    Fail("the capture holds as many packets as it takes");
+    return;
+  }
+  if (track->second.captured.size() >= kMaxRanges) {
+    Fail("the player sought too often");
     return;
   }
   if (!spool_.WriteAtCurrentPos(data)) {
@@ -477,6 +608,13 @@ void CaptureWriter::OnPacket(mojom::MediaPacketPtr packet) {
   }
   if (entry.last_pts == kUnknown || pts > entry.last_pts) {
     entry.last_pts = pts;
+  }
+  if (options_.max_duration.is_positive() && packets_.size() % 32 == 0 &&
+      base::Seconds(Length(Captured())) >= options_.max_duration) {
+    Fail("the capture reached its maxDuration, " +
+         base::NumberToString(options_.max_duration.InSecondsF()) +
+         " seconds");
+    return;
   }
   ReportProgress(false);
 }
@@ -592,10 +730,7 @@ void CaptureWriter::Finish(const std::string& reason,
   }
   done.Set("bytes", bytes);
   done.Set("files", std::move(files));
-  if (spool_.IsValid()) {
-    spool_.Close();
-    base::DeleteFile(spool_path_);
-  }
+  spool_.Close();
   report_.Run(base::WriteJson(done).value_or("{}"), true);
 }
 
@@ -701,13 +836,14 @@ bool CaptureWriter::WritePart(int part,
     Output output;
     output.track = id;
     output.audio = track.audio;
-    output.codec =
-        track.audio
-            ? media::AudioCodecToCodecID(
-                  track.audio_configs[config->second].codec(),
-                  track.audio_configs[config->second].sample_format())
-            : media::VideoCodecToCodecID(
-                  track.video_configs[config->second].codec());
+    const media::AudioDecoderConfig* audio = AudioConfig(track, config->second);
+    const media::VideoDecoderConfig* video = VideoConfig(track, config->second);
+    if (!audio && !video) {
+      continue;
+    }
+    output.codec = audio ? media::AudioCodecToCodecID(audio->codec(),
+                                                      audio->sample_format())
+                         : media::VideoCodecToCodecID(video->codec());
     if (output.codec == AV_CODEC_ID_NONE) {
       continue;
     }
@@ -866,12 +1002,20 @@ bool CaptureWriter::WritePart(int part,
 
   const Container& container =
       ChooseContainer(options_.format, requested_path, codecs);
-  const base::FilePath path =
-      WithExtension(requested_path, container, audio_only);
+  base::FilePath path = WithExtension(requested_path, container, audio_only);
+  // The destination is the application's to replace; any other name the
+  // capture makes (another part, another extension) is a file of its own.
+  if (path != path_ && base::PathExists(path)) {
+    path = base::GetUniquePath(path);
+    if (path.empty()) {
+      *error = "no free name beside " + requested_path.AsUTF8Unsafe();
+      return false;
+    }
+  }
 
   AVFormatContext* raw = nullptr;
   if (avformat_alloc_output_context2(&raw, nullptr, container.format,
-                                     path.value().c_str()) < 0 ||
+                                     path.AsUTF8Unsafe().c_str()) < 0 ||
       !raw) {
     *error = std::string("FFmpeg has no ") + container.format + " muxer";
     return false;
@@ -902,7 +1046,8 @@ bool CaptureWriter::WritePart(int part,
     std::vector<uint8_t> extra;
     base::DictValue track_value;
     if (output.audio) {
-      const media::AudioDecoderConfig& audio = track.audio_configs[config];
+      // Checked when the output was made.
+      const media::AudioDecoderConfig& audio = *AudioConfig(track, config);
       parameters->codec_type = AVMEDIA_TYPE_AUDIO;
       parameters->sample_rate = audio.samples_per_second();
       av_channel_layout_default(&parameters->ch_layout, audio.channels());
@@ -924,7 +1069,7 @@ bool CaptureWriter::WritePart(int part,
       track_value.Set("sampleRate", audio.samples_per_second());
       track_value.Set("channels", audio.channels());
     } else {
-      const media::VideoDecoderConfig& video = track.video_configs[config];
+      const media::VideoDecoderConfig& video = *VideoConfig(track, config);
       parameters->codec_type = AVMEDIA_TYPE_VIDEO;
       parameters->width = video.visible_rect().width();
       parameters->height = video.visible_rect().height();
@@ -936,22 +1081,33 @@ bool CaptureWriter::WritePart(int part,
                   int64_t{natural.width()} * parameters->height,
                   int64_t{parameters->width} * natural.height(), 1 << 30);
       }
+      // VP9's profile, and the pixels it says (4:2:0 for 0 and 2, 4:4:4
+      // taken for 1 and 3; 10 bits for 2 and 3): MP4's vpcC is made of
+      // them, and is empty without.
       switch (video.profile()) {
         case media::VP9PROFILE_PROFILE0:
           parameters->profile = 0;
+          parameters->format = AV_PIX_FMT_YUV420P;
           break;
         case media::VP9PROFILE_PROFILE1:
           parameters->profile = 1;
+          parameters->format = AV_PIX_FMT_YUV444P;
           break;
         case media::VP9PROFILE_PROFILE2:
           parameters->profile = 2;
+          parameters->format = AV_PIX_FMT_YUV420P10LE;
           break;
         case media::VP9PROFILE_PROFILE3:
           parameters->profile = 3;
+          parameters->format = AV_PIX_FMT_YUV444P10LE;
           break;
         default:
           break;
       }
+      parameters->color_range =
+          video.color_space_info().range() == gfx::ColorSpace::RangeID::FULL
+              ? AVCOL_RANGE_JPEG
+              : AVCOL_RANGE_MPEG;
       extra = video.extra_data();
       const bool hevc = output.codec == AV_CODEC_ID_HEVC;
       if (output.codec == AV_CODEC_ID_H264 || hevc) {
@@ -984,7 +1140,8 @@ bool CaptureWriter::WritePart(int part,
     tracks_value.Append(std::move(track_value));
   }
 
-  if (avio_open(&context->pb, path.value().c_str(), AVIO_FLAG_WRITE) < 0) {
+  if (avio_open(&context->pb, path.AsUTF8Unsafe().c_str(),
+                AVIO_FLAG_WRITE) < 0) {
     *error = "cannot write " + path.AsUTF8Unsafe();
     return false;
   }

@@ -26,8 +26,10 @@
 use crate::view::{call_slot, Slot};
 use crate::{c_string, script_result, string_from, sys, take_error, take_string, Error, View};
 use std::cell::RefCell;
+use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
+use std::rc::Rc;
 
 impl View {
     /// The `<audio>` and `<video>` elements in every frame of the page, as a
@@ -46,9 +48,9 @@ impl View {
         unsafe { sys::zebkit_view_media_list(raw, Some(on_result::<F>), data.cast()) }
     }
 
-    /// The media element at (`x`, `y`) of the view (CSS pixels), under it,
-    /// or whose box holds it: its entry as [`View::media_list`] has it, or
-    /// `"null"`.
+    /// The media element at (`x`, `y`) of the view (its coordinates, as its
+    /// input events have them), under it, or whose box holds it, in any
+    /// frame: its entry as [`View::media_list`] has it, or `"null"`.
     pub fn media_at<F: FnOnce(Result<String, Error>) + 'static>(&self, x: f32, y: f32, done: F) {
         let Some(raw) = self.raw() else {
             done(Err(Error::new("the view is closed")));
@@ -61,7 +63,8 @@ impl View {
     /// Starts copying what media `media_id` plays to `path` (absolute),
     /// with `options_json`: `format` (`"mp4"`, `"webm"`, `"mkv"`,
     /// `"auto"`), `includeBuffered` (what the player holds behind the
-    /// playhead too), `closeGaps` (seconds, or `false`). The files are
+    /// playhead too), `closeGaps` (seconds, or `false`), `maxBytes`,
+    /// `maxDuration` (seconds). `path` must be UTF-8. The files are
     /// written when it stops ([`MediaCapture::stop`], or when the page goes
     /// or the element loads other media), and reported to
     /// [`MediaCapture::on_done`].
@@ -69,7 +72,7 @@ impl View {
         let Some(raw) = self.raw() else {
             return Err(Error::new("the view is closed"));
         };
-        let path = c_string(&path.as_ref().to_string_lossy());
+        let path = path_c_string(path.as_ref())?;
         let mut error: *mut c_char = std::ptr::null_mut();
         let capture = unsafe {
             sys::zebkit_media_capture_start(
@@ -83,8 +86,8 @@ impl View {
         if capture.is_null() {
             return Err(unsafe { take_error(error, "the capture did not start") });
         }
-        let slots = Box::new(Slots::default());
-        let data = (&*slots as *const Slots).cast_mut().cast::<c_void>();
+        let slots = Rc::new(Slots::default());
+        let data = Rc::as_ptr(&slots).cast_mut().cast::<c_void>();
         unsafe {
             sys::zebkit_media_capture_on_progress(capture, Some(on_progress), data);
             sys::zebkit_media_capture_on_done(capture, Some(on_done), data);
@@ -104,7 +107,9 @@ struct Slots {
 /// functions are not called any more.
 pub struct MediaCapture {
     raw: *mut sys::zebkit_media_capture,
-    slots: Box<Slots>,
+    // Shared with a function that runs: one that drops the capture does not
+    // free what it runs from.
+    slots: Rc<Slots>,
 }
 
 impl MediaCapture {
@@ -151,14 +156,28 @@ unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
     done(script_result(json, error));
 }
 
+/// The capture's slots, held while its function runs: the engine calls
+/// none once the capture is freed, so they are there when one starts.
+unsafe fn slots_of(data: *mut c_void) -> Rc<Slots> {
+    let slots = data.cast_const().cast::<Slots>();
+    Rc::increment_strong_count(slots);
+    Rc::from_raw(slots)
+}
+
+/// The path as the engine takes it (UTF-8), without changing it.
+fn path_c_string(path: &Path) -> Result<CString, Error> {
+    let text = path.to_str().ok_or_else(|| Error::new("the path is not UTF-8"))?;
+    CString::new(text).map_err(|_| Error::new("the path has a zero byte"))
+}
+
 unsafe extern "C" fn on_progress(_capture: *mut sys::zebkit_media_capture, json: *const c_char, data: *mut c_void) {
-    let slots = &*data.cast::<Slots>();
+    let slots = slots_of(data);
     let json = string_from(json).unwrap_or_default();
     call_slot(&slots.on_progress, |function| function(&json));
 }
 
 unsafe extern "C" fn on_done(_capture: *mut sys::zebkit_media_capture, json: *const c_char, data: *mut c_void) {
-    let slots = &*data.cast::<Slots>();
+    let slots = slots_of(data);
     let json = string_from(json).unwrap_or_default();
     let function = slots.on_done.borrow_mut().take();
     if let Some(function) = function {

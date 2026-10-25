@@ -249,6 +249,8 @@ class Agent : public content::RenderFrameObserver,
 
   // mojom::MediaCaptureAgent
   void List(ListCallback callback) override {
+    // Captures may follow: players keep what one starts from from now on.
+    media::DemuxerTap::KeepForTapsFromNow();
     base::ListValue list;
     blink::WebDocument document = render_frame()->GetWebFrame()->GetDocument();
     for (const blink::WebElement& element :
@@ -260,6 +262,7 @@ class Agent : public content::RenderFrameObserver,
 
   void ElementAt(const gfx::PointF& point,
                  ElementAtCallback callback) override {
+    media::DemuxerTap::KeepForTapsFromNow();
     blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
     blink::WebFrameWidget* widget = frame->FrameWidget();
     if (!widget) {
@@ -383,9 +386,19 @@ class Agent : public content::RenderFrameObserver,
         return id;
       }
     }
+    Prune();
     const int id = NextElementId();
     elements_[id] = element;
     return id;
+  }
+
+  // The elements are held, so that an id stays the element's: those taken
+  // out of the document go, unless they are captured (a detached element
+  // plays on), so that the page's garbage is not kept.
+  void Prune() {
+    std::erase_if(elements_, [&](const auto& entry) {
+      return !entry.second.IsConnected() && !captures_.contains(entry.first);
+    });
   }
 
   base::DictValue Describe(int id, const blink::WebElement& element) {
@@ -468,6 +481,7 @@ class Agent : public content::RenderFrameObserver,
   // An element that loads other media (a new src) or is removed from its
   // player has none of the capture's any more.
   void Watch() {
+    Prune();
     std::vector<int> ended;
     for (auto& [id, capture] : captures_) {
       auto element = elements_.find(id);

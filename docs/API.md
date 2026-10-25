@@ -745,7 +745,20 @@ zebkit_view_media_at(view, 400, 300, at_point, NULL); /* the element under a rig
 - **Encrypted media is refused**: zebkit has no CDM, and its copy would
   be of encrypted samples. The list says `"encrypted": true`.
 - **Ends by itself** when the page goes, or the element loads other
-  media; the files are written with what was captured.
+  media; the files are written with what was captured. `maxBytes` (16 GiB
+  by default) and `maxDuration` end it with an error, and the files of
+  what it has. What a page sends is not trusted: more than 8 tracks, a
+  track that changes kind or its configuration more than 32 times, and
+  times beyond any media's end the capture or are dropped.
+- **Nothing left behind, nothing replaced but the path**: the packets
+  wait in an unnamed file while the capture runs; the names a capture
+  makes besides the path (`movie-2.mp4`) take `movie-2 (1).mp4` rather
+  than replace a file. A capture running when the engine quits is not
+  written, and does not hold it up.
+- **No cost until media is looked for**: players keep the video since
+  their last keyframe, for a capture to start at what is shown, only once
+  `zebkit_view_media_list()` or `zebkit_view_media_at()` ran in their
+  page's process.
 - **Over CDP too**, for any page target (the engine's views or pages a
   client made with `Target.createTarget`), in a domain of zebkit's own:
   `Zebkit.mediaList` → `{media}`, `Zebkit.mediaAt {x, y}` → `{media}`,
@@ -753,7 +766,10 @@ zebkit_view_media_at(view, 400, 300, at_point, NULL); /* the element under a rig
   `Zebkit.mediaCaptureStop {captureId}`, `Zebkit.mediaCaptureStatus
   {captureId}` → `{status}`, with the events `Zebkit.mediaCaptureProgress
   {captureId, state}` and `Zebkit.mediaCaptureDone {captureId, result}`
-  (the JSON of the C API) to the session that last spoke of the capture.
+  (the JSON of the C API). A capture is the session's that started it:
+  only it stops it and reads its status, and its captures stop (their
+  files written) when it detaches. `Zebkit.mediaAt`'s point is in the
+  view's coordinates, as `Input.dispatchMouseEvent`'s.
 
 | Functions | What |
 |---|---|

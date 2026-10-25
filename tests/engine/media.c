@@ -9,8 +9,12 @@
  *   what the player holds behind the playhead (includeBuffered);
  * - a seek forward during a capture: two ranges, the gap closed up;
  * - <audio> alone (Opus), to a path without an extension;
- * - the media element under the player's controls (zebkit_view_media_at);
+ * - the media element under the player's controls (zebkit_view_media_at),
+ *   and in a frame of another site;
  * - an element that loads other media during a capture;
+ * - a codec change through Media Source Extensions (H.264, then VP9): two
+ *   files, the second beside one of that name already there, kept;
+ * - a capture that reaches its maxDuration;
  * - encrypted media (CENC) refused, and ids that are not media.
  *
  *   ZEBKIT_TEST_BASE   http://127.0.0.1:<port>, serving tests/engine/pages
@@ -30,6 +34,8 @@
 #include <zebkit/media.h>
 #include <zebkit/vendor/ffmpeg.h>
 #include <zebkit/zebkit.h>
+
+#include "media_probe.h"
 
 static int failures, checks;
 
@@ -105,80 +111,7 @@ static int pairs(const char *json, const char *key) {
     return count;
 }
 
-/* ---- Files read back ------------------------------------------------- */
-
-typedef struct {
-    int ok;
-    int streams;
-    int video, audio; /* AVCodecID, or 0 */
-    int width, height;
-    double duration;
-    int video_frames, audio_frames, errors;
-} probe_t;
-
-static probe_t probe(const char *path) {
-    probe_t p = {0};
-    AVFormatContext *context = NULL;
-    if (avformat_open_input(&context, path, NULL, NULL) < 0)
-        return p;
-    if (avformat_find_stream_info(context, NULL) < 0) {
-        avformat_close_input(&context);
-        return p;
-    }
-    p.ok = 1;
-    p.streams = (int)context->nb_streams;
-    p.duration = context->duration > 0 ? context->duration / 1e6 : 0;
-    AVCodecContext *decoders[8] = {0};
-    for (unsigned i = 0; i < context->nb_streams && i < 8; ++i) {
-        AVCodecParameters *par = context->streams[i]->codecpar;
-        if (par->codec_type == AVMEDIA_TYPE_VIDEO) {
-            p.video = par->codec_id, p.width = par->width, p.height = par->height;
-        } else if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
-            p.audio = par->codec_id;
-        }
-        const AVCodec *codec = avcodec_find_decoder(par->codec_id);
-        if (!codec)
-            continue;
-        decoders[i] = avcodec_alloc_context3(codec);
-        if (avcodec_parameters_to_context(decoders[i], par) < 0 || avcodec_open2(decoders[i], codec, NULL) < 0)
-            avcodec_free_context(&decoders[i]);
-    }
-    AVPacket *packet = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-    for (int flushing = 0; flushing < 2; ++flushing) {
-        for (;;) {
-            int index = -1;
-            if (!flushing) {
-                if (av_read_frame(context, packet) < 0)
-                    break;
-                index = packet->stream_index;
-            }
-            for (unsigned i = 0; i < context->nb_streams && i < 8; ++i) {
-                if (!decoders[i] || (!flushing && (int)i != index))
-                    continue;
-                if (avcodec_send_packet(decoders[i], flushing ? NULL : packet) < 0)
-                    ++p.errors;
-                int got;
-                while ((got = avcodec_receive_frame(decoders[i], frame)) >= 0) {
-                    if (decoders[i]->codec_type == AVMEDIA_TYPE_VIDEO)
-                        ++p.video_frames;
-                    else
-                        ++p.audio_frames;
-                    av_frame_unref(frame);
-                }
-            }
-            if (flushing)
-                break;
-            av_packet_unref(packet);
-        }
-    }
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    for (int i = 0; i < 8; ++i)
-        avcodec_free_context(&decoders[i]);
-    avformat_close_input(&context);
-    return p;
-}
+/* Files read back: media_probe.h. */
 
 /* ---- Steps ----------------------------------------------------------- */
 
@@ -398,6 +331,17 @@ static void s_mp4_check(void) {
     next(0);
 }
 
+/* The video in a frame of another site, in a process of its own. */
+static void s_frame(void) { evaluate("frame()"); }
+static void s_frame_ready(void) { wait_script("state.frameReady", "true", 10000, "the frame's video loads"); }
+static void s_frame_at(void) { zebkit_view_media_at(view, 500, 90, at_done, NULL); }
+static void s_frame_at_check(void) {
+    check(strstr(at_json, "\"main\":false") && strstr(at_json, "\"video\":\"h264\"") &&
+              strstr(at_json, "localhost"),
+          "the element in a frame of another site", "%s", at_json);
+    next(0);
+}
+
 /* src= WebM */
 static void s_webm(void) { evaluate("file('video', 'media/clip.webm')"); }
 static void s_webm_ready(void) { wait_script("ready()", "true", 10000, "the WebM loads"); }
@@ -513,6 +457,72 @@ static void s_change_check(void) {
     next(0);
 }
 
+/* A codec change in one SourceBuffer: H.264 to 8 s, then VP9. */
+static char kept_path[600];
+static void s_switch(void) { evaluate("switched()"); }
+static void s_switch_ready(void) { wait_script("ready() && state.appended >= 9", "true", 10000, "the H.264 video is appended"); }
+static void s_switch_start(void) {
+    /* Where the capture's second file would go: it is not replaced. */
+    snprintf(kept_path, sizeof(kept_path), "%s/switch-2.mp4", files);
+    FILE *kept = fopen(kept_path, "w");
+    if (kept) {
+        fputs("kept", kept);
+        fclose(kept);
+    }
+    start_capture("switch.mp4", "{\"includeBuffered\": true}");
+    evaluate("switchCodec()");
+}
+static void s_switch_appended(void) { wait_script("state.appended >= 10", "true", 10000, "then the VP9 video"); }
+static void s_switch_play(void) { evaluate("play(4)"); }
+static void s_switch_wait(void) { wait_script("state.ended", "true", 30000, "it plays through the change"); }
+static void s_switch_check(void) {
+    char error[256] = "", first[600] = "", second[600] = "";
+    string(done_json, "error", error, sizeof(error));
+    check(!*error, "a capture across a codec change", "no error: %s", error);
+    const char *files_at = strstr(done_json, "\"files\":[");
+    const char *at = files_at ? strstr(files_at, "\"path\":\"") : NULL;
+    string(at, "path", first, sizeof(first));
+    at = at ? strstr(at + 1, "\"path\":\"") : NULL;
+    string(at, "path", second, sizeof(second));
+    /* MP4 holds VP9 too: the path's container goes on. */
+    check(ends_with(first, "/switch.mp4") && ends_with(second, "/switch-2 (1).mp4"),
+          "goes on in a second file, beside the one there", "%s and %s", first, second);
+    probe_t a = probe(first), b = probe(second);
+    check(a.ok && a.streams == 1 && a.video == AV_CODEC_ID_H264 && a.errors == 0 && a.video_frames >= 185,
+          "the first has the H.264 video", "%d streams, %d frames, %d errors", a.streams, a.video_frames, a.errors);
+    check(b.ok && b.streams == 1 && b.video == AV_CODEC_ID_VP9 && b.errors == 0 && b.video_frames >= 185 &&
+              b.duration > 7.4 && b.duration < 8.6,
+          "the second the VP9 video", "%d streams, %d frames, %.2f s, %d errors", b.streams, b.video_frames,
+          b.duration, b.errors);
+    char text[16] = "";
+    FILE *kept = fopen(kept_path, "r");
+    if (kept) {
+        if (!fgets(text, sizeof(text), kept))
+            text[0] = 0;
+        fclose(kept);
+    }
+    check(strcmp(text, "kept") == 0, "and the file there is as it was", "%s", text);
+    next(0);
+}
+
+/* maxDuration: the capture ends by itself, with what it has. */
+static void s_limit(void) { evaluate("file('video', 'media/clip.mp4')"); }
+static void s_limit_ready(void) { wait_script("ready()", "true", 10000, "the MP4 loads for a limited capture"); }
+static void s_limit_start(void) {
+    start_capture("limited.mp4", "{\"maxDuration\": 2}");
+    evaluate("play(2)");
+}
+static void s_limit_done(void) { wait_done(15000); }
+static void s_limit_check(void) {
+    char error[256] = "", path[600] = "";
+    string(done_json, "error", error, sizeof(error));
+    check(strstr(error, "maxDuration") != NULL, "a capture ends at its maxDuration", "%s", error);
+    probe_t p = first_file(path, sizeof(path));
+    check(p.ok && p.errors == 0 && p.duration > 1.5 && p.duration < 3.5, "with the file of what it has",
+          "%.2f s, %d errors", p.duration, p.errors);
+    evaluate("media.pause(); true");
+}
+
 /* Encrypted media. */
 static void s_cenc(void) { evaluate("encrypted()"); }
 static void s_cenc_wait(void) { wait_script("state.appended >= 1", "true", 10000, "the encrypted video is appended"); }
@@ -547,6 +557,10 @@ static void s_bad_ids(void) {
     c = zebkit_media_capture_start(view, media_id, "/tmp/x.mp4", "{\"format\": \"avi\"}", &error);
     check(!c && error, "and a format there is no muxer for", "%s", error ? error : "");
     zebkit_free(error);
+    error = NULL;
+    c = zebkit_media_capture_start(view, media_id, "/tmp/x.mp4", "{\"maxBytes\": \"lots\"}", &error);
+    check(!c && error, "and limits that are not numbers", "%s", error ? error : "");
+    zebkit_free(error);
     next(0);
 }
 
@@ -560,9 +574,12 @@ static void ready(void *data) {
     zebkit_view_on_load(view, on_load, NULL);
 
     step_func all[] = {
-        s_load,
+        /* Listed before anything plays: players keep what a capture
+         * starts from from now on. */
+        s_load, list_media,
         s_mp4, s_mp4_ready, list_media, s_mp4_list, s_mp4_at, s_mp4_at_check, s_mp4_at_none, s_mp4_at_none_check,
         s_mp4_start, s_mp4_play, stop_and_wait, s_mp4_check,
+        s_frame, s_frame_ready, s_frame_at, s_frame_at_check,
         s_webm, s_webm_ready, list_media, s_webm_list, s_webm_play, stop_and_wait, s_webm_check,
         s_mse, s_mse_ready, list_media, s_mse_list, s_mse_play, s_mse_wait, stop_and_wait, s_mse_check,
         s_buffered, s_buffered_ready, list_media, s_buffered_play, s_buffered_wait, s_buffered_start,
@@ -572,6 +589,9 @@ static void ready(void *data) {
         s_audio, s_audio_ready, list_media, s_audio_list, s_audio_play, stop_and_wait, s_audio_check,
         s_change, s_change_ready, list_media, s_change_start, s_change_wait, s_change_load, s_change_done,
         s_change_check,
+        s_switch, s_switch_ready, list_media, s_switch_start, s_switch_appended, s_switch_play, s_switch_wait,
+        stop_and_wait, s_switch_check,
+        s_limit, s_limit_ready, list_media, s_limit_start, s_limit_done, s_limit_check,
         s_cenc, s_cenc_wait, list_media, s_cenc_list, s_cenc_check,
         s_bad_ids,
     };
@@ -584,5 +604,5 @@ int main(int argc, char **argv) {
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;
-    return failures || checks < 70 ? 1 : 0;
+    return failures || checks < 85 ? 1 : 0;
 }

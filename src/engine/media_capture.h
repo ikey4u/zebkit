@@ -45,13 +45,15 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
 //   events Zebkit.mediaCaptureProgress {captureId, state},
 //          Zebkit.mediaCaptureDone {captureId, result}
 //
-// to the session that last spoke of the capture. Stop and status work
-// from any session, the browser target's too.
+// A capture is the session's that started it: its events go there, only
+// it stops it and reads its status, and its captures are stopped (their
+// files written) when it detaches.
 bool IsMediaCommand(std::string_view method);
 void HandleMediaCommand(content::DevToolsAgentHostClientChannel* channel,
                         int id,
                         std::string_view method,
                         const std::string& params_json);
+void OnMediaClientDetached(content::DevToolsAgentHostClientChannel* channel);
 
 // A message to a CDP client, if it is still attached (devtools.cc).
 bool SendToDevToolsClient(content::DevToolsAgentHostClientChannel* channel,

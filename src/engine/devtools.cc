@@ -92,6 +92,7 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
 
   void ClientDetached(content::DevToolsAgentHostClientChannel* channel) override {
     Channels().erase(channel);
+    OnMediaClientDetached(channel);
     content::ShellDevToolsManagerDelegate::ClientDetached(channel);
   }
 

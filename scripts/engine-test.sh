@@ -31,8 +31,9 @@
 # - tests/engine/media.c: what a page plays, saved as it plays
 #   (<zebkit/media.h>): files the element loads, MP4 and WebM; DASH through
 #   Media Source Extensions; a seek; audio alone; the element under the
-#   player's controls; encrypted media refused. Each file read back with
-#   the engine's FFmpeg, every frame decoded.
+#   player's controls; a codec change, in two files, without replacing a
+#   file there; maxDuration; encrypted media refused. Each file read back
+#   with the engine's FFmpeg (media_probe.h), every frame decoded.
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
@@ -83,6 +84,7 @@ build_against_package "$package" "$work/offscreen" "$tests/offscreen.c" -- "${of
 build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
+build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -164,7 +166,7 @@ mkdir -p "$work/page-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
     run page "$work/page" "${engine_switches[@]}"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
-run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
+ZEBKIT_MEDIA_PROBE="$work/media-probe" run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$work/popup" "${engine_switches[@]}"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/popup.log" || { echo "FAIL the popup test did not finish"; failed=1; }

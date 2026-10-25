@@ -36,11 +36,15 @@
 #include "content/public/browser/devtools_agent_host_client_channel.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/geometry/size_f.h"
 #include "zebkit/engine/include/zebkit/media.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/media_capture.mojom.h"
@@ -210,6 +214,8 @@ struct zebkit_media_capture {
   std::optional<std::string> pending_done;
 
   std::unique_ptr<zebkit::Agent> agent;
+  // A renderer that never answers the start (hung) ends the capture.
+  base::OneShotTimer start_timeout;
   base::SequenceBound<zebkit::CaptureWriter> writer;
 
   void Stop(const std::string& reason, const std::string& error) {
@@ -230,7 +236,11 @@ struct zebkit_media_capture {
   }
 
   void OnStarted(const std::string& error, const std::string& json) {
+    if (replied) {
+      return;
+    }
     replied = true;
+    start_timeout.Stop();
     // Not while its answer runs.
     base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
         FROM_HERE, std::move(agent));
@@ -312,6 +322,82 @@ void SetError(char** error, const std::string& message) {
 
 namespace zebkit {
 
+namespace {
+
+// Asks frame @next of @order for the media element at @point (the view's
+// coordinates), and the frames after it while none has one.
+void AskElementAt(base::WeakPtr<content::WebContents> contents,
+                  gfx::PointF point,
+                  std::vector<content::GlobalRenderFrameHostId> order,
+                  size_t next,
+                  MediaJsonCallback done) {
+  for (; contents && next < order.size(); ++next) {
+    content::RenderFrameHost* frame =
+        content::RenderFrameHost::FromID(order[next]);
+    if (!frame || !frame->IsRenderFrameLive() ||
+        content::WebContents::FromRenderFrameHost(frame) != contents.get()) {
+      continue;
+    }
+    content::RenderWidgetHostView* view = frame->GetView();
+    gfx::PointF local = point;
+    if (frame->GetParent()) {
+      if (!view) {
+        continue;
+      }
+      local = view->TransformRootPointToViewCoordSpace(point);
+      if (!gfx::RectF(gfx::SizeF(view->GetViewBounds().size()))
+               .Contains(local)) {
+        continue;
+      }
+    }
+    auto agent = AgentOf(frame);
+    Agent* raw = agent.get();
+    (*raw)->ElementAt(
+        local,
+        mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+            base::BindOnce(
+                [](base::WeakPtr<content::WebContents> contents,
+                   gfx::PointF point,
+                   std::vector<content::GlobalRenderFrameHostId> order,
+                   size_t next, MediaJsonCallback done,
+                   std::unique_ptr<Agent> agent, const std::string& token,
+                   const std::string& json) {
+                  // The agent goes once its answer has run.
+                  base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+                      FROM_HERE, std::move(agent));
+                  if (contents && !token.empty()) {
+                    for (content::RenderFrameHost* frame :
+                         FramesOf(contents.get())) {
+                      if (frame->GetFrameToken().ToString() != token) {
+                        continue;
+                      }
+                      std::optional<base::Value> entry =
+                          base::JSONReader::Read(json, 0);
+                      if (entry) {
+                        base::Value decorated =
+                            Decorate(frame, std::move(*entry));
+                        if (!decorated.is_none()) {
+                          std::move(done).Run(
+                              base::WriteJson(decorated).value_or("null"));
+                          return;
+                        }
+                      }
+                      break;
+                    }
+                  }
+                  AskElementAt(std::move(contents), point, std::move(order),
+                               next + 1, std::move(done));
+                },
+                contents, point, order, next, std::move(done),
+                std::move(agent)),
+            std::string(), std::string("null")));
+    return;
+  }
+  std::move(done).Run("null");
+}
+
+}  // namespace
+
 void ListMedia(content::WebContents* contents, MediaJsonCallback done) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   auto request = base::MakeRefCounted<ListRequest>(std::move(done));
@@ -329,41 +415,30 @@ void MediaAt(content::WebContents* contents,
     std::move(done).Run("null");
     return;
   }
-  auto agent = AgentOf(main);
-  Agent* raw = agent.get();
-  (*raw)->ElementAt(
-      gfx::PointF(x, y),
-      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
-          base::BindOnce(
-              [](base::WeakPtr<content::WebContents> contents,
-                 MediaJsonCallback done, std::unique_ptr<Agent> agent,
-                 const std::string& token, const std::string& json) {
-                // The agent goes once its answer has run.
-                base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
-                    FROM_HERE, std::move(agent));
-                std::string result = "null";
-                if (contents && !token.empty()) {
-                  for (content::RenderFrameHost* frame :
-                       FramesOf(contents.get())) {
-                    if (frame->GetFrameToken().ToString() != token) {
-                      continue;
-                    }
-                    std::optional<base::Value> entry =
-                        base::JSONReader::Read(json, 0);
-                    if (entry) {
-                      base::Value decorated =
-                          Decorate(frame, std::move(*entry));
-                      if (!decorated.is_none()) {
-                        result = base::WriteJson(decorated).value_or("null");
-                      }
-                    }
-                    break;
-                  }
-                }
-                std::move(done).Run(result);
-              },
-              contents->GetWeakPtr(), std::move(done), std::move(agent)),
-          std::string(), std::string("null")));
+  // The main frame's widget, then each frame that hit-tests in a widget of
+  // its own (an iframe of another site, in another process), the innermost
+  // first: the main frame's hit test stops at such an iframe.
+  std::vector<std::pair<int, content::GlobalRenderFrameHostId>> roots;
+  for (content::RenderFrameHost* frame : FramesOf(contents)) {
+    content::RenderFrameHost* parent = frame->GetParent();
+    if (!parent ||
+        frame->GetRenderWidgetHost() == parent->GetRenderWidgetHost()) {
+      continue;
+    }
+    int depth = 0;
+    for (content::RenderFrameHost* up = parent; up; up = up->GetParent()) {
+      ++depth;
+    }
+    roots.emplace_back(-depth, frame->GetGlobalId());
+  }
+  std::stable_sort(roots.begin(), roots.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<content::GlobalRenderFrameHostId> order = {main->GetGlobalId()};
+  for (const auto& [depth, id] : roots) {
+    order.push_back(id);
+  }
+  AskElementAt(contents->GetWeakPtr(), gfx::PointF(x, y), std::move(order), 0,
+               std::move(done));
 }
 
 zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
@@ -416,8 +491,10 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
       base::Unretained(capture)));
   capture->writer = base::SequenceBound<CaptureWriter>(
       base::ThreadPool::CreateSequencedTaskRunner(
+          // A capture still running when the engine quits does not hold
+          // it up, and is not written (media.h).
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
-           base::TaskShutdownBehavior::BLOCK_SHUTDOWN}),
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
       file, std::move(options), std::move(receiver), std::move(report));
   capture->agent = AgentOf(frame);
   (*capture->agent)
@@ -430,6 +507,14 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
                       },
                       base::Unretained(capture)),
                   std::string("the frame went away"), std::string("null")));
+  capture->start_timeout.Start(
+      FROM_HERE, base::Seconds(10),
+      base::BindOnce(
+          [](zebkit_media_capture* capture) {
+            capture->OnStarted("the page did not answer the capture's start",
+                               "null");
+          },
+          base::Unretained(capture)));
   return capture;
 }
 
@@ -540,7 +625,8 @@ struct CdpCapture {
   // Null once it is done; its result stays for Zebkit.mediaCaptureStatus.
   raw_ptr<zebkit_media_capture> capture;
   std::string result;
-  // Gone when its client detached: SendToDevToolsClient() checks.
+  // The session that started it, the only one that reaches it; null once
+  // it detached (OnMediaClientDetached()).
   raw_ptr<content::DevToolsAgentHostClientChannel, DanglingUntriaged> channel;
 };
 
@@ -603,8 +689,13 @@ void OnCdpDone(zebkit_media_capture* capture, const char* json, void* data) {
   SendCaptureEvent(id, "Zebkit.mediaCaptureDone", "result", json);
   auto it = CdpCaptures().find(id);
   if (it != CdpCaptures().end()) {
-    it->second.capture = nullptr;
-    it->second.result = json ? json : "{}";
+    if (!it->second.channel) {
+      // Its session is gone: nobody can ask for the result.
+      CdpCaptures().erase(it);
+    } else {
+      it->second.capture = nullptr;
+      it->second.result = json ? json : "{}";
+    }
   }
   // Clients that poll read the last ones.
   while (CdpCaptures().size() > 64) {
@@ -632,17 +723,14 @@ void HandleMediaCommand(content::DevToolsAgentHostClientChannel* channel,
   const base::DictValue empty;
   const base::DictValue& params =
       params_value.is_dict() ? params_value.GetDict() : empty;
-  // A capture is reached from any session, the browser's too: its page
-  // may be gone.
+  // A capture is the session's that started it.
   if (method == "Zebkit.mediaCaptureStop" ||
       method == "Zebkit.mediaCaptureStatus") {
     auto it = CdpCaptures().find(params.FindInt("captureId").value_or(0));
-    if (it == CdpCaptures().end()) {
+    if (it == CdpCaptures().end() || it->second.channel != channel) {
       SendError(channel, id, -32000, "no such capture");
       return;
     }
-    // Its events now go to whoever asked last.
-    it->second.channel = channel;
     base::DictValue result;
     if (!it->second.capture) {
       result.Set("status", Parsed(it->second.result));
@@ -711,6 +799,23 @@ void HandleMediaCommand(content::DevToolsAgentHostClientChannel* channel,
   }
   SendError(channel, id, -32601,
             std::string("'") + std::string(method) + "' wasn't found");
+}
+
+void OnMediaClientDetached(content::DevToolsAgentHostClientChannel* channel) {
+  for (auto it = CdpCaptures().begin(); it != CdpCaptures().end();) {
+    if (it->second.channel != channel) {
+      ++it;
+      continue;
+    }
+    if (!it->second.capture) {
+      it = CdpCaptures().erase(it);
+      continue;
+    }
+    // Stopped: its files are written, and the entry goes when it is done.
+    it->second.channel = nullptr;
+    zebkit_media_capture_stop(it->second.capture);
+    ++it;
+  }
 }
 
 }  // namespace zebkit

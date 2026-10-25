@@ -16,8 +16,11 @@ SourceBufferStream's ranges from the keyframe at or before `from` on (or
 all of them), then what it demuxes or what is appended. Other demuxers do
 nothing. DemuxerManager gives its demuxer to the player.
 
-FFmpegDemuxer keeps the video its decoders took since the last keyframe
-(up to 16 MiB), so that a tap starts at the keyframe of what is shown.
+DemuxerTap::KeepForTapsFromNow() says taps may come in the process (the
+embedder looks for media to copy): from then on FFmpegDemuxer keeps the
+video its decoders took since the last keyframe (up to 16 MiB), so that a
+tap starts at the keyframe of what is shown. Until then a demuxer keeps
+nothing for a tap, and costs nothing more.
 
 --- a/media/base/BUILD.gn
 +++ b/media/base/BUILD.gn
@@ -48,11 +51,34 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
    Queue queue_;
 --- a/media/base/demuxer.cc
 +++ b/media/base/demuxer.cc
-@@ -16,4 +16,6 @@
+@@ -4,6 +4,8 @@
+ 
+ #include "media/base/demuxer.h"
+ 
++#include <atomic>
++
+ namespace media {
+ 
+ DemuxerHost::~DemuxerHost() = default;
+@@ -16,4 +18,20 @@
  // Do nothing by default.
  void Demuxer::DisableCanChangeType() {}
  
 +void Demuxer::SetTap(scoped_refptr<DemuxerTap> tap, base::TimeDelta from) {}
++
++namespace {
++std::atomic<bool> g_keep_for_taps{false};
++}  // namespace
++
++// static
++void DemuxerTap::KeepForTapsFromNow() {
++  g_keep_for_taps.store(true, std::memory_order_relaxed);
++}
++
++// static
++bool DemuxerTap::KeepsForTaps() {
++  return g_keep_for_taps.load(std::memory_order_relaxed);
++}
 +
  }  // namespace media
 --- a/media/base/demuxer.h
@@ -80,7 +106,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
  }  // namespace media
 --- /dev/null
 +++ b/media/base/demuxer_tap.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,60 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -125,6 +151,13 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
 +                        base::TimeDelta decode_timestamp) = 0;
 +  // The demuxer stopped: nothing follows.
 +  virtual void OnStopped() = 0;
++
++  // Taps may come in this process (the embedder looks for media to copy):
++  // from now on demuxers keep what a tap would start from that they do not
++  // hold anyway (FFmpegDemuxer: the video its decoders took since the last
++  // keyframe). Until then they keep nothing for a tap. Any thread.
++  static void KeepForTapsFromNow();
++  static bool KeepsForTaps();
 +
 + protected:
 +  friend class base::RefCountedThreadSafe<DemuxerTap>;
@@ -313,7 +346,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
    void DisableDemuxerCanChangeType();
 --- a/media/filters/ffmpeg_demuxer.cc
 +++ b/media/filters/ffmpeg_demuxer.cc
-@@ -619,10 +619,60 @@
+@@ -619,10 +619,62 @@
      duration_ = new_duration;
    }
  
@@ -332,10 +365,12 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
  
 +// The video the decoders took since the last keyframe: a tap starts there,
 +// so that it has a keyframe for what is shown now. Up to kTapHistory
-+// bytes; a longer group of pictures is not kept.
++// bytes; a longer group of pictures is not kept. Only once taps may come
++// (DemuxerTap::KeepsForTaps()): until then players keep nothing.
 +void FFmpegDemuxerStream::KeepForTap(const scoped_refptr<DecoderBuffer>& buffer) {
 +  constexpr size_t kTapHistory = 16 * 1024 * 1024;
-+  if (type_ != VIDEO || buffer->end_of_stream()) {
++  if (type_ != VIDEO || buffer->end_of_stream() ||
++      !DemuxerTap::KeepsForTaps()) {
 +    return;
 +  }
 +  if (buffer->is_key_frame()) {
@@ -374,7 +409,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
  void FFmpegDemuxerStream::SetEndOfStream() {
    DCHECK(task_runner_->RunsTasksInCurrentSequence());
    end_of_stream_ = true;
-@@ -630,6 +680,8 @@
+@@ -630,6 +682,8 @@
  }
  
  void FFmpegDemuxerStream::FlushBuffers(bool preserve_packet_position) {
@@ -383,7 +418,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
    DCHECK(task_runner_->RunsTasksInCurrentSequence());
    DCHECK(preserve_packet_position || !read_cb_)
        << "There should be no pending read";
-@@ -828,6 +880,7 @@
+@@ -828,6 +882,7 @@
             i < std::min(requested_buffer_count_, buffer_queue_.queue_size());
             ++i) {
          output_buffers.emplace_back(buffer_queue_.Pop());
@@ -391,7 +426,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
        }
        DVLOG(3) << __func__ << " Status:kOk, return output_buffers.size = "
                 << output_buffers.size();
-@@ -1001,6 +1054,11 @@
+@@ -1001,6 +1056,11 @@
        stream->Stop();
    }
  
@@ -403,7 +438,7 @@ FFmpegDemuxer keeps the video its decoders took since the last keyframe
    data_source_ = nullptr;
  
    // Invalidate WeakPtrs on |task_runner_|, destruction may happen on another
-@@ -1013,6 +1071,31 @@
+@@ -1013,6 +1073,31 @@
  
  void FFmpegDemuxer::StartWaitingForSeek(base::TimeDelta seek_time) {}
  

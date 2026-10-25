@@ -6,6 +6,8 @@
 #
 #   clip.mp4         H.264 (with B-frames) and AAC, for <video src>
 #   clip.webm        VP9 and Opus, for <video src>
+#   clip-video.webm  its video alone, appended through Media Source
+#                    Extensions after the DASH stream's (a codec change)
 #   tone.webm        Opus alone, for <audio src>
 #   dash/            the MP4 as a DASH stream: an init segment and 1 s
 #                    segments for video and for audio, which mse.html
@@ -21,6 +23,7 @@ ffmpeg -y -v error "${src[@]}" -c:v libx264 -preset veryfast -profile:v high -bf
     -c:a aac -b:a 48k -ac 2 -movflags +faststart clip.mp4
 ffmpeg -y -v error "${src[@]}" -c:v libvpx-vp9 -b:v 120k -g 24 -keyint_min 24 -deadline realtime \
     -cpu-used 8 -c:a libopus -b:a 48k -ac 2 clip.webm
+ffmpeg -y -v error -i clip.webm -map 0:v -c copy clip-video.webm
 ffmpeg -y -v error -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=8" \
     -c:a libopus -b:a 32k tone.webm
 rm -rf dash cenc

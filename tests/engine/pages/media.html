@@ -110,6 +110,51 @@ async function encrypted() {
   return state.appended;
 }
 
+// A codec change in one SourceBuffer, as an adaptive player switching
+// rendition: the DASH stream's H.264 video, then (switchCodec()) the WebM's
+// VP9 after it, from 8 s.
+async function switched() {
+  const video = make("video");
+  source = new MediaSource();
+  video.src = URL.createObjectURL(source);
+  await new Promise((resolve) => source.addEventListener("sourceopen", resolve, { once: true }));
+  buffers = [source.addSourceBuffer(dash.reps[0].type)];
+  await appendTo(buffers[0], `${dash.dir}init-0.m4s`);
+  for (let n = 1; n <= dash.reps[0].count; n++) {
+    await appendTo(buffers[0], `${dash.dir}chunk-0-${String(n).padStart(3, "0")}.m4s`);
+  }
+  return state.appended;
+}
+
+async function switchCodec() {
+  buffers[0].changeType('video/webm; codecs="vp9"');
+  buffers[0].timestampOffset = 8;
+  await appendTo(buffers[0], "media/clip-video.webm");
+  source.endOfStream();
+  return state.appended;
+}
+
+// The MP4 in a frame of another site (localhost for 127.0.0.1): a process
+// of its own, beside the player.
+function frame() {
+  reset();
+  state.frameReady = false;
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText = "position:absolute;left:340px;top:0;width:320px;height:200px;border:0";
+  iframe.src = location.href.replace("127.0.0.1", "localhost").split("#")[0] + "#clip";
+  document.getElementById("player").append(iframe);
+  return true;
+}
+addEventListener("message", (event) => {
+  if (event.data === "ready") {
+    state.frameReady = true;
+  }
+});
+if (location.hash === "#clip") {
+  file("video", "media/clip.mp4");
+  media.addEventListener("loadedmetadata", () => parent.postMessage("ready", "*"));
+}
+
 function ready() { return !!media && media.readyState >= 1; }
 function play(rate) {
   media.playbackRate = rate || 1;

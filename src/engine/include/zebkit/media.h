@@ -56,10 +56,20 @@ extern "C" {
 ZEBKIT_API void zebkit_view_media_list(zebkit_view *view, zebkit_result_func func, void *data);
 
 /*
- * The media element at (@x, @y) of the view, in CSS pixels: the element
- * the point hits or is inside of, or else the smallest one whose box holds
- * the point (players draw their controls over the video). Its entry as
- * zebkit_view_media_list() has it, or "null", to @func.
+ * The media element at (@x, @y) of the view, in the view's coordinates
+ * (device-independent pixels, as its input events have them: CSS pixels
+ * times the page's zoom): the element the point hits or is inside of, or
+ * else the smallest one whose box holds the point (players draw their
+ * controls over the video). Frames of other sites (in other processes)
+ * are searched too. Its entry as zebkit_view_media_list() has it, or
+ * "null", to @func.
+ *
+ * The first zebkit_view_media_list() or zebkit_view_media_at() in a page's
+ * process readies its players for captures: from then on they keep the
+ * video since their last keyframe (up to 16 MiB), and a capture of a file
+ * an element loads starts at the keyframe of what is shown. A player that
+ * had shown frames before starts at its next keyframe. Players of a
+ * process never asked keep nothing.
  */
 ZEBKIT_API void zebkit_view_media_at(zebkit_view *view, float x, float y, zebkit_result_func func, void *data);
 
@@ -87,6 +97,18 @@ typedef void (*zebkit_media_capture_func)(zebkit_media_capture *capture, const c
  *   "closeGaps": seconds (1 by default), or false: a gap in what was
  *       captured longer than that (a seek forward) is closed up, so that
  *       the file plays through; the file reports where its gaps were.
+ *   "maxBytes": what the capture holds at most (16 GiB by default), and
+ *   "maxDuration": seconds of the media at most (no limit by default).
+ *       A capture that reaches one ends with an "error" saying so, and
+ *       its files have what it captured until then.
+ *
+ * The capture's packets are kept in "<path>.capture" while it runs, a
+ * file without a name outside Windows that goes when the capture ends,
+ * whatever ends it. @path is replaced if it is there; the other names a
+ * capture makes ("movie-2.mp4", or another extension for the container)
+ * never replace a file: "movie-2 (1).mp4". A capture also ends with an
+ * error when the page gives more than media has (more than 8 tracks, a
+ * track that changes its configuration more than 32 times).
  *
  * Returns NULL with @error (the caller frees it) when the media or the
  * path cannot be used. Anything found later (the element went, the media
@@ -153,6 +175,9 @@ ZEBKIT_API char *zebkit_media_capture_status(zebkit_media_capture *capture);
  * Lets the capture go: its functions are not called any more. A capture
  * still running is stopped, and its files are written as for
  * zebkit_media_capture_stop().
+ *
+ * A capture still running when the engine quits does not hold it up, and
+ * is not written: stop it, and wait for its done function, first.
  */
 ZEBKIT_API void zebkit_media_capture_free(zebkit_media_capture *capture);
 

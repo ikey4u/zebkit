@@ -17,6 +17,8 @@ use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
 thread_local! {
     static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
     static MEDIA_DONE: Cell<bool> = const { Cell::new(false) };
+    // The file a capture wrote, served to a page that plays it back.
+    static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
     static PASSED: Cell<u32> = const { Cell::new(0) };
 }
@@ -170,6 +172,11 @@ fn engine(page_port: u16) {
                 .canonicalize()
                 .unwrap_or_default();
             request.respond_file(&clip, "Content-Type: video/webm");
+        } else if request.url() == "rs://test/played.html" {
+            request.respond(200, "Content-Type: text/html", b"<video src='captured.webm' muted></video>");
+        } else if request.url() == "rs://test/captured.webm" {
+            let captured = CAPTURED.with(|path| path.borrow().clone());
+            request.respond_file(&captured, "Content-Type: video/webm");
         } else if request.url() == "rs://test/index.html" {
             request.respond(
                 200,
@@ -386,9 +393,10 @@ fn media() {
                     "media: the capture is written, as WebM",
                     (done, size),
                 );
-                let _ = std::fs::remove_file(written);
+                // Dropped in its own done function: what runs is kept.
                 held.borrow_mut().take();
-                MEDIA_DONE.with(|done| done.set(true));
+                CAPTURED.with(|path| *path.borrow_mut() = written.into());
+                play_back();
             });
             page.evaluate("document.querySelector('video').playbackRate = 4; document.querySelector('video').play().then(() => true)", |_| {});
             when_true(page, "document.querySelector('video').ended", 400, move |_| {
@@ -396,6 +404,49 @@ fn media() {
                 capture.stop();
             });
         });
+    });
+}
+
+/// The capture, played by the engine: its FFmpeg reads it, and decodes all
+/// of it.
+fn play_back() {
+    let view = View::new(Some("rs://test/played.html"), 320, 240);
+    when_true(view, "document.querySelector('video').readyState >= 1", 200, |view| {
+        let page = view.clone();
+        view.evaluate(
+            "(() => { const v = document.querySelector('video'); return [v.duration, v.videoWidth, v.videoHeight].join(' '); })()",
+            move |result| {
+                let result = result.unwrap_or_default();
+                let numbers: Vec<f64> = result.trim_matches('"').split(' ').filter_map(|n| n.parse().ok()).collect();
+                check(
+                    numbers.len() == 3 && numbers[0] > 7.4 && numbers[0] < 8.6 && numbers[1] == 320.0 && numbers[2] == 180.0,
+                    "media: the engine reads the capture back, 8 s of 320x180",
+                    &result,
+                );
+                page.evaluate("document.querySelector('video').playbackRate = 4; document.querySelector('video').play().then(() => true)", |_| {});
+                when_true(page, "document.querySelector('video').ended", 400, |page| {
+                    let closing = page.clone();
+                    page.evaluate(
+                        "(() => { const v = document.querySelector('video'); \
+                         return [v.getVideoPlaybackQuality().totalVideoFrames, v.webkitAudioDecodedByteCount, !!v.error].join(' '); })()",
+                        move |result| {
+                            let result = result.unwrap_or_default();
+                            let parts: Vec<&str> = result.trim_matches('"').split(' ').collect();
+                            let frames: u32 = parts.first().and_then(|n| n.parse().ok()).unwrap_or(0);
+                            let audio: u64 = parts.get(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+                            check(
+                                frames >= 180 && audio > 0 && parts.get(2) == Some(&"false"),
+                                "media: and plays all of it, video and audio",
+                                &result,
+                            );
+                            let _ = std::fs::remove_file(CAPTURED.with(|path| path.borrow().clone()));
+                            closing.close();
+                            MEDIA_DONE.with(|done| done.set(true));
+                        },
+                    );
+                });
+            },
+        );
     });
 }
 

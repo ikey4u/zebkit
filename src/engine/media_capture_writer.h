@@ -30,6 +30,11 @@ struct CaptureOptions {
   // Gaps longer than this between what was captured (a seek forward) are
   // closed up in the file; zero keeps them.
   base::TimeDelta close_gaps = base::Seconds(1);
+  // The capture ends, with an error and the files of what it has, once it
+  // holds this much, or this much of the media's time; zero: no limit of
+  // time.
+  int64_t max_bytes = int64_t{16} << 30;
+  base::TimeDelta max_duration;
 };
 
 // Parses zebkit_media_capture_start()'s options; false with @error.
@@ -74,6 +79,7 @@ class CaptureWriter : public mojom::MediaCaptureSink {
     int64_t offset;
     uint32_t size;
   };
+  // A track is audio or video from its first configuration on.
   struct Track {
     bool audio = false;
     std::vector<media::AudioDecoderConfig> audio_configs;
@@ -86,6 +92,14 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   // another file, since a track of MP4 or Matroska has one.
   using Part = std::map<uint32_t, int>;
 
+  // The track @id of the kind given, made if it is new; nullptr, the
+  // capture failed, when the renderer goes beyond what a capture has.
+  Track* TrackOf(uint32_t id, bool audio);
+  // The track's configuration @index of its own kind, or nullptr.
+  static const media::AudioDecoderConfig* AudioConfig(const Track& track,
+                                                      int index);
+  static const media::VideoDecoderConfig* VideoConfig(const Track& track,
+                                                      int index);
   void SwitchConfig(uint32_t track, int config);
   void Fail(const std::string& error);
   media::Ranges<base::TimeDelta> Captured() const;
