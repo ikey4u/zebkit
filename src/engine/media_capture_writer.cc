@@ -733,9 +733,17 @@ bool CaptureWriter::WritePart(int part,
     std::vector<Group> kept;
     for (Group& group : output.groups) {
       if (!kept.empty()) {
-        const Group& last = kept.back();
+        Group& last = kept.back();
+        // The same group again, whole where the first was cut short (a
+        // player that suspends and seeks back to where it was).
+        if (group.key_pts == last.key_pts) {
+          if (group.packets.size() > last.packets.size()) {
+            last = std::move(group);
+          }
+          continue;
+        }
         const int64_t slack = track.audio ? 2000 : 1000;
-        if (group.key_pts <= last.key_pts || group.start < last.end - slack) {
+        if (group.key_pts < last.key_pts || group.start < last.end - slack) {
           continue;
         }
       }
