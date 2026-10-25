@@ -274,7 +274,7 @@ camera and microphone capture, and the device APIs.
 
 ### Releases
 
-- The latest engine, 0.0.1-alpha.8 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups), is published for Linux and macOS;
+- The latest engine, 0.0.1-alpha.9 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups, media capture), is published for Linux and macOS;
   the Rust crates download a release only from a repository anyone can
   read, so the repository has to be public for them.
 
