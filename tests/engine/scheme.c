@@ -11,6 +11,9 @@
 
 static int failures, checks;
 static char file_path[1024];
+/* The test file's directory and the directory's name, for a path through "..". */
+static char parent_dir[1024];
+static char parent_name[1100];
 
 static void check(int ok, const char *what, const char *detail) {
     checks++;
@@ -37,6 +40,7 @@ static const char page[] =
     "  results.part = await part.text();\n"
     "  results.range = part.headers.get('Content-Range');\n"
     "  results.missing = (await fetch('asset://files/none.txt')).status;\n"
+    "  results.parent = (await fetch('asset://files/parent.txt')).status;\n"
     "  window.results = results;\n"
     "  document.title = 'done';\n"
     "})().catch(e => { window.results = {error: String(e)}; document.title = 'done'; });\n"
@@ -66,9 +70,14 @@ static const char cors[] = "Access-Control-Allow-Origin: *\r\nAccess-Control-Exp
 
 static void serve_asset(zebkit_request *request, void *data) {
     const char *url = zebkit_request_url(request);
-    if (strstr(url, "numbers.txt"))
+    if (strstr(url, "numbers.txt")) {
         zebkit_request_respond_file(request, file_path, cors);
-    else
+    } else if (strstr(url, "parent.txt")) {
+        /* The same file, reached through "..": refused. */
+        char through_parent[2300];
+        snprintf(through_parent, sizeof(through_parent), "%s/../%s", parent_dir, parent_name);
+        zebkit_request_respond_file(request, through_parent, cors);
+    } else
         zebkit_request_respond_file(request, "/no/such/file", cors);
 }
 
@@ -85,6 +94,7 @@ static void on_result(zebkit_view *v, const char *json, const char *error, void 
     check(HAS("\"status\":206") && HAS("\"part\":\"345\"") && HAS("\"range\":\"bytes 3-5/10\""),
           "zebkit_request_respond_file: a range", NULL);
     check(HAS("\"missing\":404"), "zebkit_request_respond_file: a file that is not there", NULL);
+    check(HAS("\"parent\":404"), "zebkit_request_respond_file: a path with \"..\" is not served", NULL);
     zebkit_quit();
 }
 
@@ -109,6 +119,10 @@ static void ready(void *data) {
 int main(int argc, char **argv) {
     const char *dir = getenv("ZEBKIT_TEST_FILES");
     snprintf(file_path, sizeof(file_path), "%s/numbers.txt", dir ? dir : ".");
+    /* <dir>/../<the directory's own name>/numbers.txt: the same file. */
+    snprintf(parent_dir, sizeof(parent_dir), "%s", dir ? dir : ".");
+    const char *slash = strrchr(parent_dir, '/');
+    snprintf(parent_name, sizeof(parent_name), "%s/numbers.txt", slash ? slash + 1 : parent_dir);
     FILE *file = fopen(file_path, "w");
     if (!file)
         return 1;

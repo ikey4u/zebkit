@@ -463,7 +463,10 @@ ZEBKIT_API void zebkit_request_respond(zebkit_request *request, int status, cons
  * Answers @request with the file at @path, read as it is sent, with the
  * range a Range header asks for (206), as a player seeking in a video
  * asks; 404 when it is not there. Content-Type is taken from the file's
- * extension unless @headers gives one.
+ * extension unless @headers gives one. A path with a ".." component is
+ * answered 404 and not opened: an application that makes @path from the
+ * request's URL keeps the page inside its directory, but should still
+ * check that the path it made is there.
  */
 ZEBKIT_API void zebkit_request_respond_file(zebkit_request *request, const char *path, const char *headers);
 

@@ -261,7 +261,12 @@ scoped_refptr<base::SequencedTaskRunner> AnswerSequence() {
 void SendFile(std::unique_ptr<zebkit_request> request,
               const base::FilePath& path,
               std::string headers) {
-  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+  // A path with "..", as an application gets by joining its directory and
+  // the URL's path (/files/../../etc/passwd), is not served: the file a
+  // page names this way is one the application never meant to give it.
+  base::File file;
+  if (!path.ReferencesParent())
+    file = base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
   const int64_t size = file.IsValid() ? file.GetLength() : -1;
   if (size < 0) {
     std::string body = "not found";
