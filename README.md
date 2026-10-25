@@ -54,7 +54,7 @@ native code, or JavaScript on the engine's own V8.
 | Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
-| Version | `VERSION`: 0.0.1-alpha.7 |
+| Version | `VERSION`: 0.0.1-alpha.8 |
 
 ## Quick start
 
@@ -157,10 +157,10 @@ const hash = await zebkit.crypto.digest('SHA-256', 'abc');
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.7"
+zebkit = "0.0.1-alpha.8"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.7"
+zebkit-build = "0.0.1-alpha.8"
 ```
 
 ```rust
