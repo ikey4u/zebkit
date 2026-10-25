@@ -380,19 +380,14 @@ CaptureWriter::CaptureWriter(
   receiver_.set_disconnect_handler(base::BindOnce(
       &CaptureWriter::Finish, base::Unretained(this),
       std::string("the page went away"), std::string()));
-  spool_path_ = path_.AddExtensionASCII("capture");
   base::CreateDirectory(path_.DirName());
-  // Nothing of it is left behind, whatever happens to the capture or the
-  // engine: Windows deletes it when it is closed, and elsewhere it has no
-  // name once it is open.
-  uint32_t flags = base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_READ |
-                   base::File::FLAG_WRITE;
-#if BUILDFLAG(IS_WIN)
-  flags |= base::File::FLAG_DELETE_ON_CLOSE | base::File::FLAG_WIN_SHARE_DELETE;
-#endif
-  spool_.Initialize(spool_path_, flags);
+  // A new file of its own beside the destination (made exclusively, never
+  // one that is there), with nothing of it left behind whatever happens to
+  // the capture or the engine: elsewhere than on Windows it has no name
+  // once it is open; on Windows it goes when the capture ends.
+  spool_ = base::CreateAndOpenTemporaryFileInDir(path_.DirName(), &spool_path_);
   if (!spool_.IsValid()) {
-    error_ = "cannot write " + spool_path_.AsUTF8Unsafe() + ": " +
+    error_ = "cannot write in " + path_.DirName().AsUTF8Unsafe() + ": " +
              base::File::ErrorToString(spool_.error_details());
     return;
   }
@@ -401,7 +396,19 @@ CaptureWriter::CaptureWriter(
 #endif
 }
 
-CaptureWriter::~CaptureWriter() = default;
+CaptureWriter::~CaptureWriter() {
+  CloseSpool();
+}
+
+void CaptureWriter::CloseSpool() {
+  if (!spool_.IsValid()) {
+    return;
+  }
+  spool_.Close();
+#if BUILDFLAG(IS_WIN)
+  base::DeleteFile(spool_path_);
+#endif
+}
 
 void CaptureWriter::Fail(const std::string& error) {
   if (error_.empty()) {
@@ -730,7 +737,7 @@ void CaptureWriter::Finish(const std::string& reason,
   }
   done.Set("bytes", bytes);
   done.Set("files", std::move(files));
-  spool_.Close();
+  CloseSpool();
   report_.Run(base::WriteJson(done).value_or("{}"), true);
 }
 
@@ -789,13 +796,20 @@ bool CaptureWriter::WritePart(int part,
           if (packet.track != id) {
             continue;
           }
+          // The last stretch that starts at or before it, by halves: the
+          // stretches are sorted and apart.
           const base::TimeDelta t = base::Microseconds(packet.pts);
-          for (size_t r = 0; r < stretch.size(); ++r) {
-            if (t >= stretch.start(r) &&
-                t < stretch.end(r) + base::Milliseconds(500)) {
-              indices.push_back(i);
-              break;
+          size_t low = 0, high = stretch.size();
+          while (low < high) {
+            const size_t middle = low + (high - low) / 2;
+            if (stretch.start(middle) <= t) {
+              low = middle + 1;
+            } else {
+              high = middle;
             }
+          }
+          if (low > 0 && t < stretch.end(low - 1) + base::Milliseconds(500)) {
+            indices.push_back(i);
           }
         }
       }
@@ -917,14 +931,19 @@ bool CaptureWriter::WritePart(int part,
       reach = std::max(reach, spans[i].second);
     }
   }
+  // What the gaps at or before @t add up to: they are in order of time, so
+  // by halves over their sums.
+  std::vector<int64_t> gap_sums(gaps.size() + 1, 0);
+  for (size_t i = 0; i < gaps.size(); ++i) {
+    gap_sums[i + 1] = gap_sums[i] + gaps[i].second;
+  }
   auto shift_at = [&](int64_t t) {
-    int64_t shift = 0;
-    for (const auto& [at, length] : gaps) {
-      if (t >= at) {
-        shift += length;
-      }
-    }
-    return shift;
+    const auto after = std::upper_bound(
+        gaps.begin(), gaps.end(), t,
+        [](int64_t time, const std::pair<int64_t, int64_t>& gap) {
+          return time < gap.first;
+        });
+    return gap_sums[after - gaps.begin()];
   };
 
   // Times in the file: the gaps closed, decode times made where the
@@ -1128,6 +1147,10 @@ bool CaptureWriter::WritePart(int part,
       track_value.Set("codec", media::GetCodecName(video.codec()));
       track_value.Set("width", parameters->width);
       track_value.Set("height", parameters->height);
+    }
+    if (extra.size() > kMaxExtraData) {
+      *error = "a codec's configuration is larger than a capture takes";
+      return false;
     }
     if (!extra.empty()) {
       parameters->extradata = static_cast<uint8_t*>(

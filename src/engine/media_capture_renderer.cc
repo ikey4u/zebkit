@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
@@ -52,6 +53,7 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "url/gurl.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/media_capture.mojom.h"
 
 namespace zebkit {
@@ -510,6 +512,15 @@ class Agent : public content::RenderFrameObserver,
 }  // namespace
 
 void InstallMediaCaptureAgent(content::RenderFrame* render_frame) {
+  // zebkit_media_keep_history(): from before the process's first player.
+  static const bool keep = [] {
+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+            kMediaHistorySwitch)) {
+      media::DemuxerTap::KeepForTapsFromNow();
+    }
+    return true;
+  }();
+  (void)keep;
   new Agent(render_frame);
 }
 

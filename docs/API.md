@@ -751,14 +751,20 @@ zebkit_view_media_at(view, 400, 300, at_point, NULL); /* the element under a rig
   track that changes kind or its configuration more than 32 times, and
   times beyond any media's end the capture or are dropped.
 - **Nothing left behind, nothing replaced but the path**: the packets
-  wait in an unnamed file while the capture runs; the names a capture
+  wait in a new file of its own while the capture runs (without a name
+  outside Windows); the names a capture
   makes besides the path (`movie-2.mp4`) take `movie-2 (1).mp4` rather
   than replace a file. A capture running when the engine quits is not
   written, and does not hold it up.
 - **No cost until media is looked for**: players keep the video since
   their last keyframe, for a capture to start at what is shown, only once
   `zebkit_view_media_list()` or `zebkit_view_media_at()` ran in their
-  page's process.
+  page's process. `zebkit_media_keep_history(true)` before
+  `zebkit_main()` (or `--zebkit-media-history`; in Rust
+  `zebkit::media::keep_history(true)` before `zebkit::run`) has them keep
+  it from the start, so that a capture starts at the frame on screen
+  whatever was asked before: up to about 16 MiB for each video stream
+  played, held only while the application turns it on.
 - **Over CDP too**, for any page target (the engine's views or pages a
   client made with `Target.createTarget`), in a domain of zebkit's own:
   `Zebkit.mediaList` → `{media}`, `Zebkit.mediaAt {x, y}` → `{media}`,
@@ -776,8 +782,9 @@ zebkit_view_media_at(view, 400, 300, at_point, NULL); /* the element under a rig
 | `zebkit_view_media_list`, `zebkit_view_media_at` | The page's media elements, in every frame, as JSON; the one at a point |
 | `zebkit_media_capture_start`, `_stop`, `_free` | A capture of what one plays |
 | `zebkit_media_capture_on_progress`, `_on_done`, `_status` | Its state and its files |
+| `zebkit_media_keep_history` | Before `zebkit_main()`: players keep what a capture starts from from the start |
 
-In Rust, `zebkit::media`: `View::media_list`, `View::media_at`,
+In Rust, `zebkit::media`: `keep_history`, `View::media_list`, `View::media_at`,
 `View::media_capture_start` and `MediaCapture` (`on_progress`, `on_done`,
 `stop`, `status`; dropped, it is let go).
 

@@ -73,6 +73,18 @@ ZEBKIT_API void zebkit_view_media_list(zebkit_view *view, zebkit_result_func fun
  */
 ZEBKIT_API void zebkit_view_media_at(zebkit_view *view, float x, float y, zebkit_result_func func, void *data);
 
+/*
+ * Players keep what a capture starts from from the engine's start: the
+ * video since their last keyframe, up to about 16 MiB for each video
+ * stream they play, so that a capture of a file an element loads starts at
+ * the frame on screen even when nothing has listed media yet. Off by
+ * default: then players keep it only once zebkit_view_media_list() or
+ * zebkit_view_media_at() ran in their page's process (see above). Before
+ * zebkit_main(); every renderer learns of it. The same from the command
+ * line: --zebkit-media-history.
+ */
+ZEBKIT_API void zebkit_media_keep_history(bool keep);
+
 /* A capture, from zebkit_media_capture_start() until zebkit_media_capture_free(). */
 typedef struct zebkit_media_capture zebkit_media_capture;
 
@@ -102,9 +114,10 @@ typedef void (*zebkit_media_capture_func)(zebkit_media_capture *capture, const c
  *       A capture that reaches one ends with an "error" saying so, and
  *       its files have what it captured until then.
  *
- * The capture's packets are kept in "<path>.capture" while it runs, a
- * file without a name outside Windows that goes when the capture ends,
- * whatever ends it. @path is replaced if it is there; the other names a
+ * The capture's packets are kept while it runs in a new file of its own
+ * in @path's directory, never one that is there: without a name outside
+ * Windows, so that nothing is left whatever ends the capture; on Windows
+ * it goes when the capture ends. @path is replaced if it is there; the other names a
  * capture makes ("movie-2.mp4", or another extension for the container)
  * never replace a file: "movie-2 (1).mp4". A capture also ends with an
  * error when the page gives more than media has (more than 8 tracks, a

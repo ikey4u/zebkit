@@ -155,6 +155,16 @@ if (location.hash === "#clip") {
   media.addEventListener("loadedmetadata", () => parent.postMessage("ready", "*"));
 }
 
+// The page's thread busy for @seconds, from the next task on: it answers
+// nothing meanwhile (a capture's start among them).
+function block(seconds) {
+  setTimeout(() => {
+    const end = Date.now() + seconds * 1000;
+    while (Date.now() < end) {}
+  }, 0);
+  return true;
+}
+
 function ready() { return !!media && media.readyState >= 1; }
 function play(rate) {
   media.playbackRate = rate || 1;

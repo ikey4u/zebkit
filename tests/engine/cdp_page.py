@@ -11,7 +11,8 @@ would use it, from tools/zebkit-run serving CDP:
   Zebkit.mediaCaptureStatus; a file the element loads and Media Source
   Extensions, each file read back with the engine's FFmpeg (the
   media_probe program ZEBKIT_MEDIA_PROBE names); a capture is its
-  session's alone, and stops when the session detaches.
+  session's alone, and stops when the session detaches, a blocked page's
+  too.
 
     python3 tests/engine/cdp_page.py <zebkit-run> <base URL> <files dir> [engine switches...]
 
@@ -386,6 +387,19 @@ def main():
         except RuntimeError as error:
             check(True, "and is gone with it", error)
         evaluate("media.pause(); true")
+
+        # A capture started while the page's thread is blocked (its start
+        # not answered), by a session that detaches before the start times
+        # out: the engine goes on.
+        blocked = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        media = cdp.call("Zebkit.mediaList", session=blocked)["media"]
+        evaluate("block(12)")
+        cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"],
+                                              "path": os.path.join(files, "cdp-blocked.mp4")}, session=blocked)
+        cdp.call("Target.detachFromTarget", {"sessionId": blocked})
+        time.sleep(14)
+        check(engine.poll() is None and evaluate("1 + 1") == 2,
+              "a blocked page's capture, its session gone before the start times out: the engine goes on")
         try:
             cdp.call("Zebkit.mediaCaptureStart", {"mediaId": "1.2.3"}, session=session)
             check(False, "a start without a path is an error")

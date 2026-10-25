@@ -12,12 +12,21 @@
 #include "base/values.h"
 #include "zebkit/engine/include/zebkit/media.h"
 
+namespace base {
+class CommandLine;
+}  // namespace base
+
 namespace content {
 class DevToolsAgentHostClientChannel;
 class WebContents;
 }  // namespace content
 
 namespace zebkit {
+
+// zebkit_media_keep_history(), for every renderer: they keep what a capture
+// starts from from their start (media_capture_renderer.cc).
+inline constexpr char kMediaHistorySwitch[] = "zebkit-media-history";
+void AppendMediaSwitch(base::CommandLine* command_line);
 
 using MediaJsonCallback = base::OnceCallback<void(std::string json)>;
 

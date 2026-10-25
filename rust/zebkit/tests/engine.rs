@@ -542,6 +542,9 @@ fn main() {
         std::process::exit(1);
     });
     check(scheme::register("rs", scheme::STANDARD | scheme::FETCH), "scheme::register", ());
+    // The media test lists the page's video once it has shown its first
+    // frames: kept from the start, its capture still begins there.
+    zebkit::media::keep_history(true);
     let code = zebkit::run_with_args(args, move || engine(port));
     let _ = std::fs::remove_dir_all(&profile);
     check(code == 0, "the engine's exit code", code);

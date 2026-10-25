@@ -101,6 +101,8 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   static const media::VideoDecoderConfig* VideoConfig(const Track& track,
                                                       int index);
   void SwitchConfig(uint32_t track, int config);
+  // Closes the spool, and deletes it where it still has a name (Windows).
+  void CloseSpool();
   void Fail(const std::string& error);
   media::Ranges<base::TimeDelta> Captured() const;
   base::DictValue State(const char* state) const;

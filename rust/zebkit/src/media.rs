@@ -31,6 +31,16 @@ use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::rc::Rc;
 
+/// Players keep what a capture starts from from the engine's start (the
+/// video since their last keyframe, up to about 16 MiB for each video
+/// stream), so that a capture starts at the frame on screen even when
+/// nothing has listed media yet. Off by default: then only once
+/// [`View::media_list`] or [`View::media_at`] ran in the page's process.
+/// Before [`crate::run`]; the same as `--zebkit-media-history`.
+pub fn keep_history(keep: bool) {
+    unsafe { sys::zebkit_media_keep_history(keep) }
+}
+
 impl View {
     /// The `<audio>` and `<video>` elements in every frame of the page, as a
     /// JSON array: `id` (for [`View::media_capture_start`]), `element`,

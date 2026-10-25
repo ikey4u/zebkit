@@ -15,7 +15,14 @@
  * - a codec change through Media Source Extensions (H.264, then VP9): two
  *   files, the second beside one of that name already there, kept;
  * - a capture that reaches its maxDuration;
+ * - captures started while the page's thread is blocked (the start is not
+ *   answered): one stopped, which ends when its start times out, one let
+ *   go at once; the engine goes on;
  * - encrypted media (CENC) refused, and ids that are not media.
+ *
+ * With ZEBKIT_TEST_HISTORY=1, zebkit_media_keep_history() instead, in an
+ * engine of its own: a video that plays before anything lists media is
+ * captured from its first frame.
  *
  *   ZEBKIT_TEST_BASE   http://127.0.0.1:<port>, serving tests/engine/pages
  *   ZEBKIT_TEST_FILES  a directory for the files written
@@ -523,6 +530,33 @@ static void s_limit_check(void) {
     evaluate("media.pause(); true");
 }
 
+/* The page's thread blocked: the starts are not answered for 12 s, past
+ * their 10 s timeout. */
+static zebkit_media_capture *freed;
+static void s_blocked(void) { evaluate("block(12)"); }
+static void s_blocked_start(void) {
+    start_capture("blocked.mp4", NULL);
+    char *error = NULL;
+    freed = zebkit_media_capture_start(view, media_id, capture_path, NULL, &error);
+    check(freed != NULL, "another capture starts", "%s", error ? error : "");
+    zebkit_free(error);
+    /* Stopped, and let go, before the renderer answers. */
+    if (capture)
+        zebkit_media_capture_stop(capture);
+    if (freed)
+        zebkit_media_capture_free(freed);
+    wait_done(20000);
+}
+static void s_blocked_check(void) {
+    char error[256] = "";
+    string(done_json, "error", error, sizeof(error));
+    check(strstr(error, "did not answer") != NULL, "a capture whose start is not answered ends when it times out",
+          "%s", done_json);
+    /* Past the page's answers to both, late. */
+    zebkit_post_delayed_task(run_step, NULL, 3000);
+}
+static void s_blocked_alive(void) { wait_script("1 + 1 === 2", "true", 10000, "the engine goes on"); }
+
 /* Encrypted media. */
 static void s_cenc(void) { evaluate("encrypted()"); }
 static void s_cenc_wait(void) { wait_script("state.appended >= 1", "true", 10000, "the encrypted video is appended"); }
@@ -539,6 +573,35 @@ static void s_cenc_check(void) {
     check(pairs(done_json, "files") == 0 || strstr(done_json, "\"files\":[]"), "and writes nothing", NULL);
     next(0);
 }
+
+/* zebkit_media_keep_history(): nothing listed before the video plays. */
+static void s_history(void) { evaluate("file('video', 'media/clip.mp4')"); }
+static void s_history_ready(void) { wait_script("ready()", "true", 10000, "the MP4 loads, nothing listed"); }
+static void s_history_play(void) { evaluate("play(1)"); }
+/* Past its first frames, before its second keyframe (1 s). */
+static void s_history_wait(void) { wait_script("time() > 0.3", "true", 10000, "it plays for a while"); }
+static void s_history_start(void) {
+    start_capture("history.mp4", NULL);
+    evaluate("play(2)");
+}
+static void s_history_end(void) { wait_script("state.ended", "true", 30000, "and to its end"); }
+static void s_history_check(void) {
+    char error[256] = "", path[600] = "";
+    string(done_json, "error", error, sizeof(error));
+    check(!*error, "captured after it began to play", "no error: %s", error);
+    probe_t p = first_file(path, sizeof(path));
+    const char *files_at = strstr(done_json, "\"files\":[");
+    check(files_at && number(files_at, "start", 9) < 0.1 && p.video_frames >= 185,
+          "its video from its first frame, the keyframe of what was on screen", "start %.3f s, %d frames",
+          files_at ? number(files_at, "start", 9) : -1, p.video_frames);
+    /* The audio from the playhead: players keep no audio for a capture. */
+    check(p.ok && p.streams == 2 && p.audio == AV_CODEC_ID_AAC && p.audio_frames >= 300 && p.errors == 0,
+          "and its audio from about where it was", "%d streams, %d audio frames, %d errors", p.streams,
+          p.audio_frames, p.errors);
+    next(0);
+}
+
+static int history;
 
 static void s_bad_ids(void) {
     char *error = NULL;
@@ -573,6 +636,16 @@ static void ready(void *data) {
     view = zebkit_view_new(NULL, 640, 480);
     zebkit_view_on_load(view, on_load, NULL);
 
+    if (history) {
+        step_func only[] = {
+            s_load, s_history, s_history_ready, s_history_play, s_history_wait, list_media, s_history_start,
+            s_history_end, stop_and_wait, s_history_check,
+        };
+        step_count = (int)(sizeof(only) / sizeof(only[0]));
+        memcpy(steps, only, sizeof(only));
+        next(0);
+        return;
+    }
     step_func all[] = {
         /* Listed before anything plays: players keep what a capture
          * starts from from now on. */
@@ -592,6 +665,7 @@ static void ready(void *data) {
         s_switch, s_switch_ready, list_media, s_switch_start, s_switch_appended, s_switch_play, s_switch_wait,
         stop_and_wait, s_switch_check,
         s_limit, s_limit_ready, list_media, s_limit_start, s_limit_done, s_limit_check,
+        list_media, s_blocked, s_blocked_start, s_blocked_check, s_blocked_alive,
         s_cenc, s_cenc_wait, list_media, s_cenc_list, s_cenc_check,
         s_bad_ids,
     };
@@ -601,8 +675,14 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    const char *env = getenv("ZEBKIT_TEST_HISTORY");
+    history = env && *env == '1';
+    if (history)
+        zebkit_media_keep_history(true);
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;
+    if (history)
+        return failures || checks < 9 ? 1 : 0;
     return failures || checks < 85 ? 1 : 0;
 }

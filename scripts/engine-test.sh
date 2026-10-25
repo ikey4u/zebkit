@@ -33,7 +33,9 @@
 #   Media Source Extensions; a seek; audio alone; the element under the
 #   player's controls; a codec change, in two files, without replacing a
 #   file there; maxDuration; encrypted media refused. Each file read back
-#   with the engine's FFmpeg (media_probe.h), every frame decoded.
+#   with the engine's FFmpeg (media_probe.h), every frame decoded. Again
+#   with zebkit_media_keep_history(): a video played before anything
+#   listed media, captured from its first frame.
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
@@ -174,6 +176,12 @@ mkdir -p "$work/media-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/media-files" \
     run media "$work/media" "${engine_switches[@]}" --autoplay-policy=no-user-gesture-required
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media.log" || { echo "FAIL the media test did not finish"; failed=1; }
+# zebkit_media_keep_history(), in an engine of its own.
+mkdir -p "$work/media-history-files"
+ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/media-history-files" \
+    run media-history "$work/media" "${engine_switches[@]/profile/profile-history}" \
+    --autoplay-policy=no-user-gesture-required
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "FAIL the media history test did not finish"; failed=1; }
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 

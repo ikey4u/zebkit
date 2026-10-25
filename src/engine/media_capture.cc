@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
@@ -218,6 +219,12 @@ struct zebkit_media_capture {
   base::OneShotTimer start_timeout;
   base::SequenceBound<zebkit::CaptureWriter> writer;
 
+  // The start's answer and its timeout reach the capture only while it is
+  // there: the agent, which holds the answer, goes after it may have been
+  // freed (DeleteSoon()), and runs the answer as it goes. Last, so that
+  // nothing reaches the capture while it is taken apart.
+  base::WeakPtrFactory<zebkit_media_capture> weak_factory{this};
+
   void Stop(const std::string& reason, const std::string& error) {
     if (state == State::kDone || state == State::kFinishing) {
       return;
@@ -324,6 +331,8 @@ namespace zebkit {
 
 namespace {
 
+bool g_keep_history = false;
+
 // Asks frame @next of @order for the media element at @point (the view's
 // coordinates), and the frames after it while none has one.
 void AskElementAt(base::WeakPtr<content::WebContents> contents,
@@ -397,6 +406,13 @@ void AskElementAt(base::WeakPtr<content::WebContents> contents,
 }
 
 }  // namespace
+
+void AppendMediaSwitch(base::CommandLine* command_line) {
+  if (g_keep_history ||
+      base::CommandLine::ForCurrentProcess()->HasSwitch(kMediaHistorySwitch)) {
+    command_line->AppendSwitch(kMediaHistorySwitch);
+  }
+}
 
 void ListMedia(content::WebContents* contents, MediaJsonCallback done) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -500,27 +516,25 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
   (*capture->agent)
       ->Start(element, include_buffered, std::move(sink),
               mojo::WrapCallbackWithDefaultInvokeIfNotRun(
-                  base::BindOnce(
-                      [](zebkit_media_capture* capture,
-                         const std::string& error, const std::string& json) {
-                        capture->OnStarted(error, json);
-                      },
-                      base::Unretained(capture)),
+                  base::BindOnce(&zebkit_media_capture::OnStarted,
+                                 capture->weak_factory.GetWeakPtr()),
                   std::string("the frame went away"), std::string("null")));
   capture->start_timeout.Start(
       FROM_HERE, base::Seconds(10),
-      base::BindOnce(
-          [](zebkit_media_capture* capture) {
-            capture->OnStarted("the page did not answer the capture's start",
-                               "null");
-          },
-          base::Unretained(capture)));
+      base::BindOnce(&zebkit_media_capture::OnStarted,
+                     capture->weak_factory.GetWeakPtr(),
+                     std::string("the page did not answer the capture's start"),
+                     std::string("null")));
   return capture;
 }
 
 }  // namespace zebkit
 
 extern "C" {
+
+void zebkit_media_keep_history(bool keep) {
+  zebkit::g_keep_history = keep;
+}
 
 void zebkit_view_media_list(zebkit_view* view,
                             zebkit_result_func func,

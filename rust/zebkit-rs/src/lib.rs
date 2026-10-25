@@ -780,6 +780,7 @@ pub type zebkit_media_capture_func =
     unsafe extern "C" fn(capture: *mut zebkit_media_capture, json: *const c_char, data: *mut c_void);
 
 extern "C" {
+    pub fn zebkit_media_keep_history(keep: bool);
     pub fn zebkit_view_media_list(view: *mut zebkit_view, func: Option<zebkit_result_func>, data: *mut c_void);
     pub fn zebkit_view_media_at(
         view: *mut zebkit_view,
