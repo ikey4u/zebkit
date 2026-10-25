@@ -5,7 +5,10 @@ would use it, from tools/zebkit-run serving CDP:
   by it (Page.handleJavaScriptDialog), Page.javascriptDialogClosed;
 - Page.printToPDF, as base64 and as a stream read with IO.read;
 - Input.dispatchDragEvent dropping a file; Input.setInterceptDrags and
-  Input.dragIntercepted; a drag in the page from Input.dispatchMouseEvent.
+  Input.dragIntercepted; a drag in the page from Input.dispatchMouseEvent;
+- what a page plays, saved as it plays (<zebkit/media.h>): Zebkit.mediaList,
+  Zebkit.mediaAt, Zebkit.mediaCaptureStart, its progress and done events,
+  Zebkit.mediaCaptureStatus from the browser's session.
 
     python3 tests/engine/cdp_page.py <zebkit-run> <base URL> <files dir> [engine switches...]
 
@@ -271,6 +274,41 @@ def main():
         time.sleep(0.3)
         check(evaluate("order()") == "abcde", "a drag in the page from Input.dispatchMouseEvent",
               evaluate("order() + ' ' + events.join(' ')"))
+
+        # A page's media, recorded over CDP.
+        navigate(f"{base}/media.html")
+        evaluate("file('video', 'media/clip.mp4')")
+        for _ in range(100):
+            if evaluate("ready()"):
+                break
+            time.sleep(0.1)
+        media = cdp.call("Zebkit.mediaList", session=session)["media"]
+        check(len(media) == 1 and media[0]["codecs"].get("video") == "h264", "Zebkit.mediaList", media)
+        at = cdp.call("Zebkit.mediaAt", {"x": 160, "y": 90}, session=session)["media"]
+        check(at and at["id"] == media[0]["id"], "Zebkit.mediaAt", at)
+        path = os.path.join(files, "cdp-capture.mp4")
+        capture = cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"], "path": path},
+                           session=session)["captureId"]
+        evaluate("play(4)")
+        progress = cdp.event("Zebkit.mediaCaptureProgress", 15)
+        check(progress and progress["params"]["captureId"] == capture, "Zebkit.mediaCaptureProgress",
+              progress and progress["params"]["state"].get("state"))
+        for _ in range(200):
+            if evaluate("state.ended"):
+                break
+            time.sleep(0.1)
+        cdp.call("Zebkit.mediaCaptureStop", {"captureId": capture}, session=session)
+        done = cdp.event("Zebkit.mediaCaptureDone", 30)
+        files_written = done and done["params"]["result"].get("files") or []
+        check(files_written and files_written[0]["path"] == path and os.path.getsize(path) > 100000,
+              "Zebkit.mediaCaptureDone: the file", files_written)
+        status = cdp.call("Zebkit.mediaCaptureStatus", {"captureId": capture})["status"]
+        check(status.get("state") == "done", "Zebkit.mediaCaptureStatus from the browser's session", status.get("state"))
+        try:
+            cdp.call("Zebkit.mediaCaptureStart", {"mediaId": "1.2.3"}, session=session)
+            check(False, "a start without a path is an error")
+        except RuntimeError as error:
+            check(True, "a start without a path is an error", error)
     except Exception as error:  # noqa: BLE001
         check(False, "the CDP session", repr(error))
     finally:

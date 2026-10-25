@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 use zebkit::services::{self, Compression, Digest, ImageFormat, UrlPart};
@@ -15,6 +16,7 @@ use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
 
 thread_local! {
     static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
+    static MEDIA_DONE: Cell<bool> = const { Cell::new(false) };
     static FAILED: Cell<u32> = const { Cell::new(0) };
     static PASSED: Cell<u32> = const { Cell::new(0) };
 }
@@ -160,6 +162,14 @@ fn engine(page_port: u16) {
                   <button style='position:absolute;left:10px;top:10px;width:100px;height:40px' \
                   onclick='document.title = \"clicked\"'>x</button></body>",
             );
+        } else if request.url() == "rs://test/media.html" {
+            request.respond(200, "Content-Type: text/html", b"<video src='clip.webm' muted></video>");
+        } else if request.url() == "rs://test/clip.webm" {
+            let clip = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/engine/pages/media/clip.webm")
+                .canonicalize()
+                .unwrap_or_default();
+            request.respond_file(&clip, "Content-Type: video/webm");
         } else if request.url() == "rs://test/index.html" {
             request.respond(
                 200,
@@ -172,6 +182,7 @@ fn engine(page_port: u16) {
         }
     });
     offscreen();
+    media();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -328,6 +339,66 @@ fn page(view: View) {
     });
 }
 
+/// Evaluates `script` until it is `"true"`, then runs `then`.
+fn when_true(view: View, script: &'static str, tries: u32, then: impl FnOnce(View) + 'static) {
+    let again = view.clone();
+    view.evaluate(script, move |result| {
+        if result.as_deref() == Ok("true") {
+            then(again);
+        } else if tries == 0 {
+            check(false, script, &result);
+            MEDIA_DONE.with(|done| done.set(true));
+        } else {
+            zebkit::after(Duration::from_millis(50), move || when_true(again, script, tries - 1, then));
+        }
+    });
+}
+
+/// <zebkit/media.h>: a WebM the page plays, captured as it plays and
+/// written without being decoded.
+fn media() {
+    let view = View::new(Some("rs://test/media.html"), 320, 240);
+    when_true(view, "document.querySelector('video').readyState >= 1", 200, |view| {
+        let page = view.clone();
+        view.media_list(move |list| {
+            let list = list.unwrap_or_default();
+            check(list.contains(r#""video":"vp9""#) && list.contains(r#""kind":"file""#), "media: the video is listed", &list);
+            let id = list.split(r#""id":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or("").to_string();
+            let path = std::env::temp_dir().join(format!("zebkit-rust-media-{}.webm", std::process::id()));
+            let capture = page.media_capture_start(&id, &path, "{}");
+            check(capture.is_ok(), "media: the capture starts", capture.as_ref().err());
+            let Ok(capture) = capture else {
+                MEDIA_DONE.with(|done| done.set(true));
+                return;
+            };
+            let progress = Rc::new(Cell::new(0));
+            {
+                let progress = progress.clone();
+                capture.on_progress(move |_| progress.set(progress.get() + 1));
+            }
+            let capture = Rc::new(capture);
+            let held = Rc::new(RefCell::new(Some(capture.clone())));
+            capture.on_done(move |done| {
+                let written = done.split(r#""path":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or("");
+                let size = std::fs::metadata(written).map(|m| m.len()).unwrap_or(0);
+                check(
+                    !done.contains(r#""error""#) && written.ends_with(".webm") && size > 100_000 && progress.get() > 0,
+                    "media: the capture is written, as WebM",
+                    (done, size),
+                );
+                let _ = std::fs::remove_file(written);
+                held.borrow_mut().take();
+                MEDIA_DONE.with(|done| done.set(true));
+            });
+            page.evaluate("document.querySelector('video').playbackRate = 4; document.querySelector('video').play().then(() => true)", |_| {});
+            when_true(page, "document.querySelector('video').ended", 400, move |_| {
+                check(capture.status().contains(r#""state":"capturing""#), "media: its status", capture.status());
+                capture.stop();
+            });
+        });
+    });
+}
+
 fn script_and_cdp(view: View) {
     let script = Script::new(&["one", "two"]);
     let script = Rc::new(script);
@@ -369,7 +440,7 @@ fn script_and_cdp(view: View) {
         text
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
-        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) {
+        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }
@@ -410,6 +481,7 @@ fn main() {
         "zebkit-test".to_string(),
         "--headless".to_string(),
         "--no-sandbox".to_string(),
+        "--autoplay-policy=no-user-gesture-required".to_string(),
         format!("--user-data-dir={}", profile.display()),
     ];
     // Ends on its own; a test that hangs is a failure too.

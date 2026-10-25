@@ -1,0 +1,120 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>media</title>
+<style>
+  body { margin: 0; }
+  video, audio { display: block; width: 320px; height: 180px; }
+  #controls { position: absolute; left: 0; top: 140px; width: 320px; height: 40px; }
+</style>
+<body>
+<div id="player"></div>
+<script>
+// The page of tests/engine/media.c: one media element at a time, played
+// from a file (src=) or through Media Source Extensions, as a DASH player
+// would append it.
+let media = null;
+const state = { error: "", ended: false, encrypted: false, appended: 0 };
+
+function reset() {
+  if (media) {
+    media.pause();
+    media.removeAttribute("src");
+    media.load();
+    media.remove();
+  }
+  media = null;
+  state.error = "";
+  state.ended = false;
+  state.encrypted = false;
+  state.appended = 0;
+  document.getElementById("player").textContent = "";
+}
+
+function make(tag) {
+  reset();
+  media = document.createElement(tag);
+  media.muted = true;
+  media.addEventListener("ended", () => { state.ended = true; });
+  media.addEventListener("error", () => { state.error = String(media.error && media.error.message); });
+  media.addEventListener("encrypted", () => { state.encrypted = true; });
+  const player = document.getElementById("player");
+  player.append(media);
+  // Controls drawn over the video, as players do.
+  const controls = document.createElement("div");
+  controls.id = "controls";
+  player.append(controls);
+  return media;
+}
+
+// A file the element loads itself.
+function file(tag, src) {
+  make(tag).src = src;
+  return true;
+}
+
+// DASH through Media Source Extensions: each representation's init segment,
+// then `first` of its segments; more() appends the rest.
+const dash = {
+  dir: "media/dash/",
+  reps: [
+    { id: 0, type: 'video/mp4; codecs="avc1.64000c"', count: 8 },
+    { id: 1, type: 'audio/mp4; codecs="mp4a.40.2"', count: 9 },
+  ],
+};
+let buffers = [];
+let source = null;
+
+function appendTo(buffer, url) {
+  return fetch(url).then((r) => r.arrayBuffer()).then((data) => new Promise((resolve, reject) => {
+    buffer.addEventListener("updateend", () => { state.appended++; resolve(); }, { once: true });
+    buffer.addEventListener("error", reject, { once: true });
+    buffer.appendBuffer(data);
+  }));
+}
+
+async function appendRange(from, to) {
+  await Promise.all(dash.reps.map(async (rep, i) => {
+    for (let n = from; n <= Math.min(to, rep.count); n++) {
+      const name = String(n).padStart(3, "0");
+      await appendTo(buffers[i], `${dash.dir}chunk-${rep.id}-${name}.m4s`);
+    }
+  }));
+}
+
+async function mse(first) {
+  const video = make("video");
+  source = new MediaSource();
+  video.src = URL.createObjectURL(source);
+  await new Promise((resolve) => source.addEventListener("sourceopen", resolve, { once: true }));
+  buffers = dash.reps.map((rep) => source.addSourceBuffer(rep.type));
+  await Promise.all(dash.reps.map((rep, i) => appendTo(buffers[i], `${dash.dir}init-${rep.id}.m4s`)));
+  dash.first = first;
+  await appendRange(1, first);
+  return state.appended;
+}
+
+async function more() {
+  await appendRange(dash.first + 1, 99);
+  source.endOfStream();
+  return state.appended;
+}
+
+// The encrypted video, appended whole; it does not play without a key.
+async function encrypted() {
+  const video = make("video");
+  source = new MediaSource();
+  video.src = URL.createObjectURL(source);
+  await new Promise((resolve) => source.addEventListener("sourceopen", resolve, { once: true }));
+  const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.64000c"');
+  await appendTo(buffer, "media/cenc/video.mp4");
+  return state.appended;
+}
+
+function ready() { return !!media && media.readyState >= 1; }
+function play(rate) {
+  media.playbackRate = rate || 1;
+  return media.play().then(() => true, (e) => String(e));
+}
+function time() { return media ? media.currentTime : -1; }
+function seek(t) { media.currentTime = t; return true; }
+</script>

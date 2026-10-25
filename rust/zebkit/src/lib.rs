@@ -46,6 +46,7 @@
 pub mod app;
 pub mod cdp;
 mod engine;
+pub mod media;
 pub mod offscreen;
 pub mod page;
 pub mod pdf;
@@ -57,6 +58,7 @@ mod view;
 
 pub use engine::{after, engine_version, is_headless, post, post_after, quit, run, run_with_args, version};
 pub use script::Script;
+pub use media::MediaCapture;
 pub use view::{Allow, Call, LoadEvent, View};
 
 /// The raw bindings this crate is built on.

@@ -769,6 +769,47 @@ extern "C" {
     pub fn zebkit_view_drag_source_end(view: *mut zebkit_view, x: f32, y: f32, operation: c_uint);
 }
 
+// <zebkit/media.h>: the media a page plays, saved as it plays.
+
+#[repr(C)]
+pub struct zebkit_media_capture {
+    _private: [u8; 0],
+}
+
+pub type zebkit_media_capture_func =
+    unsafe extern "C" fn(capture: *mut zebkit_media_capture, json: *const c_char, data: *mut c_void);
+
+extern "C" {
+    pub fn zebkit_view_media_list(view: *mut zebkit_view, func: Option<zebkit_result_func>, data: *mut c_void);
+    pub fn zebkit_view_media_at(
+        view: *mut zebkit_view,
+        x: f32,
+        y: f32,
+        func: Option<zebkit_result_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_media_capture_start(
+        view: *mut zebkit_view,
+        media_id: *const c_char,
+        path: *const c_char,
+        options_json: *const c_char,
+        error: *mut *mut c_char,
+    ) -> *mut zebkit_media_capture;
+    pub fn zebkit_media_capture_on_progress(
+        capture: *mut zebkit_media_capture,
+        func: Option<zebkit_media_capture_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_media_capture_on_done(
+        capture: *mut zebkit_media_capture,
+        func: Option<zebkit_media_capture_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_media_capture_stop(capture: *mut zebkit_media_capture);
+    pub fn zebkit_media_capture_status(capture: *mut zebkit_media_capture) -> *mut c_char;
+    pub fn zebkit_media_capture_free(capture: *mut zebkit_media_capture);
+}
+
 /// The FFmpeg inside the engine. The engine exports each of its functions
 /// as `zebkit_vendor_ffmpeg_<name>`; here they have FFmpeg's names.
 pub mod ffmpeg {

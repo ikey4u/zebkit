@@ -3,6 +3,7 @@
 //
 // - Page.printToPDF, as headless Chrome serves it (print.cc), its stream
 //   included (transferMode ReturnAsStream, read with IO.read);
+// - Zebkit.media*, a page's media list and captures (media_capture.cc);
 // - which clients are attached to each page, so that a page's dialogs wait
 //   for a CDP client that may answer them (dialog.cc), as in headless
 //   Chrome, rather than being dismissed.
@@ -33,6 +34,7 @@
 #include "third_party/inspector_protocol/crdtp/json.h"
 #include "third_party/inspector_protocol/crdtp/span.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
 
@@ -100,6 +102,23 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
         crdtp::SpanFrom(message), std::string_view(),
         [](int, crdtp::span<uint8_t>, crdtp::span<uint8_t>,
            std::string_view) {});
+    if (dispatchable.ok()) {
+      const std::string_view method(
+          reinterpret_cast<const char*>(dispatchable.Method().data()),
+          dispatchable.Method().size());
+      // Media capture (media_capture.cc).
+      if (IsMediaCommand(method)) {
+        // ConvertCBORToJSON appends to what the string has.
+        std::string params;
+        if (dispatchable.Params().empty() ||
+            !crdtp::json::ConvertCBORToJSON(dispatchable.Params(), &params)
+                 .ok()) {
+          params = "{}";
+        }
+        HandleMediaCommand(channel, dispatchable.CallId(), method, params);
+        return;
+      }
+    }
     if (dispatchable.ok() &&
         crdtp::SpanEquals(crdtp::SpanFrom("Page.printToPDF"),
                           dispatchable.Method())) {
@@ -170,6 +189,14 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
 };
 
 }  // namespace
+
+bool SendToDevToolsClient(content::DevToolsAgentHostClientChannel* channel,
+                          base::DictValue message) {
+  if (!Channels().contains(channel))
+    return false;
+  Reply(channel, std::move(message));
+  return true;
+}
 
 bool HasExternalDevToolsClient(content::WebContents* contents) {
   for (content::DevToolsAgentHostClientChannel* channel : Channels()) {

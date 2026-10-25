@@ -51,6 +51,7 @@ camera and microphone capture, and the device APIs.
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
 | Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
+| Media capture | `<zebkit/media.h>`: what a page's `<audio>` and `<video>` play copied into MP4, WebM or Matroska as it plays, without decoding: files, Media Source Extensions (DASH, HLS players), the engine's HLS; the stream's times, seeks, configuration changes, audio alone, encrypted media refused (`patches/1031`, `1032`; `tests/engine/media.c`) | 2026-10-25 |
 
 ## Next
 
@@ -102,6 +103,23 @@ camera and microphone capture, and the device APIs.
 - **What a window does besides:** drags and drops in and out, the context
   menu (`ShowContextMenu` to the application), touch, accessibility, and
   editing commands on macOS (⌘A, ⌘C) as the system sends them.
+
+### Media capture
+
+- **Elements outside the document**: `new Audio()` that is never
+  inserted, and media elements inside shadow roots, play but are not
+  listed (an element under the point is found in a shadow root, by
+  `zebkit_view_media_at()`). The players could be listed instead of the
+  elements.
+- **One file through a change of resolution.** An adaptive stream that
+  changes quality during a capture goes on in another file, since a track
+  of MP4 or Matroska has one configuration; H.264 and HEVC could stay in
+  one file with their parameter sets in band (`avc3`, `hev1`).
+- **`zebkit_view_media_at()` in frames of other sites**: it hit-tests the
+  main frame's process, so a video in a cross-site frame is found by the
+  list only.
+- **Live streams' wall-clock times** (HLS's program date, DASH's
+  availability start) are not written into the file.
 
 ### Agents
 
