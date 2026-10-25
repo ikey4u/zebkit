@@ -58,6 +58,7 @@
 #include "ui/views/widget/widget.h"
 #include "zebkit/engine/app.h"
 #include "zebkit/engine/call.h"
+#include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
 
@@ -341,6 +342,7 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
   AppendSchemeSwitch(command_line);
+  AppendMediaSwitch(command_line);
 }
 
 std::string AcceptLanguages() {

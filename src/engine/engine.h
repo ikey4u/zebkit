@@ -75,6 +75,9 @@ void ApplyLanguages(content::WebContents* contents);
 // window.chrome in the frame's pages (chrome_object.cc).
 void InstallChromeObject(content::RenderFrame* render_frame);
 
+// The frame's media elements for captures (media_capture_renderer.cc).
+void InstallMediaCaptureAgent(content::RenderFrame* render_frame);
+
 class RendererClient : public content::ShellContentRendererClient {
  public:
   RendererClient() : content::ShellContentRendererClient(false) {}

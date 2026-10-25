@@ -675,6 +675,119 @@ In Rust, `zebkit::page` and the `View` methods it adds (`on_dialog`,
 `set_dialog_policy`, `respond_dialog`, `print_to_pdf`, `on_drag_start`,
 `drag_enter`, `drop_data`, ...).
 
+## Media: what a page plays, saved as it plays
+
+`<zebkit/media.h>`: a page's `<audio>` and `<video>` elements, and what
+one of them plays copied into a file while it plays, as an image is
+saved: the encoded audio and video the player's demuxer gives its
+decoders, put into MP4, WebM or Matroska by the engine's FFmpeg without
+decoding or encoding anything. Any view, with a window or off-screen.
+
+```c
+#include <zebkit/media.h>
+
+static void on_progress(zebkit_media_capture *capture, const char *json, void *data) {
+    /* {"state": "capturing", "bytes": ..., "duration": 12.0, "ranges": [[10, 22]], ...} */
+}
+
+static void on_done(zebkit_media_capture *capture, const char *json, void *data) {
+    /* {"reason": "stopped", "files": [{"path": "/home/me/movie.mp4", "format": "mp4",
+     *   "start": 10.0, "duration": 12.0, "gaps": [], "tracks": [...]}], "ranges": [...]} */
+    zebkit_media_capture_free(capture);
+}
+
+static void listed(zebkit_view *view, const char *json, const char *error, void *data) {
+    /* [{"id": "4.12.3", "kind": "mse", "codecs": {"video": "h264", "audio": "aac"}, ...}] */
+    char *problem = NULL;
+    zebkit_media_capture *capture =
+        zebkit_media_capture_start(view, "4.12.3", "/home/me/movie.mp4", NULL, &problem);
+    zebkit_media_capture_on_progress(capture, on_progress, NULL);
+    zebkit_media_capture_on_done(capture, on_done, NULL);
+    /* ... zebkit_media_capture_stop(capture) when the person says so */
+}
+
+zebkit_view_media_list(view, listed, NULL);
+zebkit_view_media_at(view, 400, 300, at_point, NULL); /* the element under a right click */
+```
+
+- **Whatever the page delivers.** The copy is taken where the decoders
+  read (`media::DemuxerTap`, `patches/1031`, `1032`), so it is the same
+  for a file the element loads itself (`src=`, FFmpeg's demuxer), for what
+  a DASH or HLS player script appends through Media Source Extensions
+  (Chromium's `ChunkDemuxer`, the stream's own segments as they are
+  parsed), and for HLS the engine plays itself. `kind` in the list says
+  which: `file`, `mse`, `hls`; `stream` for cameras and WebRTC, which are
+  not demuxed and cannot be captured.
+- **What the player has, from the playhead on.** A capture starts with
+  what the player holds already from the keyframe before the playhead
+  (an MSE player's buffer ahead, FFmpeg's queue), then what it loads while
+  it runs; `"includeBuffered": true` takes what it holds behind the
+  playhead too. It never loads anything itself: the progress and the end
+  report the ranges of the media captured, so that an application can say
+  what was not played.
+- **The stream's times, put in order when it stops.** Packets are kept in
+  a file beside the destination as they come and written when the capture
+  stops: each track in groups from a keyframe to the next, sorted by time,
+  the same time appended twice (an adaptive player's new quality) kept
+  once; a seek forward leaves a gap, closed up in every track at once when
+  it is longer than `closeGaps` (1 s), and reported. Decode times are the
+  stream's, or made from the presentation times as a muxer makes them
+  (FFmpeg's demuxer gives the decoders none).
+- **Without re-encoding.** H.264, HEVC, AV1, VP8, VP9, AAC, Opus, Vorbis,
+  MP3 and FLAC as they are: H.264's and HEVC's parameter sets and AV1's
+  sequence header taken from the stream where MSE has them in band, AAC
+  without the ADTS headers Chromium adds. The container is the
+  options' `format`, else the path's extension if it holds the codecs,
+  else WebM for WebM's codecs, MP4 for MP4's, Matroska for the rest; the
+  extension is made to match. A track whose configuration changes during
+  a capture (another resolution) goes on in another file,
+  `movie-2.mp4`, since a track of a file has one.
+- **Encrypted media is refused**: zebkit has no CDM, and its copy would
+  be of encrypted samples. The list says `"encrypted": true`.
+- **Ends by itself** when the page goes, or the element loads other
+  media; the files are written with what was captured. `maxBytes` (16 GiB
+  by default) and `maxDuration` end it with an error, and the files of
+  what it has. What a page sends is not trusted: more than 8 tracks, a
+  track that changes kind or its configuration more than 32 times, and
+  times beyond any media's end the capture or are dropped.
+- **Nothing left behind, nothing replaced but the path**: the packets
+  wait in a new file of its own while the capture runs (without a name
+  outside Windows); the names a capture
+  makes besides the path (`movie-2.mp4`) take `movie-2 (1).mp4` rather
+  than replace a file. A capture running when the engine quits is not
+  written, and does not hold it up.
+- **No cost until media is looked for**: players keep the video since
+  their last keyframe, for a capture to start at what is shown, only once
+  `zebkit_view_media_list()` or `zebkit_view_media_at()` ran in their
+  page's process. `zebkit_media_keep_history(true)` before
+  `zebkit_main()` (or `--zebkit-media-history`; in Rust
+  `zebkit::media::keep_history(true)` before `zebkit::run`) has them keep
+  it from the start, so that a capture starts at the frame on screen
+  whatever was asked before: up to about 16 MiB for each video stream
+  played, held only while the application turns it on.
+- **Over CDP too**, for any page target (the engine's views or pages a
+  client made with `Target.createTarget`), in a domain of zebkit's own:
+  `Zebkit.mediaList` → `{media}`, `Zebkit.mediaAt {x, y}` → `{media}`,
+  `Zebkit.mediaCaptureStart {mediaId, path, options}` → `{captureId}`,
+  `Zebkit.mediaCaptureStop {captureId}`, `Zebkit.mediaCaptureStatus
+  {captureId}` → `{status}`, with the events `Zebkit.mediaCaptureProgress
+  {captureId, state}` and `Zebkit.mediaCaptureDone {captureId, result}`
+  (the JSON of the C API). A capture is the session's that started it:
+  only it stops it and reads its status, and its captures stop (their
+  files written) when it detaches. `Zebkit.mediaAt`'s point is in the
+  view's coordinates, as `Input.dispatchMouseEvent`'s.
+
+| Functions | What |
+|---|---|
+| `zebkit_view_media_list`, `zebkit_view_media_at` | The page's media elements, in every frame, as JSON; the one at a point |
+| `zebkit_media_capture_start`, `_stop`, `_free` | A capture of what one plays |
+| `zebkit_media_capture_on_progress`, `_on_done`, `_status` | Its state and its files |
+| `zebkit_media_keep_history` | Before `zebkit_main()`: players keep what a capture starts from from the start |
+
+In Rust, `zebkit::media`: `keep_history`, `View::media_list`, `View::media_at`,
+`View::media_capture_start` and `MediaCapture` (`on_progress`, `on_done`,
+`stop`, `status`; dropped, it is let go).
+
 ## Loading the library
 
 An application is linked with `libzebkit.so.1`, or loads it with `dlopen()`

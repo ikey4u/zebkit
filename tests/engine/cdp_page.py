@@ -5,7 +5,14 @@ would use it, from tools/zebkit-run serving CDP:
   by it (Page.handleJavaScriptDialog), Page.javascriptDialogClosed;
 - Page.printToPDF, as base64 and as a stream read with IO.read;
 - Input.dispatchDragEvent dropping a file; Input.setInterceptDrags and
-  Input.dragIntercepted; a drag in the page from Input.dispatchMouseEvent.
+  Input.dragIntercepted; a drag in the page from Input.dispatchMouseEvent;
+- what a page plays, saved as it plays (<zebkit/media.h>): Zebkit.mediaList,
+  Zebkit.mediaAt, Zebkit.mediaCaptureStart, its progress and done events,
+  Zebkit.mediaCaptureStatus; a file the element loads and Media Source
+  Extensions, each file read back with the engine's FFmpeg (the
+  media_probe program ZEBKIT_MEDIA_PROBE names); a capture is its
+  session's alone, and stops when the session detaches, a blocked page's
+  too.
 
     python3 tests/engine/cdp_page.py <zebkit-run> <base URL> <files dir> [engine switches...]
 
@@ -271,6 +278,133 @@ def main():
         time.sleep(0.3)
         check(evaluate("order()") == "abcde", "a drag in the page from Input.dispatchMouseEvent",
               evaluate("order() + ' ' + events.join(' ')"))
+
+        # A page's media, recorded over CDP, each file read back with the
+        # engine's FFmpeg (media_probe).
+        def probe(path):
+            tool = os.environ.get("ZEBKIT_MEDIA_PROBE")
+            if not tool:
+                return {"ok": os.path.getsize(path) > 100000, "unprobed": True}
+            result = subprocess.run([tool, path], capture_output=True, text=True, timeout=60)
+            try:
+                return json.loads(result.stdout)
+            except ValueError:
+                return {"ok": False, "output": result.stdout + result.stderr}
+
+        def whole_clip(p):
+            return p.get("unprobed") or (
+                p.get("ok") and p.get("streams") == 2 and p.get("video") == "h264" and p.get("audio") == "aac"
+                and 7.4 < p.get("duration", 0) < 8.6 and p.get("videoFrames", 0) >= 185
+                and p.get("audioFrames", 0) >= 350 and p.get("errors") == 0)
+
+        def wait(expression, tries=200):
+            for _ in range(tries):
+                if evaluate(expression):
+                    return True
+                time.sleep(0.1)
+            return False
+
+        def record(name, during, options=None):
+            path = os.path.join(files, name)
+            media = cdp.call("Zebkit.mediaList", session=session)["media"]
+            params = {"mediaId": media[0]["id"], "path": path}
+            if options:
+                params["options"] = options
+            capture = cdp.call("Zebkit.mediaCaptureStart", params, session=session)["captureId"]
+            during()
+            evaluate("play(4)")
+            ended = wait("state.ended")
+            cdp.call("Zebkit.mediaCaptureStop", {"captureId": capture}, session=session)
+            done = cdp.event("Zebkit.mediaCaptureDone", 30)
+            return media, capture, path, ended, done
+
+        navigate(f"{base}/media.html")
+        # Looked for before anything plays: the page's players keep what a
+        # capture starts from from now on.
+        check(cdp.call("Zebkit.mediaList", session=session)["media"] == [], "Zebkit.mediaList: none yet")
+        evaluate("file('video', 'media/clip.mp4')")
+        wait("ready()", 100)
+        media = cdp.call("Zebkit.mediaList", session=session)["media"]
+        check(len(media) == 1 and media[0]["codecs"].get("video") == "h264", "Zebkit.mediaList", media)
+        at = cdp.call("Zebkit.mediaAt", {"x": 160, "y": 90}, session=session)["media"]
+        check(at and at["id"] == media[0]["id"], "Zebkit.mediaAt", at)
+        path = os.path.join(files, "cdp-capture.mp4")
+        capture = cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"], "path": path},
+                           session=session)["captureId"]
+        evaluate("play(4)")
+        progress = cdp.event("Zebkit.mediaCaptureProgress", 15)
+        check(progress and progress["params"]["captureId"] == capture, "Zebkit.mediaCaptureProgress",
+              progress and progress["params"]["state"].get("state"))
+        wait("state.ended")
+        cdp.call("Zebkit.mediaCaptureStop", {"captureId": capture}, session=session)
+        done = cdp.event("Zebkit.mediaCaptureDone", 30)
+        files_written = done and done["params"]["result"].get("files") or []
+        written = files_written and files_written[0]["path"] == path and probe(path)
+        check(written and whole_clip(written), "Zebkit.mediaCaptureDone: the file, all of the clip", written)
+        status = cdp.call("Zebkit.mediaCaptureStatus", {"captureId": capture}, session=session)["status"]
+        check(status.get("state") == "done", "Zebkit.mediaCaptureStatus", status.get("state"))
+        try:
+            cdp.call("Zebkit.mediaCaptureStatus", {"captureId": capture})
+            check(False, "a capture is not another session's")
+        except RuntimeError as error:
+            check(True, "a capture is not another session's", error)
+
+        # Media Source Extensions: what a DASH player appends.
+        evaluate("mse(3)")
+        wait("ready()", 100)
+        media, capture, path, ended, done = record("cdp-mse.mp4", lambda: evaluate("more()"))
+        check(media[0]["kind"] == "mse", "Zebkit.mediaList: Media Source Extensions", media[0].get("kind"))
+        files_written = done and done["params"]["result"].get("files") or []
+        written = ended and files_written and probe(files_written[0]["path"])
+        check(written and whole_clip(written), "Zebkit.mediaCaptureDone: the stream, all of it", written)
+
+        # A session that detaches: its capture stops, and its file is written.
+        other = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        evaluate("file('video', 'media/clip.mp4')")
+        wait("ready()", 100)
+        media = cdp.call("Zebkit.mediaList", session=other)["media"]
+        path = os.path.join(files, "cdp-detached.mp4")
+        capture = cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"], "path": path},
+                           session=other)["captureId"]
+        evaluate("play(2)")
+        wait("time() > 2")
+        cdp.call("Target.detachFromTarget", {"sessionId": other})
+        # Nobody is told when it is written: the file is there, and stays
+        # the same size.
+        size = -1
+        for _ in range(100):
+            time.sleep(0.3)
+            now = os.path.getsize(path) if os.path.exists(path) else -1
+            if now > 0 and now == size:
+                break
+            size = now
+        written = os.path.exists(path) and probe(path)
+        check(written and written.get("ok") and written.get("errors", 0) == 0,
+              "a session's capture stops when it detaches, and is written", written)
+        try:
+            cdp.call("Zebkit.mediaCaptureStop", {"captureId": capture}, session=session)
+            check(False, "and is gone with it")
+        except RuntimeError as error:
+            check(True, "and is gone with it", error)
+        evaluate("media.pause(); true")
+
+        # A capture started while the page's thread is blocked (its start
+        # not answered), by a session that detaches before the start times
+        # out: the engine goes on.
+        blocked = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        media = cdp.call("Zebkit.mediaList", session=blocked)["media"]
+        evaluate("block(12)")
+        cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"],
+                                              "path": os.path.join(files, "cdp-blocked.mp4")}, session=blocked)
+        cdp.call("Target.detachFromTarget", {"sessionId": blocked})
+        time.sleep(14)
+        check(engine.poll() is None and evaluate("1 + 1") == 2,
+              "a blocked page's capture, its session gone before the start times out: the engine goes on")
+        try:
+            cdp.call("Zebkit.mediaCaptureStart", {"mediaId": "1.2.3"}, session=session)
+            check(False, "a start without a path is an error")
+        except RuntimeError as error:
+            check(True, "a start without a path is an error", error)
     except Exception as error:  # noqa: BLE001
         check(False, "the CDP session", repr(error))
     finally:

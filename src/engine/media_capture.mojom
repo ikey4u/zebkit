@@ -1,0 +1,55 @@
+// Media capture: what a page's <audio> and <video> players demux, copied
+// without decoding it (media_capture*.cc, <zebkit/media.h>).
+
+module zebkit.mojom;
+
+import "media/mojo/mojom/media_types.mojom";
+import "mojo/public/mojom/base/big_buffer.mojom";
+import "ui/gfx/geometry/mojom/geometry.mojom";
+
+// A time that is not known.
+const int64 kUnknown = -9223372036854775807;
+
+// One encoded buffer of a track, as the decoders get it.
+struct MediaPacket {
+  uint32 track;
+  mojo_base.mojom.BigBuffer data;
+  // Microseconds of the stream's own timeline.
+  int64 pts_us;
+  // The decode time; kUnknown when the demuxer does not know it.
+  int64 dts_us;
+  // kUnknown when not known.
+  int64 duration_us;
+  bool keyframe;
+};
+
+// The browser's end of a capture, bound on the thread that writes it.
+interface MediaCaptureSink {
+  // A track's configuration: before its first packet, and again when it
+  // changes.
+  OnAudioConfig(uint32 track, media.mojom.AudioDecoderConfig config);
+  OnVideoConfig(uint32 track, media.mojom.VideoDecoderConfig config);
+  OnPacket(MediaPacket packet);
+  // Nothing more comes: the player stopped or loaded other media.
+  OnEnded(string reason);
+};
+
+// The renderer's side, one for each frame. Closing the sink stops a
+// capture.
+interface MediaCaptureAgent {
+  // The frame's <audio> and <video> elements as a JSON array.
+  List() => (string json);
+
+  // The media element at @point of the frame's widget (DIPs), or under it,
+  // or whose box holds it: the token of the frame it is in
+  // (LocalFrameToken::ToString()) and its entry as List() has it; "" and
+  // "null" when there is none.
+  ElementAt(gfx.mojom.PointF point) => (string frame_token, string json);
+
+  // Taps on the player of element @element: what it holds from the
+  // playhead on (all it holds when @include_buffered), then what it
+  // demuxes. @error is "" when it started; @json is the element's entry.
+  Start(int32 element, bool include_buffered,
+        pending_remote<MediaCaptureSink> sink)
+      => (string error, string json);
+};

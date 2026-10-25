@@ -5,6 +5,7 @@
 
 import("//build/config/clang/clang.gni")
 import("//build/config/sysroot.gni")
+import("//mojo/public/tools/bindings/mojom.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
 import("//v8/gni/v8.gni")
 import("//zebkit/relr/relr.gni")
@@ -136,6 +137,17 @@ source_set("pdf") {
   ]
 }
 
+# What a page's players demux, between the renderer and the browser
+# (media_capture*.cc).
+mojom("media_capture_mojom") {
+  sources = [ "media_capture.mojom" ]
+  public_deps = [
+    "//media/mojo/mojom",
+    "//mojo/public/mojom/base",
+    "//ui/gfx/geometry/mojom",
+  ]
+}
+
 _sources = [
   "app.cc",
   "app.h",
@@ -153,10 +165,16 @@ _sources = [
   "drag.cc",
   "engine.cc",
   "engine.h",
+  "include/zebkit/media.h",
   "include/zebkit/offscreen.h",
   "include/zebkit/page.h",
   "include/zebkit/services.h",
   "include/zebkit/zebkit.h",
+  "media_capture.cc",
+  "media_capture.h",
+  "media_capture_renderer.cc",
+  "media_capture_writer.cc",
+  "media_capture_writer.h",
   "offscreen.cc",
   "page_internal.h",
   "pdf_bridge.cc",
@@ -174,6 +192,7 @@ _sources = [
 ]
 
 _deps = [
+  ":media_capture_mojom",
   ":pdf",
   ":vendor",
   "//base",

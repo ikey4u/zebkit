@@ -218,6 +218,7 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
   new printing::PrintRenderFrameHelper(render_frame,
                                        std::make_unique<PrintDelegate>());
   InstallChromeObject(render_frame);
+  InstallMediaCaptureAgent(render_frame);
 }
 
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(

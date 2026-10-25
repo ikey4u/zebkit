@@ -1,0 +1,247 @@
+Feature: a media element's player, and its demuxer's tap, for the embedder.
+
+The embedder's renderer code lists a frame's <audio> and <video> elements
+and taps the demuxer of one of their players (patches/1031): a new
+blink::GetWebMediaPlayer(WebElement) gives an element's player, and
+WebMediaPlayer::GetMediaCapture() a WebMediaCapture of it, which
+WebMediaPlayerImpl is: what it plays (a file, Media Source Extensions,
+HLS), its codecs, whether it is encrypted, and SetCaptureTap() on its
+demuxer. Players without one (WebRTC and camera streams) give nullptr.
+
+--- a/third_party/blink/public/BUILD.gn
++++ b/third_party/blink/public/BUILD.gn
+@@ -213,6 +213,7 @@
+     "platform/web_input_event_result.h",
+     "platform/web_isolated_world_info.h",
+     "platform/web_loader_freeze_mode.h",
++    "platform/web_media_capture.h",
+     "platform/web_media_key_system_configuration.h",
+     "platform/web_media_key_system_media_capability.h",
+     "platform/web_media_player.h",
+@@ -333,6 +334,7 @@
+     "web/web_local_frame_observer.h",
+     "web/web_manifest_manager.h",
+     "web/web_meaningful_layout.h",
++    "web/web_media_element.h",
+     "web/web_media_inspector.h",
+     "web/web_message_port_converter.h",
+     "web/web_meta_element.h",
+--- /dev/null
++++ b/third_party/blink/public/platform/web_media_capture.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_PUBLIC_PLATFORM_WEB_MEDIA_CAPTURE_H_
++#define THIRD_PARTY_BLINK_PUBLIC_PLATFORM_WEB_MEDIA_CAPTURE_H_
++
++#include <string>
++
++#include "base/memory/scoped_refptr.h"
++#include "base/time/time.h"
++
++namespace media {
++class DemuxerTap;
++}
++
++namespace blink {
++
++// A player's media as it is demuxed, for a copy made without decoding it
++// (WebMediaPlayer::GetMediaCapture()). On the main thread.
++class WebMediaCapture {
++ public:
++  struct Info {
++    // "file": a URL the player demuxes itself; "mse": Media Source
++    // Extensions, what the page appends; "hls": the player's own HLS.
++    std::string kind;
++    // media::GetCodecName()'s, "" for none or not known yet.
++    std::string audio_codec;
++    std::string video_codec;
++    // Encrypted Media Extensions: decrypted only by a CDM.
++    bool encrypted = false;
++  };
++
++  virtual Info GetCaptureInfo() const = 0;
++
++  // media::Demuxer::SetTap() on the player's demuxer. False when the player
++  // has none (nothing loaded, or media it does not demux).
++  virtual bool SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
++                             base::TimeDelta from) = 0;
++
++ protected:
++  virtual ~WebMediaCapture() = default;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_PUBLIC_PLATFORM_WEB_MEDIA_CAPTURE_H_
+--- a/third_party/blink/public/platform/web_media_player.h
++++ b/third_party/blink/public/platform/web_media_player.h
+@@ -67,6 +67,7 @@
+ namespace blink {
+ 
+ class WebContentDecryptionModule;
++class WebMediaCapture;
+ class WebMediaPlayerSource;
+ class WebString;
+ class WebURL;
+@@ -191,6 +192,10 @@
+ 
+   virtual ~WebMediaPlayer() = default;
+ 
++  // The player's media as it is demuxed, for a copy made without decoding
++  // it; nullptr when the player cannot give it.
++  virtual WebMediaCapture* GetMediaCapture() { return nullptr; }
++
+   // Called just before the WebMediaPlayer is posted for destruction such that
+   // the WebMediaPlayer can clear any references to WebMediaPlayerClient and
+   // perform any other necessary cleanup.
+--- /dev/null
++++ b/third_party/blink/public/web/web_media_element.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
++#define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
++
++#include "third_party/blink/public/platform/web_common.h"
++
++namespace blink {
++
++class WebElement;
++class WebMediaPlayer;
++
++// Whether |element| is an <audio> or <video> element.
++BLINK_EXPORT bool IsWebMediaElement(const WebElement& element);
++
++// The player of an <audio> or <video> element: nullptr for other elements
++// and before the element loads anything.
++BLINK_EXPORT WebMediaPlayer* GetWebMediaPlayer(const WebElement& element);
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
+--- a/third_party/blink/renderer/core/exported/build.gni
++++ b/third_party/blink/renderer/core/exported/build.gni
+@@ -40,6 +40,7 @@
+   "web_isolated_world_info.cc",
+   "web_label_element.cc",
+   "web_language_detection_details.cc",
++  "web_media_element.cc",
+   "web_message_port_converter.cc",
+   "web_meta_element.cc",
+   "web_navigation_params.cc",
+--- /dev/null
++++ b/third_party/blink/renderer/core/exported/web_media_element.cc
+@@ -0,0 +1,25 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/public/web/web_media_element.h"
++
++#include "third_party/blink/public/web/web_element.h"
++#include "third_party/blink/renderer/core/html/media/html_media_element.h"
++
++namespace blink {
++
++bool IsWebMediaElement(const WebElement& element) {
++  return !element.IsNull() &&
++         IsA<HTMLMediaElement>(*element.ConstUnwrap<Element>());
++}
++
++WebMediaPlayer* GetWebMediaPlayer(const WebElement& element) {
++  if (element.IsNull()) {
++    return nullptr;
++  }
++  const auto* media = DynamicTo<HTMLMediaElement>(*element.ConstUnwrap<Element>());
++  return media ? media->GetWebMediaPlayer() : nullptr;
++}
++
++}  // namespace blink
+--- a/third_party/blink/renderer/platform/media/web_media_player_impl.cc
++++ b/third_party/blink/renderer/platform/media/web_media_player_impl.cc
+@@ -4137,6 +4137,49 @@
+   return demuxer_manager_->GetDataSourceUrlAfterRedirects().value_or(GURL());
+ }
+ 
++WebMediaCapture* WebMediaPlayerImpl::GetMediaCapture() {
++  return this;
++}
++
++WebMediaCapture::Info WebMediaPlayerImpl::GetCaptureInfo() const {
++  DCHECK(main_task_runner_->BelongsToCurrentThread());
++  WebMediaCapture::Info info;
++  const std::optional<media::DemuxerType> type = GetDemuxerType();
++  if (type == media::DemuxerType::kManifestDemuxer) {
++    info.kind = "hls";
++  } else if (load_type_ == kLoadTypeMediaSource) {
++    info.kind = "mse";
++  } else {
++    info.kind = "file";
++  }
++  const media::AudioDecoderConfig& audio =
++      pipeline_metadata_.audio_decoder_config;
++  const media::VideoDecoderConfig& video =
++      pipeline_metadata_.video_decoder_config;
++  if (pipeline_metadata_.has_audio && audio.IsValidConfig()) {
++    info.audio_codec = media::GetCodecName(audio.codec());
++  }
++  if (pipeline_metadata_.has_video && video.IsValidConfig()) {
++    info.video_codec = media::GetCodecName(video.codec());
++  }
++  info.encrypted = is_encrypted_ ||
++                   (pipeline_metadata_.has_audio && audio.is_encrypted()) ||
++                   (pipeline_metadata_.has_video && video.is_encrypted());
++  return info;
++}
++
++bool WebMediaPlayerImpl::SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
++                                       base::TimeDelta from) {
++  DCHECK(main_task_runner_->BelongsToCurrentThread());
++  media::Demuxer* demuxer =
++      demuxer_manager_ ? demuxer_manager_->GetDemuxer() : nullptr;
++  if (!demuxer) {
++    return false;
++  }
++  demuxer->SetTap(std::move(tap), from);
++  return true;
++}
++
+ bool WebMediaPlayerImpl::HasUnmutedAudio() const {
+   // Pretend that the media has no audio if it never played unmuted. This is to
+   // avoid any action related to audible media such as taking audio focus or
+--- a/third_party/blink/renderer/platform/media/web_media_player_impl.h
++++ b/third_party/blink/renderer/platform/media/web_media_player_impl.h
+@@ -50,6 +50,7 @@
+ #include "third_party/blink/public/platform/media/web_media_player_delegate.h"
+ #include "third_party/blink/public/platform/web_audio_source_provider.h"
+ #include "third_party/blink/public/platform/web_content_decryption_module_result.h"
++#include "third_party/blink/public/platform/web_media_capture.h"
+ #include "third_party/blink/public/platform/web_media_player.h"
+ #include "third_party/blink/public/platform/web_surface_layer_bridge.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
+@@ -118,6 +119,7 @@
+ // Encrypted Media.
+ class PLATFORM_EXPORT WebMediaPlayerImpl
+     : public WebMediaPlayer,
++      public WebMediaCapture,
+       public WebMediaPlayerDelegate::Observer,
+       public media::Pipeline::Client,
+       public media::MediaObserverClient,
+@@ -329,6 +331,12 @@
+   int GetPlayerId() override { return player_id_; }
+   std::optional<viz::SurfaceId> GetSurfaceId() override;
+   GURL GetSrcAfterRedirects() override;
++
++  // WebMediaCapture:
++  WebMediaCapture* GetMediaCapture() override;
++  WebMediaCapture::Info GetCaptureInfo() const override;
++  bool SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
++                     base::TimeDelta from) override;
+   void RequestVideoFrameCallback() override;
+   std::unique_ptr<WebMediaPlayer::VideoFramePresentationMetadata>
+   GetVideoFramePresentationMetadata() override;

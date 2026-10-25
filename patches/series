@@ -26,3 +26,5 @@
 1026-v8-inspector-runs-no-page-code-for-errors.patch
 1027-content-shell-popups-to-the-embedder.patch
 1028-content-shell-undecided-permissions-ask.patch
+1031-media-demuxer-tap.patch
+1032-blink-media-capture-for-the-embedder.patch

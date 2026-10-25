@@ -160,6 +160,7 @@ browser target's WebSocket address (`zebkit_cdp_get_url()`).
 | `src/engine/attach.cc` | Views inside another view's window (Linux) |
 | `src/engine/offscreen.cc`, `offscreen_mac.mm` | `<zebkit/offscreen.h>`: views drawn off-screen, their frames from viz's video capturer, their input, popups and cursor (from `patches/1021`'s hooks) |
 | `src/engine/dialog.cc`, `print.cc`, `drag.cc`, `devtools.cc`, `page_internal.h` | `<zebkit/page.h>`: JavaScript dialogs held for the application or a CDP client; printing to PDF as headless Chrome prints, and `Page.printToPDF`; drags from the page (from `patches/1024`'s hook) and into it; the DevTools manager delegate |
+| `src/engine/media_capture.cc`, `media_capture_renderer.cc`, `media_capture_writer.cc`, `media_capture.mojom` | `<zebkit/media.h>`: each frame's media elements and a tap on a player's demuxer (renderer, from `patches/1031`, `1032`), the packets kept and written into files by FFmpeg's muxers (browser) |
 | `src/engine/call.cc`, `call.h` | `zebkit://call`: the page's calls and their answers as frames of bytes |
 | `src/engine/bridge.cc` | What `zebkit.*` calls do once the browser has checked them |
 | `src/engine/pdf.cc`, `pdf_internal.cc`, `pdf_bridge.cc`, `pdf_script.h` | `<zebkit/pdf.h>`, PDFium's classes, `zebkit.pdf` and its queue |
