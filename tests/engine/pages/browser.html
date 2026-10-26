@@ -6,7 +6,7 @@
 const results = window.results = {nameReads: 0, prepared: 0};
 class Named extends Error {}
 Object.defineProperty(Named.prototype, "name", {get() { results.nameReads++; return "Named"; }});
-setTimeout(() => {
+setTimeout(async () => {
   const previous = Error.prepareStackTrace;
   Error.prepareStackTrace = () => { results.prepared++; return "prepared"; };
   function thrower() { return new Error("logged"); }
@@ -16,6 +16,51 @@ setTimeout(() => {
   Error.prepareStackTrace = previous;
   results.chrome = typeof window.chrome === "object" && typeof chrome.loadTimes === "function" &&
       typeof chrome.csi === "function";
+  // Legacy hosted-app queries must work without an extension runtime.
+  const app = chrome.app;
+  results.app = {
+    installed: app.isInstalled,
+    queriedInstalled: app.getIsInstalled(),
+    details: app.getDetails(),
+    running: app.runningState(),
+    installStates: app.InstallState,
+    runningStates: app.RunningState,
+  };
+  app.isInstalled = true;
+  results.app.assignmentIgnored = app.isInstalled === false;
+  let synchronous = true;
+  const state = new Promise(resolve => app.installState(value => {
+    results.app.callbackWasAsync = !synchronous;
+    resolve(value);
+  }));
+  synchronous = false;
+  results.app.installState = await state;
+  results.app.badArguments = [
+    () => app.getDetails(1), () => app.getIsInstalled(1), () => app.runningState(1),
+    () => app.installState(), () => app.installState(null),
+    () => app.installState(() => {}, 1),
+  ].map(call => { try { call(); return false; } catch (error) { return error instanceof TypeError; } });
+  // A callback scheduled by a document that is removed must not run later.
+  const frame = document.createElement('iframe');
+  document.body.appendChild(frame);
+  results.app.detachedCallback = false;
+  frame.contentWindow.chrome.app.installState(() => { results.app.detachedCallback = true; });
+  frame.remove();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  // An exception in the async callback is reported and does not kill the renderer.
+  await new Promise(resolve => {
+    const onError = event => {
+      if (event.message.includes('legacy app callback')) {
+        results.app.callbackExceptionReported = true;
+        event.preventDefault();
+        removeEventListener('error', onError);
+        resolve();
+      }
+    };
+    addEventListener('error', onError);
+    app.installState(() => { throw new Error('legacy app callback'); });
+    setTimeout(() => { removeEventListener('error', onError); resolve(); }, 500);
+  });
   results.popupWithoutClick = window.open("about:blank", "_blank", "popup") !== null;
   results.screen = [screen.width, screen.height];
   results.webdriver = navigator.webdriver;

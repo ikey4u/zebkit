@@ -61,9 +61,11 @@ int main(int argc, char **argv) {
   `--zebkit-headless-user-agent` gives Chrome's headless string;
   `--user-agent` replaces it.
 - **What sites read to know it is Chrome.** `window.chrome` has
-  `chrome.loadTimes()` and `chrome.csi()`, by Chrome's own renderer code
-  (`chrome.app` is the extension system's, which zebkit has not). Popups
-  are blocked as Chrome blocks them: a page opens a window or a tab only
+  `chrome.loadTimes()` and `chrome.csi()` from Chrome's renderer, plus the
+  legacy `chrome.app` hosted-app queries. Without a hosted-app registry,
+  these report `false`, `null`, `cannot_run` and asynchronously
+  `not_installed`; no extension runtime is linked. Popups are blocked as
+  Chrome blocks them: a page opens a window or a tab only
   while the person clicks or types; `--disable-popup-blocking` lets every
   one open. A headless view's screen is `--window-size`, or 1920 by 1080,
   not Ozone's 1 by 1 pixel. `navigator.webdriver` is as Chrome sets it:
@@ -75,17 +77,14 @@ int main(int argc, char **argv) {
   client has `Runtime` enabled, which pages and bot checks read as a
   debugger attached. The client still has each error with its stack
   (`tests/engine/cdp_browser.py`).
-- **Notice: signing in to Google.** Google refuses sign-in in embedded
-  browsers and in browsers it takes for automated ones ("Couldn't sign
-  you in. This browser or app may not be secure"), and zebkit is an
-  embedded engine whose pages can be driven over CDP, as Electron and
-  app webviews are. zebkit does not work around this check; it is
-  Google's protection of its accounts. An application that needs a
-  Google account signs in through the person's own browser, as Google
-  asks of native applications: OAuth with PKCE, the redirect coming back
-  to the application at a loopback address or its own scheme
-  (`zebkit_scheme_register()`), then Google's APIs with the tokens.
-  Other providers may refuse embedded browsers the same way.
+- **Google sign-in compatibility.** In the tested slim C host, restoring
+  the legacy `chrome.app` queries changed email/Next from an unsafe-browser
+  rejection to the password page. Enabling, disabling, then re-enabling
+  only this API in the same binary produced pass, rejection (`rrk=46`),
+  pass, with fresh profiles on 2026-10-26. This is a reproducible
+  compatibility result, not a published Google login requirement or
+  official support commitment. Password/MFA and full login were not tested.
+  See [the source references and comparison](GOOGLE_SIGNIN.md).
 - **A site's "Sign in with ..." popup.** Sites sign in with Google and
   other providers through a popup, as in Firefox: FedCM, which Chrome
   answers with dialogs of its own and the content shell turns down, is off
@@ -94,7 +93,7 @@ int main(int argc, char **argv) {
   `zebkit_view_on_window_open()`, a view still linked to the site
   (`window.opener`, `postMessage()`, `window.closed`), off-screen when the
   site's view is, its frames to draw for the person. Whether the provider
-  accepts the sign-in in it is the provider's decision (the notice above);
+  accepts the sign-in in it is the provider's decision (the compatibility check above);
   once signed in, the session is the profile's (`--user-data-dir`), and a
   headless run with the same profile has it.
 - **Threads.** Everything is for the thread that called `zebkit_main()`,

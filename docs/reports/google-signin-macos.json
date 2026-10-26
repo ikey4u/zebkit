@@ -1,0 +1,264 @@
+{
+  "method": "Five fresh-profile paired runs, alternating order; same C host and unchanged tests/bench/index.html; macOS aggregate RSS (shared pages can be counted twice), 2-second idle CPU sample, sandbox enabled.",
+  "samples": [
+    {
+      "label": "before",
+      "run": 0,
+      "load_s": 2.4728434999999998,
+      "work_ms": {
+        "loop": 27,
+        "objects": 69,
+        "strings": 23,
+        "json": 544,
+        "regex": 804,
+        "sort": 108,
+        "parse": 74,
+        "gc": 97,
+        "jit": 47,
+        "dom": 482
+      },
+      "rss_mib": 618.046875,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "after",
+      "run": 0,
+      "load_s": 7.258798292,
+      "work_ms": {
+        "loop": 54,
+        "objects": 212,
+        "strings": 49,
+        "json": 792,
+        "regex": 1254,
+        "sort": 207,
+        "parse": 84,
+        "gc": 753,
+        "jit": 43,
+        "dom": 757
+      },
+      "rss_mib": 473.890625,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "after",
+      "run": 1,
+      "load_s": 2.566947457999998,
+      "work_ms": {
+        "loop": 28,
+        "objects": 71,
+        "strings": 23,
+        "json": 551,
+        "regex": 804,
+        "sort": 112,
+        "parse": 75,
+        "gc": 125,
+        "jit": 47,
+        "dom": 488
+      },
+      "rss_mib": 612.90625,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "before",
+      "run": 1,
+      "load_s": 2.504655666999998,
+      "work_ms": {
+        "loop": 25,
+        "objects": 66,
+        "strings": 23,
+        "json": 556,
+        "regex": 743,
+        "sort": 108,
+        "parse": 72,
+        "gc": 116,
+        "jit": 48,
+        "dom": 503
+      },
+      "rss_mib": 614.8125,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "before",
+      "run": 2,
+      "load_s": 2.5106195410000005,
+      "work_ms": {
+        "loop": 26,
+        "objects": 66,
+        "strings": 23,
+        "json": 548,
+        "regex": 797,
+        "sort": 107,
+        "parse": 74,
+        "gc": 121,
+        "jit": 47,
+        "dom": 478
+      },
+      "rss_mib": 617.09375,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "after",
+      "run": 2,
+      "load_s": 2.5033807919999944,
+      "work_ms": {
+        "loop": 25,
+        "objects": 68,
+        "strings": 23,
+        "json": 548,
+        "regex": 808,
+        "sort": 107,
+        "parse": 73,
+        "gc": 123,
+        "jit": 48,
+        "dom": 477
+      },
+      "rss_mib": 617.296875,
+      "idle_cpu_percent": 0.48735913272936177,
+      "processes": 5
+    },
+    {
+      "label": "after",
+      "run": 3,
+      "load_s": 2.492086417000003,
+      "work_ms": {
+        "loop": 25,
+        "objects": 68,
+        "strings": 24,
+        "json": 547,
+        "regex": 802,
+        "sort": 108,
+        "parse": 73,
+        "gc": 98,
+        "jit": 47,
+        "dom": 496
+      },
+      "rss_mib": 617.015625,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "before",
+      "run": 3,
+      "load_s": 2.5153784589999972,
+      "work_ms": {
+        "loop": 25,
+        "objects": 67,
+        "strings": 23,
+        "json": 554,
+        "regex": 802,
+        "sort": 108,
+        "parse": 73,
+        "gc": 101,
+        "jit": 48,
+        "dom": 487
+      },
+      "rss_mib": 616.4375,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    },
+    {
+      "label": "before",
+      "run": 4,
+      "load_s": 2.605510541000001,
+      "work_ms": {
+        "loop": 26,
+        "objects": 64,
+        "strings": 23,
+        "json": 554,
+        "regex": 747,
+        "sort": 173,
+        "parse": 74,
+        "gc": 111,
+        "jit": 46,
+        "dom": 529
+      },
+      "rss_mib": 608.21875,
+      "idle_cpu_percent": 0.4911593666653496,
+      "processes": 5
+    },
+    {
+      "label": "after",
+      "run": 4,
+      "load_s": 2.523146875000002,
+      "work_ms": {
+        "loop": 26,
+        "objects": 66,
+        "strings": 23,
+        "json": 553,
+        "regex": 735,
+        "sort": 108,
+        "parse": 72,
+        "gc": 113,
+        "jit": 49,
+        "dom": 512
+      },
+      "rss_mib": 616.359375,
+      "idle_cpu_percent": 0.0,
+      "processes": 5
+    }
+  ],
+  "median": {
+    "before": {
+      "load_s": 2.5106195410000005,
+      "rss_mib": 616.4375,
+      "idle_cpu_percent": 0.0,
+      "processes": 5,
+      "work_ms": {
+        "loop": 26,
+        "objects": 66,
+        "strings": 23,
+        "json": 554,
+        "regex": 797,
+        "sort": 108,
+        "parse": 74,
+        "gc": 111,
+        "jit": 47,
+        "dom": 487
+      }
+    },
+    "after": {
+      "load_s": 2.523146875000002,
+      "rss_mib": 616.359375,
+      "idle_cpu_percent": 0.0,
+      "processes": 5,
+      "work_ms": {
+        "loop": 26,
+        "objects": 68,
+        "strings": 23,
+        "json": 551,
+        "regex": 804,
+        "sort": 108,
+        "parse": 73,
+        "gc": 123,
+        "jit": 47,
+        "dom": 496
+      }
+    }
+  },
+  "date": "2026-10-26",
+  "platform": "macOS arm64",
+  "profile": "slim-macos-native",
+  "size": {
+    "before": {
+      "binary_bytes": 226273392,
+      "framework_bytes": 237736658
+    },
+    "after": {
+      "binary_bytes": 226273408,
+      "framework_bytes": 237736674
+    },
+    "delta": {
+      "binary_bytes": 16,
+      "framework_bytes": 16
+    }
+  },
+  "framework_sha256": {
+    "before": "34ac9429e516eeafc96e2b7a28bdf999b0c6b0c785c8f52581e4f5bf2770b0e1",
+    "after": "cb01de73eff590d64aa73675d91073c5aca8209aa0c53e57abc41be7a6a1bbf2"
+  }
+}

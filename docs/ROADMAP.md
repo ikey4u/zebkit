@@ -188,7 +188,11 @@ and Dock policy.
   running none of the page's code when it describes the page's errors
   (`patches/1026`; Chrome and Electron still do). Held by
   `tests/engine/cdp_browser.py`.
-  - **TODO: `chrome.app`**, which comes from Chrome's extension system.
+  - **Legacy `chrome.app` queries: done** (2026-10-26), implemented natively
+    for the actual uninstalled hosted-app state, without an extension runtime.
+    The same slim binary passes Google's email/Next check with these queries,
+    rejects it without them, and passes again after restoring them
+    ([comparison](GOOGLE_SIGNIN.md)).
 - **TODO: PDF in pages**, on zebkit's PDFium: a page that opens a PDF shows
   it, as Chrome's viewer does, and `navigator.pdfViewerEnabled` and
   `navigator.plugins` then say what Chrome says. Today both are empty,

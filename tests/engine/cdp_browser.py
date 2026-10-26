@@ -4,7 +4,7 @@ drives it, from tools/zebkit-run serving CDP (pages/browser.html):
 - nothing of the client: with Runtime enabled, describing the errors a
   page logs runs none of its code (no Error.prepareStackTrace, no more
   reads of a getter), and the client still has every error with its stack;
-- window.chrome with chrome.loadTimes() and chrome.csi(), as in Chrome;
+- window.chrome timing and legacy hosted-app queries without extensions;
 - popups blocked without a click, opened for the application's script;
 - a screen of a real size under --headless; navigator.webdriver as Chrome
   sets it (true here, since the port is 0).
@@ -73,6 +73,21 @@ def main():
               "and an error whose name is a getter", logged[1:2])
 
         check(watched.get("chrome") is True, "window.chrome with loadTimes() and csi()", watched.get("chrome"))
+        for label, sample in (("alone", alone), ("watched", watched)):
+            app = sample.get("app") or {}
+            check(app.get("installed") is False and app.get("queriedInstalled") is False
+                  and app.get("details") is None and app.get("running") == "cannot_run",
+                  f"legacy app queries report no hosted app ({label})", app)
+            check(app.get("installState") == "not_installed" and app.get("callbackWasAsync") is True,
+                  f"installState returns the actual state asynchronously ({label})", app.get("installState"))
+            check(app.get("assignmentIgnored") is True, f"isInstalled cannot be overwritten ({label})")
+            check(app.get("installStates") == {"NOT_INSTALLED": "not_installed", "INSTALLED": "installed", "DISABLED": "disabled"}
+                  and app.get("runningStates") == {"RUNNING": "running", "CANNOT_RUN": "cannot_run", "READY_TO_RUN": "ready_to_run"},
+                  f"hosted app state enums follow Chromium's API ({label})")
+            check(app.get("badArguments") == [True] * 6, f"legacy app methods reject invalid arguments ({label})")
+            check(app.get("detachedCallback") is False, f"removed documents receive no app callback ({label})")
+            check(app.get("callbackExceptionReported") is True,
+                  f"app callback exceptions reach the page and leave it running ({label})")
         check(watched.get("popupWithoutClick") is False, "a popup without a click is blocked",
               watched.get("popupWithoutClick"))
         opened = cdp.call("Runtime.evaluate", {"expression": "window.open('about:blank', '_blank') !== null",
