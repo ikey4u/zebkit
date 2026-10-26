@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-<p align="center"><b>Chrome as a library.</b><br>Drop the whole web into your app — and ship it today.</p>
+<p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux and macOS today, Windows next. Add it in a few lines.</p>
 
 ## Introduction
 
