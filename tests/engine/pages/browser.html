@@ -64,6 +64,14 @@ setTimeout(async () => {
   results.popupWithoutClick = window.open("about:blank", "_blank", "popup") !== null;
   results.screen = [screen.width, screen.height];
   results.webdriver = navigator.webdriver;
+  results.userAgent = navigator.userAgent;
+  results.languages = navigator.languages;
+  results.userAgentData = navigator.userAgentData?.toJSON();
+  try {
+    results.headers = await fetch('/__zebkit_headers__').then(response => response.json());
+  } catch (error) {
+    results.headersError = String(error);
+  }
   results.done = true;
 }, 300);
 </script>

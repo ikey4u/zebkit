@@ -68,9 +68,12 @@ int main(int argc, char **argv) {
   Chrome blocks them: a page opens a window or a tab only
   while the person clicks or types; `--disable-popup-blocking` lets every
   one open. A headless view's screen is `--window-size`, or 1920 by 1080,
-  not Ozone's 1 by 1 pixel. `navigator.webdriver` is as Chrome sets it:
-  true with `--enable-automation` or `--remote-debugging-port=0`, the
-  ports ChromeDriver uses, false otherwise.
+  not Ozone's 1 by 1 pixel. `navigator.webdriver` is true with
+  `--enable-automation`, `--remote-debugging-pipe` or
+  `--remote-debugging-port=0`, false otherwise. In zebkit's content shell,
+  `--headless` selects rendering without native windows; it is not
+  forwarded to the renderer as an automation switch. Serving CDP through
+  `zebkit_cdp_listen()` alone does not enable automation mode either.
 - **A CDP client changes nothing the page sees.** Describing the errors a
   page logs runs none of the page's code (`patches/1026`): Chrome's V8
   calls the page's `Error.prepareStackTrace` and getters on an error when a

@@ -87,6 +87,7 @@ build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
+build_against_package "$package" "$work/mode" "$tests/mode.c"
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -147,6 +148,11 @@ run vendor-cxx "$work/vendor-cxx"
 run services "$work/services"
 run pdf "$work/pdf"
 run api "$work/api" "${engine_switches[@]}"
+run mode-headless "$work/mode" "${engine_switches[@]}"
+run mode-automation "$work/mode" --no-sandbox --headless --enable-automation \
+    --expect-automation --user-data-dir="$work/profile-automation"
+run mode-driver-port "$work/mode" --no-sandbox --headless --remote-debugging-port=0 \
+    --expect-automation --user-data-dir="$work/profile-driver-port"
 
 port="${ENGINE_TEST_PORT:-8796}"
 python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$tests/pages" "$port" > "$work/server.log" 2>&1 &

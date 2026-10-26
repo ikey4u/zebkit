@@ -5,6 +5,8 @@ drives it, from tools/zebkit-run serving CDP (pages/browser.html):
   page logs runs none of its code (no Error.prepareStackTrace, no more
   reads of a getter), and the client still has every error with its stack;
 - window.chrome timing and legacy hosted-app queries without extensions;
+- the real engine version in the user agent, client hints in JavaScript
+  and HTTP, and languages consistent with Accept-Language;
 - popups blocked without a click, opened for the application's script;
 - a screen of a real size under --headless; navigator.webdriver as Chrome
   sets it (true here, since the port is 0).
@@ -43,6 +45,7 @@ def main():
         target = cdp.call("Target.createTarget", {"url": "about:blank"})["targetId"]
         session = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         cdp.call("Page.enable", session=session)
+        product = cdp.call("Browser.getVersion")["product"]
 
         def results():
             cdp.call("Page.navigate", {"url": f"{base}/browser.html"}, session=session)
@@ -88,6 +91,27 @@ def main():
             check(app.get("detachedCallback") is False, f"removed documents receive no app callback ({label})")
             check(app.get("callbackExceptionReported") is True,
                   f"app callback exceptions reach the page and leave it running ({label})")
+        major = re.search(r"/(\d+)\.", product).group(1)
+        agent = watched.get("userAgent", "")
+        check(f"Chrome/{major}." in agent and "HeadlessChrome/" not in agent,
+              "the user agent names the real Chromium version", agent)
+        hints = watched.get("userAgentData") or {}
+        brands = hints.get("brands", [])
+        check(any(brand.get("brand") == "Chromium" and brand.get("version") == major for brand in brands),
+              "client hints name Chromium of the same version", brands)
+        platform = {"darwin": "macOS", "linux": "Linux", "win32": "Windows"}.get(sys.platform)
+        check(platform is not None and hints.get("platform") == platform,
+              "client hints name the actual desktop platform", hints.get("platform"))
+        check(not watched.get("headersError"), "the server reports the actual request headers",
+              watched.get("headersError"))
+        headers = {name.lower(): value for name, value in watched.get("headers", {}).items()}
+        check(f'"Chromium";v="{major}"' in headers.get("sec-ch-ua", ""),
+              "requests send Chromium client hints", headers.get("sec-ch-ua"))
+        check(headers.get("sec-ch-ua-platform") == f'"{hints.get("platform")}"',
+              "HTTP and JavaScript agree on the platform", headers.get("sec-ch-ua-platform"))
+        languages = watched.get("languages") or []
+        check(bool(languages) and headers.get("accept-language", "").split(",")[0] == languages[0],
+              "Accept-Language agrees with navigator.languages", headers.get("accept-language"))
         check(watched.get("popupWithoutClick") is False, "a popup without a click is blocked",
               watched.get("popupWithoutClick"))
         opened = cdp.call("Runtime.evaluate", {"expression": "window.open('about:blank', '_blank') !== null",

@@ -9,6 +9,7 @@ seek in them.
 
 import functools
 import http.server
+import json
 import os
 import pathlib
 import re
@@ -35,6 +36,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/__zebkit_headers__":
+            body = json.dumps(dict(self.headers)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
