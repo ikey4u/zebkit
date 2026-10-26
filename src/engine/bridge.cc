@@ -416,7 +416,7 @@ struct FetchCall {
 
 void FetchDone(const zebkit_response* response, void* data) {
   std::unique_ptr<FetchCall> call(static_cast<FetchCall*>(data));
-  if (response->error && !response->status) {
+  if (response->error) {
     Reply(std::move(call->reply), Error(response->error));
     return;
   }

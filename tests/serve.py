@@ -17,6 +17,29 @@ import sys
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/__zebkit_oversize_body__":
+            self.send_response(200)
+            self.send_header("Content-Length", str(257 * 1024 * 1024))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            block = b"x" * (1024 * 1024)
+            try:
+                for _ in range(257):
+                    self.wfile.write(block)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/__zebkit_large_body__":
+            body = b"x" * (6 * 1024 * 1024)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
     def send_head(self):
         match = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
         path = self.translate_path(self.path)

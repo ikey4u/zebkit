@@ -155,7 +155,7 @@ typedef struct {
     const char *headers;     /* "Name: value" lines, separated by "\r\n" */
     const uint8_t *body;
     size_t body_size;
-    const char *error;       /* NULL, or why there was no response */
+    const char *error;       /* NULL, or why the request/body failed */
 } zebkit_response;
 
 typedef void (*zebkit_response_func)(const zebkit_response *response, void *data);

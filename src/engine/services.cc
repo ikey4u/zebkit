@@ -34,6 +34,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/boringssl/src/include/openssl/aead.h"
 #include "third_party/boringssl/src/include/openssl/digest.h"
@@ -184,7 +185,7 @@ const EVP_AEAD* AesGcm(size_t key_size) {
 
 // ---- HTTP ----
 
-class Fetch {
+class Fetch : public network::SimpleURLLoaderStreamConsumer {
  public:
   static void Start(std::unique_ptr<network::ResourceRequest> request,
                     std::string body,
@@ -208,6 +209,8 @@ class Fetch {
           })");
     fetch->loader_ =
         network::SimpleURLLoader::Create(std::move(request), kAnnotation);
+    fetch->loader_->SetOnResponseStartedCallback(
+        base::BindOnce(&Fetch::ResponseStarted, base::Unretained(fetch)));
     if (!body.empty() || !content_type.empty())
       fetch->loader_->AttachStringForUpload(std::move(body), content_type);
     fetch->loader_->SetAllowHttpErrorResults(true);
@@ -215,33 +218,69 @@ class Fetch {
         zebkit::GetBrowserContext()
             ->GetDefaultStoragePartition()
             ->GetURLLoaderFactoryForBrowserProcess();
-    fetch->loader_->DownloadToString(
-        factory.get(),
-        base::BindOnce(&Fetch::Done, base::Unretained(fetch)),
-        kDefaultMaxSize);
+    // DownloadToString only accepts limits up to 5 MiB. The public C API
+    // permits 256 MiB, so consume the stream while enforcing that bound.
+    fetch->loader_->DownloadAsStream(factory.get(), fetch);
   }
 
  private:
   Fetch(zebkit_response_func func, void* data) : func_(func), data_(data) {}
+  ~Fetch() override = default;
 
-  void Done(std::optional<std::string> body) {
+  void ResponseStarted(const GURL& url,
+                       const network::mojom::URLResponseHead& head) {
+    response_url_ = url.spec();
+    response_headers_ = head.headers;
+  }
+
+  void OnDataReceived(std::string_view chunk, base::OnceClosure resume) override {
+    if (chunk.size() > kDefaultMaxSize - body_.size()) {
+      // The stream API permits deleting the loader from this callback.
+      Done(std::nullopt, net::ERR_INSUFFICIENT_RESOURCES);
+      return;
+    }
+    body_.append(chunk);
+    std::move(resume).Run();
+  }
+
+  void OnComplete(bool success) override {
+    if (success)
+      Done(std::move(body_));
+    else
+      Done(std::nullopt);
+  }
+
+  void OnRetry(base::OnceClosure start_retry) override {
+    body_.clear();
+    std::move(start_retry).Run();
+  }
+
+  void Done(std::optional<std::string> body, int error_override = net::OK) {
     zebkit_response response = {};
     std::string headers;
-    std::string url = loader_->GetFinalURL().spec();
+    // The loader's status accessors require completed requests. A size
+    // rejection happens during streaming, so use the captured response.
+    const bool early = error_override != net::OK;
+    std::string url = early ? response_url_ : loader_->GetFinalURL().spec();
     std::string error;
-    const network::mojom::URLResponseHead* head = loader_->ResponseInfo();
-    if (head && head->headers) {
-      response.status = head->headers->response_code();
+    const network::mojom::URLResponseHead* head =
+        early ? nullptr : loader_->ResponseInfo();
+    const net::HttpResponseHeaders* received_headers =
+        early ? response_headers_.get() : (head ? head->headers.get() : nullptr);
+    if (received_headers) {
+      response.status = received_headers->response_code();
       size_t iter = 0;
       std::string name, value;
-      while (head->headers->EnumerateHeaderLines(&iter, &name, &value)) {
+      while (received_headers->EnumerateHeaderLines(&iter, &name, &value)) {
         if (!headers.empty())
           headers += "\r\n";
         headers += name + ": " + value;
       }
     }
     if (!body) {
-      error = net::ErrorToString(loader_->NetError());
+      error = net::ErrorToString(error_override == net::OK
+                                    ? loader_->NetError()
+                                    : error_override);
       response.error = error.c_str();
     } else {
       response.body = reinterpret_cast<const uint8_t*>(body->data());
@@ -257,6 +296,9 @@ class Fetch {
   zebkit_response_func func_;
   void* data_;
   std::unique_ptr<network::SimpleURLLoader> loader_;
+  std::string body_;
+  std::string response_url_;
+  scoped_refptr<net::HttpResponseHeaders> response_headers_;
 };
 
 }  // namespace

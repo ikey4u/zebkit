@@ -48,6 +48,22 @@ await check('fetch', async () => {
   const response = await zebkit.fetch(`${base}/hello.txt`);
   return response.status === 200 && text(response.body) === 'hello\n';
 });
+await check('fetch: an HTTP error still returns its response', async () => {
+  const response = await zebkit.fetch(`${base}/__zebkit_missing_file__`);
+  return response.status === 404 && response.body.length > 0;
+});
+await check('fetch: a body above the 5 MiB string-download limit', async () => {
+  const response = await zebkit.fetch(`${base}/__zebkit_large_body__`);
+  return response.status === 200 && response.body.length === 6 * 1024 * 1024;
+});
+await check('fetch: the 256 MiB body limit rejects a larger response', async () => {
+  try {
+    await zebkit.fetch(`${base}/__zebkit_oversize_body__`);
+    return false;
+  } catch (error) {
+    return /ERR_INSUFFICIENT_RESOURCES/.test(error.message);
+  }
+});
 await check('a thrown error is a rejection', async () => {
   try { await zebkit.compress('nonsense', 'x'); return false; } catch (e) { return /unknown format/.test(e.message); }
 });
