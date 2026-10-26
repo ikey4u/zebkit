@@ -153,3 +153,27 @@ downloads; the crates and the engine share the version in `VERSION`. Build
 (`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).
 Crates download only from a release anyone can read, so the repository
 has to be public for that.
+
+### In a container
+
+`docker/Dockerfile` is a machine for the whole release: Debian 13 with
+what Chromium's tools call from the system, and mise. Its entry builds
+both systems, runs `engine-test.sh` and `glibc-test.sh`, and publishes.
+
+```sh
+docker build -t zebkit-release --build-arg UID="$(id -u)" docker
+run=(docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise
+     -v ~/MacOSX:/macos:ro)
+"${run[@]}" zebkit-release --no-publish
+git commit -am "<version>: ..."   # engines.txt has the new checksums
+"${run[@]}" -e GH_TOKEN zebkit-release
+```
+
+The repository is mounted at the same path as outside, so the Chromium
+tree, the build and the caches stay in it between runs and a second build
+compiles only what changed; the `zebkit-mise` volume keeps mise's tools. `~/MacOSX` holds `MacOSX.sdk.tar.xz` and
+`version.plist` from a Mac (`scripts/macos-toolchain.sh`), needed on the
+first run only. The image is not a glibc 2.17 system and need not be:
+the engine is compiled against Chromium's own sysroot, `package.sh`
+refuses one that needs a newer glibc than 2.17, and `glibc-test.sh` runs
+it on CentOS 7's before anything is published.

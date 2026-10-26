@@ -1,0 +1,56 @@
+# A machine that builds zebkit's release for Linux and macOS and publishes
+# it, and checks before publishing that the Linux engine runs on glibc 2.17.
+#
+#   docker build -t zebkit-release --build-arg UID="$(id -u)" docker
+#   docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise \
+#       -v ~/MacOSX:/macos:ro -e GH_TOKEN zebkit-release   # build, test, publish
+#   docker run ... zebkit-release --no-publish            # build and test only
+#
+# The repository is mounted, not copied, and at the same path as outside:
+# the Chromium tree (upstream/), the build (out/), the caches (.cache/) and
+# dist/ stay in it from run to run, so a second build compiles only what
+# changed, and the tree's links and the build's records, which hold
+# absolute paths, stay right inside and outside the container. The
+# zebkit-mise volume keeps the tools mise installs. Allow about 150 GB for
+# the repository and as much memory as there is.
+#
+# The image is Debian, not a glibc 2.17 system: what the build runs on does
+# not decide what the engine needs. Chromium compiles with its own clang
+# against its own sysroot; scripts/package.sh refuses a package that needs
+# a glibc newer than 2.17, and scripts/glibc-test.sh runs the engine on
+# CentOS 7's glibc 2.17 and libraries before anything is published.
+#
+# /macos holds Apple's SDK for the macOS build, made once on a Mac
+# (scripts/macos-toolchain.sh says how): MacOSX.sdk.tar.xz and version.plist.
+
+FROM debian:13
+
+# What Chromium's tools and zebkit's scripts call from the system; the
+# compiler, sysroot, Rust, Node and ninja come with Chromium's checkout.
+# The libraries are what the engine loads, for the tests on this machine.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bison bzip2 ca-certificates curl file flex git gperf binutils \
+        build-essential patch perl pkg-config python3 unzip xz-utils zip \
+        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+        libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
+        libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+        libxfixes3 libxkbcommon0 libxrandr2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# mise, which brings gh and xz at the versions mise.toml pins.
+ARG MISE_VERSION=v2026.10.4
+RUN curl -fsSL "https://github.com/jdx/mise/releases/download/$MISE_VERSION/mise-$MISE_VERSION-linux-x64" \
+        -o /usr/local/bin/mise \
+    && chmod +x /usr/local/bin/mise
+
+# The same user id as the owner of the mounted repository, so what the
+# build writes there stays theirs. Chromium's tools do not run as root.
+ARG UID=1000
+RUN useradd --create-home --uid "$UID" builder
+USER builder
+ENV MISE_YES=1 PATH=/home/builder/.local/share/mise/shims:$PATH
+RUN git config --global --add safe.directory "*" \
+    && mkdir -p /home/builder/.local/share/mise
+
+COPY --chmod=755 publish.sh /usr/local/bin/zebkit-publish
+ENTRYPOINT ["zebkit-publish"]
