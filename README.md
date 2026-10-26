@@ -60,9 +60,6 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
   sandboxed; permissions a browser would ask about are not granted.
-- **An engine you can change.** zebkit is Chromium plus a small patch set
-  (`patches/`), rebuilt from source; where Chromium lacks something, zebkit
-  patches it rather than working around it.
 
 | | |
 |---|---|
@@ -341,3 +338,7 @@ made (`docs/ROADMAP.md`).
 
 `upstream/` (Chromium's tree, about 30 GB), `out/`, `dist/` and `.cache/`
 are generated and not tracked.
+
+zebkit is Chromium plus a small patch set (`patches/`), built from source.
+Where Chromium lacks something an application needs, zebkit patches
+Chromium rather than working around it (`docs/BUILD.md`).
