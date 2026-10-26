@@ -10,7 +10,8 @@ what Chrome is made of, with nothing of Chrome's browser and nothing of
 Electron's runtime. Your application stays yours, in C, C++, Rust, Python
 or JavaScript, with its own windows and toolkit. Where it needs the web,
 it adds a zebkit view; where it needs a PDF, media, compression or crypto,
-it calls zebkit's C API.
+it calls zebkit's API: in C, or through the bindings for Rust, Python and
+JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 
 <p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; Linux and macOS today, Windows planned"></p>
 
