@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-27",
+  "platform": "macOS arm64",
+  "chromium": "155.0.8059.84",
+  "profile": "slim-macos-native",
+  "validation": {
+    "native_build": "passed",
+    "engine_suite": "passed",
+    "rust_workspace": "passed",
+    "c_example_build": "passed",
+    "host_release_helper_build": "passed",
+    "application_signature_verification": "deep strict passed",
+    "offscreen_policy_modes": [
+      "disabled",
+      "enabled-unfocused",
+      "enabled-focused-without-user-activation"
+    ],
+    "synthetic_webauthn": [
+      "resident registration",
+      "discoverable assertion",
+      "origin and challenge",
+      "RP hash",
+      "presence and user verification flags",
+      "ECDSA signature",
+      "invalid RP rejection",
+      "abort"
+    ],
+    "native_ui": [
+      "owned localhost QR sheet visible",
+      "Cancel: NotAllowedError",
+      "AbortSignal: AbortError",
+      "navigation cleanup",
+      "new request after cleanup"
+    ],
+    "native_ui_sandbox": true,
+    "native_ui_gpu_disabled": true,
+    "bluetooth_permission_granted": false
+  },
+  "not_verified": [
+    "real Google sign-in",
+    "phone authentication",
+    "physical USB-key authentication",
+    "entitled iCloud/Touch ID authentication"
+  ],
+  "apple_browser_entitlement_available": false,
+  "artifacts": {
+    "host_test_copy": "dist/passkeys/Host.app",
+    "framework_binary_bytes": 226423040,
+    "host_copy_framework_sha256": "ab8d0e9125f7f638cf3e385b7e1a573e974c3457c971f34e4c3aa9ec9729cbc1",
+    "host_helper_sha256": "57c7579bf44b77f6c128ad77d08a27fc8c133840d8966e60e38ec050b5b12e74",
+    "signature": "ad hoc"
+  },
+  "optimization_profiles_modified": false,
+  "isolated_size_or_performance_comparison": false
+}

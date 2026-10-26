@@ -841,6 +841,8 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
       view_(view),
       size_(size) {
   All()[view] = this;
+  view->authentication_ui_enabled_ = false;
+  view->offscreen_view_ = true;
   InstallHooks();
   // A drag the page starts is run over the page from the application's
   // mouse events (drag.cc).
@@ -1545,6 +1547,7 @@ void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup) {
     size = offscreen->size();
   // Deleted with the page (Offscreen::WebContentsDestroyed).
   new Offscreen(popup, size, offscreen->scale());
+  popup->authentication_ui_enabled_ = opener->authentication_ui_enabled_;
 }
 
 }  // namespace zebkit
@@ -1704,8 +1707,21 @@ void zebkit_view_on_caret(zebkit_view* view, zebkit_caret_func func, void* data)
 }
 
 void zebkit_view_set_focus(zebkit_view* view, bool focused) {
-  if (Offscreen* offscreen = Offscreen::Of(view))
+  if (Offscreen* offscreen = Offscreen::Of(view)) {
+    view->offscreen_focused_ = focused;
     offscreen->SetFocus(focused);
+  }
+}
+
+bool zebkit_view_set_authentication_ui(zebkit_view* view, bool enabled) {
+#if BUILDFLAG(IS_MAC)
+  if (!view)
+    return false;
+  view->authentication_ui_enabled_ = enabled;
+  return true;
+#else
+  return false;
+#endif
 }
 
 void zebkit_view_on_cursor(zebkit_view* view, zebkit_cursor_func func, void* data) {

@@ -505,6 +505,14 @@ impl View {
         }
     }
 
+    /// Allows native macOS Passkey UI for this view. Off-screen views opt in;
+    /// their host must maintain focus and the page must have a recent user
+    /// activation before a temporary authentication window can be shown.
+    /// Returns false when unsupported or after the view has closed.
+    pub fn set_authentication_ui(&self, enabled: bool) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_authentication_ui(raw, enabled) })
+    }
+
     /// Calls `function` with the caret's place in the view, in CSS pixels,
     /// as it moves; `None` when there is none.
     pub fn on_caret<F: FnMut(Option<Rect>) + 'static>(&self, function: F) {

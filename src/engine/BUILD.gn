@@ -264,7 +264,12 @@ _deps = [
   "//v8",
 ]
 if (is_mac) {
-  _sources += [ "cookies_mac.mm" ]
+  _sources += [
+    "cookies_mac.mm",
+    "webauthn.h",
+    "webauthn_mac.mm",
+  ]
+  _deps += [ "//device/fido" ]
 } else if (is_linux && use_dbus) {
   _deps += [
     "//components/dbus",
@@ -437,6 +442,7 @@ if (!is_mac) {
            ]
     frameworks = [
       "AppKit.framework",
+      "CoreImage.framework",
       "Foundation.framework",
       "IOSurface.framework",
     ]

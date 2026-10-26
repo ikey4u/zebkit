@@ -652,6 +652,7 @@ extern "C" {
     pub fn zebkit_view_ime_cancel(view: *mut zebkit_view);
     pub fn zebkit_view_on_caret(view: *mut zebkit_view, func: Option<zebkit_caret_func>, data: *mut c_void);
     pub fn zebkit_view_set_focus(view: *mut zebkit_view, focused: bool);
+    pub fn zebkit_view_set_authentication_ui(view: *mut zebkit_view, enabled: bool) -> bool;
     pub fn zebkit_view_on_cursor(view: *mut zebkit_view, func: Option<zebkit_cursor_func>, data: *mut c_void);
     pub fn zebkit_view_on_popup(view: *mut zebkit_view, func: Option<zebkit_popup_func>, data: *mut c_void);
 }

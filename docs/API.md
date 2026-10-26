@@ -121,6 +121,13 @@ int main(int argc, char **argv) {
   session-only. In-memory/off-the-record contexts are not configured for
   disk cookies. The OS key store must be available; use the same profile
   path after restarting. See [cookie persistence](COOKIE_PERSISTENCE.md).
+- **Passkeys on macOS.** Visible views provide native WebAuthn UI for
+  entitled iCloud Keychain hosts, nearby phones and USB security keys.
+  Off-screen views default to windowless behavior; human-facing hosts may
+  opt in with `zebkit_view_set_authentication_ui()` and maintain the view
+  focus state. Conditional passkey autofill is reported as unavailable.
+  Host signing and Bluetooth declarations are described in
+  [passkey support](PASSKEYS.md).
 - **URL schemes of the application's own.** `zebkit_scheme_register()`,
   before `zebkit_main()`, makes `app:` (say) a scheme of the engine's in
   every process: standard (an origin, relative URLs), secure, open to

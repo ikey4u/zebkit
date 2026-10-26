@@ -67,7 +67,18 @@ library="$(engine_library "$package")"
 
 work="$(mktemp -d)"
 pids=()
-trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; rm -rf "$work"' EXIT
+offscreen_key_identity=
+cleanup() {
+    for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+    if [[ "$ZEBKIT_HOST" == macos && -n "$offscreen_key_identity" ]]; then
+        # Only the throwaway key created by this invocation's test executable.
+        /usr/bin/security delete-generic-password \
+            -s "Zebkit Cookies: $offscreen_key_identity" \
+            -a "$offscreen_key_identity" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$work"
+}
+trap cleanup EXIT
 
 log "building the test programs against $package"
 tests="$ZEBKIT_ROOT/tests/engine"
@@ -82,12 +93,22 @@ build_against_package "$package" "$work/bridge" "$tests/bridge.c"
 build_against_package "$package" "$work/scheme" "$tests/scheme.c"
 offscreen_options=()
 [[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
-build_against_package "$package" "$work/offscreen" "$tests/offscreen.c" -- "${offscreen_options[@]}"
+offscreen_test="$work/offscreen"
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    # Recompiled ad hoc executables cannot read an older binary's Keychain
+    # item without a user prompt. Use a reserved, disposable test identity.
+    offscreen_key_identity="zebkit-test-offscreen-$(basename "$work")"
+    offscreen_test="$work/$offscreen_key_identity"
+fi
+build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
 build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$work/mode" "$tests/mode.c"
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    build_against_package "$package" "$work/webauthn-host" "$tests/webauthn_host.c"
+fi
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -163,7 +184,7 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$p
     ZEBKIT_TEST_FILES="$work/files" run bridge "$work/bridge" "${engine_switches[@]}"
 
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_SHOTS="${ENGINE_TEST_SHOTS:-}" \
-    run offscreen "$work/offscreen" "${engine_switches[@]}"
+    run offscreen "$offscreen_test" "${engine_switches[@]}"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen.log" || { echo "FAIL the off-screen test did not finish"; failed=1; }
 run offscreen-host "$work/offscreen-show" --renderer="$work/offscreen-render" \
     --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \
@@ -190,6 +211,14 @@ ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILE
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "FAIL the media history test did not finish"; failed=1; }
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
+
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    run webauthn python3 -I "$tests/webauthn.py" "$work/webauthn-host" --no-sandbox --headless
+    run webauthn-unfocused python3 -I "$tests/webauthn.py" "$work/webauthn-host" \
+        --no-sandbox --headless --test-authentication-ui
+    run webauthn-no-activation python3 -I "$tests/webauthn.py" "$work/webauthn-host" \
+        --no-sandbox --headless --test-authentication-ui --test-focused
+fi
 
 # Cookie encryption uses the real OS key store. Headless Linux builders
 # without a desktop keyring can opt into this integration test explicitly.

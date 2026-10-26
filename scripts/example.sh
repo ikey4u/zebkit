@@ -77,6 +77,7 @@ with open(sys.argv[1], "wb") as output:
         "CFBundleInfoDictionaryVersion": "6.0",
         "NSHighResolutionCapable": True,
         "NSSupportsAutomaticGraphicsSwitching": True,
+        "NSBluetoothAlwaysUsageDescription": "Use a nearby phone or tablet to verify your identity with a passkey.",
     }, output)
 PY
     binary="$contents/MacOS/Zebkit Embedded Browser"
@@ -102,9 +103,22 @@ if [[ "$example" == macos-basic ]]; then
     # The cross-built archive carries linker signatures, without resource
     # seals. Sign the copied bundles from the inside out using the Mac's
     # codesign; leave the source engine package alone.
-    codesign --force --sign - "$framework/Versions/A/Helpers/Zebkit Helper.app"
-    codesign --force --sign - "$framework"
-    codesign --force --sign - "$app"
+    identity="${EXAMPLE_CODESIGN_IDENTITY:--}"
+    signing=()
+    if [[ -n "${EXAMPLE_ENTITLEMENTS:-}" ]]; then
+        [[ "$identity" != - ]] || die "EXAMPLE_ENTITLEMENTS needs an Apple signing identity, not ad hoc signing"
+        [[ -f "$EXAMPLE_ENTITLEMENTS" ]] || die "no entitlements file: $EXAMPLE_ENTITLEMENTS"
+        signing=(--entitlements "$EXAMPLE_ENTITLEMENTS")
+    fi
+    if [[ -n "${EXAMPLE_PROVISIONING_PROFILE:-}" ]]; then
+        [[ -f "$EXAMPLE_PROVISIONING_PROFILE" ]] || die "no provisioning profile: $EXAMPLE_PROVISIONING_PROFILE"
+        cp "$EXAMPLE_PROVISIONING_PROFILE" "$contents/embedded.provisionprofile"
+    else
+        rm -f "$contents/embedded.provisionprofile"
+    fi
+    codesign --force --sign "$identity" "$framework/Versions/A/Helpers/Zebkit Helper.app"
+    codesign --force --sign "$identity" "$framework"
+    codesign --force --sign "$identity" "${signing[@]}" "$app"
     codesign --verify --deep --strict "$app"
     log "application: $app"
 fi
@@ -117,4 +131,9 @@ if [[ "$example" != ffmpeg && "$ZEBKIT_HOST" == linux ]] && ! unshare --user tru
     set -- --no-sandbox "$@"
 fi
 log "running $binary $*"
+if [[ "$example" == macos-basic ]]; then
+    # LaunchServices makes this application responsible for its Bluetooth
+    # privacy prompt; a bare exec may make the terminal responsible instead.
+    exec open -n -W "$app" --args "$@"
+fi
 exec "$binary" "$@"

@@ -174,6 +174,11 @@ struct zebkit_view : public content::WebContentsObserver,
   GURL opening_url_;
   zebkit_drop_func on_drop_ = nullptr;
   void* on_drop_data_ = nullptr;
+  // Normal views have a native authentication anchor. Off-screen views opt
+  // in and have their foreground state explicitly maintained by the host.
+  bool authentication_ui_enabled_ = true;
+  bool offscreen_view_ = false;
+  bool offscreen_focused_ = false;
 
  private:
   struct GrantEntry {

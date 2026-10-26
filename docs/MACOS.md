@@ -29,6 +29,13 @@ and do not need the SDK archive or `macos-toolchain.sh` below. Allow about
 
 ## The package
 
+Passkey authentication also needs host configuration: the phone route
+requires a Bluetooth privacy description, and Apple's iCloud browser route
+requires an approved entitlement on the signed host application. The C
+example supplies the privacy description and supports an optional signing
+identity, entitlements file and provisioning profile. See
+[passkey support](PASSKEYS.md).
+
 `scripts/package.sh slim-macos` makes `out/blink/slim-macos/package`:
 
 ```text

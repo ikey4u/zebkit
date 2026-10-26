@@ -125,6 +125,7 @@ _view_reload = _declare("zebkit_view_reload", None, _V)
 _view_go_back = _declare("zebkit_view_go_back", None, _V)
 _view_go_forward = _declare("zebkit_view_go_forward", None, _V)
 _view_resize = _declare("zebkit_view_resize", None, _V, _I, _I)
+_view_authentication_ui = _declare("zebkit_view_set_authentication_ui", _B, _V, _B)
 _view_close = _declare("zebkit_view_close", None, _V)
 _view_get_url = _declare("zebkit_view_get_url", _P, _V)
 _view_get_title = _declare("zebkit_view_get_title", _P, _V)
@@ -291,6 +292,10 @@ class View:
 
     def resize(self, width, height):
         _view_resize(self._check(), width, height)
+
+    def set_authentication_ui(self, enabled):
+        """Allow native macOS Passkey UI; return False when unsupported."""
+        return bool(_view_authentication_ui(self._check(), bool(enabled)))
 
     def close(self):
         if not self._closed:
