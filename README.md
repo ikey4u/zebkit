@@ -14,6 +14,11 @@ native code, or JavaScript on the engine's own V8.
 
 <p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; Linux and macOS today, Windows planned"></p>
 
+- **A library, not a base.** The application keeps its own process, loop,
+  windows and toolkit, and adds zebkit where it needs a web page, a PDF,
+  media or native UI, as it would add SQLite. Electron is a base an
+  application is built on; zebkit is a part it integrates
+  (`docs/ROADMAP.md`, "The library").
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.

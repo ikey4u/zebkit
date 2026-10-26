@@ -9,9 +9,11 @@ patches, has its own: `docs/ROADMAP_HOOKS.md`.
 
 ## Requirements
 
-zebkit is an engine to embed in applications, agents among them, that
-drive it over the Chrome DevTools Protocol. It is not a browser and not an
-application framework.
+zebkit is a library that applications ship and integrate, agents among
+them: an application keeps its own process, main loop, windows and
+toolkit, and calls zebkit where it wants a web page, a PDF, media or
+zebkit's native UI. It is not a browser, and not a base that applications
+are built on, as Electron is.
 
 | Requirement | From |
 |---|---|
@@ -26,6 +28,7 @@ application framework.
 | Chromium's libraries, and what else in it is useful, exported for applications as a C API, with bindings and a JavaScript API | Owner, 2026-10-19 |
 | A full PDF API on Chromium's PDFium, with EmbedPDF's features as the reference | Owner, 2026-10-20 |
 | For agents, a general MCP tool with the engine's capabilities, not only a CDP endpoint for browser drivers | Owner, 2026-10-23 |
+| A library that applications integrate, not a base they are built on: the application owns its process, loop, windows, menus and identity; zebkit.ui is one part of the library, usable inside the application's own windows | Owner, 2026-10-25 |
 | Real web pages cost less than in the latest stable Electron, and less still over time: CPU while loading and at rest, memory, processes. A medium page in an application is not a browser's workload | Owner, 2026-10-23 |
 | Off-screen views: frames as shared surfaces (IOSurfaces, shared memory, dmabufs) with their damage, input sent by the application, popups drawn off-screen, frames passable to another process | Owner, 2026-10-23 |
 
@@ -54,6 +57,40 @@ camera and microphone capture, and the device APIs.
 | Media capture | `<zebkit/media.h>`: what a page's `<audio>` and `<video>` play copied into MP4, WebM or Matroska as it plays, without decoding: files, Media Source Extensions (DASH, HLS players), the engine's HLS; the stream's times, seeks, configuration changes, audio alone, encrypted media refused (`patches/1031`, `1032`; `tests/engine/media.c`) | 2026-10-25 |
 
 ## Next
+
+### The library
+
+zebkit fits into the application, not the application into zebkit
+(owner, 2026-10-25). Today it is closer to a base: `zebkit_main()` takes
+over `main()` and runs Chromium's loop, settings are Chromium's command
+line, and on macOS the engine sets the application's delegate, menu bar
+and Dock policy.
+
+- **TODO: `zebkit_init()` and `zebkit_shutdown()`**, from any point of the
+  application's life, in place of `zebkit_main()` as the way in
+  (`zebkit_main()` stays for programs that want the engine's loop).
+- **TODO: the engine in the application's loop**: GTK (GLib's main
+  context), Qt, AppKit (the run loop), Win32 and winit, through one
+  integration point (a file descriptor or a wake-up callback and a
+  `zebkit_pump()`), and the engine on a thread of its own for loops it
+  cannot join. Calls from the application's thread, as today.
+- **TODO: nothing taken from the application.** On macOS no delegate, menu
+  bar or Dock policy of zebkit's unless asked (`zebkit_app_*` becomes
+  opt-in); no signal handlers, crash reporter or log file of the engine's
+  over the application's; the helper program the only process zebkit adds.
+- **TODO: settings as an API**, a struct or JSON given to `zebkit_init()`
+  (profile directory, proxy, cookies, user agent, GPU, logging), with
+  Chromium's switches left as an escape hatch.
+- **TODO: views in the application's own windows and widgets as the main
+  path**: a view attached to a native window or widget handle (`NSView`,
+  GTK widget, `HWND`, Qt `QWindow`), or off-screen with the application
+  drawing its frames, rather than windows of zebkit's.
+- **TODO: zebkit.ui in the application's windows too**: its windows and
+  widgets usable as a part of an application written in another toolkit,
+  not only as a whole application (`docs/ROADMAP_UI.md`).
+- **TODO: examples of integration**: a GTK, a Qt, an AppKit and a winit
+  application each adding a web view and a PDF view to a window of their
+  own.
 
 ### The engine
 
