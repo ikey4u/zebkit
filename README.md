@@ -56,6 +56,12 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   DevTools server, headless or windowed. A general MCP server giving them
   pages, PDFs, files, media and native windows as tools is planned
   (`docs/ROADMAP.md`, "Agents").
+- **Customise it from your code.** Native hooks decide what the engine
+  does: new windows and popups, dialogs, drag and drop, your own URL
+  schemes, what a page may call, scripts before the page's own.
+  *Planned:* hooks at every point where Chromium decides, permissions,
+  navigation, network requests, certificates, downloads and more
+  (`docs/ROADMAP_HOOKS.md`).
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
@@ -89,11 +95,61 @@ in `dist/example/Zebkit Embedded Browser.app`.
 Building needs about 30 GB for Chromium's tree (`docs/BUILD.md`). Below,
 `$PKG` is the package directory.
 
-### A first program in C
+### Add it to a program you already have
 
-Today the engine runs the loop: an application starts it with
-`zebkit_main()` and works in its callbacks. Starting it from inside the
-application's own loop, `zebkit_init()`, comes next.
+zebkit is a library: your program keeps its `main()` and calls it. This
+one renders a PDF's first page to a PNG and reads its text, with PDFium
+and the image encoders inside zebkit, and nothing else to install:
+
+```c
+#include <stdio.h>
+#include <zebkit/pdf.h>
+#include <zebkit/services.h>
+
+/* Your program, your main(): zebkit is just a library it calls. */
+int main(int argc, char **argv) {
+    char *error = NULL;
+    zebkit_pdf *pdf = zebkit_pdf_open_file(argv[1], NULL, &error);
+    if (!pdf) {
+        fprintf(stderr, "%s\n", error);
+        return 1;
+    }
+
+    /* The first page as a PNG, at twice its size. */
+    zebkit_pdf_render_options options = {.scale = 2, .background = 0xffffffff};
+    int width, height;
+    uint8_t *rgba = zebkit_pdf_render(pdf, 0, &options, &width, &height, &error);
+    size_t size;
+    uint8_t *png = zebkit_image_encode(ZEBKIT_IMAGE_PNG, rgba, width, height, 0, &size, &error);
+    fwrite(png, 1, size, fopen("page1.png", "wb"));
+
+    /* And its text. */
+    char *text = zebkit_pdf_text(pdf, 0, &error);
+    printf("%d pages; page 1 says: %.80s\n", zebkit_pdf_page_count(pdf), text);
+
+    zebkit_free(text), zebkit_free(png), zebkit_free(rgba);
+    zebkit_pdf_close(pdf);
+    return 0;
+}
+```
+
+```sh
+cc thumb.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o thumb   # Linux
+cc thumb.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o thumb   # macOS
+./thumb report.pdf     # 2 pages; page 1 says: Quarterly report ...
+```
+
+The PDF API, compression, crypto, URLs, image codecs, ICU and the
+libraries inside the engine (`zebkit_vendor_*`, FFmpeg's among them) need
+no engine loop (`docs/API.md`); only HTTP through the engine's network
+stack and web pages do.
+
+### Add a web view
+
+Web pages need the engine running. Today the engine runs the loop: the
+program starts it with `zebkit_main()` and works in its callbacks.
+Starting it from inside the program's own loop (GTK, Qt, AppKit, Win32,
+winit) with `zebkit_init()` comes next (`docs/ROADMAP.md`, "The library").
 
 ```c
 #include <stdio.h>
