@@ -185,6 +185,12 @@ grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 
+# Cookie encryption uses the real OS key store. Headless Linux builders
+# without a desktop keyring can opt into this integration test explicitly.
+if [[ "$ZEBKIT_HOST" == macos || "${ENGINE_TEST_PERSISTENT_COOKIES:-0}" == 1 ]]; then
+    run cookies python3 -I "$tests/cookies.py" "$OUT_DIR/tools/zebkit-run" --no-sandbox --headless
+fi
+
 mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
 

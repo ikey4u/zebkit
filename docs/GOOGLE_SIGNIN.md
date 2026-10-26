@@ -91,9 +91,12 @@ Regression coverage lives in `tests/engine/pages/browser.html` and
 `tests/engine/cdp_browser.py`, both with and without Runtime observation.
 The live Google check is separate from those localhost tests.
 
-## Native build and final verification
+## Hosted-app patch validation
 
-The final library was rebuilt and copied to `dist/release` and the default
+These artifact hashes and measurements describe the hosted-app-only fix,
+before the separate [cookie persistence repair](COOKIE_PERSISTENCE.md).
+
+That library was rebuilt and copied to `dist/release` and the default
 C embedding example. Their framework binary SHA-256 is identical:
 `cb01de73eff590d64aa73675d91073c5aca8209aa0c53e57abc41be7a6a1bbf2`.
 A fresh-profile minimal C host using that exact framework reached Google's

@@ -109,6 +109,12 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const std::optional<url::Origin>& request_initiator,
       network::mojom::RequestDestination request_destination,
       NonNetworkURLLoaderFactoryMap* factories) override;
+  void ConfigureNetworkContextParams(
+      content::BrowserContext* context,
+      bool in_memory,
+      const base::FilePath& relative_partition_path,
+      network::mojom::NetworkContextParams* params,
+      cert_verifier::mojom::CertVerifierCreationParams* cert_params) override;
   void ConfigureNetworkContextParamsForShell(
       content::BrowserContext* context,
       network::mojom::NetworkContextParams* context_params,

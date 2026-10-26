@@ -58,6 +58,7 @@
 #include "ui/views/widget/widget.h"
 #include "zebkit/engine/app.h"
 #include "zebkit/engine/call.h"
+#include "zebkit/engine/cookies.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
@@ -441,6 +442,17 @@ bool BrowserClient::CanCreateWindow(
 // and tools read it to know what they drive.
 std::string BrowserClient::GetProduct() {
   return std::string(version_info::GetProductNameAndVersionForUserAgent());
+}
+
+void BrowserClient::ConfigureNetworkContextParams(
+    content::BrowserContext* context,
+    bool in_memory,
+    const base::FilePath& relative_partition_path,
+    network::mojom::NetworkContextParams* params,
+    cert_verifier::mojom::CertVerifierCreationParams* cert_params) {
+  content::ShellContentBrowserClient::ConfigureNetworkContextParams(
+      context, in_memory, relative_partition_path, params, cert_params);
+  ConfigurePersistentCookies(context, in_memory, relative_partition_path, params);
 }
 
 // Third-party cookies are blocked, as Safari and Firefox block them: an

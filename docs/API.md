@@ -113,6 +113,11 @@ int main(int argc, char **argv) {
   `$XDG_CONFIG_HOME/zebkit/<program name>`
   (`~/Library/Application Support/zebkit/<program name>` on macOS). The
   log goes to stderr.
+  Persistent cookies are encrypted in the profile's `Network/Cookies`
+  database and survive clean restarts. Cookies without an expiry remain
+  session-only. In-memory/off-the-record contexts are not configured for
+  disk cookies. The OS key store must be available; use the same profile
+  path after restarting. See [cookie persistence](COOKIE_PERSISTENCE.md).
 - **URL schemes of the application's own.** `zebkit_scheme_register()`,
   before `zebkit_main()`, makes `app:` (say) a scheme of the engine's in
   every process: standard (an origin, relative URLs), secure, open to

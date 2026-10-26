@@ -4,6 +4,7 @@
 # Chromium tree as //zebkit/engine by scripts/fetch-upstream.sh.
 
 import("//build/config/clang/clang.gni")
+import("//build/config/features.gni")
 import("//build/config/sysroot.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
@@ -22,6 +23,9 @@ config("implementation") {
     "ZEBKIT_IMPLEMENTATION",
     "ZEBKIT_VERSION=\"$_version\"",
   ]
+  if (is_linux && use_dbus) {
+    defines += [ "ZEBKIT_COOKIES_USE_DBUS" ]
+  }
 }
 
 # Applications include <zebkit/zebkit.h>.
@@ -157,6 +161,8 @@ _sources = [
   "cdp.cc",
   "chrome_object.cc",
   "client_hints.cc",
+  "cookies.cc",
+  "cookies.h",
   # window.chrome, by Chrome's own code (chrome_object.cc).
   "//chrome/renderer/loadtimes_bindings.cc",
   "//chrome/renderer/loadtimes_bindings.h",
@@ -199,6 +205,9 @@ _deps = [
   "//base/version_info",
   "//components/embedder_support",
   "//components/input",
+  "//components/os_crypt/async/browser",
+  "//components/os_crypt/async/browser:key_provider_interface",
+  "//crypto",
   "//components/version_info:version_info_with_user_agent",
   # Printing to PDF, as headless Chrome prints (print.cc).
   "//components/printing/browser",
@@ -242,6 +251,14 @@ _deps = [
   "//url",
   "//v8",
 ]
+if (is_mac) {
+  _sources += [ "cookies_mac.mm" ]
+} else if (is_linux && use_dbus) {
+  _deps += [
+    "//components/dbus",
+    "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
+  ]
+}
 _deps += _vendored_libraries
 
 declare_args() {
