@@ -41,8 +41,10 @@ scripts/engine-test.sh slim     # every layer of the API, from programs built ag
   (`PACKAGE_STRIP=0` keeps the symbols).
 
 A package needs nothing on the target machine but what
-`docs/reports/slim.md` lists: glibc 2.25 or newer and the libraries every
-desktop has (X11, GLib, NSS, ALSA, D-Bus).
+`docs/reports/slim.md` lists: glibc 2.17 or newer and the libraries every
+desktop has (X11, GLib, NSS, ALSA, D-Bus). `scripts/package.sh` refuses a
+package that needs a newer glibc, and `scripts/glibc-test.sh` runs it on
+CentOS 7's.
 
 ## macOS
 
@@ -108,6 +110,7 @@ in a profile is preferred to a patch wherever one exists.
 | Script | What it checks |
 |---|---|
 | `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, off-screen views and their frames in another process (`tests/engine/offscreen.c`, `examples/offscreen-host`; `ENGINE_TEST_SHOTS=<dir>` keeps their pictures), dialogs, printing to PDF and drag and drop from the C API and over CDP (`tests/engine/page.c`, `cdp_page.py`), URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
+| `scripts/glibc-test.sh <profile>` | The C tests (libraries, services, PDF, the C API, `zebkit.*`, dialogs, popups, media capture, URL schemes) on glibc 2.17 and CentOS 7's libraries, every process of the engine included, without a container: CentOS 7 unpacked once into `out/blink/glibc-2.17/` |
 | `cd rust && cargo test` | The Rust crates against the real engine |
 
 ## Measuring

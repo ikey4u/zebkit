@@ -4,7 +4,7 @@
 - Measured: 2026-10-22 on Linux x86_64, from the package directory `scripts/package.sh` assembles
 - **Total: 157.3 MiB** (within the 255.7 MiB of Electron, the baseline)
 - Compressed: 53.9 MiB as `.tar.xz` (xz -6, as releases ship), 71.8 MiB as `.zip` (deflate -9, as Electron ships)
-- Oldest glibc it can run on: 2.25
+- Oldest glibc it can run on: 2.17
 - Expects from the system: ld-linux-x86-64.so.2 libasound.so.2 libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0 libc.so.6 libdbus-1.so.3 libdl.so.2 libexpat.so.1 libgbm.so.1 libgcc_s.so.1 libglib-2.0.so.0 libgobject-2.0.so.0 libm.so.6 libnspr4.so libnss3.so libnssutil3.so libpthread.so.0 libudev.so.1 libX11.so.6 libxcb.so.1 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libxkbcommon.so.0 libXrandr.so.2
 
 | File | MiB |

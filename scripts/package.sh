@@ -125,4 +125,12 @@ done | sed 's/GLIBC_//' | sort -uV | tail -1)"
 
 log "expects from the system: $needed"
 log "oldest usable glibc: $glibc"
+# The oldest glibc the engine runs on; a symbol from a newer one, weak or
+# not, keeps glibc 2.17's dynamic linker from loading the package.
+glibc_floor=2.17
+if [[ -n "$glibc" && "$(printf '%s\n' "$glibc_floor" "$glibc" | sort -V | tail -1)" != "$glibc_floor" ]]; then
+    die "the package needs glibc $glibc, newer than $glibc_floor: $(for file in "$package"/*; do
+        if [[ -f "$file" ]] && is_elf "$file"; then objdump -T "$file" | awk -v f="${file##*/}" -v v="GLIBC_$glibc" '$0 ~ v { print f ": " $NF }'; fi
+    done | sort -u | paste -sd' ' -)"
+fi
 log "package: $package"

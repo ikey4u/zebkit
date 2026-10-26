@@ -281,7 +281,10 @@ declare_args() {
 }
 
 if (!is_mac) {
-  _sources += [ "attach.cc" ]
+  _sources += [
+    "attach.cc",
+    "glibc_compat.cc",
+  ]
 
   shared_library("zebkit") {
     # The content shell's browser classes, which are test-only in Chromium,

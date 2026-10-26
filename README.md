@@ -70,7 +70,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | | |
 |---|---|
 | Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
-| Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
+| Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later): `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
 | Version | `VERSION`: 0.0.1-alpha.10 |

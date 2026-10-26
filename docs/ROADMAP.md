@@ -55,6 +55,7 @@ camera and microphone capture, and the device APIs.
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
 | Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
 | Media capture | `<zebkit/media.h>`: what a page's `<audio>` and `<video>` play copied into MP4, WebM or Matroska as it plays, without decoding: files, Media Source Extensions (DASH, HLS players), the engine's HLS; the stream's times, seeks, configuration changes, audio alone, encrypted media refused (`patches/1031`, `1032`; `tests/engine/media.c`) | 2026-10-25 |
+| Old Linux | glibc 2.17 and newer (CentOS 7): the one newer symbol, Rust's weak `getrandom`, answered inside the engine; `scripts/package.sh` refuses a package that needs more; the C tests pass on CentOS 7's glibc and libraries (`scripts/glibc-test.sh`) | 2026-10-26 |
 
 ## Next
 
@@ -102,9 +103,6 @@ and Dock policy.
 - **A window's native handle**, so that an application can parent the
   system's dialogs to it (file dialogs through the XDG portal need
   it).
-- **Linux on older systems.** The package runs on glibc 2.25 and newer; the
-  requirement is 2.17. What is left is building on an older sysroot and
-  replacing what newer symbols the engine takes.
 - **The sandbox where there is none.** Chromium's Linux sandbox needs
   unprivileged user namespaces or a set-user-ID helper, which containers
   and build machines often lack; the engine then refuses to start without
