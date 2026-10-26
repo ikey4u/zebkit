@@ -136,14 +136,17 @@ EOF
 
 # Undo the previous series: files it created are removed, files it changed
 # are restored from the repository they belong to (src/ or one inside it).
+# A file one patch created and a later one changed is only removed.
 if [[ -f "$applied" ]]; then
+    awk '$1 == "new" { created[$2] = 1 } { if (!($2 in seen)) { seen[$2] = 1; order[n++] = $2 } }
+         END { for (i = 0; i < n; i++) print (order[i] in created ? "new" : "changed"), order[i] }' "$applied" |
     while read -r kind file; do
         if [[ "$kind" == new ]]; then
             rm -f "$SRC_DIR/$file"
         else
             git -C "$(dirname "$SRC_DIR/$file")" checkout -q HEAD -- "$(basename "$file")"
         fi
-    done < "$applied"
+    done
     rm -f "$applied"
 fi
 rm -f "$applied_series"
