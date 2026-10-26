@@ -231,6 +231,10 @@ is not one library's API.
 | `zebkit_fetch` | An HTTP request through the engine's network stack: HTTP/1.1, 2 and 3, its cache, cookies and proxy settings, without CORS | The network service |
 
 All but `zebkit_fetch()` work without the engine running.
+For a process that also starts the engine, call ICU-backed URL services
+from the ready callback. Chromium registers and locks its URL schemes
+during startup; parsing URLs first prevents that initialization. Standalone
+service programs can use these functions without starting the engine.
 
 ### PDF
 

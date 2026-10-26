@@ -46,10 +46,25 @@ fn main() {
     // What a package directory is known by.
     let engine_name = if macos { "Zebkit.framework" } else { "libzebkit.so.1" };
     let profile = if macos { "slim-macos" } else { "slim" };
-    let local = manifest.join("../../out/blink").join(profile).join("package");
+    let root = manifest.join("../..");
+    let mut locals = Vec::new();
+    if macos {
+        locals.push(root.join("dist/release"));
+        locals.push(root.join("out/blink/slim-macos-native/package"));
+        // A native package can appear after an earlier build selected the
+        // cross-built package. Watch the local package parents for that.
+        if root.join("upstream.lock").exists() {
+            for parent in [root.join("dist"), root.join("out/blink")] {
+                if parent.exists() {
+                    println!("cargo:rerun-if-changed={}", parent.display());
+                }
+            }
+        }
+    }
+    locals.push(root.join("out/blink").join(profile).join("package"));
     let directory = if let Some(given) = env::var_os("ZEBKIT_DIR") {
         PathBuf::from(given)
-    } else if local.join(engine_name).exists() {
+    } else if let Some(local) = locals.into_iter().find(|path| path.join(engine_name).exists()) {
         local
     } else {
         download(&manifest)

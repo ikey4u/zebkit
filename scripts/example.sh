@@ -3,15 +3,16 @@
 # run it.
 #
 #   scripts/example.sh linux-basic [URL]          # examples/window.c: a small browser window
-#   scripts/example.sh macos-basic [URL]          # the same program on macOS
+#   scripts/example.sh macos-basic [URL]          # examples/window.c on macOS
 #   scripts/example.sh ffmpeg [IN.mp3 [OUT.wav]]  # examples/ffmpeg.cpp: decode with the engine's FFmpeg
 #
 # On Linux it uses dist/release, which scripts/dist.sh release makes (it is
 # built first if it is not there); EXAMPLE_DIST=debug uses dist/debug. The
-# executable goes to dist/example/ and finds the engine through a relative
-# run path, the way a shipped application finds the one beside it. On a
-# Mac it uses the macOS package built on Linux (docs/MACOS.md), in
-# out/blink/slim-macos/package or ZEBKIT_DIR.
+# executable goes to dist/example/ on Linux. The macOS C embedding demo goes into
+# dist/example/Zebkit Embedded Browser.app with a signed framework copy.
+# EXAMPLE_BUILD_ONLY=1 builds without launching. The embedding demo prefers the
+# native package in dist/<kind>, then the native/cross-built profile's
+# package (docs/MACOS.md); ZEBKIT_DIR overrides all of these.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -28,12 +29,17 @@ esac
 
 kind="${EXAMPLE_DIST:-release}"
 [[ "$kind" == release || "$kind" == debug ]] || die "EXAMPLE_DIST is release or debug"
-# The engine: dist/<kind>, which scripts/dist.sh makes on Linux. On a Mac,
-# the macOS package built on Linux (docs/MACOS.md), copied to the same
-# place, or ZEBKIT_DIR.
+# The engine: dist/<kind>, which scripts/dist.sh makes on either platform,
+# or a native/cross-built macOS profile's package, or ZEBKIT_DIR.
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    dist="${ZEBKIT_DIR:-$OUT_DIR/slim-macos/package}"
-    [[ -e "$dist/Zebkit.framework" ]] || die "no Zebkit.framework in $dist: build it on Linux (scripts/build.sh slim-macos, scripts/package.sh slim-macos) and copy the package here, or set ZEBKIT_DIR"
+    dist="${ZEBKIT_DIR:-$ZEBKIT_ROOT/dist/$kind}"
+    if [[ -z "${ZEBKIT_DIR:-}" && ! -e "$dist/Zebkit.framework" ]]; then
+        native_profile=slim-macos-native
+        [[ "$kind" == debug ]] && native_profile=slim-macos-native-dev
+        dist="$OUT_DIR/$native_profile/package"
+        [[ -e "$dist/Zebkit.framework" ]] || dist="$OUT_DIR/slim-macos/package"
+    fi
+    [[ -e "$dist/Zebkit.framework" ]] || die "no Zebkit.framework in $dist: run scripts/dist.sh $kind on this Mac, or set ZEBKIT_DIR to a package"
 else
     dist="$ZEBKIT_ROOT/dist/$kind"
     [[ -e "$dist/libzebkit.so.1" ]] || "$ZEBKIT_ROOT/scripts/dist.sh" "$kind"
@@ -46,6 +52,35 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     link=(-F"$dist" -framework Zebkit -Wl,-rpath,"$dist")
 else
     link=(-L"$dist" -l:libzebkit.so.1 -Wl,-rpath,"\$ORIGIN/../$kind")
+fi
+
+# Keep the sandboxed helper and resources in a standard application bundle.
+# This also avoids the helper startup crashes observed with the released
+# framework linked from outside a bare executable's bundle.
+if [[ "$example" == macos-basic ]]; then
+    app="$out/Zebkit Embedded Browser.app"
+    contents="$app/Contents"
+    framework="$contents/Frameworks/Zebkit.framework"
+    mkdir -p "$contents/MacOS" "$framework"
+    rsync -a --delete "$dist/Zebkit.framework/" "$framework/"
+    python3 - "$contents/Info.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "wb") as output:
+    plistlib.dump({
+        "CFBundleExecutable": "Zebkit Embedded Browser",
+        "CFBundleIdentifier": "dev.zebkit.browser.embedded",
+        "CFBundleName": "Zebkit Embedded Browser",
+        "CFBundleDisplayName": "Zebkit Embedded Browser",
+        "CFBundlePackageType": "APPL",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "NSHighResolutionCapable": True,
+        "NSSupportsAutomaticGraphicsSwitching": True,
+    }, output)
+PY
+    binary="$contents/MacOS/Zebkit Embedded Browser"
+    link=(-F"$contents/Frameworks" -framework Zebkit -Wl,-rpath,@executable_path/../Frameworks)
 fi
 
 case "$example" in
@@ -62,6 +97,18 @@ case "$example" in
         (( $# > 1 )) || set -- "$1" "$out/$(basename "${1%.*}").wav"
         ;;
 esac
+
+if [[ "$example" == macos-basic ]]; then
+    # The cross-built archive carries linker signatures, without resource
+    # seals. Sign the copied bundles from the inside out using the Mac's
+    # codesign; leave the source engine package alone.
+    codesign --force --sign - "$framework/Versions/A/Helpers/Zebkit Helper.app"
+    codesign --force --sign - "$framework"
+    codesign --force --sign - "$app"
+    codesign --verify --deep --strict "$app"
+    log "application: $app"
+fi
+[[ "${EXAMPLE_BUILD_ONLY:-0}" == 1 ]] && exit 0
 
 # Chromium's sandbox needs unprivileged user namespaces; where the system
 # gives none, the example runs without it.

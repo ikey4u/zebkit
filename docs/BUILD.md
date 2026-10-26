@@ -46,9 +46,18 @@ desktop has (X11, GLib, NSS, ALSA, D-Bus).
 
 ## macOS
 
-Built on the same Linux machine, as Chromium's own builders compile for
-macOS on Linux; only Apple's SDK has to come from a Mac.
-`docs/MACOS.md` has the steps:
+On an Apple silicon Mac with full Xcode installed:
+
+```sh
+scripts/dist.sh release          # native engine and package into dist/release
+scripts/example.sh macos-basic    # C embedding demo with Zebkit.framework
+```
+
+`slim-macos-native` uses the Mac's Xcode and disables the Linux-only ML
+inliner and ThinLTO. `scripts/dist.sh debug` uses `slim-macos-native-dev`.
+
+Release archives can still be cross-built on Linux; only Apple's SDK has
+to come from a Mac. `docs/MACOS.md` has the steps:
 
 ```sh
 scripts/macos-toolchain.sh MacOSX.sdk.tar.xz version.plist    # once
@@ -70,11 +79,13 @@ Not built yet on Blink. The target is the same profile and the same API
 |---|---|
 | `slim` | The product: the engine as a library, without what an embedder does not need, optimized for speed where speed is spent (`docs/SIZE_AND_SPEED.md`) |
 | `slim-macos` | `slim` for macOS on arm64; without PGO until Chromium's macOS profile is fetched |
+| `slim-macos-native` | macOS on arm64 with installed Xcode, without ML inlining or ThinLTO |
+| `slim-macos-native-dev` | The native macOS profile with debug information |
 | `slim-dev` | `slim` with debug information and without the link-time optimization pass, for debuggers and profilers (`mise run d`) |
 | `baseline` | Chromium's content shell with its release defaults, the "before" of every measurement |
 
-`profiles/_common.gn` is what every profile has: an official release
-build, not a component build, without symbols, with linker maps (for
+`profiles/_common.gn` supplies the defaults: an official release build,
+not a component build, without symbols, with linker maps (for
 `scripts/mapsize.py`), H.264 and AAC (`proprietary_codecs`), PDFium without
 XFA forms or its own V8, and zebkit's configuration of FFmpeg. A new
 profile is a new `.gn` file.
@@ -119,9 +130,9 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 |---|---|
 | `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release` and macOS in `dist/release-macos` (cross-built, `docs/MACOS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `rust/zebkit-rs/engines.txt` |
 | `mise run r:github` | The same, then the GitHub release `v<version>` with both archives (`gh`, logged in; the tree committed) |
-| `mise run d` | `scripts/dist.sh debug`: the `slim-dev` profile into `dist/debug`, with debug information |
+| `mise run d` | `scripts/dist.sh debug`: the platform's development profile into `dist/debug`, with debug information |
 | `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
-| `mise example:macos:basic` | The same on a Mac, against the macOS package built on Linux |
+| `mise example:macos:basic` | Builds and runs the C embedding demo against the macOS framework |
 | `mise example:ffmpeg` | Builds and runs `examples/ffmpeg.cpp` |
 | `mise example:rust:window`, `example:rust:codecs` | The Rust crate's examples |
 

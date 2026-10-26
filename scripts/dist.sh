@@ -13,8 +13,7 @@
 # and without the link-time optimization pass (profiles/slim-dev.gn), which
 # is what a debugger and a profiler need and what relinks in minutes.
 #
-# The macOS engine is not built on a Mac: it is cross-built on Linux
-# (docs/MACOS.md).
+# On a Mac, use the native profile and the installed Xcode (docs/MACOS.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -28,8 +27,11 @@ esac
 host="$(uname -s)-$(uname -m)"
 case "$host" in
     Linux-x86_64) engine=libzebkit.so.1 ;;
-    Darwin-*) die "the macOS engine is built on Linux: scripts/build.sh slim-macos, then scripts/package.sh slim-macos (docs/MACOS.md)" ;;
-    *) die "zebkit builds on Linux x86_64 so far; this is $host" ;;
+    Darwin-arm64)
+        engine=Zebkit.framework/Versions/A/Zebkit
+        if [[ "$kind" == debug ]]; then profile=slim-macos-native-dev; else profile=slim-macos-native; fi
+        ;;
+    *) die "zebkit builds on Linux x86_64 or macOS arm64; this is $host" ;;
 esac
 
 "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"

@@ -295,6 +295,7 @@ void RendererClient::RenderThreadStarted() {
 std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
     const std::string& process_type,
     content::MainFunctionParams main_function_params) {
+  MarkICUInitialized();
   if (!process_type.empty()) {
     return content::ShellMainDelegate::RunProcess(
         process_type, std::move(main_function_params));

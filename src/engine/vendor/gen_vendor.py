@@ -29,6 +29,7 @@ followed, and the entry point is named after the library's own name.
 """
 
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -373,6 +374,29 @@ def preprocess(clang, sysroot, include_dir, defines, text, extra=()):
     return result.stdout
 
 
+def external_declarations(clang, sysroot, text):
+    """C functions with external linkage, after preprocessing the headers.
+
+    Mach-O may emit C++ inline helpers as global text symbols even when
+    the C header declares them static inline. They belong to the caller;
+    redefine_extname cannot be applied to their internal C declarations.
+    """
+    args = [clang, "-x", "c", "-std=c11", "--target=" + TRIPLES[TARGET],
+            "-isysroot" if TARGET == "mac" else "--sysroot", sysroot,
+            "-fsyntax-only", "-Xclang", "-ast-dump=json", "-"]
+    result = subprocess.run(args, input=text, capture_output=True, text=True)
+    if result.returncode:
+        raise SystemExit(f"error: parsing public headers failed:\n{result.stderr[-3000:]}")
+    pending = [json.loads(result.stdout)]
+    names = set()
+    while pending:
+        node = pending.pop()
+        if node.get("kind") == "FunctionDecl" and node.get("storageClass") != "static":
+            names.add(node["name"])
+        pending.extend(node.get("inner", []))
+    return names
+
+
 def generate(name, spec, args):
     src = pathlib.Path(args.src)
     out = pathlib.Path(args.out)
@@ -389,7 +413,9 @@ def generate(name, spec, args):
     umbrella_includes += "".join(f'#include "{h}"\n' for h in spec["include"])
 
     # What the headers declare, after the library's own renaming macros.
-    declared = preprocess(args.clang, args.sysroot, include_root, defines, umbrella_includes)
+    declared = external_declarations(
+        args.clang, args.sysroot,
+        preprocess(args.clang, args.sysroot, include_root, defines, umbrella_includes))
     macros = preprocess(args.clang, args.sysroot, include_root, defines, umbrella_includes, ["-dM"])
     names = sorted({m.group(1) for m in re.finditer(r"^#define (\w+) ", macros, re.M)})
     # Each object-like macro's full expansion, to map a renamed function
@@ -429,7 +455,7 @@ def generate(name, spec, args):
     defined = defined_functions(args.nm, spec["objects"], TARGET == "mac")
     functions = []
     for symbol in sorted(defined):
-        if re.search(rf"\b{re.escape(symbol)}\s*\(", declared):
+        if symbol in declared:
             functions.append((renamed.get(symbol, symbol), symbol))
     if not functions:
         raise SystemExit(f"error: {name}: no function is both declared and defined")

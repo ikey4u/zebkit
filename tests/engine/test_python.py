@@ -18,26 +18,6 @@ def check(ok, what, detail=None):
         failures.append(what)
 
 
-text = b"zebkit for Python " * 50
-for name in ("gzip", "zlib", "deflate-raw", "brotli", "zstd"):
-    packed = zebkit.compress(text, name)
-    check(zebkit.decompress(packed, name) == text and len(packed) < len(text) // 5, f"compress, {name}")
-try:
-    zebkit.decompress(b"nonsense", "gzip")
-    check(False, "decompress refuses what is not gzip")
-except zebkit.Error as e:
-    check(True, "decompress refuses what is not gzip", e)
-check(zebkit.digest(b"abc").hex().startswith("ba7816bf8f01cfea"), "digest sha256")
-check(zebkit.hmac(b"Jefe", b"what do ya want for nothing?").hex().startswith("5bdcc146"), "hmac sha256")
-key, nonce = zebkit.random_bytes(32), zebkit.random_bytes(12)
-sealed = zebkit.aes_gcm_seal(key, nonce, b"secret", b"ad")
-check(zebkit.aes_gcm_open(key, nonce, sealed, b"ad") == b"secret", "AES-GCM seal and open")
-check(zebkit.url_part("../c", "https://example.com/a/b/") == "https://example.com/a/c", "url_part, resolved")
-check(zebkit.registrable_domain("x.y.example.co.uk") == "example.co.uk", "registrable_domain")
-pixels = bytes([10, 20, 30, 255]) * 6
-width, height, back = zebkit.image_decode(zebkit.image_encode(pixels, 3, 2, "png"))
-check((width, height, back) == (3, 2, pixels), "image encode and decode, PNG")
-
 PDF = b"""%PDF-1.7
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -49,25 +29,56 @@ endstream endobj
 trailer << /Root 1 0 R >>
 %%EOF
 """
-with zebkit.Pdf(PDF) as pdf:
-    width, height, rgba = pdf.render(0, scale=2)
-    found = pdf.search("python")
-    added = pdf.add_annotation(0, {"type": "ink", "rect": [5, 5, 95, 95], "border": 2, "ink": [[[10, 10], [90, 90]]]})
-    appearance = pdf.render_annotation(0, added, scale=2)
-    check(appearance is not None and appearance[0] > 100 and pdf.render_annotation(0, added, mode=2) is None,
-          "Pdf: an annotation's appearance alone", appearance and appearance[:2])
-    pdf.set_metadata(title="from Python")
-    saved = pdf.save()
-    check(pdf.page_count == 1 and (width, height, len(rgba)) == (400, 200, 400 * 200 * 4) and len(found) == 1
-          and added == 0, "Pdf: render, search, annotate", found)
-with zebkit.Pdf(saved) as again:
-    check(again.info()["metadata"]["title"] == "from Python" and again.text(0) == "Hello Python"
-          and again.annotations(0)[0]["type"] == "ink", "Pdf: saved and opened again")
-try:
-    zebkit.Pdf(b"not a pdf")
-    check(False, "Pdf refuses what is not a PDF")
-except zebkit.Error as e:
-    check(True, "Pdf refuses what is not a PDF", e)
+
+
+def services():
+    text = b"zebkit for Python " * 50
+    for name in ("gzip", "zlib", "deflate-raw", "brotli", "zstd"):
+        packed = zebkit.compress(text, name)
+        check(zebkit.decompress(packed, name) == text and len(packed) < len(text) // 5, f"compress, {name}")
+    try:
+        zebkit.decompress(b"nonsense", "gzip")
+        check(False, "decompress refuses what is not gzip")
+    except zebkit.Error as e:
+        check(True, "decompress refuses what is not gzip", e)
+    check(zebkit.digest(b"abc").hex().startswith("ba7816bf8f01cfea"), "digest sha256")
+    check(zebkit.hmac(b"Jefe", b"what do ya want for nothing?").hex().startswith("5bdcc146"), "hmac sha256")
+    key, nonce = zebkit.random_bytes(32), zebkit.random_bytes(12)
+    sealed = zebkit.aes_gcm_seal(key, nonce, b"secret", b"ad")
+    check(zebkit.aes_gcm_open(key, nonce, sealed, b"ad") == b"secret", "AES-GCM seal and open")
+    check(zebkit.url_part("../c", "https://example.com/a/b/") == "https://example.com/a/c", "url_part, resolved")
+    check(zebkit.registrable_domain("x.y.example.co.uk") == "example.co.uk", "registrable_domain")
+    pixels = bytes([10, 20, 30, 255]) * 6
+    width, height, back = zebkit.image_decode(zebkit.image_encode(pixels, 3, 2, "png"))
+    check((width, height, back) == (3, 2, pixels), "image encode and decode, PNG")
+
+    with zebkit.Pdf(PDF) as pdf:
+        width, height, rgba = pdf.render(0, scale=2)
+        found = pdf.search("python")
+        added = pdf.add_annotation(0, {"type": "ink", "rect": [5, 5, 95, 95], "border": 2, "ink": [[[10, 10], [90, 90]]]})
+        appearance = pdf.render_annotation(0, added, scale=2)
+        check(appearance is not None and appearance[0] > 100 and pdf.render_annotation(0, added, mode=2) is None,
+              "Pdf: an annotation's appearance alone", appearance and appearance[:2])
+        pdf.set_metadata(title="from Python")
+        saved = pdf.save()
+        check(pdf.page_count == 1 and (width, height, len(rgba)) == (400, 200, 400 * 200 * 4) and len(found) == 1
+              and added == 0, "Pdf: render, search, annotate", found)
+    with zebkit.Pdf(saved) as again:
+        check(again.info()["metadata"]["title"] == "from Python" and again.text(0) == "Hello Python"
+              and again.annotations(0)[0]["type"] == "ink", "Pdf: saved and opened again")
+    try:
+        zebkit.Pdf(b"not a pdf")
+        check(False, "Pdf refuses what is not a PDF")
+    except zebkit.Error as e:
+        check(True, "Pdf refuses what is not a PDF", e)
+
+
+# Standalone services and Content startup have separate ICU/URL lifecycles.
+if "--services-only" in sys.argv:
+    services()
+    print("all passed" if not failures else "services failed")
+    sys.exit(1 if failures else 0)
+
 
 check(zebkit.scheme_register("py"), "scheme_register")
 state = {}
@@ -94,6 +105,7 @@ def scheme_view():
 
 
 def ready():
+    services()
     try:
         zebkit.app_set_menu([{"title": "Edit", "items": [{"role": "juggle"}]}], print)
         refused = False

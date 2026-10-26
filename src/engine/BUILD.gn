@@ -26,6 +26,18 @@ config("implementation") {
   if (is_linux && use_dbus) {
     defines += [ "ZEBKIT_COOKIES_USE_DBUS" ]
   }
+  if (clang_use_raw_ptr_plugin) {
+    # The embedder's C handles and callback payloads follow the host's
+    # lifetime contract, including pointers not owned by PartitionAlloc.
+    # Keep Chromium's field-migration check out of this C API adapter;
+    # Chromium's own code and its runtime pointer protections are unchanged.
+    cflags = [
+      "-Xclang",
+      "-plugin-arg-raw-ptr-plugin",
+      "-Xclang",
+      "raw-ptr-exclude-path=" + rebase_path("//zebkit/engine/", root_build_dir),
+    ]
+  }
 }
 
 # Applications include <zebkit/zebkit.h>.

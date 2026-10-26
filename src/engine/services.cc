@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,6 +58,7 @@
 namespace {
 
 constexpr size_t kDefaultMaxSize = 256u << 20;
+std::atomic<bool> g_content_icu_initialized{false};
 
 // A buffer the caller frees with zebkit_free().
 uint8_t* Give(const uint8_t* data, size_t size, size_t* out_size) {
@@ -258,6 +260,14 @@ class Fetch {
 };
 
 }  // namespace
+
+namespace zebkit {
+
+void MarkICUInitialized() {
+  g_content_icu_initialized.store(true, std::memory_order_release);
+}
+
+}  // namespace zebkit
 
 extern "C" {
 
@@ -604,6 +614,10 @@ uint8_t* zebkit_image_encode(zebkit_image_format format,
 }
 
 bool zebkit_icu_init(void) {
+  // Content has already initialized ICU before entering RunProcess().
+  // Services used by an application's script share that initialization.
+  if (g_content_icu_initialized.load(std::memory_order_acquire))
+    return true;
   static const bool initialized = [] {
     // ICU's data is beside the engine, which is not beside the application.
     const base::FilePath library = zebkit::LibraryDirectory();

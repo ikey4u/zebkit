@@ -1,0 +1,20 @@
+V8 inspector: give error-stack inspection a microtasks scope.
+
+The error-stack helper added by patches/1026 calls V8 property APIs.
+With Blink's scoped microtasks policy those calls need a MicrotasksScope,
+just as getErrorProperty already has. Without it a JavaScript exception
+evaluated over CDP terminates the renderer in a DCHECK-enabled build and
+leaves the host waiting for the evaluation callback. Suppress microtasks
+while inspecting the stack, preserving the observer's existing behavior.
+
+--- a/v8/src/inspector/value-mirror.cc
++++ b/v8/src/inspector/value-mirror.cc
+@@ -320,6 +320,8 @@ v8::MaybeLocal<v8::Value> getErrorStack(v8::Local<v8::Context> context,
+                                         v8::Local<v8::Object> object) {
+   v8::Isolate* isolate = v8::Isolate::GetCurrent();
+   v8::TryCatch tryCatch(isolate);
++  v8::MicrotasksScope microtasksScope(context,
++                                    v8::MicrotasksScope::kDoNotRunMicrotasks);
+   v8::Local<v8::String> name = toV8String(isolate, "stack");
+   v8::Local<v8::Value> descriptor;
+   if (object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor) &&

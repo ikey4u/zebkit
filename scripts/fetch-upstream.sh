@@ -11,6 +11,17 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+checkout_os=linux
+checkout_pgo=True
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    checkout_os=mac
+    checkout_pgo=False
+    # Use the installed full Xcode without changing xcode-select globally.
+    if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+        export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    fi
+fi
+
 stamp="$GCLIENT_DIR/.zebkit-stamp"
 synced="$GCLIENT_DIR/.zebkit-synced"
 applied="$GCLIENT_DIR/.zebkit-applied"
@@ -24,7 +35,11 @@ series="$PATCHES_DIR/series"
 patch_list() { [[ -f "$series" ]] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$series" || true; }
 series_now() { patch_list | while read -r p; do echo "$p $(sha256 "$PATCHES_DIR/$p" | cut -d' ' -f1)"; done; }
 patches_hash="$(patch_list | while read -r p; do sha256 "$PATCHES_DIR/$p"; done | sha256 | cut -d' ' -f1)"
-want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash"
+want="$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT $patches_hash $checkout_os"
+# Before native Mac builds the stamp had no OS field; those checkouts
+# always fetched Linux dependencies. Preserve their incremental path.
+recorded_os="$(cut -s -d' ' -f4 "$stamp" 2>/dev/null || true)"
+recorded_os="${recorded_os:-linux}"
 
 # zebkit's own engine code is not a patch: src/engine is linked into the
 # tree as //zebkit/engine, so that what is built is what is in the
@@ -38,7 +53,7 @@ link_engine() {
     # Apple's SDK in a copy of Xcode, and what DEPS fetches for a macOS
     # checkout.
     local macos="$CACHE_DIR/macos"
-    if [[ -d "$macos/xcode" ]]; then
+    if [[ "$ZEBKIT_HOST" == linux && -d "$macos/xcode" ]]; then
         mkdir -p "$SRC_DIR/build/mac_files"
         ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
         ln -sfn "$macos/cipd/mig" "$SRC_DIR/third_party/mig/bin"
@@ -70,7 +85,8 @@ fi
 # The same Chromium and depot_tools, and the series applied so far is the
 # start of the series now: only the patches after it are applied.
 if [[ -f "$stamp" && -f "$applied_series" && -f "$applied" ]] \
-    && [[ "$(cut -d' ' -f1-2 "$stamp")" == "$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT" ]]; then
+    && [[ "$(cut -d' ' -f1-2 "$stamp")" == "$CHROMIUM_VERSION $DEPOT_TOOLS_COMMIT" ]] \
+    && [[ "$recorded_os" == "$checkout_os" ]]; then
     have="$(cat "$applied_series")"
     now="$(series_now)"
     count="$(printf '%s\n' "$have" | grep -c .)"
@@ -112,10 +128,10 @@ solutions = [{
     "custom_hooks": [{"name": "vpython3_common"}],
     "custom_vars": {
         "checkout_nacl": False,
-        "checkout_pgo_profiles": True,
+        "checkout_pgo_profiles": $checkout_pgo,
     },
 }]
-target_os = ["linux"]
+target_os = ["$checkout_os"]
 EOF
 
 # Undo the previous series: files it created are removed, files it changed
@@ -132,12 +148,14 @@ if [[ -f "$applied" ]]; then
 fi
 rm -f "$applied_series"
 
-if [[ ! -f "$synced" || "$(cat "$synced")" != "$CHROMIUM_VERSION" ]]; then
+recorded_sync="$(cat "$synced" 2>/dev/null || true)"
+if [[ "$recorded_sync" != "$CHROMIUM_VERSION $checkout_os" ]] \
+    && ! [[ "$checkout_os" == linux && "$recorded_sync" == "$CHROMIUM_VERSION" ]]; then
     log "syncing Chromium $CHROMIUM_VERSION into $SRC_DIR"
     (cd "$GCLIENT_DIR" && gclient sync --no-history --nohooks --jobs 16 \
         --revision "src@refs/tags/$CHROMIUM_VERSION")
-    echo "$CHROMIUM_VERSION" > "$synced"
 fi
+echo "$CHROMIUM_VERSION $checkout_os" > "$synced"
 log "running Chromium's hooks"
 (cd "$GCLIENT_DIR" && gclient runhooks --jobs 16)
 

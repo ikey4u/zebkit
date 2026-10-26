@@ -64,14 +64,21 @@ find "$build/source/data" \( -name 'en_XA*' -o -name 'ar_XB*' \) -delete
 
 log "building ICU's tools and the filtered data"
 mkdir -p "$build/obj"
+icu_platform=Linux/gcc
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    icu_platform=MacOSX
+    jobs="$(sysctl -n hw.ncpu)"
+else
+    jobs="$(nproc)"
+fi
 (cd "$build/obj" &&
     ICU_DATA_FILTER_FILE="$filter" "$build/source/runConfigureICU" --enable-debug --disable-release \
-        Linux/gcc --disable-tests --disable-layoutex --disable-samples --enable-rpath \
+        "$icu_platform" --disable-tests --disable-layoutex --disable-samples --enable-rpath \
         --prefix="$build/prefix" > "$build/configure.log" 2>&1 &&
-    make -j "$(nproc)" > "$build/make.log" 2>&1) || die "ICU build failed; see $build/make.log"
+    make -j "$jobs" > "$build/make.log" 2>&1) || die "ICU build failed; see $build/make.log"
 
 dat="$(find "$build/obj/data/out/tmp" -name 'icudt*l.dat' | head -1)"
 [[ -n "$dat" ]] || die "no data file in $build/obj/data/out/tmp"
 cp "$dat" "$out/icudtl.dat"
 echo "$want" > "$stamp"
-log "$(stat -c %s "$out/icudtl.dat" | awk '{ printf "%.1f", $1 / 1048576 }') MiB: $out/icudtl.dat"
+log "$(wc -c < "$out/icudtl.dat" | awk '{ printf "%.1f", $1 / 1048576 }') MiB: $out/icudtl.dat"

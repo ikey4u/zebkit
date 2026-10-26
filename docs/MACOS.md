@@ -1,7 +1,31 @@
 # macOS
 
 zebkit for macOS: `Zebkit.framework`, for Apple silicon (arm64), with the
-same functions as on Linux, built on the Linux machine.
+same functions as on Linux. Release packages are cross-built on Linux;
+development builds can also be built on an Apple silicon Mac.
+
+## Build on this Mac
+
+Install full Xcode in `/Applications/Xcode.app`, then run:
+
+```sh
+scripts/dist.sh release
+scripts/example.sh macos-basic https://example.com/
+```
+
+This fetches the pinned Chromium source and macOS dependencies, applies
+the patch series, builds `slim-macos-native`, and packages it in
+`dist/release`. The example builds and locally signs `dist/example/Zebkit Embedded Browser.app`
+with that engine. `scripts/dist.sh debug` uses `slim-macos-native-dev` and
+writes `dist/debug`; `EXAMPLE_DIST=debug` selects it for the example.
+`ZEBKIT_JOBS` overrides the compiler parallelism, which defaults to at most
+one job per two GiB of RAM and at most the number of logical CPUs.
+
+Native builds use the installed Xcode through `DEVELOPER_DIR`, leaving
+the system's `xcode-select` setting alone. They disable the Linux-only ML
+inliner and ThinLTO for local iteration, keep Chromium's process sandbox,
+and do not need the SDK archive or `macos-toolchain.sh` below. Allow about
+120 GB for the checkout and build; the first build can take hours.
 
 ## The package
 
@@ -76,9 +100,10 @@ the system's location permission manager (zebkit sets it, as Chrome does)
 in place of the tests' fake, and leaves out the display test support,
 which brought Perfetto's test library as a dylib of its own.
 
-A Mac's own build would be slower: an M4 with 16 GB against 24 cores and
-94 GB here, and ThinLTO's link wants more than 16 GB. What only a Mac
-checks is signing with real certificates; ad hoc signing does for tests.
+The Linux release builder has 24 cores and 94 GB, which helps with
+ThinLTO's memory use. Native builds leave ThinLTO off to make iteration
+practical. What only a Mac checks is signing with real certificates;
+ad hoc signing does for tests.
 
 ## Decisions
 

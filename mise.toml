@@ -4,7 +4,7 @@
 #   mise run r:github         the same, published as a GitHub release
 #   mise run d                debug build for this machine    -> dist/debug
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
-#   mise example:macos:basic  the same window on macOS, against the engine built on Linux
+#   mise example:macos:basic  build and run examples/window.c on macOS
 #   mise example:ffmpeg       build and run examples/ffmpeg.cpp, which uses the engine's FFmpeg
 #   mise example:rust:window  run the Rust crate's window example
 #   mise example:rust:codecs  run the Rust crate's example of the engine's FFmpeg
@@ -45,7 +45,7 @@ description = "Build and run examples/window.c: a small browser window (pass a U
 run = "scripts/example.sh linux-basic"
 
 [tasks."example:macos:basic"]
-description = "Build and run examples/window.c on macOS, against the macOS engine built on Linux (pass a URL after --)"
+description = "Build and run examples/window.c against Zebkit.framework (pass a URL after --)"
 run = "scripts/example.sh macos-basic"
 
 [tasks."example:ffmpeg"]

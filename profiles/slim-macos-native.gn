@@ -1,0 +1,12 @@
+# zebkit-base: slim-macos
+#
+# Build and iterate on Apple silicon with the Mac's installed Xcode.
+# The cross-built release profile remains slim-macos.
+use_system_xcode = true
+is_official_build = false
+
+# The Linux release's ML inliner is unavailable in the macOS toolchain.
+# Avoid ThinLTO for local iterations and keep linking within desktop RAM.
+use_ml_inliner = false
+use_thin_lto = false
+zebkit_lto_optimize = false

@@ -204,6 +204,8 @@ run ui "$OUT_DIR/tools/zebkit-js" "${engine_switches[@]}" "$tests/ui/app.mjs"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/ui.log" || { echo "FAIL zebkit.ui's script did not finish"; failed=1; }
 
 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+    run python-services python3 "$tests/test_python.py" --services-only
+ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     run python python3 "$tests/test_python.py" "${engine_switches[@]}"
 
 log "CDP from the command line"

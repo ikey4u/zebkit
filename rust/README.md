@@ -81,7 +81,17 @@ cargo run --example window -- https://example.com/
 cargo run --example codecs                           # what the engine's FFmpeg has
 ```
 
-On a Mac the profile is `slim-macos`.
+On an Apple silicon Mac, `scripts/dist.sh release` builds the native
+`slim-macos-native` profile into `dist/release`. The bindings prefer it,
+then `out/blink/slim-macos-native/package`, then the cross-built
+`out/blink/slim-macos/package`. `ZEBKIT_DIR` overrides this selection.
+When rebuilding a host application that sets `ZEBKIT_DIR` itself, point
+it at the new `dist/release` package explicitly so it uses the new engine.
+
+When a process also starts the engine, use ICU-backed URL services from
+the ready closure passed to `run` or `run_with_args`. Chromium registers
+its schemes during startup. Standalone service programs can use these
+helpers immediately without starting the engine.
 
 ## What is covered
 

@@ -1,0 +1,5 @@
+# zebkit-base: slim-macos-native
+# Native macOS iteration with debug information.
+symbol_level = 1
+blink_symbol_level = 1
+v8_symbol_level = 1

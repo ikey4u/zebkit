@@ -1,0 +1,21 @@
+libvpx: build its public configuration query used by FFmpeg.
+
+zebkit enables FFmpeg's libvpx VP8/VP9 decoders. Their initialization
+logs vpx_codec_build_config(), a public libvpx API that Chromium's own
+decoder does not call. Chromium omits its implementation from the source
+lists, so linking the V8 context snapshot generator fails on native macOS.
+Build the configuration source selected by libvpx's existing platform and
+architecture logic; unused copies are removed by the linker's dead strip.
+
+--- a/third_party/libvpx/BUILD.gn
++++ b/third_party/libvpx/BUILD.gn
+@@ -513,6 +513,9 @@ static_library("libvpx") {
+     sources = libvpx_srcs_loongarch
+   }
+ 
++  # zebkit: FFmpeg's libvpx decoder uses this public configuration query.
++  sources += [ "$platform_include_dir/vpx_config.c" ]
++
+   configs -= [ "//build/config/compiler:chromium_code" ]
+   configs += [ "//build/config/compiler:no_chromium_code" ]
+   configs += [ ":libvpx_config" ]

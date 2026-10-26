@@ -54,9 +54,28 @@ if grep -q '^target_os = "mac"' <<< "$(profile_args "$profile")"; then
     cp -R "$framework" "$package/"
     copy_data "$package/Zebkit.framework/Versions/A/Resources"
     copy_headers
-    # The linker signs what it links for Apple silicon, and strips it with
-    # llvm-strip, which signs again (enable_stripping): nothing is changed
-    # here that would need signing again.
+    if [[ "$ZEBKIT_HOST" == macos ]]; then
+        # Native iteration leaves linker stripping off. Strip the copied
+        # package instead, without rebuilding host tools and their generated
+        # dependencies just to change how the binaries are shipped.
+        root="$package/Zebkit.framework/Versions/A"
+        helper="$root/Helpers/Zebkit Helper.app"
+        strip_tool="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin/llvm-strip"
+        if [[ "${PACKAGE_STRIP:-1}" != 0 ]]; then
+            while IFS= read -r -d '' binary; do
+                # Mach-O arm64, including the helper and ANGLE's libraries.
+                magic="$(od -An -tx1 -N4 "$binary" | tr -d ' \n')"
+                if [[ "$magic" == cffaedfe ]]; then
+                    "$strip_tool" -x -S "$binary"
+                    codesign --force --sign - "$binary"
+                fi
+            done < <(find "$root" -type f -print0)
+        fi
+        # Resource trimming also changes the bundle. Seal from the inside out.
+        codesign --force --sign - "$helper"
+        codesign --force --sign - "$package/Zebkit.framework"
+        codesign --verify --deep --strict "$package/Zebkit.framework"
+    fi
     log "package: $package"
     exit 0
 fi

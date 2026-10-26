@@ -514,7 +514,17 @@ fn script_and_cdp(view: View) {
 }
 
 fn main() {
-    services();
+    if std::env::args().any(|arg| arg == "--services-only") {
+        services();
+        std::process::exit(if FAILED.with(Cell::get) == 0 { 0 } else { 1 });
+    }
+    // Exercise standalone services separately: Content must register its
+    // schemes before this process parses URLs or initializes ICU.
+    let standalone = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--services-only")
+        .status()
+        .expect("standalone service test starts");
+    check(standalone.success(), "standalone services process", standalone);
 
     let port = serve(
         "<title>loading</title><script>\
@@ -545,7 +555,10 @@ fn main() {
     // The media test lists the page's video once it has shown its first
     // frames: kept from the start, its capture still begins there.
     zebkit::media::keep_history(true);
-    let code = zebkit::run_with_args(args, move || engine(port));
+    let code = zebkit::run_with_args(args, move || {
+        services();
+        engine(port);
+    });
     let _ = std::fs::remove_dir_all(&profile);
     check(code == 0, "the engine's exit code", code);
 

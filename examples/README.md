@@ -52,3 +52,23 @@ package holds `Zebkit.framework`: link with
 `mise example:linux:basic` builds and runs `window.c` (`scripts/example.sh`),
 `mise example:ffmpeg` the FFmpeg example, `mise example:rust:window` and
 `example:rust:codecs` the Rust ones.
+
+On macOS, `scripts/example.sh macos-basic` builds the C embedding example
+with the slim framework. To select a prebuilt engine package:
+
+```sh
+ZEBKIT_DIR=/path/to/macos/package scripts/example.sh macos-basic https://example.com/
+```
+
+This compiles `window.c` and creates `dist/example/Zebkit Embedded Browser.app`, copies the
+framework inside it, and signs the helper, framework and application locally.
+The Chromium sandbox stays enabled. `EXAMPLE_BUILD_ONLY=1` builds without
+launching; the app can then be opened from Finder. Without `ZEBKIT_DIR`, the
+script prefers `dist/release` (`dist/debug` with `EXAMPLE_DIST=debug`), then
+`out/blink/slim-macos-native/package`, then the cross-built
+`out/blink/slim-macos/package`.
+
+This builds the application against that package. To rebuild the engine
+on this Mac, run `scripts/dist.sh release` first (`docs/MACOS.md`). A
+released package may predate fixes in this checkout's `src/engine` and
+`patches`.

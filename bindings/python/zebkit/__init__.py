@@ -68,6 +68,9 @@ def _find_library():
         names.append(pathlib.Path(os.environ["ZEBKIT_DIR"]) / library)
     here = pathlib.Path(__file__).resolve().parent
     names.append(here / library)
+    if sys.platform == "darwin":
+        names.append(here.parents[2] / "dist" / "release" / library)
+        names.append(here.parents[2] / "out" / "blink" / "slim-macos-native" / "package" / library)
     names.append(here.parents[2] / "out" / "blink" / profile / "package" / library)
     for name in names:
         if name.exists():

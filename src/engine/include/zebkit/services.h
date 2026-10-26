@@ -141,6 +141,9 @@ ZEBKIT_API uint8_t *zebkit_image_encode(zebkit_image_format format, const uint8_
  * Loads ICU's data (icudtl.dat, beside the engine) so that the ICU of
  * <zebkit/vendor/icu.h> can be used without zebkit_main(). Calling it
  * again, or with the engine running, does no harm.
+ * If the process will also start the engine, use ICU-backed services
+ * (including URL parsing) from its ready callback: Chromium registers
+ * and locks URL schemes during startup, before any URLs are parsed.
  */
 ZEBKIT_API bool zebkit_icu_init(void);
 

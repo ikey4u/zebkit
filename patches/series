@@ -26,5 +26,8 @@
 1026-v8-inspector-runs-no-page-code-for-errors.patch
 1027-content-shell-popups-to-the-embedder.patch
 1028-content-shell-undecided-permissions-ask.patch
+1029-libvpx-build-configuration.patch
+1030-content-shell-resolution-only-with-web-tests.patch
+1031-v8-inspector-stack-microtasks-scope.patch
 1031-media-demuxer-tap.patch
 1032-blink-media-capture-for-the-embedder.patch

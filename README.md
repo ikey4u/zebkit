@@ -57,7 +57,7 @@ native code, or JavaScript on the engine's own V8.
 |---|---|
 | Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
 | Linux | x86-64, glibc 2.25 or newer: `libzebkit.so.1` and `zebkit-helper` |
-| macOS | Apple silicon: `Zebkit.framework`, cross-built on Linux (`docs/MACOS.md`) |
+| macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
 | Version | `VERSION`: 0.0.1-alpha.9 |
 
@@ -72,6 +72,11 @@ and `include/`. Either unpack a release's archive
 ```sh
 mise run r      # dist/release (Linux) and dist/release-macos (macOS); hours the first time
 ```
+
+On an Apple silicon Mac with full Xcode installed, `scripts/dist.sh release`
+builds the engine locally into `dist/release`. Then run
+`scripts/example.sh macos-basic` to build and launch the C embedding demo
+in `dist/example/Zebkit Embedded Browser.app`.
 
 Building needs about 30 GB for Chromium's tree (`docs/BUILD.md`). Below,
 `$PKG` is the package directory.
@@ -297,7 +302,7 @@ made (`docs/ROADMAP.md`).
 | [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing, measuring and releasing; profiles and patches |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine is made, and what in this repository is what |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
-| [docs/MACOS.md](docs/MACOS.md) | The macOS framework, built on Linux |
+| [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The engine: requirements, what is done, what is next |
 | [docs/ROADMAP_UI.md](docs/ROADMAP_UI.md) | The UI layer: React, Solid or Vue drawn natively with each system's look, on the desktop, iOS and Android |
 | [rust/README.md](rust/README.md) | The Rust crates |

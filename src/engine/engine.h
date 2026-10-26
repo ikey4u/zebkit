@@ -69,6 +69,8 @@ void InstallClientHints();
 // The languages pages and servers are told, as Chrome has them: the
 // system's locale, then its language ("en-US,en"), or --accept-lang.
 std::string AcceptLanguages();
+// Content initialized ICU before the engine or its helpers start running.
+void MarkICUInitialized();
 // Them in a page's renderer preferences (navigator.languages).
 void ApplyLanguages(content::WebContents* contents);
 
