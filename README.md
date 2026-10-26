@@ -1,30 +1,38 @@
 <h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-<p align="center"><b>All of Chrome's power. None of its weight.</b></p>
+<p align="center"><b>Chrome as a library.</b><br>Drop the whole web into your app — and ship it today.</p>
 
 ## Introduction
 
-zebkit is Chromium's content layer and Blink built as one shared library
-with a helper program, and nothing of Chrome's browser. An application
-links it, opens web pages in its windows, serves the Chrome DevTools
-Protocol to agents, and calls the libraries Chromium already carries
-through a C API, with bindings for Rust, Python and the pages' own
-JavaScript. There is no Node and no second runtime: the application is
-native code, or JavaScript on the engine's own V8.
+zebkit is Chromium's engine as one library you link into your own
+application: Blink, V8 with every JIT tier, PDFium, FFmpeg and the rest of
+what Chrome is made of, with nothing of Chrome's browser and nothing of
+Electron's runtime. Your application stays yours, in C, C++, Rust, Python
+or JavaScript, with its own windows and toolkit. Where it needs the web,
+it adds a zebkit view; where it needs a PDF, media, compression or crypto,
+it calls zebkit's C API.
 
 <p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; Linux and macOS today, Windows planned"></p>
 
-- **A library, not a base.** The application keeps its own process, loop,
-  windows and toolkit, and adds zebkit where it needs a web page, a PDF,
-  media or native UI, as it would add SQLite. Electron is a base an
-  application is built on; zebkit is a part it integrates
-  (`docs/ROADMAP.md`, "The library").
+- **Integrate it, don't build on it.** Electron is a base: an application
+  is built inside it, on its runtime, its windows and its packaging.
+  zebkit is a part: an application adds it, as it adds SQLite, and keeps
+  its process, its toolkit and its way of shipping. Running inside the
+  application's own event loop (GTK, Qt, AppKit, Win32, winit) is next on
+  the roadmap (`docs/ROADMAP.md`, "The library").
+- **Take what you need.** Web views, in a window or off-screen with their
+  frames handed to you; a full PDF API; saving what a page plays; your own
+  URL schemes; native UI from JavaScript; CDP for agents. Use one, or all.
+- **The real Chrome engine.** Pages see Chromium 155: its user agent and
+  client hints, `window.chrome`, popups blocked without a click, and
+  nothing of a debugger attached (`docs/API.md` has what still differs,
+  Google's sign-in among it).
+- **Lighter than Electron.** 38% smaller, and real web pages cost 21% less
+  CPU and 17% less memory than in the latest Electron
+  ([Benchmark](#benchmark)).
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.
-- **Bytes as they are.** A page's calls to the application go over a
-  scheme of the engine's own, through Mojo's data pipes: no base64, no JSON
-  around binary data, many calls under way at once.
 - **Chromium's libraries are yours.** 15 C libraries inside the engine,
   7,230 functions, exported under `zebkit_vendor_*`: SQLite, BoringSSL,
   zlib, Zstandard, Brotli, ICU, HarfBuzz, libxml2, libwebp, libjpeg-turbo,
@@ -33,22 +41,24 @@ native code, or JavaScript on the engine's own V8.
   text with layout, search, outline, links, annotations with appearances,
   forms, redaction, page editing, merging, attachments, metadata, and
   signatures checked for integrity. In C and in page JavaScript.
-- **Your own URL schemes.** `app://` answered by the application, for page
-  loads, `fetch()` and media alike, with files served in ranges so that a
-  `<video>` seeks.
+- **Media, saved as it plays.** Whatever a page plays, a file, MSE/DASH or
+  HLS, written to MP4 or WebM as it was sent, without re-encoding and
+  without a second download (`<zebkit/media.h>`).
+- **Bytes as they are.** A page's calls to the application go over a
+  scheme of the engine's own, through Mojo's data pipes: no base64, no JSON
+  around binary data, many calls under way at once.
 - **Native UI from JavaScript.** `zebkit.ui` draws windows with Chromium's
   views toolkit: signals, JSX, Tailwind classes, and automation for tests
-  and agents. Its successor, React, Solid or Vue drawn natively with each
-  system's look, is planned in `docs/ROADMAP_UI.md`.
-- **Made for agents.** zebkit is to be a general MCP tool: one server
-  giving an AI agent the engine's whole reach, pages to read and act on,
-  PDFs, files, media, images, capture and native windows (planned,
-  `docs/ROADMAP.md`). Today agents drive it over CDP, Chromium's own
-  DevTools server, headless or windowed.
+  and agents. React, Solid or Vue drawn natively with each system's look is
+  planned (`docs/ROADMAP_UI.md`).
+- **Made for agents.** Agents drive zebkit over CDP, Chromium's own
+  DevTools server, headless or windowed. A general MCP server giving them
+  pages, PDFs, files, media and native windows as tools is planned
+  (`docs/ROADMAP.md`, "Agents").
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
-  sandboxed.
+  sandboxed; permissions a browser would ask about are not granted.
 - **An engine you can change.** zebkit is Chromium plus a small patch set
   (`patches/`), rebuilt from source; where Chromium lacks something, zebkit
   patches it rather than working around it.
@@ -82,6 +92,10 @@ Building needs about 30 GB for Chromium's tree (`docs/BUILD.md`). Below,
 `$PKG` is the package directory.
 
 ### A first program in C
+
+Today the engine runs the loop: an application starts it with
+`zebkit_main()` and works in its callbacks. Starting it from inside the
+application's own loop, `zebkit_init()`, comes next.
 
 ```c
 #include <stdio.h>
@@ -208,8 +222,8 @@ zebkit.main(ready)                 # the engine is found in $ZEBKIT_DIR
 
 ### JavaScript, without Node
 
-`zebkit-js` runs an ES module on the engine's V8, as Electron's main
-process would, with views, the same APIs, and native windows:
+`zebkit-js` runs an ES module on the engine's V8, for applications
+written in JavaScript, with views, the same APIs, and native windows:
 
 ```js
 // zebkit-js main.mjs
@@ -287,9 +301,9 @@ made (`docs/ROADMAP.md`).
   10 s and shown for 20 s more, each alone in a freshly started engine,
   the median of 3 runs, CPU and memory of every process (the averages
   above are over the 15). A simple page takes 171 MB, two thirds of it
-  the engine's own code, which every further page shares. zebkit costs less CPU on 12 of the 15 and less memory on
-  13; Stack Overflow is where it costs more (`docs/reports/web-bench.md`,
-  `scripts/web-bench.sh`).
+  the engine's own code, which every further page shares. zebkit costs
+  less CPU on 12 of the 15 and less memory on 13; Stack Overflow is where
+  it costs more (`docs/reports/web-bench.md`, `scripts/web-bench.sh`).
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
 ## Reference
@@ -303,7 +317,8 @@ made (`docs/ROADMAP.md`).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine is made, and what in this repository is what |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | The engine: requirements, what is done, what is next |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
+| [docs/ROADMAP_HOOKS.md](docs/ROADMAP_HOOKS.md) | Hooks: how an application decides what the engine does, from native code |
 | [docs/ROADMAP_UI.md](docs/ROADMAP_UI.md) | The UI layer: React, Solid or Vue drawn natively with each system's look, on the desktop, iOS and Android |
 | [rust/README.md](rust/README.md) | The Rust crates |
 | `docs/reports/` | Size reports, regenerated by the scripts |
