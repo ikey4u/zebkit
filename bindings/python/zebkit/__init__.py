@@ -31,7 +31,7 @@ import sys
 
 __all__ = [
     "View", "main", "quit", "post", "version", "engine_version", "is_headless",
-    "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
+    "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
@@ -121,6 +121,7 @@ _post_delayed = _declare("zebkit_post_delayed_task", None, _TASK, _P, ctypes.c_u
 _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
+_cookie_storage = _declare("zebkit_set_cookie_storage", _B, _I, _S)
 _cookie_key = _declare("zebkit_set_cookie_encryption_key", _B, _P, ctypes.c_size_t)
 _view_target = _declare("zebkit_view_get_target_id", _P, _V)
 _view_reload = _declare("zebkit_view_reload", None, _V)
@@ -846,3 +847,18 @@ def set_cookie_encryption_key(key):
         raise ValueError("cookie key must contain exactly 32 bytes")
     buffer = ctypes.create_string_buffer(key)
     return bool(_cookie_key(buffer, len(key)))
+
+
+def set_cookie_storage(storage="os", key_directory=None):
+    """Select Zebkit's built-in 'os' or 'file' backend before main().
+
+    File mode defaults to <profile>/Secrets and needs no host key-file code.
+    Startup fails if the key is lost/corrupt. The file key relies on OS file
+    permissions, with less protection than the system key store.
+    """
+    if storage not in ("os", "file"):
+        raise ValueError("cookie storage must be 'os' or 'file'")
+    directory = None if key_directory is None else os.fsencode(key_directory)
+    if directory is not None and b"\0" in directory:
+        raise ValueError("key directory contains a zero byte")
+    return bool(_cookie_storage(0 if storage == "os" else 1, directory))

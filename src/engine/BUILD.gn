@@ -173,6 +173,8 @@ _sources = [
   "cdp.cc",
   "chrome_object.cc",
   "client_hints.cc",
+  "cookie_key_file.cc",
+  "cookie_key_file.h",
   "cookies.cc",
   "cookies.h",
   # window.chrome, by Chrome's own code (chrome_object.cc).

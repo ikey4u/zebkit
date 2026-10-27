@@ -20,6 +20,38 @@ pub(crate) fn require_engine_thread(what: &str) {
     );
 }
 
+/// Built-in cookie key storage, configured before starting the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CookieStorage {
+    /// The operating system key store (the default).
+    Os,
+    /// Zebkit generates/persists the key in a private file, without OS key-store UI.
+    File,
+}
+
+/// Selects Zebkit's built-in storage backend. `None` places a file key in
+/// `<user-data-dir>/Secrets`; a custom directory must be absolute. No host
+/// key-file implementation is needed. I/O happens at startup, which returns
+/// a nonzero exit code if the key cannot be loaded safely.
+pub fn set_cookie_storage(storage: CookieStorage, directory: Option<&std::path::Path>) -> bool {
+    let directory = match directory {
+        Some(path) => match path.to_str().and_then(|value| CString::new(value).ok()) {
+            Some(value) => Some(value),
+            None => return false,
+        },
+        None => None,
+    };
+    unsafe {
+        sys::zebkit_set_cookie_storage(
+            match storage {
+                CookieStorage::Os => 0,
+                CookieStorage::File => 1,
+            },
+            directory.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()),
+        )
+    }
+}
+
 /// Installs a host-owned AES-256 cookie key before starting the engine.
 /// The host must persist/reuse the key. No Keychain/keyring is accessed.
 /// Host cookies use a separate database; existing OS-encrypted cookies stay intact.
@@ -122,4 +154,16 @@ pub fn version() -> String {
 /// The engine's, as in `"Chromium 155.0.8059.84"`.
 pub fn engine_version() -> String {
     unsafe { string_from(sys::zebkit_engine_version()) }.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod cookie_storage_tests {
+    use super::*;
+    #[test]
+    fn built_in_selection_rejects_invalid_directories_without_io() {
+        assert!(set_cookie_storage(CookieStorage::File, None));
+        assert!(!set_cookie_storage(CookieStorage::File, Some(std::path::Path::new("relative"))));
+        assert!(!set_cookie_storage(CookieStorage::Os, Some(std::path::Path::new("/unused"))));
+        assert!(set_cookie_storage(CookieStorage::Os, None));
+    }
 }

@@ -2,6 +2,8 @@
 #define ZEBKIT_ENGINE_COOKIES_H_
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
@@ -15,7 +17,7 @@ class KeyProvider;
 
 namespace zebkit {
 std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider();
-void LockCookieKeyConfiguration();
+bool PrepareCookieStorage(const std::vector<std::string>& args);
 void ConfigurePersistentCookies(content::BrowserContext* context,
                                 bool in_memory,
                                 const base::FilePath& partition,

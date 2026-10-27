@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-27",
+  "engine": "Chromium 155.0.8059.84",
+  "ownership": {
+    "implementation": "Zebkit C++ engine, src/engine/cookie_key_file.cc",
+    "host": "select backend and optionally a directory; no key-file code required",
+    "host": "one set_cookie_storage(File, None) call; duplicated Rust key-file implementation removed"
+  },
+  "interfaces": {
+    "C": "zebkit_set_cookie_storage(ZEBKIT_COOKIE_STORAGE_FILE, NULL)",
+    "Rust": "zebkit::set_cookie_storage(CookieStorage::File, None)",
+    "Python": "zebkit.set_cookie_storage(\"file\")",
+    "CLI": "--zebkit-cookie-storage=file [--zebkit-cookie-key-directory=/absolute/profile-specific/directory]",
+    "default": "OS key store",
+    "host_supplied_key_API_retained": true
+  },
+  "compatibility": {
+    "key_file": "<profile>/Secrets/cookie.key",
+    "format": "unchanged 53-byte v1",
+    "cookie_database": "Network/Cookies.host",
+    "encryption_tag": "zbh",
+    "prior_Host_file_backed_login": "confirmed restored without key rotation",
+    "original_OS_cookies_retained": true
+  },
+  "validation": {
+    "Mac_engine_build_and_package": "passed",
+    "Mac_backend_unit_contracts": "passed; restart, prior key format, missing/malformed refusal, path selection, owner/permission/link checks",
+    "C_API_restart_integration": "passed; automatic key creation, encrypted/HttpOnly values, first-request authentication, logout, profile isolation, retained OS cookie DB",
+    "signed_C_application_sandbox": "passed, LaunchServices launch and Chromium sandbox enabled",
+    "normal_runner_CLI": "passed; Unicode custom directory, restart, missing/malformed key stops before changing DB, unknown mode rejects",
+    "Python_selection": "passed",
+    "Rust_unit": "1 passed",
+    "Rust_engine_integration": "53 passed, 0 failed; workspace doctests passed",
+    "Host_helper_unit": "9 passed, 0 failed; key-file tests now belong to Zebkit",
+    "Host_real_helper_integration": "passed; key/cookies reused on restart and POST/303/opener popup behavior retained; explicit no-sandbox fixture"
+  },
+  "platform_checks": {
+    "macOS_arm64": "backend runtime and actual engine/host integration passed",
+    "Linux_x86_64": "same C++ source compiled and test executable linked with glibc 2.17 target; symbol requirements at most GLIBC_2.16",
+    "Windows_x86_64": "same C++ backend and test executable compiled/linked with MinGW, including ACL APIs",
+    "Linux_Windows_runtime_tested": false,
+    "Windows_engine_added": false
+  },
+  "artifact": {
+    "path": "dist/builtin-cookie/Host.app",
+    "platform": "macOS arm64",
+    "desktop": "reuse existing optimized desktop; UI/wire unchanged",
+    "backend": "Zebkit built-in C++ private-file backend",
+    "main": {
+      "bytes": 150370512,
+      "sha256": "ce68302a07d937da1824c9cc33ca4a92b9166ca179c0c70797a2f7efe81684fb"
+    },
+    "helper": {
+      "bytes": 543360,
+      "sha256": "bda1d8dbb339ed3ce791dabf54a0173916d7c1e0f29e162acee4a8888d9aae3c"
+    },
+    "framework": {
+      "bytes": 226456560,
+      "sha256": "766f0f29119f27293bd592563f34f8419147cc5a44afef57e70a8fb2d247b674"
+    },
+    "signing": "ad hoc, deep strict verification passed",
+    "installed_application_modified": false
+  },
+  "engine_size": {
+    "before_bytes": 226423472,
+    "after_bytes": 226456544,
+    "delta_bytes": 33072,
+    "sha256": "8d201de4c85c15c14478b4f429fd9c3dca93238078c61fd7c85c7ba30325bf2a"
+  },
+  "profiles_changed": false,
+  "new_full_browser_layer": false,
+  "installed_app_modified": false,
+  "boundaries": [
+    "Filesystem permissions provide less protection than OS key-store application/unlock checks.",
+    "Default OS-to-file switching can still require a new sign-in; this refactor preserves already file-backed logins.",
+    "The file backend refuses malformed/missing key files; it cannot restore lost keys.",
+    "Final real Google/x.com account authorization was not repeated."
+  ]
+}

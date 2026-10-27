@@ -20,10 +20,11 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 `scripts/engine-test.sh <profile>` tests every layer from programs built
 against the package (`tests/engine/`).
 
-Cookie encryption can use the host's own storage through
-`zebkit_set_cookie_encryption_key()` before startup. This avoids the OS
-key provider while retaining encrypted cookies; see
-[storage and migration rules](COOKIE_PERSISTENCE.md#host-owned-keys-without-os-key-store-dialogs).
+Cookie encryption supports the built-in OS and private-file backends through
+`zebkit_set_cookie_storage()` before startup, or `--zebkit-cookie-storage=file`.
+The file backend is implemented by Zebkit for every host/binding. Advanced
+hosts can still provide their own key with `zebkit_set_cookie_encryption_key()`;
+see [storage and compatibility rules](COOKIE_PERSISTENCE.md#built-in-storage-backends).
 
 ## 0. The core
 

@@ -110,6 +110,7 @@ build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${of
 build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/cookie-host" "$tests/cookie_host.c"
+build_against_package "$package" "$work/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$work/mode" "$tests/mode.c"
@@ -220,6 +221,8 @@ run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 
 run cookie-host python3 -I "$tests/cookie_host.py" "$work/cookie-host" --no-sandbox --headless
+run cookie-file python3 -I "$tests/cookie_file.py" "$work/cookie-host" --no-sandbox --headless
+run cookie-file-options python3 -I "$tests/cookie_file_options.py" "$work/cookie-file-runner" --no-sandbox --headless
 
 run webauthn-plain-headless python3 -I "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view

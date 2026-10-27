@@ -74,6 +74,21 @@ typedef void (*zebkit_task_func)(void *data);
  */
 ZEBKIT_API int zebkit_main(int argc, char **argv, zebkit_task_func ready, void *data);
 
+/* Built-in cookie key storage. Select on the main thread before zebkit_main().
+ * OS is the default. FILE generates/reuses a private key file without OS key
+ * store access. NULL/empty key_directory uses <user-data-dir>/Secrets; an
+ * override must be absolute. The engine resolves its profile and loads the key
+ * at startup, before opening cookie databases, returning exit code 1 on error.
+ * Configuration never overwrites a bad/missing key for existing Cookies.host.
+ * FILE preserves the same format/database as host-owned keys below.
+ */
+typedef enum zebkit_cookie_storage {
+    ZEBKIT_COOKIE_STORAGE_OS = 0,
+    ZEBKIT_COOKIE_STORAGE_FILE = 1
+} zebkit_cookie_storage;
+ZEBKIT_API bool zebkit_set_cookie_storage(zebkit_cookie_storage storage,
+                                         const char *key_directory);
+
 /* Optional host-owned cookie encryption, configured on the main thread before
  * zebkit_main(). Copies exactly 32 random bytes (AES-256-GCM). The host must
  * persist and reuse this key; no OS key-store provider is accessed in this mode.

@@ -33,6 +33,10 @@ opaque!(zebkit_view);
 opaque!(zebkit_call);
 opaque!(zebkit_script);
 
+pub type zebkit_cookie_storage = c_int;
+pub const ZEBKIT_COOKIE_STORAGE_OS: zebkit_cookie_storage = 0;
+pub const ZEBKIT_COOKIE_STORAGE_FILE: zebkit_cookie_storage = 1;
+
 pub type zebkit_task_func = unsafe extern "C" fn(data: *mut c_void);
 
 /// `zebkit_load_event`.
@@ -121,6 +125,7 @@ extern "C" {
     pub fn zebkit_engine_version() -> *const c_char;
     pub fn zebkit_free(pointer: *mut c_void);
 
+    pub fn zebkit_set_cookie_storage(storage: zebkit_cookie_storage, key_directory: *const c_char) -> bool;
     pub fn zebkit_set_cookie_encryption_key(key: *const u8, size: usize) -> bool;
     pub fn zebkit_view_get_target_id(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_main(argc: c_int, argv: *mut *mut c_char, ready: Option<zebkit_task_func>, data: *mut c_void)
