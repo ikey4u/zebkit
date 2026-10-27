@@ -1,5 +1,6 @@
 /* A human-facing off-screen host for the localhost WebAuthn tests.
  * The UI and focus flags are opt-in; default invocation stays windowless. */
+#define _GNU_SOURCE /* strdup */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
