@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-27",
+  "engine": "Chromium 155.0.8059.84",
+  "runtime_platform": "macOS arm64",
+  "host_storage": {
+    "c_api": "zebkit_set_cookie_encryption_key",
+    "algorithm": "AES-256-GCM",
+    "key_bytes": 32,
+    "cookie_database": "Network/Cookies.host",
+    "host_key_file": "Secrets/cookie.key",
+    "keychain_access_in_host_mode": false,
+    "original_os_cookie_database_retained": true,
+    "automatic_os_key_migration": false,
+    "posix": "0700 directory, 0600 owned regular file, no symlinks or hard links",
+    "windows": "protected owner-only DACL, no reparse points",
+    "lost_or_corrupt_key": "stop helper startup; do not replace"
+  },
+  "validation": {
+    "native_engine_build_and_package": "passed",
+    "c_host_restart_cookie_integration": "passed; encrypted persistent/HttpOnly values, first-request authentication, session expiry, logout, isolation, original DB byte-identical and startup configuration lock",
+    "rust_engine_integration": "53 passed, 0 failed; workspace doctests passed",
+    "host_helper_unit_tests": "11 passed, 0 failed",
+    "host_client_unit_tests": "43 passed, 0 failed",
+    "host_helper_desktop_optimized_builds": "passed",
+    "storage_compilation": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-gnu"
+    ],
+    "linux_windows_runtime_tested": false,
+    "windows_engine_added": false,
+    "sandboxed_c_host_application": "passed; the same C fixture in its own ad hoc signed app, launched through LaunchServices, Chromium sandbox enabled"
+  },
+  "artifact": {
+    "path": "dist/cookie-host/Host.app",
+    "platform": "macOS arm64",
+    "desktop_profile": "release-desktop, stripped",
+    "signing": "ad hoc, deep strict verification passed",
+    "main": {
+      "bytes": 150370512,
+      "sha256": "e8cacb055fad529b57af3e7d96817e47287ecc67ff3fac386ba68ffbe77fe920"
+    },
+    "helper": {
+      "bytes": 560464,
+      "sha256": "d5ec82b09429f58f07f6a04d2332f3f153725fd1bfff48047e4eaff676c4a53d"
+    },
+    "framework": {
+      "bytes": 226423488,
+      "sha256": "32bdd011df6815d3a7be73e64a8c22759af2f08f7611d026a98b1571ed0730e1"
+    },
+    "installed_app_modified": false
+  },
+  "engine_binary": {
+    "before_bytes": 226423312,
+    "after_bytes": 226423472,
+    "delta_bytes": 160,
+    "sha256": "3192d1b0510e3206179446fbce05fa04f1c4b1b4f0db02167af4e024db01ab53",
+    "note": "Net delivered-build size includes the host-key and popup target-ID interfaces."
+  },
+  "slim_profiles_changed": false,
+  "performance_benchmark_performed": false,
+  "installed_application_modified": false,
+  "limits": [
+    "File key storage does not provide Keychain application-identity/unlock protection.",
+    "Initial transition uses a separate cookie DB and can require signing in again.",
+    "macOS runtime validated; Linux/Windows storage compile checked only.",
+    "No Windows Chromium engine was added.",
+    "Passkey and OS permissions are independent of cookie storage."
+  ]
+}

@@ -56,7 +56,7 @@ pub mod services;
 pub mod vendor;
 mod view;
 
-pub use engine::{after, engine_version, is_headless, post, post_after, quit, run, run_with_args, version};
+pub use engine::{set_cookie_encryption_key, after, engine_version, is_headless, post, post_after, quit, run, run_with_args, version};
 pub use script::Script;
 pub use media::MediaCapture;
 pub use view::{Allow, Call, LoadEvent, View};

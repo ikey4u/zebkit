@@ -33,7 +33,7 @@ cookie configuration. Expiry and session-cookie semantics remain Chromium's
 defaults; the patch does not turn a website's session cookie into a permanent
 cookie. Another profile does not inherit the first profile's cookies.
 
-On macOS, the engine generates a random AES-256-GCM key in the system
+By default on macOS, the engine generates a random AES-256-GCM key in the system
 Keychain. The item is scoped by the host's bundle identifier, with its
 executable name as the fallback for an unbundled program. It uses its own
 `Zebkit Cookies: <host identity>` item, rather than another browser's key.
@@ -88,3 +88,79 @@ no full Chromium browser layer, password manager or background timer.
 The broad GN header checker still reports pre-existing dependency/visibility
 issues in the user-agent and PDFium integration. No cookie-source include
 errors were reported. Those unrelated issues are outside this patch.
+
+
+## Host-owned keys without OS key-store dialogs
+
+A host can now opt out of the OS key provider before starting the engine:
+
+```c
+/* Generate once using zebkit_random_bytes() from <zebkit/services.h>,
+ * save in the application's own storage, and reuse on every restart. */
+uint8_t key[32];
+if (!host_load_or_create_key(key) ||
+    !zebkit_set_cookie_encryption_key(key, sizeof(key))) {
+    return 1; /* The application implements host_load_or_create_key(). */
+}
+return zebkit_main(argc, argv, ready, NULL);
+```
+
+The C function copies exactly 32 bytes for AES-256-GCM; NULL/0 restores the
+OS default before startup. Configuration is main-thread-only and locks at
+`zebkit_main()`. Invalid sizes and later changes return false. Rust exposes
+`zebkit::set_cookie_encryption_key(Some(&key))`; Python exposes
+`set_cookie_encryption_key(key)`. These are trusted-host interfaces, never
+webpage bindings. No key is passed through command-line arguments or CDP.
+
+In host-key mode, Zebkit does not construct its Keychain/Secret Service
+provider. Chromium still encrypts the cookie values. It uses
+`Network/Cookies.host` with the `zbh` encryption tag, independently of the
+OS-encrypted `Network/Cookies`. Existing OS cookies and keys are neither
+read nor overwritten. In-memory/off-the-record contexts still have no disk
+cookie store. This C interface has no OS-specific storage calls; the host
+chooses how to retain the key on Linux, macOS or Windows.
+
+Host's helper opts in when both the package C header and Rust binding expose
+the interface. Its host storage is `<profile>/Secrets/cookie.key`: a versioned
+53-byte file containing a 32-byte random key. It is generated using the
+engine's existing secure random service. POSIX uses a private 0700 directory
+and 0600 file, checks ownership, rejects symlinks/nonregular files/hard links,
+and publishes a fully written, flushed temporary file without overwriting
+an existing key. Windows uses an owner-only protected DACL and rejects
+reparse points. The final key is reused, never derived from a user name or
+compiled into the program. A missing key with an existing host cookie database,
+a malformed key or unacceptable permissions stop helper startup; they do
+not trigger key rotation, OS-provider fallback or plaintext cookie storage.
+
+File storage protects against other OS users through file permissions. It
+does **not** provide Keychain's application-identity/unlock protection: a
+process running as the same user, or a copied profile together with its
+Secrets file, can access these cookies. Back up/restore the key and cookie
+database together. A host needing stronger protection can supply a key from
+its own secure store through the same API.
+
+Switching from OS keys cannot silently decrypt cookies whose key requires
+OS authorization. Host starts a separate host cookie store and may require
+one new sign-in after switching. The original database is retained so the
+change is reversible; changing modes does not merge the two sets of cookies.
+This setting does not suppress Passkey, Bluetooth or biometric system UI.
+
+### Validation on 2026-10-27
+
+The owned localhost C fixture verifies host-key persistence across restarts,
+encrypted/HttpOnly cookies, first-request authentication, session-cookie
+expiry, logout and profile isolation. It also verifies that a pre-existing
+OS cookie database remains byte-identical and that changing a key after
+startup is rejected. It passed as a command-line no-sandbox fixture and as
+an owned signed application launched through LaunchServices with Chromium's
+sandbox enabled. The test never uses real accounts or their cookies.
+Host's real helper integration independently checks a stable key file and
+Cookie authentication state after a helper restart. Storage unit tests cover
+missing/corrupt keys, permissions and links.
+
+The file-storage module passes compilation for macOS arm64, Linux x86-64
+and Windows x86-64; runtime checks here were performed on macOS. This does
+not add a Windows Chromium engine (which the project does not ship yet).
+
+See [the measured validation record](reports/cookie-host.json) for
+artifact hashes, size and runtime/compile boundaries.

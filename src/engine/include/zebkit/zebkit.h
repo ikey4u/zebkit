@@ -74,6 +74,16 @@ typedef void (*zebkit_task_func)(void *data);
  */
 ZEBKIT_API int zebkit_main(int argc, char **argv, zebkit_task_func ready, void *data);
 
+/* Optional host-owned cookie encryption, configured on the main thread before
+ * zebkit_main(). Copies exactly 32 random bytes (AES-256-GCM). The host must
+ * persist and reuse this key; no OS key-store provider is accessed in this mode.
+ * NULL with size 0 restores the default OS provider before startup. False for
+ * invalid size or after startup. Host cookies use Network/Cookies.host, leaving
+ * the OS-encrypted Network/Cookies untouched. Losing/changing the key loses
+ * access to host cookies. Never expose it to websites, arguments or logs.
+ */
+ZEBKIT_API bool zebkit_set_cookie_encryption_key(const uint8_t *key, size_t size);
+
 /* Closes every view and ends zebkit_main()'s loop. */
 ZEBKIT_API void zebkit_quit(void);
 

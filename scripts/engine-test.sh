@@ -109,6 +109,7 @@ fi
 build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
 build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
+build_against_package "$package" "$work/cookie-host" "$tests/cookie_host.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$work/mode" "$tests/mode.c"
@@ -217,6 +218,8 @@ ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILE
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "FAIL the media history test did not finish"; failed=1; }
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
+
+run cookie-host python3 -I "$tests/cookie_host.py" "$work/cookie-host" --no-sandbox --headless
 
 run webauthn-plain-headless python3 -I "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view

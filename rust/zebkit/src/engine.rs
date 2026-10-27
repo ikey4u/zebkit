@@ -20,6 +20,14 @@ pub(crate) fn require_engine_thread(what: &str) {
     );
 }
 
+/// Installs a host-owned AES-256 cookie key before starting the engine.
+/// The host must persist/reuse the key. No Keychain/keyring is accessed.
+/// Host cookies use a separate database; existing OS-encrypted cookies stay intact.
+/// `None` restores the default OS provider. Returns false after startup.
+pub fn set_cookie_encryption_key(key: Option<&[u8; 32]>) -> bool {
+    unsafe { sys::zebkit_set_cookie_encryption_key(key.map_or(std::ptr::null(), |key| key.as_ptr()), key.map_or(0, |_| 32)) }
+}
+
 /// Starts the engine with the program's arguments, calls `ready` once views
 /// can be made, and runs until [`quit`]. Returns the exit code for the
 /// process.

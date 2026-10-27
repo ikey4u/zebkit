@@ -1,6 +1,9 @@
 // Persistent network cookies for a profile, using Chromium's encrypted store.
 #include "zebkit/engine/cookies.h"
 
+#include <algorithm>
+#include <array>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -9,11 +12,14 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
+#include "components/os_crypt/async/browser/key_provider.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/algorithm.mojom.h"
 #include "content/public/browser/browser_context.h"
 #include "services/network/public/cpp/cookie_encryption_provider_impl.h"
 #include "services/network/public/cpp/transferable_directory.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "zebkit/engine/include/zebkit/zebkit.h"
 
 #if defined(ZEBKIT_COOKIES_USE_DBUS)
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
@@ -24,6 +30,28 @@ namespace zebkit {
 namespace {
 using KeyProvider = os_crypt_async::KeyProvider;
 using KeyProviders = std::vector<std::pair<size_t, std::unique_ptr<KeyProvider>>>;
+
+struct HostCookieKey {
+  std::optional<std::array<uint8_t, 32>> key;
+  bool locked = false;
+};
+HostCookieKey& HostKey() {
+  static HostCookieKey state;
+  return state;
+}
+class HostKeyProvider : public KeyProvider {
+ public:
+  explicit HostKeyProvider(const std::array<uint8_t, 32>& key) : key_(key) {}
+  void GetKey(KeyCallback callback) override {
+    std::move(callback).Run(
+        "zbh", os_crypt_async::Encryptor::Key(
+                   key_, os_crypt_async::mojom::Algorithm::kAES256GCM));
+  }
+  bool UseForEncryption() override { return true; }
+
+ private:
+  std::array<uint8_t, 32> key_;
+};
 
 class CookieCrypt {
  public:
@@ -81,6 +109,10 @@ std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider() {
 }
 #endif
 
+void LockCookieKeyConfiguration() {
+  HostKey().locked = true;
+}
+
 void ConfigurePersistentCookies(content::BrowserContext* context,
                                 bool in_memory,
                                 const base::FilePath& partition,
@@ -88,7 +120,11 @@ void ConfigurePersistentCookies(content::BrowserContext* context,
   if (in_memory || context->IsOffTheRecord() || context->GetPath().empty())
     return;
   static base::NoDestructor<std::unique_ptr<CookieCrypt>> crypt([] {
-    auto key = CreateCookieKeyProvider();
+    std::unique_ptr<KeyProvider> key;
+    if (HostKey().key)
+      key = std::make_unique<HostKeyProvider>(*HostKey().key);
+    else
+      key = CreateCookieKeyProvider();
     return key ? std::make_unique<CookieCrypt>(std::move(key)) : nullptr;
   }());
   if (!*crypt) {
@@ -100,10 +136,26 @@ void ConfigurePersistentCookies(content::BrowserContext* context,
   params->file_paths->data_directory = network::TransferableDirectory(
       context->GetPath().Append(partition).AppendASCII("Network"));
   params->file_paths->cookie_database_name =
-      base::FilePath(FILE_PATH_LITERAL("Cookies"));
+      base::FilePath(HostKey().key ? FILE_PATH_LITERAL("Cookies.host")
+                                   : FILE_PATH_LITERAL("Cookies"));
   params->enable_encrypted_cookies = true;
   params->cookie_encryption_provider = (*crypt)->Bind();
   // Keep Chromium's session-cookie lifetime semantics. Persistent cookies
   // survive restart; cookies without an expiry remain scoped to this run.
 }
 }  // namespace zebkit
+
+extern "C" bool zebkit_set_cookie_encryption_key(const uint8_t* key,
+                                                 size_t size) {
+  auto& state = zebkit::HostKey();
+  if (state.locked || (key ? size != 32 : size != 0))
+    return false;
+  if (key) {
+    std::array<uint8_t, 32> copy;
+    std::copy_n(key, copy.size(), copy.begin());
+    state.key = copy;
+  } else {
+    state.key.reset();
+  }
+  return true;
+}

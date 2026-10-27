@@ -6,6 +6,7 @@ cookies and HTTP traffic in this test belong to its localhost fixture.
 """
 import http.server
 import json
+import os
 import pathlib
 import socket
 import sqlite3
@@ -41,14 +42,20 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def run(binary, switches, profile, url, write=False, logout=False):
+def run(binary, switches, profile, url, write=False, logout=False, environment=None):
     with socket.socket() as available:
         available.bind(('127.0.0.1', 0))
         port = available.getsockname()[1]
     with (pathlib.Path(profile) / 'browser.log').open('a') as log:
-        process = subprocess.Popen([str(binary), *switches,
-                                    f'--user-data-dir={profile}', f'--remote-debugging-port={port}', url],
-                                   stdout=log, stderr=log)
+        arguments = [*switches, f'--user-data-dir={profile}', f'--remote-debugging-port={port}', url]
+        app = os.environ.get('ZEBKIT_COOKIE_TEST_APP')
+        command = [str(binary), *arguments]
+        if app:
+            command = ['open', '-n', '-W', '--stdout', log.name, '--stderr', log.name]
+            if environment and 'ZEBKIT_TEST_COOKIE_KEY_FILE' in environment:
+                command += ['--env', 'ZEBKIT_TEST_COOKIE_KEY_FILE=' + environment['ZEBKIT_TEST_COOKIE_KEY_FILE']]
+            command += [app, '--args', *arguments]
+        process = subprocess.Popen(command, stdout=log, stderr=log, env=environment)
         try:
             deadline = time.monotonic() + 30
             while True:

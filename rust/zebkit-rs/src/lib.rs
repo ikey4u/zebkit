@@ -121,6 +121,7 @@ extern "C" {
     pub fn zebkit_engine_version() -> *const c_char;
     pub fn zebkit_free(pointer: *mut c_void);
 
+    pub fn zebkit_set_cookie_encryption_key(key: *const u8, size: usize) -> bool;
     pub fn zebkit_main(argc: c_int, argv: *mut *mut c_char, ready: Option<zebkit_task_func>, data: *mut c_void)
         -> c_int;
     pub fn zebkit_quit();

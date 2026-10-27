@@ -31,7 +31,7 @@ import sys
 
 __all__ = [
     "View", "main", "quit", "post", "version", "engine_version", "is_headless",
-    "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
+    "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
@@ -121,6 +121,7 @@ _post_delayed = _declare("zebkit_post_delayed_task", None, _TASK, _P, ctypes.c_u
 _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
+_cookie_key = _declare("zebkit_set_cookie_encryption_key", _B, _P, ctypes.c_size_t)
 _view_reload = _declare("zebkit_view_reload", None, _V)
 _view_go_back = _declare("zebkit_view_go_back", None, _V)
 _view_go_forward = _declare("zebkit_view_go_forward", None, _V)
@@ -827,3 +828,17 @@ def app_on_quit_request(function):
     callback = _APP(_guard(lambda data: function()))
     _app_callbacks["quit"] = callback
     _app_on_quit_request(callback, None)
+
+
+def set_cookie_encryption_key(key):
+    """Before run(): host-persisted 32-byte random key, or None for the OS store.
+
+    Never log the key. Host cookies use a separate database.
+    """
+    if key is None:
+        return bool(_cookie_key(None, 0))
+    key = bytes(key)
+    if len(key) != 32:
+        raise ValueError("cookie key must contain exactly 32 bytes")
+    buffer = ctypes.create_string_buffer(key)
+    return bool(_cookie_key(buffer, len(key)))

@@ -15,6 +15,7 @@ class KeyProvider;
 
 namespace zebkit {
 std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider();
+void LockCookieKeyConfiguration();
 void ConfigurePersistentCookies(content::BrowserContext* context,
                                 bool in_memory,
                                 const base::FilePath& partition,

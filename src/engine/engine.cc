@@ -684,6 +684,7 @@ void zebkit_free(void* pointer) {
 }
 
 int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
+  zebkit::LockCookieKeyConfiguration();
 #if BUILDFLAG(IS_MAC)
   zebkit::SetUpBundle(zebkit::LibraryDirectory());
 #endif
