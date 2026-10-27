@@ -6,6 +6,8 @@
 # checksum is not the one here.
 0.0.1-alpha.10 aarch64-apple-darwin 3ec2b9435c50d7664f03eda7b67b7aa2e5b2bcded2fd75122019feb39e177b63
 0.0.1-alpha.10 x86_64-unknown-linux-gnu ce07e6d0bc8de6aca5a87a8b2519d218d502a907bd7816803e10d0e84ca457a6
+0.0.1-alpha.11 aarch64-apple-darwin 80dabcf8b097ab1a79e7899a63baea1f22f6fae4d2d628700a471bc4fd52c1f3
+0.0.1-alpha.11 x86_64-unknown-linux-gnu 9d7c6d50eee37c09e8aa656ba762a0a5ec1125afd0952eab5fb26ce4d30b7668
 0.0.1-alpha.3 x86_64-unknown-linux-gnu 9a9b01dfa21092219e71cdeaba62e55f3fd81b2d176e1a0c2fa0fb29de5252d5
 0.0.1-alpha.4 aarch64-apple-darwin 6f86ba25134f200a947526285378e06a989dbf7eac0c88ce24fd5cd4806b6fac
 0.0.1-alpha.4 x86_64-unknown-linux-gnu 9a649b6d1ee245f61bf072807624a5448f66edba37428771b47743d337b4e157

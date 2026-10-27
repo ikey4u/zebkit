@@ -16,10 +16,10 @@ program written for one builds and runs on the other.
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.10"
+zebkit = "0.0.1-alpha.11"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.10"
+zebkit-build = "0.0.1-alpha.11"
 ```
 
 ```rust
@@ -56,7 +56,7 @@ ZEBKIT_DIR=/path/to/package cargo run
   Inside the repository the crates find it there; elsewhere `ZEBKIT_DIR`
   names it. Released engines are downloaded once, checked against the
   SHA-256 in `zebkit-rs/engines.txt`; the latest engine is
-  0.0.1-alpha.10, for Linux and macOS.
+  0.0.1-alpha.11, for Linux and macOS.
 - **`zebkit_build::bundle()` puts the engine beside the executable**, in
   `target/<profile>/zebkit/`, and makes the executable look for it there.
 - **To ship the application**, copy the executable and that `zebkit`

@@ -313,7 +313,7 @@ and Dock policy.
 
 ### Releases
 
-- The latest engine, 0.0.1-alpha.10 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups, media capture, persistent cookies), is published for Linux and macOS;
+- The latest engine, 0.0.1-alpha.11 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups, media capture, persistent cookies, glibc 2.17, passkeys), is published for Linux and macOS;
   the Rust crates download a release only from a repository anyone can
   read, so the repository has to be public for them.
 
