@@ -125,6 +125,9 @@ _view_reload = _declare("zebkit_view_reload", None, _V)
 _view_go_back = _declare("zebkit_view_go_back", None, _V)
 _view_go_forward = _declare("zebkit_view_go_forward", None, _V)
 _view_resize = _declare("zebkit_view_resize", None, _V, _I, _I)
+_AUTHENTICATION = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_authentication = _declare("zebkit_view_on_authentication", _B, _V, _AUTHENTICATION, _P)
+_view_authentication_action = _declare("zebkit_view_authentication_action", _B, _V, _S)
 _view_authentication_ui = _declare("zebkit_view_set_authentication_ui", _B, _V, _B)
 _view_close = _declare("zebkit_view_close", None, _V)
 _view_get_url = _declare("zebkit_view_get_url", _P, _V)
@@ -293,8 +296,31 @@ class View:
     def resize(self, width, height):
         _view_resize(self._check(), width, height)
 
+    def on_authentication(self, function):
+        """Receive host-owned Passkey events as dictionaries; None restores native UI.
+
+        Never log/persist these events or PIN actions. Off-screen hosts must
+        opt into authentication UI. See docs/PASSKEYS.md for the schema.
+        """
+        handle = self._check()
+        _view_on_authentication(handle, _AUTHENTICATION(), None)
+        previous = self._callbacks.pop("authentication", None)
+        if previous is not None:
+            # A handler may unregister itself; keep the ctypes trampoline
+            # alive until its native invocation has returned.
+            post(lambda previous=previous: None)
+        if function is None:
+            return True
+        callback = _AUTHENTICATION(_guard(lambda h, event, data: function(json.loads(event))))
+        self._callbacks["authentication"] = callback
+        return bool(_view_on_authentication(handle, callback, None))
+
+    def authentication_action(self, action):
+        """Queue a current request/revision action; True is not authentication success."""
+        return bool(_view_authentication_action(self._check(), json.dumps(action).encode()))
+
     def set_authentication_ui(self, enabled):
-        """Allow native macOS Passkey UI; return False when unsupported."""
+        """Allow Passkey UI for this view."""
         return bool(_view_authentication_ui(self._check(), bool(enabled)))
 
     def close(self):

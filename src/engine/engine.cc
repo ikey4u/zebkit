@@ -63,10 +63,8 @@
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
 
-#if BUILDFLAG(IS_MAC)
 #include "content/public/browser/authenticator_request_client_delegate.h"
 #include "zebkit/engine/webauthn.h"
-#endif
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_switches.h"
@@ -450,7 +448,6 @@ std::string BrowserClient::GetProduct() {
   return std::string(version_info::GetProductNameAndVersionForUserAgent());
 }
 
-#if BUILDFLAG(IS_MAC)
 content::WebAuthenticationDelegate* BrowserClient::GetWebAuthenticationDelegate() {
   return GetWebAuthnDelegate();
 }
@@ -458,7 +455,6 @@ std::unique_ptr<content::AuthenticatorRequestClientDelegate>
 BrowserClient::GetWebAuthenticationRequestDelegate(content::RenderFrameHost* frame) {
   return CreateWebAuthnRequestDelegate(frame);
 }
-#endif
 
 void BrowserClient::ConfigureNetworkContextParams(
     content::BrowserContext* context,

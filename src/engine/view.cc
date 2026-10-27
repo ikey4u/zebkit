@@ -451,6 +451,8 @@ void zebkit_view::WebContentsDestroyed() {
     devtools_->DetachClient(this);
     devtools_ = nullptr;
   }
+  on_authentication_ = nullptr;
+  on_authentication_data_ = nullptr;
   FailPending("the view was closed");
   Observe(nullptr);
   if (on_close_)

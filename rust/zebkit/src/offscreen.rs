@@ -26,6 +26,7 @@
 
 use crate::view::{call_slot, Slot};
 use crate::{c_string, string_from, sys, View};
+use std::cell::Cell;
 use std::ops::BitOr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
@@ -319,6 +320,8 @@ pub(crate) struct Slots {
     on_caret: Slot<dyn FnMut(Option<Rect>)>,
     on_cursor: Slot<CursorFunction>,
     on_popup: Slot<dyn FnMut(Option<Rect>)>,
+    on_authentication: Slot<dyn FnMut(&str)>,
+    authentication_generation: Cell<u64>,
 }
 
 impl Slots {
@@ -327,6 +330,9 @@ impl Slots {
         self.on_caret.borrow_mut().take();
         self.on_cursor.borrow_mut().take();
         self.on_popup.borrow_mut().take();
+        self.authentication_generation
+            .set(self.authentication_generation.get().wrapping_add(1));
+        self.on_authentication.borrow_mut().take();
     }
 }
 
@@ -505,12 +511,51 @@ impl View {
         }
     }
 
-    /// Allows native macOS Passkey UI for this view. Off-screen views opt in;
+    /// Uses the host's UI for WebAuthn requests. Events are versioned JSON
+    /// (see docs/PASSKEYS.md); copy their data to another thread if necessary.
+    /// Register before the request. Off-screen hosts must also opt into UI.
+    pub fn on_authentication<F: FnMut(&str) + 'static>(&self, function: F) -> bool {
+        let Some(raw) = self.raw() else { return false };
+        self.inner
+            .offscreen
+            .authentication_generation
+            .set(self.inner.offscreen.authentication_generation.get().wrapping_add(1));
+        // Clear the C handler before replacing callback storage.
+        unsafe {
+            sys::zebkit_view_on_authentication(raw, None, std::ptr::null_mut());
+        }
+        *self.inner.offscreen.on_authentication.borrow_mut() = Some(Box::new(function));
+        unsafe { sys::zebkit_view_on_authentication(raw, Some(on_authentication), self.data()) }
+    }
+
+    /// Cancels outstanding host-owned requests, then restores native UI.
+    pub fn clear_authentication_handler(&self) {
+        self.inner
+            .offscreen
+            .authentication_generation
+            .set(self.inner.offscreen.authentication_generation.get().wrapping_add(1));
+        if let Some(raw) = self.raw() {
+            unsafe {
+                sys::zebkit_view_on_authentication(raw, None, std::ptr::null_mut());
+            }
+        }
+        self.inner.offscreen.on_authentication.borrow_mut().take();
+    }
+
+    /// Queues an action using the latest event's request/revision. False
+    /// means it was malformed, stale or unavailable; true is not success.
+    pub fn authentication_action(&self, action_json: &str) -> bool {
+        self.raw()
+            .is_some_and(|raw| unsafe { sys::zebkit_view_authentication_action(raw, c_string(action_json).as_ptr()) })
+    }
+
+    /// Allows Passkey UI for this view. Off-screen views opt in;
     /// their host must maintain focus and the page must have a recent user
     /// activation before a temporary authentication window can be shown.
-    /// Returns false when unsupported or after the view has closed.
+    /// Returns false after the view has closed.
     pub fn set_authentication_ui(&self, enabled: bool) -> bool {
-        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_authentication_ui(raw, enabled) })
+        self.raw()
+            .is_some_and(|raw| unsafe { sys::zebkit_view_set_authentication_ui(raw, enabled) })
     }
 
     /// Calls `function` with the caret's place in the view, in CSS pixels,
@@ -582,4 +627,22 @@ unsafe extern "C" fn on_cursor(
 unsafe extern "C" fn on_popup(_view: *mut sys::zebkit_view, shown: bool, bounds: *const sys::zebkit_rect, data: *mut c_void) {
     let bounds = (shown && !bounds.is_null()).then(|| *bounds);
     call_slot(&slots(data).on_popup, |function| function(bounds));
+}
+
+unsafe extern "C" fn on_authentication(_view: *mut sys::zebkit_view, event: *const c_char, data: *mut c_void) {
+    // The host may close the view or replace its handler in this callback.
+    // Keep the engine-owned reference alive until returning to native code.
+    let inner_ptr = data.cast::<crate::view::Inner>();
+    Rc::increment_strong_count(inner_ptr);
+    let inner = Rc::from_raw(inner_ptr);
+    let slots = &inner.offscreen;
+    let generation = slots.authentication_generation.get();
+    let function = slots.on_authentication.borrow_mut().take();
+    if let Some(mut function) = function {
+        let event = string_from(event).unwrap_or_default();
+        function(&event);
+        if slots.authentication_generation.get() == generation {
+            *slots.on_authentication.borrow_mut() = Some(function);
+        }
+    }
 }

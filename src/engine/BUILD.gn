@@ -207,6 +207,9 @@ _sources = [
   "ui_script.h",
   "view.cc",
   "view.h",
+  "webauthn.cc",
+  "webauthn.h",
+  "webauthn_ui.h",
 ]
 
 _deps = [
@@ -262,14 +265,17 @@ _deps = [
   "//ui/gfx",
   "//url",
   "//v8",
+  "//device/fido",
 ]
+if (!is_mac) {
+  _sources += [ "webauthn_views.cc" ]
+  _deps += [ "//components/qr_code_generator:qr_code_generator" ]
+}
 if (is_mac) {
   _sources += [
     "cookies_mac.mm",
-    "webauthn.h",
     "webauthn_mac.mm",
   ]
-  _deps += [ "//device/fido" ]
 } else if (is_linux && use_dbus) {
   _deps += [
     "//components/dbus",

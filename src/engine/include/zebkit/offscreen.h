@@ -332,12 +332,11 @@ ZEBKIT_API void zebkit_view_on_caret(zebkit_view *view, zebkit_caret_func func, 
 ZEBKIT_API void zebkit_view_set_focus(zebkit_view *view, bool focused);
 
 /*
- * Enables native Passkey authentication UI on macOS. Normal views enable it
+ * Enables Passkey authentication UI. Normal views enable it
  * by default; off-screen views do not. An opted-in off-screen view may show a
  * temporary authentication window only while the host marks it focused and
  * its page has a recent user activation. Keep set_focus() in sync with the
- * host's active tab/window. UI is closed with the request. Returns false on
- * unsupported platforms or a NULL view. No credentials are synthesized.
+ * host's active tab/window. UI is closed with the request. Returns false for a NULL view. No credentials are synthesized.
  */
 ZEBKIT_API bool zebkit_view_set_authentication_ui(zebkit_view *view, bool enabled);
 

@@ -475,6 +475,25 @@ ZEBKIT_API void zebkit_request_respond_file(zebkit_request *request, const char 
 /* The renderer, GPU and utility processes. Only zebkit-helper calls it. */
 ZEBKIT_API int zebkit_helper_main(int argc, char **argv);
 
+/* Host-owned WebAuthn UI. Register before a request; NULL restores default UI
+ * for future requests. This interface is shared by supported desktop platforms.
+ * Events are versioned JSON, valid during the callback (see PASSKEYS.md).
+ * Calls run on the engine thread. Respond using the request and revision from
+ * the latest event. Never log events (QR pairing data) or PIN actions.
+ * Removing/replacing a handler cancels its active requests. Hosts must retain
+ * their callback data until removal returns; closing a view ends delivery.
+ */
+typedef void (*zebkit_authentication_func)(zebkit_view *view,
+                                          const char *event_json, void *data);
+ZEBKIT_API bool zebkit_view_on_authentication(zebkit_view *view,
+    zebkit_authentication_func func, void *data);
+/* Accepts an action for the current request/revision; false for stale,
+ * malformed, unsupported or unavailable actions. A true return queues the
+ * action, not an authentication result. Safe from inside the event callback.
+ */
+ZEBKIT_API bool zebkit_view_authentication_action(zebkit_view *view,
+                                                const char *action_json);
+
 #ifdef __cplusplus
 }
 #endif

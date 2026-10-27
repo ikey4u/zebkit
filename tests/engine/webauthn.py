@@ -80,29 +80,27 @@ def main():
                     break
                 time.sleep(0.1)
             assert evaluate("isSecureContext && !!globalThis.PublicKeyCredential")
-            if sys.platform == "darwin":
-                assert evaluate("PublicKeyCredential.isConditionalMediationAvailable()") is False
-                assert evaluate("PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()") is False
-                capabilities = evaluate("PublicKeyCredential.getClientCapabilities()")
-                assert capabilities["conditionalGet"] is False, capabilities
-                assert capabilities["conditionalCreate"] is False, capabilities
-                print("ok no autofill or windowless platform capability is falsely advertised", flush=True)
-                # Real windowless requests finish instead of waiting for native UI.
-                result = evaluate("""(async () => {
-                  const controller = new AbortController();
-                  const timer = setTimeout(() => controller.abort(), 2500);
-                  try {
-                    await navigator.credentials.get({publicKey: {
-                      challenge: new Uint8Array(32), rpId: 'localhost',
-                      allowCredentials: [{type: 'public-key', id: new Uint8Array([1]), transports: ['internal']}]
-                    }, signal: controller.signal});
-                    return 'unexpected success';
-                  } catch (error) { return error.name; }
-                  finally { clearTimeout(timer); }
-                })()""")
-                assert result == "NotAllowedError", result
-                print("ok a windowless real request rejects without hanging or fabricating credentials", flush=True)
-
+            assert evaluate("PublicKeyCredential.isConditionalMediationAvailable()") is False
+            assert evaluate("PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()") is False
+            capabilities = evaluate("PublicKeyCredential.getClientCapabilities()")
+            assert capabilities["conditionalGet"] is False, capabilities
+            assert capabilities["conditionalCreate"] is False, capabilities
+            print("ok no autofill or windowless platform capability is falsely advertised", flush=True)
+            # Real windowless requests finish instead of waiting for native UI.
+            result = evaluate("""(async () => {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 2500);
+              try {
+                await navigator.credentials.get({publicKey: {
+                  challenge: new Uint8Array(32), rpId: 'localhost',
+                  allowCredentials: [{type: 'public-key', id: new Uint8Array([1]), transports: ['internal']}]
+                }, signal: controller.signal});
+                return 'unexpected success';
+              } catch (error) { return error.name; }
+              finally { clearTimeout(timer); }
+            })()""")
+            assert result == "NotAllowedError", result
+            print("ok a windowless real request rejects without hanging or fabricating credentials", flush=True)
             call("WebAuthn.enable", {"enableUI": False})
             authenticator = call("WebAuthn.addVirtualAuthenticator", {"options": {
                 "protocol": "ctap2", "transport": "internal",

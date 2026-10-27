@@ -176,6 +176,9 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_drop_data_ = nullptr;
   // Normal views have a native authentication anchor. Off-screen views opt
   // in and have their foreground state explicitly maintained by the host.
+  zebkit_authentication_func on_authentication_ = nullptr;
+  void* on_authentication_data_ = nullptr;
+  uint64_t authentication_handler_generation_ = 0;
   bool authentication_ui_enabled_ = true;
   bool offscreen_view_ = false;
   bool offscreen_focused_ = false;

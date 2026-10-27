@@ -95,6 +95,7 @@
 #include "zebkit/engine/include/zebkit/offscreen.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
+#include "zebkit/engine/webauthn.h"
 
 #if BUILDFLAG(IS_MAC)
 #include <IOSurface/IOSurfaceRef.h>
@@ -1713,15 +1714,28 @@ void zebkit_view_set_focus(zebkit_view* view, bool focused) {
   }
 }
 
+bool zebkit_view_on_authentication(zebkit_view* view,
+                                   zebkit_authentication_func func,
+                                   void* data) {
+  if (!view)
+    return false;
+  zebkit::AuthenticationHandlerChanged(view);
+  view->on_authentication_ = func;
+  view->on_authentication_data_ = data;
+  return true;
+}
+
+bool zebkit_view_authentication_action(zebkit_view* view, const char* json) {
+  return view && json && zebkit::AuthenticationAction(view, json);
+}
+
 bool zebkit_view_set_authentication_ui(zebkit_view* view, bool enabled) {
-#if BUILDFLAG(IS_MAC)
   if (!view)
     return false;
   view->authentication_ui_enabled_ = enabled;
+  if (!enabled)
+    zebkit::AuthenticationPolicyDisabled(view);
   return true;
-#else
-  return false;
-#endif
 }
 
 void zebkit_view_on_cursor(zebkit_view* view, zebkit_cursor_func func, void* data) {

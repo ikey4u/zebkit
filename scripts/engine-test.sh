@@ -68,6 +68,7 @@ library="$(engine_library "$package")"
 work="$(mktemp -d)"
 pids=()
 offscreen_key_identity=
+webauthn_key_identity=
 cleanup() {
     for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
     if [[ "$ZEBKIT_HOST" == macos && -n "$offscreen_key_identity" ]]; then
@@ -75,6 +76,11 @@ cleanup() {
         /usr/bin/security delete-generic-password \
             -s "Zebkit Cookies: $offscreen_key_identity" \
             -a "$offscreen_key_identity" >/dev/null 2>&1 || true
+    fi
+    if [[ "$ZEBKIT_HOST" == macos && -n "$webauthn_key_identity" ]]; then
+        /usr/bin/security delete-generic-password \
+            -s "Zebkit Cookies: $webauthn_key_identity" \
+            -a "$webauthn_key_identity" >/dev/null 2>&1 || true
     fi
     rm -rf "$work"
 }
@@ -106,9 +112,9 @@ build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$work/mode" "$tests/mode.c"
-if [[ "$ZEBKIT_HOST" == macos ]]; then
-    build_against_package "$package" "$work/webauthn-host" "$tests/webauthn_host.c"
-fi
+webauthn_key_identity="zebkit-test-webauthn-$(basename "$work")"
+webauthn_host="$work/$webauthn_key_identity"
+build_against_package "$package" "$webauthn_host" "$tests/webauthn_host.c"
 render_options=(-pthread)
 [[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
 build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
@@ -212,13 +218,14 @@ grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 
-if [[ "$ZEBKIT_HOST" == macos ]]; then
-    run webauthn python3 -I "$tests/webauthn.py" "$work/webauthn-host" --no-sandbox --headless
-    run webauthn-unfocused python3 -I "$tests/webauthn.py" "$work/webauthn-host" \
-        --no-sandbox --headless --test-authentication-ui
-    run webauthn-no-activation python3 -I "$tests/webauthn.py" "$work/webauthn-host" \
-        --no-sandbox --headless --test-authentication-ui --test-focused
-fi
+run webauthn-plain-headless python3 -I "$tests/webauthn.py" "$webauthn_host" \
+    --no-sandbox --headless --test-normal-view
+run webauthn-host-ui python3 -I "$tests/webauthn_ui.py" "$webauthn_host" --no-sandbox
+run webauthn python3 -I "$tests/webauthn.py" "$webauthn_host" --no-sandbox --headless
+run webauthn-unfocused python3 -I "$tests/webauthn.py" "$webauthn_host" \
+    --no-sandbox --headless --test-authentication-ui
+run webauthn-no-activation python3 -I "$tests/webauthn.py" "$webauthn_host" \
+    --no-sandbox --headless --test-authentication-ui --test-focused
 
 # Cookie encryption uses the real OS key store. Headless Linux builders
 # without a desktop keyring can opt into this integration test explicitly.

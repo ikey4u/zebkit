@@ -45,6 +45,8 @@ pub const ZEBKIT_LOAD_FAILED: zebkit_load_event = 3;
 pub type zebkit_load_func =
     unsafe extern "C" fn(view: *mut zebkit_view, event: zebkit_load_event, url: *const c_char, data: *mut c_void);
 pub type zebkit_view_func = unsafe extern "C" fn(view: *mut zebkit_view, data: *mut c_void);
+pub type zebkit_authentication_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, event_json: *const c_char, data: *mut c_void);
 pub type zebkit_title_func = unsafe extern "C" fn(view: *mut zebkit_view, title: *const c_char, data: *mut c_void);
 pub type zebkit_result_func =
     unsafe extern "C" fn(view: *mut zebkit_view, json: *const c_char, error: *const c_char, data: *mut c_void);
@@ -652,6 +654,10 @@ extern "C" {
     pub fn zebkit_view_ime_cancel(view: *mut zebkit_view);
     pub fn zebkit_view_on_caret(view: *mut zebkit_view, func: Option<zebkit_caret_func>, data: *mut c_void);
     pub fn zebkit_view_set_focus(view: *mut zebkit_view, focused: bool);
+    pub fn zebkit_view_on_authentication(
+        view: *mut zebkit_view, func: Option<zebkit_authentication_func>, data: *mut c_void,
+    ) -> bool;
+    pub fn zebkit_view_authentication_action(view: *mut zebkit_view, action_json: *const c_char) -> bool;
     pub fn zebkit_view_set_authentication_ui(view: *mut zebkit_view, enabled: bool) -> bool;
     pub fn zebkit_view_on_cursor(view: *mut zebkit_view, func: Option<zebkit_cursor_func>, data: *mut c_void);
     pub fn zebkit_view_on_popup(view: *mut zebkit_view, func: Option<zebkit_popup_func>, data: *mut c_void);

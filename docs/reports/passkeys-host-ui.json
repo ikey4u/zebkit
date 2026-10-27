@@ -1,0 +1,114 @@
+{
+  "date": "2026-10-27",
+  "engine": "Chromium 155.0.8059.84",
+  "build_platform": "macOS arm64",
+  "engine_profile": "slim-macos-native",
+  "scope": {
+    "shared": [
+      "Chromium FIDO controller",
+      "versioned C/Rust/Python host events and actions",
+      "Host embedded panel and private wire protocol"
+    ],
+    "existing_engine_platforms": [
+      "macOS arm64",
+      "Linux x86-64"
+    ],
+    "linux_runtime_tested": false,
+    "windows_engine_added": false,
+    "full_chrome_browser_layer_added": false,
+    "optimization_profiles_changed": false,
+    "comparative_performance_benchmark_performed": false
+  },
+  "validation": {
+    "native_engine_build": "passed",
+    "optimized_host_desktop_and_helper_build": "passed",
+    "full_engine_regression_suite": "passed before final focused lifecycle hardening; includes rendering, media, browser, encrypted cookie persistence",
+    "final_focused_tests": {
+      "virtual_webauthn": "passed resident registration/assertion, origin/challenge/RP hash, presence, user verification and ECDSA signature checks",
+      "ordinary_headless_view": "passed; UI-enabled normal headless view rejects real requests and does not open authentication UI",
+      "c_host_protocol": "passed; origin-bound events, malformed/stale/duplicate actions, cancel, abort, navigation and callback removal",
+      "rust_workspace_integration": {
+        "passed": 53,
+        "failed": 0,
+        "doctests": "passed",
+        "lifecycle": "disable UI inside callback, receive deferred closure and close owning view from callback"
+      },
+      "sandboxed_c_host_app": {
+        "passed": true,
+        "launch": "LaunchServices",
+        "chromium_sandbox_enabled": true
+      },
+      "host_private_helper_integration": {
+        "passed": true,
+        "chromium_sandbox_enabled": false
+      },
+      "host_browser_client_unit_tests": {
+        "passed": 43,
+        "failed": 0
+      },
+      "host_authentication_model_tests": {
+        "passed": 2,
+        "failed": 0,
+        "includes": "new request after helper restart"
+      },
+      "host_native_panel_rendering": {
+        "passed": 40,
+        "states": 5,
+        "window_sizes": 4,
+        "themes": 2,
+        "qr_screenshot_decoding": "passed",
+        "short_pane_cancel_visibility": "passed"
+      },
+      "generic_views_adapter": "final sources passed syntax compilation with the Mac engine toolchain; this is not a Linux build or runtime test",
+      "default_mac_sheet": "observed in owned sandboxed fixture; abort removes old sheet and a new request displays a fresh sheet"
+    },
+    "existing_fixture_fixes": {
+      "commit": "397325e",
+      "resize_control": "unchanged test executable against previous framework reproduced incomplete first-resized-frame pixels (29/30); new framework paired run passed (30/30). Fixture now waits for completed scaled content.",
+      "rust_cookie_identity": "per-run test identity and own-key cleanup avoids old test binary Keychain authorization; production keys unchanged"
+    },
+    "not_validated": [
+      "Linux runtime and physical devices",
+      "Windows engine",
+      "physical-phone passkey completion",
+      "USB security-key completion",
+      "entitled iCloud or Touch ID completion",
+      "final real Google sign-in"
+    ],
+    "permissions_granted_during_tests": [],
+    "real_account_credentials_used": false
+  },
+  "artifact": {
+    "artifact": "dist/authentication/Host.app",
+    "platform": "macOS arm64",
+    "desktop_profile": "release-desktop, stripped",
+    "signing": "ad hoc; deep strict verification passed",
+    "main": {
+      "bytes": 147982528,
+      "sha256": "36300c9261bd801594ddea331f1a4cb2d351cfced710d9d70389e21bd853800e"
+    },
+    "helper": {
+      "bytes": 542976,
+      "sha256": "36dac153fe5bbbaeeed4948cc22fef6638ddc2391d413c39e749e32ffdc33d91"
+    },
+    "framework": {
+      "bytes": 226423328,
+      "sha256": "e9fb0b174dc1b75c88b98c17ddbda1b7abf364596f078eb23286b9ba817edc43"
+    },
+    "worker_unchanged": true,
+    "host_commit": "bfeb3e722d259d122ded990c843f1f6dfc6324f3"
+  },
+  "default_package": {
+    "path": "dist/release",
+    "engine_bytes": 226423312,
+    "engine_sha256": "1c7c05c51dfc7fb1d640d4a1d9ba0ef9c1e14b17af3bc84969140b8fd9a82660",
+    "note": "Signing identities can change hashes between the framework in the app and the library package."
+  },
+  "delivery": {
+    "installed_host_overwritten": false,
+    "quit_existing_host_before_opening_test_app": true,
+    "uses_normal_host_profile_on_manual_launch": true,
+    "apple_platform_passkey_entitlement": "Requires Apple approval and a suitable signing/provisioning profile; the ad hoc test app does not grant it.",
+    "cookie_keychain_dialog": "Independent OS authorization; host authentication UI does not suppress it."
+  }
+}

@@ -90,11 +90,9 @@ class RendererClient : public content::ShellContentRendererClient {
 
 class BrowserClient : public content::ShellContentBrowserClient {
  public:
-#if BUILDFLAG(IS_MAC)
   content::WebAuthenticationDelegate* GetWebAuthenticationDelegate() override;
   std::unique_ptr<content::AuthenticatorRequestClientDelegate>
   GetWebAuthenticationRequestDelegate(content::RenderFrameHost* frame) override;
-#endif
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
       bool is_integration_test) override;
   bool IsHandledURL(const GURL& url) override;

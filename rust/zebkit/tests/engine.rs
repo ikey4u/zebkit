@@ -17,6 +17,7 @@ use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
 thread_local! {
     static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
     static MEDIA_DONE: Cell<bool> = const { Cell::new(false) };
+    static AUTHENTICATION_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -320,6 +321,38 @@ fn offscreen() {
     }
 }
 
+/// A host can disable UI inside an authentication callback, receive its
+/// eventual close event, then close the view from that callback safely.
+fn authentication_host() {
+    let port = serve("<style>body{margin:0}button{width:200px;height:60px}</style><button onclick=\"navigator.credentials.get({publicKey:{challenge:new Uint8Array(32),rpId:'localhost',timeout:10000}}).catch(()=>{})\">Owned test</button>");
+    // Off-screen views share the process display scale; keep the scale
+    // used by the rendering fixture above.
+    let view = View::new_offscreen(None, 240, 120, 2.0).expect("an off-screen host");
+    view.set_authentication_ui(true);
+    view.set_focus(true);
+    let responding = view.clone();
+    let disabled = Rc::new(Cell::new(false));
+    let installed = view.on_authentication(move |event| {
+        if event.contains(r#""state":"closed""#) {
+            check(disabled.get() && event.contains(r#""outcome":"disabled""#),
+                "authentication: deferred closure after disabling UI inside its handler", ());
+            AUTHENTICATION_DONE.with(|done| done.set(true));
+            responding.close();
+        } else if !disabled.replace(true) {
+            responding.set_authentication_ui(false);
+        }
+    });
+    check(installed, "authentication: host handler registered", ());
+    let ready = view.clone();
+    view.on_load(move |event, url| {
+        if event == LoadEvent::Finished && url.starts_with("http://localhost:") {
+            ready.send_mouse(MouseEvent::Down, 20.0, 20.0, MouseButton::Left, 1, Modifiers::NONE);
+            ready.send_mouse(MouseEvent::Up, 20.0, 20.0, MouseButton::Left, 1, Modifiers::NONE);
+        }
+    });
+    view.load_url(&format!("http://localhost:{port}/"));
+}
+
 /// <zebkit/page.h>: a confirm() answered by the application, the page
 /// printed to PDF; then the view closes.
 fn page(view: View) {
@@ -342,6 +375,9 @@ fn page(view: View) {
             check(pdf.as_ref().is_ok_and(|bytes| bytes.starts_with(b"%PDF-")), "page: printed to PDF", pdf.as_ref().map(Vec::len));
             closing.close();
             OFFSCREEN_DONE.with(|done| done.set(true));
+            // Keep focus-sensitive fixtures sequential: this test explicitly
+            // focuses its own off-screen view to begin authentication.
+            authentication_host();
         });
     });
 }
@@ -491,7 +527,8 @@ fn script_and_cdp(view: View) {
         text
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
-        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get) {
+        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
+            || !AUTHENTICATION_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }
