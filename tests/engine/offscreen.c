@@ -545,7 +545,14 @@ static void s_check_rate(void) {
 }
 
 /* 11. Resized, and at another scale. */
-static int resized(void) { return last[0].width == 640 && last[0].height == 480; }
+/* A resized surface may arrive before the renderer has repainted at the
+ * new scale. Wait for the finished page, rather than asserting on that
+ * intermediate frame (the same race occurs with the previous engine). */
+static int resized(void) {
+    return last[0].width == 640 && last[0].height == 480 && last[0].scale == 2 &&
+           pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 &&
+           pixel_at(0, 300, 230) == 0x102030;
+}
 static void s_resize(void) {
     zebkit_view_set_size(view, 320, 240, 2);
     wait_for(resized, 5000, "a frame of the new size");

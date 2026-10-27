@@ -513,6 +513,21 @@ fn script_and_cdp(view: View) {
     wait(client, view);
 }
 
+// Recompiled ad hoc test binaries must not ask to read an older binary's
+// Cookie key. Each invocation removes only the throwaway key it owns.
+fn cleanup_test_key(identity: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/security")
+            .args(["delete-generic-password", "-s", &format!("Zebkit Cookies: {identity}"), "-a", identity])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = identity;
+}
+
 fn main() {
     if std::env::args().any(|arg| arg == "--services-only") {
         services();
@@ -537,18 +552,22 @@ fn main() {
          })();\
          </script>",
     );
-    let profile = std::env::temp_dir().join(format!("zebkit-rust-test-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let identity = format!("zebkit-rust-test-{}-{nonce}", std::process::id());
+    let profile = std::env::temp_dir().join(&identity);
     let args = [
-        "zebkit-test".to_string(),
+        identity.clone(),
         "--headless".to_string(),
         "--no-sandbox".to_string(),
         "--autoplay-policy=no-user-gesture-required".to_string(),
         format!("--user-data-dir={}", profile.display()),
     ];
     // Ends on its own; a test that hangs is a failure too.
-    std::thread::spawn(|| {
+    let watchdog_identity = identity.clone();
+    std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(120));
         eprintln!("FAIL  the test did not finish in 120 s");
+        cleanup_test_key(&watchdog_identity);
         std::process::exit(1);
     });
     check(scheme::register("rs", scheme::STANDARD | scheme::FETCH), "scheme::register", ());
@@ -560,6 +579,7 @@ fn main() {
         engine(port);
     });
     let _ = std::fs::remove_dir_all(&profile);
+    cleanup_test_key(&identity);
     check(code == 0, "the engine's exit code", code);
 
     let (passed, failed) = (PASSED.with(Cell::get), FAILED.with(Cell::get));
