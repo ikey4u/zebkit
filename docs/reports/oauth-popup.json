@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-27",
+  "engine": "Chromium 155.0.8059.84",
+  "runtime_platform": "macOS arm64",
+  "comparison": {
+    "fixture": "two owned localhost origins, real mouse click, named popup, POST /gsi/transform, 303 /callback, origin/source-checked postMessage, window.closed and helper restart",
+    "control": "same engine and host-key mode, popup-adoption disabled; callback pending and regression fails",
+    "after": "same regression passes; exactly one POST, zero GET replays, actual native popup adopted, callback and closed state observed",
+    "fixture_sandbox_enabled": false,
+    "real_account_or_oauth_tokens_used": false,
+    "final_x_google_account_authorization_tested": false
+  },
+  "artifact": {
+    "path": "dist/cookie-host/Host.app",
+    "platform": "macOS arm64",
+    "desktop_profile": "release-desktop, stripped",
+    "signing": "ad hoc, deep strict verification passed",
+    "main": {
+      "bytes": 150370512,
+      "sha256": "e8cacb055fad529b57af3e7d96817e47287ecc67ff3fac386ba68ffbe77fe920"
+    },
+    "helper": {
+      "bytes": 560464,
+      "sha256": "d5ec82b09429f58f07f6a04d2332f3f153725fd1bfff48047e4eaff676c4a53d"
+    },
+    "framework": {
+      "bytes": 226423488,
+      "sha256": "32bdd011df6815d3a7be73e64a8c22759af2f08f7611d026a98b1571ed0730e1"
+    },
+    "installed_app_modified": false
+  },
+  "source_basis": "docs/GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup"
+}

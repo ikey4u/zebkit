@@ -161,6 +161,10 @@ typedef struct zebkit_view zebkit_view;
 ZEBKIT_API zebkit_view *zebkit_view_new(const char *url, int width, int height);
 
 ZEBKIT_API void zebkit_view_load_url(zebkit_view *view, const char *url);
+/* CDP target identifier for this existing view. Caller frees with zebkit_free().
+ * Use it to adopt a popup; recreating only its URL loses POST data and opener. */
+ZEBKIT_API char *zebkit_view_get_target_id(zebkit_view *view);
+
 ZEBKIT_API void zebkit_view_reload(zebkit_view *view);
 ZEBKIT_API void zebkit_view_go_back(zebkit_view *view);
 ZEBKIT_API void zebkit_view_go_forward(zebkit_view *view);

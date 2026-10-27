@@ -829,3 +829,14 @@ Exporting the libraries and the API cost 0.8 MiB of the engine over the
 content shell it replaced, the headers 7.6 MiB of the package; speed is the
 same within the spread of `scripts/bench.sh`. The engine's size and speed
 as a whole are `docs/SIZE_AND_SPEED.md`.
+
+
+### Adopting a site's authorization popup
+
+Use `zebkit_view_on_window_open()` to receive Chromium's actual popup and
+`zebkit_view_get_target_id()` to attach a CDP client to it. The returned
+identifier is freed with `zebkit_free()`. Rust exposes `View::target_id()`
+and `clear_new_window_handler()`. Python exposes `View.target_id()`.
+A URL-only `on_new_window` callback cancels the original operation and cannot
+preserve a form's POST or `window.opener`; see
+[the integration regression](GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup).

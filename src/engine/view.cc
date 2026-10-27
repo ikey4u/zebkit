@@ -698,6 +698,13 @@ void zebkit_view_on_new_window(zebkit_view* view,
   view->on_new_window_data_ = data;
 }
 
+char* zebkit_view_get_target_id(zebkit_view* view) {
+  if (!view || !view->web_contents())
+    return nullptr;
+  return strdup(content::DevToolsAgentHost::GetOrCreateFor(view->web_contents())
+                    ->GetId().c_str());
+}
+
 void zebkit_view_on_window_open(zebkit_view* view,
                                 zebkit_window_open_func func,
                                 void* data) {

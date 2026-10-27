@@ -305,6 +305,20 @@ impl View {
         unsafe { sys::zebkit_view_capture(raw, on_capture::<F>, data.cast()) }
     }
 
+    /// Restores normal Chromium popup creation after a URL-only handler.
+    pub fn clear_new_window_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_new_window(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.on_new_window.borrow_mut().take();
+    }
+
+    /// The CDP target ID of this existing view; does not navigate or recreate it.
+    pub fn target_id(&self) -> Option<String> {
+        self.raw()
+            .and_then(|raw| unsafe { crate::take_string(sys::zebkit_view_get_target_id(raw)) })
+    }
+
     /// What a page opens in a new window comes here as its URL, and no
     /// window is made.
     pub fn on_new_window<F: FnMut(&str) + 'static>(&self, function: F) {

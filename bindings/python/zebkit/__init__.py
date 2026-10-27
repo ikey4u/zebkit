@@ -122,6 +122,7 @@ _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
 _cookie_key = _declare("zebkit_set_cookie_encryption_key", _B, _P, ctypes.c_size_t)
+_view_target = _declare("zebkit_view_get_target_id", _P, _V)
 _view_reload = _declare("zebkit_view_reload", None, _V)
 _view_go_back = _declare("zebkit_view_go_back", None, _V)
 _view_go_forward = _declare("zebkit_view_go_forward", None, _V)
@@ -293,6 +294,9 @@ class View:
 
     def forward(self):
         _view_go_forward(self._check())
+
+    def target_id(self):
+        return _string(_view_target(self._check()))
 
     def resize(self, width, height):
         _view_resize(self._check(), width, height)

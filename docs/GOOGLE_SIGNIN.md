@@ -155,3 +155,63 @@ in its other four runs); it remains included in the medians. These local
 results show no sustained large regression, not a guarantee for every
 workload. The workload runs no hosted-app query; it measures the cost of
 adding the interface to normal page contexts.
+
+## Integrated browser: preserve the original authorization popup
+
+On 2026-10-27 the separate Host off-screen integration had another issue:
+its helper installed `View::on_new_window`, which deliberately cancels
+Chromium's popup and reports only its URL. The client then called
+`open_tab_from(url, opener)` to create an independent off-screen view.
+The `opener` in that host event was only UI metadata; it did not recreate a
+JavaScript `window.opener` relationship.
+
+This URL-only path cannot preserve a named window opened by script or a
+form's POST body, original navigation parameters and provider-to-site
+`postMessage`/`window.closed` contract. Thus reaching an address such as
+`accounts.google.com/gsi/transform` in a new tab does not establish that
+its original authorization request was forwarded correctly. A service URL
+alone is not enough to replay the browser operation.
+
+Google's [GIS setup guide](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#cross_origin_opener_policy)
+documents the popup/opener requirement when FedCM is disabled, including
+blank popup failures when the policy is unsuitable. This supports preserving
+the actual browsing-context relationship; it does not document a public
+standalone API contract for `gsi/transform`.
+
+Zebkit already provides `on_window_open`, which transfers the existing popup
+view while Chromium retains its request and opener. The added
+`zebkit_view_get_target_id()` / Rust `View::target_id()` identifies that
+exact view to the host's CDP client. Rust also allows clearing an earlier
+URL-only handler. Host's wire version 4 transports the existing view ID and
+CDP target ID; its client binds rendering/input and attaches to that target
+instead of navigating a replacement. The new popup receives the same
+frame, input, close, authentication and drag handlers as other tabs.
+Older helpers/clients continue to negotiate their previous protocol.
+This works in the shared Mac/Linux integration without loading Chrome UI.
+
+### Controlled regression
+
+`crates/host-browser-client/tests/popup.rs` in Host launches the real helper
+against two owned localhost origins. A genuine mouse click opens a named
+popup, submits a form by POST to a fixture `/gsi/transform`, follows a 303
+to `/callback`, posts a synthetic result to its actual opener and closes.
+The test checks native-view adoption, exactly one POST with its body,
+zero GET replays of the transform URL, origin/source-checked `postMessage`,
+and the site's observation of the closed popup. It also restarts the helper
+to verify the same file key and persisted authentication cookie.
+
+| Same fixture, same engine, same host key mode | Result |
+| --- | --- |
+| URL-only helper (`popup-adoption` disabled) | Callback stays pending; test fails |
+| Original-popup adoption enabled | POST, redirect, callback, close and restart checks pass |
+
+The control differs only in popup-adoption support and still uses host-owned
+cookie keys, so it does not introduce Keychain prompts into the comparison.
+The macOS runtime fixture uses the explicit no-sandbox test option.
+It uses synthetic data exclusively. Final x.com/Google account authorization
+has not been performed; no real authorization code, token or cookie was
+captured. The engine's existing UA, popup blocking and site security checks
+remain in force.
+
+See the [popup regression record](reports/oauth-popup.json) for the delivered
+artifact and test boundaries.
