@@ -32,4 +32,5 @@
 1031-media-demuxer-tap.patch
 1032-blink-media-capture-for-the-embedder.patch
 1033-webauthn-embedder-conditional-capability.patch
+1034-content-shell-file-chooser.patch
 1040-tls-initial-exec-for-the-library.patch
