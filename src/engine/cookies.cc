@@ -115,6 +115,19 @@ std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider() {
 }
 #endif
 
+// A path given on the command line, as the UTF-8 that
+// zebkit_set_cookie_storage() takes. On POSIX it is the OS's own bytes:
+// FilePath::AsUTF8Unsafe() converts through the process's locale there, and
+// before anything calls setlocale() that is "C", in which a name such as
+// "密钥" is not valid and comes back empty.
+static std::string PathArgument(const base::FilePath& path) {
+#if BUILDFLAG(IS_WIN)
+  return path.AsUTF8Unsafe();
+#else
+  return path.value();
+#endif
+}
+
 bool PrepareCookieStorage(const std::vector<std::string>& args) {
   auto& state = HostKey();
   if (state.locked)
@@ -129,8 +142,8 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
     }
     std::string directory =
         command.HasSwitch("zebkit-cookie-key-directory")
-            ? command.GetSwitchValuePath("zebkit-cookie-key-directory")
-                  .AsUTF8Unsafe()
+            ? PathArgument(
+                  command.GetSwitchValuePath("zebkit-cookie-key-directory"))
             : (mode == "file" ? state.directory : std::string());
     if (!zebkit_set_cookie_storage(
             mode == "file" ? ZEBKIT_COOKIE_STORAGE_FILE
@@ -141,9 +154,8 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
       return false;
     }
   } else if (command.HasSwitch("zebkit-cookie-key-directory")) {
-    std::string directory =
-        command.GetSwitchValuePath("zebkit-cookie-key-directory")
-            .AsUTF8Unsafe();
+    std::string directory = PathArgument(
+        command.GetSwitchValuePath("zebkit-cookie-key-directory"));
     if (state.mode != ZEBKIT_COOKIE_STORAGE_FILE ||
         !zebkit_set_cookie_storage(ZEBKIT_COOKIE_STORAGE_FILE,
                                    directory.c_str())) {
@@ -163,7 +175,7 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
   }
   std::error_code ec;
   auto path = std::filesystem::absolute(
-      std::filesystem::u8path(profile.AsUTF8Unsafe()), ec);
+      std::filesystem::u8path(PathArgument(profile)), ec);
   cookie_keys::Key key;
   std::string error;
   bool loaded =
