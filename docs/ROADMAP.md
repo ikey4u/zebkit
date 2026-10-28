@@ -273,13 +273,14 @@ and Dock policy.
 
 ### Measurements
 
-- **Web pages against Electron 44.9: done for 15 pages, two left over.**
-  0.0.1-alpha.6 costs 21% less CPU and 17% less memory on a page, over the 15 pages
-  of `scripts/web-bench.sh --sites` (`docs/SIZE_AND_SPEED.md`).
-  - **TODO: Stack Overflow**: 10.2 s of CPU against 8.4 s, 672 MB against
-    650 MB, 11 renderers against 9.
-  - **TODO: YouTube's memory**: 680 MB against 596 MB, 2 renderers
-    against 1.
+- **Web pages against Electron 44.9: done for 14 pages, one left over.**
+  `slim` costs 16% less CPU and 16% less memory on a page, over 14 of the
+  15 pages of `scripts/web-bench.sh --sites`, both engines in a 1280 by
+  800 window (`docs/SIZE_AND_SPEED.md`); less memory on every page, less
+  CPU on 12, level on BBC News and Stack Overflow.
+  - **TODO: Reddit** showed zebkit a reCAPTCHA in place of the page, and
+    Electron a challenge it passed; until both are shown the page, it is
+    out of the comparison.
 - **TODO: a fully equal comparison with Electron.** The comparison of
   whole applications that was published (a document reader against its
   build on Electron 36) was withdrawn on 2026-10-23: an old Electron, and

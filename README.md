@@ -332,32 +332,37 @@ Every comparison is with the latest stable Electron, 44.9 (Chromium 152).
 A comparison of whole applications, the same one on both, is still to be
 made (`docs/ROADMAP.md`).
 
-| | zebkit 0.0.1-alpha.6 | Electron 44.9, trimmed | zebkit is |
+| | zebkit `slim`, 2026-10-27 | Electron 44.9, trimmed | zebkit is |
 |---|---:|---:|---:|
-| Uncompressed | **157.5 MiB** | 255.7 MiB | 38% smaller |
-| `.tar.xz` | **53.9 MiB** | 85.3 MiB | 37% smaller |
-| `.zip` | **71.9 MiB** | 112.6 MiB | 36% smaller |
-| Text layout (an EPUB chapter) | 8.7 ms | **6.8 ms** | 28% slower |
-| A web page: CPU in its first 30 s, on average | **4.9 s** | 6.1 s | 21% less |
-| A web page: memory, on average | **409 MB** | 492 MB | 17% less |
+| Uncompressed | **158.7 MiB** | 255.7 MiB | 38% smaller |
+| `.tar.xz` | **54.3 MiB** | 85.3 MiB | 36% smaller |
+| `.zip` | **72.3 MiB** | 112.6 MiB | 36% smaller |
+| Text layout (a chapter of a book) | 10.9 ms | **9.2 ms** | 18% slower |
+| A web page: CPU in its first 30 s, on average | **4.6 s** | 5.5 s | 16% less |
+| A web page: memory, on average | **416 MB** | 498 MB | 16% less |
 
 - **Size.** Electron as shipped is 283.3 MiB; "trimmed" is a hello world
   with its locales and extras removed, the fairest baseline we could make
   (`examples/electron-hello`). zebkit keeps the whole web platform that
   applications use: HTML, CSS, JavaScript with every JIT tier,
   WebAssembly, WebGL, media with H.264 and AAC, HTTP/3.
-- **Text layout.** Electron's is Chrome's own build, every hot path
-  optimized for speed. zebkit is built with Chromium's PGO profile and
-  link-time optimization but optimizes part of the engine for size;
-  closing the gap is on the roadmap (`docs/ROADMAP.md`).
-- **Web pages.** Twelve popular sites (Wikipedia, YouTube, Amazon, The New
+- **Text layout.** A chapter of a book in columns, laid out again as its
+  window is resized (`scripts/layout-bench.sh`). Both engines lay out the
+  same lines; zebkit's code runs slower for being compiled for size.
+  Compiled for speed (`slim-speed`) it is within 4% of Google's own build
+  of Chromium 155, which is itself 8% behind Electron's Chromium 152, at
+  a cost of 19% in size; the release stays `slim`
+  (`docs/SIZE_AND_SPEED.md`).
+- **Web pages.** Eleven popular sites (Wikipedia, YouTube, Amazon, The New
   York Times, GitHub and others) and three local pages, each loaded for
-  10 s and shown for 20 s more, each alone in a freshly started engine,
-  the median of 3 runs, CPU and memory of every process (the averages
-  above are over the 15). A simple page takes 171 MB, two thirds of it
-  the engine's own code, which every further page shares. zebkit costs
-  less CPU on 12 of the 15 and less memory on 13; Stack Overflow is where
-  it costs more (`docs/reports/web-bench.md`, `scripts/web-bench.sh`).
+  10 s and shown for 20 s more, each alone in a freshly started engine in
+  a 1280 by 800 window, the median of 3 runs, CPU and memory of every
+  process (the averages above are over the 14). A simple page takes
+  172 MB, two thirds of it the engine's own code, which every further
+  page shares. zebkit costs less CPU on 12 of the 14 and less memory on
+  all 14; on BBC News and Stack Overflow the CPU is level. Reddit, the
+  fifteenth, showed zebkit a reCAPTCHA in place of the page and is left
+  out (`docs/reports/web-bench.md`, `scripts/web-bench.sh`).
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
 ## Reference

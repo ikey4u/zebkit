@@ -11,11 +11,11 @@ slimming Chromium disagrees with what was measured, the measurement wins.
 
 | | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| zebkit `slim`, 0.0.1-alpha.6, 2026-10-24 | **157.5 MiB** | **53.9 MiB** | **71.9 MiB** |
+| zebkit `slim`, 2026-10-27 | **158.7 MiB** | **54.3 MiB** | **72.3 MiB** |
 | Electron 44.9.0, trimmed (the baseline) | 255.7 MiB | 85.3 MiB | 112.6 MiB |
 | zebkit of Electron | 62% | 63% | 64% |
 
-The engine library is 137.6 MiB of it; ICU's data 6.5 MiB, SwiftShader
+The engine library is 138.9 MiB of it; ICU's data 6.5 MiB, SwiftShader
 with its Vulkan loader 3.6 MiB, the headers an application builds against
 7.6 MiB, V8's snapshots, the resource pack and ANGLE the rest
 (`docs/reports/slim.md`).
@@ -129,8 +129,8 @@ All of V8 at `-Os` would have saved 3.6 MiB more, with JSON 45% slower,
 regular expressions 55%, parsing 70% and JIT compilation 30%, and was not
 taken. Maglev stays: 2.4 MiB for a JIT tier.
 
-Text layout was what the size build lost. Laying out a chapter of an EPUB,
-as a reader does:
+Text layout was what the size build lost. Laying out a chapter of a book,
+as a reader does, when it was decided (2026-10-21):
 
 | Build | ms | Package, MiB |
 |---|---:|---:|
@@ -222,22 +222,25 @@ Fifteen pages: three local ones and twelve popular sites (Wikipedia,
 Google, YouTube, GitHub, Amazon, Reddit, The New York Times, BBC News, The
 Verge, Stack Overflow, Apple, MDN). Each is loaded for 10 s and shown for
 20 s more; the CPU and the memory (PSS) of every process are counted, and
-the median of 3 runs is taken. 2026-10-24, zebkit 0.0.1-alpha.6:
+the median of 3 runs is taken, both engines in a 1280 by 800 window (before 2026-10-27 zebkit's content shell window stayed at its 800 by 600 default, which flattered it). 2026-10-27, zebkit `slim`:
 
 Each page is opened alone, in an engine started for it, so the totals are
-sums of 15 separate runs, not one engine with 15 pages:
+sums of separate runs, not one engine with many pages. Reddit showed
+zebkit a reCAPTCHA in place of the page (Google's, which timed out) and
+Electron a challenge it passed; with different pages to compare, it is
+left out of the totals, which are over the other 14:
 
-| 15 pages, one at a time | zebkit `slim` | Electron 44.9.0 | zebkit |
+| 14 pages, one at a time | zebkit `slim` | Electron 44.9.0 | zebkit |
 |---|---:|---:|---:|
-| CPU, loading and at rest, all pages | **73 s** | 92 s | 21% less |
-| CPU, a page on average | **4.9 s** | 6.1 s | |
-| Memory, a page on average | **409 MB** | 492 MB | 17% less |
-| Memory, the smallest page (a static article) | **179 MB** | 262 MB | 32% less |
+| CPU, loading and at rest, all pages | **64 s** | 76 s | 16% less |
+| CPU, a page on average | **4.6 s** | 5.5 s | |
+| Memory, a page on average | **416 MB** | 498 MB | 16% less |
+| Memory, the smallest page (a static article) | **172 MB** | 262 MB | 34% less |
 
 Of a simple page's memory, about two thirds is the engine's own code: each
 process maps the same library and PSS divides those pages among them, so
 it is counted once and a second page does not add it again. For the
-static article, 171 MB in all: the GPU process 61 MB (rendering in
+static article, 171 MB in all when it was broken down (0.0.1-alpha.6): the GPU process 61 MB (rendering in
 software, SwiftShader, on a display without a GPU), the browser 40, the
 page's renderer 37, the network and storage services 25, the two zygotes
 10; of it 58 MB is memory the processes allocated and 113 MB their share
@@ -245,17 +248,17 @@ of the code. Busy sites cost more in their renderers' heaps: script,
 images and advertising, one renderer for each site's frames (The New
 York Times: 14).
 
-zebkit costs less CPU on 12 of the 15 pages and less memory on 13. BBC
-News and the local animation are level. Stack Overflow costs more (10.2 s
-of CPU against 8.4 s, 672 MB against 650 MB, with 11 renderers against 9),
-and so does YouTube's memory (680 MB against 596 MB, 2 renderers against
-1); these are the next
-to look at. Two defaults account for much of the lead: third-party cookies
-are blocked, which keeps advertising frames, and with site isolation their
-processes, from syncing (The Verge: 3 renderers against 16), and no spare
-renderer is kept waiting.
+zebkit costs less memory on all 14 pages and less CPU on 12; on BBC News
+(6.1 s against 5.9) and Stack Overflow (9.0 against 9.0) the CPU is
+level. BBC News varies with the advertising it is served: in three more
+runs the same day it took 6 renderer processes and 497 MB twice, and 25
+and 728 MB once. Two defaults account for much of the lead: third-party
+cookies are blocked, which keeps advertising frames, and with site
+isolation their processes, from syncing (The Verge: 9 renderers against
+17), and no spare renderer is kept waiting.
 
-Compiling for speed was measured on the same pages: `slim-speed`
+Compiling for speed was measured on the same pages (0.0.1-alpha.6,
+2026-10-24, over 15 with Reddit): `slim-speed`
 (`profiles/slim-speed.gn`, `-O2` and Chromium's full PGO, `-Oz` only for
 cold code) took 69 s of CPU against `slim`'s 73, with 2% more memory and
 a package 27 MB larger (186 MB). Since `slim` already costs less than
