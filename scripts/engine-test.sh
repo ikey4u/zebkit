@@ -40,6 +40,8 @@
 #   (<zebkit/automation.h>, docs/AUTOMATION.md): navigation, reads that
 #   wait, actions that wait until an element is enabled and nothing covers
 #   it, fill, check, keys and mouse, strict mode and timeouts.
+# - tests/engine/automation_python.py: the same through zebkit.automation,
+#   Playwright's async API for Python.
 # - tests/engine/playwright_connect.mjs: Playwright's own client (Node.js,
 #   playwright-core $PLAYWRIGHT_CORE_VERSION) connected to zebkit's
 #   Playwright endpoint (zebkit_automation_listen, no CDP); skipped when
@@ -215,6 +217,7 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" run automation "$work/automation" "${engine_switches[@]}"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/automation.log" || { echo "FAIL the automation test did not finish"; failed=1; }
+run automation-python python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 pw_node=(node)
 command -v mise > /dev/null && pw_node=(mise exec node@24 -- node)
 if [[ -d "$CACHE_DIR/playwright-tools/node_modules/playwright-core" ]] && "${pw_node[@]}" --version > /dev/null 2>&1; then

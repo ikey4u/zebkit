@@ -44,6 +44,7 @@
 //! that; [`post`] runs a closure there from any thread.
 
 pub mod app;
+pub mod automation;
 pub mod cdp;
 mod engine;
 pub mod media;

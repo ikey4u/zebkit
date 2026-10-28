@@ -52,6 +52,12 @@ pub type zebkit_view_func = unsafe extern "C" fn(view: *mut zebkit_view, data: *
 pub type zebkit_authentication_func =
     unsafe extern "C" fn(view: *mut zebkit_view, event_json: *const c_char, data: *mut c_void);
 pub type zebkit_title_func = unsafe extern "C" fn(view: *mut zebkit_view, title: *const c_char, data: *mut c_void);
+pub type zebkit_automation_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, json: *const c_char, error: *const c_char, data: *mut c_void);
+pub type zebkit_automation_listen_func =
+    unsafe extern "C" fn(url: *const c_char, error: *const c_char, data: *mut c_void);
+pub type zebkit_automation_event_func =
+    unsafe extern "C" fn(view: *mut zebkit_view, event: *const c_char, json: *const c_char, data: *mut c_void);
 pub type zebkit_result_func =
     unsafe extern "C" fn(view: *mut zebkit_view, json: *const c_char, error: *const c_char, data: *mut c_void);
 pub type zebkit_bind_func = unsafe extern "C" fn(
@@ -745,6 +751,18 @@ extern "C" {
         -> bool;
     pub fn zebkit_view_dialogs(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_view_request_close(view: *mut zebkit_view);
+    pub fn zebkit_automation_call(
+        view: *mut zebkit_view,
+        method: *const c_char,
+        params: *const c_char,
+        func: Option<zebkit_automation_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_automation_on_event(view: *mut zebkit_view, func: Option<zebkit_automation_event_func>, data: *mut c_void);
+    pub fn zebkit_automation_commands() -> *mut c_char;
+    pub fn zebkit_automation_page(page: *const c_char) -> *mut zebkit_view;
+    pub fn zebkit_automation_page_id(view: *mut zebkit_view) -> *mut c_char;
+    pub fn zebkit_automation_listen(port: c_int, func: Option<zebkit_automation_listen_func>, data: *mut c_void);
     pub fn zebkit_view_print_to_pdf(
         view: *mut zebkit_view,
         options_json: *const c_char,
