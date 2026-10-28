@@ -83,6 +83,7 @@ Not built yet on Blink. The target is the same profile and the same API
 | `slim-macos` | `slim` for macOS on arm64; without PGO until Chromium's macOS profile is fetched |
 | `slim-macos-native` | macOS on arm64 with installed Xcode, without ML inlining or ThinLTO |
 | `slim-macos-native-dev` | The native macOS profile with debug information |
+| `slim-speed` | `slim` compiled for speed: `-O2` throughout, no size-trained inliner; 7 to 11% less CPU at layout and on animated pages, 30 MiB larger, 20 to 50 MB more memory a page (`docs/SIZE_AND_SPEED.md`) |
 | `slim-dev` | `slim` with debug information and without the link-time optimization pass, for debuggers and profilers (`mise run d`) |
 | `baseline` | Chromium's content shell with its release defaults, the "before" of every measurement |
 
@@ -121,6 +122,7 @@ in a profile is preferred to a patch wherever one exists.
 | `scripts/mapsize.py <profile>` | `docs/reports/<profile>-map.md`: the engine's bytes by the source directory they came from, from the linker map |
 | `scripts/electron-baseline.sh` | `docs/reports/electron.md`: Electron's hello world, packaged and counted the same way |
 | `scripts/bench.sh <profile> [before=<dir>]` | JavaScript and DOM workloads, best of three, against a saved package |
+| `scripts/layout-bench.sh` | Text layout in zebkit and the pinned Electron: a chapter of a book in columns, laid out again as its width changes (`tests/bench/web/local/layout.html`) |
 | `scripts/ui-bench.sh <profile> [rows]` | The same interface as `zebkit.ui` widgets and as a page: layout time, update time, memory |
 | `scripts/web-bench.sh [--sites] [--check]` | What pages cost in zebkit and in the pinned Electron: CPU loading and at rest, memory, processes; `docs/reports/web-bench.md`. `--check` fails when zebkit goes over `tests/bench/web/limits.json` (`mise run bench:web`) |
 

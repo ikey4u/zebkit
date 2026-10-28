@@ -141,9 +141,77 @@ as a reader does:
 | **and link-time optimization (`zebkit_lto_optimize`): adopted** | **8.7** | **157.3** |
 | and without the size-trained inliner at the link | 8.2 | 171.4, not taken |
 
+Now, 0.0.1-alpha.11 (2026-10-27): `scripts/layout-bench.sh` lays out a
+chapter of about 9,000 words in columns a page wide, again after each
+change of its width by a pixel, as a reader does when its window is
+resized; the median of 50 layouts, the median of 5 runs, in each engine.
+
+| Text layout, `scripts/layout-bench.sh` | ms |
+|---|---:|
+| Electron 44.9.0 | **9.2** |
+| zebkit `slim`, 2026-10-27 | 10.9, 18% slower |
+
+(The page is not hyphenated: Electron ships no hyphenation dictionaries,
+and the engines would not lay out the same lines. The absolute times
+drift with the machine's state from one session to the next; the ratio
+holds, 18 to 19%, and so does the CPU per layout below.)
+
 `zebkit_max_speed_patterns` in `profiles/slim.gn` is the list of
 directories at `-O2` (a third tier in `patches/1007`). `slim-macos` is
 built without PGO until Chromium's profile for macOS is fetched.
+
+### Where the time went: the build, not the engine
+
+The gap was taken apart on 2026-10-27, measuring the CPU time of the
+renderer's main thread per layout of the same chapter (its lines, widths
+and glyph advances were checked to be identical in every engine), the
+median of five runs, each engine in turn, on an idle machine. What the
+engines do turned out to be the same; how fast their code runs did not:
+
+| CPU per layout, ms | | of Electron |
+|---|---:|---:|
+| Electron 44.9.0 (Chromium 152, Chrome's build flags) | **3.50** | 100% |
+| Chrome 155.0.8059.84, Google's own build | 3.78 | 108% |
+| zebkit `slim`, 0.0.1-alpha.11 | 4.42 | 126% |
+| `slim` with vtables as pointers, initial-exec thread-locals and V8 at `-O3` | 4.43 | 127% |
+| `slim-speed` (`-O2` throughout, no size-trained inliner) | 4.07 | 116% |
+| `slim-speed` with those three | 3.91 to 3.96 | 112% |
+| Chromium's content shell, official build, as Chromium links it (no zebkit change, `--lto-O0`) | 4.43 | 127% |
+
+Ruled out, each by measurement: garbage collection (traced over CDP,
+Electron collects more, not less, and is faster); fonts, line breaks and
+justification (identical); the renderer's priority, its backgrounding and
+visibility; a mismatch of Chrome's PGO profile (none, with the compiler's
+warnings on); Blink's newly stable features; and the engine's own
+patches, none of which touch layout or the heaps. The same factor shows
+on the animated page: every thread of every process costs about 15%
+more in `slim` than in Electron, and 5% less once built for speed.
+
+What the library gives up for being one costs nothing measurable:
+vtables as pointers (`use_relative_vtables_abi = false`), thread-local
+variables of V8 and Blink's heap read in one instruction instead of a
+call (`zebkit_tls_initial_exec`, `patches/1040`, kept as an option) and
+V8 at `-O3` were built into `slim` together, for 5 MiB, and changed
+neither layout (4.43 ms) nor the animated page; `slim` stays as it was.
+What moves it is the compiler's optimization level: `slim-speed`, `-O2`
+for all of the engine and no size-trained inliner at the link, is 7 to
+11% faster at layout, costs 5% less on the animated page than Electron
+instead of 15% more, and is 30 MiB larger (188 MiB; 60.8 MiB as
+`.tar.xz` against Electron's 85.3) and 20 to 50 MB more memory a page
+(a static article 195 MB against `slim`'s 175, Electron's 266). The two
+things left that Chrome's build has could not be measured: PartitionAlloc
+as malloc cannot be built into a library without taking the
+application's malloc over (the shim crashed the host program at start),
+and the packed relocations cost only at load. `slim` stays the release
+(owner, 2026-10-27): a build that costs more in size than it gains in
+speed is not an improvement, and `slim-speed` costs 19% in size for 7 to
+11% in speed.
+
+What remains is not zebkit's: Google's own build of Chromium 155 takes 8%
+more CPU per layout than Electron's Chromium 152, and `slim-speed` is
+within 4% of Google's build. Beating Electron on this test means
+beating Chrome 155 at Chromium 155, which is a change of Chromium, not of
+the build.
 
 ### Web pages
 

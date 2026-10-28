@@ -21,6 +21,7 @@ are built on, as Electron is.
 | CDP, compatible with Puppeteer, Playwright and raw clients | Owner |
 | Media playback, H.264 and AAC included | Owner, 2026-10-10 |
 | The JIT stays; no cut that costs much speed for little size | Owner, 2026-10-09 |
+| A build that costs more in size than it gains in speed is not an improvement: `slim-speed` (19% for 7 to 11%) stays a profile, the release stays `slim` | Owner, 2026-10-27 |
 | ICU's data for English, Chinese, Japanese and Korean at least | Owner |
 | Linux on old systems: glibc 2.31 first, then 2.17 | Owner, 2026-10-17 |
 | The same functions on Linux, macOS and Windows | Owner |
@@ -108,11 +109,16 @@ and Dock policy.
   and build machines often lack; the engine then refuses to start without
   `--no-sandbox`. Agents run in such places: zebkit needs a stated answer
   (ship the helper, document `--no-sandbox` for containers, or both).
-- **Text layout at Chrome's speed.** An EPUB chapter takes 8.7 ms in
-  zebkit and 6.8 ms in Electron 44.9, Chrome's own build
-  (`docs/SIZE_AND_SPEED.md`). What is left at `-Os` for size, and the
-  inliner trained for size at the link (8.2 ms without it, 14 MiB more),
-  are where to look; every comparison is with the latest stable Electron.
+- **Text layout at Chrome's speed.** A chapter of a book takes 4.4 ms of
+  CPU to lay out in zebkit `slim` and 3.5 ms in Electron 44.9
+  (`scripts/layout-bench.sh`, `docs/SIZE_AND_SPEED.md`). Taken apart on
+  2026-10-27: the engines do the same work; `slim`'s code runs slower
+  for being compiled for size. `slim-speed` (`-O2` throughout, no
+  size-trained inliner) takes 3.9 ms for 30 MiB more and 20 to 50 MB more
+  a page; Google's own build of Chromium 155 takes 3.8. The release stays
+  `slim` (owner, 2026-10-27): a build that costs more in size than it
+  gains in speed is not an improvement. Beyond that the gap is Chromium
+  155's against Electron's Chromium 152, not the build's.
 - **CDP checked against Puppeteer and Playwright**, with Chrome's
   results as the reference: the engine serves Chromium's own DevTools
   endpoint, and a suite of client tests against it is still to be written.

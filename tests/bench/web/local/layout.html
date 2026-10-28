@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Text layout</title>
+<style>
+  body { margin: 0; }
+  /* A chapter paginated as a reader shows a book: columns a page wide,
+     justified. Not hyphenated: Electron has no hyphenation dictionaries,
+     and the engines would not lay out the same lines. */
+  #chapter { height: 720px; column-width: 560px; column-gap: 48px; font: 18px/1.6 Georgia, serif;
+             color: #222; text-align: justify; }
+  h2 { font-size: 1.4em; break-after: avoid; }
+</style>
+<!-- scripts/layout-bench.sh: the time to lay out a chapter of a book again,
+     its width changed by one pixel each time, as a reader does when its
+     window is resized. The title ends as "layout <median> ms". -->
+<div id="chapter"></div>
+<script>
+const sentences = [
+  'It is interesting to contemplate an entangled bank, clothed with many plants of many kinds, with birds singing on the bushes.',
+  'Various insects flit about, and worms crawl through the damp earth.',
+  'These elaborately constructed forms, so different from each other, and dependent on each other in so complex a manner, have all been produced by laws acting around us.',
+  'These laws, taken in the <em>largest</em> sense, being Growth with Reproduction; Inheritance which is almost implied by reproduction.',
+  'Variability from the indirect and direct action of the external conditions of life, and from use and disuse.',
+  'A Ratio of Increase so high as to lead to a Struggle for Life, and as a consequence to Natural Selection.',
+  'Natural Selection entails Divergence of Character and the Extinction of less-improved forms.',
+  'There is grandeur in this view of life, with its several powers, having been originally breathed into a few forms or into one.',
+  'Whilst this planet has gone cycling on according to the fixed law of gravity, from so simple a beginning endless forms most beautiful and most wonderful have been, and are being, evolved.',
+  'Authors of the highest eminence seem to be fully satisfied with the view that each species has been independently created.',
+];
+// The same chapter every time: about 9,000 words in 120 paragraphs.
+let seed = 1;
+const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+let html = '';
+for (let p = 0; p < 120; p++) {
+  if (p % 20 === 0) html += `<h2>Section ${p / 20 + 1}</h2>`;
+  let text = '';
+  const count = 5 + Math.floor(next() * 6);
+  for (let s = 0; s < count; s++) text += sentences[Math.floor(next() * sentences.length)] + ' ';
+  html += `<p>${text}</p>`;
+}
+const chapter = document.getElementById('chapter');
+chapter.innerHTML = html;
+chapter.getBoundingClientRect();
+
+const times = [];
+for (let i = 0; i < 60; i++) {
+  chapter.style.width = (1200 + (i % 2)) + 'px';
+  const start = performance.now();
+  chapter.scrollWidth;
+  times.push(performance.now() - start);
+}
+const kept = times.slice(10).sort((a, b) => a - b);
+document.title = `layout ${kept[Math.floor(kept.length / 2)].toFixed(2)} ms`;
+</script>
+</html>
