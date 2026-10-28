@@ -82,7 +82,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later): `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | Planned, with the same API |
-| Version | `VERSION`: 0.0.1-alpha.11 |
+| Version | `VERSION`: 0.0.1-alpha.12 |
 
 ## Quick start
 
@@ -244,10 +244,10 @@ const hash = await zebkit.crypto.digest('SHA-256', 'abc');
 
 ```toml
 [dependencies]
-zebkit = "0.0.1-alpha.11"
+zebkit = "0.0.1-alpha.12"
 
 [build-dependencies]
-zebkit-build = "0.0.1-alpha.11"
+zebkit-build = "0.0.1-alpha.12"
 ```
 
 ```rust
