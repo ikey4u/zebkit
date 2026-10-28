@@ -1,0 +1,178 @@
+Content: what zebkit's automation needs that the public API does not give.
+
+zebkit runs Playwright's API inside the engine, without DevTools
+(docs/AUTOMATION.md). Four things it needs are content's own, which only
+its DevTools handlers reach; content/public/browser/zebkit_automation.h
+gives them to the embedder, in one new file:
+
+- the widget under a point of a page, a frame of another site's included,
+  and the point in it (GetRenderWidgetHostAtPointAsynchronously), so that
+  mouse input reaches the frame a person's would, as DevTools' Input
+  domain sends it;
+- touch events to a widget (RenderInputRouter::ForwardTouchEventWithLatencyInfo);
+- the position a page's Geolocation API reads (Playwright's
+  setGeolocation; DevTools' Emulation.setGeolocationOverride);
+- a frame's subresource loader factories made again, so that the
+  embedder's factory is in front of the network's from now on, as
+  DevTools' Fetch domain does when it starts.
+
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -2186,6 +2186,7 @@
+     "web_contents/slow_web_preference_cache.cc",
+     "web_contents/slow_web_preference_cache.h",
+     "web_contents/web_contents_impl.cc",
++    "zebkit_automation.cc",
+     "web_contents/web_contents_impl.h",
+     "web_contents/web_contents_view.h",
+     "web_contents/web_contents_view_aura.cc",
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -505,6 +505,7 @@
+     "web_contents_media_capture_id.h",
+     "web_contents_observer.cc",
+     "web_contents_observer.h",
++    "zebkit_automation.h",
+     "web_contents_user_data.h",
+     "web_contents_view_delegate.cc",
+     "web_contents_view_delegate.h",
+--- /dev/null
++++ b/content/browser/zebkit_automation.cc
+@@ -0,0 +1,77 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: content/public/browser/zebkit_automation.h.
++
++#include "content/public/browser/zebkit_automation.h"
++
++#include <utility>
++
++#include "base/time/time.h"
++#include "components/input/render_input_router.h"
++#include "components/input/render_widget_host_input_event_router.h"
++#include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "content/browser/renderer_host/render_widget_host_impl.h"
++#include "content/browser/renderer_host/render_widget_host_view_base.h"
++#include "content/browser/web_contents/web_contents_impl.h"
++#include "services/device/public/mojom/geolocation_context.mojom.h"
++#include "services/device/public/mojom/geoposition.mojom.h"
++#include "third_party/blink/public/common/input/web_touch_event.h"
++#include "ui/latency/latency_info.h"
++
++namespace content {
++
++void FindWidgetAtPoint(WebContents* contents,
++                       const gfx::PointF& point,
++                       WidgetAtPointCallback callback) {
++  auto* impl = static_cast<WebContentsImpl*>(contents);
++  auto* root =
++      static_cast<RenderWidgetHostViewBase*>(impl->GetRenderWidgetHostView());
++  if (!root) {
++    std::move(callback).Run(nullptr, point);
++    return;
++  }
++  impl->GetRenderWidgetHostAtPointAsynchronously(
++      root, point,
++      base::BindOnce(
++          [](WidgetAtPointCallback callback,
++             base::WeakPtr<RenderWidgetHostViewBase> target,
++             std::optional<gfx::PointF> local) {
++            if (!target || !local) {
++              std::move(callback).Run(nullptr, gfx::PointF());
++              return;
++            }
++            std::move(callback).Run(target->GetRenderWidgetHost(), *local);
++          },
++          std::move(callback)));
++}
++
++void ForwardTouchEvent(RenderWidgetHost* widget,
++                       const blink::WebTouchEvent& event) {
++  RenderWidgetHostImpl::From(widget)
++      ->GetRenderInputRouter()
++      ->ForwardTouchEventWithLatencyInfo(event, ui::LatencyInfo());
++}
++
++void SetGeolocationOverride(WebContents* contents,
++                            std::optional<GeolocationOverride> position) {
++  device::mojom::GeolocationContext* context =
++      static_cast<WebContentsImpl*>(contents)->GetGeolocationContext();
++  if (!context)
++    return;
++  if (!position) {
++    context->ClearOverride();
++    return;
++  }
++  auto geoposition = device::mojom::Geoposition::New();
++  geoposition->latitude = position->latitude;
++  geoposition->longitude = position->longitude;
++  geoposition->accuracy = position->accuracy;
++  geoposition->timestamp = base::Time::Now();
++  context->SetOverride(
++      device::mojom::GeopositionResult::NewPosition(std::move(geoposition)));
++}
++
++void UpdateSubresourceLoaderFactories(RenderFrameHost* frame) {
++  static_cast<RenderFrameHostImpl*>(frame)->UpdateSubresourceLoaderFactories();
++}
++
++}  // namespace content
+--- /dev/null
++++ b/content/public/browser/zebkit_automation.h
+@@ -0,0 +1,57 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: what the embedder's automation (Playwright's API without DevTools)
++// needs of content that its public API does not give: input to the widget
++// under a point, as DevTools' Input domain sends it; touch input; the
++// geolocation a page reads; a frame's loader factories made again, as
++// DevTools' Fetch domain makes them when it starts intercepting.
++
++#ifndef CONTENT_PUBLIC_BROWSER_ZEBKIT_AUTOMATION_H_
++#define CONTENT_PUBLIC_BROWSER_ZEBKIT_AUTOMATION_H_
++
++#include <optional>
++
++#include "base/functional/callback.h"
++#include "content/common/content_export.h"
++#include "ui/gfx/geometry/point_f.h"
++
++namespace blink {
++class WebTouchEvent;
++}  // namespace blink
++
++namespace content {
++
++class RenderFrameHost;
++class RenderWidgetHost;
++class WebContents;
++
++// The widget of @contents at @point (in its main frame's view), a frame of
++// another site's included, and the point in that widget; nullptr when there
++// is none. Asynchronous, as the browser's hit test of the frames may be.
++using WidgetAtPointCallback =
++    base::OnceCallback<void(RenderWidgetHost* widget, gfx::PointF point)>;
++CONTENT_EXPORT void FindWidgetAtPoint(WebContents* contents,
++                                      const gfx::PointF& point,
++                                      WidgetAtPointCallback callback);
++
++// A touch event to @widget, as a touchscreen's.
++CONTENT_EXPORT void ForwardTouchEvent(RenderWidgetHost* widget,
++                                      const blink::WebTouchEvent& event);
++
++// The position @contents' pages get from the Geolocation API, or the
++// device's again (nullopt).
++struct GeolocationOverride {
++  double latitude = 0;
++  double longitude = 0;
++  double accuracy = 0;
++};
++CONTENT_EXPORT void SetGeolocationOverride(
++    WebContents* contents,
++    std::optional<GeolocationOverride> position);
++
++// @frame's subresource loader factories made again, through
++// ContentBrowserClient::WillCreateURLLoaderFactory().
++CONTENT_EXPORT void UpdateSubresourceLoaderFactories(RenderFrameHost* frame);
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_ZEBKIT_AUTOMATION_H_

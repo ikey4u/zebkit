@@ -1,0 +1,46 @@
+Blink: files given to an <input type=file> by path, for the embedder.
+
+DevTools' DOM.setFileInputFiles gives an input the files at some paths as a
+person choosing them would (HTMLInputElement::SetFilesFromPaths: input and
+change dispatched), and nothing else outside Blink can. zebkit's automation
+needs the same for Playwright's setInputFiles without CDP:
+WebInputElement::SetFilesFromPaths.
+
+--- a/third_party/blink/public/web/web_input_element.h
++++ b/third_party/blink/public/web/web_input_element.h
+@@ -31,6 +31,8 @@
+ #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_INPUT_ELEMENT_H_
+ #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_INPUT_ELEMENT_H_
+ 
++#include <vector>
++
+ #include "build/build_config.h"
+ #include "third_party/blink/public/common/webid/email_verification_state.h"
+ #include "third_party/blink/public/platform/web_common.h"
+@@ -70,6 +72,10 @@
+                   bool send_events = false,
+                   WebAutofillState = WebAutofillState::kNotFilled);
+   bool IsValidValue(const WebString&) const;
++  // zebkit: the files at the paths given to an <input type=file>, as a
++  // person choosing them would (DevTools' DOM.setFileInputFiles): input and
++  // change are dispatched.
++  void SetFilesFromPaths(const std::vector<WebString>& paths);
+   bool IsChecked() const;
+   bool IsMultiple() const;
+ 
+--- a/third_party/blink/renderer/core/exported/web_input_element.cc
++++ b/third_party/blink/renderer/core/exported/web_input_element.cc
+@@ -68,6 +68,13 @@
+   return ConstUnwrap<HTMLInputElement>()->IsValidValue(value);
+ }
+ 
++void WebInputElement::SetFilesFromPaths(const std::vector<WebString>& paths) {
++  Vector<String> files;
++  for (const WebString& path : paths)
++    files.push_back(path);
++  Unwrap<HTMLInputElement>()->SetFilesFromPaths(files);
++}
++
+ void WebInputElement::SetChecked(bool now_checked,
+                                  bool send_events,
+                                  WebAutofillState autofill_state) {

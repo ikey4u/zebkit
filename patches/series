@@ -33,4 +33,9 @@
 1032-blink-media-capture-for-the-embedder.patch
 1033-webauthn-embedder-conditional-capability.patch
 1034-content-shell-file-chooser.patch
+1035-content-shell-file-choosers-to-the-embedder.patch
+1036-blink-input-files-from-paths-for-the-embedder.patch
+1037-content-shell-permissions-from-the-embedder.patch
 1040-tls-initial-exec-for-the-library.patch
+1038-content-automation-for-the-embedder.patch
+1039-blink-media-type-for-the-embedder.patch
