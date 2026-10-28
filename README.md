@@ -23,7 +23,8 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   the roadmap (`docs/ROADMAP.md`, "The library").
 - **Take what you need.** Web views, in a window or off-screen with their
   frames handed to you; a full PDF API; saving what a page plays; your own
-  URL schemes; native UI from JavaScript; CDP for agents. Use one, or all.
+  URL schemes; native UI from JavaScript; Playwright's API and CDP for
+  agents. Use one, or all.
 - **The real Chrome engine.** Pages see Chromium 155: its user agent and
   client hints, `window.chrome`, popups blocked without a click, and
   nothing of a debugger attached (`docs/API.md` has what still differs,
@@ -52,10 +53,18 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   views toolkit: signals, JSX, Tailwind classes, and automation for tests
   and agents. React, Solid or Vue drawn natively with each system's look is
   planned (`docs/ROADMAP_UI.md`).
-- **Made for agents.** Agents drive zebkit over CDP, Chromium's own
-  DevTools server, headless or windowed. A general MCP server giving them
-  pages, PDFs, files, media and native windows as tools is planned
-  (`docs/ROADMAP.md`, "Agents").
+- **Playwright's API, natively.** The whole of Playwright (locators,
+  actions that wait until they can be done, keyboard, mouse and touch,
+  routes, dialogs, downloads, contexts, workers, traces, HAR, video) runs
+  inside the engine, without CDP or a Node.js driver: 3 to 10 times faster
+  than Playwright over CDP, and a click in 3 to 5 ms instead of 33
+  (`<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
+  clients, in any of its languages, connect to it unchanged with
+  `chromium.connect()`.
+- **Made for agents.** Agents drive zebkit through Playwright's API or over
+  CDP, Chromium's own DevTools server, headless or windowed. A general MCP
+  server giving them pages, PDFs, files, media and native windows as tools
+  is planned (`docs/ROADMAP.md`, "Agents").
 - **Customise it from your code.** Native hooks decide what the engine
   does: new windows and popups, dialogs, drag and drop, your own URL
   schemes, what a page may call, scripts before the page's own.
@@ -308,15 +317,48 @@ window({title: 'To do', width: 420, height: 440}, () =>
 
 ### Agents
 
-An MCP server that gives agents zebkit's capabilities as tools is planned
-(`docs/ROADMAP.md`, "Agents"). Today an agent drives zebkit over CDP, as it
-would drive Chrome:
+Playwright's API runs inside the engine (`docs/AUTOMATION.md`): every
+command of Playwright's protocol, in the application's process, with no
+CDP and no Node.js. From C it is one call, `zebkit_automation_call(view,
+"Frame.click", "{\"selector\": \"#go\"}", done, data)`; Python has it with
+Playwright's names:
+
+```python
+import zebkit
+from zebkit.automation import Page, expect, run
+
+async def test():
+    page = Page()
+    await page.goto("https://example.com/")
+    await expect(page).to_have_title("Example Domain")
+    await expect(page.get_by_text("documentation examples")).to_be_visible()
+    await page.screenshot(path="example.png")
+    zebkit.quit()
+
+zebkit.main(lambda: run(test()), ["python", "--headless"])
+```
+
+Playwright's own clients, its test runner and its other languages included,
+connect to the engine's Playwright endpoint unchanged:
+
+```sh
+tools/zebkit-run --headless --playwright-port=0   # prints "Playwright listening on ws://127.0.0.1:<port>/"
+```
+
+```js
+const browser = await chromium.connect('ws://127.0.0.1:<port>/');
+const page = await (await browser.newContext()).newPage();
+```
+
+Agents and tools that speak CDP drive zebkit as they would drive Chrome:
 
 ```sh
 tools/zebkit-run --headless --remote-debugging-port=9222 https://example.com/
 ```
 
-Any CDP client connects to `http://127.0.0.1:9222`.
+Any CDP client connects to `http://127.0.0.1:9222`. An MCP server that gives
+agents zebkit's capabilities as tools is planned (`docs/ROADMAP.md`,
+"Agents").
 
 ### The examples
 
@@ -365,6 +407,25 @@ made (`docs/ROADMAP.md`).
   out (`docs/reports/web-bench.md`, `scripts/web-bench.sh`).
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
+Playwright's commands, natively and through Playwright over CDP, headless,
+medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
+
+| | zebkit, native | zebkit, Playwright's client to its endpoint | Chrome 156, Playwright over CDP |
+|---|---:|---:|---:|
+| `locator.click()` | **4.9 ms** | 3.5 ms | 33.4 ms |
+| `locator.fill()` | **0.66 ms** | 2.4 ms | 2.7 ms |
+| `locator.press('Enter')` | **0.40 ms** | 0.82 ms | 2.3 ms |
+| `locator.textContent()` | **0.22 ms** | 0.65 ms | 0.90 ms |
+| `allTextContents()` of 200 | **0.26 ms** | 2.1 ms | 1.8 ms |
+| `page.screenshot()` | **29.9 ms** | 44.2 ms | 33.4 ms |
+
+- **One call in the renderer** where Playwright's server makes several
+  round trips over CDP, and no JSON between processes; no Node.js process
+  (Playwright's alone reached 175 MiB).
+- **A click without waiting for the display**: the frames Playwright's
+  checks wait for are made at once while a command is in flight on a page
+  without a display, instead of at 60 Hz.
+
 ## Reference
 
 ### Documentation
@@ -374,6 +435,7 @@ made (`docs/ROADMAP.md`).
 | [docs/API.md](docs/API.md) | Everything an application can call, in C, Rust, Python and JavaScript |
 | [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing, measuring and releasing; profiles and patches |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine is made, and what in this repository is what |
+| [docs/AUTOMATION.md](docs/AUTOMATION.md) | Playwright's API without CDP: how Playwright works, what zebkit does instead, the endpoint, what it costs |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
@@ -392,7 +454,7 @@ made (`docs/ROADMAP.md`).
 | `src/engine/` | zebkit's own code, linked into Chromium as `//zebkit/engine`: the library, its C API and headers |
 | `src/ffmpeg/` | zebkit's FFmpeg configuration, from `scripts/ffmpeg-config.sh` |
 | `rust/`, `bindings/python/` | The Rust crates and the Python binding |
-| `tools/` | `zebkit-run` (open pages, serve CDP) and `zebkit-js` (applications in JavaScript) |
+| `tools/` | `zebkit-run` (open pages, serve CDP or Playwright's endpoint) and `zebkit-js` (applications in JavaScript) |
 | `tests/` | Programs that test every layer of the API against a package; speed workloads |
 | `examples/` | A browser window in C, `zebkit.ui`, a library inside the engine, the Electron baseline |
 | `scripts/` | Every step, one script each; `mise tasks` lists the short forms |
