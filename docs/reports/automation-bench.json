@@ -1,0 +1,201 @@
+{
+ "native": {
+  "engine": "zebkit native",
+  "results": {
+   "goto": {
+    "median": 15.62,
+    "p90": 17.04
+   },
+   "evaluate 1+1": {
+    "median": 0.12,
+    "p90": 0.15
+   },
+   "locator.textContent": {
+    "median": 0.22,
+    "p90": 0.3
+   },
+   "locator.click": {
+    "median": 4.91,
+    "p90": 5.15
+   },
+   "locator.fill": {
+    "median": 0.66,
+    "p90": 2.51
+   },
+   "locator.press Enter": {
+    "median": 0.4,
+    "p90": 0.56
+   },
+   "locator.isVisible": {
+    "median": 0.2,
+    "p90": 0.23
+   },
+   "locator.count (200)": {
+    "median": 0.24,
+    "p90": 0.28
+   },
+   "allTextContents (200)": {
+    "median": 0.26,
+    "p90": 0.3
+   },
+   "getByRole click": {
+    "median": 3.19,
+    "p90": 5.23
+   },
+   "screenshot": {
+    "median": 29.91,
+    "p90": 31.8
+   }
+  }
+ },
+ "endpoint": {
+  "engine": "zebkit endpoint (Playwright protocol)",
+  "version": "155.0.8059.84",
+  "results": {
+   "goto": {
+    "median": 16.72,
+    "p90": 18.77
+   },
+   "evaluate 1+1": {
+    "median": 0.59,
+    "p90": 1.04
+   },
+   "locator.textContent": {
+    "median": 0.65,
+    "p90": 0.73
+   },
+   "locator.click": {
+    "median": 3.46,
+    "p90": 5.09
+   },
+   "locator.fill": {
+    "median": 2.42,
+    "p90": 2.64
+   },
+   "locator.press Enter": {
+    "median": 0.82,
+    "p90": 0.95
+   },
+   "locator.isVisible": {
+    "median": 0.69,
+    "p90": 0.77
+   },
+   "locator.count (200)": {
+    "median": 0.77,
+    "p90": 1.03
+   },
+   "allTextContents (200)": {
+    "median": 2.05,
+    "p90": 2.26
+   },
+   "getByRole click": {
+    "median": 3.46,
+    "p90": 4.59
+   },
+   "screenshot": {
+    "median": 44.15,
+    "p90": 44.65
+   }
+  }
+ },
+ "cdp": {
+  "engine": "zebkit over CDP",
+  "version": "155.0.8059.84",
+  "results": {
+   "goto": {
+    "median": 14.74,
+    "p90": 21.22
+   },
+   "evaluate 1+1": {
+    "median": 0.6,
+    "p90": 0.82
+   },
+   "locator.textContent": {
+    "median": 1.1,
+    "p90": 1.18
+   },
+   "locator.click": {
+    "median": 33.39,
+    "p90": 33.68
+   },
+   "locator.fill": {
+    "median": 3.22,
+    "p90": 5.16
+   },
+   "locator.press Enter": {
+    "median": 3.18,
+    "p90": 3.37
+   },
+   "locator.isVisible": {
+    "median": 0.74,
+    "p90": 0.8
+   },
+   "locator.count (200)": {
+    "median": 0.78,
+    "p90": 0.89
+   },
+   "allTextContents (200)": {
+    "median": 2.21,
+    "p90": 2.61
+   },
+   "getByRole click": {
+    "median": 33.32,
+    "p90": 33.81
+   },
+   "screenshot": {
+    "median": 66.68,
+    "p90": 67.85
+   }
+  }
+ },
+ "chrome": {
+  "engine": "Chrome over CDP",
+  "version": "156.0.8078.4",
+  "results": {
+   "goto": {
+    "median": 17.08,
+    "p90": 20.59
+   },
+   "evaluate 1+1": {
+    "median": 0.45,
+    "p90": 0.62
+   },
+   "locator.textContent": {
+    "median": 0.9,
+    "p90": 1.09
+   },
+   "locator.click": {
+    "median": 33.39,
+    "p90": 33.76
+   },
+   "locator.fill": {
+    "median": 2.74,
+    "p90": 5
+   },
+   "locator.press Enter": {
+    "median": 2.34,
+    "p90": 2.97
+   },
+   "locator.isVisible": {
+    "median": 0.66,
+    "p90": 0.8
+   },
+   "locator.count (200)": {
+    "median": 0.76,
+    "p90": 0.94
+   },
+   "allTextContents (200)": {
+    "median": 1.81,
+    "p90": 2.68
+   },
+   "getByRole click": {
+    "median": 33.35,
+    "p90": 33.65
+   },
+   "screenshot": {
+    "median": 33.39,
+    "p90": 35.25
+   }
+  }
+ }
+}
