@@ -203,6 +203,7 @@ _sources = [
   "automation_trace.cc",
   "automation_trace.h",
   "automation_renderer.cc",
+  "automation_server.cc",
   "include/zebkit/automation.h",
   "playwright/us_keyboard_layout.h",
   "bridge.cc",

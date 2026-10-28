@@ -69,6 +69,16 @@ ZEBKIT_API void zebkit_automation_on_event(zebkit_view *view, zebkit_automation_
 ZEBKIT_API zebkit_view *zebkit_automation_page(const char *page);
 ZEBKIT_API char *zebkit_automation_page_id(zebkit_view *view);
 
+/*
+ * Playwright's own endpoint: a WebSocket on 127.0.0.1:@port (0 picks one)
+ * speaking Playwright's protocol, what `chromium.connect(url)` of each of
+ * Playwright's languages connects to, served by these commands (no CDP, no
+ * Node). @func gets its url ("ws://127.0.0.1:<port>/") or an error, on the
+ * engine's thread. A client's contexts close when it disconnects.
+ */
+typedef void (*zebkit_automation_listen_func)(const char *url, const char *error, void *data);
+ZEBKIT_API void zebkit_automation_listen(int port, zebkit_automation_listen_func func, void *data);
+
 /* The commands this engine has, as a JSON array of their names. Free with
  * zebkit_free(). */
 ZEBKIT_API char *zebkit_automation_commands(void);
