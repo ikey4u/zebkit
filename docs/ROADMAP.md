@@ -1,11 +1,10 @@
 # Roadmap
 
 Where zebkit stands and what comes next. How the engine is made is
-`docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`. The
-UI layer, applications in React, Solid or Vue drawn natively with each
-system's look, and iOS, has its own roadmap: `docs/ROADMAP_UI.md`. How an
-application decides what the engine does, through hooks rather than
-patches, has its own: `docs/ROADMAP_HOOKS.md`.
+`docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`;
+what `zebkit.ui` is for, `docs/UI.md`. How an application decides what
+the engine does, through hooks rather than patches, has its own roadmap:
+`docs/ROADMAP_HOOKS.md`.
 
 ## Requirements
 
@@ -22,6 +21,7 @@ are built on, as Electron is.
 | Media playback, H.264 and AAC included | Owner, 2026-10-10 |
 | The JIT stays; no cut that costs much speed for little size | Owner, 2026-10-09 |
 | A build that costs more in size than it gains in speed is not an improvement: `slim-speed` (19% for 7 to 11%) stays a profile, the release stays `slim` | Owner, 2026-10-27 |
+| No UI layer of zebkit's own (the PocketJS and Native Shell plan of 2026-10-23 is retired): rich UI is a page, `zebkit.ui` is the window, the prompts and the dialogs around it (`docs/UI.md`) | Owner, 2026-10-28 |
 | ICU's data for English, Chinese, Japanese and Korean at least | Owner |
 | Linux on old systems: glibc 2.31 first, then 2.17 | Owner, 2026-10-17 |
 | The same functions on Linux, macOS and Windows | Owner |
@@ -87,9 +87,6 @@ and Dock policy.
   path**: a view attached to a native window or widget handle (`NSView`,
   GTK widget, `HWND`, Qt `QWindow`), or off-screen with the application
   drawing its frames, rather than windows of zebkit's.
-- **TODO: zebkit.ui in the application's windows too**: its windows and
-  widgets usable as a part of an application written in another toolkit,
-  not only as a whole application (`docs/ROADMAP_UI.md`).
 - **TODO: examples of integration**: a GTK, a Qt, an AppKit and a winit
   application each adding a web view and a PDF view to a window of their
   own.
