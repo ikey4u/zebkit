@@ -207,6 +207,25 @@ and Dock policy.
   checks (WebRTC, permissions, client hints, TLS, JavaScript) in
   scripts/web-bench.sh, against what zebkit's defaults promise.
 
+- **Playwright's API, natively: built** (owner, 2026-10-27;
+  `docs/AUTOMATION.md`). `<zebkit/automation.h>` runs Playwright's
+  protocol commands inside the engine, without CDP or a driver: Playwright's
+  injected script in an isolated world of each frame, input to the
+  widgets, routes in front of the network; 3.4 to 10 times faster than
+  Playwright over CDP for what does not wait for a frame. Python
+  (`zebkit.automation`) and Rust (`zebkit::automation`) have it with
+  Playwright's names. Contexts as profiles of their own, workers,
+  WebSocket routes, geolocation, HTTP credentials, print media, touch
+  events, mouse input into frames of other sites, traces, HAR, video and
+  frames on demand for views without a display are built (2026-10-27), and
+  Playwright's own protocol over a WebSocket (`zebkit_automation_listen`,
+  `zebkit-run --playwright-port`), so Playwright's clients drive zebkit
+  unchanged with `chromium.connect()`. Held by `tests/engine/automation.c`,
+  `automation_python.py`, `playwright_connect.mjs`,
+  `scripts/automation-bench.sh`.
+  - **TODO**: Playwright's own test suite against the endpoint;
+    `Disposable.dispose` (exposed bindings and init scripts stay until the
+    page closes); request timing and sizes.
 - **TODO: zebkit as an MCP server.** One program, `tools/zebkit-mcp`,
   that gives an AI agent the engine's capabilities as MCP tools, over
   standard input and over HTTP, on Linux and macOS alike. CDP stays for
