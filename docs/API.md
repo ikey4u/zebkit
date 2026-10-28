@@ -73,8 +73,9 @@ int main(int argc, char **argv) {
   `not_installed`; no extension runtime is linked. Popups are blocked as
   Chrome blocks them: a page opens a window or a tab only
   while the person clicks or types; `--disable-popup-blocking` lets every
-  one open. A headless view's screen is `--window-size`, or 1920 by 1080,
-  not Ozone's 1 by 1 pixel. `navigator.webdriver` is true with
+  one open. `--window-size=W,H` is the window's size, as in Chrome. A
+  headless view's screen is that size too, or 1920 by 1080, not Ozone's
+  1 by 1 pixel. `navigator.webdriver` is true with
   `--enable-automation`, `--remote-debugging-pipe` or
   `--remote-debugging-port=0`, false otherwise. In zebkit's content shell,
   `--headless` selects rendering without native windows; it is not

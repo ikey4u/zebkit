@@ -185,6 +185,17 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
     args.push_back(std::string("--") + switches::kEnableLogging + "=stderr");
   }
   args.push_back(std::string("--") + switches::kContentShellHideToolbar);
+  // --window-size is the window's size, as in Chrome; the shell's own
+  // switch for it still decides.
+  {
+    std::string size = SwitchValue(argc, argv, "window-size");
+    const size_t comma = size.find(',');
+    if (comma != std::string::npos &&
+        !HasSwitch(argc, argv, switches::kContentShellHostWindowSize)) {
+      args.push_back(std::string("--") + switches::kContentShellHostWindowSize +
+                     "=" + size.substr(0, comma) + "x" + size.substr(comma + 1));
+    }
+  }
   // Features a browser wants and an application showing its pages does not,
   // as Electron leaves them out (its shell/browser/feature_list.cc): a spare
   // renderer kept warm for the next navigation, a process with its memory.
