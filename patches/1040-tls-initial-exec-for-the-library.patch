@@ -1,0 +1,98 @@
+Speed: thread-local variables of V8 and Blink's heap read in one instruction.
+
+In a shared library V8 and Blink's heap (cppgc, Oilpan) use the
+local-dynamic model for their thread-local variables, which is a call to
+__tls_get_addr on every access, and Blink hides each variable behind a
+function besides; the current isolate and the heap's thread state are
+read on every allocation and write barrier. Chrome's executable reads them
+in one instruction (local-exec). libzebkit.so.1 is loaded with the
+application and already has static TLS (DF_STATIC_TLS), so the
+initial-exec model, one instruction too, is open to it. A GN argument,
+zebkit_tls_initial_exec, chooses it for both; it overrides
+zebkit_v8_tls_local_dynamic (patches/1011). Upstream's default is
+unchanged. Measured with use_relative_vtables_abi = false: 3.5% less CPU
+per layout of a chapter of text.
+
+--- a/third_party/blink/renderer/platform/heap/BUILD.gn
++++ b/third_party/blink/renderer/platform/heap/BUILD.gn
+@@ -24,8 +24,10 @@
+   header = "heap_buildflags.h"
+   header_dir = "third_party/blink/renderer/platform/heap"
+ 
+-  flags =
+-      [ "BLINK_HEAP_INSIDE_SHARED_LIBRARY=$blink_heap_inside_shared_library" ]
++  flags = [
++    "BLINK_HEAP_INSIDE_SHARED_LIBRARY=$blink_heap_inside_shared_library",
++    "ZEBKIT_TLS_INITIAL_EXEC=$zebkit_tls_initial_exec",
++  ]
+ }
+ 
+ blink_platform_sources("heap") {
+--- a/third_party/blink/renderer/platform/heap/thread_local.h
++++ b/third_party/blink/renderer/platform/heap/thread_local.h
+@@ -28,7 +28,10 @@
+ 
+ // The call is still cheaper than multiple calls through WTF/base/pthread*
+ // layers.
+-#if BUILDFLAG(BLINK_HEAP_INSIDE_SHARED_LIBRARY)
++// zebkit: a shared library with static TLS (zebkit_tls_initial_exec in
++// v8/gni/v8.gni): the variable is not hidden, and is initial-exec.
++#if BUILDFLAG(BLINK_HEAP_INSIDE_SHARED_LIBRARY) && \
++    !BUILDFLAG(ZEBKIT_TLS_INITIAL_EXEC)
+ #define BLINK_HEAP_HIDE_THREAD_LOCAL_IN_LIBRARY 1
+ #else
+ #define BLINK_HEAP_HIDE_THREAD_LOCAL_IN_LIBRARY 0
+@@ -37,7 +40,9 @@
+ #if BLINK_HEAP_HIDE_THREAD_LOCAL_IN_LIBRARY
+ #define BLINK_HEAP_THREAD_LOCAL_MODEL "local-dynamic"
+ #else
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(ZEBKIT_TLS_INITIAL_EXEC)
++#define BLINK_HEAP_THREAD_LOCAL_MODEL "initial-exec"
++#elif BUILDFLAG(IS_WIN)
+ #define BLINK_HEAP_THREAD_LOCAL_MODEL "initial-exec"
+ #elif BUILDFLAG(IS_ANDROID)
+ #define BLINK_HEAP_THREAD_LOCAL_MODEL "local-dynamic"
+--- a/v8/BUILD.gn
++++ b/v8/BUILD.gn
+@@ -1340,7 +1340,9 @@
+   }
+ 
+   # zebkit: thread-local variables for a shared library (gni/v8.gni).
+-  if (zebkit_v8_tls_local_dynamic) {
++  if (zebkit_tls_initial_exec) {
++    defines += [ "ZEBKIT_V8_TLS_INITIAL_EXEC" ]
++  } else if (zebkit_v8_tls_local_dynamic) {
+     defines += [ "ZEBKIT_V8_TLS_LOCAL_DYNAMIC" ]
+   }
+ 
+--- a/v8/gni/v8.gni
++++ b/v8/gni/v8.gni
+@@ -408,6 +408,12 @@
+   # model, as on Android, where V8 would use local-exec, which only an
+   # executable can.
+   zebkit_v8_tls_local_dynamic = false
++
++  # zebkit: the thread-local variables of V8 and of Blink's heap use the
++  # initial-exec model, one instruction for each access, in a shared
++  # library that already has static TLS (libzebkit.so.1). Overrides
++  # zebkit_v8_tls_local_dynamic.
++  zebkit_tls_initial_exec = false
+ }
+ 
+ # Common configs to remove or add in all v8 targets.
+--- a/v8/src/common/thread-local-storage.h
++++ b/v8/src/common/thread-local-storage.h
+@@ -31,7 +31,11 @@
+ #if V8_TLS_LIBRARY_MODE
+ #define V8_TLS_MODEL "local-dynamic"
+ #else
+-#if defined(ZEBKIT_V8_TLS_LOCAL_DYNAMIC)
++#if defined(ZEBKIT_V8_TLS_INITIAL_EXEC)
++// zebkit: V8 in a shared library with static TLS: one instruction for
++// each access, as in an executable.
++#define V8_TLS_MODEL "initial-exec"
++#elif defined(ZEBKIT_V8_TLS_LOCAL_DYNAMIC)
+ // zebkit: V8 in a shared library that may be loaded with dlopen, as on
+ // Android.
+ #define V8_TLS_MODEL "local-dynamic"
