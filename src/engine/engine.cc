@@ -57,6 +57,8 @@
 #include "ui/gfx/switches.h"
 #include "ui/views/widget/widget.h"
 #include "zebkit/engine/app.h"
+#include "zebkit/engine/automation.h"
+#include "zebkit/engine/automation_network.h"
 #include "zebkit/engine/call.h"
 #include "zebkit/engine/cookies.h"
 #include "zebkit/engine/media_capture.h"
@@ -528,6 +530,68 @@ BrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
       CreateNonNetworkNavigationURLLoaderFactory(scheme, frame_tree_node_id);
 }
 
+std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
+    const net::AuthChallengeInfo& auth_info,
+    content::WebContents* web_contents,
+    content::BrowserContext* browser_context,
+    const content::GlobalRequestID& request_id,
+    bool is_request_for_primary_main_frame_navigation,
+    bool is_request_for_navigation,
+    const GURL& url,
+    scoped_refptr<net::HttpResponseHeaders> response_headers,
+    bool first_auth_attempt,
+    content::GuestPageHolder* guest_page_holder,
+    content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
+  if (browser_context) {
+    // Only taken when automation answers; otherwise the shell's own.
+    auto callback = std::make_shared<
+        content::LoginDelegate::LoginAuthRequiredCallback>(
+        std::move(auth_required_callback));
+    std::unique_ptr<content::LoginDelegate> delegate =
+        CreateAutomationLoginDelegate(
+            auth_info, browser_context, first_auth_attempt,
+            base::BindOnce(
+                [](std::shared_ptr<content::LoginDelegate::LoginAuthRequiredCallback>
+                       callback,
+                   const std::optional<net::AuthCredentials>& credentials) {
+                  if (*callback)
+                    std::move(*callback).Run(credentials);
+                },
+                callback));
+    if (delegate)
+      return delegate;
+    auth_required_callback = std::move(*callback);
+  }
+  return content::ShellContentBrowserClient::CreateLoginDelegate(
+      auth_info, web_contents, browser_context, request_id,
+      is_request_for_primary_main_frame_navigation, is_request_for_navigation,
+      url, std::move(response_headers), first_auth_attempt, guest_page_holder,
+      std::move(auth_required_callback));
+}
+
+void BrowserClient::WillCreateURLLoaderFactory(
+    content::BrowserContext* browser_context,
+    content::RenderFrameHost* frame,
+    int render_process_id,
+    URLLoaderFactoryType type,
+    const url::Origin& request_initiator,
+    const net::IsolationInfo& isolation_info,
+    std::optional<int64_t> navigation_id,
+    ukm::SourceIdObj ukm_source_id,
+    network::URLLoaderFactoryBuilder& factory_builder,
+    mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+        header_client,
+    bool* bypass_redirect_checks,
+    bool* disable_secure_dns,
+    network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+    scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+    bool is_for_network_service) {
+  if (type == URLLoaderFactoryType::kNavigation ||
+      type == URLLoaderFactoryType::kDocumentSubResource) {
+    InterceptURLLoaderFactory(frame, factory_builder);
+  }
+}
+
 void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
     int render_process_id,
     int render_frame_id,
@@ -655,6 +719,9 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
   content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
+  // Playwright's dialogs and file choosers, and file choosers without a
+  // display cancelled (automation.cc).
+  InstallAutomationHooks();
   content::Shell::SetKeyboardEventHandler(base::BindRepeating(&HandleKey));
 #if BUILDFLAG(IS_MAC)
   SetUpViews();
@@ -674,6 +741,15 @@ void BrowserMainParts::PostMainMessageLoopRun() {
 
 content::BrowserContext* GetBrowserContext() {
   return content::ShellContentBrowserClient::Get()->browser_context();
+}
+
+content::BrowserContext* ProfileOf(zebkit_context* context) {
+  return context && context->profile ? context->profile.get()
+                                      : GetBrowserContext();
+}
+
+void ConfigureContext(content::BrowserContext* profile) {
+  InstallClientHintsFor(profile);
 }
 
 }  // namespace zebkit

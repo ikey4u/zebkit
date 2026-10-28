@@ -38,6 +38,8 @@
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/web/web_element.h"
+#include "zebkit/engine/automation.h"
+#include "zebkit/engine/automation.mojom.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
@@ -212,6 +214,13 @@ void PrintToPdf(content::WebContents* contents,
           std::move(callback)));
 }
 
+void RendererClient::DidInitializeWorkerContextOnWorkerThread(
+    v8::Local<v8::Context> context) {
+  content::ShellContentRendererClient::DidInitializeWorkerContextOnWorkerThread(
+      context);
+  AutomationWorkerStarted(context);
+}
+
 void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
   content::ShellContentRendererClient::RenderFrameCreated(render_frame);
   // Deletes itself with the frame.
@@ -219,6 +228,7 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
                                        std::make_unique<PrintDelegate>());
   InstallChromeObject(render_frame);
   InstallMediaCaptureAgent(render_frame);
+  InstallAutomationAgent(render_frame);
 }
 
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
@@ -239,6 +249,8 @@ void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
                                                         frame);
           },
           &render_frame_host));
+  associated_registry.AddInterface<mojom::AutomationHost>(
+      base::BindRepeating(&BindAutomationHost, &render_frame_host));
 }
 
 }  // namespace zebkit

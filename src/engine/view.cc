@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <tuple>
+#include <vector>
 #include <utility>
 #include <vector>
 
@@ -624,11 +626,48 @@ std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
 
 extern "C" {
 
-zebkit_view* zebkit_view_new(const char* url, int width, int height) {
+zebkit_context* zebkit_context_new(void) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto* context = new zebkit_context;
+  context->profile =
+      std::make_unique<content::ShellBrowserContext>(/*off_the_record=*/true);
+  zebkit::ConfigureContext(context->profile.get());
+  return context;
+}
+
+void zebkit_context_close(zebkit_context* context) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!context)
+    return;
+  std::vector<zebkit_view*> views;
+  for (zebkit_view* view : zebkit_view::Views()) {
+    if (view->web_contents() &&
+        view->web_contents()->GetBrowserContext() == context->profile.get()) {
+      views.push_back(view);
+    }
+  }
+  for (zebkit_view* view : views)
+    view->Close();
+  // The profile stays until the engine stops: its pages' processes go
+  // after them, and content wants it while they do.
+  std::ignore = context->profile.release();
+  delete context;
+}
+
+zebkit_view* zebkit_view_new(const char* url, int width, int height) {
+  return zebkit_view_new_in(nullptr, url, width, height);
+}
+
+zebkit_view* zebkit_view_new_in(zebkit_context* context,
+                                const char* url,
+                                int width,
+                                int height) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (context && !context->profile)
+    return nullptr;
   const bool sized = width > 0 && height > 0;
   content::Shell* shell = content::Shell::CreateNewWindow(
-      zebkit::GetBrowserContext(), GURL(), nullptr,
+      zebkit::ProfileOf(context), GURL(), nullptr,
       gfx::Size(sized ? width : 0, sized ? height : 0));
   if (!shell)
     return nullptr;

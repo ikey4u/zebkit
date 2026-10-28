@@ -1561,6 +1561,14 @@ zebkit_view* zebkit_view_new_offscreen(const char* url,
                                        int width,
                                        int height,
                                        float scale) {
+  return zebkit_view_new_offscreen_in(nullptr, url, width, height, scale);
+}
+
+zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
+                                          const char* url,
+                                          int width,
+                                          int height,
+                                          float scale) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (!zebkit_is_headless()) {
     LOG(ERROR) << "zebkit: off-screen views are for a process without "
@@ -1568,7 +1576,8 @@ zebkit_view* zebkit_view_new_offscreen(const char* url,
     return nullptr;
   }
   const gfx::Size size(width > 0 ? width : 800, height > 0 ? height : 600);
-  zebkit_view* view = zebkit_view_new(url, size.width(), size.height());
+  zebkit_view* view =
+      zebkit_view_new_in(context, url, size.width(), size.height());
   if (!view)
     return nullptr;
   // Deleted with the page (Offscreen::WebContentsDestroyed).

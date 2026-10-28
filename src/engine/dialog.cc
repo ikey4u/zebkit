@@ -46,6 +46,8 @@ namespace zebkit {
 
 namespace {
 
+DialogObserver* g_dialog_observer = nullptr;
+
 const char* TypeName(zebkit_dialog_type type) {
   switch (type) {
     case ZEBKIT_DIALOG_CONFIRM:
@@ -101,8 +103,11 @@ class DialogState : public content::WebContentsObserver,
       case ZEBKIT_DIALOG_POLICY_DISMISS:
         return Decision::kDismiss;
       default:
-        if (on_dialog || HasExternalDevToolsClient(web_contents()))
+        if (on_dialog || HasExternalDevToolsClient(web_contents()) ||
+            (g_dialog_observer &&
+             g_dialog_observer->HoldsDialogs(web_contents()))) {
           return Decision::kHold;
+        }
         return Decision::kShell;
     }
   }
@@ -130,11 +135,15 @@ class DialogState : public content::WebContentsObserver,
     info.default_prompt = prompt.c_str();
     info.url = url.c_str();
     zebkit_view* view = ViewOf(web_contents());
+    if (g_dialog_observer)
+      g_dialog_observer->DialogOpened(web_contents(), info);
     if (view && on_dialog)
       on_dialog(view, &info, on_dialog_data);
   }
 
   void ReportClosed(uint64_t id, bool accepted, const std::string& input) {
+    if (g_dialog_observer)
+      g_dialog_observer->DialogClosed(web_contents(), id, accepted, input);
     zebkit_view* view = ViewOf(web_contents());
     if (view && on_closed)
       on_closed(view, id, accepted, input.c_str(), on_closed_data);
@@ -352,6 +361,10 @@ class DialogManager : public content::JavaScriptDialogManager {
 std::unique_ptr<content::JavaScriptDialogManager> CreateDialogManager(
     content::Shell* shell) {
   return std::make_unique<DialogManager>();
+}
+
+void SetDialogObserver(DialogObserver* observer) {
+  g_dialog_observer = observer;
 }
 
 void ReportPrintDialog(content::WebContents* contents,

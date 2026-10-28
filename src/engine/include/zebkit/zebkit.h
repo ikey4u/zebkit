@@ -175,6 +175,19 @@ typedef struct zebkit_view zebkit_view;
  */
 ZEBKIT_API zebkit_view *zebkit_view_new(const char *url, int width, int height);
 
+/*
+ * A context: a profile of its own, in memory, as an incognito window's:
+ * its cookies, storage, cache and permissions are its own and go with it.
+ * Playwright's BrowserContext. zebkit_context_close() closes its views; the
+ * profile itself is freed when the engine stops.
+ */
+typedef struct zebkit_context zebkit_context;
+ZEBKIT_API zebkit_context *zebkit_context_new(void);
+ZEBKIT_API void zebkit_context_close(zebkit_context *context);
+
+/* zebkit_view_new() in @context; NULL for the engine's own profile. */
+ZEBKIT_API zebkit_view *zebkit_view_new_in(zebkit_context *context, const char *url, int width, int height);
+
 ZEBKIT_API void zebkit_view_load_url(zebkit_view *view, const char *url);
 /* CDP target identifier for this existing view. Caller frees with zebkit_free().
  * Use it to adopt a popup; recreating only its URL loses POST data and opener. */

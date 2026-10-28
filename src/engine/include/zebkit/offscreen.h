@@ -59,6 +59,9 @@ extern "C" {
  * (1, 2, 3), as a Mac's screens are.
  */
 ZEBKIT_API zebkit_view *zebkit_view_new_offscreen(const char *url, int width, int height, float scale);
+/* zebkit_view_new_offscreen() in @context (<zebkit/zebkit.h>). */
+ZEBKIT_API zebkit_view *zebkit_view_new_offscreen_in(zebkit_context *context, const char *url, int width, int height,
+                                                     float scale);
 
 /* Whether @view is off-screen. */
 ZEBKIT_API bool zebkit_view_is_offscreen(zebkit_view *view);

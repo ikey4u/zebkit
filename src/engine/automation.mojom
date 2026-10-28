@@ -1,0 +1,133 @@
+// zebkit's automation (docs/AUTOMATION.md, <zebkit/automation.h>): the
+// browser's calls to a frame's agent, which runs the steps of Playwright's
+// commands in the renderer (automation_renderer.cc, automation_steps.js).
+
+module zebkit.mojom;
+
+enum AutomationStatus {
+  // @result is the runner's answer: {ok: true, value} or {ok: false, error}.
+  kOk,
+  // @result is the message of an error outside the runner (a syntax error
+  // in an expression, the injected script failing to start).
+  kError,
+  // The document went (a navigation, the frame removed) before the call
+  // ended: the browser tries again in the next document, or fails.
+  kGone,
+};
+
+// The page's own world, or zebkit's isolated one, where Playwright's
+// injected script does what the page must not see.
+enum AutomationWorld {
+  kMain,
+  kUtility,
+};
+
+// An object the agent keeps for the browser: an ElementHandle or a
+// JSHandle. The runner's answer refers to the call's handles as
+// {"$h": index}.
+struct AutomationHandle {
+  int32 id;
+  bool is_element;
+  // What Playwright shows of it: the node, JSHandle@object, Array(3).
+  string preview;
+};
+
+// How an expression is taken, as Playwright's isFunction: a function to
+// call, a value, or a function if its value is one.
+enum AutomationExpression {
+  kAuto,
+  kFunction,
+  kValue,
+};
+
+// The browser's side, one for each frame: what a page calls.
+interface AutomationHost {
+  // The page called @name, a function Expose() made, with @args (a JSON
+  // array): Playwright's exposeBinding. @result is the JSON the call's
+  // promise resolves to, or the message it rejects with.
+  BindingCalled(string name, string args) => (bool ok, string result);
+
+  // A worker of the frame's origin started, or ended: Playwright's Worker.
+  // @worker is the renderer's number for it.
+  WorkerStarted(int32 worker, string url);
+  WorkerEnded(int32 worker);
+};
+
+// The renderer's side, one for each frame.
+interface AutomationAgent {
+  // Functions @names in the page's world, now and in every document from
+  // now on, that call AutomationHost.BindingCalled.
+  Expose(array<string> names);
+
+  // Runs step @step of automation_steps.js in @world with @arg, a JSON
+  // object whose {"$h": i} are @handles[i]. A step that asks for text to
+  // be typed ({insertText}) has it committed into the focused element, as
+  // an IME commits it, before the answer.
+  Step(AutomationWorld world, string step, string arg, array<int32> handles)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // Playwright's evaluate(): @expression compiled in @world (not by eval(),
+  // which the page's Content Security Policy may forbid), called with @args
+  // (a JSON array; Playwright's serialized values unless @plain, which is
+  // JSON with {"$h": i} for @handles[i]), a promise waited for; the value
+  // as JSON (serialized unless @plain) or as a handle. In the page's world
+  // with a user gesture, as Playwright's evaluate has.
+  Evaluate(AutomationWorld world, string expression,
+           AutomationExpression kind, string args, array<int32> handles,
+           bool return_by_value, bool plain)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // Playwright's waitForFunction(): the predicate run at each animation
+  // frame (@polling 0) or every @polling ms until it is truthy, its value
+  // as a handle; {timedOut} after @timeout ms (0: none).
+  WaitForFunction(AutomationWorld world, string expression,
+                  AutomationExpression kind, string args,
+                  array<int32> handles, int32 polling, int32 timeout,
+                  bool plain)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // JSHandle.getProperty (@name) and getPropertyList (@name empty), of handle @object.
+  Properties(int32 object, string name)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // JSHandle.jsonValue.
+  JsonValue(int32 object, bool plain)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // The element of @selector (all of them when @all) in @world, inside
+  // @scope (0 for the document): what Frame.evalOnSelector evaluates on.
+  Select(AutomationWorld world, string selector, bool strict, int32 scope,
+         bool all)
+      => (AutomationStatus status, string result,
+          array<AutomationHandle> handles);
+
+  // The media the page's CSS is for: "print", "screen", "" for its own
+  // (Page.emulateMedia).
+  SetMediaType(string media);
+
+  // Worker.evaluateExpression: @expression in worker @worker (from
+  // WorkerStarted), as Evaluate() in a frame, its value as JSON.
+  WorkerEvaluate(int32 worker, string expression, AutomationExpression kind,
+                 string args)
+      => (AutomationStatus status, string result);
+
+  // Forgets handles: JSHandle.dispose.
+  Release(array<int32> handles);
+
+  // Commits @text into the focused element, as an IME does: Playwright's
+  // Keyboard.insertText (CDP's Input.insertText).
+  InsertText(string text) => ();
+
+  // Gives the <input type=file> of handle @input the files at @paths, as a person
+  // choosing them would (CDP's DOM.setFileInputFiles): input and change.
+  SetInputFiles(int32 input, array<string> paths) => (bool ok);
+
+  // The frame of the <iframe> or <frame> of handle @element: its index among this
+  // frame's children, in the frame tree's order; -1 when it has none.
+  ContentFrame(int32 element) => (int32 index);
+};

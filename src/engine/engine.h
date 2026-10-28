@@ -11,6 +11,7 @@
 #include "build/build_config.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/shell/app/shell_main_delegate.h"
+#include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/common/shell_content_client.h"
@@ -29,6 +30,11 @@ class RenderFrame;
 class WebContents;
 class Shell;
 }
+
+// A context (<zebkit/zebkit.h>): a profile in memory, of its own.
+struct zebkit_context {
+  std::unique_ptr<content::ShellBrowserContext> profile;
+};
 
 namespace zebkit {
 
@@ -65,6 +71,8 @@ class ContentClient : public content::ShellContentClient {
 
 // The client hints delegate of the browser contexts (client_hints.cc).
 void InstallClientHints();
+// Client hints for a context made later (zebkit_context_new()).
+void InstallClientHintsFor(content::BrowserContext* profile);
 
 // The languages pages and servers are told, as Chrome has them: the
 // system's locale, then its language ("en-US,en"), or --accept-lang.
@@ -86,6 +94,9 @@ class RendererClient : public content::ShellContentRendererClient {
   void RenderThreadStarted() override;
   // Printing in the page (print.cc).
   void RenderFrameCreated(content::RenderFrame* render_frame) override;
+  // Workers for automation (automation_renderer.cc).
+  void DidInitializeWorkerContextOnWorkerThread(
+      v8::Local<v8::Context> context) override;
 };
 
 class BrowserClient : public content::ShellContentBrowserClient {
@@ -104,6 +115,40 @@ class BrowserClient : public content::ShellContentBrowserClient {
   CreateNonNetworkNavigationURLLoaderFactory(
       const std::string& scheme,
       content::FrameTreeNodeId frame_tree_node_id) override;
+  // HTTP authentication, answered with automation's credentials
+  // (automation.cc), else the shell's.
+  std::unique_ptr<content::LoginDelegate> CreateLoginDelegate(
+      const net::AuthChallengeInfo& auth_info,
+      content::WebContents* web_contents,
+      content::BrowserContext* browser_context,
+      const content::GlobalRequestID& request_id,
+      bool is_request_for_primary_main_frame_navigation,
+      bool is_request_for_navigation,
+      const GURL& url,
+      scoped_refptr<net::HttpResponseHeaders> response_headers,
+      bool first_auth_attempt,
+      content::GuestPageHolder* guest_page_holder,
+      content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback)
+      override;
+  // The pages with automation's requests, for Playwright's network events
+  // and routes (automation_network.cc).
+  void WillCreateURLLoaderFactory(
+      content::BrowserContext* browser_context,
+      content::RenderFrameHost* frame,
+      int render_process_id,
+      URLLoaderFactoryType type,
+      const url::Origin& request_initiator,
+      const net::IsolationInfo& isolation_info,
+      std::optional<int64_t> navigation_id,
+      ukm::SourceIdObj ukm_source_id,
+      network::URLLoaderFactoryBuilder& factory_builder,
+      mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+          header_client,
+      bool* bypass_redirect_checks,
+      bool* disable_secure_dns,
+      network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+      scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+      bool is_for_network_service) override;
   void RegisterNonNetworkSubresourceURLLoaderFactories(
       int render_process_id,
       int render_frame_id,
@@ -196,6 +241,11 @@ std::unique_ptr<content::ShellPlatformDelegate> CreateHeadlessPlatformDelegate()
 
 // The browser context views are created in.
 content::BrowserContext* GetBrowserContext();
+
+// A context's profile (zebkit_context_new()); the engine's own for NULL.
+content::BrowserContext* ProfileOf(zebkit_context* context);
+// What a new profile has of the engine's own: client hints, cookies.
+void ConfigureContext(content::BrowserContext* profile);
 
 // CDP (cdp.cc).
 unsigned CdpListen(const std::string& address, unsigned port, std::string* error);

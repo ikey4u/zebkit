@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Automation</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  #cover { position: absolute; left: 0; top: 300px; width: 200px; height: 40px; background: #eee; }
+  #moving { transition: transform 300ms; }
+  .far { margin-top: 2000px; }
+</style>
+<input id="name" placeholder="Name">
+<textarea id="notes"></textarea>
+<button id="go" onclick="clicks++; out.textContent = 'clicked ' + clicks">Go</button>
+<button id="later" disabled>Later</button>
+<label><input id="agree" type="checkbox"> I agree</label>
+<div id="out">none</div>
+<div id="keys"></div>
+<div id="hidden" style="display: none">hidden text</div>
+<a id="link" href="automation.html#second">Second</a>
+<select id="color"><option value="r">Red</option><option value="g">Green</option><option value="b">Blue</option></select>
+<input id="upload" type="file" multiple>
+<iframe id="inner" srcdoc="<button id=deep onclick=&quot;this.textContent='pressed'&quot;>Deep</button>" style="width: 200px; height: 60px; border: 5px solid #ccc"></iframe>
+<ul>
+  <li class="item">one</li><li class="item">two</li><li class="item">three</li>
+</ul>
+<button id="under" onclick="out.textContent = 'under'" style="position: absolute; left: 10px; top: 305px">Under</button>
+<button id="far" class="far" onclick="out.textContent = 'far'">Far</button>
+<script>
+  let clicks = 0;
+  const out = document.getElementById('out');
+  const keys = [];
+  document.getElementById('name').addEventListener('keydown', e => {
+    keys.push(e.key + (e.isTrusted ? '' : '!'));
+    document.getElementById('keys').textContent = keys.join(' ');
+  });
+</script>

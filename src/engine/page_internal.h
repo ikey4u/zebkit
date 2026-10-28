@@ -32,6 +32,22 @@ std::unique_ptr<content::JavaScriptDialogManager> CreateDialogManager(
 void ReportPrintDialog(content::WebContents* contents,
                        content::RenderFrameHost* frame);
 
+// Automation's part in a page's dialogs (automation.cc): whether it holds
+// them for its own answer (a Playwright dialog listener), and what it hears
+// of them. One for the process.
+class DialogObserver {
+ public:
+  virtual ~DialogObserver() = default;
+  virtual bool HoldsDialogs(content::WebContents* contents) = 0;
+  virtual void DialogOpened(content::WebContents* contents,
+                            const zebkit_dialog& dialog) = 0;
+  virtual void DialogClosed(content::WebContents* contents,
+                            uint64_t id,
+                            bool accepted,
+                            const std::string& user_input) = 0;
+};
+void SetDialogObserver(DialogObserver* observer);
+
 // Whether a DevTools client other than the engine's own sessions is
 // attached to @contents' page (devtools.cc).
 bool HasExternalDevToolsClient(content::WebContents* contents);

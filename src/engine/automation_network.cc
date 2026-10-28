@@ -1,0 +1,847 @@
+// zebkit's automation, the network (automation_network.h): a page's
+// requests through a URL loader factory in front of the network's, as
+// extensions' webRequest and DevTools' Fetch domain put one, for
+// Playwright's network events and routes.
+
+#include "zebkit/engine/automation_network.h"
+
+#include <deque>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "base/base64.h"
+#include "base/byte_size.h"
+#include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_user_data.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/system/data_pipe.h"
+#include "mojo/public/cpp/system/data_pipe_drainer.h"
+#include "mojo/public/cpp/system/simple_watcher.h"
+#include "net/base/net_errors.h"
+#include "net/http/http_response_headers.h"
+#include "net/http/http_status_code.h"
+#include "net/http/http_util.h"
+#include "net/url_request/redirect_info.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/resource_request_body.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
+#include "services/network/public/cpp/url_loader_factory_builder.h"
+#include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/re2/src/re2/re2.h"
+
+namespace zebkit {
+
+namespace {
+
+using network::mojom::RequestDestination;
+
+// Playwright's resourceType (crNetworkManager.ts names CDP's types).
+const char* ResourceType(const network::ResourceRequest& request) {
+  switch (request.destination) {
+    case RequestDestination::kDocument:
+    case RequestDestination::kIframe:
+    case RequestDestination::kFrame:
+      return "document";
+    case RequestDestination::kStyle:
+      return "stylesheet";
+    case RequestDestination::kImage:
+      return "image";
+    case RequestDestination::kAudio:
+    case RequestDestination::kVideo:
+    case RequestDestination::kTrack:
+      return "media";
+    case RequestDestination::kFont:
+      return "font";
+    case RequestDestination::kScript:
+    case RequestDestination::kWorker:
+    case RequestDestination::kSharedWorker:
+    case RequestDestination::kServiceWorker:
+      return "script";
+    case RequestDestination::kManifest:
+      return "manifest";
+    default:
+      return "fetch";
+  }
+}
+
+// Route.abort's error codes (crNetworkManager.ts's errorReasons).
+int NetError(const std::string& code) {
+  static const std::map<std::string, int> kErrors = {
+      {"aborted", net::ERR_ABORTED},
+      {"accessdenied", net::ERR_ACCESS_DENIED},
+      {"addressunreachable", net::ERR_ADDRESS_UNREACHABLE},
+      {"blockedbyclient", net::ERR_BLOCKED_BY_CLIENT},
+      {"blockedbyresponse", net::ERR_BLOCKED_BY_RESPONSE},
+      {"connectionaborted", net::ERR_CONNECTION_ABORTED},
+      {"connectionclosed", net::ERR_CONNECTION_CLOSED},
+      {"connectionfailed", net::ERR_CONNECTION_FAILED},
+      {"connectionrefused", net::ERR_CONNECTION_REFUSED},
+      {"connectionreset", net::ERR_CONNECTION_RESET},
+      {"internetdisconnected", net::ERR_INTERNET_DISCONNECTED},
+      {"namenotresolved", net::ERR_NAME_NOT_RESOLVED},
+      {"timedout", net::ERR_TIMED_OUT},
+      {"failed", net::ERR_FAILED},
+  };
+  auto found = kErrors.find(code);
+  return found == kErrors.end() ? net::ERR_FAILED : found->second;
+}
+
+base::ListValue RequestHeaders(const net::HttpRequestHeaders& headers) {
+  base::ListValue list;
+  for (const net::HttpRequestHeaders::HeaderKeyValuePair& header :
+       headers.GetHeaderVector()) {
+    base::DictValue entry;
+    entry.Set("name", header.key);
+    entry.Set("value", header.value);
+    list.Append(std::move(entry));
+  }
+  return list;
+}
+
+base::ListValue ResponseHeaders(const net::HttpResponseHeaders* headers) {
+  base::ListValue list;
+  if (!headers)
+    return list;
+  size_t iterator = 0;
+  std::string name, value;
+  while (headers->EnumerateHeaderLines(&iterator, &name, &value)) {
+    base::DictValue entry;
+    entry.Set("name", name);
+    entry.Set("value", value);
+    list.Append(std::move(entry));
+  }
+  return list;
+}
+
+// Playwright's globToRegexPattern() (isomorphic/urlMatch.ts).
+std::string GlobToRegex(const std::string& glob) {
+  static const std::string kEscaped = "$^+.*()|\\?{}[]";
+  std::string regex = "^";
+  bool in_group = false;
+  for (size_t i = 0; i < glob.size(); ++i) {
+    const char c = glob[i];
+    if (c == '\\' && i + 1 < glob.size()) {
+      const char next = glob[++i];
+      if (kEscaped.find(next) != std::string::npos)
+        regex += '\\';
+      regex += next;
+      continue;
+    }
+    if (c == '*') {
+      const char before = i ? glob[i - 1] : 0;
+      int stars = 1;
+      while (i + 1 < glob.size() && glob[i + 1] == '*') {
+        ++stars;
+        ++i;
+      }
+      if (stars > 1) {
+        if (i + 1 < glob.size() && glob[i + 1] == '/') {
+          regex += before == '/' ? "((.+/)|)" : "(.*/)";
+          ++i;
+        } else {
+          regex += "(.*)";
+        }
+      } else {
+        regex += "([^/]*)";
+      }
+      continue;
+    }
+    switch (c) {
+      case '{':
+        in_group = true;
+        regex += '(';
+        break;
+      case '}':
+        in_group = false;
+        regex += ')';
+        break;
+      case ',':
+        regex += in_group ? "|" : "\\,";
+        break;
+      default:
+        if (kEscaped.find(c) != std::string::npos)
+          regex += '\\';
+        regex += c;
+    }
+  }
+  return regex + "$";
+}
+
+class NetworkImpl;
+
+constexpr size_t kBodyLimit = 10 * 1024 * 1024;
+constexpr size_t kBodiesKept = 200;
+
+// A response's body on its way to the page, kept as it passes
+// (Response.body): read from the network's pipe, written to the page's.
+class BodyTee : public mojo::DataPipeDrainer::Client {
+ public:
+  using Done = base::OnceCallback<void(std::string body, bool complete)>;
+
+  BodyTee(mojo::ScopedDataPipeConsumerHandle from,
+          mojo::ScopedDataPipeProducerHandle to,
+          Done done)
+      : to_(std::move(to)),
+        watcher_(FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL),
+        done_(std::move(done)) {
+    watcher_.Watch(to_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
+                   base::BindRepeating(&BodyTee::Writable,
+                                       base::Unretained(this)));
+    drainer_ = std::make_unique<mojo::DataPipeDrainer>(this, std::move(from));
+  }
+
+  // mojo::DataPipeDrainer::Client
+  void OnDataAvailable(base::span<const uint8_t> data) override {
+    if (kept_.size() + data.size() <= kBodyLimit)
+      kept_.append(reinterpret_cast<const char*>(data.data()), data.size());
+    else
+      complete_ = false;
+    pending_.emplace_back(data.begin(), data.end());
+    Write();
+  }
+  void OnDataComplete() override {
+    ended_ = true;
+    Write();
+  }
+
+ private:
+  void Writable(MojoResult result) {
+    if (result != MOJO_RESULT_OK) {
+      Finish();
+      return;
+    }
+    Write();
+  }
+
+  void Write() {
+    while (!pending_.empty()) {
+      std::vector<uint8_t>& chunk = pending_.front();
+      size_t written = 0;
+      const MojoResult result = to_->WriteData(
+          base::span(chunk).subspan(offset_), MOJO_WRITE_DATA_FLAG_NONE, written);
+      if (result == MOJO_RESULT_SHOULD_WAIT) {
+        watcher_.ArmOrNotify();
+        return;
+      }
+      if (result != MOJO_RESULT_OK) {
+        // The page stopped reading.
+        Finish();
+        return;
+      }
+      offset_ += written;
+      if (offset_ >= chunk.size()) {
+        pending_.pop_front();
+        offset_ = 0;
+      }
+    }
+    if (ended_)
+      Finish();
+  }
+
+  void Finish() {
+    if (!done_)
+      return;
+    watcher_.Cancel();
+    to_.reset();
+    std::move(done_).Run(std::move(kept_), complete_);
+    // The drainer is the caller's: delete later.
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, this);
+  }
+
+  mojo::ScopedDataPipeProducerHandle to_;
+  mojo::SimpleWatcher watcher_;
+  std::unique_ptr<mojo::DataPipeDrainer> drainer_;
+  std::deque<std::vector<uint8_t>> pending_;
+  size_t offset_ = 0;
+  std::string kept_;
+  bool complete_ = true;
+  bool ended_ = false;
+  Done done_;
+};
+
+// One request of the page, between the page's loader and the network's.
+class Loader : public network::mojom::URLLoader,
+               public network::mojom::URLLoaderClient {
+ public:
+  Loader(base::WeakPtr<NetworkImpl> network,
+         std::string id,
+         std::string frame,
+         bool navigation,
+         mojo::PendingReceiver<network::mojom::URLLoader> loader,
+         int32_t request_id,
+         uint32_t options,
+         const network::ResourceRequest& request,
+         mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+         const net::MutableNetworkTrafficAnnotationTag& annotation,
+         network::mojom::URLLoaderFactory* target)
+      : network_(std::move(network)),
+        id_(std::move(id)),
+        frame_(std::move(frame)),
+        navigation_(navigation),
+        request_id_(request_id),
+        options_(options),
+        request_(request),
+        annotation_(annotation),
+        target_(target),
+        loader_receiver_(this, std::move(loader)),
+        client_(std::move(client)) {
+    loader_receiver_.set_disconnect_handler(
+        base::BindOnce(&Loader::Gone, base::Unretained(this)));
+  }
+
+  void Start();
+
+  void Continue(const base::DictValue& overrides) {
+    if (const std::string* url = overrides.FindString("url")) {
+      GURL changed(*url);
+      if (changed.is_valid())
+        request_.url = changed;
+    }
+    if (const std::string* method = overrides.FindString("method"))
+      request_.method = *method;
+    if (const base::ListValue* headers = overrides.FindList("headers")) {
+      request_.headers.Clear();
+      for (const base::Value& header : *headers) {
+        const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+        const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+        if (name && value)
+          request_.headers.SetHeader(*name, *value);
+      }
+    }
+    if (const std::string* post = overrides.FindString("postData")) {
+      std::string bytes;
+      if (!base::Base64Decode(*post, &bytes))
+        bytes = *post;
+      request_.request_body = network::ResourceRequestBody::CreateFromCopyOfBytes(
+          base::as_byte_span(bytes));
+    }
+    if (!target_) {
+      Complete(net::ERR_FAILED);
+      return;
+    }
+    target_->CreateLoaderAndStart(
+        target_loader_.BindNewPipeAndPassReceiver(), request_id_, options_,
+        request_, client_receiver_.BindNewPipeAndPassRemote(), annotation_);
+    client_receiver_.set_disconnect_handler(
+        base::BindOnce(&Loader::NetworkGone, base::Unretained(this)));
+  }
+
+  // A response of the client's: Route.fulfill.
+  void Fulfill(const base::DictValue& response) {
+    const int status = response.FindInt("status").value_or(200);
+    std::string raw = "HTTP/1.1 " + base::NumberToString(status) + " " +
+                      std::string(net::GetHttpReasonPhrase(
+                          static_cast<net::HttpStatusCode>(status)))
+                      + "\r\n";
+    std::string mime_type = "text/plain";
+    if (const base::ListValue* headers = response.FindList("headers")) {
+      for (const base::Value& header : *headers) {
+        const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+        const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+        if (!name || !value)
+          continue;
+        raw += *name + ": " + *value + "\r\n";
+        if (base::EqualsCaseInsensitiveASCII(*name, "content-type"))
+          mime_type = *value;
+      }
+    }
+    std::string body;
+    if (const std::string* given = response.FindString("body")) {
+      if (!response.FindBool("isBase64").value_or(false) ||
+          !base::Base64Decode(*given, &body)) {
+        body = *given;
+      }
+    }
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(raw));
+    std::string charset;
+    head->headers->GetMimeTypeAndCharset(&head->mime_type, &charset);
+    if (head->mime_type.empty())
+      head->mime_type = mime_type;
+    head->charset = charset;
+    head->content_length = static_cast<int64_t>(body.size());
+    mojo::ScopedDataPipeProducerHandle producer;
+    mojo::ScopedDataPipeConsumerHandle consumer;
+    if (mojo::CreateDataPipe(std::max<uint32_t>(1, body.size()), producer,
+                             consumer) != MOJO_RESULT_OK) {
+      Complete(net::ERR_INSUFFICIENT_RESOURCES);
+      return;
+    }
+    size_t written = 0;
+    if (!body.empty()) {
+      producer->WriteData(base::as_byte_span(body), MOJO_WRITE_DATA_FLAG_ALL_OR_NONE,
+                          written);
+    }
+    producer.reset();
+    Responded(*head);
+    client_->OnReceiveResponse(std::move(head), std::move(consumer),
+                               std::nullopt);
+    network::URLLoaderCompletionStatus done(net::OK);
+    done.decoded_body_length = base::ByteSize(body.size());
+    done.encoded_data_length = base::ByteSize(body.size());
+    OnCompleteInternal(done);
+  }
+
+  void Abort(int error) { Complete(error); }
+
+  // network::mojom::URLLoader
+  void FollowRedirect(network::HttpRequestHeadersUpdateParams params,
+                      const std::optional<GURL>& new_url) override {
+    if (target_loader_)
+      target_loader_->FollowRedirect(std::move(params), new_url);
+  }
+  void SetPriority(net::RequestPriority priority, int32_t value) override {
+    if (target_loader_)
+      target_loader_->SetPriority(priority, value);
+  }
+
+  // network::mojom::URLLoaderClient
+  void OnReceiveEarlyHints(network::mojom::EarlyHintsPtr hints) override {
+    client_->OnReceiveEarlyHints(std::move(hints));
+  }
+  void OnReceiveResponse(network::mojom::URLResponseHeadPtr head,
+                         mojo::ScopedDataPipeConsumerHandle body,
+                         std::optional<mojo_base::BigBuffer> metadata) override;
+  void OnReceiveRedirect(const net::RedirectInfo& redirect,
+                         network::mojom::URLResponseHeadPtr head) override;
+  void OnUploadProgress(int64_t position,
+                        int64_t total,
+                        OnUploadProgressCallback callback) override {
+    client_->OnUploadProgress(position, total, std::move(callback));
+  }
+  void OnTransferSizeUpdated(int32_t diff) override {
+    client_->OnTransferSizeUpdated(diff);
+  }
+  void OnComplete(const network::URLLoaderCompletionStatus& status) override {
+    OnCompleteInternal(status);
+  }
+
+  base::WeakPtr<Loader> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
+
+ private:
+  base::DictValue RequestValue() {
+    base::DictValue value;
+    value.Set("request", id_);
+    value.Set("url", request_.url.spec());
+    value.Set("method", request_.method);
+    value.Set("headers", RequestHeaders(request_.headers));
+    value.Set("resourceType", ResourceType(request_));
+    value.Set("isNavigationRequest", navigation_);
+    value.Set("frame", frame_);
+    if (!redirected_from_.empty())
+      value.Set("redirectedFrom", redirected_from_);
+    return value;
+  }
+
+  void Responded(const network::mojom::URLResponseHead& head);
+  void OnCompleteInternal(const network::URLLoaderCompletionStatus& status);
+
+  void Complete(int error) {
+    OnCompleteInternal(network::URLLoaderCompletionStatus(error));
+  }
+
+  // The page's end went: the request is cancelled.
+  void Gone() { delete this; }
+  void NetworkGone() {
+    if (!completed_)
+      Complete(net::ERR_ABORTED);
+  }
+
+  base::WeakPtr<NetworkImpl> network_;
+  std::string id_;
+  std::string frame_;
+  bool navigation_;
+  int32_t request_id_;
+  uint32_t options_;
+  network::ResourceRequest request_;
+  net::MutableNetworkTrafficAnnotationTag annotation_;
+  raw_ptr<network::mojom::URLLoaderFactory> target_;
+  std::string redirected_from_;
+  bool completed_ = false;
+  mojo::Receiver<network::mojom::URLLoader> loader_receiver_;
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
+  mojo::Remote<network::mojom::URLLoader> target_loader_;
+  mojo::Remote<network::mojom::URLLoaderFactory> held_target_;
+  mojo::Receiver<network::mojom::URLLoaderClient> client_receiver_{this};
+  base::WeakPtrFactory<Loader> weak_factory_{this};
+};
+
+// The factory in front of the network's for one of the page's factories.
+class ProxyFactory : public network::mojom::URLLoaderFactory {
+ public:
+  ProxyFactory(base::WeakPtr<NetworkImpl> network,
+               std::string frame,
+               mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+               mojo::PendingRemote<network::mojom::URLLoaderFactory> target)
+      : network_(std::move(network)),
+        frame_(std::move(frame)),
+        target_(std::move(target)) {
+    receivers_.Add(this, std::move(receiver));
+    receivers_.set_disconnect_handler(base::BindRepeating(
+        &ProxyFactory::Disconnected, base::Unretained(this)));
+    target_.set_disconnect_handler(
+        base::BindOnce(&ProxyFactory::Gone, base::Unretained(this)));
+  }
+
+  void CreateLoaderAndStart(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      int32_t request_id,
+      uint32_t options,
+      const network::ResourceRequest& request,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+      const net::MutableNetworkTrafficAnnotationTag& annotation) override;
+
+  void Clone(mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver)
+      override {
+    receivers_.Add(this, std::move(receiver));
+  }
+
+ private:
+  void Disconnected() {
+    if (receivers_.empty())
+      Gone();
+  }
+  void Gone() { delete this; }
+
+  base::WeakPtr<NetworkImpl> network_;
+  std::string frame_;
+  mojo::Remote<network::mojom::URLLoaderFactory> target_;
+  mojo::ReceiverSet<network::mojom::URLLoaderFactory> receivers_;
+};
+
+class NetworkImpl : public Network,
+                    public content::WebContentsUserData<NetworkImpl> {
+ public:
+  ~NetworkImpl() override = default;
+
+  void Emit(const std::string& event, base::DictValue params) {
+    if (emit_)
+      emit_.Run(event, std::move(params));
+  }
+
+  std::string NextId(const char* prefix) {
+    return prefix + base::NumberToString(++next_id_);
+  }
+
+  bool Intercepts(const GURL& url) const {
+    for (const auto& pattern : patterns_) {
+      if (RE2::PartialMatch(url.spec(), *pattern))
+        return true;
+    }
+    return false;
+  }
+
+  void Hold(const std::string& route, base::WeakPtr<Loader> loader) {
+    routes_[route] = std::move(loader);
+  }
+
+  void AddExtraHeaders(network::ResourceRequest& request) const {
+    for (const auto& [name, value] : extra_headers_)
+      request.headers.SetHeader(name, value);
+  }
+
+  void SetEmit(EventFunc emit) { emit_ = std::move(emit); }
+
+  base::WeakPtr<NetworkImpl> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
+
+  // Network
+  bool SetPatterns(const base::ListValue& patterns, std::string* error) override {
+    return Compile(patterns, &patterns_, error);
+  }
+
+  bool SetWebSocketPatterns(const base::ListValue& patterns,
+                            std::string* error) override {
+    return Compile(patterns, &web_socket_patterns_, error);
+  }
+
+  bool RoutesWebSocket(const std::string& url) const override {
+    for (const auto& pattern : web_socket_patterns_) {
+      if (RE2::PartialMatch(url, *pattern))
+        return true;
+    }
+    return false;
+  }
+
+  static bool Compile(const base::ListValue& patterns,
+                      std::vector<std::unique_ptr<RE2>>* out,
+                      std::string* error) {
+    std::vector<std::unique_ptr<RE2>> compiled;
+    for (const base::Value& pattern : patterns) {
+      if (!pattern.is_dict())
+        continue;
+      std::string source;
+      RE2::Options options;
+      options.set_log_errors(false);
+      if (const std::string* glob = pattern.GetDict().FindString("glob")) {
+        source = GlobToRegex(*glob);
+      } else if (const std::string* regex =
+                     pattern.GetDict().FindString("regexSource")) {
+        source = *regex;
+        const std::string* flags = pattern.GetDict().FindString("regexFlags");
+        options.set_case_sensitive(!flags || flags->find('i') == std::string::npos);
+      } else {
+        continue;
+      }
+      auto re = std::make_unique<RE2>(source, options);
+      if (!re->ok()) {
+        *error = "Invalid URL pattern: " + source;
+        return false;
+      }
+      compiled.push_back(std::move(re));
+    }
+    *out = std::move(compiled);
+    return true;
+  }
+
+  void SetOffline(bool offline) override { offline_ = offline; }
+
+  void KeepBody(const std::string& request, std::string body) {
+    bodies_[request] = std::move(body);
+    order_.push_back(request);
+    while (order_.size() > kBodiesKept) {
+      bodies_.erase(order_.front());
+      order_.pop_front();
+    }
+  }
+
+  std::optional<std::string> Body(const std::string& request) override {
+    auto found = bodies_.find(request);
+    if (found == bodies_.end())
+      return std::nullopt;
+    return found->second;
+  }
+  bool offline() const { return offline_; }
+
+  void SetExtraHeaders(const base::ListValue& headers) override {
+    extra_headers_.clear();
+    for (const base::Value& header : headers) {
+      const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+      if (name && value)
+        extra_headers_.emplace_back(*name, *value);
+    }
+  }
+
+  bool Continue(const std::string& route,
+                const base::DictValue& overrides) override {
+    base::WeakPtr<Loader> loader = Take(route);
+    if (!loader)
+      return false;
+    loader->Continue(overrides);
+    return true;
+  }
+
+  bool Fulfill(const std::string& route,
+               const base::DictValue& response) override {
+    base::WeakPtr<Loader> loader = Take(route);
+    if (!loader)
+      return false;
+    loader->Fulfill(response);
+    return true;
+  }
+
+  bool Abort(const std::string& route, const std::string& error) override {
+    base::WeakPtr<Loader> loader = Take(route);
+    if (!loader)
+      return false;
+    loader->Abort(NetError(error));
+    return true;
+  }
+
+ private:
+  explicit NetworkImpl(content::WebContents* contents)
+      : content::WebContentsUserData<NetworkImpl>(*contents) {}
+  friend class content::WebContentsUserData<NetworkImpl>;
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+
+  base::WeakPtr<Loader> Take(const std::string& route) {
+    auto found = routes_.find(route);
+    if (found == routes_.end())
+      return nullptr;
+    base::WeakPtr<Loader> loader = found->second;
+    routes_.erase(found);
+    return loader;
+  }
+
+  EventFunc emit_;
+  std::vector<std::unique_ptr<RE2>> patterns_;
+  std::vector<std::unique_ptr<RE2>> web_socket_patterns_;
+  std::vector<std::pair<std::string, std::string>> extra_headers_;
+  std::map<std::string, base::WeakPtr<Loader>> routes_;
+  int next_id_ = 0;
+  bool offline_ = false;
+  std::map<std::string, std::string> bodies_;
+  std::deque<std::string> order_;
+  base::WeakPtrFactory<NetworkImpl> weak_factory_{this};
+};
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(NetworkImpl);
+
+void Loader::Start() {
+  if (!network_) {
+    Continue({});
+    return;
+  }
+  network_->AddExtraHeaders(request_);
+  network_->Emit("Page.request", RequestValue());
+  if (network_->offline()) {
+    Complete(net::ERR_INTERNET_DISCONNECTED);
+    return;
+  }
+  if (!network_->Intercepts(request_.url)) {
+    Continue({});
+    return;
+  }
+  // Held for the client: Route.continue, fulfill or abort, with a factory
+  // of its own, which outlives the page's.
+  target_->Clone(held_target_.BindNewPipeAndPassReceiver());
+  target_ = held_target_.get();
+  const std::string route = network_->NextId("r");
+  network_->Hold(route, GetWeakPtr());
+  base::DictValue params;
+  params.Set("route", route);
+  params.Set("request", RequestValue());
+  network_->Emit("BrowserContext.route", std::move(params));
+}
+
+void Loader::OnReceiveResponse(network::mojom::URLResponseHeadPtr head,
+                               mojo::ScopedDataPipeConsumerHandle body,
+                               std::optional<mojo_base::BigBuffer> metadata) {
+  Responded(*head);
+  mojo::ScopedDataPipeProducerHandle producer;
+  mojo::ScopedDataPipeConsumerHandle consumer;
+  if (body && network_ &&
+      mojo::CreateDataPipe(nullptr, producer, consumer) == MOJO_RESULT_OK) {
+    // Deletes itself when the body has passed.
+    new BodyTee(std::move(body), std::move(producer),
+                base::BindOnce(
+                    [](base::WeakPtr<NetworkImpl> network, std::string id,
+                       std::string kept, bool complete) {
+                      if (network && complete)
+                        network->KeepBody(id, std::move(kept));
+                    },
+                    network_, id_));
+    body = std::move(consumer);
+  }
+  client_->OnReceiveResponse(std::move(head), std::move(body),
+                             std::move(metadata));
+}
+
+void Loader::Responded(const network::mojom::URLResponseHead& head) {
+  if (!network_)
+    return;
+  base::DictValue response;
+  response.Set("request", id_);
+  response.Set("url", request_.url.spec());
+  response.Set("status", head.headers ? head.headers->response_code() : 200);
+  response.Set("statusText", head.headers ? head.headers->GetStatusText() : "");
+  response.Set("headers", ResponseHeaders(head.headers.get()));
+  response.Set("mimeType", head.mime_type);
+  if (!head.remote_endpoint.address().empty()) {
+    response.Set("serverAddr", head.remote_endpoint.ToStringWithoutPort());
+  }
+  network_->Emit("Page.response", std::move(response));
+}
+
+void Loader::OnReceiveRedirect(const net::RedirectInfo& redirect,
+                               network::mojom::URLResponseHeadPtr head) {
+  Responded(*head);
+  if (network_) {
+    // The redirect is a request of its own, from the one before, as
+    // Playwright reports it.
+    base::DictValue finished;
+    finished.Set("request", id_);
+    network_->Emit("Page.requestFinished", std::move(finished));
+    redirected_from_ = id_;
+    id_ = network_->NextId("q");
+    request_.url = redirect.new_url;
+    request_.method = redirect.new_method;
+    network_->Emit("Page.request", RequestValue());
+  }
+  client_->OnReceiveRedirect(redirect, std::move(head));
+}
+
+void Loader::OnCompleteInternal(
+    const network::URLLoaderCompletionStatus& status) {
+  if (completed_)
+    return;
+  completed_ = true;
+  if (network_) {
+    base::DictValue params;
+    params.Set("request", id_);
+    if (status.error_code == net::OK) {
+      params.Set("responseEndTiming", 0);
+      network_->Emit("Page.requestFinished", std::move(params));
+    } else {
+      params.Set("failureText", net::ErrorToString(status.error_code));
+      network_->Emit("Page.requestFailed", std::move(params));
+    }
+  }
+  client_->OnComplete(status);
+}
+
+void ProxyFactory::CreateLoaderAndStart(
+    mojo::PendingReceiver<network::mojom::URLLoader> loader,
+    int32_t request_id,
+    uint32_t options,
+    const network::ResourceRequest& request,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    const net::MutableNetworkTrafficAnnotationTag& annotation) {
+  const std::string id = network_ ? network_->NextId("q") : "q0";
+  const bool navigation =
+      request.mode == network::mojom::RequestMode::kNavigate;
+  // Deletes itself when the page's end goes.
+  auto* proxied = new Loader(network_, id, frame_, navigation, std::move(loader),
+                             request_id, options, request, std::move(client),
+                             annotation, target_.get());
+  proxied->Start();
+}
+
+}  // namespace
+
+Network* Network::For(content::WebContents* contents) {
+  return NetworkImpl::FromWebContents(contents);
+}
+
+void Network::Create(content::WebContents* contents, EventFunc emit) {
+  NetworkImpl::CreateForWebContents(contents);
+  NetworkImpl::FromWebContents(contents)->SetEmit(std::move(emit));
+}
+
+void InterceptURLLoaderFactory(content::RenderFrameHost* frame,
+                               network::URLLoaderFactoryBuilder& builder) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!frame)
+    return;
+  content::WebContents* contents =
+      content::WebContents::FromRenderFrameHost(frame);
+  NetworkImpl* network = contents ? NetworkImpl::FromWebContents(contents) : nullptr;
+  if (!network)
+    return;
+  auto [receiver, target] = builder.Append();
+  // Deletes itself when the page's factory and its clones go.
+  new ProxyFactory(network->GetWeakPtr(),
+                   "f" + base::NumberToString(frame->GetFrameTreeNodeId().value()),
+                   std::move(receiver), std::move(target));
+}
+
+}  // namespace zebkit

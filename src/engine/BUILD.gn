@@ -3,6 +3,7 @@
 # on macOS. This directory is zebkit's src/engine, linked into the
 # Chromium tree as //zebkit/engine by scripts/fetch-upstream.sh.
 
+import("//build/config/ui.gni")
 import("//build/config/clang/clang.gni")
 import("//build/config/features.gni")
 import("//build/config/sysroot.gni")
@@ -164,9 +165,46 @@ mojom("media_capture_mojom") {
   ]
 }
 
+# zebkit's automation (automation*.cc, docs/AUTOMATION.md): the browser's
+# calls to each frame's agent.
+mojom("automation_mojom") {
+  sources = [ "automation.mojom" ]
+}
+
+# The script of the agent's isolated world: Playwright's injected script and
+# zebkit's steps over it, as an array.
+action("automation_scripts") {
+  script = "automation_scripts.py"
+  inputs = [
+    "automation_steps.js",
+    "playwright/clock_script.js",
+    "playwright/injected_script.js",
+    "playwright/websocket_mock_script.js",
+  ]
+  outputs = [ "$target_gen_dir/automation_scripts.h" ]
+  args = [
+    rebase_path("playwright/injected_script.js", root_build_dir),
+    rebase_path("automation_steps.js", root_build_dir),
+    rebase_path("playwright/clock_script.js", root_build_dir),
+    rebase_path("playwright/websocket_mock_script.js", root_build_dir),
+    rebase_path("$target_gen_dir/automation_scripts.h", root_build_dir),
+  ]
+}
+
 _sources = [
   "app.cc",
   "app.h",
+  "automation.cc",
+  "automation.h",
+  "automation_context.cc",
+  "automation_context.h",
+  "automation_network.cc",
+  "automation_network.h",
+  "automation_trace.cc",
+  "automation_trace.h",
+  "automation_renderer.cc",
+  "include/zebkit/automation.h",
+  "playwright/us_keyboard_layout.h",
   "bridge.cc",
   "call.cc",
   "call.h",
@@ -215,6 +253,12 @@ _sources = [
 ]
 
 _deps = [
+  ":automation_mojom",
+  "//components/download/public/common:public",
+  "//third_party/libyuv",
+  "//third_party/zlib/google:zip",
+  "//third_party/re2",
+  ":automation_scripts",
   ":media_capture_mojom",
   ":pdf",
   ":vendor",
@@ -282,6 +326,13 @@ if (is_mac) {
   _deps += [
     "//components/dbus",
     "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
+  ]
+}
+# Frames on demand for pages without a display (automation.cc).
+if (use_aura) {
+  _deps += [
+    "//ui/aura",
+    "//ui/compositor",
   ]
 }
 _deps += _vendored_libraries

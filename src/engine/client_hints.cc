@@ -96,6 +96,12 @@ class ClientHints : public content::ClientHintsControllerDelegate {
 
 }  // namespace
 
+void InstallClientHintsFor(content::BrowserContext* profile) {
+  static base::NoDestructor<ClientHints> contexts;
+  static_cast<content::ShellBrowserContext*>(profile)
+      ->set_client_hints_controller_delegate(contexts.get());
+}
+
 void InstallClientHints() {
   static base::NoDestructor<ClientHints> regular;
   static base::NoDestructor<ClientHints> off_the_record;

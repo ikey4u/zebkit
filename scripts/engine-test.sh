@@ -36,6 +36,10 @@
 #   with the engine's FFmpeg (media_probe.h), every frame decoded. Again
 #   with zebkit_media_keep_history(): a video played before anything
 #   listed media, captured from its first frame.
+# - tests/engine/automation.c: Playwright's commands, natively
+#   (<zebkit/automation.h>, docs/AUTOMATION.md): navigation, reads that
+#   wait, actions that wait until an element is enabled and nothing covers
+#   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
@@ -111,6 +115,7 @@ build_against_package "$package" "$work/page" "$tests/page.c"
 build_against_package "$package" "$work/popup" "$tests/popup.c"
 build_against_package "$package" "$work/cookie-host" "$tests/cookie_host.c"
 build_against_package "$package" "$work/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+build_against_package "$package" "$work/automation" "$tests/automation.c"
 build_against_package "$package" "$work/media" "$tests/media.c"
 build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$work/mode" "$tests/mode.c"
@@ -203,6 +208,8 @@ mkdir -p "$work/page-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
     run page "$work/page" "${engine_switches[@]}"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" run automation "$work/automation" "${engine_switches[@]}"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/automation.log" || { echo "FAIL the automation test did not finish"; failed=1; }
 ZEBKIT_MEDIA_PROBE="$work/media-probe" run cdp-page python3 -I "$tests/cdp_page.py" "$OUT_DIR/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$work/popup" "${engine_switches[@]}"
