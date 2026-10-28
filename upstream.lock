@@ -16,3 +16,17 @@ DEPOT_TOOLS_COMMIT=889099791deff38466d471fa6590951c91a1d8ab
 # runtime for Linux x86-64, at the stable release, checked by its SHA-256.
 ELECTRON_VERSION=44.9.0
 ELECTRON_LINUX_X64_SHA256=ecced7ecb55697f92ca870939c5988557faa8acd8c222c232cae5913d318c8b9
+
+# Playwright, whose injected script (selectors, actionability, ARIA) and
+# US keyboard layout zebkit's automation runs (docs/AUTOMATION.md):
+# scripts/playwright-sources.sh bundles them from this commit into
+# src/engine/playwright/. esbuild is the version Playwright builds with.
+PLAYWRIGHT_URL=https://github.com/microsoft/playwright.git
+PLAYWRIGHT_COMMIT=a169686c61af856cd1434b4994ef9c3222ee1041
+PLAYWRIGHT_ESBUILD_VERSION=0.28.1
+# playwright-core from npm, the latest stable release, for
+# scripts/automation-bench.sh's comparison over CDP.
+PLAYWRIGHT_CORE_VERSION=1.64.1
+# The YAML library Playwright pins (its package.json), bundled with the
+# injected script for ariaSnapshot's YAML.
+PLAYWRIGHT_YAML_VERSION=2.9.0
