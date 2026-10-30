@@ -7,6 +7,7 @@
 #define ZEBKIT_ENGINE_PDF_INTERNAL_H_
 
 #include <array>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +22,17 @@ namespace zebkit::pdf {
 // Sets entry @tag of the document information to the UTF-8 @value, or
 // removes it when @value is null; the dictionary is made if there is none.
 bool SetInfo(FPDF_DOCUMENT document, const char* tag, const char* value);
+
+struct OutlineItem {
+  std::string title;
+  int page = -1;
+  std::optional<float> x, y, zoom;
+  std::optional<std::string> url;
+  bool open = false;
+  std::vector<OutlineItem> children;
+};
+// Replaces the catalog outline only after the new tree has been built.
+bool SetOutline(FPDF_DOCUMENT document, const std::vector<OutlineItem>& items);
 
 // An annotation's entries that PDFium's API has no setter for: a number,
 // and the removal of any entry.

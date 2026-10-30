@@ -194,3 +194,55 @@ unsafe extern "C" fn on_done(_capture: *mut sys::zebkit_media_capture, json: *co
         function(&json);
     }
 }
+
+
+/// A native media tap: encoded packets, sampled RGBA frames, planar f32 PCM,
+/// and optionally an encoded file. All callbacks run on the engine thread.
+/// Dropping stops it and suppresses callbacks. Call `stop()` and wait for the
+/// `done` event before shutting down the engine to finalize a recording.
+pub struct MediaTap {
+    raw: *mut sys::zebkit_media_tap,
+    // A callback may drop the handle; the trampoline holds its own Rc.
+    _callback: Rc<Slot<dyn FnMut(&str, &[u8])>>,
+}
+
+impl View {
+    /// Starts native media output for an ID from `media_list()`.
+    /// `options_json` accepts `packets`, `video`, `audio` (default true),
+    /// `maxFps`, `maxWidth`, `maxHeight`, `maxPendingBytes`, `includeBuffered`,
+    /// and an optional absolute `path` with `recordingOptions` for file output.
+    /// MediaStream requires `packets:false` and no path. Callback metadata is
+    /// JSON; payload bytes are borrowed for this call. Copy for later use.
+    /// Packet timestamps are decimal strings to preserve int64 precision.
+    pub fn media_tap_start<F>(&self, media_id: &str, options_json: &str, callback: F)
+        -> Result<MediaTap, Error>
+    where F: FnMut(&str, &[u8]) + 'static {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let id = CString::new(media_id).map_err(|_| Error::new("the media id has a zero byte"))?;
+        let options = CString::new(options_json).map_err(|_| Error::new("the options have a zero byte"))?;
+        let slot: Rc<Slot<dyn FnMut(&str, &[u8])>> = Rc::new(RefCell::new(Some(Box::new(callback))));
+        let mut error = std::ptr::null_mut();
+        let tap = unsafe { sys::zebkit_media_tap_start(raw, id.as_ptr(), options.as_ptr(),
+            Some(on_tap), Rc::as_ptr(&slot).cast_mut().cast(), &mut error) };
+        if tap.is_null() {
+            return Err(unsafe { take_error(error, "the media tap did not start") });
+        }
+        Ok(MediaTap { raw: tap, _callback: slot })
+    }
+}
+impl MediaTap {
+    /// Stop samples and finalize any file. The callback gets `type: done` later.
+    pub fn stop(&self) { unsafe { sys::zebkit_media_tap_stop(self.raw) } }
+}
+impl Drop for MediaTap {
+    fn drop(&mut self) { unsafe { sys::zebkit_media_tap_free(self.raw) } }
+}
+unsafe extern "C" fn on_tap(_tap: *mut sys::zebkit_media_tap, json: *const c_char,
+    bytes: *const u8, size: usize, data: *mut c_void) {
+    let ptr = data.cast_const().cast::<Slot<dyn FnMut(&str, &[u8])>>();
+    Rc::increment_strong_count(ptr);
+    let slot = Rc::from_raw(ptr);
+    let json = string_from(json).unwrap_or_default();
+    let bytes = if size == 0 { &[] } else { std::slice::from_raw_parts(bytes, size) };
+    call_slot(&slot, |callback| callback(&json, bytes));
+}

@@ -5,6 +5,7 @@
 
 #include "zebkit/engine/automation_network.h"
 
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -303,6 +305,7 @@ class Loader : public network::mojom::URLLoader,
         target_(target),
         loader_receiver_(this, std::move(loader)),
         client_(std::move(client)) {
+    request_.enable_load_timing = true;
     loader_receiver_.set_disconnect_handler(
         base::BindOnce(&Loader::Gone, base::Unretained(this)));
   }
@@ -397,7 +400,8 @@ class Loader : public network::mojom::URLLoader,
                                std::nullopt);
     network::URLLoaderCompletionStatus done(net::OK);
     done.decoded_body_length = base::ByteSize(body.size());
-    done.encoded_data_length = base::ByteSize(body.size());
+    done.encoded_body_length = base::ByteSize(body.size());
+    done.encoded_data_length = base::ByteSize(body.size() + response_headers_size_);
     OnCompleteInternal(done);
   }
 
@@ -477,6 +481,9 @@ class Loader : public network::mojom::URLLoader,
   raw_ptr<network::mojom::URLLoaderFactory> target_;
   std::string redirected_from_;
   bool completed_ = false;
+  base::TimeTicks timing_start_ = base::TimeTicks::Now();
+  base::Time wall_start_ = base::Time::Now();
+  int64_t response_headers_size_ = 0;
   mojo::Receiver<network::mojom::URLLoader> loader_receiver_;
   mojo::Remote<network::mojom::URLLoaderClient> client_;
   mojo::Remote<network::mojom::URLLoader> target_loader_;
@@ -614,6 +621,21 @@ class NetworkImpl : public Network,
 
   void SetOffline(bool offline) override { offline_ = offline; }
 
+  void KeepNavigationResponse(const std::string& url, const base::DictValue& response) {
+    navigation_responses_.insert_or_assign(url, response.Clone());
+    navigation_order_.push_back(url);
+    while (navigation_order_.size() > kBodiesKept) {
+      // The oldest record of a URL, unless it has been kept again since.
+      if (std::count(navigation_order_.begin(), navigation_order_.end(), navigation_order_.front()) == 1)
+        navigation_responses_.erase(navigation_order_.front());
+      navigation_order_.pop_front();
+    }
+  }
+  std::optional<base::DictValue> NavigationResponse(const std::string& url) override {
+    auto found = navigation_responses_.find(url);
+    return found == navigation_responses_.end() ? std::nullopt : std::make_optional(found->second.Clone());
+  }
+
   void KeepBody(const std::string& request, std::string body) {
     bodies_[request] = std::move(body);
     order_.push_back(request);
@@ -690,6 +712,8 @@ class NetworkImpl : public Network,
   int next_id_ = 0;
   bool offline_ = false;
   std::map<std::string, std::string> bodies_;
+  std::deque<std::string> navigation_order_;
+  std::map<std::string, base::DictValue> navigation_responses_;
   std::deque<std::string> order_;
   base::WeakPtrFactory<NetworkImpl> weak_factory_{this};
 };
@@ -756,9 +780,38 @@ void Loader::Responded(const network::mojom::URLResponseHead& head) {
   response.Set("statusText", head.headers ? head.headers->GetStatusText() : "");
   response.Set("headers", ResponseHeaders(head.headers.get()));
   response.Set("mimeType", head.mime_type);
+  const auto& load = head.load_timing;
+  if (!load.request_start.is_null())
+    timing_start_ = load.request_start;
+  if (!load.request_start_time.is_null())
+    wall_start_ = load.request_start_time;
+  auto elapsed = [&](base::TimeTicks time) {
+    return time.is_null() ? -1.0 : (time - timing_start_).InMillisecondsF();
+  };
+  base::DictValue timing;
+  timing.Set("startTime", wall_start_.InMillisecondsFSinceUnixEpoch());
+  timing.Set("domainLookupStart", elapsed(load.connect_timing.domain_lookup_start));
+  timing.Set("domainLookupEnd", elapsed(load.connect_timing.domain_lookup_end));
+  timing.Set("connectStart", elapsed(load.connect_timing.connect_start));
+  timing.Set("connectEnd", elapsed(load.connect_timing.connect_end));
+  timing.Set("secureConnectionStart", elapsed(load.connect_timing.ssl_start));
+  timing.Set("requestStart", elapsed(load.send_start));
+  timing.Set("responseStart", elapsed(load.receive_headers_start));
+  response.Set("timing", std::move(timing));
+  response.Set("fromServiceWorker", head.was_fetched_via_service_worker);
+  response_headers_size_ = head.headers ? head.headers->raw_headers().size() : 0;
+  if (head.headers)
+    response.Set("httpVersion", base::NumberToString(head.headers->GetHttpVersion().major_value()) + "." +
+        base::NumberToString(head.headers->GetHttpVersion().minor_value()));
+  // The network stack writes HTTP/2 and HTTP/3 status lines as HTTP/1.1.
+  if (head.alpn_negotiated_protocol == "h2") response.Set("httpVersion", "2.0");
+  else if (head.alpn_negotiated_protocol == "h3") response.Set("httpVersion", "3.0");
+
   if (!head.remote_endpoint.address().empty()) {
     response.Set("serverAddr", head.remote_endpoint.ToStringWithoutPort());
   }
+  if (navigation_)
+    network_->KeepNavigationResponse(request_.url.spec(), response);
   network_->Emit("Page.response", std::move(response));
 }
 
@@ -770,11 +823,15 @@ void Loader::OnReceiveRedirect(const net::RedirectInfo& redirect,
     // Playwright reports it.
     base::DictValue finished;
     finished.Set("request", id_);
+    finished.Set("responseEndTiming", (base::TimeTicks::Now() - timing_start_).InMillisecondsF());
     network_->Emit("Page.requestFinished", std::move(finished));
     redirected_from_ = id_;
     id_ = network_->NextId("q");
     request_.url = redirect.new_url;
     request_.method = redirect.new_method;
+    timing_start_ = base::TimeTicks::Now();
+    wall_start_ = base::Time::Now();
+    response_headers_size_ = 0;
     network_->Emit("Page.request", RequestValue());
   }
   client_->OnReceiveRedirect(redirect, std::move(head));
@@ -789,7 +846,30 @@ void Loader::OnCompleteInternal(
     base::DictValue params;
     params.Set("request", id_);
     if (status.error_code == net::OK) {
-      params.Set("responseEndTiming", 0);
+      const base::TimeTicks end = status.completion_time.is_null() ? base::TimeTicks::Now() : status.completion_time;
+      params.Set("responseEndTiming", (end - timing_start_).InMillisecondsF());
+      base::DictValue sizes;
+      int64_t upload = 0;
+      if (request_.request_body) {
+        for (const auto& element : *request_.request_body->elements()) {
+          if (element.type() == network::DataElement::Tag::kBytes)
+            upload += element.As<network::DataElementBytes>().bytes().size();
+          else if (element.type() == network::DataElement::Tag::kFile)
+            upload += element.As<network::DataElementFile>().length();
+          else { upload = -1; break; }
+        }
+      }
+      sizes.Set("requestBodySize", static_cast<double>(upload));
+      // Playwright's header-size convention: HTTP request line plus the
+      // observed header names/values and CRLFs, independent of H2 framing.
+      sizes.Set("requestHeadersSize", static_cast<double>(request_.method.size() +
+          request_.url.PathForRequest().size() + 12 + request_.headers.ToString().size()));
+      sizes.Set("responseBodySize", static_cast<double>(status.encoded_body_length.InBytes()));
+      const int64_t received = status.encoded_data_length.InBytes();
+      const int64_t encoded_body = status.encoded_body_length.InBytes();
+      sizes.Set("responseHeadersSize", static_cast<double>(received >= encoded_body && received > 0
+          ? received - encoded_body : response_headers_size_));
+      params.Set("sizes", std::move(sizes));
       network_->Emit("Page.requestFinished", std::move(params));
     } else {
       params.Set("failureText", net::ErrorToString(status.error_code));

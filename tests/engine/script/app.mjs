@@ -97,6 +97,22 @@ await check('pdf: open, info, render, search, annotate, save', async () => {
       found.length === 1 && found[0].count === 3 && index === 0 &&
       annotations[0].type === 'highlight' && text === 'Hello pdf';
 });
+await check('pdf: edited outline persists and invalid replacement is atomic', async () => {
+  const doc = await zebkit.pdf.open(new TextEncoder().encode(PDF));
+  const tree = [{title: '第一章 π', page: 0, x: 12.5, y: 70, zoom: 1, open: true,
+                 children: [{title: 'Child', url: 'https://example.com', open: false}]}];
+  await doc.setOutline(tree);
+  let rejected = false;
+  try { await doc.setOutline([{title: 'Wrong', page: 10}]); } catch { rejected = true; }
+  const current = await doc.outline();
+  const again = await zebkit.pdf.open(await doc.save());
+  const saved = await again.outline();
+  await doc.setOutline([]);
+  const empty = await doc.outline();
+  await Promise.all([doc.close(), again.close()]);
+  return rejected && JSON.stringify(current) === JSON.stringify(saved) &&
+      current[0].title === tree[0].title && current[0].children[0].url === tree[0].children[0].url && empty.length === 0;
+});
 await check('pdf: pages copied, inserted, moved, turned and deleted', async () => {
   const source = await zebkit.pdf.open(new TextEncoder().encode(PDF));
   const built = await zebkit.pdf.create();

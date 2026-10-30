@@ -169,6 +169,40 @@ LIBRARIES = {
         ],
         "objects": ["third_party/icu"],
     },
+    "leveldb": {
+        "title": "LevelDB",
+        "version": None,
+        "roots": {"": "third_party/leveldatabase/src/include"},
+        "ship": ["leveldb/c.h", "leveldb/export.h"],
+        "include": ["leveldb/c.h"],
+        "objects": ["third_party/leveldatabase"],
+    },
+    "freetype": {
+        "title": "FreeType",
+        "version": ("freetype/freetype.h", r"#define\s+FREETYPE_MAJOR\s+(\d+)[\s\S]*?#define\s+FREETYPE_MINOR\s+(\d+)[\s\S]*?#define\s+FREETYPE_PATCH\s+(\d+)"),
+        "roots": {"": "third_party/freetype/src/include"},
+        "ship": ["ft2build.h", "freetype/*.h", "freetype/config/*.h"],
+        "override_headers": {
+            "freetype/config/ftoption.h": "third_party/freetype/include/freetype-custom/freetype/config/ftoption.h",
+            "freetype/config/ftmodule.h": "third_party/freetype/include/freetype-custom/freetype/config/ftmodule.h",
+        },
+        "macro_include_prefix": "zebkit/vendor/freetype/",
+        # Legacy Carbon/FSSpec APIs are not part of the engine's FT build.
+        "skip_ship": ["freetype/ftmac.h"],
+        "include": [
+            "freetype/freetype.h", "freetype/ftadvanc.h", "freetype/ftbbox.h", "freetype/ftbdf.h",
+            "freetype/ftbitmap.h", "freetype/ftbzip2.h", "freetype/ftcache.h", "freetype/ftcid.h",
+            "freetype/ftcolor.h", "freetype/ftdriver.h", "freetype/ftfntfmt.h", "freetype/ftgasp.h",
+            "freetype/ftglyph.h", "freetype/ftgxval.h", "freetype/ftgzip.h", "freetype/ftincrem.h",
+            "freetype/ftlcdfil.h", "freetype/ftlist.h", "freetype/ftlogging.h", "freetype/ftlzw.h",
+            "freetype/ftmm.h", "freetype/ftmodapi.h", "freetype/ftotval.h",
+            "freetype/ftoutln.h", "freetype/ftparams.h", "freetype/ftpfr.h", "freetype/ftrender.h",
+            "freetype/ftsizes.h", "freetype/ftsnames.h", "freetype/ftstroke.h", "freetype/ftsynth.h",
+            "freetype/ftsystem.h", "freetype/fttrigon.h", "freetype/ftwinfnt.h", "freetype/otsvg.h",
+            "freetype/t1tables.h", "freetype/ttnameid.h", "freetype/tttables.h", "freetype/tttags.h",
+        ],
+        "objects": ["third_party/freetype"],
+    },
     "harfbuzz": {
         "title": "HarfBuzz",
         "version": ("hb-version.h", r'#define HB_VERSION_STRING "([^"]+)"'),
@@ -305,6 +339,8 @@ def gather(spec, src):
             if any(pathlib.PurePosixPath(relative).match(skip) for skip in spec.get("skip_ship", [])):
                 continue
             files[relative] = path.read_text(errors="replace")
+    for relative, source in spec.get("override_headers", {}).items():
+        files[relative] = (src / source).read_text()
     return files
 
 
@@ -335,6 +371,13 @@ def relink(spec, files):
                 system.add(target)
             return m.group(0)
 
+        prefix = spec.get("macro_include_prefix")
+        if prefix:
+            # FreeType's FT_*_H header names are expanded at the caller's
+            # include site, so relative paths would depend on that caller.
+            text = re.sub(r'(^\s*#\s*define\s+\w+\s+)<([^>]+)>',
+                          lambda m: m.group(1) + "<" + prefix + m.group(2) + ">"
+                          if m.group(2) in files else m.group(0), text, flags=re.M)
         files[name] = INCLUDE.sub(replace, text)
     return system
 
@@ -365,7 +408,8 @@ TARGET = "linux"
 
 def preprocess(clang, sysroot, include_dir, defines, text, extra=()):
     args = [clang, "-x", "c", "-std=c11", "-E", "--target=" + TRIPLES[TARGET],
-            "-isysroot" if TARGET == "mac" else "--sysroot", sysroot, "-I", str(include_dir)]
+            "-isysroot" if TARGET == "mac" else "--sysroot", sysroot, "-I", str(include_dir),
+            "-I", str(include_dir.parents[2])]
     args += [f"-D{k}={v}" for k, v in defines.items()]
     args += list(extra) + ["-"]
     result = subprocess.run(args, input=text, capture_output=True, text=True)

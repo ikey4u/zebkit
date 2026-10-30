@@ -57,6 +57,7 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
       return this.#call('search', String(query), (matchCase ? 1 : 0) | (wholeWord ? 2 : 0), first, limit);
     }
     outline() { return this.#call('outline'); }
+    setOutline(items) { return this.#call('setOutline', items); }
     // The digital signatures: field, subFilter, reason, time, byteRange,
     // docMDP, signer, and contents (the PKCS#7) as bytes.
     signatures() { return this.#call('signatures'); }

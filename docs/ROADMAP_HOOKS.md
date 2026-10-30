@@ -83,16 +83,43 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
 
 ## Each hook
 
-- **TODO: permissions.** A request (`zebkit_view_on_permission`) carries
-  the permission, the requesting origin, the top origin and whether a click
-  came first, and is granted, denied or dismissed, once or for the origin.
-  The status a page reads (`navigator.permissions.query()`) comes from the
-  view's table (`zebkit_view_set_permission(view, origin, permission,
-  state)`), which a granted request fills; what is not in it is
-  `patches/1023`'s answer. CDP's `Browser.setPermission` writes the same
-  table. Location, sensors, NFC, MIDI, payment handlers, idle detection and
-  background work stay denied by default.
-- **TODO: popups and new windows.** `CanCreateWindow` is answered from the
+- **Implemented: document permissions.** `<zebkit/hooks.h>` provides
+  origin/default view rules, a side-effect-free status query, asynchronous
+  requests, replies and outcome events. Requests include permission,
+  requesting/top origin, user gesture and deadline. Reply once with prompt,
+  granted or denied; `remember` stores an origin rule. Navigation, destruction,
+  handler replacement and deadlines settle outstanding requests. Late replies
+  return false; tokens are never reused. The deadline uses a monotonic clock,
+  including when the host blocks the engine thread.
+  `navigator.permissions` subscriptions use Chromium's actual controller.
+  Later context/CDP mutations supersede older view rules in Chromium's own
+  permission scope; a later explicit view rule applies only to that view.
+  There is no parallel CDP permission cache. Resetting view rules preserves
+  context overrides; resetting context permissions supersedes older rules.
+  Worker permissions use context/CDP policy: document view rules do not
+  redefine the policy of shared or service workers. Document security,
+  fenced-frame restrictions and Permissions Policy remain enforced.
+  MIDI denial also denies SysEx; SysEx grants also grant MIDI. Approximate-only
+  geolocation cannot be persisted separately. Opaque requesting origins cannot
+  be remembered. Rules are bounded to 4096 per view and pending requests to
+  4096 per engine; invalid batches do not partially update policy.
+  Camera/microphone device capture now uses this controller and device IDs
+  selected by Chromium. Display/tab capture still needs a host chooser.
+  Linux regression coverage includes real location requests with synthetic
+  coordinates, subscriptions, OOPIF, timeouts, blocked callbacks, once/remember,
+  handler replacement, navigation, closure, context isolation and native/CDP
+  ordering. Platform runtime and additional permission-specific checks remain.
+- **In progress: popups and new windows.** `<zebkit/hooks.h>` now has a
+  per-view popup policy and an asynchronous blocked-popup event, with Rust,
+  Python and host JavaScript bindings. Linux runtime tests cover two views,
+  runtime changes, invalid values, gestures and startup-switch precedence;
+  Python, Rust and host JavaScript tests cover the bindings.
+  Native decision/created metadata and creation snapshots are implemented and
+  pass Linux/macOS compilation checks. C/Rust/Python/host JavaScript bindings
+  and integration tests pass on Linux, including immediate closure, cross-origin
+  source identity and adoption of the original child in host JavaScript.
+  Platform runtime validation remains open.
+  `CanCreateWindow` is answered from the
   view's popup policy: allowed with a click and blocked without, as
   Chrome's blocker does (`ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE`, the
   default), always, or never. A window that is allowed goes to the
@@ -101,12 +128,50 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   application opens it as a view of its own, keeping `window.opener` when
   it wants (`AddNewContents` with the new contents), or elsewhere; a
   blocked one is reported, so that it can be offered.
-- **TODO: navigation.** A throttle on every navigation of a view's frames
-  asks the application at the start, at each redirect and at the response
-  (URL, method, frame, whether a click started it, the response's status
-  and headers), and the answer is go on, cancel, or cancel and load
-  another URL. Chrome's own throttles (safe browsing among them) are not
-  in the content layer; this is where an application puts its own.
+- **In progress: native document-console events.** The C observer is connected
+  directly to Chromium's WebContentsObserver and reports real frame identity,
+  origin, severity, message, source and an optional untrusted exception stack.
+  Asynchronous queues and payloads are bounded; handler replacement and closure
+  cancel pending deliveries. Linux/macOS compilation and Rust binding checks
+  pass. Existing bindings pass Linux runtime tests for frame isolation,
+  truncation, handler replacement and closure. Worker events and platform
+  runtime validation remain open.
+- **In progress: document certificate errors.** The native BrowserClient hook
+  provides asynchronous single-use requests, metadata/PEM chains, deadlines and
+  outcome events. Denial is the default; strict errors cannot be continued.
+  Top-level navigation, stopping, closure and handler replacement invalidate
+  requests. C/Rust/Python/host JavaScript interfaces and local TLS tests are
+  implemented. Native compilation and real Linux TLS tests pass through C,
+  Rust, Python and host JavaScript. Patch 1051 prevents an earlier per-view
+  allow decision leaking through pooled HTTP/1.1 or HTTP/2 connections; tests
+  verify denied requests send no HTTP headers or body to the server.
+  Client certificate selection, requests without a WebContents,
+  finer subframe cancellation and platform validation remain open.
+- **Implemented: document navigation throttle hooks.** C, Rust, Python and
+  host JavaScript receive start, redirect, response, failure and loader-less
+  commit stages. Requests have stable navigation/frame IDs, URL, method,
+  gesture, referrer, redirect chain, response status and duplicate-preserving
+  headers. Response header output is bounded and reports truncation.
+  Reply once to continue, cancel, or cancel and start a GET of a replacement
+  URL in the same frame. Unanswered stages continue after the configurable
+  deadline (default 30 seconds); invalid replies preserve pending requests.
+  Superseding, closing and cancellation invalidate old tokens. Replacing or
+  removing a handler continues its pending stages. Native/Python real HTTP
+  tests cover cancellation before network IO and before commit, redirect
+  responses, POST, subframe replacements, headers, timeout, blocked callbacks,
+  handler replacement, wrong-thread replies and closure. Rust's full suite
+  passed 75 checks; host JavaScript's real navigation test passed.
+  BFCache restoration and prerender activation use an additional commit-deferring
+  `activation` stage with `activationType`. Real Linux tests verify continue,
+  cancel, replacement, timeout, handler removal, closure and superseding
+  navigation for both paths. Activation referrer metadata is unavailable before
+  Chromium initializes it and is explicitly marked as such. Renderer-only
+  same-document policy remains open. Internal inspection uses tab targets and
+  preserves initialization-script ordering, Disposable removal and native UA
+  state across prerender activation. Tests verify real request headers, the
+  document's first script and worker UA values. Chromium's own content-layer
+  throttles remain registered; full native UA metadata and cross-client override
+  precedence are still separate work.
 - **TODO: network requests and responses.** A loader factory in front of
   the network's gives the application each request of a view's frames and
   workers before it is sent and each response before the page has it:
@@ -118,13 +183,15 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   `Fetch.enable` takes. A request the application does not answer within
   the deadline goes on. CDP's Fetch and Network domains keep working
   beside it: the hook sees requests before them.
-- **TODO: user agent and client hints, per view.** The string, and the
-  client hints that go with it (brands, full versions, platform and its
-  version, architecture, model, mobile), set together
-  (`zebkit_view_set_user_agent_metadata` with JSON, as
-  `Emulation.setUserAgentOverride` takes `userAgentMetadata`), so that the
-  two never disagree. Workers of the view's pages send the same; checked
-  as `tests/bench/web/privacy.html` checks the engine's.
+- **Implemented foundation: user agent and client hints, per view.**
+  `zebkit_view_set_user_agent_override` sets the string, optional language,
+  platform and `userAgentMetadata` together using Chromium's validated CDP
+  parameter format. Only successful updates persist into future targets. C,
+  Python, Rust and host JavaScript interfaces are present. Real Linux tests
+  cover first-script values, brands, full versions, platform, architecture,
+  model, bitness, WoW64, form factors, Accept-CH request headers and workers;
+  rejected updates preserve prior values. External CDP sessions retain their
+  own scopes. Platform runtime and wider target/context coverage remain open.
 - **TODO: downloads.** A download is asked about with its URL, the
   suggested name, the type and the size when known, and is saved where the
   application says, opened by the application from its bytes, or
@@ -133,14 +200,12 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
 - **JavaScript dialogs and beforeunload: done** (0.0.1-alpha.6,
   `<zebkit/page.h>`), the model for the others: held for the application,
   answered by it or by a CDP client, a policy per view.
-- **TODO: certificate errors.** Asked with the error, the certificate's
-  chain (PEM), the URL and whether it is the main frame, and answered
-  proceed or refuse, for this request or for the host until the view
-  closes. Refused by default. Client certificates are chosen the same way
-  (`SelectClientCertificate`), none by default.
-- **TODO: sign-in.** HTTP authentication (`CreateLoginDelegate`) asked
-  with the realm, the host and whether it is a proxy, and answered with a
-  user and password or cancelled, as Chrome's dialog does.
+- **Partial: sign-in.** Per-view HTTP authentication (`CreateLoginDelegate`)
+  exposes realm, challenger, proxy and navigation metadata through single-use
+  requests with deadlines and result events. C, Rust, Python and host JavaScript
+  pass real HTTP challenges; native tests also cover proxy 407. Global requests
+  without a WebContents remain open. Chromium's context auth cache and earlier
+  CDP interception retain their existing scopes.
 - **TODO: links to other programs.** A URL of a scheme the engine does not
   load goes to the application (`HandleExternalProtocol`), which opens it
   with the system or not; nothing is opened by default.
@@ -155,12 +220,36 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   context isolation does and Chrome's content scripts do; for every frame
   or the main frame only. `zebkit.*` can be given to an isolated world and
   not to the page (`zebkit_view_grant` with a world).
-- **TODO: settings of a view.** What Chromium's `WebPreferences` holds and
-  an application changes: JavaScript, images, fonts and font sizes,
-  default encoding, autoplay, spatial navigation, smooth scrolling, the
-  minimum font size, plugins, `prefers-color-scheme` and the other media
-  features, text autosizing; set per view (`zebkit_view_set_settings` with
-  JSON), applied at once (`NotifyPreferencesChanged`).
+- **Settings of a view: implemented** (2026-10-29). `<zebkit/hooks.h>`
+  exposes `zebkit_view_set_settings(view, json, error)` and
+  `zebkit_view_get_settings`. Changes merge by top-level key; null restores
+  Chromium's default, {} does nothing, and an invalid batch changes nothing.
+  They are reapplied through `OverrideWebPreferences` on recomputation and
+  sent to every renderer with `NotifyPreferencesChanged`.
+  - Booleans: `javaScript`, `images`, `remoteFonts`, `plugins`,
+    `spatialNavigation`, `smoothScrolling`, `textAutosizing`, `localStorage`,
+    `hyperlinkAuditing`, `reducedMotion`, `reducedTransparency`, `hideScrollbars`.
+  - Integer font sizes (up to 512): `defaultFontSize`, `defaultFixedFontSize`
+    (at least 1), `minimumFontSize`, `minimumLogicalFontSize` (at least 0).
+  - `fonts`: standard/fixed/serif/sansSerif/cursive/fantasy/math, each a family
+    string for Common or a dictionary of four-letter ISO 15924 script codes
+    to family strings. A family is nonempty, without NUL, at most 1024 bytes.
+    Replacing `fonts` replaces that entire override dictionary.
+  - `defaultEncoding` is validated and canonicalized; `autoplay` is allow,
+    gesture or document-activation; `colorScheme` is light/dark; `contrast`
+    is no-preference/more/less/custom. The JSON object is at most 64 KiB.
+  - C, Rust `View::set_settings/settings`, Python `set_settings/settings`,
+    and host JavaScript `setSettings/settings` are tested. The getter returns
+    explicit native preferences, not temporary CDP emulation; Chromium's CDP
+    emulation continues to apply separately. Parser scripts do not execute
+    retroactively when JavaScript is re-enabled; applications reload when
+    their content needs that.
+  - Linux checks cover atomic rejection, two views, scripts, images including
+    live re-enabling, proportional/fixed fonts, autoplay allow/deny, main and
+    cross-site iframe media queries, runtime changes and reset. C/host JS pass,
+    Rust passes 61 integration checks, and the complete engine suite passes.
+    macOS framework/package and C hooks ARM64 cross-link pass; runtime remains.
+  Engine-wide settings and unifying more policy hooks remain open.
 - **TODO: file choosers, camera and microphone, keys, context menu,
   fullscreen**: as the table says; the context menu is the one in
   `docs/ROADMAP.md` ("What a window does besides").
@@ -172,19 +261,34 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   type per asked hook, with `zebkit_<hook>_respond()` and accessors, as
   `zebkit_request` and `zebkit_view_dialog_respond()` are now. JSON where
   a structure would change between Chromium versions.
-- **Rust**: `View::on_permission(|request| ...)`, the request answered by
-  `request.grant()`, `request.deny()` or kept and answered later; an
-  `async` form beside it.
-- **JavaScript** (`zebkit-js`): `view.on('permission', async (request) =>
-  'grant')`, the promise being the answer, and `view.set('popups',
-  'block-without-gesture')`. Pages never see hooks: they are the
-  application's.
+- **Rust**: `View::on_permission`, `PermissionRequest::respond(state,
+  remember)`, `info` and retained metadata; requests are engine-thread objects.
+  `View::set_permission`, `permission`, `reset_permissions`, deadline and
+  handler cleanup methods wrap the same policy. Async convenience remains open.
+- **Python**: `view.on_permission(function)` receives `PermissionRequest`;
+  `request.respond('granted', remember=True)` replies. `request.info` becomes
+  `None` after settlement; `metadata` remains a snapshot. Passing `None`
+  removes a handler; post worker replies onto the engine thread.
+- **JavaScript** (`zebkit-js`): `view.onPermission(fn)` receives a request with
+  `metadata`, `info` and `respond(state, remember)`; `onPermission(null)` removes
+  it. `view.on('permission-result', fn)` observes outcomes. `setPermission`,
+  `getPermission`, `resetPermissions`, `setPermissionTimeout` and `setPopupPolicy`
+  configure host policy. Pages never see these hooks.
 - **CDP and MCP**: what CDP already decides (Fetch, `Browser.setPermission`,
   `Emulation.setUserAgentOverride`, `Page.setDownloadBehavior`) keeps
-  working and writes the same settings a hook reads, so that an agent and
-  the application never disagree about what is in force. The MCP server
+  working in its own scope, as a CDP client's override does in Chrome: it
+  does not write the settings a hook reads. The MCP server
   (`docs/ROADMAP.md`, "zebkit as an MCP server") sets the same policies
   for an agent, within the bounds whoever runs it sets.
+
+Navigation bindings are `View::on_navigation` with
+`NavigationRequest::respond(NavigationAction)` in Rust;
+`view.on_navigation(fn)` and `request.respond('redirect', url)` in Python;
+and `view.onNavigation(fn)` with `request.respond('redirect', url)` in host
+JavaScript. Each exposes a metadata snapshot and pending `info`; the view
+also exposes a navigation deadline and outcome observer. C and Rust return
+native error details; Python/JavaScript replies return false for stale or
+invalid native replies. All requests run on the engine thread.
 
 ## Tests
 

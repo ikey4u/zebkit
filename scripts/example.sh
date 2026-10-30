@@ -4,6 +4,7 @@
 #
 #   scripts/example.sh linux-basic [URL]          # examples/window.c: a small browser window
 #   scripts/example.sh macos-basic [URL]          # examples/window.c on macOS
+#   scripts/example.sh macos-appkit [switches...] # an AppKit-owned web/PDF window
 #   scripts/example.sh ffmpeg [IN.mp3 [OUT.wav]]  # examples/ffmpeg.cpp: decode with the engine's FFmpeg
 #
 # On Linux it uses dist/release, which scripts/dist.sh release makes (it is
@@ -19,11 +20,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 example="${1:-}"
 [[ $# -gt 0 ]] && shift
 case "$example" in
-    linux-basic|macos-basic|ffmpeg) ;;
-    *) die "usage: $(basename "$0") linux-basic [URL] | macos-basic [URL] | ffmpeg [IN.mp3 [OUT.wav]]" ;;
+    linux-basic|macos-basic|macos-appkit|ffmpeg) ;;
+    *) die "usage: $(basename "$0") linux-basic [URL] | macos-basic [URL] | macos-appkit [switches...] | ffmpeg [IN.mp3 [OUT.wav]]" ;;
 esac
 case "$example-$ZEBKIT_HOST" in
-    linux-basic-linux|macos-basic-macos|ffmpeg-*) ;;
+    linux-basic-linux|macos-basic-macos|macos-appkit-macos|ffmpeg-*) ;;
     *) die "the example '$example' is not for this system ($ZEBKIT_HOST)" ;;
 esac
 
@@ -57,22 +58,28 @@ fi
 # Keep the sandboxed helper and resources in a standard application bundle.
 # This also avoids the helper startup crashes observed with the released
 # framework linked from outside a bare executable's bundle.
-if [[ "$example" == macos-basic ]]; then
-    app="$out/Zebkit Embedded Browser.app"
+if [[ "$example" == macos-* ]]; then
+    app_name="Zebkit Embedded Browser"
+    bundle_id="dev.zebkit.browser.embedded"
+    if [[ "$example" == macos-appkit ]]; then
+        app_name="Zebkit AppKit Host"
+        bundle_id="dev.zebkit.host.appkit"
+    fi
+    app="$out/$app_name.app"
     contents="$app/Contents"
     framework="$contents/Frameworks/Zebkit.framework"
     mkdir -p "$contents/MacOS" "$framework"
     rsync -a --delete "$dist/Zebkit.framework/" "$framework/"
-    python3 - "$contents/Info.plist" <<'PY'
+    python3 - "$contents/Info.plist" "$app_name" "$bundle_id" <<'PY'
 import plistlib
 import sys
 
 with open(sys.argv[1], "wb") as output:
     plistlib.dump({
-        "CFBundleExecutable": "Zebkit Embedded Browser",
-        "CFBundleIdentifier": "dev.zebkit.browser.embedded",
-        "CFBundleName": "Zebkit Embedded Browser",
-        "CFBundleDisplayName": "Zebkit Embedded Browser",
+        "CFBundleExecutable": sys.argv[2],
+        "CFBundleIdentifier": sys.argv[3],
+        "CFBundleName": sys.argv[2],
+        "CFBundleDisplayName": sys.argv[2],
         "CFBundlePackageType": "APPL",
         "CFBundleInfoDictionaryVersion": "6.0",
         "NSHighResolutionCapable": True,
@@ -80,7 +87,7 @@ with open(sys.argv[1], "wb") as output:
         "NSBluetoothAlwaysUsageDescription": "Use a nearby phone or tablet to verify your identity with a passkey.",
     }, output)
 PY
-    binary="$contents/MacOS/Zebkit Embedded Browser"
+    binary="$contents/MacOS/$app_name"
     link=(-F"$contents/Frameworks" -framework Zebkit -Wl,-rpath,@executable_path/../Frameworks)
 fi
 
@@ -88,6 +95,11 @@ case "$example" in
     linux-basic|macos-basic)
         log "building examples/window.c against $dist"
         cc -std=c11 -O1 -Wall -Wextra -o "$binary" "$ZEBKIT_ROOT/examples/window.c" -I"$dist/include" "${link[@]}"
+        ;;
+    macos-appkit)
+        log "building examples/native-host/appkit.mm against $dist"
+        c++ -std=c++17 -fobjc-arc -O1 -Wall -Wextra -o "$binary" \
+            "$ZEBKIT_ROOT/examples/native-host/appkit.mm" -I"$dist/include" -framework Cocoa "${link[@]}"
         ;;
     ffmpeg)
         [[ -f "$dist/include/zebkit/vendor/ffmpeg.h" ]] || die "$dist does not expose FFmpeg"
@@ -99,7 +111,7 @@ case "$example" in
         ;;
 esac
 
-if [[ "$example" == macos-basic ]]; then
+if [[ "$example" == macos-* ]]; then
     # The cross-built archive carries linker signatures, without resource
     # seals. Sign the copied bundles from the inside out using the Mac's
     # codesign; leave the source engine package alone.
@@ -131,7 +143,7 @@ if [[ "$example" != ffmpeg && "$ZEBKIT_HOST" == linux ]] && ! unshare --user tru
     set -- --no-sandbox "$@"
 fi
 log "running $binary $*"
-if [[ "$example" == macos-basic ]]; then
+if [[ "$example" == macos-* ]]; then
     # LaunchServices makes this application responsible for its Bluetooth
     # privacy prompt; a bare exec may make the terminal responsible instead.
     exec open -n -W "$app" --args "$@"

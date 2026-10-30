@@ -24,6 +24,7 @@
 #include "core/fpdfdoc/cpdf_interactiveform.h"
 #include "fpdfsdk/cpdfsdk_formfillenvironment.h"
 #include "fpdfsdk/cpdfsdk_interactiveform.h"
+#include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/widestring.h"
 #include "core/fxge/cfx_renderdevice.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
@@ -44,6 +45,68 @@ bool SetInfo(FPDF_DOCUMENT document, const char* tag, const char* value) {
     return true;
   }
   info->SetNewFor<CPDF_String>(tag, WideString::FromUTF8(value).AsStringView());
+  return true;
+}
+
+namespace {
+
+int BuildOutline(CPDF_Document* pdf, CPDF_Dictionary* parent,
+                 const std::vector<OutlineItem>& items) {
+  RetainPtr<CPDF_Dictionary> previous;
+  int visible = 0;
+  for (const auto& item : items) {
+    auto node = pdf->NewIndirect<CPDF_Dictionary>();
+    node->SetNewFor<CPDF_String>("Title", WideString::FromUTF8(ByteStringView(item.title.data(), item.title.size())).AsStringView());
+    node->SetNewFor<CPDF_Reference>("Parent", pdf, parent->GetObjNum());
+    if (previous) {
+      previous->SetNewFor<CPDF_Reference>("Next", pdf, node->GetObjNum());
+      node->SetNewFor<CPDF_Reference>("Prev", pdf, previous->GetObjNum());
+    } else {
+      parent->SetNewFor<CPDF_Reference>("First", pdf, node->GetObjNum());
+    }
+    if (item.page >= 0) {
+      auto destination = node->SetNewFor<CPDF_Array>("Dest");
+      destination->AppendNew<CPDF_Reference>(pdf, pdf->GetMutablePageDictionary(item.page)->GetObjNum());
+      destination->AppendNew<CPDF_Name>("XYZ");
+      for (auto value : {item.x, item.y, item.zoom}) {
+        if (value) destination->AppendNew<CPDF_Number>(*value);
+        else destination->AppendNew<CPDF_Null>();
+      }
+    } else if (item.url) {
+      auto action = node->SetNewFor<CPDF_Dictionary>("A");
+      action->SetNewFor<CPDF_Name>("S", "URI");
+      action->SetNewFor<CPDF_String>("URI", ByteString(item.url->c_str()));
+    }
+    const int descendants = BuildOutline(pdf, node.Get(), item.children);
+    if (descendants) node->SetNewFor<CPDF_Number>("Count", item.open ? descendants : -descendants);
+    visible += 1 + (item.open ? descendants : 0);
+    previous = std::move(node);
+  }
+  if (previous) parent->SetNewFor<CPDF_Reference>("Last", pdf, previous->GetObjNum());
+  return visible;
+}
+
+}  // namespace
+
+bool SetOutline(FPDF_DOCUMENT document, const std::vector<OutlineItem>& items) {
+  CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(document);
+  if (!pdf || !pdf->GetMutableRoot()) return false;
+  auto valid = [&](auto&& self, const std::vector<OutlineItem>& entries) -> bool {
+    for (const auto& item : entries) {
+      if (item.page >= 0 && !pdf->GetMutablePageDictionary(item.page)) return false;
+      if (!self(self, item.children)) return false;
+    }
+    return true;
+  };
+  if (!valid(valid, items)) return false;
+  if (items.empty()) {
+    pdf->GetMutableRoot()->RemoveFor("Outlines");
+    return true;
+  }
+  auto root = pdf->NewIndirect<CPDF_Dictionary>();
+  root->SetNewFor<CPDF_Name>("Type", "Outlines");
+  root->SetNewFor<CPDF_Number>("Count", BuildOutline(pdf, root.Get(), items));
+  pdf->GetMutableRoot()->SetNewFor<CPDF_Reference>("Outlines", pdf, root->GetObjNum());
   return true;
 }
 

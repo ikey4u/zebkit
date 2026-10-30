@@ -341,7 +341,26 @@ static void s_mp4_check(void) {
 /* The video in a frame of another site, in a process of its own. */
 static void s_frame(void) { evaluate("frame()"); }
 static void s_frame_ready(void) { wait_script("state.frameReady", "true", 10000, "the frame's video loads"); }
-static void s_frame_at(void) { zebkit_view_media_at(view, 500, 90, at_done, NULL); }
+/* Metadata precedes compositor submission for an out-of-process iframe.
+ * Wait for its surface to become hittable instead of assuming that the
+ * loadedmetadata message means the browser has received the surface. */
+static int64_t frame_at_until;
+static void frame_at_poll(void *data);
+static void frame_at_done(zebkit_view *v, const char *json, const char *error, void *data) {
+    if (!error && json && strcmp(json, "null") == 0 && now_us() < frame_at_until) {
+        zebkit_post_delayed_task(frame_at_poll, NULL, 10);
+        return;
+    }
+    at_done(v, json, error, data);
+}
+static void frame_at_poll(void *data) {
+    (void)data;
+    zebkit_view_media_at(view, 500, 90, frame_at_done, NULL);
+}
+static void s_frame_at(void) {
+    frame_at_until = now_us() + 5000000;
+    frame_at_poll(NULL);
+}
 static void s_frame_at_check(void) {
     check(strstr(at_json, "\"main\":false") && strstr(at_json, "\"video\":\"h264\"") &&
               strstr(at_json, "localhost"),

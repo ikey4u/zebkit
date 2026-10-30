@@ -99,6 +99,8 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "zebkit/engine/automation.h"
+#include "zebkit/engine/permission_types.h"
+#include "content/public/browser/embedder_permission_hooks.h"
 #include "zebkit/engine/automation.mojom.h"
 #include "zebkit/engine/automation_context.h"
 #include "zebkit/engine/automation_network.h"
@@ -416,6 +418,21 @@ struct HandleRef {
 
 void WatchDownloads(content::WebContents* contents);
 
+// UI-thread registration IDs are shared by page and context registrations.
+std::string RegistrationId(const base::DictValue& params) {
+  if (const std::string* id = params.FindString("registration"))
+    return *id;
+  static uint64_t next = 0;
+  return "registration" + base::NumberToString(++next);
+}
+
+base::Value RegistrationResult(const std::string& id, const std::string& kind) {
+  base::DictValue result;
+  result.Set("registration", id);
+  result.Set("kind", kind);
+  return base::Value(std::move(result));
+}
+
 // What a context (a profile) has for all its pages: Browser.newContext's
 // options and the BrowserContext commands that change them.
 struct ContextState {
@@ -449,6 +466,10 @@ class Automation : public content::WebContentsObserver,
       widget->RemoveInputEventObserver(this);
       widget->RemoveObserver(this);
     }
+  }
+
+  bool HasBinding(const std::string& name) const {
+    return std::find(exposed_.begin(), exposed_.end(), name) != exposed_.end();
   }
 
   static Automation* For(zebkit_view* view) {
@@ -2544,7 +2565,14 @@ class Automation : public content::WebContentsObserver,
     Settle();
   }
 
-  static base::DictValue ResponseOf(content::NavigationHandle* navigation) {
+  base::DictValue ResponseOf(content::NavigationHandle* navigation) {
+    // What was kept is of an earlier load: these two load nothing.
+    Network* network = navigation->IsSameDocument() || navigation->IsServedFromBackForwardCache()
+        ? nullptr : Network::For(web_contents());
+    if (network) {
+      if (auto response = network->NavigationResponse(navigation->GetURL().spec()))
+        return std::move(*response);
+    }
     base::DictValue response;
     response.Set("url", navigation->GetURL().spec());
     const net::HttpResponseHeaders* headers = navigation->GetResponseHeaders();
@@ -3586,8 +3614,45 @@ class Automation : public content::WebContentsObserver,
   // Page.addInitScript: in every document from now on, before the page's
   // own.
   void AddInitScript(Call* call) {
-    zebkit_view_add_script(call->view(), call->String("source").c_str());
-    call->Done();
+    const std::string id = RegistrationId(call->params());
+    call->view()->AddScript(call->String("source"), base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+           std::string id, const base::DictValue* result, const std::string& error) {
+          if (!self || !call)
+            return;
+          const std::string* native_id = result ? result->FindString("identifier") : nullptr;
+          if (!error.empty() || !native_id) {
+            call->Fail(error.empty() ? "Script registration failed" : error);
+            return;
+          }
+          self->init_scripts_[id] = *native_id;
+          call->Done(RegistrationResult(id, "script"));
+        }, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), id));
+  }
+
+  void RemoveRegistration(Call* call) {
+    const std::string id = call->String("registration");
+    if (auto binding = binding_registrations_.find(id); binding != binding_registrations_.end()) {
+      std::erase(exposed_, binding->second);
+      binding_registrations_.erase(binding);
+      MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+        if (frame->IsRenderFrameLive())
+          Agent(frame)->Expose(exposed_);
+      });
+    }
+    auto script = init_scripts_.find(id);
+    if (script == init_scripts_.end()) {
+      call->Done();
+      return;
+    }
+    base::DictValue params;
+    params.Set("identifier", script->second);
+    init_scripts_.erase(script);
+    call->view()->Send("Page.removeScriptToEvaluateOnNewDocument", std::move(params),
+        base::BindOnce([](base::WeakPtr<Call> call, const base::DictValue*, const std::string& error) {
+          if (!call) return;
+          if (error.empty()) call->Done(); else call->Fail(error);
+        }, call->GetWeakPtr()));
   }
 
   // Page.pdf, as Page.printToPDF prints: "pdf" in base64.
@@ -3718,12 +3783,14 @@ class Automation : public content::WebContentsObserver,
       call->Fail("Function \"" + name + "\" has been already registered");
       return;
     }
+    const std::string id = RegistrationId(call->params());
+    binding_registrations_[id] = name;
     exposed_.push_back(name);
     MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
         Agent(frame)->Expose(exposed_);
     });
-    call->Done();
+    call->Done(RegistrationResult(id, "binding"));
   }
 
   void BindHost(content::RenderFrameHost* frame,
@@ -4494,6 +4561,8 @@ class Automation : public content::WebContentsObserver,
   std::map<std::string, HandleRef> handles_;
   int next_handle_ = 0;
   std::vector<std::string> exposed_;
+  std::map<std::string, std::string> init_scripts_;
+  std::map<std::string, std::string> binding_registrations_;
   bool clock_installed_ = false;
   std::unique_ptr<TraceRecorder> tracing_;
   std::map<Call*, std::string> traced_;
@@ -4577,94 +4646,37 @@ class AutomationDialogs : public DialogObserver {
   }
 };
 
-// Permissions granted with BrowserContext.grantPermissions, for the
-// engine's profile: by origin ("" for every origin). An origin with grants
-// has those and is denied the others, as CDP's Browser.grantPermissions
-// has it.
+// Playwright grants use the same per-profile controller and subscription
+// notifications as CDP, including workers. No global shell permission table.
 class Permissions {
  public:
   static Permissions* Get() {
-    static base::NoDestructor<Permissions> permissions;
-    return permissions.get();
+    static Permissions permissions;
+    return &permissions;
   }
-
-  // Playwright's names (crBrowser.ts's webPermissionToProtocol).
-  static std::optional<blink::PermissionType> TypeOf(const std::string& name) {
-    using P = blink::PermissionType;
-    static const base::NoDestructor<std::map<std::string, P>> kTypes(
-        std::map<std::string, P>{
-            {"geolocation", P::GEOLOCATION},
-            {"midi", P::MIDI},
-            {"midi-sysex", P::MIDI_SYSEX},
-            {"notifications", P::NOTIFICATIONS},
-            {"camera", P::VIDEO_CAPTURE},
-            {"microphone", P::AUDIO_CAPTURE},
-            {"background-sync", P::BACKGROUND_SYNC},
-            {"ambient-light-sensor", P::SENSORS},
-            {"accelerometer", P::SENSORS},
-            {"gyroscope", P::SENSORS},
-            {"magnetometer", P::SENSORS},
-            {"clipboard-read", P::CLIPBOARD_READ_WRITE},
-            {"clipboard-write", P::CLIPBOARD_SANITIZED_WRITE},
-            {"payment-handler", P::PAYMENT_HANDLER},
-            {"storage-access", P::STORAGE_ACCESS_GRANT},
-            {"local-fonts", P::LOCAL_FONTS},
-            {"idle-detection", P::IDLE_DETECTION},
-            {"screen-wake-lock", P::WAKE_LOCK_SCREEN},
-            {"local-network-access", P::LOCAL_NETWORK_ACCESS},
-        });
-    auto found = kTypes->find(name);
-    if (found == kTypes->end())
-      return std::nullopt;
-    return found->second;
-  }
-
-  bool Grant(const base::ListValue& names,
-             const std::string& origin,
+  bool Grant(content::BrowserContext* profile, const base::ListValue& names,
+             const std::string& origin, base::OnceCallback<void(bool)> done,
              std::string* error) {
-    std::set<blink::PermissionType> types;
-    for (const base::Value& name : names) {
-      std::optional<blink::PermissionType> type =
-          name.is_string() ? TypeOf(name.GetString()) : std::nullopt;
-      if (!type) {
-        *error = "Unknown permission: " + (name.is_string() ? name.GetString() : "");
+    std::vector<blink::PermissionType> types;
+    for (const auto& name : names) {
+      auto type = name.is_string() ? PermissionTypeNamed(name.GetString()) : std::nullopt;
+      if (!type || *type == blink::PermissionType::GEOLOCATION_APPROXIMATE) {
+        *error = "Unknown or unsupported permission: " + (name.is_string() ? name.GetString() : std::string());
         return false;
       }
-      types.insert(*type);
+      types.push_back(*type);
     }
-    const std::string key =
-        origin.empty() ? std::string() : url::Origin::Create(GURL(origin)).Serialize();
-    grants_[key].insert(types.begin(), types.end());
-    Install();
+    std::optional<url::Origin> scope;
+    if (!origin.empty()) {
+      scope = url::Origin::Create(GURL(origin));
+      if (scope->opaque()) { *error = "Permission origin must be a non-opaque origin"; return false; }
+    }
+    content::GrantEmbedderContextPermissions(profile, scope, types, std::move(done));
     return true;
   }
-
-  void Clear() { grants_.clear(); }
-
- private:
-  void Install() {
-    if (installed_)
-      return;
-    installed_ = true;
-    content::ShellPermissionManager::SetEmbedderDecision(base::BindRepeating(
-        [](blink::PermissionType type, const GURL& origin)
-            -> std::optional<blink::mojom::PermissionStatus> {
-          const auto& grants = Permissions::Get()->grants_;
-          for (const std::string& key :
-               {url::Origin::Create(origin).Serialize(), std::string()}) {
-            auto found = grants.find(key);
-            if (found == grants.end())
-              continue;
-            return found->second.contains(type)
-                       ? blink::mojom::PermissionStatus::GRANTED
-                       : blink::mojom::PermissionStatus::DENIED;
-          }
-          return std::nullopt;
-        }));
+  void Clear(content::BrowserContext* profile, base::OnceClosure done) {
+    content::ResetEmbedderContextPermissions(profile, std::move(done));
   }
-
-  std::map<std::string, std::set<blink::PermissionType>> grants_;
-  bool installed_ = false;
 };
 
 // Downloads of pages with automation (Playwright's acceptDownloads): saved
@@ -4954,6 +4966,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.screenshot", &A::Screenshot},
           {"Page.setViewportSize", &A::SetViewportSize},
           {"Page.addInitScript", &A::AddInitScript},
+          {"Page.removeRegistration", &A::RemoveRegistration},
           {"Page.pdf", &A::Pdf},
           {"Page.close", &A::Close},
           {"Page.bringToFront", &A::BringToFront},
@@ -5030,17 +5043,17 @@ void WatchDownloads(content::WebContents* contents) {
 void Automation::GrantPermissions(Call* call) {
   std::string error;
   const base::ListValue* names = call->params().FindList("permissions");
-  if (!Permissions::Get()->Grant(names ? names->Clone() : base::ListValue(),
-                                 call->String("origin"), &error)) {
-    call->Fail(error);
-    return;
-  }
-  call->Done();
+  if (!Permissions::Get()->Grant(view_->web_contents()->GetBrowserContext(),
+      names ? names->Clone() : base::ListValue(), call->String("origin"),
+      base::BindOnce([](base::WeakPtr<Call> pending, bool ok) {
+        if (!pending) return;
+        if (ok) pending->Done(); else pending->Fail("Permissions cannot be overridden");
+      }, call->GetWeakPtr()), &error)) call->Fail(error);
 }
 
 void Automation::ClearPermissions(Call* call) {
-  Permissions::Get()->Clear();
-  call->Done();
+  Permissions::Get()->Clear(view_->web_contents()->GetBrowserContext(),
+      base::BindOnce([](base::WeakPtr<Call> pending) { if (pending) pending->Done(); }, call->GetWeakPtr()));
 }
 
 void Automation::Download(Call* call) {
@@ -5094,6 +5107,15 @@ std::string Automation::Registered_IdOf() {
 // colorScheme, reducedMotion, forcedColors, geolocation, permissions,
 // extraHTTPHeaders, offline, httpCredentials, storageState's cookies).
 void NewContext(Call* call) {
+  if (const auto* permissions = call->params().Find("permissions")) {
+    if (!permissions->is_list()) { call->Fail("permissions must be a list"); return; }
+    for (const auto& name : permissions->GetList()) {
+      const auto type = name.is_string() ? PermissionTypeNamed(name.GetString()) : std::nullopt;
+      if (!type || *type == blink::PermissionType::GEOLOCATION_APPROXIMATE) {
+        call->Fail("Unknown or unsupported initial permission"); return;
+      }
+    }
+  }
   zebkit_context* context = zebkit_context_new();
   const std::string id = "x" + base::NumberToString(++Registered().next);
   Registered().contexts[id] = context;
@@ -5113,26 +5135,48 @@ void NewContext(Call* call) {
   state.offline = state.options.FindBool("offline").value_or(false);
   base::DictValue answer;
   answer.Set("context", id);
-  const base::ListValue* cookies =
-      state.options.FindListByDottedPath("storageState.cookies");
-  if (!cookies || cookies->empty()) {
-    call->Done(base::Value(std::move(answer)));
+  auto complete = base::BindOnce(
+      [](base::WeakPtr<Call> pending, content::BrowserContext* profile,
+         base::DictValue options, base::DictValue answer) {
+        if (!pending) return;
+        const auto* cookies = options.FindListByDottedPath("storageState.cookies");
+        if (!cookies || cookies->empty()) {
+          pending->Done(base::Value(std::move(answer)));
+          return;
+        }
+        base::DictValue params;
+        params.Set("cookies", cookies->Clone());
+        ContextAddCookies(profile, params, base::BindOnce(
+            [](base::WeakPtr<Call> call, base::DictValue answer,
+               base::Value, const std::string& error) {
+              if (!call) return;
+              if (!error.empty()) call->Fail(error);
+              else call->Done(base::Value(std::move(answer)));
+            }, pending, std::move(answer)));
+      }, call->GetWeakPtr(), profile, state.options.Clone(), std::move(answer));
+  if (const auto* names = state.options.FindList("permissions"); names && !names->empty()) {
+    std::string error;
+    if (!Permissions::Get()->Grant(profile, *names, std::string(),
+        base::BindOnce([](base::WeakPtr<Call> pending, base::OnceClosure complete, std::string id,
+                          content::BrowserContext* profile, zebkit_context* context, bool ok) {
+          if (!ok) {
+            // The client never gets the id to close it with.
+            Registered().contexts.erase(id);
+            ContextStates().erase(profile);
+            zebkit_context_close(context);
+            if (pending) pending->Fail("Permissions cannot be overridden");
+            return;
+          }
+          if (pending) std::move(complete).Run();
+        }, call->GetWeakPtr(), std::move(complete), id, profile, context), &error)) {
+      Registered().contexts.erase(id);
+      ContextStates().erase(profile);
+      zebkit_context_close(context);
+      call->Fail(error);
+    }
     return;
   }
-  base::DictValue params;
-  params.Set("cookies", cookies->Clone());
-  ContextAddCookies(profile, params,
-                    base::BindOnce(
-                        [](base::WeakPtr<Call> call, base::DictValue answer,
-                           base::Value, const std::string& error) {
-                          if (!call)
-                            return;
-                          if (!error.empty())
-                            call->Fail(error);
-                          else
-                            call->Done(base::Value(std::move(answer)));
-                        },
-                        call->GetWeakPtr(), std::move(answer)));
+  std::move(complete).Run();
 }
 
 // BrowserContext.newPage: a view in the context ("context"; the engine's
@@ -5216,6 +5260,37 @@ void ContextCommand(Call* call) {
   const std::string name = call->Name();
   base::DictValue params = call->params().Clone();
   params.Remove("context");
+  if (name == "exposeBinding") {
+    const std::string* binding = params.FindString("name");
+    if (!binding || binding->empty()) {
+      call->Fail("name: expected a string");
+      return;
+    }
+    bool duplicate = std::any_of(state.replay.begin(), state.replay.end(), [&](const auto& entry) {
+      const std::string* existing = entry.second.FindString("name");
+      return entry.first == "Page.exposeBinding" && existing && *existing == *binding;
+    });
+    for (zebkit_view* view : pages) {
+      if (Automation* automation = Automation::FromWebContents(view->web_contents()))
+        duplicate |= automation->HasBinding(*binding);
+    }
+    if (duplicate) {
+      call->Fail("Function \"" + *binding + "\" has been already registered");
+      return;
+    }
+  }
+  const bool registration = name == "addInitScript" || name == "exposeBinding";
+  if (registration)
+    params.Set("registration", RegistrationId(params));
+  const bool removal = name == "removeRegistration";
+  if (removal) {
+    const std::string* token = params.FindString("registration");
+    std::erase_if(state.replay, [&](const auto& entry) {
+      return token && entry.second.FindString("registration") &&
+             *entry.second.FindString("registration") == *token;
+    });
+  }
+
   auto finish = base::BindOnce(
       [](base::WeakPtr<Call> call, base::Value result, const std::string& error) {
         if (!call)
@@ -5242,17 +5317,16 @@ void ContextCommand(Call* call) {
     std::string error;
     const base::ListValue* names = params.FindList("permissions");
     const std::string* origin = params.FindString("origin");
-    if (!Permissions::Get()->Grant(names ? names->Clone() : base::ListValue(),
-                                   origin ? *origin : std::string(), &error)) {
-      call->Fail(error);
-    } else {
-      call->Done();
-    }
+    if (!Permissions::Get()->Grant(profile, names ? names->Clone() : base::ListValue(),
+        origin ? *origin : std::string(), base::BindOnce([](base::WeakPtr<Call> pending, bool ok) {
+          if (!pending) return;
+          if (ok) pending->Done(); else pending->Fail("Permissions cannot be overridden");
+        }, call->GetWeakPtr()), &error)) call->Fail(error);
     return;
   }
   if (name == "clearPermissions") {
-    Permissions::Get()->Clear();
-    call->Done();
+    Permissions::Get()->Clear(profile,
+        base::BindOnce([](base::WeakPtr<Call> pending) { if (pending) pending->Done(); }, call->GetWeakPtr()));
     return;
   }
   // Kept for the context's pages to come; what is not, a context without
@@ -5272,7 +5346,7 @@ void ContextCommand(Call* call) {
           {"clockSetFixedTime", "BrowserContext.clockSetFixedTime"},
           {"clockSetSystemTime", "BrowserContext.clockSetSystemTime"},
       });
-  std::string method = "BrowserContext." + name;
+  std::string method = removal ? "Page.removeRegistration" : "BrowserContext." + name;
   if (auto replayed = kReplayed->find(name); replayed != kReplayed->end()) {
     method = replayed->second;
     if (name == "setNetworkInterceptionPatterns" ||
@@ -5281,7 +5355,7 @@ void ContextCommand(Call* call) {
                     [&](const auto& entry) { return entry.first == method; });
     }
     state.replay.emplace_back(method, params.Clone());
-  } else if (pages.empty()) {
+  } else if (pages.empty() && !removal) {
     if (name == "setGeolocation") {
       if (const base::DictValue* given = params.FindDict("geolocation")) {
         state.geolocation = content::GeolocationOverride{
@@ -5327,13 +5401,16 @@ void ContextCommand(Call* call) {
   }
   // Context-wide commands go to one page (they act on the whole context);
   // the replayed ones to every page.
-  const bool every = kReplayed->contains(name);
+  const bool every = kReplayed->contains(name) || removal;
   std::vector<zebkit_view*> targets =
       every ? pages
             : std::vector<zebkit_view*>(pages.begin(),
                                         pages.empty() ? pages.begin() : pages.begin() + 1);
   if (targets.empty()) {
-    call->Done();
+    if (registration)
+      call->Done(RegistrationResult(*params.FindString("registration"), name == "addInitScript" ? "script" : "binding"));
+    else
+      call->Done();
     return;
   }
   struct Pending {

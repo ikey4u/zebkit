@@ -14,7 +14,8 @@
 //
 // The view is a content shell window like any other, without a display
 // (--headless): Linux's headless Ozone platform, or on macOS a view in no
-// window. The headless screen's display has the views' scale.
+// window. Linux gives each root a separate headless display. macOS supplies
+// a per-widget screen snapshot before compositor and renderer synchronization.
 //
 // Input goes to the page's widgets as the window's events would
 // (RenderWidgetHost::Forward*), an input method's composition through the
@@ -50,6 +51,7 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/numerics/clamped_math.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
@@ -97,6 +99,11 @@
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/webauthn.h"
 
+#if BUILDFLAG(IS_LINUX)
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
+#endif
+
 #if BUILDFLAG(IS_MAC)
 #include <IOSurface/IOSurfaceRef.h>
 
@@ -104,6 +111,7 @@
 
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/mac/io_surface.h"
+#include "ui/display/screen_infos.h"
 
 #include "zebkit/engine/offscreen_mac.h"
 #else
@@ -326,7 +334,7 @@ class Offscreen : public content::WebContentsObserver,
                  bool precise,
                  zebkit_wheel_phase phase,
                  unsigned modifiers);
-  void SendKey(const zebkit_key_event& event);
+  void SendKey(const zebkit_key_event& event, const std::vector<content::EmbedderEditCommand>& commands = {});
 
   // A frame of @layer, to the application.
   void DeliverFrame(const zebkit_frame* frame) {
@@ -399,8 +407,14 @@ class Offscreen : public content::WebContentsObserver,
   std::optional<gfx::Rect> last_caret_;
   // A mouse button held, so that a drag that leaves the popup stays its.
   bool mouse_in_popup_ = false;
-  // The primary display: the size of the largest view, their scale.
+  // Configure backing displays; macOS overrides the widget snapshot separately.
   void UpdateDisplay();
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+  float own_scale_ = 1;
+#endif
+#if BUILDFLAG(IS_LINUX)
+  std::optional<display::Display> own_display_;
+#endif
   base::WeakPtrFactory<Offscreen> weak_factory_{this};
 };
 
@@ -814,6 +828,22 @@ void OnPopupShown(content::WebContents* contents,
                   content::RenderWidgetHost* popup,
                   const gfx::Rect& bounds);
 
+#if BUILDFLAG(IS_MAC)
+void OnScreenInfos(content::RenderWidgetHost* widget, display::ScreenInfos* infos) {
+  if (!infos || infos->screen_infos.empty()) return;
+  for (const auto& [view, offscreen] : Offscreen::All()) {
+    if (!offscreen->Owns(widget)) continue;
+    auto& current = infos->mutable_current();
+    current.device_scale_factor = offscreen->scale();
+    gfx::Size screen_size = offscreen->size();
+    screen_size.Enlarge(1024, 1024);
+    current.rect.set_size(screen_size);
+    current.available_rect = current.rect;
+    return;
+  }
+}
+#endif
+
 void InstallHooks() {
   static bool installed = false;
   if (installed)
@@ -822,19 +852,23 @@ void InstallHooks() {
   content::EmbedderWidgetHooks hooks = content::GetEmbedderWidgetHooks();
   hooks.cursor_changed = &OnCursorChanged;
   hooks.popup_shown = &OnPopupShown;
+#if BUILDFLAG(IS_MAC)
+  hooks.screen_infos = &OnScreenInfos;
+#endif
   content::SetEmbedderWidgetHooks(hooks);
 }
 
-// The scale of every off-screen view: they are all on the headless
-// screen's primary display, which has their scale and the size of the
-// largest. A display of its own for each, elsewhere than at the origin,
-// could not have a scale of its own: the headless screen places a
-// display's DIPs at its pixels' origin, where a window of another scale is
-// not.
+// Legacy platforms without a per-view backend still share their display scale.
+#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_MAC)
 float g_scale = 1;
+#endif
 
 float Offscreen::scale() const {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+  return own_scale_;
+#else
   return g_scale;
+#endif
 }
 
 Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
@@ -853,6 +887,10 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
   // page, rather than a menu of the system's.
   std::ignore = web_contents()->ForbidExternalPopupMenus().Release();
 #endif
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+  if (scale > 0) own_scale_ = scale;
+  UpdateDisplay();
+#else
   const bool rescale = scale > 0 && scale != g_scale;
   if (scale > 0)
     g_scale = scale;
@@ -861,6 +899,7 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
     for (auto& [other, offscreen] : All())
       offscreen->PlaceWindow();
   }
+#endif
   PlaceWindow();
   AttachMainWidget();
 }
@@ -870,6 +909,10 @@ Offscreen::~Offscreen() {
   if (main_widget_)
     main_widget_->RemoveObserver(this);
   All().erase(view_);
+#if BUILDFLAG(IS_LINUX)
+  if (own_display_)
+    display::HeadlessScreenManager::Get()->RemoveDisplay(own_display_->id());
+#endif
 }
 
 std::map<zebkit_view*, Offscreen*>& Offscreen::All() {
@@ -907,6 +950,38 @@ gfx::Size Offscreen::PixelSize(content::RenderWidgetHostView* view) const {
 }
 
 void Offscreen::UpdateDisplay() {
+#if BUILDFLAG(IS_LINUX)
+  auto* manager = display::HeadlessScreenManager::Get();
+  gfx::Size screen_size = size_;
+  screen_size.Enlarge(1024, 1024);
+  const gfx::Size pixels = gfx::ScaleToCeiledSize(screen_size, own_scale_);
+  gfx::Size reserved = screen_size;
+  reserved.SetToMax(pixels);
+  const bool had_display = own_display_.has_value();
+  gfx::Point origin = had_display ? own_display_->native_origin() : gfx::Point();
+  int right = 0;
+  bool relocate = !had_display;
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
+    if (had_display && display.id() == own_display_->id()) continue;
+    // Headless display origins are shared by DIP and pixel coordinates.
+    // Reserve both extents so fractional scales and large resizes cannot
+    // make a different root host match this view's display.
+    gfx::Rect occupied(display.native_origin(), display.GetSizeInPixel());
+    occupied.Union(display.bounds());
+    right = std::max(right, occupied.right());
+    if (occupied.Intersects(gfx::Rect(origin, reserved))) relocate = true;
+  }
+  if (relocate) origin = gfx::Point(base::ClampAdd(right, 1024), 0);
+  if (!had_display) own_display_ = display::Screen::Get()->GetPrimaryDisplay();
+  headless::SetDisplayGeometry(*own_display_,
+      gfx::Rect(origin, pixels),
+      gfx::Insets(), own_scale_);
+  const auto& displays = display::Screen::Get()->GetAllDisplays();
+  const bool exists = had_display && std::any_of(displays.begin(), displays.end(),
+      [&](const auto& display) { return display.id() == own_display_->id(); });
+  if (exists) manager->UpdateDisplay(*own_display_);
+  else own_display_->set_id(manager->AddDisplay(*own_display_));
+#else
   gfx::Size largest;
   for (auto& [view, offscreen] : All())
     largest.SetToMax(offscreen->size());
@@ -914,23 +989,58 @@ void Offscreen::UpdateDisplay() {
   // does not fit below its <select> in the view still opens below it.
   largest.Enlarge(1024, 1024);
   display::Display display = display::Screen::Get()->GetPrimaryDisplay();
+#if BUILDFLAG(IS_MAC)
+  // Preserve the native density of unrelated headless/window views. Owned
+  // widgets get their independent density through OnScreenInfos instead.
+  const float backing_scale = display.device_scale_factor();
+#else
+  const float backing_scale = g_scale;
+#endif
   headless::SetDisplayGeometry(
-      display, gfx::Rect(gfx::ScaleToCeiledSize(largest, g_scale)),
-      gfx::Insets(), g_scale);
+      display, gfx::Rect(gfx::ScaleToCeiledSize(largest, backing_scale)),
+      gfx::Insets(), backing_scale);
   display::HeadlessScreenManager::Get()->UpdateDisplay(display);
+#endif
 }
 
 void Offscreen::PlaceWindow() {
   // The page the view's size, whatever the window's frame takes; the
   // display gives it its scale.
-  if (content::Shell* shell = view_->shell())
+  if (content::Shell* shell = view_->shell()) {
+#if BUILDFLAG(IS_LINUX)
+    auto pin = [&] {
+      auto* native = web_contents() ? web_contents()->GetNativeView() : nullptr;
+      auto* host = native && native->GetRootWindow() ? native->GetRootWindow()->GetHost() : nullptr;
+      if (host && own_display_) {
+        auto bounds = host->GetBoundsInPixels();
+        if (bounds.origin() != own_display_->native_origin()) {
+          bounds.set_origin(own_display_->native_origin());
+          host->SetBoundsInPixels(bounds);
+        }
+      }
+    };
+    pin();
+#endif
     shell->ResizeWebContentForTests(size_);
+#if BUILDFLAG(IS_LINUX)
+    pin();
+#endif
+  }
 }
 
 void Offscreen::SetSize(const gfx::Size& size, float scale) {
   if (!size.IsEmpty())
     size_ = size;
-  // A new scale is every off-screen view's.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+  if (scale > 0) own_scale_ = scale;
+  UpdateDisplay();
+  PlaceWindow();
+#if BUILDFLAG(IS_MAC)
+  content::NotifyEmbedderWidgetScreenInfoChanged(MainWidget());
+  if (popup_) content::NotifyEmbedderWidgetScreenInfoChanged(popup_);
+#endif
+#else
+  // A new scale is every off-screen view's on this platform.
   const bool rescale = scale > 0 && scale != g_scale;
   if (scale > 0)
     g_scale = scale;
@@ -941,6 +1051,7 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
   } else {
     PlaceWindow();
   }
+#endif
   main_.SetPixelSize(gfx::ScaleToCeiledSize(size_, this->scale()));
 }
 
@@ -954,6 +1065,9 @@ void Offscreen::AttachMainWidget() {
   if (!widget)
     return;
   widget->AddObserver(this);
+#if BUILDFLAG(IS_MAC)
+  content::NotifyEmbedderWidgetScreenInfoChanged(widget);
+#endif
   main_.set_bounds(gfx::Rect(size_));
   if (main_.started())
     main_.Retarget(MainView());
@@ -1095,6 +1209,7 @@ void Offscreen::PopupShown(content::RenderWidgetHost* popup,
   popup_bounds_ = screen;
   popup_bounds_.Offset(-main->GetViewBounds().OffsetFromOrigin());
 #if BUILDFLAG(IS_MAC)
+  content::NotifyEmbedderWidgetScreenInfoChanged(popup);
   if (content::RenderWidgetHostView* view = popup->GetView())
     HideOffscreenPopupWindow(view->GetNativeView());
 #endif
@@ -1377,7 +1492,7 @@ void CopyText(const char* utf8, char16_t* out, size_t cap) {
   memcpy(out, text.data(), std::min(text.size(), cap - 1) * sizeof(char16_t));
 }
 
-void Offscreen::SendKey(const zebkit_key_event& in) {
+void Offscreen::SendKey(const zebkit_key_event& in, const std::vector<content::EmbedderEditCommand>& commands) {
   if (DragTakesKey(view_, in))
     return;
   content::RenderWidgetHost* target = KeyTarget();
@@ -1440,7 +1555,10 @@ void Offscreen::SendKey(const zebkit_key_event& in) {
     // Enter's text is a carriage return, which its keypress needs.
     event.text[0] = event.unmodified_text[0] = '\r';
   }
-  target->ForwardKeyboardEvent(event);
+  if (commands.empty())
+    target->ForwardKeyboardEvent(event);
+  else
+    content::ForwardEmbedderKeyboardEventWithCommands(target, event, commands);
 }
 
 // ---- Cursors ---------------------------------------------------------------
@@ -1678,6 +1796,21 @@ void zebkit_view_send_wheel(zebkit_view* view,
 void zebkit_view_send_key(zebkit_view* view, const zebkit_key_event* event) {
   if (Offscreen* offscreen = Offscreen::Of(view); offscreen && event)
     offscreen->SendKey(*event);
+}
+
+bool zebkit_view_send_key_with_commands(zebkit_view* view, const zebkit_key_event* event,
+                                        const zebkit_edit_command* commands, size_t count) {
+  Offscreen* offscreen = Offscreen::Of(view);
+  if (!offscreen || !event || count > 128 || (count && (!commands || event->type != ZEBKIT_KEY_DOWN)))
+    return false;
+  std::vector<content::EmbedderEditCommand> native;
+  for (size_t i = 0; i < count; ++i) {
+    if (!commands[i].name || !*commands[i].name)
+      return false;
+    native.push_back({commands[i].name, commands[i].value ? commands[i].value : ""});
+  }
+  offscreen->SendKey(*event, native);
+  return true;
 }
 
 void zebkit_view_ime_set_composition(zebkit_view* view,

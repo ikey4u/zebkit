@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8"><title>Permissions</title>
+<script>
+window.geoResult = null;
+window.permissionEvents = [];
+function askGeo() {
+  window.geoResult = 'pending';
+  navigator.geolocation.getCurrentPosition(
+    p => { window.geoResult = {latitude:p.coords.latitude, longitude:p.coords.longitude}; },
+    e => { window.geoResult = {error:e.code}; });
+  return true;
+}
+async function permissionState(name, options={}) {
+  return (await navigator.permissions.query({name,...options})).state;
+}
+async function listenGeo() {
+  window.geoStatus = await navigator.permissions.query({name:'geolocation'});
+  geoStatus.onchange = () => permissionEvents.push(geoStatus.state);
+  return geoStatus.state;
+}
+window.frameResult = null;
+addEventListener('message', event => {
+  if (event.data && event.data.permissionFrame) frameResult = event.data;
+});
+function askFrame(allowed) {
+  document.querySelector('iframe')?.remove();
+  window.frameResult = null;
+  const frame = document.createElement('iframe');
+  if (allowed) frame.allow = 'geolocation';
+  const url = new URL('permissions-frame.html', location.href);
+  if (url.hostname === '127.0.0.1') url.hostname = 'localhost';
+  frame.src = url.href;
+  document.body.append(frame);
+  return true;
+}
+</script><body>Permission test

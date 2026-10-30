@@ -35,3 +35,15 @@ key=00112233445566778899aabbccddeeff kid=0123456789abcdef0123456789abcdef
 ffmpeg -y -v error -i clip.mp4 -map 0:v -c copy -encryption_scheme cenc-aes-ctr \
     -encryption_key "$key" -encryption_kid "$kid" \
     -movflags frag_keyframe+empty_moov+default_base_moof cenc/video.mp4
+
+# Same codec and aspect ratio, smaller resolution, for adaptive captures.
+ffmpeg -y -v error -f lavfi -i "testsrc2=size=160x90:rate=24:duration=4" \
+    -c:v libx264 -preset veryfast -profile:v high -bf 2 -g 24 -keyint_min 24 \
+    -sc_threshold 0 -b:v 60k -pix_fmt yuv420p \
+    -movflags frag_keyframe+empty_moov+default_base_moof+negative_cts_offsets adaptive-small.mp4
+
+# WebM DateUTC provides the UTC corresponding to the source timeline.
+mkdir -p clock
+ffmpeg -y -v error -i tone.webm -c copy \
+    -metadata creation_time=2023-11-14T22:13:20.250000Z clock/date.webm
+# clock/*.m3u8 reference the DASH fragments above, with fixed program dates.

@@ -531,16 +531,31 @@ either:
   dedicated workers.
 - **The recorder, the inspector and `page.pause()`**: Playwright's tools,
   not the browser's; they need Playwright's own server.
-- **`Disposable.dispose()`** of `exposeBinding` and `addInitScript`
-  answers, but the function or script stays until the page (or context)
-  closes: zebkit's page scripts (`zebkit_view_add_script`) cannot be
-  removed yet.
-- **Request timing and sizes** (`Response.timing`, `Request.sizes`) are
-  reported as unknown (-1, 0): the URL loader factory proxy does not see the
-  network's timing.
+- **Request measurements** now use Chromium load timing for the start,
+  DNS, connect, TLS, send, receive and completion phases. A phase unavailable
+  for a reused connection or a synthetic response remains -1. Encoded body
+  sizes come from network completion statistics; header sizes follow the
+  observed HTTP header representation, rather than HTTP/2 or HTTP/3 framing.
+  Upload streams without a known length report -1 for their body size.
 - **Playwright's own test suite** against the endpoint is run in part
   (`tests/engine/playwright_connect.mjs`); the whole suite needs its
   fixtures' servers and is the next step for conformance.
+
+Native `Page.addInitScript`, `Page.exposeBinding` and their context versions
+return `{registration, kind}`. Pass the registration token to
+`Page.removeRegistration` or `BrowserContext.removeRegistration` (with the
+owning context ID) to revoke that registration. Removing an already absent
+token succeeds without changing other registrations. Context binding names
+are checked across current pages before the replay queue is changed.
+
+Initialization-script and exposed-binding registrations returned by the
+Playwright protocol have real disposal. Disposing a script removes its
+Chromium new-document registration; effects already executed in a document
+remain. Disposing a binding removes it from live frames and future documents,
+and saved references reject, including after same-name registration. Context
+disposal also removes the replay entry used for future pages. Linux client
+regressions cover these cases, compressed-response timings and sizes, POST
+uploads, navigation response identity and response-body reads.
 
 ## 6. What it costs now
 

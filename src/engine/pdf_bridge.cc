@@ -352,6 +352,11 @@ Answer Work(zebkit_pdf* pdf,
     }
     return answer;
   }
+  if (method == "setOutline") {
+    if (!zebkit_pdf_set_outline(pdf, JsonArg(args, 0).c_str(), &error))
+      return Failed(error, "the outline cannot be set");
+    return Ok(base::Value());
+  }
   if (method == "outline")
     return Json(zebkit_pdf_outline(pdf, &error), error, "no outline");
   if (method == "links")

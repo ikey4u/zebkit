@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><body>Frame preferences
+<script>
+function report() {
+  parent.postMessage({settingsFrame:true, dark:matchMedia('(prefers-color-scheme: dark)').matches,
+    contrast:matchMedia('(prefers-contrast: more)').matches, motion:matchMedia('(prefers-reduced-motion: reduce)').matches,
+    fontSize:getComputedStyle(document.body).fontSize}, '*');
+}
+for (const query of ['(prefers-color-scheme: dark)', '(prefers-contrast: more)', '(prefers-reduced-motion: reduce)'])
+  matchMedia(query).addEventListener('change', report);
+report();
+</script>

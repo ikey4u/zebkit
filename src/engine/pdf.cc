@@ -19,9 +19,11 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -228,8 +230,11 @@ base::Value Destination(FPDF_DOCUMENT document, FPDF_DEST dest) {
   if (!dest)
     return base::Value(std::move(place));
   const int page = FPDFDest_GetDestPageIndex(document, dest);
-  if (page >= 0)
-    place.Set("page", page);
+  // A dangling destination has no page, and coordinates mean nothing without
+  // one: zebkit_pdf_set_outline() refuses them, as it should.
+  if (page < 0)
+    return base::Value(std::move(place));
+  place.Set("page", page);
   FPDF_BOOL has_x = false, has_y = false, has_zoom = false;
   FS_FLOAT x = 0, y = 0, zoom = 0;
   if (FPDFDest_GetLocationInPage(dest, &has_x, &has_y, &has_zoom, &x, &y,
@@ -271,6 +276,70 @@ void AddAction(FPDF_DOCUMENT document,
     default:
       break;
   }
+}
+
+bool ParseOutline(const base::ListValue& list, int pages, int depth,
+                  size_t* count, std::vector<zebkit::pdf::OutlineItem>* items,
+                  std::string* error) {
+  if (depth > 64 || list.size() > 100000 - *count) {
+    *error = "the outline exceeds 64 levels or 100000 items";
+    return false;
+  }
+  for (const auto& value : list) {
+    if (++*count > 100000 || !value.is_dict()) {
+      *error = "outline items must be objects (at most 100000)"; return false;
+    }
+    const auto& dict = value.GetDict();
+    for (auto entry : dict) {
+      const auto& key = entry.first;
+      if (key != "title" && key != "page" && key != "x" && key != "y" &&
+          key != "zoom" && key != "url" && key != "open" && key != "children") {
+        *error = "unknown outline entry: " + key; return false;
+      }
+    }
+    zebkit::pdf::OutlineItem item;
+    const std::string* title = dict.FindString("title");
+    if (!title || title->size() > 1024 * 1024) {
+      *error = "an outline title must be a string of at most 1 MiB"; return false;
+    }
+    item.title = *title;
+    if (dict.contains("page")) {
+      auto page = dict.FindInt("page");
+      if (!page || *page < 0 || *page >= pages) {
+        *error = "an outline page is outside the document"; return false;
+      }
+      item.page = *page;
+    }
+    if (dict.contains("url")) {
+      const std::string* url = dict.FindString("url");
+      if (!url || url->size() > 1024 * 1024 || url->find('\0') != std::string::npos || item.page >= 0) {
+        *error = "an outline URL must be a string, without page or NUL"; return false;
+      }
+      item.url = *url;
+    }
+    for (auto coordinate : {std::pair{"x", &item.x}, {"y", &item.y}, {"zoom", &item.zoom}}) {
+      if (!dict.contains(coordinate.first)) continue;
+      auto number = dict.FindDouble(coordinate.first);
+      if (item.page < 0 || !number || !std::isfinite(*number) ||
+          std::abs(*number) > std::numeric_limits<float>::max() ||
+          (std::string_view(coordinate.first) == "zoom" && *number < 0)) {
+        *error = "outline coordinates need a page and finite numbers; zoom is nonnegative"; return false;
+      }
+      *coordinate.second = static_cast<float>(*number);
+    }
+    if (dict.contains("open")) {
+      auto open = dict.FindBool("open");
+      if (!open) { *error = "outline open must be a boolean"; return false; }
+      item.open = *open;
+    }
+    if (dict.contains("children")) {
+      const auto* children = dict.FindList("children");
+      if (!children) { *error = "outline children must be an array"; return false; }
+      if (!ParseOutline(*children, pages, depth + 1, count, &item.children, error)) return false;
+    }
+    items->push_back(std::move(item));
+  }
+  return true;
 }
 
 base::ListValue Outline(FPDF_DOCUMENT document,
@@ -1511,6 +1580,23 @@ char* zebkit_pdf_outline(zebkit_pdf* pdf, char** error) {
     return Fail(error, "no document");
   base::AutoLock lock(PdfiumLock());
   return GiveJson(base::Value(Outline(pdf->document, nullptr, 0)));
+}
+
+bool zebkit_pdf_set_outline(zebkit_pdf* pdf, const char* json, char** error) {
+  if (!pdf) return FailFalse(error, "no document");
+  if (!json || strlen(json) > 16 * 1024 * 1024)
+    return FailFalse(error, "the outline must be a JSON array of at most 16 MiB");
+  auto value = base::JSONReader::Read(json, 0, 256);
+  if (!value || !value->is_list()) return FailFalse(error, "the outline is not a JSON array");
+  base::AutoLock lock(PdfiumLock());
+  size_t count = 0;
+  std::vector<zebkit::pdf::OutlineItem> items;
+  std::string message;
+  if (!ParseOutline(value->GetList(), FPDF_GetPageCount(pdf->document), 0, &count, &items, &message))
+    return FailFalse(error, message);
+  if (!zebkit::pdf::SetOutline(pdf->document, items))
+    return FailFalse(error, "the outline target pages cannot be read");
+  return true;
 }
 
 char* zebkit_pdf_links(zebkit_pdf* pdf, int index, char** error) {

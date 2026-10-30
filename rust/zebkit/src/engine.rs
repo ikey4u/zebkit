@@ -1,10 +1,41 @@
 //! Starting the engine, its loop, and running code on its thread.
 
-use crate::{call_once, call_once_for, string_from, sys};
+use crate::{call_once, call_once_for, string_from, sys, Error};
 use std::cell::Cell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::time::Duration;
+
+type WakeupFunction = dyn Fn(Duration) + Send + Sync;
+static WAKEUP: std::sync::Mutex<Option<Box<WakeupFunction>>> = std::sync::Mutex::new(None);
+
+unsafe extern "C" fn on_wakeup(delay_ms: i64, _data: *mut std::ffi::c_void) {
+    let wakeup = WAKEUP.lock().expect("wakeup callback lock");
+    if let Some(function) = wakeup.as_ref() {
+        function(Duration::from_millis(delay_ms.max(0) as u64));
+    }
+}
+
+/// Configures event-driven pumping before initialization, on the main thread.
+/// The callback may run on any engine thread: only queue a host event/timer;
+/// never call zebkit or block. Keep the earliest outstanding deadline, then
+/// consume it before calling [`pump`]. The callback is retained until shutdown.
+pub fn set_wakeup<F: Fn(Duration) + Send + Sync + 'static>(function: F) -> bool {
+    if !unsafe { sys::zebkit_set_wakeup(Some(on_wakeup), std::ptr::null_mut()) } {
+        return false;
+    }
+    *WAKEUP.lock().expect("wakeup callback lock") = Some(Box::new(function));
+    true
+}
+
+/// Removes the scheduling callback before startup. Returns false after startup.
+pub fn clear_wakeup() -> bool {
+    if !unsafe { sys::zebkit_set_wakeup(None, std::ptr::null_mut()) } {
+        return false;
+    }
+    WAKEUP.lock().expect("wakeup callback lock").take();
+    true
+}
 
 thread_local! {
     /// Whether this thread is the engine's: the one in [`run`].
@@ -16,7 +47,7 @@ thread_local! {
 pub(crate) fn require_engine_thread(what: &str) {
     assert!(
         ENGINE_THREAD.with(Cell::get),
-        "zebkit: {what} is for the engine's thread, inside zebkit::run()"
+        "zebkit: {what} requires the engine's initializing thread"
     );
 }
 
@@ -72,6 +103,68 @@ pub fn run<F: FnOnce() + 'static>(ready: F) -> i32 {
     run_with_args(std::env::args_os(), ready)
 }
 
+/// Initializes the engine for an application's own loop. Main thread only,
+/// once per process. After success, create views and call [`pump`] from a
+/// toolkit timer; call [`shutdown`] outside callbacks when finished.
+/// Returns Chromium's nonzero startup code on failure.
+pub fn init<I>(args: I) -> Result<(), i32>
+where
+    I: IntoIterator,
+    I::Item: Into<std::ffi::OsString>,
+{
+    let args: Vec<CString> = args.into_iter().map(|arg| os_c_string(arg.into())).collect();
+    let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
+    let argc = argv.len() as c_int;
+    argv.push(std::ptr::null_mut());
+    let code = unsafe { sys::zebkit_init(argc, argv.as_mut_ptr()) };
+    if code != 0 {
+        return Err(code);
+    }
+    ENGINE_THREAD.with(|engine| engine.set(true));
+    Ok(())
+}
+
+/// Processes currently ready engine and native events without waiting.
+/// False on the wrong thread, outside the engine's life, or inside a callback.
+pub fn pump() -> bool {
+    unsafe { sys::zebkit_pump() }
+}
+
+/// Initializes with strict JSON startup settings, overriding matching argv
+/// switches. See `<zebkit/zebkit.h>` for the supported fields. Invalid settings
+/// are rejected before starting Chromium or opening profile/key/log files.
+pub fn init_with_settings<I>(args: I, settings: &str) -> Result<(), Error>
+where
+    I: IntoIterator,
+    I::Item: Into<std::ffi::OsString>,
+{
+    let settings = CString::new(settings).map_err(|_| Error::new("startup settings contain NUL"))?;
+    let args: Vec<CString> = args.into_iter().map(|arg| os_c_string(arg.into())).collect();
+    let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
+    let argc = argv.len() as c_int;
+    argv.push(std::ptr::null_mut());
+    let mut error = std::ptr::null_mut();
+    let code = unsafe { sys::zebkit_init_with_settings(argc, argv.as_mut_ptr(), settings.as_ptr(), &mut error) };
+    let message = unsafe { crate::take_string(error) };
+    if code != 0 {
+        return Err(Error::new(message.unwrap_or_else(|| format!("engine startup failed: {code}"))));
+    }
+    ENGINE_THREAD.with(|engine| engine.set(true));
+    Ok(())
+}
+
+/// Stops the embedded engine and closes its views, returning to the host.
+/// False on the wrong thread, outside the engine's life, or inside a callback.
+/// Chromium cannot subsequently be initialized again in this process.
+pub fn shutdown() -> bool {
+    if !unsafe { sys::zebkit_shutdown() } {
+        return false;
+    }
+    ENGINE_THREAD.with(|engine| engine.set(false));
+    WAKEUP.lock().expect("wakeup callback lock").take();
+    true
+}
+
 /// [`run`] with arguments of the application's choosing; the first is the
 /// program's name.
 pub fn run_with_args<I, F>(args: I, ready: F) -> i32
@@ -84,13 +177,24 @@ where
     let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
     let argc = argv.len() as c_int;
     argv.push(std::ptr::null_mut());
+    let called = std::rc::Rc::new(Cell::new(false));
+    let ready_called = called.clone();
     let ready = move || {
+        ready_called.set(true);
         ENGINE_THREAD.with(|engine| engine.set(true));
         ready();
     };
     let trampoline = call_once_for(&ready);
     let data = Box::into_raw(Box::new(ready));
-    unsafe { sys::zebkit_main(argc, argv.as_mut_ptr(), Some(trampoline), data.cast()) }
+    let result = unsafe { sys::zebkit_main(argc, argv.as_mut_ptr(), Some(trampoline), data.cast()) };
+    if called.get() {
+        ENGINE_THREAD.with(|engine| engine.set(false));
+    } else {
+        // A failed/rejected startup never transferred the closure to the
+        // trampoline. Reclaim it without changing an existing engine's flag.
+        drop(unsafe { Box::from_raw(data) });
+    }
+    result
 }
 
 #[cfg(unix)]

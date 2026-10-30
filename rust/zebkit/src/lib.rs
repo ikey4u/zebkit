@@ -48,6 +48,7 @@ pub mod automation;
 pub mod cdp;
 mod engine;
 pub mod media;
+pub mod media_tools;
 pub mod offscreen;
 pub mod page;
 pub mod pdf;
@@ -58,12 +59,12 @@ pub mod vendor;
 mod view;
 
 pub use engine::{
-    after, engine_version, is_headless, post, post_after, quit, run, run_with_args, set_cookie_encryption_key,
-    set_cookie_storage, version, CookieStorage,
+    after, clear_wakeup, engine_version, init, init_with_settings, is_headless, post, post_after, pump, quit, run, run_with_args,
+    set_cookie_encryption_key, set_cookie_storage, set_wakeup, shutdown, version, CookieStorage,
 };
 pub use script::Script;
-pub use media::MediaCapture;
-pub use view::{Allow, Call, LoadEvent, View};
+pub use media::{MediaCapture, MediaTap};
+pub use view::{Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.
 pub use zebkit_rs as sys;

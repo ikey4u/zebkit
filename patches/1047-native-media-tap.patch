@@ -1,0 +1,188 @@
+Feature: native media PCM observer, muted rendering lease and stream tracks.
+
+Native PCM observation coexists with captureStream and WebAudio. Muted
+rendering remains enabled while either the page or the native observer
+needs it. The native callback is independent of page-facing CORS copying.
+
+--- a/third_party/blink/public/platform/web_audio_source_provider_impl.h
++++ b/third_party/blink/public/platform/web_audio_source_provider_impl.h
+@@ -90,6 +90,10 @@
+   void SetCopyAudioCallback(CopyAudioCB callback);
+   void ClearCopyAudioCallback();
+ 
++  // Independent native-embedder observer; does not replace captureStream().
++  // Called on the audio thread. Empty callback detaches it.
++  void SetEmbedderAudioCallback(CopyAudioCB callback);
++
+   int RenderForTesting(media::AudioBus* audio_bus);
+ 
+   bool IsAudioBeingCaptured() const;
+@@ -133,6 +137,7 @@
+   base::OnceClosure on_set_client_callback_;
+ 
+   bool has_copy_audio_callback_ = false;
++  bool has_embedder_audio_callback_ = false;
+ 
+   // NOTE: Weak pointers must be invalidated before all other member variables.
+   base::WeakPtrFactory<WebAudioSourceProviderImpl> weak_factory_{this};
+--- a/third_party/blink/public/platform/web_media_capture.h
++++ b/third_party/blink/public/platform/web_media_capture.h
+@@ -33,6 +33,10 @@
+ 
+   virtual Info GetCaptureInfo() const = 0;
+ 
++  // Keep PCM rendering for a native observer even when the element is muted.
++  // Independent of the page's captureStream render-muted request.
++  virtual void SetNativeAudioCapture(bool enabled) = 0;
++
+   // media::Demuxer::SetTap() on the player's demuxer. False when the player
+   // has none (nothing loaded, or media it does not demux).
+   virtual bool SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
+--- a/third_party/blink/public/web/web_media_element.h
++++ b/third_party/blink/public/web/web_media_element.h
+@@ -6,6 +6,7 @@
+ #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
+ 
+ #include <vector>
++#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_track.h"
+ 
+ #include "third_party/blink/public/platform/web_common.h"
+ 
+@@ -13,6 +14,9 @@
+ 
+ class WebElement;
+ class WebDocument;
++
++// Native embedder access to srcObject audio tracks; no script is evaluated.
++BLINK_EXPORT std::vector<WebMediaStreamTrack> GetWebMediaAudioTracks(const WebElement& element);
+ class WebMediaPlayer;
+ 
+ // Whether |element| is an <audio> or <video> element.
+--- a/third_party/blink/renderer/core/exported/web_media_element.cc
++++ b/third_party/blink/renderer/core/exported/web_media_element.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "third_party/blink/public/web/web_element.h"
+ #include "third_party/blink/renderer/core/html/media/html_media_element.h"
++#include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
+ 
+ namespace blink {
+ 
+@@ -22,4 +23,17 @@
+   return media ? media->GetWebMediaPlayer() : nullptr;
+ }
+ 
++std::vector<WebMediaStreamTrack> GetWebMediaAudioTracks(const WebElement& element) {
++  std::vector<WebMediaStreamTrack> tracks;
++  if (element.IsNull()) return tracks;
++  const auto* media = DynamicTo<HTMLMediaElement>(*element.ConstUnwrap<Element>());
++  if (!media) return tracks;
++  auto source = media->GetSrcObjectVariant();
++  auto* stream = std::get_if<MediaStreamDescriptor*>(&source);
++  if (stream && *stream)
++    for (const auto& component : (*stream)->AudioComponents())
++      tracks.emplace_back(component.Get());
++  return tracks;
++}
++
+ }  // namespace blink
+--- a/third_party/blink/renderer/platform/media/web_audio_source_provider_impl.cc
++++ b/third_party/blink/renderer/platform/media/web_audio_source_provider_impl.cc
+@@ -91,6 +91,16 @@
+       }
+     }
+ 
++    if (embedder_copy_required_) {
++      base::AutoLock lock(copy_lock_);
++      if (embedder_audio_callback_) {
++        auto copy = media::AudioBus::Create(audio_bus->channels(), audio_bus->frames());
++        audio_bus->CopyTo(copy.get());
++        embedder_audio_callback_.Run(std::move(copy),
++            static_cast<uint32_t>(media::AudioTimestampHelper::TimeToFrames(delay, sample_rate_)),
++            sample_rate_);
++      }
++    }
+     return num_rendered_frames;
+   }
+ 
+@@ -107,6 +117,12 @@
+     copy_required_ = !callback.is_null();
+     base::AutoLock auto_lock(copy_lock_);
+     copy_audio_bus_callback_ = std::move(callback);
++  }
++
++  void SetEmbedderAudioCallback(CopyAudioCB callback) {
++    base::AutoLock lock(copy_lock_);
++    embedder_audio_callback_ = std::move(callback);
++    embedder_copy_required_ = !embedder_audio_callback_.is_null();
+   }
+ 
+   void TaintOrigin() { origin_tainted_.Set(); }
+@@ -125,7 +141,9 @@
+ 
+   // The vast majority of the time we're operating in passthrough mode. So only
+   // acquire a lock to read |copy_audio_bus_callback_| when necessary.
+-  std::atomic<bool> copy_required_;
++  std::atomic<bool> copy_required_{false};
++  std::atomic<bool> embedder_copy_required_{false};
++  CopyAudioCB embedder_audio_callback_ GUARDED_BY(copy_lock_);
+   base::Lock copy_lock_;
+   CopyAudioCB copy_audio_bus_callback_ GUARDED_BY(copy_lock_);
+ };
+@@ -353,13 +371,18 @@
+   has_copy_audio_callback_ = false;
+ }
+ 
++void WebAudioSourceProviderImpl::SetEmbedderAudioCallback(CopyAudioCB callback) {
++  has_embedder_audio_callback_ = !callback.is_null();
++  tee_filter_->SetEmbedderAudioCallback(std::move(callback));
++}
++
+ int WebAudioSourceProviderImpl::RenderForTesting(media::AudioBus* audio_bus) {
+   return tee_filter_->Render(base::TimeDelta(), base::TimeTicks::Now(), {},
+                              audio_bus);
+ }
+ 
+ bool WebAudioSourceProviderImpl::IsAudioBeingCaptured() const {
+-  return has_copy_audio_callback_ || client_;
++  return has_copy_audio_callback_ || has_embedder_audio_callback_ || client_;
+ }
+ 
+ void WebAudioSourceProviderImpl::OnSetFormat() {
+--- a/third_party/blink/renderer/platform/media/web_media_player_impl.cc
++++ b/third_party/blink/renderer/platform/media/web_media_player_impl.cc
+@@ -1689,7 +1689,14 @@
+ }
+ 
+ void WebMediaPlayerImpl::SetRenderMutedAudio(bool render_muted_audio) {
+-  pipeline_controller_->SetRenderMutedAudio(render_muted_audio);
++  page_render_muted_audio_ = render_muted_audio;
++  pipeline_controller_->SetRenderMutedAudio(page_render_muted_audio_ || native_audio_capture_);
++}
++
++void WebMediaPlayerImpl::SetNativeAudioCapture(bool enabled) {
++  DCHECK(main_task_runner_->BelongsToCurrentThread());
++  native_audio_capture_ = enabled;
++  pipeline_controller_->SetRenderMutedAudio(page_render_muted_audio_ || native_audio_capture_);
+ }
+ 
+ void WebMediaPlayerImpl::OnEncryptedMediaInitData(
+--- a/third_party/blink/renderer/platform/media/web_media_player_impl.h
++++ b/third_party/blink/renderer/platform/media/web_media_player_impl.h
+@@ -335,6 +335,7 @@
+   // WebMediaCapture:
+   WebMediaCapture* GetMediaCapture() override;
+   WebMediaCapture::Info GetCaptureInfo() const override;
++  void SetNativeAudioCapture(bool enabled) override;
+   bool SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
+                      base::TimeDelta from) override;
+   void RequestVideoFrameCallback() override;
+@@ -808,6 +809,8 @@
+   int num_playback_rate_logs_ = 0;
+ 
+   // Set while paused. |paused_time_| is only valid when |paused_| is true.
++  bool native_audio_capture_ = false;
++  bool page_render_muted_audio_ = false;
+   bool paused_ = true;
+   base::TimeDelta paused_time_;
+ 

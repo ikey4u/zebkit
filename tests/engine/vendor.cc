@@ -6,10 +6,12 @@
 #include <string>
 
 #include <zebkit/vendor/sqlite.h>
+#include <zebkit/vendor/freetype.h>
 #include <zebkit/vendor/zlib.h>
 
 namespace zlib = zebkit::vendor::zlib;
 namespace sql = zebkit::vendor::sqlite;
+namespace ft = zebkit::vendor::freetype;
 
 int main() {
     int failures = 0;
@@ -26,5 +28,10 @@ int main() {
     std::cout << (opened ? "ok  " : "FAIL") << " sqlite from C++: sqlite3_open\n";
     failures += !opened;
     sql::sqlite3_close(db);
+    ft::FT_Library font_library = nullptr;
+    const bool font_opened = ft::FT_Init_FreeType(&font_library) == 0;
+    std::cout << (font_opened ? "ok  " : "FAIL") << " freetype from C++: isolated library\n";
+    failures += !font_opened;
+    if (font_opened) ft::FT_Done_FreeType(font_library);
     return failures ? 1 : 0;
 }

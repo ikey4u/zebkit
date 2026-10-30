@@ -189,7 +189,7 @@ static void write_png(const char *path, const struct picture *p) {
 }
 
 static void save(const char *name, int layer) {
-    if (!shots || !last[layer].pixels)
+    if (!shots || !*shots || !last[layer].pixels)
         return;
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s.png", shots, name);

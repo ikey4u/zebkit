@@ -62,34 +62,39 @@ camera and microphone capture, and the device APIs.
 
 ### The library
 
-zebkit fits into the application, not the application into zebkit
-(owner, 2026-10-25). Today it is closer to a base: `zebkit_main()` takes
-over `main()` and runs Chromium's loop, settings are Chromium's command
-line, and on macOS the engine sets the application's delegate, menu bar
-and Dock policy.
+zebkit fits into the application (owner, 2026-10-25). The embedded entry
+now separates startup, host scheduling and teardown; toolkit and native
+window integration below are still required.
 
-- **TODO: `zebkit_init()` and `zebkit_shutdown()`**, from any point of the
-  application's life, in place of `zebkit_main()` as the way in
-  (`zebkit_main()` stays for programs that want the engine's loop).
-- **TODO: the engine in the application's loop**: GTK (GLib's main
-  context), Qt, AppKit (the run loop), Win32 and winit, through one
-  integration point (a file descriptor or a wake-up callback and a
-  `zebkit_pump()`), and the engine on a thread of its own for loops it
-  cannot join. Calls from the application's thread, as today.
-- **TODO: nothing taken from the application.** On macOS no delegate, menu
-  bar or Dock policy of zebkit's unless asked (`zebkit_app_*` becomes
-  opt-in); no signal handlers, crash reporter or log file of the engine's
-  over the application's; the helper program the only process zebkit adds.
-- **TODO: settings as an API**, a struct or JSON given to `zebkit_init()`
-  (profile directory, proxy, cookies, user agent, GPU, logging), with
-  Chromium's switches left as an escape hatch.
-- **TODO: views in the application's own windows and widgets as the main
-  path**: a view attached to a native window or widget handle (`NSView`,
-  GTK widget, `HWND`, Qt `QWindow`), or off-screen with the application
-  drawing its frames, rather than windows of zebkit's.
-- **TODO: examples of integration**: a GTK, a Qt, an AppKit and a winit
-  application each adding a web view and a PDF view to a window of their
-  own.
+- **Implemented foundation: `zebkit_init()`, `zebkit_pump()` and
+  `zebkit_shutdown()`**. `zebkit_set_wakeup()` reports immediate and delayed
+  work from engine threads for an event-driven host loop; the host consumes
+  the earliest deadline and pumps on the initializing thread. `zebkit_main()`
+  remains available. Chromium initializes once per process. C, Rust and
+  Python host-loop tests pass on Linux; macOS runtime validation remains.
+- **Toolkit loop adapters implemented in the examples:** GTK (GLib), Qt,
+  AppKit and winit use wakeup deadlines and pump rather than polling. The
+  Linux GLib regression and GTK/Qt/winit native input tests pass. AppKit
+  runtime validation, a Win32 integration path and a dedicated engine thread
+  for loops the engine cannot join remain open.
+- **Implemented host-state isolation foundation.** Embedded startup skips
+  signal, locale, thread-name, process-title, crash-handler and environment
+  setup; macOS delegate/menu/Dock integration is opt-in. A concurrent
+  signal-handler monitor verifies that startup never temporarily replaces
+  the host handler. Logging is explicit and append-only. Cross-platform
+  runtime validation and toolkit integration remain open.
+- **Implemented: startup settings API**, validated JSON passed to
+  `zebkit_init_with_settings()` for profile, proxy, cookies, user agent,
+  GPU, logging, sandbox, headless mode and macOS application integration.
+  Unknown fields and malformed values fail before file IO. Real HTTP proxy,
+  UA, cookie-key/profile paths, logging and argv precedence tests pass.
+- **Application-owned windows via off-screen views:** `examples/native-host`
+  draws web frames and a PDF view inside GTK, Qt, AppKit and winit windows.
+  The toolkit owns the window and event loop; no engine browser window is
+  created. GTK/Qt/winit drawing, native keyboard/mouse and shutdown passed
+  on Linux. AppKit's source cross-compiles; its runtime validation remains.
+  Native parent-handle embedding and mixed engine-window/off-screen views
+  remain separate compositor/platform work.
 
 ### The engine
 
@@ -127,9 +132,13 @@ and Dock policy.
   `RenderWidgetHostView` of zebkit's own with its own compositor, as
   CEF's and Electron's off-screen views have, would let one process have
   both.
-- **A scale for each view.** The off-screen views of a process share the
-  headless screen's scale; a display of its own for each needs the
-  headless screen to place a display's DIPs apart from its pixels.
+- **Independent scale: Linux foundation implemented.** Separate headless
+  displays and root hosts preserve each view's DPR, CSS layout and frame
+  pixels, including fractional scales. Pixel/DIP space reservation prevents
+  large resizes overlapping other views. Multi-view input/frame regressions,
+  the complete Linux/glibc 2.17 suites and Rust integration pass. The Mac
+  per-widget screen snapshot path is implemented with patch 1053 and compiles;
+  Mac runtime validation remains open.
 - **viz's own IOSurfaces on macOS.** Frames are read back and copied into
   IOSurfaces of the engine's; viz's blit into mappable shared images
   (`ZEBKIT_BUFFERS_GPU`) gives no frame for a page in no window. With it,
@@ -139,25 +148,35 @@ and Dock policy.
   machine has no GPU: it has only been seen to fall back to shared
   memory.
 - **What a window does besides:** drags and drops in and out, the context
-  menu (`ShowContextMenu` to the application), touch, accessibility, and
-  editing commands on macOS (⌘A, ⌘C) as the system sends them.
+  menu (`ShowContextMenu` to the application), touch and accessibility remain.
+  Native editing commands now accompany one key via
+  `zebkit_view_send_key_with_commands` (C and Rust); the AppKit example
+  collects system editing selectors. Word deletion, Unicode command batches
+  and `preventDefault()` pass Linux behavior tests; Mac runtime remains.
 
 ### Media capture
 
-- **Elements outside the document**: `new Audio()` that is never
-  inserted, and media elements inside shadow roots, play but are not
-  listed (an element under the point is found in a shadow root, by
-  `zebkit_view_media_at()`). The players could be listed instead of the
-  elements.
-- **One file through a change of resolution.** An adaptive stream that
-  changes quality during a capture goes on in another file, since a track
-  of MP4 or Matroska has one configuration; H.264 and HEVC could stay in
-  one file with their parameter sets in band (`avc3`, `hev1`).
-- **`zebkit_view_media_at()` in frames of other sites**: it hit-tests the
-  main frame's process, so a video in a cross-site frame is found by the
-  list only.
-- **Live streams' wall-clock times** (HLS's program date, DASH's
-  availability start) are not written into the file.
+- **Elements outside the document: done** (2026-10-29). The inventory
+  uses Blink's weak document-to-media registry: detached `Audio` objects,
+  open/closed and nested shadow roots, stable DOM node IDs without retaining
+  unreachable elements. Active captures retain their element. Held by
+  `tests/engine/media_inventory.py`; the existing capture suite still passes.
+- **One file through a change of resolution: implemented.** Compatible
+  H.264/HEVC configurations use in-band parameter sets (`avc3`, `hev1`) in
+  one MP4. H.264 up/down changes, AAC preservation, decoding and browser
+  replay pass `tests/engine/media_resolution.py`. Incompatible changes and
+  explicit Matroska remain separate files. Real HEVC playback and macOS
+  runtime validation remain (Linux slim does not enable HEVC decoding).
+- **`zebkit_view_media_at()` in frames of other sites: implemented.** Each
+  frame is asked in its own coordinates. Its existing implementation and
+  cross-site assertion in `tests/engine/media.c` were verified on Linux on
+  2026-10-29; the old description of this gap was stale.
+- **Live streams' source UTC: implemented.** Native HLS program dates
+  and WebM DateUTC are propagated through the demuxer; MSE/DASH applications
+  can supply a media/Unix anchor. Piecewise mappings survive buffered date
+  discontinuities and closed gaps, in result JSON and container metadata.
+  Native HLS, buffered jumps, WebM, explicit anchors, opt-out and unknown
+  dates pass Linux regressions; macOS runtime validation remains.
 
 ### Agents
 
@@ -198,8 +217,11 @@ and Dock policy.
   it, as Chrome's viewer does, and `navigator.pdfViewerEnabled` and
   `navigator.plugins` then say what Chrome says. Today both are empty,
   which browserleaks.com shows and bot checks read as a headless browser.
-- **TODO: network quality estimates**: `navigator.connection` reports `rtt`
-  0 and `downlink` 10, fixed values, where Chrome reports measured ones.
+- **Network quality estimates: implemented.** Chromium's network-service
+  estimator now feeds its native tracker and render-process observer, for
+  existing and new renderers. Chromium's 3G and Slow-2G test modes pass
+  `tests/engine/network_quality.py`, with standard web privacy rounding;
+  real-network and macOS runtime validation remain.
 - **The privacy defaults tested on every change**: browserleaks.com's
   checks (WebRTC, permissions, client hints, TLS, JavaScript) in
   scripts/web-bench.sh, against what zebkit's defaults promise.
@@ -221,8 +243,10 @@ and Dock policy.
   `automation_python.py`, `playwright_connect.mjs`,
   `scripts/automation-bench.sh`.
   - **TODO**: Playwright's own test suite against the endpoint;
-    `Disposable.dispose` (exposed bindings and init scripts stay until the
-    page closes); request timing and sizes.
+    official-suite conformance beyond the client smoke tests.
+    `Disposable.dispose` now removes binding/script registrations and context
+    replay entries. Request timing and encoded sizes use Chromium network
+    measurements; compressed responses and POST uploads pass client tests.
 - **TODO: zebkit as an MCP server.** One program, `tools/zebkit-mcp`,
   that gives an AI agent the engine's capabilities as MCP tools, over
   standard input and over HTTP, on Linux and macOS alike. CDP stays for
@@ -370,19 +394,31 @@ and Dock policy.
     its own appearance, keeps an undo history and supplies OCR text, the
     same in C and in JavaScript, with tests for every hook.
 - **PDF, beyond annotations**: trust in a signer's certificate (the chain,
-  revocation), editing the outline, encrypted documents saved with new
-  permissions, form fields renamed, a page's JavaScript actions. PDFium in
+  revocation), encrypted documents saved with new permissions, form fields
+  renamed, a page's JavaScript actions. Outline replacement now supports
+  hierarchy, page positions and URLs through C/Rust/Python/host JavaScript;
+  atomic validation and full/incremental-save regressions pass on Linux. PDFium in
   a sandboxed utility process for pages' documents, as Chrome's printing
   runs it.
 - **Services, later areas**: 2D drawing on Skia's canvas, shaping a line of
-  text, decoding media frames, a key-value store; the desktop's
+  text, decoding media frames; the desktop's
   clipboard, notifications, file dialogs, screens, power and keychain.
-- **FreeType** among the exported libraries.
+- **LevelDB export: implemented** (2026-10-30). The engine's own LevelDB,
+  exported through its C API as `zebkit_vendor_leveldb_*` in `leveldb/c.h`,
+  like the other libraries, with no key-value API of zebkit's beside it.
+  Non-ASCII paths, compaction without the engine's thread pool, binary values,
+  snapshots, batches and iterators pass in `tests/engine/vendor.c`.
+- **FreeType export: implemented** (2026-10-29). The engine's 189 public
+  compiled functions, package-relative macro headers and actual configuration;
+  C/C++ initialization, outline rasterization and TrueType glyph loading pass
+  on Linux and glibc 2.17. macOS framework packaging and C/C++ ARM64
+  cross-linking pass; macOS runtime validation remains.
 - **Bindings** generated from the headers for more languages: Go, C#,
   Node's N-API.
-- **Loading the engine with `dlopen()`** after threads have started (one
-  of `base`'s thread-local pointers goes stale); linking it, or loading it
-  first, is what works now.
+- **Loading after threads have started: implemented on Linux** (2026-10-29).
+  Patch 1045 removes all deferred TLS pointer initializers. ELF audit, C/Python
+  main/worker loops and the glibc 2.17 C regressions pass. Native unloading is
+  not supported; macOS late loading remains to be validated.
 
 ## Decided
 

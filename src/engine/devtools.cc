@@ -50,7 +50,7 @@ std::set<content::DevToolsAgentHostClientChannel*>& Channels() {
 }
 
 bool IsViewSession(content::DevToolsAgentHostClientChannel* channel) {
-  content::DevToolsAgentHostClient* client = channel->GetClient();
+  content::DevToolsAgentHostClient* client = channel->GetRootClient();
   for (zebkit_view* view : zebkit_view::Views()) {
     if (static_cast<content::DevToolsAgentHostClient*>(view) == client)
       return true;

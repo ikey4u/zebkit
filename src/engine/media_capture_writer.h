@@ -7,6 +7,7 @@
 #define ZEBKIT_ENGINE_MEDIA_CAPTURE_WRITER_H_
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,8 @@ namespace zebkit {
 struct CaptureOptions {
   // "mp4", "webm", "mkv", or "" to choose by the codecs and the path.
   std::string format;
+  bool use_source_clock = true;
+  std::optional<base::Time> wall_clock_origin;
   // Gaps longer than this between what was captured (a seek forward) are
   // closed up in the file; zero keeps them.
   base::TimeDelta close_gaps = base::Seconds(1);
@@ -61,6 +64,7 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   void Finish(const std::string& reason, const std::string& error);
 
   // mojom::MediaCaptureSink
+  void OnTimelineOffset(int64_t unix_zero_us, int64_t from_media_us) override;
   void OnAudioConfig(uint32_t track,
                      const media::AudioDecoderConfig& config) override;
   void OnVideoConfig(uint32_t track,
@@ -78,6 +82,7 @@ class CaptureWriter : public mojom::MediaCaptureSink {
     bool keyframe;
     int64_t offset;
     uint32_t size;
+    int64_t clock_origin_us;
   };
   // A track is audio or video from its first configuration on.
   struct Track {
@@ -101,6 +106,7 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   static const media::VideoDecoderConfig* VideoConfig(const Track& track,
                                                       int index);
   void SwitchConfig(uint32_t track, int config);
+  bool CanMergeParts(int first, int next) const;
   // Closes the spool, and deletes it where it still has a name (Windows).
   void CloseSpool();
   void Fail(const std::string& error);
@@ -108,7 +114,7 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   base::DictValue State(const char* state) const;
   void ReportProgress(bool now);
   // Writes part @part; false with @error. @file gets its description.
-  bool WritePart(int part,
+  bool WritePart(const std::vector<int>& source_parts,
                  const base::FilePath& path,
                  base::DictValue* file,
                  std::string* error);
@@ -122,7 +128,11 @@ class CaptureWriter : public mojom::MediaCaptureSink {
   int64_t spool_size_ = 0;
   std::map<uint32_t, Track> tracks_;
   std::vector<Part> parts_;
+  std::map<std::pair<uint32_t, int>, std::vector<uint8_t>> parameter_sets_;
   int current_part_ = 0;
+  int64_t clock_origin_us_ = mojom::kUnknown;
+  int64_t clock_valid_from_us_ = mojom::kUnknown;
+  std::map<int64_t, int64_t> source_clock_origins_;
   std::vector<Packet> packets_;
   bool finished_ = false;
   std::string error_;

@@ -233,6 +233,14 @@ ZEBKIT_API uint8_t *zebkit_pdf_signature_contents(zebkit_pdf *pdf, int index, si
  */
 ZEBKIT_API char *zebkit_pdf_outline(zebkit_pdf *pdf, char **error);
 
+/* Replaces the outline with an array in the format above; [] removes it.
+ * Titles are required; page indices are zero based. Page and URL are mutually
+ * exclusive; x/y/zoom need a page, with zoom >= 0. Unknown keys and invalid
+ * values reject the whole tree before mutation. At most 64 child levels,
+ * 100000 entries and 16 MiB of JSON. Save the document to persist changes.
+ */
+ZEBKIT_API bool zebkit_pdf_set_outline(zebkit_pdf *pdf, const char *json, char **error);
+
 /*
  * The page's links: the link annotations, and addresses written in its
  * text ("detected": true): JSON [{"rect": [l, b, r, t], "page": 2 | "url":

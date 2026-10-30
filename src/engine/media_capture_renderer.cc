@@ -8,6 +8,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_media_capture.h"
+#include "third_party/blink/public/platform/web_audio_source_provider_impl.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/platform/web_time_range.h"
@@ -54,6 +56,7 @@
 #include "url/gurl.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/media_capture.h"
+#include "zebkit/engine/media_tap_renderer.h"
 #include "zebkit/engine/media_capture.mojom.h"
 
 namespace zebkit {
@@ -78,6 +81,11 @@ class Tap : public media::DemuxerTap {
               base::ThreadPool::CreateSequencedTaskRunner({})) {}
 
   mojo::SharedRemote<mojom::MediaCaptureSink>& sink() { return sink_; }
+
+  void OnTimelineOffset(base::Time origin, base::TimeDelta from) override {
+    if (!origin.is_null())
+      sink_->OnTimelineOffset((origin - base::Time::UnixEpoch()).InMicroseconds(), Micros(from));
+  }
 
   void OnAudioConfig(const void* stream,
                      const media::AudioDecoderConfig& config) override {
@@ -210,11 +218,6 @@ std::map<const blink::WebLocalFrame*, Agent*>& Agents() {
   return *agents;
 }
 
-int NextElementId() {
-  static int next = 0;
-  return ++next;
-}
-
 // One for each frame; deletes itself with it.
 class Agent : public content::RenderFrameObserver,
               public mojom::MediaCaptureAgent {
@@ -245,8 +248,9 @@ class Agent : public content::RenderFrameObserver,
     for (auto& [id, capture] : captures_) {
       capture.tap->sink()->OnEnded("the page went away");
     }
+    native_taps_.clear();
     captures_.clear();
-    elements_.clear();
+    known_ids_.clear();
   }
 
   // mojom::MediaCaptureAgent
@@ -255,8 +259,13 @@ class Agent : public content::RenderFrameObserver,
     media::DemuxerTap::KeepForTapsFromNow();
     base::ListValue list;
     blink::WebDocument document = render_frame()->GetWebFrame()->GetDocument();
-    for (const blink::WebElement& element :
-         document.QuerySelectorAll("video, audio")) {
+    auto elements = blink::GetWebMediaElements(document);
+    std::sort(elements.begin(), elements.end(), [](const auto& a, const auto& b) {
+      if (a.IsConnected() != b.IsConnected())
+        return a.IsConnected();
+      return a.GetDomNodeId() < b.GetDomNodeId();
+    });
+    for (const blink::WebElement& element : elements) {
       list.Append(Describe(IdOf(element), element));
     }
     std::move(callback).Run(base::WriteJson(list).value_or("[]"));
@@ -287,7 +296,7 @@ class Agent : public content::RenderFrameObserver,
     if (found.IsNull()) {
       int64_t area = 0;
       for (const blink::WebElement& element :
-           frame->GetDocument().QuerySelectorAll("video, audio")) {
+           blink::GetWebMediaElements(frame->GetDocument())) {
         const gfx::Rect bounds = element.BoundsInWidget();
         if (!gfx::RectF(bounds).Contains(blink_point)) {
           continue;
@@ -315,19 +324,48 @@ class Agent : public content::RenderFrameObserver,
                             base::WriteJson(entry).value_or("null"));
   }
 
+  void StartTap(int32_t id, bool packets, bool video, bool audio,
+                uint32_t fps, uint32_t width, uint32_t height, uint32_t pending,
+                bool buffered, mojo::PendingRemote<mojom::MediaTapSink> sink,
+                StartTapCallback callback) override {
+    if (native_taps_.contains(id) || (packets && captures_.contains(id))) {
+      std::move(callback).Run("the media already has a conflicting capture or tap");
+      return;
+    }
+    auto element = ElementOf(id);
+    if (element.IsNull()) {
+      std::move(callback).Run("no such media element (list the media again)");
+      return;
+    }
+    if (!fps || fps > 60 || !width || width > 4096 || !height || height > 4096 ||
+        pending < 65536 || pending > 67108864) {
+      std::move(callback).Run("invalid media tap limits"); return;
+    }
+    std::string error;
+    auto tap = StartNativeMediaTap(element, packets, video, audio,
+        fps, width, height, pending, buffered, std::move(sink),
+        base::BindOnce(&Agent::OnNativeTapClosed, weak_factory_.GetWeakPtr(), id), &error);
+    if (tap) native_taps_[id] = std::move(tap);
+    std::move(callback).Run(error);
+  }
+
   void Start(int32_t id,
              bool include_buffered,
              mojo::PendingRemote<mojom::MediaCaptureSink> sink,
              StartCallback callback) override {
-    auto element = elements_.find(id);
-    if (element == elements_.end()) {
+    blink::WebElement element = ElementOf(id);
+    if (native_taps_.contains(id) && native_taps_[id]->encoded()) {
+      std::move(callback).Run("the media already has an encoded tap", "null");
+      return;
+    }
+    if (element.IsNull()) {
       std::move(callback).Run("no such media element (list the media again)",
                               "null");
       return;
     }
     const std::string json =
-        base::WriteJson(Describe(id, element->second)).value_or("null");
-    blink::WebMediaPlayer* player = blink::GetWebMediaPlayer(element->second);
+        base::WriteJson(Describe(id, element)).value_or("null");
+    blink::WebMediaPlayer* player = blink::GetWebMediaPlayer(element);
     if (!player) {
       std::move(callback).Run("the element has no media loaded", json);
       return;
@@ -361,7 +399,7 @@ class Agent : public content::RenderFrameObserver,
       std::move(callback).Run("the player is not demuxing anything yet", json);
       return;
     }
-    captures_[id] = {tap, player};
+    captures_[id] = {tap, element, player};
     if (!watch_.IsRunning()) {
       watch_.Start(FROM_HERE, base::Seconds(1),
                    base::BindRepeating(&Agent::Watch, base::Unretained(this)));
@@ -370,8 +408,12 @@ class Agent : public content::RenderFrameObserver,
   }
 
  private:
+  void OnNativeTapClosed(int id) { native_taps_.erase(id); }
+
   struct Capture {
     scoped_refptr<Tap> tap;
+    // Only an active capture retains the element, never an inventory entry.
+    blink::WebElement element;
     // Which player was tapped: an element that loads other media has a
     // new one.
     raw_ptr<blink::WebMediaPlayer, DisableDanglingPtrDetection> player;
@@ -383,24 +425,21 @@ class Agent : public content::RenderFrameObserver,
   }
 
   int IdOf(const blink::WebElement& element) {
-    for (const auto& [id, known] : elements_) {
-      if (known == element) {
-        return id;
-      }
-    }
-    Prune();
-    const int id = NextElementId();
-    elements_[id] = element;
+    const int id = element.GetDomNodeId();
+    known_ids_.insert(id);
     return id;
   }
 
-  // The elements are held, so that an id stays the element's: those taken
-  // out of the document go, unless they are captured (a detached element
-  // plays on), so that the page's garbage is not kept.
-  void Prune() {
-    std::erase_if(elements_, [&](const auto& entry) {
-      return !entry.second.IsConnected() && !captures_.contains(entry.first);
-    });
+  blink::WebElement ElementOf(int id) {
+    if (!known_ids_.contains(id))
+      return blink::WebElement();
+    blink::WebNode node = blink::WebNode::FromDomNodeId(id);
+    if (node.IsNull() || !node.IsElementNode())
+      return blink::WebElement();
+    blink::WebElement element = node.To<blink::WebElement>();
+    if (!blink::IsWebMediaElement(element) || element.GetDocument().GetFrame() != frame_)
+      return blink::WebElement();
+    return element;
   }
 
   base::DictValue Describe(int id, const blink::WebElement& element) {
@@ -455,6 +494,14 @@ class Agent : public content::RenderFrameObserver,
     entry.Set("encrypted", info.encrypted);
     entry.Set("capturable", capture && !info.encrypted);
     entry.Set("capturing", captures_.contains(id));
+    base::DictValue tap;
+    tap.Set("packets", capture && !info.encrypted);
+    tap.Set("recording", capture && !info.encrypted);
+    tap.Set("video", player->HasVideo() && !info.encrypted);
+    tap.Set("audio", player->HasAudio() && !info.encrypted &&
+        (player->GetAudioSourceProvider() || !blink::GetWebMediaAudioTracks(element).empty()));
+    tap.Set("active", native_taps_.contains(id));
+    entry.Set("tap", std::move(tap));
     return entry;
   }
 
@@ -463,9 +510,7 @@ class Agent : public content::RenderFrameObserver,
     if (it == captures_.end()) {
       return;
     }
-    auto element = elements_.find(id);
-    if (element != elements_.end() &&
-        blink::GetWebMediaPlayer(element->second) == it->second.player) {
+    if (blink::GetWebMediaPlayer(it->second.element) == it->second.player) {
       it->second.player->GetMediaCapture()->SetCaptureTap(nullptr,
                                                           media::kNoTimestamp);
     }
@@ -483,12 +528,9 @@ class Agent : public content::RenderFrameObserver,
   // An element that loads other media (a new src) or is removed from its
   // player has none of the capture's any more.
   void Watch() {
-    Prune();
     std::vector<int> ended;
     for (auto& [id, capture] : captures_) {
-      auto element = elements_.find(id);
-      if (element == elements_.end() ||
-          blink::GetWebMediaPlayer(element->second) != capture.player) {
+      if (blink::GetWebMediaPlayer(capture.element) != capture.player) {
         capture.tap->sink()->OnEnded("the element loaded other media");
         ended.push_back(id);
       }
@@ -502,8 +544,9 @@ class Agent : public content::RenderFrameObserver,
   }
 
   const raw_ptr<const blink::WebLocalFrame> frame_;
-  std::map<int, blink::WebElement> elements_;
+  std::set<int> known_ids_;
   std::map<int, Capture> captures_;
+  std::map<int, std::unique_ptr<NativeMediaTap>> native_taps_;
   base::RepeatingTimer watch_;
   mojo::AssociatedReceiverSet<mojom::MediaCaptureAgent> receivers_;
   base::WeakPtrFactory<Agent> weak_factory_{this};

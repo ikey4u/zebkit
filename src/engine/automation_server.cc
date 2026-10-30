@@ -374,11 +374,14 @@ class Connection {
   }
 
   void Initialize(int id);
-  // exposeBinding's and addInitScript's answer: a Disposable. Its dispose()
-  // answers, and what it was for stays until the page or context closes.
-  void ReplyDisposable(int id, const std::string& parent, base::Value) {
+  // A disposable retains the native token and owning page/context.
+  void ReplyDisposable(int id, const std::string& parent, base::Value result) {
+    Object object;
+    object.page = parent;
+    if (result.is_dict())
+      object.data = std::move(result.GetDict());
     base::DictValue answer;
-    answer.Set("disposable", Ref(Create(parent, "Disposable", base::DictValue())));
+    answer.Set("disposable", Ref(Create(parent, "Disposable", base::DictValue(), std::move(object))));
     Reply(id, base::Value(std::move(answer)));
   }
   void Command(int id, const std::string& guid, const std::string& method,
@@ -608,6 +611,7 @@ std::string Connection::RequestGuid(const std::string& page_guid,
   Object object;
   object.id = key;
   object.page = page_guid;
+  object.data = request.Clone();
   Object* page = Find(page_guid);
   const std::string scope = page && !page->context.empty() ? page->context : page_guid;
   const std::string guid = Create(scope, "Request", std::move(initializer), std::move(object));
@@ -618,6 +622,10 @@ std::string Connection::RequestGuid(const std::string& page_guid,
 std::string Connection::ResponseGuid(const std::string& page_guid,
                                      const std::string& request_guid,
                                      const base::DictValue& response) {
+  if (Object* request = Find(request_guid)) {
+    if (const std::string* known = request->data.FindString("response"))
+      return *known;
+  }
   base::DictValue initializer;
   initializer.Set("request", Ref(request_guid));
   const std::string* url = response.FindString("url");
@@ -633,12 +641,13 @@ std::string Connection::ResponseGuid(const std::string& page_guid,
                           "requestStart", "responseStart"}) {
     timing.Set(key, -1.0);
   }
-  initializer.Set("timing", std::move(timing));
-  initializer.Set("fromServiceWorker", false);
+  initializer.Set("timing", response.FindDict("timing") ? response.FindDict("timing")->Clone() : std::move(timing));
+  initializer.Set("fromServiceWorker", response.FindBool("fromServiceWorker").value_or(false));
   Object object;
   Object* request = Find(request_guid);
   object.id = request ? request->id : std::string();
   object.page = page_guid;
+  object.data = response.Clone();
   const std::string guid =
       Create(request_guid, "Response", std::move(initializer), std::move(object));
   if (request)
@@ -916,12 +925,17 @@ void Connection::PageEvent(const std::string& page_guid,
       return;
     base::DictValue ended;
     ended.Set("request", Ref(request));
-    ended.Set("responseEndTiming", -1.0);
+    ended.Set("responseEndTiming", params.FindDouble("responseEndTiming").value_or(-1.0));
     ended.Set("page", Ref(page_guid));
     if (event == "Page.requestFinished") {
       if (Object* object = Find(request)) {
-        if (const std::string* response = object->data.FindString("response"))
+        if (const std::string* response = object->data.FindString("response")) {
           ended.Set("response", Ref(*response));
+          if (Object* response_object = Find(*response)) {
+            if (const base::DictValue* sizes = params.FindDict("sizes"))
+              response_object->data.Set("sizes", sizes->Clone());
+          }
+        }
       }
       Event(context, "requestFinished", std::move(ended));
     } else {
@@ -1527,8 +1541,26 @@ void Connection::Command(int id,
     return;
   }
   if (type == "Disposable") {
-    empty_reply();
-    Dispose(guid);
+    Object* owner = Find(object->page);
+    const std::string* token = object->data.FindString("registration");
+    if (!owner || !token) {
+      empty_reply();
+      Dispose(guid);
+      return;
+    }
+    base::DictValue remove;
+    remove.Set("registration", *token);
+    const bool context = owner->type == "BrowserContext";
+    if (context)
+      remove.Set("context", owner->id);
+    Native(id, context ? nullptr : ViewOf(*owner),
+           context ? "BrowserContext.removeRegistration" : "Page.removeRegistration",
+           std::move(remove), base::BindOnce(
+               [](base::WeakPtr<Connection> self, int id, std::string guid, base::Value) {
+                 if (!self) return;
+                 self->Reply(id, base::Value(base::DictValue()));
+                 self->Dispose(guid);
+               }, weak_factory_.GetWeakPtr(), id, guid));
     return;
   }
   if (type == "Stream") {
@@ -1615,7 +1647,7 @@ void Connection::Command(int id,
       if (const std::string* response = object->data.FindString("response"))
         answer.Set("response", Ref(*response));
     } else if (method == "rawRequestHeaders") {
-      answer.Set("headers", base::ListValue());
+      answer.Set("headers", object->data.FindList("headers") ? object->data.FindList("headers")->Clone() : base::ListValue());
     }
     Reply(id, base::Value(std::move(answer)));
     return;
@@ -1628,16 +1660,17 @@ void Connection::Command(int id,
     }
     base::DictValue answer;
     if (method == "rawResponseHeaders") {
-      answer.Set("headers", base::ListValue());
+      answer.Set("headers", object->data.FindList("headers") ? object->data.FindList("headers")->Clone() : base::ListValue());
     } else if (method == "httpVersion") {
-      answer.Set("value", "HTTP/1.1");
+      const std::string* version = object->data.FindString("httpVersion");
+      answer.Set("value", version ? "HTTP/" + *version : "HTTP/1.1");
     } else if (method == "sizes") {
       base::DictValue sizes;
       for (const char* key : {"requestBodySize", "requestHeadersSize", "responseBodySize",
                               "responseHeadersSize"}) {
         sizes.Set(key, 0);
       }
-      answer.Set("sizes", std::move(sizes));
+      answer.Set("sizes", object->data.FindDict("sizes") ? object->data.FindDict("sizes")->Clone() : std::move(sizes));
     }
     Reply(id, base::Value(std::move(answer)));
     return;

@@ -1,0 +1,34 @@
+Keep rejected user-agent metadata updates atomic.
+
+Validate all client hints before changing browser-side user-agent or language
+state, so a rejected command cannot change headers on the next navigation.
+
+--- a/content/browser/devtools/protocol/emulation_handler.cc
++++ b/content/browser/devtools/protocol/emulation_handler.cc
+@@ -920,11 +920,10 @@
+         "Invalid characters found in acceptLanguage");
+   }
+ 
+-  user_agent_ = user_agent;
+-  accept_language_ = accept_lang;
+-
+-  user_agent_metadata_ = std::nullopt;
+   if (!ua_metadata_override) {
++    user_agent_ = user_agent;
++    accept_language_ = accept_lang;
++    user_agent_metadata_ = std::nullopt;
+     return Response::FallThrough();
+   }
+ 
+@@ -1027,7 +1026,10 @@
+     new_ua_metadata.form_factors.push_back(form_factor);
+   }
+ 
+-  // All checks OK, can update user_agent_metadata_.
++  // Commit every override together. An invalid metadata field must not change
++  // browser-side navigation headers while renderer-side emulation stays old.
++  user_agent_ = user_agent;
++  accept_language_ = accept_lang;
+   user_agent_metadata_.emplace(std::move(new_ua_metadata));
+   return Response::FallThrough();
+ }

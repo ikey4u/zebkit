@@ -17,7 +17,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 profile="${1:-}"
 require_profile "$profile"
 [[ "$(uname)" == Linux ]] || die "glibc is Linux's"
-package="$OUT_DIR/$profile/package"
+package="${ZEBKIT_TEST_PACKAGE:-$OUT_DIR/$profile/package}"
 [[ -f "$package/libzebkit.so.1" ]] || die "no engine in $package; run scripts/package.sh $profile first"
 
 cache="$OUT_DIR/glibc-2.17"
@@ -124,10 +124,14 @@ build() {
         -I"$work/package/include" "$source" "$@" $(engine_link_options "$work/package") -o "$work/$name"
     "$patchelf" --set-interpreter "$loader" "$work/$name"
 }
-for name in vendor services pdf bridge page popup scheme media mode; do
+for name in vendor services pdf bridge page popup scheme media mode hooks certificate http_auth offscreen_scale; do
     build "$name" "$tests/$name.c"
 done
 build api "$tests/api.c" -pthread
+"$clang" -std=c11 -O1 -Wall -Werror --sysroot="$root" --gcc-toolchain="$root/usr" -fuse-ld=lld \
+    -I"$work/package/include" "$tests/late_load.c" -ldl -pthread -o "$work/late-load"
+"$patchelf" --set-interpreter "$loader" "$work/late-load"
+
 
 # What each program needs of glibc, as built.
 newest="$(for file in "$work"/* "$work/package"/*; do
@@ -160,11 +164,15 @@ finished() {
 log "the C library the engine runs on"
 "${system[@]}" "$loader" "$root/usr/lib64/libc.so.6" | head -1
 
-run vendor "$work/vendor"
+run vendor "$work/vendor" "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
 run services "$work/services"
 run pdf "$work/pdf"
 run api "$work/api" "${engine_switches[@]}"
 run mode-headless "$work/mode" "${engine_switches[@]}"
+for owner in main worker; do
+    run "late-load-$owner" "$work/late-load" "$work/package/libzebkit.so.1" "$owner" "${engine_switches[@]}"
+done
+
 
 port="${ENGINE_TEST_PORT:-8797}"
 python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$tests/pages" "$port" > "$work/server.log" 2>&1 &
@@ -176,6 +184,27 @@ ZEBKIT_TEST_BASE="$base" ZEBKIT_TEST_OTHER="http://localhost:$port" ZEBKIT_TEST_
     run bridge "$work/bridge" "${engine_switches[@]}"
 ZEBKIT_TEST_BASE="$base" ZEBKIT_TEST_FILES="$work/page-files" run page "$work/page" "${engine_switches[@]}"
 finished page
+run hooks "$work/hooks" "${engine_switches[@]}"
+run offscreen-scale "$work/offscreen_scale" "${engine_switches[@]}"
+# The Python TLS server uses the host runtime; only its C child gets CentOS libc.
+log "certificate-c"
+if ! limited 180 python3 "$tests/certificate_c.py" "$work/certificate" \
+    "$work/package:$root/usr/lib64" > "$work/certificate.log" 2> "$work/certificate.err"; then
+    failed=1
+    cat "$work/certificate.log"
+    tail -20 "$work/certificate.err"
+else
+    cat "$work/certificate.log"
+fi
+log "http-auth-c"
+if ! limited 180 python3 "$tests/http_auth_c.py" "$work/http_auth" \
+    "$work/package:$root/usr/lib64" > "$work/http-auth.log" 2> "$work/http-auth.err"; then
+    failed=1
+    cat "$work/http-auth.log"
+    tail -20 "$work/http-auth.err"
+else
+    cat "$work/http-auth.log"
+fi
 ZEBKIT_TEST_BASE="$base" run popup "$work/popup" "${engine_switches[@]}"
 finished popup
 ZEBKIT_TEST_BASE="$base" ZEBKIT_TEST_FILES="$work/media-files" \

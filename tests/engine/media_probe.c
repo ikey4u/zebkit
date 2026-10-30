@@ -16,6 +16,16 @@
 
 #include "media_probe.h"
 
+static void json_string(const char *value) {
+    putchar('"');
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p) {
+        if (*p == '"' || *p == '\\') { putchar('\\'); putchar(*p); }
+        else if (*p < 32) printf("\\u%04x", *p);
+        else putchar(*p);
+    }
+    putchar('"');
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s <file>\n", argv[0]);
@@ -23,9 +33,12 @@ int main(int argc, char **argv) {
     }
     probe_t p = probe(argv[1]);
     printf("{\"ok\": %s, \"streams\": %d, \"video\": \"%s\", \"audio\": \"%s\", \"width\": %d, \"height\": %d, "
-           "\"duration\": %.3f, \"videoFrames\": %d, \"audioFrames\": %d, \"errors\": %d}\n",
+           "\"duration\": %.3f, \"videoFrames\": %d, \"audioFrames\": %d, \"errors\": %d, \"minWidth\": %d, \"maxWidth\": %d, \"minHeight\": %d, \"maxHeight\": %d, \"videoTag\": %u",
            p.ok ? "true" : "false", p.streams, p.video ? avcodec_get_name(p.video) : "",
            p.audio ? avcodec_get_name(p.audio) : "", p.width, p.height, p.duration, p.video_frames, p.audio_frames,
-           p.errors);
+           p.errors, p.min_width, p.max_width, p.min_height, p.max_height, p.video_tag);
+    fputs(",\"creationTime\":", stdout); json_string(p.creation_time);
+    fputs(",\"wallClockMetadata\":", stdout); json_string(p.wall_clock);
+    puts("}");
     return p.ok ? 0 : 1;
 }

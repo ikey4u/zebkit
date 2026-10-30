@@ -44,6 +44,9 @@ class Network {
 
   virtual ~Network() = default;
 
+  // The latest intercepted main-resource response for a navigation URL.
+  virtual std::optional<base::DictValue> NavigationResponse(const std::string& url) = 0;
+
   // Page.setNetworkInterceptionPatterns: [{glob}, {regexSource,
   // regexFlags}]; empty for none.
   virtual bool SetPatterns(const base::ListValue& patterns,

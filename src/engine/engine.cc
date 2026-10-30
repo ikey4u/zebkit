@@ -6,6 +6,18 @@
 #endif
 
 #include "zebkit/engine/engine.h"
+
+#if BUILDFLAG(IS_POSIX)
+#include <signal.h>
+#endif
+#include "zebkit/engine/host_loop.h"
+#include "zebkit/engine/startup_settings.h"
+#include "zebkit/engine/settings.h"
+#include "zebkit/engine/permissions.h"
+#include "zebkit/engine/navigation_hooks.h"
+#include "zebkit/engine/certificate_hooks.h"
+#include "zebkit/engine/http_auth.h"
+#include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/page_internal.h"
 
 #include <dlfcn.h>
@@ -23,26 +35,36 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
+#include "base/json/json_writer.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/process/current_process.h"
+#include "base/run_loop.h"
+#include "base/threading/platform_thread.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "components/embedder_support/switches.h"
 #include "net/http/http_util.h"
+#include "net/proxy_resolution/proxy_config.h"
+#include "net/proxy_resolution/proxy_config_with_annotation.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info_with_user_agent.h"
 #include "content/public/app/content_main.h"
+#include "content/public/app/content_main_runner.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/shell/browser/shell.h"
@@ -68,11 +90,20 @@
 #include "content/public/browser/authenticator_request_client_delegate.h"
 #include "zebkit/engine/webauthn.h"
 
+#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#include "dbus/bus.h"
+#endif
+
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_switches.h"
 #endif
 
 namespace zebkit {
+
+// The compatibility entry opts into zebkit's application shell; init does
+// not replace an existing application's delegate, menu bar or Dock policy.
+bool g_external_loop = false;
+bool g_application_integration = false;
 
 // Where libzebkit is: the engine's data files and zebkit-helper are beside
 // it. On macOS, the framework's version directory, which has them inside.
@@ -126,7 +157,9 @@ std::string SwitchValue(int argc, char** argv, const char* name) {
 // The arguments Chromium sees: the application's, and what the engine
 // needs that the application did not say.
 std::vector<std::string> EngineArguments(int argc, char** argv) {
-  std::vector<std::string> args(argv, argv + argc);
+  std::vector<std::string> args;
+  for (int i = 0; i < argc; ++i)
+    args.emplace_back(argv[i]);
   if (args.empty())
     args.push_back("zebkit");
   const base::FilePath library = LibraryDirectory();
@@ -183,7 +216,8 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
   // The log goes to stderr, not to a file beside the executable, which for
   // the engine is in its package, perhaps read-only or shared.
   if (!HasSwitch(argc, argv, switches::kEnableLogging) &&
-      !HasSwitch(argc, argv, switches::kLogFile)) {
+      !HasSwitch(argc, argv, switches::kLogFile) &&
+      !HasSwitch(argc, argv, "disable-logging")) {
     args.push_back(std::string("--") + switches::kEnableLogging + "=stderr");
   }
   args.push_back(std::string("--") + switches::kContentShellHideToolbar);
@@ -246,10 +280,17 @@ int RunContent(int argc, char** argv, MainDelegate* delegate) {
 
 }  // namespace
 
-MainDelegate::MainDelegate(zebkit_task_func ready, void* data)
-    : ready_(ready), data_(data) {}
+MainDelegate::MainDelegate(zebkit_task_func ready, void* data, bool external_loop)
+    : ready_(ready), data_(data), external_loop_(external_loop) {}
 
 MainDelegate::~MainDelegate() = default;
+
+void MainDelegate::ShutdownBrowser() {
+  if (browser_runner_) {
+    browser_runner_->Shutdown();
+    browser_runner_.reset();
+  }
+}
 
 std::optional<int> MainDelegate::BasicStartupComplete() {
   // Chromium finds its data files beside the executable, which for an
@@ -273,7 +314,16 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
         /*create=*/false);
   }
 #endif
-  return content::ShellMainDelegate::BasicStartupComplete();
+  auto result = content::ShellMainDelegate::BasicStartupComplete();
+  const auto& command = *base::CommandLine::ForCurrentProcess();
+  if (command.HasSwitch("disable-logging")) {
+    logging::SetMinLogLevel(logging::LOGGING_FATAL);
+  } else if (command.HasSwitch("log-level")) {
+    int level;
+    if (base::StringToInt(command.GetSwitchValueASCII("log-level"), &level))
+      logging::SetMinLogLevel(level);
+  }
+  return result;
 }
 
 bool MainDelegate::ShouldLoadV8Snapshot(const std::string& process_type) {
@@ -281,6 +331,13 @@ bool MainDelegate::ShouldLoadV8Snapshot(const std::string& process_type) {
   // (zebkit_script_new()), so it needs V8 as a renderer does.
   return process_type.empty() ||
          content::ShellMainDelegate::ShouldLoadV8Snapshot(process_type);
+}
+
+std::optional<int> MainDelegate::PreBrowserMain() {
+  // The shell registers its own NSApplication subclass on macOS. An embedded
+  // engine uses the application's existing NSApplication and native pump.
+  return external_loop_ ? content::ContentMainDelegate::PreBrowserMain()
+                        : content::ShellMainDelegate::PreBrowserMain();
 }
 
 content::ContentClient* MainDelegate::CreateContentClient() {
@@ -318,6 +375,16 @@ std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
   }
   base::CurrentProcess::GetInstance().SetProcessType(
       base::CurrentProcessType::PROCESS_BROWSER);
+  if (external_loop_) {
+    // RunContentProcess's autorelease pool lives on its stack. Nothing in
+    // the externally driven browser may retain it after Initialize returns.
+#if BUILDFLAG(IS_MAC)
+    main_function_params.autorelease_pool = nullptr;
+#endif
+    browser_runner_ = content::BrowserMainRunner::Create();
+    const int result = browser_runner_->Initialize(std::move(main_function_params));
+    return result < 0 ? 0 : (result ? result : 1);
+  }
   std::unique_ptr<content::BrowserMainRunner> runner =
       content::BrowserMainRunner::Create();
   const int exit_code = runner->Initialize(std::move(main_function_params));
@@ -359,6 +426,11 @@ void BrowserClient::AppendExtraCommandLineSwitches(
     int child_process_id) {
   content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line, child_process_id);
+  const auto& process = *base::CommandLine::ForCurrentProcess();
+  for (const char* flag : {"enable-logging", "disable-logging", "log-file", "log-level"}) {
+    if (process.HasSwitch(flag))
+      command_line->AppendSwitchNative(flag, process.GetSwitchValueNative(flag));
+  }
   AppendSchemeSwitch(command_line);
   AppendMediaSwitch(command_line);
 }
@@ -416,6 +488,31 @@ std::string BrowserClient::GetUserAgent() {
 // only while the person acts (a click, a key), not from a timer or on load
 // (blocked_content::ShouldBlockPopup and ConsiderForPopupBlocking, whose
 // rule this is). --disable-popup-blocking lets every one open, as in Chrome.
+void BrowserClient::CreateThrottlesForNavigation(content::NavigationThrottleRegistry& registry) {
+  content::ShellContentBrowserClient::CreateThrottlesForNavigation(registry);
+  AddNavigationPolicyThrottle(registry);
+}
+void BrowserClient::CreateThrottlesForCommitWithoutUrlLoader(content::NavigationThrottleRegistry& registry) {
+  content::ShellContentBrowserClient::CreateThrottlesForCommitWithoutUrlLoader(registry);
+  AddNavigationPolicyThrottle(registry);
+}
+std::vector<std::unique_ptr<content::CommitDeferringCondition>>
+BrowserClient::CreateCommitDeferringConditionsForNavigation(
+    content::NavigationHandle* handle, content::CommitDeferringCondition::NavigationType type) {
+  auto conditions = content::ShellContentBrowserClient::CreateCommitDeferringConditionsForNavigation(handle, type);
+  auto policy = CreateNavigationActivationPolicy(handle,
+      type == content::CommitDeferringCondition::NavigationType::kPrerenderedPageActivation);
+  if (policy) conditions.push_back(std::move(policy));
+  return conditions;
+}
+
+void BrowserClient::OverrideWebPreferences(content::WebContents* contents,
+                                           content::SiteInstance& main_frame_site,
+                                           blink::web_pref::WebPreferences* prefs) {
+  content::ShellContentBrowserClient::OverrideWebPreferences(contents, main_frame_site, prefs);
+  ApplyViewSettings(contents, prefs);
+}
+
 bool BrowserClient::CanCreateWindow(
     content::RenderFrameHost* opener,
     const GURL& opener_url,
@@ -443,15 +540,47 @@ bool BrowserClient::CanCreateWindow(
     default:
       break;
   }
-  if (opens_window && !user_gesture &&
-      !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          embedder_support::kDisablePopupBlocking)) {
+  zebkit_view* view = opener ? ViewOf(content::WebContents::FromRenderFrameHost(opener)) : nullptr;
+  const zebkit_popup_policy policy = zebkit_view_get_popup_policy(view);
+  const bool blocked_by_policy = opens_window &&
+      (policy == ZEBKIT_POPUP_POLICY_BLOCK ||
+       (policy == ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE && !user_gesture));
+  const bool allowed = !blocked_by_policy &&
+      content::ShellContentBrowserClient::CanCreateWindow(
+          opener, opener_url, opener_top_level_frame_url, source_origin,
+          container_type, target_url, referrer, frame_name, disposition, features,
+          user_gesture, opener_suppressed, no_javascript_access);
+  if (opens_window && view && view->on_window_open_event_) {
+    base::DictValue event;
+    event.Set("phase", "decision"); event.Set("allowed", allowed);
+    event.Set("url", target_url.spec()); event.Set("frameName", frame_name);
+    event.Set("userGesture", user_gesture);
+    event.Set("disposition", WindowDispositionName(disposition));
+    event.Set("containerType", static_cast<int>(container_type));
+    event.Set("openerUrl", opener_url.spec());
+    event.Set("topUrl", opener_top_level_frame_url.spec());
+    event.Set("sourceOrigin", source_origin.Serialize());
+    event.Set("referrer", referrer.url.spec());
+    event.Set("openerSuppressed", opener_suppressed);
+    event.Set("features", WindowFeaturesInfo(features));
+    NotifyWindowOpenEvent(view, std::move(event));
+  }
+  if (!allowed) {
+    if (view && view->on_popup_blocked_) {
+      base::DictValue event;
+      event.Set("url", target_url.spec());
+      event.Set("frameName", frame_name);
+      event.Set("userGesture", user_gesture);
+      content::GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(
+              [](base::WeakPtr<zebkit_view> view, std::string json) {
+                if (view && view->on_popup_blocked_)
+                  view->on_popup_blocked_(view.get(), json.c_str(), view->on_popup_blocked_data_);
+              }, view->GetWeakPtr(), base::WriteJson(event).value_or("{}")));
+    }
     return false;
   }
-  return content::ShellContentBrowserClient::CanCreateWindow(
-      opener, opener_url, opener_top_level_frame_url, source_origin,
-      container_type, target_url, referrer, frame_name, disposition, features,
-      user_gesture, opener_suppressed, no_javascript_access);
+  return true;
 }
 
 // The product CDP names in /json/version and Browser.getVersion, as
@@ -502,6 +631,38 @@ void BrowserClient::ConfigureNetworkContextParamsForShell(
   // ("en-US,en;q=0.9"), not the list as it is.
   context_params->accept_language = net::HttpUtil::GenerateAcceptLanguageHeader(
       net::HttpUtil::ExpandLanguageList(AcceptLanguages()));
+  const auto& command = *base::CommandLine::ForCurrentProcess();
+  if (command.HasSwitch("no-proxy-server") || command.HasSwitch("proxy-server") ||
+      command.HasSwitch("proxy-pac-url") || command.HasSwitch("proxy-auto-detect")) {
+    net::ProxyConfig proxy;
+    if (!command.HasSwitch("no-proxy-server")) {
+      if (command.HasSwitch("proxy-server")) {
+        proxy.proxy_rules().ParseFromString(command.GetSwitchValueASCII("proxy-server"));
+        if (command.HasSwitch("proxy-bypass-list"))
+          proxy.proxy_rules().bypass_rules.ParseFromString(command.GetSwitchValueASCII("proxy-bypass-list"));
+      } else if (command.HasSwitch("proxy-pac-url")) {
+        proxy = net::ProxyConfig::CreateFromCustomPacURL(GURL(command.GetSwitchValueASCII("proxy-pac-url")));
+      } else {
+        proxy.set_auto_detect(true);
+      }
+    }
+    static constexpr auto kProxyAnnotation = net::DefineNetworkTrafficAnnotation(
+        "zebkit_application_proxy", R"(
+          semantics {
+            sender: "zebkit embedding application"
+            description: "Network traffic uses the proxy selected by the embedding application."
+            trigger: "The application configures a proxy through startup settings or switches."
+            data: "The requests the application or its pages send."
+            destination: OTHER
+          }
+          policy {
+            cookies_allowed: YES
+            setting: "The embedding application selects the proxy and cookie policy."
+            policy_exception_justification: "An embedding application's own network configuration."
+          })");
+    context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(proxy, kProxyAnnotation);
+    context_params->proxy_config_client_receiver.reset();
+  }
 }
 
 // A browser starts a renderer ahead of the next navigation; an application
@@ -530,6 +691,12 @@ BrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
       CreateNonNetworkNavigationURLLoaderFactory(scheme, frame_tree_node_id);
 }
 
+void BrowserClient::AllowCertificateError(content::WebContents* contents, int error,
+    const net::SSLInfo& info, const GURL& url, bool main_frame, bool strict,
+    base::OnceCallback<void(content::CertificateRequestResultType)> reply) {
+  HandleCertificateError(contents, error, info, url, main_frame, strict, std::move(reply));
+}
+
 std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
     const net::AuthChallengeInfo& auth_info,
     content::WebContents* web_contents,
@@ -542,6 +709,9 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
     bool first_auth_attempt,
     content::GuestPageHolder* guest_page_holder,
     content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
+  if (auto delegate = CreateHttpAuthDelegate(auth_info, web_contents, url,
+          is_request_for_primary_main_frame_navigation, is_request_for_navigation,
+          first_auth_attempt, auth_required_callback)) return delegate;
   if (browser_context) {
     // Only taken when automation answers; otherwise the shell's own.
     auto callback = std::make_shared<
@@ -709,13 +879,18 @@ BrowserMainParts::CreateShellPlatformDelegate() {
 
 #if BUILDFLAG(IS_MAC)
 void BrowserMainParts::PreCreateMainMessageLoop() {
-  SetUpApplication(zebkit_is_headless());
+  if (!g_external_loop || g_application_integration)
+    SetUpApplication(zebkit_is_headless());
 }
 #endif
 
 int BrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   InstallClientHints();
+  InstallPermissionHooks();
+  InstallCertificateHooks();
+  InstallHttpAuthHooks();
+  InstallNavigationHooks();
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
   content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
@@ -734,6 +909,11 @@ int BrowserMainParts::PreMainMessageLoopRun() {
 
 void BrowserMainParts::PostMainMessageLoopRun() {
   CdpStop();
+  StopNetworkQuality();
+  StopNavigationHooks();
+  StopPermissionHooks();
+  StopCertificateHooks();
+  StopHttpAuthHooks();
   CloseAllViews();
   content::Shell::Shutdown();
   content::ShellBrowserMainParts::PostMainMessageLoopRun();
@@ -754,7 +934,71 @@ void ConfigureContext(content::BrowserContext* profile) {
 
 }  // namespace zebkit
 
+namespace {
+
+// Content's normal entry point performs process setup before calling Run(),
+// then immediately shuts down. Keep its state alive for the host's loop;
+// browser teardown must precede the content runner's teardown.
+class EmbeddedRunner : public content::ContentMainRunner {
+ public:
+  int Initialize(content::ContentMainParams params) override {
+    return runner_->Initialize(std::move(params));
+  }
+  void ReInitializeParams(content::ContentMainParams params) override {
+    runner_->ReInitializeParams(std::move(params));
+  }
+  int Run() override { return runner_->Run(); }
+  void Shutdown() override {}
+  void Finish() { runner_.reset(); }
+
+ private:
+  std::unique_ptr<content::ContentMainRunner> runner_ =
+      content::ContentMainRunner::Create();
+};
+
+struct EmbeddedEngine {
+  std::vector<std::string> args;
+  std::vector<const char*> argv;
+  zebkit::MainDelegate delegate{nullptr, nullptr, true};
+  EmbeddedRunner runner;
+  base::PlatformThreadRef thread = base::PlatformThread::CurrentRef();
+  bool pumping = false;
+  bool ready = false;
+};
+
+// Chromium cannot be initialized twice in one process, even after shutdown.
+bool g_engine_started = false;
+EmbeddedEngine* g_embedded = nullptr;
+thread_local bool g_embedded_thread = false;
+
+}  // namespace
+
 extern "C" {
+
+bool zebkit_view_set_popup_policy(zebkit_view* view, zebkit_popup_policy policy) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!view || !view->web_contents() ||
+      (policy != ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE &&
+       policy != ZEBKIT_POPUP_POLICY_ALLOW && policy != ZEBKIT_POPUP_POLICY_BLOCK))
+    return false;
+  view->popup_policy_ = policy;
+  return true;
+}
+
+zebkit_popup_policy zebkit_view_get_popup_policy(zebkit_view* view) {
+  if (view && view->popup_policy_)
+    return *view->popup_policy_;
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(embedder_support::kDisablePopupBlocking)
+      ? ZEBKIT_POPUP_POLICY_ALLOW : ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE;
+}
+
+void zebkit_view_on_popup_blocked(zebkit_view* view, zebkit_popup_blocked_func func, void* data) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!view)
+    return;
+  view->on_popup_blocked_ = func;
+  view->on_popup_blocked_data_ = data;
+}
 
 const char* zebkit_version(void) {
   return ZEBKIT_VERSION;
@@ -771,9 +1015,16 @@ void zebkit_free(void* pointer) {
 }
 
 int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
+  if (g_engine_started || argc < 0 || (argc && !argv))
+    return 1;
+  g_engine_started = true;
 #if BUILDFLAG(IS_MAC)
   zebkit::SetUpBundle(zebkit::LibraryDirectory());
 #endif
+  for (int i = 0; i < argc; ++i) {
+    if (!argv[i])
+      return 1;
+  }
   std::vector<std::string> args = zebkit::EngineArguments(argc, argv);
   if (!zebkit::PrepareCookieStorage(args))
     return 1;
@@ -784,6 +1035,122 @@ int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
   static base::NoDestructor<zebkit::MainDelegate> delegate(ready, data);
   return zebkit::RunContent(static_cast<int>(args.size()), engine_argv.data(),
                             delegate.get());
+}
+
+int zebkit_init(int argc, char** argv) {
+  return zebkit_init_with_settings(argc, argv, nullptr, nullptr);
+}
+
+int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, char** error) {
+  if (error)
+    *error = nullptr;
+  auto fail = [error](const std::string& message) {
+    if (error)
+      *error = strdup(message.c_str());
+    return 1;
+  };
+  if (g_engine_started || argc < 0 || (argc && !argv))
+    return fail("Engine startup was already attempted, or argv is invalid");
+  std::vector<std::string> input;
+  std::vector<std::string> positional;
+  for (int i = 0; i < argc; ++i) {
+    if (!argv[i])
+      return fail("argv contains a null argument");
+    // After "--" nothing is a switch: what is added below has to come before.
+    if (!positional.empty() || !strcmp(argv[i], "--"))
+      positional.emplace_back(argv[i]);
+    else
+      input.emplace_back(argv[i]);
+  }
+  if (input.empty())
+    input.emplace_back("zebkit");
+  bool application_integration = false;
+  std::string problem;
+  if (!zebkit::ApplyStartupSettings(settings_json, &input, &application_integration, &problem))
+    return fail(problem);
+  // Chromium already exposes switches for these two process-wide behaviors.
+  // The rest is controlled by ContentMainParams::preserve_process_state.
+  input.emplace_back("--disable-main-thread-name-override");
+  input.emplace_back("--disable-in-process-stack-traces");
+#if BUILDFLAG(IS_POSIX)
+  // Chromium ignores SIGPIPE in its own signal setup, which an embedded engine
+  // skips; its raw writes (--remote-debugging-pipe to a client that has gone)
+  // would kill the application. A handler the application set is left alone.
+  struct sigaction current = {};
+  if (!sigaction(SIGPIPE, nullptr, &current) && current.sa_handler == SIG_DFL)
+    signal(SIGPIPE, SIG_IGN);
+#endif
+  std::vector<char*> input_argv;
+  for (auto& arg : input)
+    input_argv.push_back(arg.data());
+  input_argv.push_back(nullptr);
+#if BUILDFLAG(IS_MAC)
+  zebkit::SetUpBundle(zebkit::LibraryDirectory());
+#endif
+  auto engine = std::make_unique<EmbeddedEngine>();
+  engine->args = zebkit::EngineArguments(static_cast<int>(input.size()), input_argv.data());
+  engine->args.insert(engine->args.end(), positional.begin(), positional.end());
+  if (!zebkit::PrepareCookieStorage(engine->args))
+    return fail("Cookie storage could not be initialized");
+  if (!zebkit::InstallHostLoop())
+    return fail("The UI message pump factory was already configured");
+  for (const auto& arg : engine->args)
+    engine->argv.push_back(arg.c_str());
+  engine->argv.push_back(nullptr);
+  content::ContentMainParams params(&engine->delegate);
+  params.preserve_process_state = true;
+  params.argc = static_cast<int>(engine->args.size());
+  params.argv = engine->argv.data();
+  g_engine_started = true;
+  zebkit::g_external_loop = true;
+  zebkit::g_application_integration = application_integration;
+#if defined(ZEBKIT_COOKIES_USE_DBUS)
+  dbus::Bus::SetRequireExplicitSessionBusAddress(true);
+#endif
+  const int result = content::RunContentProcess(std::move(params), &engine->runner);
+  if (result != 0) {
+    zebkit::StopHostLoop();
+    engine->delegate.ShutdownBrowser();
+    engine->runner.Finish();
+    if (error)
+      *error = strdup(("Engine initialization failed with exit code " + std::to_string(result)).c_str());
+    return result;
+  }
+  engine->ready = true;
+  g_embedded = engine.release();
+  g_embedded_thread = true;
+  return 0;
+}
+
+bool zebkit_set_wakeup(zebkit_wakeup_func func, void* data) {
+  if (g_engine_started)
+    return false;
+  zebkit::ConfigureHostWakeup(func, data);
+  return true;
+}
+
+bool zebkit_pump(void) {
+  if (!g_embedded_thread || !g_embedded || !g_embedded->ready || g_embedded->pumping ||
+      g_embedded->thread != base::PlatformThread::CurrentRef())
+    return false;
+  g_embedded->pumping = true;
+  base::RunLoop().RunUntilIdle();
+  g_embedded->pumping = false;
+  return true;
+}
+
+bool zebkit_shutdown(void) {
+  if (!g_embedded_thread || !g_embedded || !g_embedded->ready || g_embedded->pumping ||
+      g_embedded->thread != base::PlatformThread::CurrentRef())
+    return false;
+  std::unique_ptr<EmbeddedEngine> engine(g_embedded);
+  g_embedded = nullptr;
+  g_embedded_thread = false;
+  engine->ready = false;
+  zebkit::StopHostLoop();
+  engine->delegate.ShutdownBrowser();
+  engine->runner.Finish();
+  return true;
 }
 
 int zebkit_helper_main(int argc, char** argv) {
@@ -804,11 +1171,15 @@ void zebkit_quit(void) {
   // such as on_close, which the shutdown must not pull out from under it.
   content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, base::BindOnce([] {
                                                  zebkit::CloseAllViews();
-                                                 content::Shell::Shutdown();
+                                                 // Embedded, the application ends
+                                                 // the engine: zebkit_shutdown().
+                                                 if (!g_embedded)
+                                                   content::Shell::Shutdown();
                                                }));
 }
 
 void zebkit_post_task(zebkit_task_func func, void* data) {
+  CHECK(g_engine_started) << "zebkit_post_task() before the engine started";
   content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE,
                                                base::BindOnce(func, data));
 }
@@ -816,6 +1187,7 @@ void zebkit_post_task(zebkit_task_func func, void* data) {
 void zebkit_post_delayed_task(zebkit_task_func func,
                               void* data,
                               uint32_t delay_ms) {
+  CHECK(g_engine_started) << "zebkit_post_delayed_task() before the engine started";
   content::GetUIThreadTaskRunner({})->PostDelayedTask(
       FROM_HERE, base::BindOnce(func, data), base::Milliseconds(delay_ms));
 }

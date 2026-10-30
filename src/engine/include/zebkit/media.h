@@ -30,7 +30,8 @@ extern "C" {
 #endif
 
 /*
- * The <audio> and <video> elements in every frame of the view's page, as
+ * The live <audio> and <video> elements owned by every frame of the view's
+ * page, including detached Audio objects and open/closed shadow trees, as
  * a JSON array to @func (its @error is NULL):
  *
  *     [{"id": "4.12.3",            the media's id for a capture
@@ -51,7 +52,11 @@ extern "C" {
  *       "playing": true, "encrypted": false,
  *       "capturable": true, "capturing": false}]
  *
- * "path" is a CSS selector of the element in its frame's document.
+ * "path" describes the element within its root; a detached or shadow-tree
+ * element cannot be queried from the frame's document with this selector.
+ * Use "id" for captures. IDs remain stable while the element lives; listing
+ * does not retain otherwise unreachable elements. Active captures retain
+ * their element until stopped or its document goes away.
  */
 ZEBKIT_API void zebkit_view_media_list(zebkit_view *view, zebkit_result_func func, void *data);
 
@@ -109,6 +114,11 @@ typedef void (*zebkit_media_capture_func)(zebkit_media_capture *capture, const c
  *   "closeGaps": seconds (1 by default), or false: a gap in what was
  *       captured longer than that (a seek forward) is closed up, so that
  *       the file plays through; the file reports where its gaps were.
+ *   "wallClock": true (default) uses a known source UTC mapping, false
+ *       omits dates. {"mediaTime": 0, "unixTime": 1700000000.25} supplies
+ *       an application mapping, in seconds, for MSE/DASH players. Native
+ *       HLS program dates and WebM DateUTC are used automatically. Unknown
+ *       source dates stay unknown; recording time is never substituted.
  *   "maxBytes": what the capture holds at most (16 GiB by default), and
  *   "maxDuration": seconds of the media at most (no limit by default).
  *       A capture that reaches one ends with an "error" saying so, and
@@ -164,12 +174,23 @@ ZEBKIT_API void zebkit_media_capture_on_progress(zebkit_media_capture *capture, 
  *                             "packets": 360}, ...]}]}
  *
  * "reason" is "stopped", "the page went away", "the element loaded other
- * media", "the player stopped" or "error". A track whose configuration
- * changes while it is captured (another resolution in an adaptive stream,
- * another codec) goes on in another file, "movie-2.mp4", since a track of
- * a file has one: "files" lists them in order. "start" is where the
- * file's first frame is in the media; "gaps" are the stretches of the
- * media closed up in it.
+ * media", "the player stopped" or "error". Compatible H.264/HEVC
+ * resolution changes share an MP4 using in-band parameter sets (avc3/hev1);
+ * its video track reports "sampleEntry" and "resolutions". Other codec,
+ * profile, aspect, color or track changes, and explicit Matroska, produce
+ * another file, "movie-2.mp4". "files" lists them in order. "start" is
+ * where the file's first frame is in the media; "gaps" are stretches of
+ * the media closed up in it.
+ *
+ * When source UTC is known, a file reports "wallClockStart" (UTC ISO 8601)
+ * and "wallClockMapping": {"source": "player" or "application",
+ * "segments": [{"fileTime": 0, "mediaTime": 10,
+ * "unixTime": 1700000010.25, "utc": "2023-11-14T22:13:30.250000Z"}]}.
+ * Each segment maps file seconds to source UTC until the next segment;
+ * discontinuities and closed gaps begin new segments. The same mapping
+ * is embedded as zebkit.wall_clock metadata, with creation_time for the
+ * first sample when known (whole seconds in standard MP4 date headers).
+ * Dates are absent where the source has none.
  */
 ZEBKIT_API void zebkit_media_capture_on_done(zebkit_media_capture *capture, zebkit_media_capture_func func,
                                              void *data);

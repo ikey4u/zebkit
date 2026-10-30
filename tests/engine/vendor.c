@@ -4,7 +4,10 @@
  * pass. scripts/engine-test.sh runs it, and checks that the engine
  * exports none of the libraries' own names. */
 
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include <zebkit/services.h>
@@ -12,6 +15,9 @@
 #include <zebkit/vendor/brotli.h>
 #include <zebkit/vendor/dav1d.h>
 #include <zebkit/vendor/ffmpeg.h>
+#include <zebkit/vendor/freetype.h>
+#include <zebkit/vendor/leveldb.h>
+#include FT_OUTLINE_H
 #include <zebkit/vendor/harfbuzz.h>
 #include <zebkit/vendor/icu.h>
 #include <zebkit/vendor/libjpeg.h>
@@ -231,6 +237,142 @@ static const char pdf[] =
     "trailer << /Root 1 0 R >>\n"
     "%%EOF\n";
 
+static void test_freetype(const char *font_path) {
+    FT_Library library = NULL;
+    int ok = FT_Init_FreeType(&library) == 0;
+    check(ok, "freetype: independent library", NULL);
+    if (!ok) return;
+    FT_Int major = 0, minor = 0, patch = 0;
+    FT_Library_Version(library, &major, &minor, &patch);
+    check(major == FREETYPE_MAJOR && minor == FREETYPE_MINOR && patch == FREETYPE_PATCH,
+          "freetype: headers match the linked library", NULL);
+    FT_Outline outline = {0};
+    ok = FT_Outline_New(library, 4, 1, &outline) == 0;
+    if (ok) {
+        FT_Vector square[] = {{128,128}, {896,128}, {896,896}, {128,896}};
+        memcpy(outline.points, square, sizeof(square));
+        memset(outline.tags, FT_CURVE_TAG_ON, 4);
+        outline.contours[0] = 3;
+        unsigned char pixels[16 * 16] = {0};
+        FT_Bitmap bitmap = {0};
+        bitmap.rows = bitmap.width = bitmap.pitch = 16;
+        bitmap.buffer = pixels;
+        bitmap.num_grays = 256;
+        bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+        FT_BBox bounds = {0};
+        FT_Outline_Get_CBox(&outline, &bounds);
+        ok = FT_Outline_Get_Bitmap(library, &outline, &bitmap) == 0 &&
+             pixels[8 * 16 + 8] > 250 && pixels[0] == 0 && bounds.xMin == 128 && bounds.xMax == 896;
+        FT_Outline_Done(library, &outline);
+    }
+    check(ok, "freetype: outline rasterization and caller-owned bitmap", NULL);
+    if (font_path) {
+        FT_Face face = NULL;
+        ok = FT_New_Face(library, font_path, 0, &face) == 0;
+        if (ok) {
+            ok = FT_Set_Pixel_Sizes(face, 0, 24) == 0 &&
+                 FT_Get_Char_Index(face, 'A') != 0 && FT_Load_Char(face, 'A', FT_LOAD_RENDER) == 0 &&
+                 face->glyph->bitmap.width > 0 && face->glyph->bitmap.rows > 0;
+            FT_Done_Face(face);
+        }
+        check(ok, "freetype: TrueType font loaded and glyph rendered", NULL);
+    }
+    FT_Done_FreeType(library);
+}
+
+// With no engine started: no thread pool for its compactions, the C locale, and
+// a name that is not ASCII.
+static void test_leveldb(void) {
+    char parent[] = "/tmp/zebkit-leveldb-XXXXXX";
+    check(mkdtemp(parent) != NULL, "leveldb: temporary directory", NULL);
+    char path[128];
+    snprintf(path, sizeof(path), "%s/\xE6\x95\xB0\xE6\x8D\xAE", parent);
+
+    leveldb_options_t *options = leveldb_options_create();
+    leveldb_options_set_create_if_missing(options, 1);
+    leveldb_options_set_write_buffer_size(options, 64 * 1024);
+    leveldb_writeoptions_t *sync = leveldb_writeoptions_create();
+    leveldb_writeoptions_set_sync(sync, 1);
+    leveldb_writeoptions_t *async = leveldb_writeoptions_create();
+    leveldb_readoptions_t *read = leveldb_readoptions_create();
+
+    char *error = NULL;
+    leveldb_t *db = leveldb_open(options, path, &error);
+    check(db && !error, "leveldb: opens a non-ASCII path under the C locale", error);
+    if (!db) return;
+
+    leveldb_t *second = leveldb_open(options, path, &error);
+    check(!second && error, "leveldb: a second open is refused by the lock", NULL);
+    if (second) leveldb_close(second);
+    leveldb_free(error);
+    error = NULL;
+
+    // More than the write buffer many times over: flushes and compactions, on
+    // their own thread here.
+    char key[32];
+    char value[1024];
+    memset(value, 'v', sizeof(value));
+    int written = 1;
+    for (int i = 0; i < 2000 && written; i++) {
+        snprintf(key, sizeof(key), "key%06d", i);
+        leveldb_put(db, async, key, strlen(key), value, sizeof(value), &error);
+        written = !error;
+    }
+    check(written, "leveldb: writes through compactions", error);
+    leveldb_free(error);
+    error = NULL;
+
+    const char binary[] = {'a', 0, 'b'};
+    leveldb_put(db, sync, binary, sizeof(binary), binary, sizeof(binary), &error);
+    size_t size = 0;
+    char *got = leveldb_get(db, read, binary, sizeof(binary), &size, &error);
+    check(got && size == sizeof(binary) && !memcmp(got, binary, size), "leveldb: binary keys and values", error);
+    leveldb_free(got);
+
+    const leveldb_snapshot_t *snapshot = leveldb_create_snapshot(db);
+    leveldb_writebatch_t *batch = leveldb_writebatch_create();
+    leveldb_writebatch_put(batch, "batch", 5, "1", 1);
+    leveldb_writebatch_delete(batch, "key000000", 9);
+    leveldb_write(db, sync, batch, &error);
+    leveldb_writebatch_destroy(batch);
+    check(!error, "leveldb: a batch", error);
+
+    got = leveldb_get(db, read, "key000000", 9, &size, &error);
+    check(!got, "leveldb: the batch deleted it", NULL);
+    leveldb_free(got);
+    leveldb_readoptions_t *old = leveldb_readoptions_create();
+    leveldb_readoptions_set_snapshot(old, snapshot);
+    got = leveldb_get(db, old, "key000000", 9, &size, &error);
+    check(got != NULL, "leveldb: the snapshot still has it", NULL);
+    leveldb_free(got);
+    leveldb_readoptions_destroy(old);
+    leveldb_release_snapshot(db, snapshot);
+
+    int count = 0;
+    leveldb_iterator_t *iterator = leveldb_create_iterator(db, read);
+    for (leveldb_iter_seek(iterator, "key", 3); leveldb_iter_valid(iterator); leveldb_iter_next(iterator))
+        count++;
+    leveldb_iter_destroy(iterator);
+    check(count == 1999, "leveldb: an iterator sees every key in order", NULL);
+
+    leveldb_close(db);
+    db = leveldb_open(options, path, &error);
+    check(db && !error, "leveldb: reopens", error);
+    if (db) {
+        got = leveldb_get(db, read, "batch", 5, &size, &error);
+        check(got && size == 1 && *got == '1', "leveldb: a synced write survives closing", error);
+        leveldb_free(got);
+        leveldb_close(db);
+    }
+    leveldb_destroy_db(options, path, &error);
+    check(!error, "leveldb: destroys the database", error);
+    rmdir(parent);
+    leveldb_readoptions_destroy(read);
+    leveldb_writeoptions_destroy(async);
+    leveldb_writeoptions_destroy(sync);
+    leveldb_options_destroy(options);
+}
+
 static void test_pdfium(void) {
     FPDF_InitLibrary();
     FPDF_DOCUMENT document = FPDF_LoadMemDocument(pdf, (int)sizeof(pdf) - 1, NULL);
@@ -269,16 +411,18 @@ static void test_pdfium(void) {
     FPDF_DestroyLibrary();
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     test_zlib();
     test_zstd();
     test_brotli();
     test_boringssl();
+    test_leveldb();
     test_sqlite();
     test_icu();
     test_libxml();
     test_media();
     test_images();
+    test_freetype(argc > 1 ? argv[1] : NULL);
     test_pdfium();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

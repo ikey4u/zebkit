@@ -1,0 +1,37 @@
+Resetting a context's permission overrides does not undo a view's own rules.
+
+patches/1046 made a reset outrank every view rule older than it, so a CDP
+client clearing permissions for one view silently lifted another view's explicit
+denial. A reset only clears overrides: a view's rule loses only to an override
+written after it.
+
+--- a/content/browser/permissions/permission_overrides.cc
++++ b/content/browser/permissions/permission_overrides.cc
+@@ -87,7 +87,7 @@
+   CHECK_NE(value, 0u);
+   return value;
+ }
+-PermissionOverrides::PermissionOverrides() : reset_revision_(NextRevision()) {}
++PermissionOverrides::PermissionOverrides() = default;
+ 
+ PermissionOverrides::~PermissionOverrides() = default;
+ PermissionOverrides::PermissionOverrides(PermissionOverrides&& other) = default;
+@@ -134,7 +134,7 @@
+ uint64_t PermissionOverrides::GetRevision(const url::Origin& requesting,
+     const url::Origin& embedding, blink::PermissionType type) const {
+   const auto* value = FindValue(requesting, embedding, type);
+-  return value ? std::max(value->revision, reset_revision_) : reset_revision_;
++  return value ? value->revision : 0;
+ }
+ std::optional<blink::mojom::PermissionStatus> PermissionOverrides::GetExactStatus(
+     base::optional_ref<const url::Origin> requesting,
+--- a/content/browser/permissions/permission_overrides.h
++++ b/content/browser/permissions/permission_overrides.h
+@@ -137,7 +137,6 @@
+   };
+   const OverrideValue* FindValue(const url::Origin&, const url::Origin&, blink::PermissionType) const;
+   base::flat_map<PermissionKey, OverrideValue> overrides_;
+-  uint64_t reset_revision_;
+ 
+ };
+ 

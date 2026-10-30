@@ -12,11 +12,15 @@ use zebkit::services::{self, Compression, Digest, ImageFormat, UrlPart};
 use zebkit::vendor::ffmpeg;
 use zebkit::pdf::{Document, RenderOptions};
 use zebkit::offscreen::{FrameBuffer, Modifiers, MouseButton, MouseEvent};
-use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View};
+use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View, PermissionState, NavigationAction};
 
 thread_local! {
     static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
     static MEDIA_DONE: Cell<bool> = const { Cell::new(false) };
+    static NAVIGATION_DONE: Cell<bool> = const { Cell::new(false) };
+    static CONSOLE_DONE: Cell<bool> = const { Cell::new(false) };
+    static WINDOW_DONE: Cell<bool> = const { Cell::new(false) };
+    static PERMISSION_DONE: Cell<bool> = const { Cell::new(false) };
     static AUTHENTICATION_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
@@ -101,6 +105,10 @@ fn services() {
         "pdf: an annotation's appearance alone",
         appearance.map(|image| (image.width, image.height)),
     );
+    document.set_outline(r#"[{"title":"Rust book π","page":0,"open":true,"children":[{"title":"Child","url":"https://example.com"}]}]"#).unwrap();
+    let outline = document.outline().unwrap();
+    check(document.set_outline(r#"[{"title":"Invalid","page":9}]"#).is_err()
+        && document.outline().unwrap() == outline, "pdf: invalid outline replacement is atomic", ());
     let saved = document.save(false).unwrap();
     let mut again = Document::open(&saved, None).unwrap();
     check(
@@ -113,6 +121,7 @@ fn services() {
         "pdf: render, search, annotate, save",
         &found,
     );
+    check(again.outline().unwrap() == outline, "pdf: edited outline persists", again.outline());
     check(Document::open(b"not a pdf", None).is_err(), "pdf: what is not a PDF is refused", ());
     let areas = again.redact(0, Some("[[5, 30, 70, 65]]"), 0x0000_00ff);
     check(
@@ -204,6 +213,105 @@ fn engine(page_port: u16) {
 
     // A page that calls the application and shows the answer in its title.
     let view = View::new(None, 800, 600);
+    check(view.set_settings(r#"{"colorScheme":"dark","reducedMotion":true}"#).is_ok()
+        && view.settings().is_some_and(|json| json.contains("dark") && json.contains("true")),
+        "view settings: native preferences", view.settings());
+    let settings_before = view.settings();
+    check(view.set_settings(r#"{"colorScheme":"light","javaScript":5}"#).is_err()
+        && view.set_settings("{}\0{}").is_err() && view.settings() == settings_before,
+        "view settings: invalid updates are atomic", view.settings());
+    check(view.set_settings(r#"{"colorScheme":null,"reducedMotion":null}"#).is_ok()
+        && view.settings().as_deref() == Some("{}"), "view settings: reset", view.settings());
+
+    let console = View::new(None, 240, 120);
+    let closing_console = console.clone();
+    console.on_console(move |json| {
+        check(json.contains("\"message\":\"Rust console\"") && json.contains("\"level\":\"warning\""),
+            "console: native document message", json);
+        closing_console.clear_console_handler();
+        closing_console.close();
+        CONSOLE_DONE.with(|done| done.set(true));
+    });
+    console.evaluate("console.warn('Rust console'); true", |_| {});
+
+    let popup = View::new(None, 240, 120);
+    check(popup.window_open_info().as_deref() == Some("{}"), "window: ordinary view has no creation snapshot", ());
+    popup.set_popup_policy(zebkit::PopupPolicy::Allow);
+    popup.on_window_open(move |child, url| {
+        let metadata = child.window_open_info().unwrap_or_default();
+        check(url == "about:blank" && metadata.contains("\"hasX\":true")
+            && metadata.contains("\"hasOpener\":true") && child.target_id().is_some(),
+            "window: actual child creation snapshot", &metadata);
+        child.close();
+    });
+    let closing_popup = popup.clone();
+    popup.on_window_open_event(move |json| {
+        if !json.contains("\"phase\":\"created\"") { return; }
+        check(json.contains("\"targetId\"") && json.contains("\"frameName\":\"child\""),
+            "window: unified creation observer", json);
+        closing_popup.clear_window_open_event_handler();
+        closing_popup.close();
+        WINDOW_DONE.with(|done| done.set(true));
+    });
+    let popup_port = serve("<script>window.open('about:blank','child','left=0,top=0,width=320,height=240')</script>");
+    popup.load_url(&format!("http://127.0.0.1:{popup_port}/"));
+
+    let navigation = View::new(None, 240, 120);
+    check(!navigation.set_navigation_timeout(0) && navigation.set_navigation_timeout(5000),
+        "navigation: deadline validation", ());
+    let responding = navigation.clone();
+    navigation.on_navigation(move |request| {
+        check(request.info().as_deref() == Some(request.metadata()), "navigation: request metadata", request.metadata());
+        check(request.respond(NavigationAction::Redirect("not a URL")).is_err()
+            && request.respond(NavigationAction::Redirect("https://invalid.test/\0suffix")).is_err()
+            && request.info().is_some(), "navigation: invalid reply preserves request", ());
+        let response = request.metadata().contains("\"phase\":\"response\"");
+        check(request.respond(if response { NavigationAction::Cancel } else { NavigationAction::Continue }).is_ok()
+            && request.info().is_none() && request.respond(NavigationAction::Continue).is_err(),
+            "navigation: reply exactly once", ());
+        if response { responding.clear_navigation_handler(); }
+    });
+    let finished_navigation = navigation.clone();
+    navigation.on_navigation_result(move |json| {
+        if !json.contains("\"phase\":\"response\"") { return; }
+        check(json.contains("\"action\":\"cancel\"") && json.contains("answered"),
+            "navigation: asynchronous outcome", json);
+        finished_navigation.clear_navigation_result_handler();
+        finished_navigation.close();
+        NAVIGATION_DONE.with(|done| done.set(true));
+    });
+    let navigation_port = serve("<title>Rust navigation response</title>");
+    navigation.load_url(&format!("http://127.0.0.1:{navigation_port}/"));
+
+    let permission_origin = format!("http://127.0.0.1:{page_port}");
+    check(view.set_permission("geolocation", PermissionState::Denied, Some(&permission_origin)).is_ok()
+        && view.permission("geolocation", Some(&permission_origin)) == Some(PermissionState::Denied),
+        "permission: Rust native rule", ());
+    check(view.set_permission("geolocation\0notifications", PermissionState::Granted, Some(&permission_origin)).is_err()
+        && view.permission("geolocation", Some(&permission_origin)) == Some(PermissionState::Denied),
+        "permission: reject NUL atomically", ());
+    check(view.reset_permissions(None).is_ok() && !view.set_permission_timeout(0)
+        && view.set_permission_timeout(5000), "permission: reset and deadline", ());
+    let prompt = View::new(None, 200, 100);
+    let callback_view = prompt.clone();
+    prompt.on_permission(move |request| {
+        check(request.info().as_deref() == Some(request.metadata()) && request.metadata().contains("requestingOrigin"),
+            "permission: request metadata", request.metadata());
+        check(request.respond(PermissionState::Denied, false)
+            && !request.respond(PermissionState::Granted, false) && request.info().is_none(),
+            "permission: reply exactly once", ());
+        callback_view.clear_permission_handler();
+    });
+    let finished = prompt.clone();
+    prompt.on_permission_result(move |json| {
+        check(json.contains("answered") && json.contains("denied"), "permission: asynchronous outcome", json);
+        finished.clear_permission_result_handler();
+        finished.close();
+        PERMISSION_DONE.with(|done| done.set(true));
+    });
+    let permission_port = serve("<script>navigator.geolocation.getCurrentPosition(()=>{},()=>{});</script>");
+    prompt.load_url(&format!("http://127.0.0.1:{permission_port}/"));
+
     let origin = format!("http://127.0.0.1:{page_port}");
     view.grant(&origin, Allow::APP | Allow::CRYPTO, None);
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -315,10 +423,27 @@ fn offscreen() {
         view.on_title(move |title| {
             if title == "clicked" {
                 check(true, "a click sent to the off-screen view", ());
-                page(view2.clone());
+                editing(view2.clone());
             }
         });
     }
+}
+
+fn editing(view: View) {
+    use zebkit::offscreen::{EditCommand, KeyEvent, KeyEventType};
+    view.set_focus(true);
+    let prepared = view.clone();
+    view.evaluate("(()=>{const t=document.createElement('textarea');t.value='old';document.body.append(t);t.focus();window.editKeys=0;t.addEventListener('keydown',()=>editKeys++);return true})()", move |result| {
+        check(result.as_deref() == Ok("true"), "native editing: prepare input", &result);
+        let key = KeyEvent { kind: KeyEventType::Down, modifiers: Modifiers::NONE,
+            key_code: 0, native_key_code: 0, code: None, key: None, text: None, unmodified_text: None };
+        check(prepared.send_key_with_commands(&key, &[EditCommand { name: "SelectAll", value: None },
+            EditCommand { name: "InsertText", value: Some("Rust Ω") }]), "native editing: send command batch", ());
+        when_true(prepared, "document.querySelector('textarea').value === 'Rust Ω' && window.editKeys === 1", 40, |view| {
+            check(true, "native editing: Unicode and one keydown", ());
+            page(view);
+        });
+    });
 }
 
 /// A host can disable UI inside an authentication callback, receive its
@@ -528,7 +653,7 @@ fn script_and_cdp(view: View) {
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
-            || !AUTHENTICATION_DONE.with(Cell::get) {
+            || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

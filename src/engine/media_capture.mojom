@@ -25,6 +25,8 @@ struct MediaPacket {
 
 // The browser's end of a capture, bound on the thread that writes it.
 interface MediaCaptureSink {
+  // Unix microseconds represented by presentation timestamp zero.
+  OnTimelineOffset(int64 unix_zero_us, int64 from_media_us);
   // A track's configuration: before its first packet, and again when it
   // changes.
   OnAudioConfig(uint32 track, media.mojom.AudioDecoderConfig config);
@@ -37,6 +39,11 @@ interface MediaCaptureSink {
 // The renderer's side, one for each frame. Closing the sink stops a
 // capture.
 interface MediaCaptureAgent {
+  StartTap(int32 element, bool packets, bool video, bool audio,
+           uint32 max_fps, uint32 max_width, uint32 max_height,
+           uint32 max_pending_bytes, bool include_buffered,
+           pending_remote<MediaTapSink> sink) => (string error);
+
   // The frame's <audio> and <video> elements as a JSON array.
   List() => (string json);
 
@@ -52,4 +59,15 @@ interface MediaCaptureAgent {
   Start(int32 element, bool include_buffered,
         pending_remote<MediaCaptureSink> sink)
       => (string error, string json);
+};
+
+// Real-time native consumer. Replies acknowledge consumption, bounding data
+// in flight without blocking the playback threads.
+interface MediaTapSink {
+  OnAudioConfig(uint32 track, media.mojom.AudioDecoderConfig config);
+  OnVideoConfig(uint32 track, media.mojom.VideoDecoderConfig config);
+  OnTimelineOffset(int64 unix_zero_us, int64 from_media_us);
+  OnPacket(MediaPacket packet) => ();
+  OnSample(string metadata, mojo_base.mojom.BigBuffer data) => ();
+  OnEnded(string reason);
 };

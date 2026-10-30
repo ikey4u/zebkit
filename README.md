@@ -35,10 +35,10 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.
-- **Chromium's libraries are yours.** 15 C libraries inside the engine,
-  7,230 functions, exported under `zebkit_vendor_*`: SQLite, BoringSSL,
+- **Chromium's libraries are yours.** 16 C libraries inside the engine,
+  7,421 functions in Linux slim, exported under `zebkit_vendor_*`: SQLite, BoringSSL,
   zlib, Zstandard, Brotli, ICU, HarfBuzz, libxml2, libwebp, libjpeg-turbo,
-  FFmpeg, dav1d, Opus, libvpx and PDFium. You do not ship them twice.
+  FFmpeg, dav1d, Opus, libvpx, FreeType and PDFium. You do not ship them twice.
 - **PDF built in.** A full API on Chromium's PDFium: rendering and tiles,
   text with layout, search, outline, links, annotations with appearances,
   forms, redaction, page editing, merging, attachments, metadata, and

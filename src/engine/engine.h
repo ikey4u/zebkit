@@ -25,6 +25,7 @@ class FilePath;
 }
 
 namespace content {
+class BrowserMainRunner;
 class BrowserContext;
 class RenderFrame;
 class WebContents;
@@ -43,10 +44,12 @@ namespace zebkit {
 // application's ready callback runs between initialization and the loop.
 class MainDelegate : public content::ShellMainDelegate {
  public:
-  MainDelegate(zebkit_task_func ready, void* data);
+  MainDelegate(zebkit_task_func ready, void* data, bool external_loop = false);
   ~MainDelegate() override;
+  void ShutdownBrowser();
 
   std::optional<int> BasicStartupComplete() override;
+  std::optional<int> PreBrowserMain() override;
   bool ShouldLoadV8Snapshot(const std::string& process_type) override;
   content::ContentClient* CreateContentClient() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
@@ -58,6 +61,8 @@ class MainDelegate : public content::ShellMainDelegate {
  private:
   zebkit_task_func ready_;
   void* data_;
+  bool external_loop_;
+  std::unique_ptr<content::BrowserMainRunner> browser_runner_;
   std::unique_ptr<content::ShellContentClient> content_client_;
   std::unique_ptr<content::ShellContentBrowserClient> browser_client_;
   std::unique_ptr<content::ShellContentRendererClient> renderer_client_;
@@ -71,6 +76,8 @@ class ContentClient : public content::ShellContentClient {
 
 // The client hints delegate of the browser contexts (client_hints.cc).
 void InstallClientHints();
+// Release observers before the browser/network service shuts down.
+void StopNetworkQuality();
 // Client hints for a context made later (zebkit_context_new()).
 void InstallClientHintsFor(content::BrowserContext* profile);
 
@@ -107,6 +114,17 @@ class BrowserClient : public content::ShellContentBrowserClient {
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
       bool is_integration_test) override;
   bool IsHandledURL(const GURL& url) override;
+  void CreateThrottlesForNavigation(content::NavigationThrottleRegistry& registry) override;
+  void CreateThrottlesForCommitWithoutUrlLoader(content::NavigationThrottleRegistry& registry) override;
+  std::vector<std::unique_ptr<content::CommitDeferringCondition>>
+  CreateCommitDeferringConditionsForNavigation(content::NavigationHandle* handle,
+      content::CommitDeferringCondition::NavigationType type) override;
+  void AllowCertificateError(content::WebContents* contents, int error,
+      const net::SSLInfo& info, const GURL& url, bool main_frame, bool strict,
+      base::OnceCallback<void(content::CertificateRequestResultType)> reply) override;
+  void OverrideWebPreferences(content::WebContents* contents,
+                              content::SiteInstance& main_frame_site,
+                              blink::web_pref::WebPreferences* prefs) override;
   std::unique_ptr<content::WebContentsViewDelegate> GetWebContentsViewDelegate(
       content::WebContents* web_contents) override;
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,

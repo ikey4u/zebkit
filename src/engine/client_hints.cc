@@ -10,6 +10,10 @@
 #include <vector>
 
 #include "base/no_destructor.h"
+#include "base/functional/bind.h"
+#include "content/public/browser/network_service_instance.h"
+#include "services/network/public/cpp/network_quality_tracker.h"
+#include "content/public/browser/network_quality_observer_factory.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "content/public/browser/client_hints_controller_delegate.h"
 #include "content/shell/browser/shell_browser_context.h"
@@ -27,6 +31,17 @@ namespace zebkit {
 
 namespace {
 
+// The network service owns the estimator. Chromium's observer forwards its
+// estimates to existing renderers and every renderer created afterwards.
+struct NetworkQuality {
+  std::unique_ptr<network::NetworkQualityTracker> tracker;
+  std::unique_ptr<network::NetworkQualityTracker::RTTAndThroughputEstimatesObserver> observer;
+};
+NetworkQuality& Quality() {
+  static base::NoDestructor<NetworkQuality> quality;
+  return *quality;
+}
+
 // Network quality hints, which Chrome no longer sends either.
 constexpr network::mojom::WebClientHintsType kNotSent[] = {
     network::mojom::WebClientHintsType::kRtt_DEPRECATED,
@@ -37,7 +52,7 @@ constexpr network::mojom::WebClientHintsType kNotSent[] = {
 class ClientHints : public content::ClientHintsControllerDelegate {
  public:
   network::NetworkQualityTracker* GetNetworkQualityTracker() override {
-    return nullptr;
+    return Quality().tracker.get();
   }
 
   void GetAllowedClientHintsFromSource(
@@ -102,7 +117,15 @@ void InstallClientHintsFor(content::BrowserContext* profile) {
       ->set_client_hints_controller_delegate(contexts.get());
 }
 
+void StopNetworkQuality() {
+  Quality().observer.reset();
+  Quality().tracker.reset();
+}
+
 void InstallClientHints() {
+  Quality().tracker = std::make_unique<network::NetworkQualityTracker>(
+      base::BindRepeating(&content::GetNetworkService));
+  Quality().observer = content::CreateNetworkQualityObserver(Quality().tracker.get());
   static base::NoDestructor<ClientHints> regular;
   static base::NoDestructor<ClientHints> off_the_record;
   auto* client = content::ShellContentBrowserClient::Get();

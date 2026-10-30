@@ -55,8 +55,8 @@ interface AutomationHost {
 
 // The renderer's side, one for each frame.
 interface AutomationAgent {
-  // Functions @names in the page's world, now and in every document from
-  // now on, that call AutomationHost.BindingCalled.
+  // Replace the functions exposed in the page world, now and in future
+  // documents. Removed functions are deleted and retained references reject.
   Expose(array<string> names);
 
   // Runs step @step of automation_steps.js in @world with @arg, a JSON

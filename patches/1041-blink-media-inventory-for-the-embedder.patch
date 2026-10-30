@@ -1,0 +1,69 @@
+Fix: enumerate every live media element owned by a document.
+
+Use Blink's weak document-to-media registry, including detached Audio and
+open, closed and nested author shadow roots. The inventory introduces no
+new registry or GC root. The embedder uses DOM node IDs for stable weak
+handles and retains elements only while actively capturing them.
+
+--- a/third_party/blink/public/web/web_media_element.h
++++ b/third_party/blink/public/web/web_media_element.h
+@@ -5,11 +5,14 @@
+ #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
+ #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
+ 
++#include <vector>
++
+ #include "third_party/blink/public/platform/web_common.h"
+ 
+ namespace blink {
+ 
+ class WebElement;
++class WebDocument;
+ class WebMediaPlayer;
+ 
+ // Whether |element| is an <audio> or <video> element.
+@@ -19,6 +22,10 @@
+ // and before the element loads anything.
+ BLINK_EXPORT WebMediaPlayer* GetWebMediaPlayer(const WebElement& element);
+ 
++// Every live media element owned by this document, including detached Audio
++// objects and author shadow trees. The inventory itself keeps no GC roots.
++BLINK_EXPORT std::vector<WebElement> GetWebMediaElements(const WebDocument& document);
++
+ }  // namespace blink
+ 
+ #endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_MEDIA_ELEMENT_H_
+--- a/third_party/blink/renderer/core/html/media/html_media_element.cc
++++ b/third_party/blink/renderer/core/html/media/html_media_element.cc
+@@ -25,6 +25,9 @@
+  */
+ 
+ #include "third_party/blink/renderer/core/html/media/html_media_element.h"
++#include "third_party/blink/public/web/web_document.h"
++#include "third_party/blink/public/web/web_element.h"
++#include "third_party/blink/public/web/web_media_element.h"
+ 
+ #include <algorithm>
+ #include <limits>
+@@ -378,6 +381,21 @@
+ 
+ }  // anonymous namespace
+ 
++std::vector<WebElement> GetWebMediaElements(const WebDocument& document) {
++  std::vector<WebElement> result;
++  if (document.IsNull())
++    return result;
++  WebDocument owner = document;
++  auto it = DocumentToElementSetMap().find(owner.Unwrap<Document>());
++  if (it == DocumentToElementSetMap().end())
++    return result;
++  for (const auto& element : *it->value) {
++    if (element)
++      result.emplace_back(element.Get());
++  }
++  return result;
++}
++
+ // static
+ MIMETypeRegistry::SupportsType HTMLMediaElement::GetSupportsType(
+     const ContentType& content_type) {

@@ -7,6 +7,7 @@
 #endif
 
 #include "zebkit/engine/view.h"
+#include "zebkit/engine/http_auth.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -42,10 +43,16 @@
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/drop_data.h"
 #include "content/shell/browser/shell.h"
+#include "net/http/http_util.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/permissions.h"
+#include "zebkit/engine/certificate_hooks.h"
+#include "zebkit/engine/navigation_hooks.h"
+#include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/pdf_script.h"
 
 namespace {
@@ -164,6 +171,11 @@ zebkit_view::zebkit_view(content::Shell* shell)
 }
 
 zebkit_view::~zebkit_view() {
+  protocol_closing_ = true;
+  zebkit::CancelHttpAuthRequests(this, "cancelled");
+  zebkit::CancelNavigationRequests(this, "cancelled");
+  zebkit::CancelPermissionRequests(this, "cancelled");
+  zebkit::CancelCertificateRequests(this, "cancelled");
   Views().erase(this);
   zebkit::ClosePdfsOf(this);
   zebkit::DetachView(this);
@@ -187,21 +199,233 @@ void zebkit_view::Close() {
 }
 
 bool zebkit_view::EnsureSession() {
+  if (protocol_closing_) return false;
   if (devtools_)
-    return true;
+    return !protocol_attach_failed_;
   if (!web_contents())
     return false;
-  devtools_ = content::DevToolsAgentHost::GetOrCreateFor(web_contents());
+  devtools_ = content::DevToolsAgentHost::GetOrCreateForTab(web_contents());
   if (!devtools_->AttachClient(this)) {
     devtools_ = nullptr;
     return false;
   }
+  base::DictValue params;
+  params.Set("autoAttach", true);
+  params.Set("waitForDebuggerOnStart", true);
+  params.Set("flatten", true);
+  base::ListValue filter;
+  base::DictValue pages;
+  pages.Set("type", "page");
+  pages.Set("exclude", false);
+  filter.Append(std::move(pages));
+  base::DictValue rest;
+  rest.Set("exclude", true);
+  filter.Append(std::move(rest));
+  params.Set("filter", std::move(filter));
+  base::DictValue message;
+  protocol_auto_attach_id_ = next_id_++;
+  message.Set("id", protocol_auto_attach_id_);
+  message.Set("method", "Target.setAutoAttach");
+  message.Set("params", std::move(params));
+  DispatchCommand(std::move(message));
   return true;
+}
+
+void zebkit_view::DispatchCommand(base::DictValue message) {
+  if (!devtools_) return;
+  const std::string json = base::WriteJson(message).value_or("{}");
+  // Keep the host alive if a synchronous protocol callback closes the view.
+  auto host = devtools_;
+  host->DispatchProtocolMessage(this, base::as_byte_span(json));
+}
+
+void zebkit_view::FlushTargetCommands(const std::string& target) {
+  auto session = protocol_sessions_.find(target);
+  if (session == protocol_sessions_.end()) return;
+  const std::string session_id = session->second;
+  std::vector<base::DictValue> commands;
+  for (auto it = protocol_queued_.begin(); it != protocol_queued_.end();) {
+    if (it->first != target) { ++it; continue; }
+    commands.push_back(std::move(it->second));
+    it = protocol_queued_.erase(it);
+  }
+  auto weak = GetWeakPtr();
+  for (auto& message : commands) {
+    message.Set("sessionId", session_id);
+    DispatchCommand(std::move(message));
+    if (!weak) return;
+  }
+}
+
+void zebkit_view::SendTargetCommand(const std::string& target, const std::string& method,
+                                   base::DictValue params, Reply reply) {
+  auto session = protocol_sessions_.find(target);
+  if (session == protocol_sessions_.end()) return;
+  const int id = next_id_++;
+  base::DictValue message;
+  message.Set("id", id);
+  message.Set("method", method);
+  message.Set("params", std::move(params));
+  message.Set("sessionId", session->second);
+  if (reply) pending_[id] = std::move(reply);
+  protocol_pending_targets_[id] = target;
+  DispatchCommand(std::move(message));
+}
+
+void zebkit_view::InitializeProtocolTarget(const std::string& target) {
+  if (!protocol_sessions_.contains(target) || protocol_initializing_.contains(target)) return;
+  const size_t applied = protocol_scripts_applied_[target];
+  const bool user_agent = protocol_user_agent_ &&
+      protocol_user_agent_applied_[target] != protocol_user_agent_revision_;
+  if (applied >= protocol_script_sources_.size() && !user_agent) {
+    protocol_ready_targets_.insert(target);
+    auto weak = GetWeakPtr();
+    SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
+    if (!weak) return;
+    FlushTargetCommands(target);
+    if (weak) MaybeRunDeferredLoad();
+    return;
+  }
+  protocol_ready_targets_.erase(target);
+  const size_t count = protocol_script_sources_.size();
+  protocol_scripts_applied_[target] = count;
+  size_t scripts = 0;
+  for (size_t index = applied; index < count; ++index)
+    if (!protocol_removed_scripts_.contains(index)) ++scripts;
+  if (!scripts && !user_agent) { InitializeProtocolTarget(target); return; }
+  protocol_initializing_[target] = scripts + (scripts ? 1 : 0) + (user_agent ? 1 : 0);
+  auto weak = GetWeakPtr();
+  auto completion = [](base::WeakPtr<zebkit_view> view, const std::string& target,
+                       const base::DictValue*, const std::string& error) {
+    if (view) view->ProtocolInitializationReply(target, error);
+  };
+  if (user_agent) {
+    protocol_user_agent_applied_[target] = protocol_user_agent_revision_;
+    SendTargetCommand(target, "Emulation.setUserAgentOverride", protocol_user_agent_->Clone(),
+                      base::BindOnce(completion, weak, target));
+    if (!weak) return;
+  }
+  if (scripts) {
+    SendTargetCommand(target, "Page.enable", base::DictValue(), base::BindOnce(completion, weak, target));
+    if (!weak) return;
+  }
+  for (size_t index = applied; index < count; ++index) {
+    if (protocol_removed_scripts_.contains(index)) continue;
+    base::DictValue params;
+    params.Set("source", protocol_script_sources_[index]);
+    params.Set("runImmediately", true);
+    SendTargetCommand(target, "Page.addScriptToEvaluateOnNewDocument", std::move(params),
+                      base::BindOnce([](base::WeakPtr<zebkit_view> view, std::string target,
+                                        size_t index, const base::DictValue* result,
+                                        const std::string& error) {
+                        if (!view) return;
+                        const bool recorded = view->RecordProtocolScript(target, index, result);
+                        if (view) view->ProtocolInitializationReply(target,
+                            recorded || !error.empty() ? error : "script registration returned no identifier");
+                      }, weak, target, index));
+    if (!weak) return;
+  }
+  // This notification occurs inside WillInitiatePrerender(), before Chromium
+  // builds the navigation's DevTools request throttle. A synchronous resume
+  // clears its waiting state too early and leaves renderer messages suspended
+  // until commit. Let startup install the throttle and release those messages
+  // before resuming. Acknowledgements still gate subsequent host commands.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
+      base::BindOnce([](base::WeakPtr<zebkit_view> view, std::string target) {
+        if (view && view->protocol_sessions_.contains(target))
+          view->SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
+      }, weak, target));
+}
+
+bool zebkit_view::RecordProtocolScript(const std::string& target, size_t index,
+                                      const base::DictValue* result) {
+  const auto* identifier = result ? result->FindString("identifier") : nullptr;
+  if (!identifier) return false;
+  if (protocol_removed_scripts_.contains(index)) {
+    // Disposal may race an acknowledgement from a newly attached renderer.
+    base::DictValue params;
+    params.Set("identifier", *identifier);
+    SendTargetCommand(target, "Page.removeScriptToEvaluateOnNewDocument", std::move(params));
+  } else {
+    protocol_script_ids_[target][index] = *identifier;
+  }
+  return true;
+}
+
+void zebkit_view::RemoveProtocolScript(size_t index, Reply reply) {
+  if (index >= protocol_script_sources_.size()) {
+    if (reply) std::move(reply).Run(nullptr, "unknown initialization script");
+    return;
+  }
+  protocol_removed_scripts_.insert(index);
+  std::string().swap(protocol_script_sources_[index]);
+  const std::string current = web_contents()
+      ? content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId() : "";
+  std::vector<std::pair<std::string, std::string>> removals;
+  std::optional<std::string> current_id;
+  for (auto& [target, scripts] : protocol_script_ids_) {
+    auto script = scripts.find(index);
+    if (script == scripts.end()) continue;
+    if (protocol_sessions_.contains(target)) {
+      if (target == current) current_id = script->second;
+      else removals.emplace_back(target, script->second);
+    }
+    scripts.erase(script);
+  }
+  auto weak = GetWeakPtr();
+  for (const auto& [target, identifier] : removals) {
+    base::DictValue params;
+    params.Set("identifier", identifier);
+    SendTargetCommand(target, "Page.removeScriptToEvaluateOnNewDocument", std::move(params));
+    if (!weak) return;
+  }
+  if (current_id && protocol_sessions_.contains(current)) {
+    base::DictValue params;
+    params.Set("identifier", *current_id);
+    SendTargetCommand(current, "Page.removeScriptToEvaluateOnNewDocument", std::move(params), std::move(reply));
+  } else if (reply) {
+    base::DictValue result;
+    std::move(reply).Run(&result, std::string());
+  }
+}
+
+void zebkit_view::ProtocolInitializationReply(const std::string& target,
+                                             const std::string& error) {
+  auto initializing = protocol_initializing_.find(target);
+  if (initializing == protocol_initializing_.end()) return;
+  if (!error.empty()) {
+    protocol_initializing_.erase(initializing);
+    auto weak = GetWeakPtr();
+    // Ready, without its scripts: the failure is reported here, and a target
+    // left waiting would hold every later command and load for good.
+    protocol_ready_targets_.insert(target);
+    FailPending("the page initialization scripts could not be installed");
+    if (weak && web_contents()) web_contents()->Stop();
+    if (weak) FlushTargetCommands(target);
+    if (weak) MaybeRunDeferredLoad();
+    return;
+  }
+  if (--initializing->second) return;
+  protocol_initializing_.erase(initializing);
+  // A host may have registered another script while these acknowledgements
+  // were in flight. Install that script too before releasing the renderer.
+  InitializeProtocolTarget(target);
 }
 
 void zebkit_view::Send(const std::string& method,
                        base::DictValue params,
                        Reply reply) {
+  if (method == "Page.removeScriptToEvaluateOnNewDocument") {
+    const auto* identifier = params.FindString("identifier");
+    constexpr std::string_view prefix = "zebkit-init-";
+    if (identifier && identifier->starts_with(prefix)) {
+      size_t index;
+      if (!base::StringToSizeT(std::string_view(*identifier).substr(prefix.size()), &index)) {
+        if (reply) std::move(reply).Run(nullptr, "invalid initialization script identifier");
+      } else RemoveProtocolScript(index, std::move(reply));
+      return;
+    }
+  }
   if (!EnsureSession()) {
     if (reply)
       std::move(reply).Run(nullptr, "the page cannot be inspected");
@@ -214,8 +438,17 @@ void zebkit_view::Send(const std::string& method,
   message.Set("params", std::move(params));
   if (reply)
     pending_[id] = std::move(reply);
-  const std::string json = base::WriteJson(message).value_or("{}");
-  devtools_->DispatchProtocolMessage(this, base::as_byte_span(json));
+  const std::string target = content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId();
+  if (method == "Page.addScriptToEvaluateOnNewDocument")
+    protocol_scripts_applied_[target] = protocol_script_sources_.size();
+  protocol_pending_targets_[id] = target;
+  auto session = protocol_sessions_.find(target);
+  if (session == protocol_sessions_.end() || !protocol_ready_targets_.contains(target)) {
+    protocol_queued_.emplace_back(target, std::move(message));
+    return;
+  }
+  message.Set("sessionId", session->second);
+  DispatchCommand(std::move(message));
 }
 
 void zebkit_view::Evaluate(const char* script,
@@ -305,12 +538,26 @@ void zebkit_view::InstallBridge() {
                            ", configurable: true});\n", kBridgeScript}));
 }
 
-void zebkit_view::AddScript(const std::string& source) {
+void zebkit_view::AddScript(const std::string& source, Reply reply) {
   Send("Page.enable", base::DictValue());
-  SendScript(source);
+  SendScript(source, std::move(reply));
 }
 
-void zebkit_view::SendScript(const std::string& source) {
+// A prerender attached before a later script or user agent change.
+void zebkit_view::RefreshOtherProtocolTargets(const std::string& current) {
+  std::vector<std::string> others;
+  for (const auto& [target, session] : protocol_sessions_)
+    if (target != current) others.push_back(target);
+  auto weak = GetWeakPtr();
+  for (const auto& target : others)
+    if (weak) InitializeProtocolTarget(target);
+}
+
+void zebkit_view::SendScript(const std::string& source, Reply reply) {
+  const size_t index = protocol_script_sources_.size();
+  protocol_script_sources_.push_back(source);
+  const std::string target = web_contents()
+      ? content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId() : "";
   base::DictValue script;
   script.Set("source", source);
   script.Set("runImmediately", true);
@@ -318,25 +565,91 @@ void zebkit_view::SendScript(const std::string& source) {
   // Answered, or failed when the page goes, either way once.
   Send("Page.addScriptToEvaluateOnNewDocument", std::move(script),
        base::BindOnce(
-           [](base::WeakPtr<zebkit_view> view, const base::DictValue* result,
+           [](base::WeakPtr<zebkit_view> view, std::string target, size_t index,
+              Reply reply, const base::DictValue* result,
               const std::string& error) {
-             if (!view || --view->scripts_pending_ > 0)
-               return;
-             if (std::optional<GURL> url = std::move(view->deferred_load_)) {
-               view->deferred_load_.reset();
-               view->LoadUrl(*url);
+             const bool recorded = view && view->RecordProtocolScript(target, index, result);
+             if (view && !recorded) {
+               view->protocol_removed_scripts_.insert(index);
+               std::string().swap(view->protocol_script_sources_[index]);
              }
+             const std::string failure = recorded || !error.empty()
+                 ? error : "script registration returned no identifier";
+             if (reply) {
+               base::DictValue response = result ? result->Clone() : base::DictValue();
+               if (recorded) response.Set("identifier", "zebkit-init-" + base::NumberToString(index));
+               std::move(reply).Run(result ? &response : nullptr, failure);
+             }
+             if (!view) return;
+             if (recorded) view->RefreshOtherProtocolTargets(target);
+             if (!view) return;
+             --view->scripts_pending_;
+             view->MaybeRunDeferredLoad();
            },
-           weak_factory_.GetWeakPtr()));
+           weak_factory_.GetWeakPtr(), target, index, std::move(reply)));
 }
 
 void zebkit_view::LoadUrl(const GURL& url) {
-  if (scripts_pending_ > 0) {
+  const bool attaching = devtools_ && !protocol_attach_failed_ && web_contents() &&
+      !protocol_ready_targets_.contains(content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId());
+  if (scripts_pending_ > 0 || protocol_setups_pending_ > 0 || attaching) {
     deferred_load_ = url;
     return;
   }
+  // A caller can choose a replacement navigation inside a setup completion.
+  // Once it can start immediately, it supersedes any older deferred URL.
+  deferred_load_.reset();
   if (content::Shell* s = shell())
     s->LoadURL(url);
+}
+
+void zebkit_view::MaybeRunDeferredLoad() {
+  if (scripts_pending_ || protocol_setups_pending_ || !deferred_load_ || !web_contents()) return;
+  GURL url = std::move(*deferred_load_);
+  deferred_load_.reset();
+  LoadUrl(url);
+}
+
+void zebkit_view::SetUserAgent(const char* user_agent) {
+  const std::string value = user_agent ? user_agent : "";
+  // Match EmulationHandler validation before changing replay state. A rejected
+  // override must not prevent initialization of a future prerender target.
+  if (!net::HttpUtil::IsValidHeaderValue(value)) return;
+  base::DictValue params;
+  params.Set("userAgent", value);
+  SetUserAgentOverride(std::move(params));
+}
+
+void zebkit_view::SetUserAgentOverride(base::DictValue params, Reply reply) {
+  const size_t submission = ++protocol_user_agent_submission_;
+  auto saved = params.Clone();
+  ++protocol_setups_pending_;
+  Send("Emulation.setUserAgentOverride", std::move(params),
+      base::BindOnce([](base::WeakPtr<zebkit_view> view, size_t submission,
+                       base::DictValue saved, Reply reply,
+                       const base::DictValue* result, const std::string& error) {
+        if (!view) return;
+        // Persist only successfully validated overrides. In-flight replies
+        // must not replace a newer successful setting with an older one.
+        if (error.empty() && submission > view->protocol_user_agent_committed_) {
+          view->protocol_user_agent_committed_ = submission;
+          view->protocol_user_agent_ = std::move(saved);
+          ++view->protocol_user_agent_revision_;
+          if (view->web_contents())
+            view->protocol_user_agent_applied_[content::DevToolsAgentHost::GetOrCreateFor(view->web_contents())->GetId()] =
+                view->protocol_user_agent_revision_;
+        }
+        --view->protocol_setups_pending_;
+        if (error.empty() && view->web_contents())
+          view->RefreshOtherProtocolTargets(
+              content::DevToolsAgentHost::GetOrCreateFor(view->web_contents())->GetId());
+        if (!view) return;
+        // Finish the caller before releasing a deferred load, so it can
+        // observe validation failure and change the next navigation.
+        if (reply) std::move(reply).Run(result, error);
+        if (!view || view->protocol_closing_) return;
+        view->MaybeRunDeferredLoad();
+      }, GetWeakPtr(), submission, std::move(saved), std::move(reply)));
 }
 
 const zebkit_view::GrantEntry* zebkit_view::GrantFor(
@@ -384,6 +697,7 @@ void zebkit_view::CallApp(zebkit::PageCall call) {
 
 void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
                                           base::span<const uint8_t> message) {
+  if (protocol_closing_) return;
   std::optional<base::Value> parsed = base::JSONReader::Read(
       std::string_view(reinterpret_cast<const char*>(message.data()),
                        message.size()),
@@ -391,7 +705,56 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
   if (!parsed || !parsed->is_dict())
     return;
   base::DictValue& reply = parsed->GetDict();
+  if (const auto* method = reply.FindString("method")) {
+    const auto* params = reply.FindDict("params");
+    if (!params) return;
+    if (*method == "Target.attachedToTarget") {
+      const auto* session = params->FindString("sessionId");
+      const auto* info = params->FindDict("targetInfo");
+      const auto* target = info ? info->FindString("targetId") : nullptr;
+      if (session && target) {
+        protocol_sessions_[*target] = *session;
+        InitializeProtocolTarget(*target);
+      }
+    } else if (*method == "Target.detachedFromTarget") {
+      const auto* session = params->FindString("sessionId");
+      if (!session) return;
+      std::string target;
+      for (auto it = protocol_sessions_.begin(); it != protocol_sessions_.end(); ++it) {
+        if (it->second == *session) { target = it->first; protocol_sessions_.erase(it); break; }
+      }
+      if (target.empty()) return;
+      protocol_ready_targets_.erase(target);
+      protocol_initializing_.erase(target);
+      protocol_scripts_applied_.erase(target);
+      protocol_script_ids_.erase(target);
+      protocol_user_agent_applied_.erase(target);
+      std::vector<Reply> failed;
+      for (auto it = protocol_pending_targets_.begin(); it != protocol_pending_targets_.end();) {
+        if (it->second != target) { ++it; continue; }
+        auto callback = pending_.find(it->first);
+        if (callback != pending_.end()) {
+          failed.push_back(std::move(callback->second));
+          pending_.erase(callback);
+        }
+        it = protocol_pending_targets_.erase(it);
+      }
+      std::erase_if(protocol_queued_, [&](const auto& command) { return command.first == target; });
+      for (auto& callback : failed)
+        std::move(callback).Run(nullptr, "the page target was detached");
+    }
+    return;
+  }
   if (std::optional<int> id = reply.FindInt("id")) {
+    if (*id == protocol_auto_attach_id_) {
+      protocol_auto_attach_id_ = 0;
+      if (reply.FindDict("error")) {
+        protocol_attach_failed_ = true;
+        FailPending("the page tab session could not be initialized");
+      }
+      return;
+    }
+    protocol_pending_targets_.erase(*id);
     auto it = pending_.find(*id);
     if (it == pending_.end())
       return;
@@ -409,23 +772,93 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
 }
 
 void zebkit_view::AgentHostClosed(content::DevToolsAgentHost* agent_host) {
+  if (protocol_closing_) return;
   devtools_ = nullptr;
+  protocol_sessions_.clear();
+  protocol_ready_targets_.clear();
+  protocol_initializing_.clear();
+  protocol_scripts_applied_.clear();
+  protocol_script_ids_.clear();
+  protocol_user_agent_applied_.clear();
+  protocol_auto_attach_id_ = 0;
+  protocol_attach_failed_ = false;
   bridge_installed_ = false;
   FailPending("the page was closed");
 }
 
+void zebkit_view::OnDidAddMessageToConsole(content::RenderFrameHost* frame,
+    blink::mojom::ConsoleMessageLevel level, const std::u16string& message,
+    int32_t line, const std::u16string& source,
+    const std::optional<std::u16string>& stack) {
+  if (!on_console_) return;
+  if (console_pending_ >= 256) { ++console_dropped_; return; }
+  const char* name = "info";
+  switch (level) {
+    case blink::mojom::ConsoleMessageLevel::kVerbose: name = "debug"; break;
+    case blink::mojom::ConsoleMessageLevel::kWarning: name = "warning"; break;
+    case blink::mojom::ConsoleMessageLevel::kError: name = "error"; break;
+    case blink::mojom::ConsoleMessageLevel::kInfo: break;
+  }
+  bool truncated = false;
+  auto text = [&truncated](const std::u16string& value, size_t limit) {
+    size_t count = std::min(value.size(), limit);
+    if (count < value.size()) {
+      truncated = true;
+      if (count && value[count - 1] >= 0xd800 && value[count - 1] <= 0xdbff) --count;
+    }
+    return base::UTF16ToUTF8(std::u16string_view(value).substr(0, count));
+  };
+  base::DictValue event;
+  event.Set("level", name); event.Set("message", text(message, 65536));
+  event.Set("source", text(source, 16384)); event.Set("line", line);
+  event.Set("frameId", frame ? "f" + base::NumberToString(frame->GetFrameTreeNodeId().value()) : "");
+  event.Set("mainFrame", frame && frame->IsInPrimaryMainFrame());
+  event.Set("origin", frame ? frame->GetLastCommittedOrigin().Serialize() : "null");
+  if (stack) event.Set("stackTrace", text(*stack, 65536));
+  else event.Set("stackTrace", base::Value());
+  event.Set("truncated", truncated);
+  ++console_pending_;
+  content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, base::BindOnce(
+      [](base::WeakPtr<zebkit_view> view, uint64_t generation, base::DictValue event) {
+        if (!view || view->console_generation_ != generation || !view->on_console_) return;
+        --view->console_pending_;
+        event.Set("dropped", base::NumberToString(view->console_dropped_));
+        view->console_dropped_ = 0;
+        const std::string json = base::WriteJson(event).value_or("{}");
+        auto function = view->on_console_; void* data = view->on_console_data_;
+        function(view.get(), json.c_str(), data);
+      }, GetWeakPtr(), console_generation_, std::move(event)));
+}
+
 void zebkit_view::DidStartNavigation(content::NavigationHandle* navigation) {
+  if (navigation->IsInPrimaryMainFrame() && !navigation->IsSameDocument()) {
+    auto weak = GetWeakPtr();
+    zebkit::CancelHttpAuthRequests(this, "navigation");
+    if (!weak) return;
+    zebkit::CancelCertificateRequests(this, "navigation");
+    if (!weak) return;
+  }
   if (navigation->IsInPrimaryMainFrame() && !navigation->IsSameDocument())
     Load(ZEBKIT_LOAD_STARTED, navigation->GetURL());
 }
 
 void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
+  if (navigation->IsInPrimaryMainFrame() && !navigation->IsSameDocument()) {
+    auto weak = GetWeakPtr();
+    zebkit::FinishCertificateNavigation(this, navigation->GetURL());
+    if (!weak) return;
+  }
+  if (navigation->HasCommitted()) zebkit::CheckPermissionDocuments(this);
   if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
     return;
   if (navigation->HasCommitted() && !navigation->IsErrorPage())
     Load(ZEBKIT_LOAD_COMMITTED, navigation->GetURL());
   else
     Load(ZEBKIT_LOAD_FAILED, navigation->GetURL());
+}
+
+void zebkit_view::RenderFrameDeleted(content::RenderFrameHost* frame) {
+  zebkit::PermissionFrameDeleted(this, frame);
 }
 
 void zebkit_view::DidFinishLoad(content::RenderFrameHost* frame,
@@ -449,6 +882,11 @@ void zebkit_view::TitleWasSet(content::NavigationEntry* entry) {
 }
 
 void zebkit_view::WebContentsDestroyed() {
+  protocol_closing_ = true;
+  zebkit::CancelHttpAuthRequests(this, "cancelled");
+  zebkit::CancelNavigationRequests(this, "cancelled");
+  zebkit::CancelPermissionRequests(this, "cancelled");
+  zebkit::CancelCertificateRequests(this, "cancelled");
   if (devtools_) {
     devtools_->DetachClient(this);
     devtools_ = nullptr;
@@ -473,6 +911,8 @@ void zebkit_view::Load(zebkit_load_event event, const GURL& url) {
 }
 
 void zebkit_view::FailPending(const std::string& why) {
+  protocol_pending_targets_.clear();
+  protocol_queued_.clear();
   std::map<int, Reply> pending;
   pending.swap(pending_);
   for (auto& [id, reply] : pending) {
@@ -494,16 +934,28 @@ void CloseAllViews() {
 
 void HandlePopup(content::WebContents* opener,
                  content::Shell* popup,
-                 const GURL& url) {
+                 const GURL& url,
+                 WindowOpenDisposition disposition,
+                 const blink::mojom::WindowFeatures& features,
+                 bool user_gesture) {
   zebkit_view* view = ViewOf(opener);
-  if (!view || !view->on_window_open_ || !popup)
+  if (!view || !popup)
     return;
+  // Always a view, with or without a window-open handler: without one the
+  // popup would have no policy at all, and window.open() would escape it.
   zebkit_view* made = new zebkit_view(popup);
+  made->policy_opener_ = view->GetWeakPtr();
+  made->inherits_policy_ = true;
+  made->popup_policy_ = view->popup_policy_;
+  made->navigation_fail_closed_ = view->navigation_fail_closed_;
+  made->permission_timeout_ms_ = view->permission_timeout_ms_;
+  made->navigation_timeout_ms_ = view->navigation_timeout_ms_;
+  made->certificate_timeout_ms_ = view->certificate_timeout_ms_;
+  made->http_auth_timeout_ms_ = view->http_auth_timeout_ms_;
   MakeOffscreenLike(view, made);
-  const GURL opened = view->opening_url_.is_empty() ? url : view->opening_url_;
-  view->opening_url_ = GURL();
-  view->on_window_open_(view, made, opened.spec().c_str(),
-                        view->on_window_open_data_);
+  SetWindowOpenInfo(view, made, url, disposition, features, user_gesture);
+  if (view->on_window_open_)
+    view->on_window_open_(view, made, url.spec().c_str(), view->on_window_open_data_);
 }
 
 zebkit_view* ViewOf(content::WebContents* contents) {
@@ -516,8 +968,6 @@ zebkit_view* ViewOf(content::WebContents* contents) {
 
 bool HandleNewWindow(content::WebContents* opener, const GURL& url) {
   zebkit_view* view = ViewOf(opener);
-  if (view)
-    view->opening_url_ = url;
   if (!view || !view->on_new_window_)
     return false;
   view->on_new_window_(view, url.spec().c_str(), view->on_new_window_data_);
@@ -773,9 +1223,45 @@ bool zebkit_view_is_loading(zebkit_view* view) {
 void zebkit_view_set_user_agent(zebkit_view* view, const char* user_agent) {
   // For the view's session, as Chrome's own override for a tab: its
   // requests, navigator.userAgent and workers.
-  base::DictValue params;
-  params.Set("userAgent", user_agent ? user_agent : "");
-  view->Send("Emulation.setUserAgentOverride", std::move(params));
+  view->SetUserAgent(user_agent);
+}
+
+bool zebkit_view_set_user_agent_override(zebkit_view* view, const char* json,
+                                         zebkit_result_func func, void* data) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) return false;
+  if (!view || !view->web_contents()) {
+    // Told, as for every other failure: its callers release what they gave it there.
+    if (func) func(view, nullptr, "the view is closed", data);
+    return false;
+  }
+  const size_t size = json ? strnlen(json, 65537) : 0;
+  auto parsed = size && size <= 65536
+      ? base::JSONReader::Read(std::string_view(json, size), base::JSON_PARSE_RFC)
+      : std::nullopt;
+  const char* error = nullptr;
+  if (!parsed || !parsed->is_dict() || !parsed->GetDict().FindString("userAgent")) {
+    error = "expected a JSON object with userAgent, at most 65536 UTF-8 bytes";
+  } else {
+    for (const auto entry : parsed->GetDict()) {
+      if (entry.first != "userAgent" && entry.first != "acceptLanguage" && entry.first != "platform" &&
+          entry.first != "userAgentMetadata") {
+        error = "unknown user agent override option";
+        break;
+      }
+    }
+  }
+  if (error) {
+    if (func) func(view, nullptr, error, data);
+    return false;
+  }
+  view->SetUserAgentOverride(std::move(parsed->GetDict()),
+      base::BindOnce([](base::WeakPtr<zebkit_view> view, zebkit_result_func func,
+                       void* data, const base::DictValue*, const std::string& error) {
+        if (view && func)
+          func(view.get(), error.empty() ? "{}" : nullptr,
+               error.empty() ? nullptr : error.c_str(), data);
+      }, view->GetWeakPtr(), func, data));
+  return true;
 }
 
 void zebkit_view_capture(zebkit_view* view,
@@ -914,3 +1400,10 @@ void zebkit_call_reject(zebkit_call* call, const char* message) {
 }
 
 }  // extern "C"
+
+extern "C" void zebkit_view_on_console(zebkit_view* view, zebkit_console_func function, void* data) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents()) return;
+  ++view->console_generation_;
+  view->console_pending_ = 0; view->console_dropped_ = 0;
+  view->on_console_ = function; view->on_console_data_ = data;
+}

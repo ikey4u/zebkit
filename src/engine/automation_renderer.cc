@@ -209,7 +209,7 @@ void EvaluateInWorker(std::string source,
   const int64_t request = ++g_worker->next;
   g_worker->pending[request] = std::move(reply);
   auto reaction = [&](bool ok) {
-    v8::Local<v8::Array> data = v8::Array::New(isolate, 2);
+    v8::Local<v8::Array> data = v8::Array::New(isolate, 3);
     data->Set(context, 0, v8::Number::New(isolate, static_cast<double>(request)))
         .Check();
     data->Set(context, 1, v8::Boolean::New(isolate, ok)).Check();
@@ -546,17 +546,24 @@ class Agent : public content::RenderFrameObserver,
     std::vector<std::string> added;
     for (const std::string& name : names) {
       if (std::find(exposed_.begin(), exposed_.end(), name) == exposed_.end()) {
-        exposed_.push_back(name);
         added.push_back(name);
       }
     }
-    if (added.empty())
-      return;
     v8::Isolate* isolate = v8::Isolate::GetCurrent();
     v8::HandleScope scope(isolate);
     v8::Local<v8::Context> context = Context(0);
-    if (!context.IsEmpty())
-      Define(context, added);
+    if (!context.IsEmpty()) {
+      v8::Context::Scope context_scope(context);
+      for (const std::string& previous : exposed_) {
+        if (std::find(names.begin(), names.end(), previous) == names.end()) {
+          binding_generations_.erase(previous);
+          std::ignore = context->Global()->Delete(context, String(isolate, previous));
+        }
+      }
+      if (!added.empty())
+        Define(context, added);
+    }
+    exposed_ = names;
   }
 
   // window[@name](...args): a promise of what the application answers.
@@ -587,6 +594,12 @@ class Agent : public content::RenderFrameObserver,
       resolver->Reject(context, v8::Exception::Error(String(
                                     isolate, "the page is closing")))
           .Check();
+      return;
+    }
+    const uint32_t generation = data->Get(context, 2).ToLocalChecked().As<v8::Uint32>()->Value();
+    auto registered = found->second->binding_generations_.find(name);
+    if (registered == found->second->binding_generations_.end() || registered->second != generation) {
+      resolver->Reject(context, v8::Exception::Error(String(isolate, "binding was disposed"))).Check();
       return;
     }
     found->second->CallHost(name, Text(isolate, json), isolate, context,
@@ -752,6 +765,9 @@ class Agent : public content::RenderFrameObserver,
       data->Set(context, 0, v8::Number::New(isolate, static_cast<double>(id_)))
           .Check();
       data->Set(context, 1, String(isolate, name)).Check();
+      const uint32_t generation = ++next_binding_generation_;
+      binding_generations_[name] = generation;
+      data->Set(context, 2, v8::Integer::NewFromUnsigned(isolate, generation)).Check();
       v8::Local<v8::Function> function;
       if (v8::Function::New(context, &Agent::Called, data).ToLocal(&function)) {
         std::ignore =
@@ -1097,6 +1113,8 @@ class Agent : public content::RenderFrameObserver,
   }
 
   std::vector<std::string> exposed_;
+  uint32_t next_binding_generation_ = 0;
+  std::map<std::string, uint32_t> binding_generations_;
   std::set<int32_t> reported_workers_;
   int64_t id_ = 0;
   mojo::AssociatedRemote<mojom::AutomationHost> host_;

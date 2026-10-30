@@ -1,0 +1,251 @@
+LevelDB for applications, through its own C API.
+
+zebkit exports LevelDB as it exports the other libraries in the engine. Its C
+API is db/c.cc, which Chromium does not build. Two things stop it being usable
+in an application's process: compactions go to the browser's thread pool, which
+an application that has not started the engine does not have; and names are
+converted through UTF-8 with the locale, which is the application's, so a
+non-ASCII path fails under the C locale. Without a thread pool a compaction
+runs on a thread of its own, and on POSIX a name is the path's own bytes.
+Chromium's names are already that under a UTF-8 locale.
+
+--- a/third_party/leveldatabase/BUILD.gn
++++ b/third_party/leveldatabase/BUILD.gn
+@@ -23,6 +23,7 @@
+   "port/port_chromium.cc",
+   "port/port_chromium.h",
+   "src/db/builder.cc",
++  "src/db/c.cc",
+   "src/db/builder.h",
+   "src/db/db_impl.cc",
+   "src/db/db_impl.h",
+--- a/third_party/leveldatabase/env_chromium.cc
++++ b/third_party/leveldatabase/env_chromium.cc
+@@ -33,6 +33,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
++#include "base/task/thread_pool/thread_pool_instance.h"
+ #include "base/time/time.h"
+ #include "base/time/time_override.h"
+ #include "base/trace_event/memory_dump_manager.h"
+@@ -57,6 +58,24 @@
+ using leveldb::Status;
+ 
+ namespace leveldb_env {
++
++// zebkit: LevelDB's names are the path's own bytes. Converting them through
++// UTF-8 depends on the locale on POSIX, which is the application's: a
++// non-ASCII path fails under the C locale.
++static base::FilePath PathFromName(const std::string& name) {
++#if BUILDFLAG(IS_WIN)
++  return base::FilePath::FromUTF8Unsafe(name);
++#else
++  return base::FilePath(name);
++#endif
++}
++static std::string NameFromPath(const base::FilePath& path) {
++#if BUILDFLAG(IS_WIN)
++  return path.AsUTF8Unsafe();
++#else
++  return path.value();
++#endif
++}
+ namespace {
+ 
+ template <typename ValueType>
+@@ -181,7 +200,7 @@
+       base::as_writable_bytes(UNSAFE_TODO(base::span(scratch, n)));
+   std::optional<size_t> bytes_read = file->Read(offset, scratch_span);
+   if (!bytes_read) {
+-    return MakeIOError(file_path.AsUTF8Unsafe(), "Could not perform read",
++    return MakeIOError(NameFromPath(file_path), "Could not perform read",
+                        kRandomAccessFileRead);
+   }
+   *result = Slice(scratch, bytes_read.value());
+@@ -240,7 +259,7 @@
+       int flags = base::File::FLAG_READ | base::File::FLAG_OPEN;
+       ASSIGN_OR_RETURN(
+           base::File file, filesystem_->OpenFile(filepath_, flags), [&](auto) {
+-            return MakeIOError(filepath_.AsUTF8Unsafe(),
++            return MakeIOError(NameFromPath(filepath_),
+                                "Could not perform read", kRandomAccessFileRead);
+           });
+       handle = file_cache_->Insert(cache_key_, new base::File(std::move(file)),
+@@ -322,20 +341,20 @@
+       filesystem_(filesystem),
+ #endif
+       file_type_(kOther) {
+-  FilePath path = FilePath::FromUTF8Unsafe(fname);
+-  if (path.BaseName().AsUTF8Unsafe().find("MANIFEST") == 0) {
++  FilePath path = PathFromName(fname);
++  if (NameFromPath(path.BaseName()).find("MANIFEST") == 0) {
+     file_type_ = kManifest;
+   } else if (base::EqualsCaseInsensitiveASCII(path.Extension().c_str(),
+                                               table_extension)) {
+     file_type_ = kTable;
+   }
+-  parent_dir_ = FilePath::FromUTF8Unsafe(fname).DirName().AsUTF8Unsafe();
++  parent_dir_ = NameFromPath(PathFromName(fname).DirName());
+ }
+ 
+ Status ChromiumWritableFile::SyncParent() {
+   TRACE_EVENT0("leveldb", "SyncParent");
+ #if defined(OS_POSIX) || defined(OS_FUCHSIA)
+-  FilePath path = FilePath::FromUTF8Unsafe(parent_dir_);
++  FilePath path = PathFromName(parent_dir_);
+   FileErrorOr<base::File> result = filesystem_->OpenFile(
+       path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+   if (!result.has_value()) {
+@@ -732,7 +751,7 @@
+ }
+ 
+ bool ChromiumEnv::FileExists(const std::string& fname) {
+-  return filesystem_->PathExists(FilePath::FromUTF8Unsafe(fname));
++  return filesystem_->PathExists(PathFromName(fname));
+ }
+ 
+ const char* ChromiumEnv::FileErrorString(base::File::Error error) {
+@@ -806,7 +825,7 @@
+ 
+ Status ChromiumEnv::GetChildren(const std::string& dir,
+                                 std::vector<std::string>* result) {
+-  FilePath dir_path = FilePath::FromUTF8Unsafe(dir);
++  FilePath dir_path = PathFromName(dir);
+   RemoveBackupFiles(dir_path);
+ 
+   ASSIGN_OR_RETURN(
+@@ -818,7 +837,7 @@
+ 
+   result->clear();
+   for (const auto& entry : entries) {
+-    result->push_back(entry.BaseName().AsUTF8Unsafe());
++    result->push_back(NameFromPath(entry.BaseName()));
+   }
+ 
+   return Status::OK();
+@@ -826,7 +845,7 @@
+ 
+ Status ChromiumEnv::RemoveFile(const std::string& fname) {
+   Status result;
+-  FilePath fname_filepath = FilePath::FromUTF8Unsafe(fname);
++  FilePath fname_filepath = PathFromName(fname);
+   if (!filesystem_->DeleteFile(fname_filepath)) {
+     result = MakeIOError(fname, "Could not delete file.", kRemoveFile);
+   }
+@@ -838,7 +857,7 @@
+   base::File::Error error = base::File::FILE_OK;
+   Retrier retrier;
+   do {
+-    error = filesystem_->CreateDirectory(base::FilePath::FromUTF8Unsafe(name));
++    error = filesystem_->CreateDirectory(PathFromName(name));
+     if (error == base::File::FILE_OK)
+       return result;
+   } while (retrier.ShouldKeepTrying());
+@@ -847,7 +866,7 @@
+ 
+ Status ChromiumEnv::RemoveDir(const std::string& name) {
+   Status result;
+-  if (!filesystem_->DeleteFile(FilePath::FromUTF8Unsafe(name))) {
++  if (!filesystem_->DeleteFile(PathFromName(name))) {
+     result = MakeIOError(name, "Could not delete directory.", kRemoveDir);
+   }
+   return result;
+@@ -856,7 +875,7 @@
+ Status ChromiumEnv::GetFileSize(const std::string& fname, uint64_t* size) {
+   Status s;
+   std::optional<base::File::Info> info =
+-      filesystem_->GetFileInfo(base::FilePath::FromUTF8Unsafe(fname));
++      filesystem_->GetFileInfo(PathFromName(fname));
+   if (!info) {
+     *size = 0;
+     s = MakeIOError(fname, "Could not determine file size.", kGetFileSize);
+@@ -868,10 +887,10 @@
+ 
+ Status ChromiumEnv::RenameFile(const std::string& src, const std::string& dst) {
+   Status result;
+-  FilePath src_file_path = FilePath::FromUTF8Unsafe(src);
++  FilePath src_file_path = PathFromName(src);
+   if (!filesystem_->PathExists(src_file_path))
+     return result;
+-  FilePath destination = FilePath::FromUTF8Unsafe(dst);
++  FilePath destination = PathFromName(dst);
+ 
+   Retrier retrier;
+   base::File::Error error = base::File::FILE_OK;
+@@ -893,7 +912,7 @@
+ Status ChromiumEnv::LockFile(const std::string& fname, FileLock** lock) {
+   *lock = nullptr;
+   Status result;
+-  const base::FilePath path = base::FilePath::FromUTF8Unsafe(fname);
++  const base::FilePath path = PathFromName(fname);
+   Retrier retrier;
+   FileErrorOr<std::unique_ptr<storage::FilesystemProxy::FileLock>> lock_result;
+   size_t tries = 0;
+@@ -934,7 +953,7 @@
+           "Could not create temp directory.", "", kGetTestDirectory);
+     }
+   }
+-  *path = test_directory_.AsUTF8Unsafe();
++  *path = NameFromPath(test_directory_);
+   mu_.Release();
+   return Status::OK();
+ }
+@@ -942,7 +961,7 @@
+ Status ChromiumEnv::NewLogger(const std::string& fname,
+                               leveldb::Logger** result) {
+   *result = nullptr;
+-  FilePath path = FilePath::FromUTF8Unsafe(fname);
++  FilePath path = PathFromName(fname);
+   ASSIGN_OR_RETURN(base::File open_result,
+                    filesystem_->OpenFile(path, base::File::FLAG_CREATE_ALWAYS |
+                                                    base::File::FLAG_WRITE),
+@@ -954,7 +973,7 @@
+ Status ChromiumEnv::NewSequentialFile(const std::string& fname,
+                                       leveldb::SequentialFile** result) {
+   *result = nullptr;
+-  FilePath path = FilePath::FromUTF8Unsafe(fname);
++  FilePath path = PathFromName(fname);
+   ASSIGN_OR_RETURN(base::File open_result,
+                    filesystem_->OpenFile(
+                        path, base::File::FLAG_OPEN | base::File::FLAG_READ),
+@@ -967,7 +986,7 @@
+ Status ChromiumEnv::NewRandomAccessFile(const std::string& fname,
+                                         leveldb::RandomAccessFile** result) {
+   *result = nullptr;
+-  base::FilePath file_path = FilePath::FromUTF8Unsafe(fname);
++  base::FilePath file_path = PathFromName(fname);
+   ASSIGN_OR_RETURN(base::File file,
+                    filesystem_->OpenFile(file_path, base::File::FLAG_READ |
+                                                         base::File::FLAG_OPEN),
+@@ -988,7 +1007,7 @@
+ 
+ Status ChromiumEnv::NewWritableFile(const std::string& fname,
+                                     leveldb::WritableFile** result) {
+-  FilePath path = FilePath::FromUTF8Unsafe(fname);
++  FilePath path = PathFromName(fname);
+   FileErrorOr<base::File> open_result = filesystem_->OpenFile(
+       path, base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+   if (!open_result.has_value()) {
+@@ -1004,7 +1023,7 @@
+ Status ChromiumEnv::NewAppendableFile(const std::string& fname,
+                                       leveldb::WritableFile** result) {
+   *result = nullptr;
+-  FilePath path = FilePath::FromUTF8Unsafe(fname);
++  FilePath path = PathFromName(fname);
+   ASSIGN_OR_RETURN(base::File open_result,
+                    filesystem_->OpenFile(path, base::File::FLAG_OPEN_ALWAYS |
+                                                    base::File::FLAG_APPEND),
+@@ -1048,6 +1067,12 @@
+ };
+ 
+ void ChromiumEnv::Schedule(ScheduleFunc* function, void* arg) {
++  // zebkit: an application can use LevelDB before the engine starts, or with
++  // no engine. Leveldb schedules one compaction at a time.
++  if (!base::ThreadPoolInstance::Get()) {
++    new Thread(function, arg);  // Will self-delete.
++    return;
++  }
+   // The BLOCK_SHUTDOWN is required to avoid shutdown hangs. The scheduled
+   // tasks may be blocking foreground threads waiting for their completions.
+   // see: https://crbug.com/1086185.

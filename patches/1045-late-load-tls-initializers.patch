@@ -1,0 +1,80 @@
+Library late loading: do not put deferred relative pointers in TLS images.
+
+RELR is applied by DT_INIT after the loader has copied TLS for existing
+host threads. Use an integer loader sentinel, a null default thread-name
+pointer and lazy construction of the polymorphic thread-type manager.
+NoDestructor avoids TLS destructor registration requiring glibc 2.18.
+The engine regression audits the packed TLS relocations and runs its
+loop on both main and pre-existing worker threads after dlopen.
+
+--- a/base/threading/platform_thread.cc
++++ b/base/threading/platform_thread.cc
+@@ -35,8 +35,11 @@
+ }
+ 
+ internal::ThreadTypeManager* GetThreadTypeManager() {
+-  constinit thread_local internal::ThreadTypeManager thread_type_manager;
+-  return &thread_type_manager;
++  // A constinit polymorphic object puts its vtable in the TLS image. With
++  // packed relocations, copies made for existing dlopen host threads retain
++  // that unrelocated pointer. Construct it on first use in zeroed TLS.
++  thread_local NoDestructor<internal::ThreadTypeManager> thread_type_manager;
++  return thread_type_manager.get();
+ }
+ 
+ }  // namespace
+--- a/base/threading/thread_id_name_manager.cc
++++ b/base/threading/thread_id_name_manager.cc
+@@ -20,7 +20,9 @@
+ static const char kDefaultName[] = "";
+ static std::string* g_default_name;
+ 
+-constinit thread_local const char* thread_name = kDefaultName;
++// No address in the TLS initializer: host threads may predate dlopen and
++// receive their TLS copy before the library applies packed relocations.
++constinit thread_local const char* thread_name = nullptr;
+ }  // namespace
+ 
+ ThreadIdNameManager::Observer::~Observer() = default;
+@@ -121,7 +123,7 @@
+ }
+ 
+ const char* ThreadIdNameManager::GetNameForCurrentThread() {
+-  return thread_name;
++  return thread_name ? thread_name : kDefaultName;
+ }
+ 
+ void ThreadIdNameManager::RemoveName(PlatformThreadHandle::Handle handle,
+--- a/zebkit/relr/relr_preinit.c
++++ b/zebkit/relr/relr_preinit.c
+@@ -33,16 +33,16 @@
+ extern const ElfW(Ehdr) __ehdr_start __attribute__((visibility("hidden")));
+ extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+ 
+-// A pointer in the thread-local data, relocated like any other, that says
+-// whether the main thread's copy of that data was fixed as well.
+-static const char tls_target = 0;
++// An integer sentinel locates this thread's TLS block without itself
++// requiring a relocation in copies belonging to pre-existing host threads.
++#define TLS_SENTINEL ((uintptr_t)0x51ea7e)
+ #if defined(ZEBKIT_RELR_SHARED)
+ // Not static, so that its name is the one the assembly below gives.
+ __attribute__((visibility("hidden")))
+-__thread const char* volatile zebkit_relr_tls_check = &tls_target;
++__thread uintptr_t volatile zebkit_relr_tls_check = TLS_SENTINEL;
+ #define tls_check zebkit_relr_tls_check
+ #else
+-static __thread const char* volatile tls_check = &tls_target;
++static __thread uintptr_t volatile tls_check = TLS_SENTINEL;
+ #endif
+ 
+ // The pages wholly inside [start, end), as the loader protects them. A raw
+@@ -139,7 +139,7 @@
+ 
+   if (relro_start && raw_mprotect(relro_start, relro_end, PROT_READ))
+     __builtin_trap();
+-  if (tls_check != &tls_target)
++  if (tls_check != TLS_SENTINEL)
+     __builtin_trap();
+ }
+ 

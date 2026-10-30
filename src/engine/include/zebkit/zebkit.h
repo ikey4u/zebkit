@@ -54,6 +54,65 @@ ZEBKIT_API void zebkit_free(void *pointer);
 
 typedef void (*zebkit_task_func)(void *data);
 
+/* Scheduling notification for the application's loop: pump no later than
+ * delay_ms from now (0: promptly). May run on any engine thread, including
+ * during init. It must only queue a host event/timer, never call zebkit or
+ * block. Keep the earliest outstanding deadline; a later notification must
+ * not postpone earlier work. When the host calls pump, consume that deadline
+ * before entering it. Chromium's native window events still need the host's
+ * ordinary platform event loop.
+ *
+ * Configure before init; NULL removes it. Data must live through shutdown,
+ * which waits for callbacks in progress and prevents subsequent callbacks: so
+ * do not hold a mutex the callback takes while calling zebkit_shutdown(). The
+ * callback may run on the thread that posted the task, inside that call, so a
+ * thread must not post while holding a mutex the callback takes unless that
+ * mutex is recursive.
+ * False after startup has been attempted. Not used by zebkit_main().
+ */
+typedef void (*zebkit_wakeup_func)(int64_t delay_ms, void *data);
+ZEBKIT_API bool zebkit_set_wakeup(zebkit_wakeup_func func, void *data);
+
+/*
+ * Initializes the engine without taking over the application's loop. Returns
+ * 0 when views may be created, or a nonzero startup error. On macOS, the main
+ * thread only. Elsewhere any thread, which is then the engine's: it pumps, and
+ * makes every call that needs the UI thread. SIGPIPE is set to be ignored if
+ * it has the default action, and Chromium does not change it otherwise.
+ * Chromium switches in argv have the same meaning as in zebkit_main().
+ * Call only once per process (including after shutdown). Do not mix with
+ * zebkit_main(). Use zebkit_set_wakeup() for event-driven integration, or
+ * call zebkit_pump() periodically from the host's loop.
+ */
+ZEBKIT_API int zebkit_init(int argc, char **argv);
+
+/* init with validated JSON startup settings, applied over corresponding argv
+ * switches. Other Chromium switches remain an escape hatch. NULL is {}.
+ * profileDirectory (absolute path), proxy (Chrome proxy-server syntax),
+ * userAgent (string), headless/sandbox (boolean), gpu (auto/disabled/software),
+ * logging: {destination: stderr/file/none, path: absolute file path, level: 0..3},
+ * cookies: {storage: os/file, keyDirectory: absolute path, thirdParty: boolean},
+ * applicationIntegration (boolean; opt into zebkit's macOS delegate/menu/Dock).
+ * Unknown keys and malformed values fail before startup or file IO. error,
+ * when provided, is NULL on success or a message to free with zebkit_free().
+ */
+ZEBKIT_API int zebkit_init_with_settings(int argc, char **argv,
+    const char *settings_json, char **error);
+
+/* Processes currently runnable engine and native events without waiting.
+ * Call on the initializing thread, outside an engine callback. Returns false
+ * before init, after shutdown, on another thread or during a nested pump.
+ * The host remains responsible for its own loop and for calling this again
+ * when delayed work becomes due (for example from a toolkit timer).
+ */
+ZEBKIT_API bool zebkit_pump(void);
+
+/* Closes views and stops the engine's threads and child processes. Call on
+ * the initializing thread, outside callbacks. False in the same invalid
+ * states as zebkit_pump(). The host's loop continues after this returns.
+ */
+ZEBKIT_API bool zebkit_shutdown(void);
+
 /*
  * Starts the engine, calls @ready on this thread once views can be created,
  * runs until zebkit_quit(), and returns the process's exit code. Call it
@@ -99,7 +158,9 @@ ZEBKIT_API bool zebkit_set_cookie_storage(zebkit_cookie_storage storage,
  */
 ZEBKIT_API bool zebkit_set_cookie_encryption_key(const uint8_t *key, size_t size);
 
-/* Closes every view and ends zebkit_main()'s loop. */
+/* Closes every view and ends zebkit_main()'s loop. After zebkit_init() there is
+ * no such loop: it closes the views, and the application calls zebkit_shutdown().
+ */
 ZEBKIT_API void zebkit_quit(void);
 
 /* Runs @func(@data) on the engine's thread. Any thread may call it. */
@@ -276,8 +337,21 @@ ZEBKIT_API void zebkit_view_stop(zebkit_view *view);
 /* Whether the page is loading. */
 ZEBKIT_API bool zebkit_view_is_loading(zebkit_view *view);
 
-/* The User-Agent the view's requests send and its pages see; NULL or "" for the engine's. */
+/* The User-Agent for the view's requests and documents.
+ * NULL/empty clears this session's override. Invalid HTTP header values are
+ * ignored without changing current or future-document overrides. External
+ * CDP sessions keep Chromium's own independent override scope. */
 ZEBKIT_API void zebkit_view_set_user_agent(zebkit_view *view, const char *user_agent);
+/* Atomically set the string and optional client hints using
+ * Emulation.setUserAgentOverride JSON: userAgent is required; acceptLanguage,
+ * platform and userAgentMetadata are optional. Up to 65536 UTF-8 bytes.
+ * Returns true when queued. Validation errors arrive through func; successful
+ * completion supplies {}. Only successful settings persist into future pages.
+ * Loads wait for completion. Engine thread only; closing reports an error
+ * for pending callbacks before the view's close notification.
+ */
+ZEBKIT_API bool zebkit_view_set_user_agent_override(zebkit_view *view, const char *json,
+                                                    zebkit_result_func func, void *data);
 
 typedef void (*zebkit_capture_func)(zebkit_view *view, const uint8_t *png, size_t size, const char *error,
                                     void *data);

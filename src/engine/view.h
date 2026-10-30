@@ -3,10 +3,13 @@
 #ifndef ZEBKIT_ENGINE_VIEW_H_
 #define ZEBKIT_ENGINE_VIEW_H_
 
+#include <stdint.h>
+
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -18,7 +21,10 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "url/gurl.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom-forward.h"
+#include "ui/base/window_open_disposition.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
+#include "zebkit/engine/include/zebkit/hooks.h"
 
 namespace content {
 class RenderFrameHost;
@@ -83,7 +89,10 @@ bool HandleNewWindow(content::WebContents* opener, const GURL& url);
 // (content::Shell::SetPopupHandler()).
 void HandlePopup(content::WebContents* opener,
                  content::Shell* popup,
-                 const GURL& url);
+                 const GURL& url,
+                 WindowOpenDisposition disposition,
+                 const blink::mojom::WindowFeatures& features,
+                 bool user_gesture);
 // A popup of an off-screen view off the screen too (offscreen.cc).
 void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup);
 
@@ -121,9 +130,11 @@ struct zebkit_view : public content::WebContentsObserver,
   void LoadUrl(const GURL& url);
 
   // A script for every new document, before the page's own.
-  void AddScript(const std::string& source);
+  void AddScript(const std::string& source, Reply reply = Reply());
 
   void Evaluate(const char* script, zebkit_result_func func, void* data);
+  void SetUserAgent(const char* user_agent);
+  void SetUserAgentOverride(base::DictValue params, Reply reply = Reply());
   void Grant(const std::string& origin,
              unsigned allow,
              const std::string& files_root);
@@ -135,6 +146,21 @@ struct zebkit_view : public content::WebContentsObserver,
 
   // zebkit.app.<name>(): to the application's bound function.
   void CallApp(zebkit::PageCall call);
+
+  // A popup is decided for by the view that opened it until it has a handler
+  // of its own. The view that decides for this one; nullptr when that opener
+  // has closed, which every hook treats as a refusal: a popup must not outlive
+  // its opener's policy into having none.
+  template <typename Handler>
+  zebkit_view* Decider(Handler zebkit_view::*handler) {
+    zebkit_view* view = this;
+    while (view && !(view->*handler) && view->inherits_policy_)
+      view = view->policy_opener_.get();
+    return view;
+  }
+  base::WeakPtr<zebkit_view> policy_opener_;
+  bool inherits_policy_ = false;
+  bool navigation_fail_closed_ = false;
 
   base::WeakPtr<zebkit_view> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
@@ -148,11 +174,16 @@ struct zebkit_view : public content::WebContentsObserver,
   // content::WebContentsObserver
   void DidStartNavigation(content::NavigationHandle* navigation) override;
   void DidFinishNavigation(content::NavigationHandle* navigation) override;
+  void RenderFrameDeleted(content::RenderFrameHost* frame) override;
   void DidFinishLoad(content::RenderFrameHost* frame, const GURL& url) override;
   void DidFailLoad(content::RenderFrameHost* frame,
                    const GURL& url,
                    int error_code) override;
   void TitleWasSet(content::NavigationEntry* entry) override;
+  void OnDidAddMessageToConsole(content::RenderFrameHost* frame,
+      blink::mojom::ConsoleMessageLevel level, const std::u16string& message,
+      int32_t line, const std::u16string& source,
+      const std::optional<std::u16string>& stack) override;
   void WebContentsDestroyed() override;
 
   zebkit_load_func on_load_ = nullptr;
@@ -169,9 +200,43 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_new_window_data_ = nullptr;
   zebkit_window_open_func on_window_open_ = nullptr;
   void* on_window_open_data_ = nullptr;
-  // The URL of the window a page is opening, between the shell asking
-  // whether to make it and making it (which starts it on about:blank).
-  GURL opening_url_;
+  struct PermissionRule { zebkit_permission_state state; uint64_t revision; };
+  std::map<std::pair<std::string, int>, PermissionRule> permission_rules_;
+  uint32_t permission_timeout_ms_ = 30000;
+  zebkit_permission_func on_permission_ = nullptr;
+  void* on_permission_data_ = nullptr;
+  zebkit_permission_result_func on_permission_result_ = nullptr;
+  void* on_permission_result_data_ = nullptr;
+  uint32_t navigation_timeout_ms_ = 30000;
+  zebkit_navigation_func on_navigation_ = nullptr;
+  void* on_navigation_data_ = nullptr;
+  zebkit_navigation_result_func on_navigation_result_ = nullptr;
+  void* on_navigation_result_data_ = nullptr;
+  base::DictValue settings_;
+  std::optional<zebkit_popup_policy> popup_policy_;
+  base::DictValue window_open_info_;
+  zebkit_window_open_event_func on_window_open_event_ = nullptr;
+  void* on_window_open_event_data_ = nullptr;
+  uint64_t window_open_event_generation_ = 0;
+  zebkit_console_func on_console_ = nullptr;
+  void* on_console_data_ = nullptr;
+  uint64_t console_generation_ = 0;
+  size_t console_pending_ = 0;
+  uint64_t console_dropped_ = 0;
+  zebkit_certificate_func on_certificate_ = nullptr;
+  void* on_certificate_data_ = nullptr;
+  zebkit_certificate_result_func on_certificate_result_ = nullptr;
+  void* on_certificate_result_data_ = nullptr;
+  uint64_t certificate_result_generation_ = 0;
+  zebkit_http_auth_func on_http_auth_ = nullptr;
+  void* on_http_auth_data_ = nullptr;
+  zebkit_http_auth_result_func on_http_auth_result_ = nullptr;
+  void* on_http_auth_result_data_ = nullptr;
+  uint64_t http_auth_result_generation_ = 0;
+  uint32_t http_auth_timeout_ms_ = 30000;
+  uint32_t certificate_timeout_ms_ = 30000;
+  zebkit_popup_blocked_func on_popup_blocked_ = nullptr;
+  void* on_popup_blocked_data_ = nullptr;
   zebkit_drop_func on_drop_ = nullptr;
   void* on_drop_data_ = nullptr;
   // Normal views have a native authentication anchor. Off-screen views opt
@@ -194,7 +259,18 @@ struct zebkit_view : public content::WebContentsObserver,
   };
 
   bool EnsureSession();
-  void SendScript(const std::string& source);
+  void MaybeRunDeferredLoad();
+  void DispatchCommand(base::DictValue message);
+  void FlushTargetCommands(const std::string& target);
+  void SendTargetCommand(const std::string& target, const std::string& method,
+                         base::DictValue params, Reply reply = Reply());
+  void InitializeProtocolTarget(const std::string& target);
+  void ProtocolInitializationReply(const std::string& target, const std::string& error);
+  bool RecordProtocolScript(const std::string& target, size_t index,
+                            const base::DictValue* result);
+  void RemoveProtocolScript(size_t index, Reply reply);
+  void RefreshOtherProtocolTargets(const std::string& current);
+  void SendScript(const std::string& source, Reply reply = Reply());
   void InstallBridge();
   const GrantEntry* GrantFor(const url::Origin& origin) const;
   void Load(zebkit_load_event event, const GURL& url);
@@ -203,6 +279,26 @@ struct zebkit_view : public content::WebContentsObserver,
   scoped_refptr<content::DevToolsAgentHost> devtools_;
   int next_id_ = 1;
   std::map<int, Reply> pending_;
+  // A tab session survives primary-frame swaps. Commands are routed only to
+  // the page target that was primary when the host issued them.
+  std::map<std::string, std::string> protocol_sessions_;
+  std::map<int, std::string> protocol_pending_targets_;
+  std::vector<std::pair<std::string, base::DictValue>> protocol_queued_;
+  std::set<std::string> protocol_ready_targets_;
+  std::map<std::string, size_t> protocol_scripts_applied_;
+  std::map<std::string, size_t> protocol_initializing_;
+  std::vector<std::string> protocol_script_sources_;
+  std::set<size_t> protocol_removed_scripts_;
+  std::map<std::string, std::map<size_t, std::string>> protocol_script_ids_;
+  std::optional<base::DictValue> protocol_user_agent_;
+  size_t protocol_user_agent_revision_ = 0;
+  size_t protocol_user_agent_submission_ = 0;
+  size_t protocol_user_agent_committed_ = 0;
+  std::map<std::string, size_t> protocol_user_agent_applied_;
+  size_t protocol_setups_pending_ = 0;
+  int protocol_auto_attach_id_ = 0;
+  bool protocol_attach_failed_ = false;
+  bool protocol_closing_ = false;
   bool bridge_installed_ = false;
   // Until the browser has the scripts for new documents (zebkit.*, and the
   // application's), a load waits: a document committed first would be

@@ -30,7 +30,7 @@ import pathlib
 import sys
 
 __all__ = [
-    "View", "main", "quit", "post", "version", "engine_version", "is_headless",
+    "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless",
     "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
@@ -115,12 +115,20 @@ _version = _declare("zebkit_version", _S)
 _engine_version = _declare("zebkit_engine_version", _S)
 _free = _declare("zebkit_free", None, _P)
 _main = _declare("zebkit_main", _I, _I, ctypes.POINTER(ctypes.c_char_p), _TASK, _P)
+_init = _declare("zebkit_init", _I, _I, ctypes.POINTER(ctypes.c_char_p))
+_init_settings = _declare("zebkit_init_with_settings", _I, _I, ctypes.POINTER(ctypes.c_char_p), _S, _EP)
+_WAKEUP = ctypes.CFUNCTYPE(None, ctypes.c_int64, _P)
+_set_wakeup = _declare("zebkit_set_wakeup", _B, _WAKEUP, _P)
+_wakeup_callback = None
+_pump = _declare("zebkit_pump", _B)
+_shutdown = _declare("zebkit_shutdown", _B)
 _quit = _declare("zebkit_quit", None)
 _post = _declare("zebkit_post_task", None, _TASK, _P)
 _post_delayed = _declare("zebkit_post_delayed_task", None, _TASK, _P, ctypes.c_uint32)
 _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
+_view_user_agent_override = _declare("zebkit_view_set_user_agent_override", _B, _V, _S, _RESULT, _P)
 _cookie_storage = _declare("zebkit_set_cookie_storage", _B, _I, _S)
 _cookie_key = _declare("zebkit_set_cookie_encryption_key", _B, _P, ctypes.c_size_t)
 _view_target = _declare("zebkit_view_get_target_id", _P, _V)
@@ -138,6 +146,162 @@ _view_get_title = _declare("zebkit_view_get_title", _P, _V)
 _view_on_load = _declare("zebkit_view_on_load", None, _V, _LOAD, _P)
 _view_on_title = _declare("zebkit_view_on_title", None, _V, _TITLE, _P)
 _view_on_close = _declare("zebkit_view_on_close", None, _V, _VIEW, _P)
+_POPUP_BLOCKED = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_WINDOW_OPEN = ctypes.CFUNCTYPE(None, _V, _V, _S, _P)
+_WINDOW_OPEN_EVENT = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_window_open = _declare("zebkit_view_on_window_open", None, _V, _WINDOW_OPEN, _P)
+_view_on_window_open_event = _declare("zebkit_view_on_window_open_event", None, _V, _WINDOW_OPEN_EVENT, _P)
+_view_window_open_info = _declare("zebkit_view_get_window_open_info", _P, _V)
+_CONSOLE = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_console = _declare("zebkit_view_on_console", None, _V, _CONSOLE, _P)
+
+_view_set_settings = _declare("zebkit_view_set_settings", _B, _V, _S, ctypes.POINTER(_P))
+_view_get_settings = _declare("zebkit_view_get_settings", _P, _V)
+_PERMISSION = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
+_PERMISSION_RESULT = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_set_permission = _declare("zebkit_view_set_permission", _B, _V, _S, _S, _I, _EP)
+_view_get_permission = _declare("zebkit_view_get_permission", _I, _V, _S, _S)
+_view_reset_permissions = _declare("zebkit_view_reset_permissions", _B, _V, _S, _EP)
+_view_permission_timeout = _declare("zebkit_view_set_permission_timeout", _B, _V, ctypes.c_uint32)
+_view_on_permission = _declare("zebkit_view_on_permission", None, _V, _PERMISSION, _P)
+_view_on_permission_result = _declare("zebkit_view_on_permission_result", None, _V, _PERMISSION_RESULT, _P)
+_permission_info = _declare("zebkit_permission_request_info", _P, _P)
+_permission_respond = _declare("zebkit_permission_respond", _B, _P, _I, _B)
+_PERMISSION_STATES = {"prompt": 0, "granted": 1, "denied": 2}
+_NAVIGATION = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
+_NAVIGATION_RESULT = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_navigation = _declare("zebkit_view_on_navigation", None, _V, _NAVIGATION, _P)
+_view_on_navigation_result = _declare("zebkit_view_on_navigation_result", None, _V, _NAVIGATION_RESULT, _P)
+_view_navigation_timeout = _declare("zebkit_view_set_navigation_timeout", _B, _V, ctypes.c_uint32)
+_view_navigation_fail_closed = _declare("zebkit_view_set_navigation_fail_closed", _B, _V, ctypes.c_bool)
+_navigation_info = _declare("zebkit_navigation_request_info", _P, _P)
+_navigation_respond = _declare("zebkit_navigation_respond", _B, _P, _I, _S, _EP)
+
+
+_CERTIFICATE = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
+_CERTIFICATE_RESULT = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_certificate = _declare("zebkit_view_on_certificate", None, _V, _CERTIFICATE, _P)
+_view_on_certificate_result = _declare("zebkit_view_on_certificate_result", None, _V, _CERTIFICATE_RESULT, _P)
+_view_certificate_timeout = _declare("zebkit_view_set_certificate_timeout", _B, _V, ctypes.c_uint32)
+_certificate_info = _declare("zebkit_certificate_request_info", _P, _P)
+_certificate_respond = _declare("zebkit_certificate_respond", _B, _P, _B)
+
+_HTTP_AUTH = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
+_HTTP_AUTH_RESULT = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_http_auth = _declare("zebkit_view_on_http_auth", None, _V, _HTTP_AUTH, _P)
+_view_on_http_auth_result = _declare("zebkit_view_on_http_auth_result", None, _V, _HTTP_AUTH_RESULT, _P)
+_view_http_auth_timeout = _declare("zebkit_view_set_http_auth_timeout", _B, _V, ctypes.c_uint32)
+_http_auth_info = _declare("zebkit_http_auth_request_info", _P, _P)
+_http_auth_respond = _declare("zebkit_http_auth_respond", _B, _P, _S, _S)
+
+
+class HttpAuthRequest:
+    """An expiring HTTP/proxy challenge; credentials are not kept on this object."""
+    def __init__(self, handle, metadata):
+        self._handle = handle
+        self.metadata = metadata
+
+    @property
+    def info(self):
+        value = _string(_http_auth_info(self._handle))
+        return json.loads(value) if value else None
+
+    def respond(self, username=None, password=None):
+        """Reply once with two strings, or cancel with two None values."""
+        if username is None and password is None:
+            return bool(_http_auth_respond(self._handle, None, None))
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise TypeError("HTTP authentication needs two strings or two None values")
+        if '\0' in username or '\0' in password:
+            raise ValueError("HTTP authentication credentials cannot contain NUL")
+        user, secret = username.encode(), password.encode()
+        if len(user) > 65536 or len(secret) > 65536:
+            raise ValueError("each HTTP authentication credential is limited to 65536 UTF-8 bytes")
+        return bool(_http_auth_respond(self._handle, user, secret))
+
+
+class CertificateRequest:
+    """A document TLS error; keeping this object does not extend its deadline."""
+    def __init__(self, handle, metadata):
+        self._handle = handle
+        self.metadata = metadata
+
+    @property
+    def info(self):
+        value = _string(_certificate_info(self._handle))
+        return json.loads(value) if value else None
+
+    def respond(self, allow=False):
+        """Reply once; False for stale requests or attempts to ignore strict errors."""
+        if not isinstance(allow, bool):
+            raise TypeError("certificate reply must be a boolean")
+        return bool(_certificate_respond(self._handle, allow))
+
+
+class NavigationRequest:
+    """An engine-thread navigation decision; retaining it does not extend its deadline.
+
+    metadata is a snapshot; info becomes None after settlement. A reply affects
+    one stage of one navigation. Unanswered stages continue after their deadline.
+    """
+    def __init__(self, handle, metadata):
+        self._handle = handle
+        self.metadata = metadata
+
+    @property
+    def info(self):
+        value = _string(_navigation_info(self._handle))
+        return json.loads(value) if value else None
+
+    def respond(self, action='continue', replacement_url=None):
+        """Continue, cancel, or redirect as GET in the same frame; False if stale/invalid."""
+        actions = {'continue': 0, 'cancel': 1, 'redirect': 2}
+        if action not in actions:
+            raise ValueError("unknown navigation action")
+        if replacement_url is not None and (not isinstance(replacement_url, str) or '\0' in replacement_url):
+            raise ValueError("replacement URL must be a NUL-free string")
+        return bool(_navigation_respond(self._handle, actions[action],
+                    replacement_url.encode() if replacement_url is not None else None, None))
+
+
+
+def _permission_state(state):
+    if state not in _PERMISSION_STATES:
+        raise ValueError("permission state must be prompt, granted or denied")
+    return _PERMISSION_STATES[state]
+
+
+def _permission_text(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or '\0' in value:
+        raise ValueError("permission name and origin must be NUL-free strings")
+    return value.encode()
+
+
+class PermissionRequest:
+    """A permission prompt. Use only on the engine thread; post worker replies.
+
+    metadata is a snapshot. info is None after cancellation, timeout or reply;
+    respond returns False for stale requests, without affecting later prompts.
+    """
+
+    def __init__(self, handle, metadata):
+        self._handle = handle
+        self.metadata = metadata
+
+    @property
+    def info(self):
+        value = _string(_permission_info(self._handle))
+        return json.loads(value) if value else None
+
+    def respond(self, state, remember=False):
+        """Reply once; remember stores a rule for the requesting origin."""
+        return bool(_permission_respond(self._handle, _permission_state(state), bool(remember)))
+
+_view_popup_policy = _declare("zebkit_view_set_popup_policy", _B, _V, _I)
+_view_get_popup_policy = _declare("zebkit_view_get_popup_policy", _I, _V)
+_view_on_popup_blocked = _declare("zebkit_view_on_popup_blocked", None, _V, _POPUP_BLOCKED, _P)
 _view_evaluate = _declare("zebkit_view_evaluate", None, _V, _S, _RESULT, _P)
 _view_grant = _declare("zebkit_view_grant", None, _V, _S, _U, _S)
 _view_bind = _declare("zebkit_view_bind", None, _V, _S, _BIND, _P)
@@ -236,7 +400,59 @@ def main(ready, argv=None):
     array = (ctypes.c_char_p * (len(argv) + 1))(*[a.encode() for a in argv], None)
     callback = _TASK(_guard(lambda data: ready()))
     _alive.add(callback)
-    return _main(len(argv), array, callback, None)
+    try:
+        return _main(len(argv), array, callback, None)
+    finally:
+        _alive.discard(callback)
+
+
+def init(argv=None, *, settings=None):
+    """Initialize on the main thread for a host-owned loop; once per process.
+    Returns 0 on success or Chromium's startup code. With settings (a dict or
+    JSON string), invalid settings/startup errors raise Error with the native
+    explanation. Use set_wakeup for event-driven pumping, or a toolkit timer;
+    call shutdown outside callbacks when the engine is no longer needed.
+    """
+    argv = list(sys.argv if argv is None else argv) or ["python"]
+    array = (ctypes.c_char_p * (len(argv) + 1))(*[a.encode() for a in argv], None)
+    if settings is None:
+        return _init(len(argv), array)
+    source = settings if isinstance(settings, str) else json.dumps(settings)
+    error = ctypes.c_void_p()
+    code = _init_settings(len(argv), array, source.encode(), ctypes.byref(error))
+    message = _string(error.value)
+    if code:
+        raise Error(message or f"engine startup failed: {code}")
+    return code
+
+
+def pump():
+    """Process ready engine/native events without waiting; False if invalid."""
+    return bool(_pump())
+
+
+def set_wakeup(function):
+    """Before init, set function(delay_ms) to queue a host event/timer.
+    It may run on any engine thread: never call zebkit or block in it.
+    Keep the earliest deadline and consume it before pump(). None removes it.
+    """
+    global _wakeup_callback
+    callback = _WAKEUP(_guard(lambda delay, data: function(delay))) if function else _WAKEUP()
+    if not _set_wakeup(callback, None):
+        return False
+    _wakeup_callback = callback if function else None
+    return True
+
+
+def shutdown():
+    """Close views and stop the engine on its initializing thread, outside callbacks.
+    Returns False if invalid. The engine cannot be restarted after shutdown.
+    """
+    global _wakeup_callback
+    if not _shutdown():
+        return False
+    _wakeup_callback = None
+    return True
 
 
 def quit():  # noqa: A001
@@ -263,6 +479,17 @@ class View:
         self._handle = _view_new(url.encode() if url else None, width, height)
         if not self._handle:
             raise Error("cannot create a view")
+        self._initialize_callbacks()
+
+    @classmethod
+    def _adopt(cls, handle):
+        """Wrap a newly created native popup exactly once, from its creation callback."""
+        view = cls.__new__(cls)
+        view._handle = handle
+        view._initialize_callbacks()
+        return view
+
+    def _initialize_callbacks(self):
         self._callbacks = {}
         self._on_close_user = None
         self._closed = False
@@ -301,6 +528,224 @@ class View:
 
     def resize(self, width, height):
         _view_resize(self._check(), width, height)
+
+    def set_settings(self, settings):
+        """Merge native preferences; None values reset individual keys."""
+        source = settings if isinstance(settings, str) else json.dumps(settings)
+        if '\0' in source:
+            raise Error("view settings contain NUL")
+        error = ctypes.c_void_p()
+        if not _view_set_settings(self._check(), source.encode(), ctypes.byref(error)):
+            _raise(error, "view settings rejected")
+
+    @property
+    def settings(self):
+        """Explicit native preferences; temporary CDP emulation is separate."""
+        return json.loads(_string(_view_get_settings(self._check())))
+
+    def set_permission(self, permission, state, origin=None):
+        """Set a view rule; None uses the current origin, '*' a default rule."""
+        error = _P()
+        if not _view_set_permission(self._check(), _permission_text(origin),
+                                    _permission_text(permission), _permission_state(state), ctypes.byref(error)):
+            _raise(error, "permission rule rejected")
+
+    def get_permission(self, permission, origin=None):
+        """Effective policy for a concrete origin; document security still applies."""
+        state = _view_get_permission(self._check(), _permission_text(origin), _permission_text(permission))
+        if state < 0:
+            raise Error("invalid permission or origin")
+        return ("prompt", "granted", "denied")[state]
+
+    def reset_permissions(self, origin=None):
+        """Remove all view rules, or only rules at the supplied origin/default."""
+        error = _P()
+        if not _view_reset_permissions(self._check(), _permission_text(origin), ctypes.byref(error)):
+            _raise(error, "permission reset rejected")
+
+    def set_permission_timeout(self, milliseconds):
+        """Deadline for future prompts, from 1 to 300000 milliseconds."""
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError("permission timeout must be an integer from 1 to 300000")
+        if not _view_permission_timeout(self._check(), milliseconds):
+            raise Error("permission timeout rejected")
+
+    def on_permission(self, function):
+        """function(PermissionRequest); None restores the default permission policy."""
+        self._check()
+        previous = self._callbacks.get("permission")
+        callback = _PERMISSION(_guard(lambda h, request, payload, d:
+                    function(PermissionRequest(request, json.loads(payload))))) if function else _PERMISSION()
+        self._set("permission", callback, _view_on_permission)
+        if previous is not None:
+            # A handler can replace itself while its trampoline is executing.
+            post(lambda previous=previous: None)
+
+    def on_permission_result(self, function):
+        """function(dict) receives asynchronous outcomes; None removes it."""
+        self._check()
+        previous = self._callbacks.get("permission-result")
+        callback = _PERMISSION_RESULT(_guard(lambda h, payload, d: function(json.loads(payload)))) if function else _PERMISSION_RESULT()
+        self._set("permission-result", callback, _view_on_permission_result)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def set_certificate_timeout(self, milliseconds):
+        """Deadline for future certificate decisions, from 1 to 300000 milliseconds."""
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError("certificate timeout must be an integer from 1 to 300000")
+        if not _view_certificate_timeout(self._check(), milliseconds):
+            raise Error("certificate timeout rejected")
+
+    def on_certificate(self, function):
+        """function(CertificateRequest); None denies pending requests and removes it."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("certificate handler must be callable or None")
+        previous = self._callbacks.get('certificate')
+        callback = _CERTIFICATE(_guard(lambda h, request, payload, d:
+                    function(CertificateRequest(request, json.loads(payload))))) if function is not None else _CERTIFICATE()
+        self._set('certificate', callback, _view_on_certificate)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_certificate_result(self, function):
+        """function(dict) observes asynchronous outcomes; None removes it."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("certificate result observer must be callable or None")
+        previous = self._callbacks.get('certificate-result')
+        callback = _CERTIFICATE_RESULT(_guard(lambda h, payload, d:
+                    function(json.loads(payload)))) if function is not None else _CERTIFICATE_RESULT()
+        self._set('certificate-result', callback, _view_on_certificate_result)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def set_http_auth_timeout(self, milliseconds):
+        """Deadline for future HTTP challenges, from 1 to 300000 milliseconds."""
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError("HTTP authentication timeout must be an integer from 1 to 300000")
+        if not _view_http_auth_timeout(self._check(), milliseconds):
+            raise Error("HTTP authentication timeout rejected")
+
+    def on_http_auth(self, function):
+        """function(HttpAuthRequest); None cancels pending challenges and removes it."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("HTTP authentication handler must be callable or None")
+        previous = self._callbacks.get('http-auth')
+        callback = _HTTP_AUTH(_guard(lambda h, request, payload, d:
+                    function(HttpAuthRequest(request, json.loads(payload))))) if function is not None else _HTTP_AUTH()
+        self._set('http-auth', callback, _view_on_http_auth)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_http_auth_result(self, function):
+        """function(dict) observes credential provision/cancellation, not HTTP success."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("HTTP authentication result observer must be callable or None")
+        previous = self._callbacks.get('http-auth-result')
+        callback = _HTTP_AUTH_RESULT(_guard(lambda h, payload, d:
+                    function(json.loads(payload)))) if function is not None else _HTTP_AUTH_RESULT()
+        self._set('http-auth-result', callback, _view_on_http_auth_result)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def set_navigation_fail_closed(self, fail_closed):
+        """With True, an unanswered navigation is cancelled instead of continued."""
+        if not _view_navigation_fail_closed(self._check(), bool(fail_closed)):
+            raise RuntimeError("cannot set the navigation policy of this view")
+
+    def set_navigation_timeout(self, milliseconds):
+        """Deadline for future navigation decisions, from 1 to 300000 milliseconds."""
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError("navigation timeout must be an integer from 1 to 300000")
+        if not _view_navigation_timeout(self._check(), milliseconds):
+            raise Error("navigation timeout rejected")
+
+    def on_navigation(self, function):
+        """function(NavigationRequest); None continues pending requests and removes policy."""
+        self._check()
+        previous = self._callbacks.get('navigation')
+        callback = _NAVIGATION(_guard(lambda h, request, payload, d:
+                    function(NavigationRequest(request, json.loads(payload))))) if function else _NAVIGATION()
+        self._set('navigation', callback, _view_on_navigation)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_navigation_result(self, function):
+        """function(dict) observes asynchronous decisions; None removes it."""
+        self._check()
+        previous = self._callbacks.get('navigation-result')
+        callback = _NAVIGATION_RESULT(_guard(lambda h, payload, d: function(json.loads(payload)))) if function else _NAVIGATION_RESULT()
+        self._set('navigation-result', callback, _view_on_navigation_result)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def set_popup_policy(self, policy):
+        """Set block-without-gesture, allow or block for future new windows."""
+        policies = {"block-without-gesture": 0, "allow": 1, "block": 2}
+        if policy not in policies:
+            raise ValueError("unknown popup policy")
+        return bool(_view_popup_policy(self._check(), policies[policy]))
+
+    @property
+    def popup_policy(self):
+        return ("block-without-gesture", "allow", "block")[_view_get_popup_policy(self._check())]
+
+    @property
+    def window_open_info(self):
+        """Creation snapshot for a popup; an ordinary view returns an empty dict."""
+        value = _view_window_open_info(self._check())
+        if not value:
+            raise Error("window metadata unavailable on this thread")
+        return json.loads(_string(value))
+
+    def on_window_open(self, function):
+        """function(child_view, url) receives the original popup with its opener."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("window handler must be callable or None")
+        previous = self._callbacks.get('window-open')
+        callback = _WINDOW_OPEN(_guard(lambda h, child, url, d:
+                    function(View._adopt(child), url.decode()))) if function is not None else _WINDOW_OPEN()
+        self._set('window-open', callback, _view_on_window_open)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_window_open_event(self, function):
+        """function(dict) observes decision/created metadata; None removes it."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("window observer must be callable or None")
+        previous = self._callbacks.get('window-open-event')
+        callback = _WINDOW_OPEN_EVENT(_guard(lambda h, payload, d:
+                    function(json.loads(payload)))) if function is not None else _WINDOW_OPEN_EVENT()
+        self._set('window-open-event', callback, _view_on_window_open_event)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_console(self, function):
+        """function(dict) observes native document-console messages; None removes it."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("console observer must be callable or None")
+        previous = self._callbacks.get('console')
+        callback = _CONSOLE(_guard(lambda h, payload, d:
+                    function(json.loads(payload)))) if function is not None else _CONSOLE()
+        self._set('console', callback, _view_on_console)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def on_popup_blocked(self, function):
+        """Report a blocked popup as a dict, after the decision; None removes it."""
+        self._check()
+        previous = self._callbacks.get("popup-blocked")
+        callback = _POPUP_BLOCKED(_guard(lambda view, event, data: function(json.loads(event)))) if function else _POPUP_BLOCKED()
+        self._set("popup-blocked", callback, _view_on_popup_blocked)
+        if previous is not None:
+            post(lambda previous=previous: None)
 
     def on_authentication(self, function):
         """Receive host-owned Passkey events as dictionaries; None restores native UI.
@@ -364,6 +809,23 @@ class View:
         callback = _RESULT(_guard(done))
         _alive.add(callback)
         _view_evaluate(self._check(), script.encode(), callback, None)
+
+    def set_user_agent_override(self, options, function=None):
+        """Set UA/client hints together; function(value, error) reports validation."""
+        handle = self._check()
+        if function is not None and not callable(function):
+            raise TypeError("completion must be callable or None")
+        source = options if isinstance(options, str) else json.dumps(options, ensure_ascii=False)
+        encoded = source.encode('utf-8')
+        if b'\0' in encoded:
+            raise ValueError("user agent options must not contain a literal NUL")
+        def done(handle, result, error, data):
+            _alive.discard(callback)
+            if function is not None:
+                function(json.loads(result) if result else None, error.decode() if error else None)
+        callback = _RESULT(_guard(done))
+        _alive.add(callback)
+        return bool(_view_user_agent_override(handle, encoded, callback, None))
 
     def grant(self, origin, allow, files_root=None):
         """Give pages of origin the zebkit.* capabilities in allow (ALLOW_*)."""
@@ -558,6 +1020,7 @@ _pdf_text_layout = _declare("zebkit_pdf_text_layout", _P, _P, _I, _EP)
 _pdf_text_rects = _declare("zebkit_pdf_text_rects", _P, _P, _I, _I, _I, _EP)
 _pdf_char_at = _declare("zebkit_pdf_char_at", _I, _P, _I, ctypes.c_double, ctypes.c_double, ctypes.c_double)
 _pdf_search = _declare("zebkit_pdf_search", _P, _P, _S, _U, _I, _I, _EP)
+_pdf_set_outline = _declare("zebkit_pdf_set_outline", _B, _P, _S, _EP)
 _pdf_outline = _declare("zebkit_pdf_outline", _P, _P, _EP)
 _pdf_links = _declare("zebkit_pdf_links", _P, _P, _I, _EP)
 _pdf_annotations = _declare("zebkit_pdf_annotations", _P, _P, _I, _EP)
@@ -674,6 +1137,10 @@ class Pdf:
     def search(self, query, match_case=False, whole_word=False, first=0, limit=0):
         flags = (1 if match_case else 0) | (2 if whole_word else 0)
         return self._json(_pdf_search, query.encode(), flags, first, limit)
+
+    def set_outline(self, items):
+        """Replace the bookmark tree; [] removes it. Validated before mutation."""
+        self._ok(_pdf_set_outline, json.dumps(items).encode())
 
     def outline(self):
         return self._json(_pdf_outline)

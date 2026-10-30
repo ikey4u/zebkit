@@ -1,0 +1,635 @@
+//! A winit-owned window and loop, with an off-screen web view and native PDF.
+use softbuffer::{Context, Surface};
+use std::{
+    num::NonZeroU32,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, Instant},
+};
+use winit::{
+    application::ApplicationHandler,
+    dpi::{LogicalSize, PhysicalPosition},
+    event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, OwnedDisplayHandle},
+    keyboard::{Key, ModifiersState, NamedKey, PhysicalKey},
+    window::{CursorIcon, Window, WindowId},
+};
+use zebkit::{
+    offscreen::{self, Buffers, FrameBuffer, Layer, Modifiers},
+    pdf::{Document, RenderOptions},
+    View,
+};
+
+struct Bitmap {
+    width: u32,
+    height: u32,
+    pixels: Vec<u32>,
+    bounds: offscreen::Rect,
+}
+enum Event {
+    Wake(Instant),
+    Frame(Layer, Bitmap),
+    Popup(bool),
+    Cursor(String),
+    Caret(offscreen::Rect),
+}
+struct App {
+    proxy: EventLoopProxy<Event>,
+    context: Context<OwnedDisplayHandle>,
+    surface: Option<Surface<OwnedDisplayHandle, Rc<Window>>>,
+    window: Option<Rc<Window>>,
+    view: Option<View>,
+    pdf: Option<Document>,
+    document: Option<Bitmap>,
+    web: Option<Bitmap>,
+    popup: Option<Bitmap>,
+    popup_shown: bool,
+    page: usize,
+    cursor: PhysicalPosition<f64>,
+    modifiers: ModifiersState,
+    buttons: Modifiers,
+    clicks: u32,
+    last_press: Option<(offscreen::MouseButton, std::time::Instant)>,
+    deadline: Option<Instant>,
+    smoke_due: Option<Instant>,
+    smoke: Option<PathBuf>,
+    arguments: Vec<std::ffi::OsString>,
+    started: bool,
+    frames: usize,
+    pumps: usize,
+    last_pixels: Vec<u32>,
+}
+impl App {
+    fn render_pdf(&mut self) {
+        let image = self
+            .pdf
+            .as_mut()
+            .unwrap()
+            .render(
+                self.page,
+                &RenderOptions {
+                    scale: 1.5,
+                    ..Default::default()
+                },
+            )
+            .expect("render PDF");
+        let pixels = image
+            .rgba
+            .chunks_exact(4)
+            .map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
+            .collect();
+        self.document = Some(Bitmap {
+            width: image.width,
+            height: image.height,
+            pixels,
+            bounds: offscreen::Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+        });
+    }
+    fn resize_web(&self) {
+        if let (Some(window), Some(view)) = (&self.window, &self.view) {
+            let size = window.inner_size();
+            let scale = window.scale_factor();
+            view.set_size(
+                ((size.width / 2) as f64 / scale).max(1.) as u32,
+                (size.height as f64 / scale).max(1.) as u32,
+                scale as f32,
+            );
+        }
+    }
+    fn paint(&mut self) {
+        let Some(window) = &self.window else { return };
+        let size = window.inner_size();
+        if size.width < 2 || size.height == 0 {
+            return;
+        }
+        let surface = self.surface.as_mut().unwrap();
+        surface
+            .resize(
+                NonZeroU32::new(size.width).unwrap(),
+                NonZeroU32::new(size.height).unwrap(),
+            )
+            .unwrap();
+        let mut buffer = surface.buffer_mut().unwrap();
+        buffer.fill(0xdddddd);
+        let left = size.width / 2;
+        let mut draw = |image: &Bitmap, x: i32, y: i32, width: u32, height: u32| {
+            if !image.width.eq(&0) && image.height > 0 && width > 0 && height > 0 {
+                for dy in 0..height {
+                    let py = y + dy as i32;
+                    if py < 0 || py >= size.height as i32 {
+                        continue;
+                    }
+                    for dx in 0..width {
+                        let px = x + dx as i32;
+                        if px < 0 || px >= size.width as i32 {
+                            continue;
+                        }
+                        let source = ((dy as u64 * image.height as u64 / height as u64)
+                            * image.width as u64
+                            + dx as u64 * image.width as u64 / width as u64)
+                            as usize;
+                        buffer[py as usize * size.width as usize + px as usize] =
+                            image.pixels[source];
+                    }
+                }
+            }
+        };
+        if let Some(web) = &self.web {
+            draw(web, 0, 0, left, size.height);
+        }
+        if self.popup_shown {
+            if let Some(popup) = &self.popup {
+                let scale = window.scale_factor();
+                draw(
+                    popup,
+                    (popup.bounds.x as f64 * scale) as i32,
+                    (popup.bounds.y as f64 * scale) as i32,
+                    popup.width,
+                    popup.height,
+                );
+            }
+        }
+        if let Some(pdf) = &self.document {
+            let scale = ((size.width - left).saturating_sub(24) as f64 / pdf.width as f64)
+                .min(size.height.saturating_sub(24) as f64 / pdf.height as f64);
+            let width = (pdf.width as f64 * scale) as u32;
+            let height = (pdf.height as f64 * scale) as u32;
+            draw(
+                pdf,
+                (left + (size.width - left - width) / 2) as i32,
+                ((size.height - height) / 2) as i32,
+                width,
+                height,
+            );
+        }
+        self.last_pixels = buffer.to_vec();
+        buffer.present().unwrap();
+    }
+    fn stop(&mut self) {
+        if !self.started {
+            return;
+        }
+        if let Some(view) = self.view.take() {
+            view.close();
+        }
+        self.pdf.take();
+        assert!(zebkit::shutdown());
+        self.started = false;
+        println!(
+            "winit host: {} frames, {} event-driven pumps, shutdown=ok",
+            self.frames, self.pumps
+        );
+    }
+    fn input_modifiers(&self) -> Modifiers {
+        let mut flags = self.buttons;
+        if self.modifiers.shift_key() {
+            flags = flags | Modifiers::SHIFT;
+        }
+        if self.modifiers.control_key() {
+            flags = flags | Modifiers::CONTROL;
+        }
+        if self.modifiers.alt_key() {
+            flags = flags | Modifiers::ALT;
+        }
+        if self.modifiers.super_key() {
+            flags = flags | Modifiers::META;
+        }
+        flags
+    }
+    fn logical_cursor(&self) -> (f32, f32) {
+        let scale = self.window.as_ref().unwrap().scale_factor();
+        (
+            (self.cursor.x / scale) as f32,
+            (self.cursor.y / scale) as f32,
+        )
+    }
+    fn over_pdf(&self) -> bool {
+        self.cursor.x >= (self.window.as_ref().unwrap().inner_size().width / 2) as f64
+    }
+    fn turn(&mut self, forward: bool) {
+        let count = self.pdf.as_mut().unwrap().page_count();
+        let next = if forward {
+            (self.page + 1).min(count - 1)
+        } else {
+            self.page.saturating_sub(1)
+        };
+        if next != self.page {
+            self.page = next;
+            self.render_pdf();
+            self.window.as_ref().unwrap().request_redraw();
+        }
+    }
+}
+impl ApplicationHandler<Event> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = Rc::new(
+            event_loop
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("zebkit — winit web / PDF (scroll over PDF to turn pages)")
+                        .with_inner_size(LogicalSize::new(1200., 740.)),
+                )
+                .unwrap(),
+        );
+        window.set_ime_allowed(true);
+        self.surface = Some(Surface::new(&self.context, window.clone()).unwrap());
+        self.window = Some(window.clone());
+        let wake = self.proxy.clone();
+        assert!(zebkit::set_wakeup(move |delay| {
+            let _ = wake.send_event(Event::Wake(Instant::now() + delay));
+        }));
+        zebkit::init_with_settings(self.arguments.clone(), r#"{"headless":true}"#)
+            .expect("initialize engine");
+        self.started = true;
+        let pdf_path = self
+            .arguments
+            .iter()
+            .filter_map(|v| v.to_str())
+            .find_map(|v| v.strip_prefix("--pdf="));
+        self.pdf = Some(
+            match pdf_path {
+                Some(path) => Document::open_file(std::path::Path::new(path), None),
+                None => Document::open(include_bytes!("../../sample.pdf"), None),
+            }
+            .expect("open PDF"),
+        );
+        self.render_pdf();
+        let view = View::new_offscreen(None, 600, 740, window.scale_factor() as f32)
+            .expect("off-screen view");
+        view.set_frame_buffers(Buffers::SharedMemory);
+        let proxy = self.proxy.clone();
+        view.on_frame(move |frame| {
+            if let FrameBuffer::SharedMemory { pixels, stride, .. } = frame.buffer() {
+                let width = frame.width();
+                let height = frame.height();
+                let mut copy = Vec::with_capacity(width as usize * height as usize);
+                for y in 0..height as usize {
+                    for pixel in pixels[y * stride..y * stride + width as usize * 4].chunks_exact(4)
+                    {
+                        copy.push(
+                            (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32,
+                        );
+                    }
+                }
+                let _ = proxy.send_event(Event::Frame(
+                    frame.layer(),
+                    Bitmap {
+                        width,
+                        height,
+                        pixels: copy,
+                        bounds: frame.bounds(),
+                    },
+                ));
+            }
+        });
+        let proxy = self.proxy.clone();
+        view.on_popup(move |bounds| {
+            let _ = proxy.send_event(Event::Popup(bounds.is_some()));
+        });
+        let proxy = self.proxy.clone();
+        view.on_cursor(move |name, _| {
+            let _ = proxy.send_event(Event::Cursor(name.into()));
+        });
+        let proxy = self.proxy.clone();
+        view.on_caret(move |rect| {
+            if let Some(rect) = rect {
+                let _ = proxy.send_event(Event::Caret(rect));
+            }
+        });
+        let url = self
+            .arguments
+            .iter()
+            .filter_map(|v| v.to_str())
+            .find_map(|v| v.strip_prefix("--url="));
+        view.load_url(url.unwrap_or("data:text/html,<!doctype html><meta charset=utf-8><style>body{font:20px sans-serif;padding:24px}input,button,select{font:inherit;margin:8px}</style><h1>Your native window</h1><p>This page is a zebkit off-screen view.</p><input placeholder='Type here'><button onclick=\"this.textContent='Clicked'\">Click me</button><select><option>First</option><option>Second</option></select>"));
+        self.view = Some(view);
+        self.resize_web();
+        self.deadline = Some(Instant::now());
+        if self.smoke.is_some() {
+            self.smoke_due = Some(Instant::now() + Duration::from_millis(1500));
+        }
+        if self.arguments.iter().any(|v| v == "--print-bounds") {
+            println!("host-web-bounds: 0 0 {}", window.scale_factor());
+        }
+    }
+    fn user_event(&mut self, _: &ActiveEventLoop, event: Event) {
+        match event {
+            Event::Wake(due) => self.deadline = Some(self.deadline.map_or(due, |old| old.min(due))),
+            Event::Frame(layer, image) => {
+                self.frames += 1;
+                if layer == Layer::Popup {
+                    self.popup = Some(image);
+                } else {
+                    self.web = Some(image);
+                }
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            Event::Popup(shown) => {
+                self.popup_shown = shown;
+                if !shown {
+                    self.popup = None;
+                }
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            Event::Cursor(name) => self
+                .window
+                .as_ref()
+                .unwrap()
+                .set_cursor(match name.as_str() {
+                    "pointer" => CursorIcon::Pointer,
+                    "text" => CursorIcon::Text,
+                    "wait" => CursorIcon::Wait,
+                    "crosshair" => CursorIcon::Crosshair,
+                    "ew-resize" => CursorIcon::EwResize,
+                    "ns-resize" => CursorIcon::NsResize,
+                    _ => CursorIcon::Default,
+                }),
+            Event::Caret(rect) => self.window.as_ref().unwrap().set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(rect.x, rect.y),
+                LogicalSize::new(rect.width, rect.height),
+            ),
+        }
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                self.stop();
+                event_loop.exit();
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.resize_web();
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            WindowEvent::RedrawRequested => self.paint(),
+            WindowEvent::Focused(focus) => {
+                if let Some(view) = &self.view {
+                    view.set_focus(focus && !self.over_pdf());
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position;
+                if !self.over_pdf() {
+                    let (x, y) = self.logical_cursor();
+                    if let Some(view) = &self.view {
+                        view.send_mouse(
+                            offscreen::MouseEvent::Move,
+                            x,
+                            y,
+                            offscreen::MouseButton::None,
+                            0,
+                            self.input_modifiers(),
+                        );
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(view) = &self.view {
+                    view.send_mouse(
+                        offscreen::MouseEvent::Leave,
+                        0.,
+                        0.,
+                        offscreen::MouseButton::None,
+                        0,
+                        self.input_modifiers(),
+                    );
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let (button, flag) = match button {
+                    MouseButton::Left => (offscreen::MouseButton::Left, Modifiers::LEFT_BUTTON),
+                    MouseButton::Middle => {
+                        (offscreen::MouseButton::Middle, Modifiers::MIDDLE_BUTTON)
+                    }
+                    MouseButton::Right => (offscreen::MouseButton::Right, Modifiers::RIGHT_BUTTON),
+                    _ => (offscreen::MouseButton::None, Modifiers::NONE),
+                };
+                if state == ElementState::Pressed {
+                    // A double click is the same button again within 400 ms.
+                    let now = std::time::Instant::now();
+                    self.clicks = match self.last_press {
+                        Some((last, at)) if last == button && now.duration_since(at).as_millis() < 400 => self.clicks + 1,
+                        _ => 1,
+                    };
+                    self.last_press = Some((button, now));
+                    self.buttons = self.buttons | flag;
+                } else {
+                    self.buttons.0 &= !flag.0;
+                }
+                if let Some(view) = &self.view {
+                    view.set_focus(!self.over_pdf());
+                    if !self.over_pdf() {
+                        let (x, y) = self.logical_cursor();
+                        view.send_mouse(
+                            if state == ElementState::Pressed {
+                                offscreen::MouseEvent::Down
+                            } else {
+                                offscreen::MouseEvent::Up
+                            },
+                            x,
+                            y,
+                            button,
+                            self.clicks,
+                            self.input_modifiers(),
+                        );
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy, precise) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 40., y * 40., false),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let scale = self.window.as_ref().unwrap().scale_factor() as f32;
+                        (p.x as f32 / scale, p.y as f32 / scale, true)
+                    }
+                };
+                if self.over_pdf() {
+                    if dy != 0. {
+                        self.turn(dy < 0.);
+                    }
+                } else if let Some(view) = &self.view {
+                    let (x, y) = self.logical_cursor();
+                    view.send_wheel(
+                        x,
+                        y,
+                        -dx,
+                        -dy,
+                        precise,
+                        offscreen::WheelPhase::None,
+                        self.input_modifiers(),
+                    );
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if self.over_pdf() {
+                    if event.state == ElementState::Pressed {
+                        if event.logical_key == Key::Named(NamedKey::PageDown) {
+                            self.turn(true);
+                        } else if event.logical_key == Key::Named(NamedKey::PageUp) {
+                            self.turn(false);
+                        }
+                    }
+                    return;
+                }
+                if let Some(view) = &self.view {
+                    let code = match &event.logical_key {
+                        Key::Character(s) if s.len() == 1 => {
+                            s.as_bytes()[0].to_ascii_uppercase() as i32
+                        }
+                        Key::Named(n) => match n {
+                            NamedKey::Enter => 13,
+                            NamedKey::Backspace => 8,
+                            NamedKey::Tab => 9,
+                            NamedKey::Escape => 27,
+                            NamedKey::ArrowLeft => 37,
+                            NamedKey::ArrowUp => 38,
+                            NamedKey::ArrowRight => 39,
+                            NamedKey::ArrowDown => 40,
+                            NamedKey::Delete => 46,
+                            NamedKey::Home => 36,
+                            NamedKey::End => 35,
+                            _ => 0,
+                        },
+                        _ => 0,
+                    };
+                    let physical = match event.physical_key {
+                        PhysicalKey::Code(code) => Some(format!("{code:?}")),
+                        _ => None,
+                    };
+                    view.send_key(&offscreen::KeyEvent {
+                        kind: if event.state == ElementState::Pressed {
+                            offscreen::KeyEventType::Down
+                        } else {
+                            offscreen::KeyEventType::Up
+                        },
+                        modifiers: self.input_modifiers()
+                            | if event.repeat {
+                                Modifiers::AUTO_REPEAT
+                            } else {
+                                Modifiers::NONE
+                            },
+                        key_code: code,
+                        native_key_code: 0,
+                        code: physical.as_deref(),
+                        key: None,
+                        text: None,
+                        unmodified_text: None,
+                    });
+                    if event.state == ElementState::Pressed
+                        && !self.modifiers.control_key()
+                        && !self.modifiers.super_key()
+                        && !matches!(code, 8 | 9 | 13 | 27 | 46)
+                    {
+                        if let Some(text) = event.text {
+                            view.ime_commit(&text);
+                        }
+                    }
+                }
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if let Some(view) = &self.view {
+                    view.ime_commit(&text);
+                }
+            }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                if let Some(view) = &self.view {
+                    if text.is_empty() {
+                        view.ime_cancel();
+                    } else {
+                        view.ime_set_composition(
+                            &text,
+                            cursor.map(|(a, b)| {
+                                (
+                                    text[..a].encode_utf16().count() as u32,
+                                    text[..b].encode_utf16().count() as u32,
+                                )
+                            }),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.started && self.deadline.is_some_and(|due| due <= Instant::now()) {
+            self.deadline = None;
+            self.pumps += 1;
+            assert!(zebkit::pump());
+        }
+        if self.smoke_due.is_some_and(|due| due <= Instant::now())
+            && self.frames > 0
+            && !self.last_pixels.is_empty()
+        {
+            let size = self.window.as_ref().unwrap().inner_size();
+            let rgba = self
+                .last_pixels
+                .iter()
+                .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255])
+                .collect();
+            let image = zebkit::services::Image {
+                width: size.width,
+                height: size.height,
+                rgba,
+            };
+            let png =
+                zebkit::services::encode_image(zebkit::services::ImageFormat::Png, &image, 100)
+                    .unwrap();
+            std::fs::write(self.smoke.as_ref().unwrap(), png).unwrap();
+            self.stop();
+            event_loop.exit();
+            return;
+        }
+        let next = match (self.deadline, self.smoke_due) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+}
+fn main() {
+    let arguments: Vec<_> = std::env::args_os().collect();
+    let smoke = arguments
+        .iter()
+        .filter_map(|v| v.to_str())
+        .find_map(|v| v.strip_prefix("--smoke-test="))
+        .map(PathBuf::from);
+    let event_loop = EventLoop::<Event>::with_user_event().build().unwrap();
+    let context = Context::new(event_loop.owned_display_handle()).unwrap();
+    let mut app = App {
+        proxy: event_loop.create_proxy(),
+        context,
+        surface: None,
+        window: None,
+        view: None,
+        pdf: None,
+        document: None,
+        web: None,
+        popup: None,
+        popup_shown: false,
+        page: 0,
+        cursor: PhysicalPosition::new(0., 0.),
+        modifiers: ModifiersState::empty(),
+        buttons: Modifiers::NONE,
+        clicks: 1,
+        last_press: None,
+        deadline: None,
+        smoke_due: None,
+        smoke,
+        arguments,
+        started: false,
+        frames: 0,
+        pumps: 0,
+        last_pixels: Vec::new(),
+    };
+    event_loop.run_app(&mut app).unwrap();
+    app.stop();
+}

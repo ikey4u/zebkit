@@ -1,0 +1,238 @@
+Embedder: preserve the host process during library initialization.
+
+ContentMainParams opts out of browser-owned changes to locale, signal
+handlers, environment, title, application defaults and CRT state. Native
+browser entry points retain their existing behavior. The embedded engine
+requires explicit session-bus addresses in its own D-Bus connections, so
+it avoids autolaunch without mutating the host environment. The content
+shell honors --disable-logging without creating content_shell.log and
+appends to an explicitly selected log instead of deleting it.
+
+--- a/content/public/app/content_main.h
++++ b/content/public/app/content_main.h
+@@ -66,6 +66,10 @@
+   // are left uninitialized.
+   bool minimal_browser_mode = false;
+ 
++  // An embedded engine must not replace its host's locale, signal handling,
++  // environment, process title, CRT state or application defaults.
++  bool preserve_process_state = false;
++
+ #if BUILDFLAG(IS_MAC)
+   // The outermost autorelease pool to pass to main entry points.
+   STACK_ALLOCATED_IGNORE("https://crbug.com/1424190")
+@@ -87,6 +91,7 @@
+     DCHECK(!ui_task);
+     DCHECK(!created_main_parts_closure);
+     copy.minimal_browser_mode = minimal_browser_mode;
++    copy.preserve_process_state = preserve_process_state;
+ #if BUILDFLAG(IS_MAC)
+     copy.autorelease_pool = autorelease_pool;
+ #endif
+--- a/content/app/content_main.cc
++++ b/content/app/content_main.cc
+@@ -190,6 +190,7 @@
+     ContentMainParams params,
+     ContentMainRunner* content_main_runner) {
+   base::FeatureList::FailOnFeatureAccessWithoutFeatureList();
++  const bool preserve_process_state = params.preserve_process_state;
+   int exit_code = -1;
+ #if BUILDFLAG(IS_MAC)
+   base::apple::ScopedNSAutoreleasePool autorelease_pool;
+@@ -209,7 +210,8 @@
+ #if BUILDFLAG(IS_APPLE) && PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+     allocator_shim::InitializeAllocatorShim();
+ #endif
+-    base::EnableTerminationOnOutOfMemory();
++    if (!preserve_process_state)
++      base::EnableTerminationOnOutOfMemory();
+     logging::RegisterAbslAbortHook();
+ 
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+@@ -223,11 +225,13 @@
+     // by setting DBUS_SESSION_BUS_ADDRESS="autolaunch:" before launching
+     // chrome.
+     const int kNoOverrideIfAlreadySet = 0;
+-    setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:", kNoOverrideIfAlreadySet);
+-#endif
+-
+-#if BUILDFLAG(IS_WIN)
+-    base::win::RegisterInvalidParamHandler();
++    if (!preserve_process_state)
++      setenv("DBUS_SESSION_BUS_ADDRESS", "disabled:", kNoOverrideIfAlreadySet);
++#endif
++
++#if BUILDFLAG(IS_WIN)
++    if (!preserve_process_state)
++      base::win::RegisterInvalidParamHandler();
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -247,9 +251,10 @@
+     PopulateFileDescriptorStoreFromFdTable();
+ #endif
+ 
+-    base::EnableTerminationOnHeapCorruption();
+-
+-    base::SetProcessTitleFromCommandLine(argv);
++    if (!preserve_process_state) {
++      base::EnableTerminationOnHeapCorruption();
++      base::SetProcessTitleFromCommandLine(argv);
++    }
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
+ // On Android setlocale() is not supported, and we don't override the signal
+@@ -259,21 +264,24 @@
+     // argument values in the correct encoding and to make sure
+     // generated file names (think downloads) are in the file system's
+     // encoding.
+-    setlocale(LC_ALL, "");
+-    // For numbers we never want the C library's locale sensitive
+-    // conversion from number to string because the only thing it
+-    // changes is the decimal separator which is not good enough for
+-    // the UI and can be harmful elsewhere. User interface number
+-    // conversions need to go through ICU. Other conversions need to
+-    // be locale insensitive so we force the number locale back to the
+-    // default, "C", locale.
+-    setlocale(LC_NUMERIC, "C");
+-
+-    SetupSignalHandlers();
+-#endif
+-
+-#if BUILDFLAG(IS_WIN)
+-    base::win::SetupCRT(*base::CommandLine::ForCurrentProcess());
++    if (!preserve_process_state) {
++      setlocale(LC_ALL, "");
++      // For numbers we never want the C library's locale sensitive
++      // conversion from number to string because the only thing it
++      // changes is the decimal separator which is not good enough for
++      // the UI and can be harmful elsewhere. User interface number
++      // conversions need to go through ICU. Other conversions need to
++      // be locale insensitive so we force the number locale back to the
++      // default, "C", locale.
++      setlocale(LC_NUMERIC, "C");
++
++      SetupSignalHandlers();
++    }
++#endif
++
++#if BUILDFLAG(IS_WIN)
++    if (!preserve_process_state)
++      base::win::SetupCRT(*base::CommandLine::ForCurrentProcess());
+ #endif
+ 
+ #if BUILDFLAG(IS_MAC)
+@@ -285,7 +293,8 @@
+     // should not be flushing the pool at the base of the autorelease pool
+     // stack.
+     params.autorelease_pool = &autorelease_pool;
+-    InitializeMac();
++    if (!preserve_process_state)
++      InitializeMac();
+ #endif
+ 
+ #if BUILDFLAG(IS_IOS)
+@@ -316,11 +325,11 @@
+ 
+ #if BUILDFLAG(IS_WIN)
+     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+-    if (command_line->HasSwitch(switches::kHeadless)) {
++    if (!preserve_process_state && command_line->HasSwitch(switches::kHeadless)) {
+       // When running in headless mode we want stdio routed however if
+       // console does not exist we should not create one.
+       base::RouteStdioToConsole(/*create_console_if_not_found*/ false);
+-    } else if (command_line->HasSwitch(switches::kEnableLogging)) {
++    } else if (!preserve_process_state && command_line->HasSwitch(switches::kEnableLogging)) {
+       // Route stdio to parent console (if any) or create one, do not create a
+       // console in children if handles are being passed.
+       bool create_console = command_line->GetSwitchValueASCII(
+--- a/content/shell/app/shell_main_delegate.cc
++++ b/content/shell/app/shell_main_delegate.cc
+@@ -130,6 +130,12 @@
+ #endif
+ 
+ void InitLogging(const base::CommandLine& command_line) {
++  if (command_line.HasSwitch("disable-logging")) {
++    logging::LoggingSettings settings;
++    settings.logging_dest = logging::LOG_NONE;
++    logging::InitLogging(settings);
++    return;
++  }
+   LoggingDest dest = LoggingDest::kFile;
+ 
+   const std::string logging_dest =
+@@ -192,12 +198,14 @@
+     settings.logging_dest = logging::LOG_TO_STDERR;
+   } else if (dest == LoggingDest::kSystem) {
+     settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
++  } else if (dest == LoggingDest::kFile) {
++    settings.logging_dest = logging::LOG_TO_FILE;
+   } else {
+     // Includes both handle or provided filename on Windows.
+     settings.logging_dest = logging::LOG_TO_ALL;
+   }
+ 
+-  settings.delete_old = logging::DELETE_OLD_LOG_FILE;
++  settings.delete_old = logging::APPEND_TO_OLD_LOG_FILE;
+   logging::InitLogging(settings);
+   logging::SetLogItems(true /* Process ID */, true /* Thread ID */,
+                        true /* Timestamp */, false /* Tick count */);
+--- a/dbus/bus.h
++++ b/dbus/bus.h
+@@ -228,6 +228,11 @@
+   // Connect() is called.
+   explicit Bus(Options options);
+ 
++  // For an embedded library: do not autolaunch a session daemon when the host
++  // has no session address. This affects these Bus instances only, without
++  // changing the process environment or another library's D-Bus policy.
++  static void SetRequireExplicitSessionBusAddress(bool require);
++
+   Bus(const Bus&) = delete;
+   Bus& operator=(const Bus&) = delete;
+ 
+--- a/dbus/bus.cc
++++ b/dbus/bus.cc
+@@ -7,6 +7,8 @@
+ #include <stddef.h>
+ 
+ #include <memory>
++#include <atomic>
++#include <cstdlib>
+ #include <utility>
+ 
+ #include "base/files/file_descriptor_watcher_posix.h"
+@@ -35,6 +37,8 @@
+ 
+ namespace {
+ 
++std::atomic<bool> g_require_explicit_session_bus_address{false};
++
+ const char kDisconnectedSignal[] = "Disconnected";
+ const char kDisconnectedMatchRule[] =
+     "type='signal', path='/org/freedesktop/DBus/Local',"
+@@ -375,6 +379,10 @@
+   std::move(callback).Run();
+ }
+ 
++void Bus::SetRequireExplicitSessionBusAddress(bool require) {
++  g_require_explicit_session_bus_address.store(require, std::memory_order_relaxed);
++}
++
+ bool Bus::Connect() {
+   // dbus_bus_get_private() and dbus_bus_get() are blocking calls.
+   AssertOnDBusThread();
+@@ -384,6 +392,13 @@
+   // Check if it's already initialized.
+   if (connection_)
+     return true;
++
++  if (bus_type_ == SESSION &&
++      g_require_explicit_session_bus_address.load(std::memory_order_relaxed)) {
++    const char* address = std::getenv("DBUS_SESSION_BUS_ADDRESS");
++    if (!address || !*address)
++      return false;
++  }
+ 
+   internal::ScopedDBusError dbus_error;
+   if (bus_type_ == CUSTOM_ADDRESS) {

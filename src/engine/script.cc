@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -50,6 +51,7 @@
 #include "zebkit/engine/ui.h"
 #include "zebkit/engine/ui_script.h"
 #include "zebkit/engine/view.h"
+#include "zebkit/engine/popup_metadata.h"
 
 namespace {
 
@@ -146,14 +148,22 @@ constexpr char kBootstrap[] = R"js((function (native) {
       methods.map((m) => [m, (...args) => call(module, m, args)])));
   const ALLOW = {app: 1, fetch: 2, files: 4, compress: 8, crypto: 16, image: 32, url: 64, pdf: 128, all: 255};
 
+  const VIEW_ADOPT = Symbol();
   class View {
     #id;
-    #handlers = {load: [], title: [], close: []};
-    constructor(url = 'about:blank', {width = 0, height = 0} = {}) {
-      this.#id = native.viewNew(String(url), width, height);
+    #handlers = {load: [], title: [], close: [], 'popup-blocked': [], 'permission-result': [], 'navigation-result': [], 'window-open': [], console: [], 'certificate-result': [], 'http-auth-result': []};
+    constructor(url = 'about:blank', {width = 0, height = 0} = {}, adoption = null) {
+      this.#id = adoption?.key === VIEW_ADOPT ? adoption.id : native.viewNew(String(url), width, height);
       native.viewOn(this.#id, 'load', (event, url) => this.#emit('load', event, url));
       native.viewOn(this.#id, 'title', (title) => this.#emit('title', title));
       native.viewOn(this.#id, 'close', () => this.#emit('close'));
+      native.viewOn(this.#id, 'popup-blocked', (event) => this.#emit('popup-blocked', event));
+      native.viewOn(this.#id, 'permission-result', event => this.#emit('permission-result', event));
+      native.viewOn(this.#id, 'navigation-result', event => this.#emit('navigation-result', event));
+      native.viewOn(this.#id, 'window-open', event => this.#emit('window-open', event));
+      native.viewOn(this.#id, 'console', event => this.#emit('console', event));
+      native.viewOn(this.#id, 'certificate-result', event => this.#emit('certificate-result', event));
+      native.viewOn(this.#id, 'http-auth-result', event => this.#emit('http-auth-result', event));
     }
     #emit(name, ...args) { for (const fn of this.#handlers[name]) fn(...args); }
     on(name, fn) {
@@ -166,10 +176,64 @@ constexpr char kBootstrap[] = R"js((function (native) {
     back() { native.viewBack(this.#id); }
     forward() { native.viewForward(this.#id); }
     resize(width, height) { native.viewResize(this.#id, width, height); }
+    setSettings(settings) { return native.viewSettings(this.#id, JSON.stringify(settings)); }
+    get settings() { return JSON.parse(native.viewGetSettings(this.#id)); }
+    setPermission(permission, state, origin = null) {
+      return native.viewPermission(this.#id, 'set', origin, permission, state);
+    }
+    getPermission(permission, origin = null) {
+      return native.viewPermission(this.#id, 'get', origin, permission);
+    }
+    resetPermissions(origin = null) { return native.viewPermission(this.#id, 'reset', origin); }
+    setPermissionTimeout(milliseconds) { return native.viewPermission(this.#id, 'timeout', milliseconds); }
+    onPermission(fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('permission handler must be a function or null');
+      return native.viewPermission(this.#id, 'handler', fn === null ? null : metadata => fn(Object.freeze({
+        metadata: Object.freeze(metadata),
+        get info() { return native.permissionRequest('info', metadata.id); },
+        respond(state, remember = false) { return native.permissionRequest('respond', metadata.id, state, remember); }
+      })));
+    }
+    setCertificateTimeout(milliseconds) { return native.viewCertificate(this.#id, 'timeout', milliseconds); }
+    onCertificate(fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('certificate handler must be a function or null');
+      return native.viewCertificate(this.#id, 'handler', fn === null ? null : metadata => {
+        const id = metadata.id;
+        fn(Object.freeze({metadata: Object.freeze(metadata),
+          get info() { return native.certificateRequest('info', id); },
+          respond(allow = false) { return native.certificateRequest('respond', id, allow); }
+        }));
+      });
+    }
+    setHttpAuthTimeout(milliseconds) { return native.viewHttpAuth(this.#id, 'timeout', milliseconds); }
+    onHttpAuth(fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('HTTP authentication handler must be a function or null');
+      return native.viewHttpAuth(this.#id, 'handler', fn === null ? null : metadata => {
+        const id = metadata.id;
+        fn(Object.freeze({metadata: Object.freeze(metadata),
+          get info() { return native.httpAuthRequest('info', id); },
+          respond(username = null, password = null) { return native.httpAuthRequest('respond', id, username, password); }
+        }));
+      });
+    }
+    setNavigationTimeout(milliseconds) { return native.viewNavigation(this.#id, 'timeout', milliseconds); }
+    onNavigation(fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('navigation handler must be a function or null');
+      return native.viewNavigation(this.#id, 'handler', fn === null ? null : metadata => {
+        const id = metadata.id;
+        fn(Object.freeze({metadata: Object.freeze(metadata),
+          get info() { return native.navigationRequest('info', id); },
+          respond(action = 'continue', replacementUrl = null) { return native.navigationRequest('respond', id, action, replacementUrl); }
+        }));
+      });
+    }
+    setPopupPolicy(policy) { return native.viewPopupPolicy(this.#id, String(policy)); }
     close() { native.viewClose(this.#id); }
     get url() { return native.viewUrl(this.#id); }
     get title() { return native.viewTitle(this.#id); }
+    get windowOpenInfo() { return JSON.parse(native.viewWindowOpenInfo(this.#id)); }
     evaluate(script) { return native.viewEvaluate(this.#id, String(script)); }
+    setUserAgentOverride(options) { return native.viewUserAgentOverride(this.#id, JSON.stringify(options)); }
     grant(origin, allow, filesRoot) {
       const names = Array.isArray(allow) ? allow : [allow];
       let bits = 0;
@@ -181,6 +245,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     }
     bind(name, fn) { native.viewBind(this.#id, String(name), fn); }
   }
+
+  native.setViewFactory(id => new View('', {}, {key: VIEW_ADOPT, id}));
 
   globalThis.zebkit = Object.freeze({
     ui: native.ui,
@@ -389,6 +455,8 @@ struct zebkit_script {
 
   struct ViewEntry {
     zebkit_view* view = nullptr;
+    void* hook = nullptr;
+    v8::Global<v8::Object> wrapper;
     std::map<std::string, v8::Global<v8::Function>> handlers;
     std::vector<std::unique_ptr<std::pair<base::WeakPtr<zebkit_script>,
                                           v8::Global<v8::Function>>>>
@@ -445,12 +513,23 @@ struct zebkit_script {
   static void SetTimer(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ClearTimer(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void Quit(const v8::FunctionCallbackInfo<v8::Value>& info);
+  int WrapView(zebkit_view* view);
+  static void SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
-  enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle };
+  static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewCertificate(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void CertificateRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewHttpAuth(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kWindowOpenInfo };
   template <Action action>
   static void ViewAction(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void UiCommit(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -468,6 +547,7 @@ struct zebkit_script {
 
   std::unique_ptr<gin::IsolateHolder> holder_;
   v8::Global<v8::Context> context_;
+  v8::Global<v8::Function> view_factory_;
   std::vector<std::string> args_;
 
   std::map<int, v8::Global<v8::Module>> modules_by_hash_;
@@ -528,7 +608,18 @@ zebkit_script::zebkit_script(std::vector<std::string> args)
 }
 
 zebkit_script::~zebkit_script() {
+  // Its views stay, and must not wait on a handler that is gone: a pending
+  // navigation would stall until its deadline. A setter can close a view.
+  std::vector<base::WeakPtr<zebkit_view>> kept;
+  for (const auto& [id, entry] : views_)
+    if (entry.view) kept.push_back(entry.view->GetWeakPtr());
   weak_factory_.InvalidateWeakPtrs();
+  for (const auto& view : kept) {
+    if (view) zebkit_view_on_navigation(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_permission(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_certificate(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_http_auth(view.get(), nullptr, nullptr);
+  }
   ui_.reset();
   {
     v8::Isolate::Scope isolate_scope(isolate());
@@ -541,6 +632,7 @@ zebkit_script::~zebkit_script() {
     // Every handle goes while the isolate is there: members destroyed after
     // this would release theirs into an isolate that is gone.
     ui_listener_.Reset();
+    view_factory_.Reset();
     context_.Reset();
   }
   holder_.reset();
@@ -566,8 +658,19 @@ void zebkit_script::Install() {
   SetMethod(native, "clearTimer", &ClearTimer);
   SetMethod(native, "quit", &Quit);
   SetMethod(native, "viewNew", &ViewNew);
+  SetMethod(native, "setViewFactory", &SetViewFactory);
+  SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
   SetMethod(native, "viewOn", &ViewOn);
+  SetMethod(native, "viewPermission", &ViewPermission);
+  SetMethod(native, "permissionRequest", &PermissionRequest);
+  SetMethod(native, "viewNavigation", &ViewNavigation);
+  SetMethod(native, "viewCertificate", &ViewCertificate);
+  SetMethod(native, "certificateRequest", &CertificateRequest);
+  SetMethod(native, "viewHttpAuth", &ViewHttpAuth);
+  SetMethod(native, "httpAuthRequest", &HttpAuthRequest);
+  SetMethod(native, "navigationRequest", &NavigationRequest);
   SetMethod(native, "viewEvaluate", &ViewEvaluate);
+  SetMethod(native, "viewUserAgentOverride", &ViewUserAgentOverride);
   SetMethod(native, "viewGrant", &ViewGrant);
   SetMethod(native, "viewBind", &ViewBind);
   SetMethod(native, "uiCommit", &UiCommit);
@@ -580,6 +683,9 @@ void zebkit_script::Install() {
   SetMethod(native, "viewBack", &ViewAction<Action::kBack>);
   SetMethod(native, "viewForward", &ViewAction<Action::kForward>);
   SetMethod(native, "viewResize", &ViewAction<Action::kResize>);
+  SetMethod(native, "viewPopupPolicy", &ViewAction<Action::kPopupPolicy>);
+  SetMethod(native, "viewSettings", &ViewAction<Action::kSettings>);
+  SetMethod(native, "viewGetSettings", &ViewAction<Action::kGetSettings>);
   SetMethod(native, "viewClose", &ViewAction<Action::kClose>);
   SetMethod(native, "viewUrl", &ViewAction<Action::kUrl>);
   SetMethod(native, "viewTitle", &ViewAction<Action::kTitle>);
@@ -837,10 +943,20 @@ void zebkit_script::ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info) {
         v8::Exception::Error(String8(isolate, "cannot create a view")));
     return;
   }
-  const int id = self->next_view_++;
-  self->views_[id].view = view;
+  info.GetReturnValue().Set(self->WrapView(view));
+}
+
+void zebkit_script::SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  if (info[0]->IsFunction()) From(info)->view_factory_.Reset(info.GetIsolate(), info[0].As<v8::Function>());
+}
+
+int zebkit_script::WrapView(zebkit_view* view) {
+  for (const auto& [id, entry] : views_) if (entry.view == view) return id;
+  const int id = this->next_view_++;
+  this->views_[id].view = view;
   // The hook lives as long as the view: freed when it closes.
-  auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
+  auto* hook = new ViewHook{this->weak_factory_.GetWeakPtr(), id};
+  this->views_[id].hook = hook;
   zebkit_view_on_load(
       view,
       [](zebkit_view*, zebkit_load_event event, const char* url, void* data) {
@@ -876,7 +992,102 @@ void zebkit_script::ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info) {
           hook->script->ViewClosed(hook->id);
       },
       hook);
-  info.GetReturnValue().Set(id);
+  zebkit_view_on_popup_blocked(
+      view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script)
+          return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "popup-blocked", {value});
+      },
+      hook);
+  zebkit_view_on_permission_result(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "permission-result", {value});
+      }, hook);
+  zebkit_view_on_navigation_result(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "navigation-result", {value});
+      }, hook);
+  zebkit_view_on_certificate_result(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "certificate-result", {value});
+      }, hook);
+  zebkit_view_on_http_auth_result(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "http-auth-result", {value});
+      }, hook);
+  zebkit_view_on_console(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "console", {value});
+      }, hook);
+  zebkit_view_on_window_open(view,
+      [](zebkit_view*, zebkit_view* child, const char*, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        auto* script = hook->script.get();
+        Scope scope(script);
+        const int id = script->WrapView(child);
+        v8::Local<v8::Value> argument = v8::Integer::New(script->isolate(), id);
+        v8::Local<v8::Value> wrapper;
+        v8::TryCatch caught(script->isolate());
+        if (script->view_factory_.Get(script->isolate())->Call(script->context(),
+            v8::Undefined(script->isolate()), 1, &argument).ToLocal(&wrapper) && wrapper->IsObject()) {
+          auto found = script->views_.find(id);
+          if (found != script->views_.end()) found->second.wrapper.Reset(script->isolate(), wrapper.As<v8::Object>());
+        } else if (caught.HasCaught()) script->Report(caught);
+      }, hook);
+  zebkit_view_on_window_open_event(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        auto* script = hook->script.get();
+        Scope scope(script);
+        v8::Local<v8::Value> value;
+        if (!v8::JSON::Parse(script->context(), String8(script->isolate(), json)).ToLocal(&value) || !value->IsObject()) return;
+        auto object = value.As<v8::Object>();
+        v8::Local<v8::Value> target;
+        if (object->Get(script->context(), String8(script->isolate(), "targetId")).ToLocal(&target) && target->IsString()) {
+          auto* child = zebkit::WindowViewForTarget(Utf8(script->isolate(), target));
+          std::ignore = object->Set(script->context(), String8(script->isolate(), "view"), v8::Null(script->isolate()));
+          for (auto& [child_id, entry] : script->views_) {
+            if (child && entry.view == child && !entry.wrapper.IsEmpty()) {
+              std::ignore = object->Set(script->context(), String8(script->isolate(), "view"), entry.wrapper.Get(script->isolate()));
+              break;
+            }
+          }
+        }
+        script->ViewEvent(hook->id, "window-open", {value});
+      }, hook);
+  return id;
 }
 
 void zebkit_script::ViewEvent(int id,
@@ -907,6 +1118,296 @@ void zebkit_script::ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info) {
     return;
   entry->handlers[Utf8(info.GetIsolate(), info[1])].Reset(
       info.GetIsolate(), info[2].As<v8::Function>());
+}
+
+namespace {
+std::optional<zebkit_permission_state> ScriptPermissionState(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  if (!value->IsString()) return std::nullopt;
+  const auto state = Utf8(isolate, value);
+  if (state == "prompt") return ZEBKIT_PERMISSION_PROMPT;
+  if (state == "granted") return ZEBKIT_PERMISSION_GRANTED;
+  if (state == "denied") return ZEBKIT_PERMISSION_DENIED;
+  return std::nullopt;
+}
+void PermissionTypeError(v8::Isolate* isolate, const char* text) {
+  isolate->ThrowException(v8::Exception::TypeError(String8(isolate, text)));
+}
+}  // namespace
+
+void zebkit_script::PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate();
+  uint64_t id = 0;
+  if (!info[1]->IsString() || !base::StringToUint64(Utf8(isolate, info[1]), &id) || !id || id > UINTPTR_MAX) {
+    PermissionTypeError(isolate, "invalid permission request id"); return;
+  }
+  auto* request = reinterpret_cast<zebkit_permission_request*>(static_cast<uintptr_t>(id));
+  const auto action = Utf8(isolate, info[0]);
+  if (action == "info") {
+    char* json = zebkit_permission_request_info(request);
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json);
+    info.GetReturnValue().Set(value);
+  } else if (action == "respond") {
+    auto state = ScriptPermissionState(isolate, info[2]);
+    if (!state || !info[3]->IsBoolean()) { PermissionTypeError(isolate, "invalid permission reply"); return; }
+    info.GetReturnValue().Set(zebkit_permission_respond(request, *state, info[3]->IsTrue()));
+  }
+}
+
+void zebkit_script::ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info);
+  auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto action = Utf8(isolate, info[1]);
+  if (action == "handler") {
+    if (!info[2]->IsNull() && !info[2]->IsFunction()) { PermissionTypeError(isolate, "invalid permission handler"); return; }
+    {
+      // Clearing settles pending prompts, whose handlers can close the view.
+      auto weak = entry->view->GetWeakPtr();
+      zebkit_view_on_permission(entry->view, nullptr, nullptr);
+      if (!weak) return;
+    }
+    entry->handlers.erase("permission");
+    if (info[2]->IsFunction()) {
+      entry->handlers["permission"].Reset(isolate, info[2].As<v8::Function>());
+      zebkit_view_on_permission(entry->view,
+          [](zebkit_view*, zebkit_permission_request*, const char* json, void* data) {
+            auto* hook = static_cast<ViewHook*>(data);
+            if (!hook->script) return;
+            Scope scope(hook->script.get());
+            v8::Local<v8::Value> value;
+            if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+              hook->script->ViewEvent(hook->id, "permission", {value});
+          }, entry->hook);
+    }
+    info.GetReturnValue().Set(true); return;
+  }
+  if (action == "timeout") {
+    if (!info[2]->IsUint32()) { PermissionTypeError(isolate, "invalid permission timeout"); return; }
+    const bool ok = zebkit_view_set_permission_timeout(entry->view, info[2].As<v8::Uint32>()->Value());
+    if (!ok) PermissionTypeError(isolate, "permission timeout must be from 1 to 300000");
+    info.GetReturnValue().Set(ok); return;
+  }
+  if (!info[2]->IsNull() && !info[2]->IsString()) { PermissionTypeError(isolate, "permission origin must be a string or null"); return; }
+  const auto origin = info[2]->IsNull() ? std::string() : Utf8(isolate, info[2]);
+  if (origin.find('\0') != std::string::npos) { PermissionTypeError(isolate, "permission origin contains NUL"); return; }
+  const char* scope = info[2]->IsNull() ? nullptr : origin.c_str();
+  char* error = nullptr;
+  bool ok = false;
+  if (action == "reset") {
+    ok = zebkit_view_reset_permissions(entry->view, scope, &error);
+  } else {
+    if (!info[3]->IsString()) { PermissionTypeError(isolate, "permission name must be a string"); return; }
+    const auto name = Utf8(isolate, info[3]);
+    if (name.find('\0') != std::string::npos) { PermissionTypeError(isolate, "permission name contains NUL"); return; }
+    if (action == "get") {
+      const auto state = zebkit_view_get_permission(entry->view, scope, name.c_str());
+      if (state == ZEBKIT_PERMISSION_INVALID) { PermissionTypeError(isolate, "invalid permission or origin"); return; }
+      info.GetReturnValue().Set(String8(isolate, state == ZEBKIT_PERMISSION_GRANTED ? "granted" : state == ZEBKIT_PERMISSION_DENIED ? "denied" : "prompt")); return;
+    }
+    const auto state = ScriptPermissionState(isolate, info[4]);
+    if (action != "set" || !state) { PermissionTypeError(isolate, "invalid permission state"); return; }
+    ok = zebkit_view_set_permission(entry->view, scope, name.c_str(), *state, &error);
+  }
+  if (!ok) PermissionTypeError(isolate, error ? error : "permission policy rejected");
+  zebkit_free(error);
+  info.GetReturnValue().Set(ok);
+}
+
+void zebkit_script::ViewCertificate(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info); auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto action = Utf8(isolate, info[1]);
+  if (action == "timeout") {
+    if (!info[2]->IsUint32()) { PermissionTypeError(isolate, "invalid certificate timeout"); return; }
+    const bool ok = zebkit_view_set_certificate_timeout(entry->view, info[2].As<v8::Uint32>()->Value());
+    if (!ok) PermissionTypeError(isolate, "certificate timeout must be from 1 to 300000");
+    info.GetReturnValue().Set(ok); return;
+  }
+  if (action != "handler" || (!info[2]->IsNull() && !info[2]->IsFunction())) {
+    PermissionTypeError(isolate, "invalid certificate handler"); return;
+  }
+  zebkit_view_on_certificate(entry->view, nullptr, nullptr);
+  entry = self->FindView(info);
+  if (!entry) { info.GetReturnValue().Set(false); return; }
+  entry->handlers.erase("certificate");
+  if (info[2]->IsFunction()) {
+    entry->handlers["certificate"].Reset(isolate, info[2].As<v8::Function>());
+    zebkit_view_on_certificate(entry->view,
+        [](zebkit_view*, zebkit_certificate_request*, const char* json, void* data) {
+          auto* hook = static_cast<ViewHook*>(data);
+          if (!hook->script) return;
+          Scope scope(hook->script.get());
+          v8::Local<v8::Value> value;
+          if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+            hook->script->ViewEvent(hook->id, "certificate", {value});
+        }, entry->hook);
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::CertificateRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate(); uint64_t id = 0;
+  if (!info[1]->IsString() || !base::StringToUint64(Utf8(isolate, info[1]), &id) || !id || id > UINTPTR_MAX) {
+    PermissionTypeError(isolate, "invalid certificate request id"); return;
+  }
+  auto* request = reinterpret_cast<zebkit_certificate_request*>(static_cast<uintptr_t>(id));
+  const auto action = Utf8(isolate, info[0]);
+  if (action == "info") {
+    char* json = zebkit_certificate_request_info(request);
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json); info.GetReturnValue().Set(value); return;
+  }
+  if (action != "respond" || !info[2]->IsBoolean()) {
+    PermissionTypeError(isolate, "certificate reply must be a boolean"); return;
+  }
+  info.GetReturnValue().Set(zebkit_certificate_respond(request, info[2]->IsTrue()));
+}
+
+void zebkit_script::ViewHttpAuth(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info); auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto action = Utf8(isolate, info[1]);
+  if (action == "timeout") {
+    if (!info[2]->IsUint32()) { PermissionTypeError(isolate, "invalid HTTP authentication timeout"); return; }
+    const bool ok = zebkit_view_set_http_auth_timeout(entry->view, info[2].As<v8::Uint32>()->Value());
+    if (!ok) PermissionTypeError(isolate, "HTTP authentication timeout must be from 1 to 300000");
+    info.GetReturnValue().Set(ok); return;
+  }
+  if (action != "handler" || (!info[2]->IsNull() && !info[2]->IsFunction())) {
+    PermissionTypeError(isolate, "invalid HTTP authentication handler"); return;
+  }
+  zebkit_view_on_http_auth(entry->view, nullptr, nullptr);
+  entry = self->FindView(info);
+  if (!entry) { info.GetReturnValue().Set(false); return; }
+  entry->handlers.erase("http-auth");
+  if (info[2]->IsFunction()) {
+    entry->handlers["http-auth"].Reset(isolate, info[2].As<v8::Function>());
+    zebkit_view_on_http_auth(entry->view,
+        [](zebkit_view*, zebkit_http_auth_request*, const char* json, void* data) {
+          auto* hook = static_cast<ViewHook*>(data);
+          if (!hook->script) return;
+          Scope scope(hook->script.get());
+          v8::Local<v8::Value> value;
+          if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+            hook->script->ViewEvent(hook->id, "http-auth", {value});
+        }, entry->hook);
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate(); uint64_t id = 0;
+  if (!info[1]->IsString() || !base::StringToUint64(Utf8(isolate, info[1]), &id) || !id || id > UINTPTR_MAX) {
+    PermissionTypeError(isolate, "invalid HTTP authentication request id"); return;
+  }
+  auto* request = reinterpret_cast<zebkit_http_auth_request*>(static_cast<uintptr_t>(id));
+  const auto action = Utf8(isolate, info[0]);
+  if (action == "info") {
+    char* json = zebkit_http_auth_request_info(request);
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json); info.GetReturnValue().Set(value); return;
+  }
+  if (action != "respond") { PermissionTypeError(isolate, "invalid HTTP authentication action"); return; }
+  if (info[2]->IsNull() && info[3]->IsNull()) {
+    info.GetReturnValue().Set(zebkit_http_auth_respond(request, nullptr, nullptr)); return;
+  }
+  if (!info[2]->IsString() || !info[3]->IsString()) {
+    PermissionTypeError(isolate, "HTTP authentication needs two strings or two null values"); return;
+  }
+  if (info[2].As<v8::String>()->Length() > 65536 || info[3].As<v8::String>()->Length() > 65536) {
+    PermissionTypeError(isolate, "HTTP authentication credentials are limited to 65536 UTF-8 bytes"); return;
+  }
+  const auto username = Utf8(isolate, info[2]), password = Utf8(isolate, info[3]);
+  if (username.find('\0') != std::string::npos || password.find('\0') != std::string::npos ||
+      username.size() > 65536 || password.size() > 65536) {
+    PermissionTypeError(isolate, "HTTP authentication credentials must be NUL-free and at most 65536 UTF-8 bytes"); return;
+  }
+  info.GetReturnValue().Set(zebkit_http_auth_respond(request, username.c_str(), password.c_str()));
+}
+
+void zebkit_script::ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info);
+  auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto action = Utf8(isolate, info[1]);
+  if (action == "timeout") {
+    if (!info[2]->IsUint32()) { PermissionTypeError(isolate, "invalid navigation timeout"); return; }
+    const bool ok = zebkit_view_set_navigation_timeout(entry->view, info[2].As<v8::Uint32>()->Value());
+    if (!ok) PermissionTypeError(isolate, "navigation timeout must be from 1 to 300000");
+    info.GetReturnValue().Set(ok); return;
+  }
+  if (action != "handler" || (!info[2]->IsNull() && !info[2]->IsFunction())) {
+    PermissionTypeError(isolate, "invalid navigation handler"); return;
+  }
+  {
+    // Clearing settles pending stages, whose handlers can close the view.
+    auto weak = entry->view->GetWeakPtr();
+    zebkit_view_on_navigation(entry->view, nullptr, nullptr);
+    if (!weak) return;
+  }
+  entry->handlers.erase("navigation");
+  if (info[2]->IsFunction()) {
+    entry->handlers["navigation"].Reset(isolate, info[2].As<v8::Function>());
+    zebkit_view_on_navigation(entry->view,
+        [](zebkit_view*, zebkit_navigation_request*, const char* json, void* data) {
+          auto* hook = static_cast<ViewHook*>(data);
+          if (!hook->script) return;
+          Scope scope(hook->script.get());
+          v8::Local<v8::Value> value;
+          if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+            hook->script->ViewEvent(hook->id, "navigation", {value});
+        }, entry->hook);
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate();
+  uint64_t id = 0;
+  if (!info[1]->IsString() || !base::StringToUint64(Utf8(isolate, info[1]), &id) || !id || id > UINTPTR_MAX) {
+    PermissionTypeError(isolate, "invalid navigation request id"); return;
+  }
+  auto* request = reinterpret_cast<zebkit_navigation_request*>(static_cast<uintptr_t>(id));
+  const auto action = Utf8(isolate, info[0]);
+  if (action == "info") {
+    char* json = zebkit_navigation_request_info(request);
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json);
+    info.GetReturnValue().Set(value); return;
+  }
+  if (action != "respond" || !info[2]->IsString() || (!info[3]->IsNull() && !info[3]->IsString())) {
+    PermissionTypeError(isolate, "invalid navigation reply"); return;
+  }
+  const auto state = Utf8(isolate, info[2]);
+  if (state != "continue" && state != "cancel" && state != "redirect") {
+    PermissionTypeError(isolate, "unknown navigation action"); return;
+  }
+  const auto url = info[3]->IsNull() ? std::string() : Utf8(isolate, info[3]);
+  if (url.find('\0') != std::string::npos) { PermissionTypeError(isolate, "replacement URL contains NUL"); return; }
+  info.GetReturnValue().Set(zebkit_navigation_respond(request,
+      state == "continue" ? ZEBKIT_NAVIGATION_CONTINUE : state == "cancel" ? ZEBKIT_NAVIGATION_CANCEL : ZEBKIT_NAVIGATION_REDIRECT,
+      info[3]->IsNull() ? nullptr : url.c_str(), nullptr));
 }
 
 template <zebkit_script::Action action>
@@ -940,6 +1441,37 @@ void zebkit_script::ViewAction(
     case Action::kClose:
       zebkit_view_close(view);
       break;
+    case Action::kSettings: {
+      char* error = nullptr;
+      const bool ok = zebkit_view_set_settings(view, Utf8(isolate, info[1]).c_str(), &error);
+      if (!ok) isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "view settings rejected")));
+      zebkit_free(error);
+      info.GetReturnValue().Set(ok);
+      break;
+    }
+    case Action::kWindowOpenInfo: {
+      char* json = zebkit_view_get_window_open_info(view);
+      info.GetReturnValue().Set(String8(isolate, json ? json : "{}"));
+      zebkit_free(json);
+      break;
+    }
+    case Action::kGetSettings: {
+      char* json = zebkit_view_get_settings(view);
+      info.GetReturnValue().Set(String8(isolate, json ? json : "{}"));
+      zebkit_free(json);
+      break;
+    }
+    case Action::kPopupPolicy: {
+      const std::string policy = Utf8(isolate, info[1]);
+      if (policy != "allow" && policy != "block" && policy != "block-without-gesture") {
+        isolate->ThrowException(v8::Exception::TypeError(String8(isolate, "unknown popup policy")));
+        return;
+      }
+      info.GetReturnValue().Set(zebkit_view_set_popup_policy(view,
+          policy == "allow" ? ZEBKIT_POPUP_POLICY_ALLOW :
+          policy == "block" ? ZEBKIT_POPUP_POLICY_BLOCK : ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE));
+      break;
+    }
     case Action::kUrl:
     case Action::kTitle: {
       char* text = action == Action::kUrl ? zebkit_view_get_url(view)
@@ -969,6 +1501,25 @@ void zebkit_script::ViewEvaluate(
           hook->script->SettleJson(hook->id, json, error);
       },
       hook);
+}
+
+void zebkit_script::ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  ViewEntry* entry = self->FindView(info);
+  if (!entry) return;
+  v8::Local<v8::Promise> promise;
+  const int id = self->NewPromise(&promise);
+  info.GetReturnValue().Set(promise);
+  if (!info[1]->IsString() || info[1].As<v8::String>()->Length() > 65536) {
+    self->SettleJson(id, nullptr, "expected user agent options, at most 65536 UTF-8 bytes");
+    return;
+  }
+  auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
+  zebkit_view_set_user_agent_override(entry->view, Utf8(info.GetIsolate(), info[1]).c_str(),
+      [](zebkit_view*, const char* json, const char* error, void* data) {
+        std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
+        if (hook->script) hook->script->SettleJson(hook->id, json, error);
+      }, hook);
 }
 
 void zebkit_script::ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info) {

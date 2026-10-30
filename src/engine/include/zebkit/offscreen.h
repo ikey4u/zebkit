@@ -54,9 +54,9 @@ extern "C" {
  * frames are @width * @scale by @height * @scale pixels. Frames start
  * with zebkit_view_on_frame(). Otherwise it is a view as
  * zebkit_view_new() makes one, closed the same way. NULL when the process
- * has windows (see above). The off-screen views of a process share one
- * scale, the last one given: the headless screen's. On macOS it is whole
- * (1, 2, 3), as a Mac's screens are.
+ * has windows (see above). Linux views have independent scale and display
+ * geometry, including fractional scales. The macOS per-widget scale path
+ * is implemented but still requires runtime validation.
  */
 ZEBKIT_API zebkit_view *zebkit_view_new_offscreen(const char *url, int width, int height, float scale);
 /* zebkit_view_new_offscreen() in @context (<zebkit/zebkit.h>). */
@@ -304,6 +304,22 @@ typedef struct {
  * them.
  */
 ZEBKIT_API void zebkit_view_send_key(zebkit_view *view, const zebkit_key_event *event);
+
+/* Native key-binding commands, such as MoveWordLeft, DeleteBackward,
+ * SelectAll. UTF-8; NULL value is empty. Commands execute with the key event,
+ * after its DOM keydown, so preventDefault() suppresses the editing too.
+ * An application can collect AppKit's doCommandBySelector results and send
+ * them with one DOWN instead of generating a second keyboard event.
+ * Unknown commands have no effect. False for an invalid view/event, commands
+ * on an UP/CHAR, missing command names, or more than 128 commands.
+ */
+typedef struct {
+    const char *name;
+    const char *value;
+} zebkit_edit_command;
+ZEBKIT_API bool zebkit_view_send_key_with_commands(zebkit_view *view, const zebkit_key_event *event,
+    const zebkit_edit_command *commands, size_t count);
+
 
 /*
  * An input method's composition: @text (UTF-8) in the focused field,

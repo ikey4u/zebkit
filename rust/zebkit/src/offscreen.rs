@@ -299,6 +299,14 @@ pub struct KeyEvent<'a> {
     pub unmodified_text: Option<&'a str>,
 }
 
+/// A command resolved by the host's native key bindings, sent with one DOWN.
+/// The page's `preventDefault()` suppresses these commands as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditCommand<'a> {
+    pub name: &'a str,
+    pub value: Option<&'a str>,
+}
+
 /// A cursor the page asks for that is an image of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CursorImage {
@@ -459,7 +467,13 @@ impl View {
 
     /// A key, to the focused element or the open popup.
     pub fn send_key(&self, event: &KeyEvent<'_>) {
-        let Some(raw) = self.raw() else { return };
+        self.send_key_with_commands(event, &[]);
+    }
+
+    /// Sends one key with its native editing commands (at most 128).
+    /// Commands are valid on DOWN only; false for invalid or closed views.
+    pub fn send_key_with_commands(&self, event: &KeyEvent<'_>, commands: &[EditCommand<'_>]) -> bool {
+        let Some(raw) = self.raw() else { return false };
         let code = event.code.map(c_string);
         let key = event.key.map(c_string);
         let text = event.text.map(c_string);
@@ -479,7 +493,12 @@ impl View {
             text: pointer(&text),
             unmodified_text: pointer(&unmodified),
         };
-        unsafe { sys::zebkit_view_send_key(raw, &raw_event) }
+        let names: Vec<_> = commands.iter().map(|c| c_string(c.name)).collect();
+        let values: Vec<_> = commands.iter().map(|c| c.value.map(c_string)).collect();
+        let commands: Vec<_> = names.iter().zip(&values).map(|(name, value)| sys::zebkit_edit_command {
+            name: name.as_ptr(), value: pointer(value),
+        }).collect();
+        unsafe { sys::zebkit_view_send_key_with_commands(raw, &raw_event, commands.as_ptr(), commands.len()) }
     }
 
     /// An input method's composition, `selection` in UTF-16 code units

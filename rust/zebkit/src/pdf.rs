@@ -294,6 +294,13 @@ impl Document {
         self.json(answer, error)
     }
 
+    /// Replaces bookmarks as a JSON tree; an empty array removes them.
+    pub fn set_outline(&mut self, json: &str) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_set_outline(self.raw, c_string(json).as_ptr(), &mut error) };
+        self.done(ok, error, "the outline cannot be set")
+    }
+
     pub fn outline(&mut self) -> Result<String, Error> {
         let mut error = std::ptr::null_mut();
         let answer = unsafe { sys::zebkit_pdf_outline(self.raw, &mut error) };

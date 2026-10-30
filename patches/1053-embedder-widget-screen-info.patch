@@ -1,0 +1,69 @@
+diff --git a/content/public/browser/embedder_widget_hooks.h b/content/public/browser/embedder_widget_hooks.h
+--- a/content/public/browser/embedder_widget_hooks.h
++++ b/content/public/browser/embedder_widget_hooks.h
+@@ -13,6 +13,8 @@
+ namespace input { struct NativeWebKeyboardEvent; }
+ 
+ class SkBitmap;
++
++namespace display { struct ScreenInfos; }
+ 
+ namespace gfx {
+ class Point;
+@@ -56,6 +58,10 @@
+                        float scale,
+                        const gfx::Vector2d& cursor_offset,
+                        const gfx::Point& location) = nullptr;
++  // Override a widget's screen snapshot before renderer/compositor sync.
++  // No hook leaves the platform's normal screen information unchanged.
++  void (*screen_infos)(RenderWidgetHost* widget,
++                       display::ScreenInfos* infos) = nullptr;
+ };
+ 
+ // Editing commands resolved by the host's native key bindings (AppKit).
+@@ -70,6 +76,8 @@
+ 
+ CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
+ CONTENT_EXPORT const EmbedderWidgetHooks& GetEmbedderWidgetHooks();
++// Re-read the snapshot after the embedder changes a widget's virtual screen.
++CONTENT_EXPORT void NotifyEmbedderWidgetScreenInfoChanged(RenderWidgetHost* widget);
+ 
+ }  // namespace content
+ 
+diff --git a/content/browser/renderer_host/render_widget_host_impl.cc b/content/browser/renderer_host/render_widget_host_impl.cc
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -4584,4 +4584,10 @@
+   return g_embedder_widget_hooks;
+ }
+ 
++void NotifyEmbedderWidgetScreenInfoChanged(RenderWidgetHost* widget) {
++  if (!widget) return;
++  if (auto* view = static_cast<RenderWidgetHostImpl*>(widget)->GetView())
++    view->UpdateScreenInfo();
++}
++
+ }  // namespace content
+diff --git a/content/browser/renderer_host/render_widget_host_view_mac.mm b/content/browser/renderer_host/render_widget_host_view_mac.mm
+--- a/content/browser/renderer_host/render_widget_host_view_mac.mm
++++ b/content/browser/renderer_host/render_widget_host_view_mac.mm
+@@ -54,6 +54,7 @@
+ #include "content/browser/renderer_host/visible_time_request_trigger.h"
+ #include "content/common/features.h"
+ #include "content/public/browser/browser_context.h"
++#include "content/public/browser/embedder_widget_hooks.h"
+ #include "content/public/browser/browser_plugin_guest_manager.h"
+ #include "content/public/browser/render_widget_host.h"
+ #include "content/public/browser/web_contents.h"
+@@ -1014,6 +1015,11 @@
+     new_screen_infos_from_shim_.reset();
+   }
+ 
++  if (auto hook = GetEmbedderWidgetHooks().screen_infos) {
++    auto weak = weak_factory_.GetWeakPtr();
++    hook(host(), &original_screen_infos_);
++    if (!weak) return;
++  }
+   std::pair<bool, bool> was_updated = MaybeUpdateScreenInfosForHiDPI();
+   any_display_changed |= was_updated.first;
+   current_display_changed |= was_updated.second;

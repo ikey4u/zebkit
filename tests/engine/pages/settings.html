@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>settings default</title>
+<body><div id="sample">View settings sample</div><code id="fixed">Fixed-width sample</code>
+<img id="image" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==">
+<iframe id="child" src="about:blank"></iframe>
+<audio id="autoplay-test" src="media/tone.webm" preload="none"></audio>
+<script>
+window.inlineRan = true;
+window.autoplayResult = 'waiting';
+const audio = document.querySelector('#autoplay-test');
+audio.play().then(() => { window.autoplayResult = 'allowed'; audio.pause(); }, error => { window.autoplayResult = error.name; });
+document.title = 'settings script ran';
+window.preferenceEvents = [];
+for (const query of ['(prefers-color-scheme: dark)', '(prefers-contrast: more)', '(prefers-reduced-motion: reduce)'])
+  matchMedia(query).addEventListener('change', () => preferenceEvents.push(query));
+window.framePrefs = null;
+addEventListener('message', event => {
+  if (event.data && event.data.settingsFrame) framePrefs = {...event.data, origin: event.origin};
+});
+const frame = new URL('settings-frame.html', location.href);
+if (frame.hostname === '127.0.0.1') frame.hostname = 'localhost';
+document.querySelector('#child').src = frame.href;
+</script>

@@ -1,0 +1,49 @@
+A shutdown with no GPU process does not spin forever.
+
+During shutdown GpuProcessHost::Get() returns null. The new FrameSinkManager
+pipe ends were then closed, which HostFrameSinkManager reports as a lost
+connection, which connects again, on the main thread, without end:
+Shell::Shutdown()'s RunUntilIdle() never returned, in about one
+zebkit_shutdown() in four. The ends are kept instead, until the next connection.
+
+--- a/content/browser/compositor/viz_process_transport_factory.cc
++++ b/content/browser/compositor/viz_process_transport_factory.cc
+@@ -183,6 +183,13 @@
+         std::move(frame_sink_manager_receiver),
+         std::move(frame_sink_manager_client),
+         GetHostFrameSinkManager()->debug_renderer_settings());
++  } else {
++    // Nothing will connect them; closing them would report the connection as
++    // lost, and this function would run again, forever, with nothing else
++    // running: a shutdown's RunUntilIdle() would never return.
++    unconnected_frame_sink_manager_ = std::move(frame_sink_manager_receiver);
++    unconnected_frame_sink_manager_client_ =
++        std::move(frame_sink_manager_client);
+   }
+ }
+ 
+--- a/content/browser/compositor/viz_process_transport_factory.h
++++ b/content/browser/compositor/viz_process_transport_factory.h
+@@ -11,6 +11,9 @@
+ #include "build/build_config.h"
+ #include "components/viz/common/surfaces/frame_sink_id_allocator.h"
+ #include "components/viz/common/surfaces/subtree_capture_id_allocator.h"
++#include "mojo/public/cpp/bindings/pending_receiver.h"
++#include "mojo/public/cpp/bindings/pending_remote.h"
++#include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
+ #include "content/browser/compositor/image_transport_factory.h"
+ #include "gpu/command_buffer/common/context_result.h"
+ #include "gpu/ipc/client/gpu_channel_host.h"
+@@ -150,6 +153,12 @@
+ 
+   bool is_gpu_compositing_disabled_ = false;
+ 
++  // What ConnectHostFrameSinkManager() had no GPU process to give to.
++  mojo::PendingReceiver<viz::mojom::FrameSinkManager>
++      unconnected_frame_sink_manager_;
++  mojo::PendingRemote<viz::mojom::FrameSinkManagerClient>
++      unconnected_frame_sink_manager_client_;
++
+   base::WeakPtrFactory<VizProcessTransportFactory> weak_ptr_factory_{this};
+ };
+ 

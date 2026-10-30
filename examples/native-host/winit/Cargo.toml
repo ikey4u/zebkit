@@ -1,0 +1,15 @@
+[package]
+name = "zebkit-winit-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+zebkit = { path = "../../../rust/zebkit" }
+winit = "0.30"
+softbuffer = "0.4"
+
+[build-dependencies]
+zebkit-build = { path = "../../../rust/zebkit-build" }
