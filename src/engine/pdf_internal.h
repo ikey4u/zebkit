@@ -107,8 +107,11 @@ struct Value {
 
 // The annotation dictionary's entries but its appearance (/AP) and its
 // page (/P). Indirect objects are followed, but for annotations and pages,
-// which stay references, and for one already being followed.
-Value AnnotationEntries(FPDF_ANNOTATION annot);
+// which stay references, and for one already being followed. What is reached
+// through references takes from *@budget, or from a million of its own; past
+// that they stay references: a small file's arrays of references to arrays of
+// references would otherwise never end.
+Value AnnotationEntries(FPDF_ANNOTATION annot, size_t* budget = nullptr);
 
 // The object number of the annotation's dictionary; 0 for a direct one.
 int AnnotationObjectNumber(FPDF_ANNOTATION annot);

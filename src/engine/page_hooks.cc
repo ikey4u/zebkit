@@ -130,6 +130,14 @@ std::map<uintptr_t, DocumentOf>& MediaDocuments() {
   return *documents;
 }
 
+// A request's document, kept for what is pending: however it ended, its
+// entry does not stay.
+template <typename Requests>
+void RememberDocument(Requests& requests, std::map<uintptr_t, DocumentOf>& documents, DocumentOf document) {
+  std::erase_if(documents, [&](const auto& entry) { return !requests.Pending(entry.first); });
+  documents[requests.last_id()] = std::move(document);
+}
+
 template <typename Requests>
 void SweepDocuments(Requests& requests, std::map<uintptr_t, DocumentOf>& documents,
                     zebkit_view* view, content::RenderFrameHost* frame) {
@@ -388,7 +396,7 @@ class Hooks : public content::Shell::EmbedderHooks {
       std::move(reply).Run(MediaTraits::Decision());
       return true;
     }
-    MediaDocuments()[requests.last_id()] = document;
+    RememberDocument(requests, MediaDocuments(), document);
     return true;
   }
 };
@@ -483,7 +491,7 @@ bool HandleFileChooserHook(content::RenderFrameHost* frame,
     listener->FileSelectionCanceled();
     return true;
   }
-  FileDocuments()[requests.last_id()] = {frame->GetWeakDocumentPtr(), frame->GetGlobalId()};
+  RememberDocument(requests, FileDocuments(), {frame->GetWeakDocumentPtr(), frame->GetGlobalId()});
   return true;
 }
 

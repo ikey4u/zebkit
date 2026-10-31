@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -174,6 +175,13 @@ struct Recorded {
 std::map<zebkit_pdf*, Recorded>& RecordedOperations() {
   static base::NoDestructor<std::map<zebkit_pdf*, Recorded>> recorded;
   return *recorded;
+}
+
+// The hooks a script registered on each document, which are all that its
+// removeHook can reach: a page must not take away the application's.
+std::map<zebkit_pdf*, std::set<int>>& ScriptHooks() {
+  static base::NoDestructor<std::map<zebkit_pdf*, std::set<int>>> hooks;
+  return *hooks;
 }
 
 void RecordOperation(zebkit_pdf* pdf, const char* operation, void*) {
@@ -645,10 +653,16 @@ Answer Work(zebkit_pdf* pdf,
     const int id = zebkit_pdf_hook_kind(pdf, &kind, &error);
     if (id < 0)
       return Failed(error, "the kind cannot be registered");
+    ScriptHooks()[pdf].insert(id);
     return Ok(base::Value(id));
   }
-  if (method == "removeHook")
-    return Ok(base::Value(zebkit_pdf_hook_remove(IntArg(args, 0))));
+  if (method == "removeHook") {
+    const int id = IntArg(args, 0);
+    const auto hooks = ScriptHooks().find(pdf);
+    if (hooks == ScriptHooks().end() || !hooks->second.erase(id))
+      return Ok(base::Value(false));
+    return Ok(base::Value(zebkit_pdf_hook_remove(id)));
+  }
   if (method == "enableOperations") {
     // What happens to the document comes to a script's after hooks this way,
     // with what C's hooks get, asked for after each call.
@@ -778,6 +792,7 @@ void CloseOnSequence(zebkit_pdf* pdf) {
   Enqueue(kLater, base::BindOnce(
                       [](zebkit_pdf* document) {
                         RecordedOperations().erase(document);
+                        ScriptHooks().erase(document);
                         zebkit_pdf_close(document);
                       },
                       pdf));

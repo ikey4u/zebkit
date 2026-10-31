@@ -472,22 +472,26 @@ bool IsAnnotationOrPage(const CPDF_Dictionary* dict) {
 // @followed holds the object numbers being followed, against cycles.
 Value ToValue(const CPDF_Object* object,
               int depth,
-              std::vector<uint32_t>& followed) {
+              std::vector<uint32_t>& followed,
+              size_t& budget) {
   Value value;
   if (!object || depth > kMaxDepth)
     return value;
+  // What the file spells out itself is as large as the file: not counted.
+  if (followed.size() > 1 && budget)
+    --budget;
   if (const CPDF_Reference* reference = object->AsReference()) {
     const uint32_t number = reference->GetRefObjNum();
     RetainPtr<const CPDF_Object> target = reference->GetDirect();
     const bool cycle =
         std::find(followed.begin(), followed.end(), number) != followed.end();
-    if (!target || cycle || IsAnnotationOrPage(target->AsDictionary())) {
+    if (!target || cycle || !budget || IsAnnotationOrPage(target->AsDictionary())) {
       value.kind = Value::Kind::kRef;
       value.number = number;
       return value;
     }
     followed.push_back(number);
-    value = ToValue(target.Get(), depth, followed);
+    value = ToValue(target.Get(), depth, followed, budget);
     followed.pop_back();
     return value;
   }
@@ -507,13 +511,13 @@ Value ToValue(const CPDF_Object* object,
     value.kind = Value::Kind::kArray;
     CPDF_ArrayLocker locker(array);
     for (const auto& item : locker)
-      value.items.push_back(ToValue(item.Get(), depth + 1, followed));
+      value.items.push_back(ToValue(item.Get(), depth + 1, followed, budget));
   } else if (const CPDF_Dictionary* dict = object->AsDictionary()) {
     value.kind = Value::Kind::kDict;
     CPDF_DictionaryLocker locker(dict);
     for (const auto& [key, item] : locker) {
       value.entries.emplace_back(key.c_str(),
-                                 ToValue(item.Get(), depth + 1, followed));
+                                 ToValue(item.Get(), depth + 1, followed, budget));
     }
   }
   return value;
@@ -572,7 +576,10 @@ RetainPtr<CPDF_Object> ToObject(CPDF_Document* document,
 
 }  // namespace
 
-Value AnnotationEntries(FPDF_ANNOTATION annot) {
+Value AnnotationEntries(FPDF_ANNOTATION annot, size_t* budget) {
+  size_t own_budget = size_t{1} << 20;
+  if (!budget)
+    budget = &own_budget;
   Value value;
   value.kind = Value::Kind::kDict;
   RetainPtr<CPDF_Dictionary> dict = AnnotationDictionary(annot);
@@ -583,7 +590,7 @@ Value AnnotationEntries(FPDF_ANNOTATION annot) {
     if (key == "AP" || key == "P")
       continue;
     std::vector<uint32_t> followed = {dict->GetObjNum()};
-    value.entries.emplace_back(key.c_str(), ToValue(item.Get(), 1, followed));
+    value.entries.emplace_back(key.c_str(), ToValue(item.Get(), 1, followed, *budget));
   }
   return value;
 }

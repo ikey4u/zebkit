@@ -11,8 +11,8 @@
 #include <string.h>
 
 #include <map>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -108,14 +108,41 @@ std::string PointsText(const base::ListValue& points) {
   return out;
 }
 
-// Whether @text is XML that can be written as it is.
-bool WellFormed(const std::string& text) {
+// The element of @text, which is XML, to write inside another document: not
+// its "<?xml ?>", as /RC usually starts, which is an error anywhere else. ""
+// when it is not XML, or has a DTD.
+std::string RootElementOf(const std::string& text) {
   xmlDocPtr doc = xmlReadMemory(text.data(), static_cast<int>(text.size()), nullptr, "UTF-8",
                                 XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_NO_XXE);
-  const bool ok = doc && !doc->intSubset && !doc->extSubset;
-  if (doc)
-    xmlFreeDoc(doc);
-  return ok;
+  if (!doc)
+    return std::string();
+  std::string out;
+  xmlNode* root = xmlDocGetRootElement(doc);
+  if (root && !doc->intSubset && !doc->extSubset) {
+    if (xmlBufferPtr buffer = xmlBufferCreate()) {
+      xmlNodeDump(buffer, doc, root, 0, 0);
+      out = reinterpret_cast<const char*>(xmlBufferContent(buffer));
+      xmlBufferFree(buffer);
+    }
+  }
+  xmlFreeDoc(doc);
+  return out;
+}
+
+// A file's numbers mean nothing in this document: what one refers to is not here.
+void DropReferences(base::Value& value) {
+  if (value.is_list()) {
+    for (base::Value& item : value.GetList())
+      DropReferences(item);
+  } else if (value.is_dict()) {
+    base::DictValue& dict = value.GetDict();
+    if (dict.size() == 1 && dict.FindInt("ref")) {
+      value = base::Value();
+      return;
+    }
+    for (auto [key, item] : dict)
+      DropReferences(item);
+  }
 }
 
 // What travels in entries of its own, standard or not: what the attributes do not say.
@@ -317,7 +344,10 @@ std::string WriteXfdf(zebkit_pdf* pdf, const std::vector<Written>& all) {
       attr("caption", caption->FindBool("show").value_or(false) ? "yes" : "no");
       if (const std::string* position = caption->FindString("position"))
         attr("caption-style", *position == "top" ? "Top" : "Inline");
-      if (const base::ListValue* offset = caption->FindList("offset"); offset && offset->size() == 2) {
+      // What the file has in /CO, numbers or not.
+      if (const base::ListValue* offset = caption->FindList("offset");
+          offset && offset->size() == 2 && ((*offset)[0].is_int() || (*offset)[0].is_double()) &&
+          ((*offset)[1].is_int() || (*offset)[1].is_double())) {
         attr("caption-offset-h", NumberText((*offset)[0].GetDouble()));
         attr("caption-offset-v", NumberText((*offset)[1].GetDouble()));
       }
@@ -347,8 +377,10 @@ std::string WriteXfdf(zebkit_pdf* pdf, const std::vector<Written>& all) {
     std::string children;
     if (const std::string* contents = a.FindString("contents"))
       children += "<contents>" + Xml(*contents) + "</contents>\n";
-    if (const std::string* rich = a.FindString("richText"); rich && WellFormed(*rich))
-      children += "<contents-richtext>" + *rich + "</contents-richtext>\n";
+    if (const std::string* rich = a.FindString("richText")) {
+      if (const std::string element = RootElementOf(*rich); !element.empty())
+        children += "<contents-richtext>" + element + "</contents-richtext>\n";
+    }
     if (const base::DictValue* entries = a.FindDict("entries")) {
       // In "entries" a string that starts with a slash has another before it.
       if (const std::string* da = entries->FindString("DA"))
@@ -778,9 +810,13 @@ std::string ReadXfdfAnnotation(zebkit_pdf* pdf, xmlNode* node, int pages, Pendin
           base::JSONReader::Read(TextOf(child), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
       if (!parsed || !parsed->is_dict())
         return "zebkit-entries is not a JSON object";
-      for (const auto [key, item] : parsed->GetDict()) {
-        if (key == "Subtype" || key == "AP" || key == "P" || key == "A" || key == "AA")
+      // As much as WriteXfdf() puts there, and no links to what is not here:
+      // the same a file of FDF is held to.
+      const std::vector<std::string> prefixes = zebkit::pdf::KindPrefixes(pdf);
+      for (auto [key, item] : parsed->GetDict()) {
+        if (!TravelsAsEntry(key, prefixes))
           return "zebkit-entries may not have " + key;
+        DropReferences(item);
         entries.Set(key, item.Clone());
       }
     } else if (name == "inklist") {
@@ -905,6 +941,8 @@ std::string ReadFdf(zebkit_pdf* pdf, const void* data, size_t size, std::vector<
                             "ZebkitOwnAppearance", "PDFIUM_HasGeneratedAP", "FS"}) {
       entries.Remove(key);
     }
+    for (auto [key, item] : entries)
+      DropReferences(item);
     // A kind's data, under its name in JSON.
     if (std::shared_ptr<zebkit::pdf::Hook> kind = zebkit::pdf::FindKind(pdf, type)) {
       if (const base::Value* data_value = entries.Find(kind->prefix + "Data")) {
@@ -966,6 +1004,8 @@ int zebkit_pdf_annotations_import(zebkit_pdf* pdf,
   };
   if (!pdf || !data || !size || size > kMaxFile)
     return fail("no file, or one over 64 MiB");
+  // Each annotation's hooks may close the document, which stays for all of this.
+  zebkit::pdf::ApiScope scope(pdf);
   std::vector<Pending> pending;
   const std::string problem =
       format == ZEBKIT_PDF_FDF ? ReadFdf(pdf, data, size, &pending) : ReadXfdf(pdf, data, size, &pending);
@@ -996,12 +1036,19 @@ int zebkit_pdf_annotations_import(zebkit_pdf* pdf,
     }
   }
   // A cycle of replies in the file is an error of the file.
+  // Each one once, whatever the length of the chains: a file's can be its whole.
+  enum : uint8_t { kUnseen, kOnThisChain, kFine };
+  std::vector<uint8_t> state(pending.size(), kUnseen);
   for (size_t i = 0; i < pending.size(); ++i) {
-    std::set<int> seen = {static_cast<int>(i)};
-    for (int at = target[i]; at >= 0; at = target[at]) {
-      if (!seen.insert(at).second)
-        return fail("the file's replies go round in a cycle");
+    int at = static_cast<int>(i);
+    while (at >= 0 && state[at] == kUnseen) {
+      state[at] = kOnThisChain;
+      at = target[at];
     }
+    if (at >= 0 && state[at] == kOnThisChain)
+      return fail("the file's replies go round in a cycle");
+    for (at = static_cast<int>(i); at >= 0 && state[at] == kOnThisChain; at = target[at])
+      state[at] = kFine;
   }
 
   // Added one by one; undone if one of them cannot be.
@@ -1018,6 +1065,8 @@ int zebkit_pdf_annotations_import(zebkit_pdf* pdf,
       return -1;
     }
     added.emplace_back(item.page, at);
+    if (pdf->closing)
+      return fail("a hook closed the document");
   }
   // The replies: the objects there now.
   std::map<int, base::Value> read;
@@ -1048,6 +1097,8 @@ int zebkit_pdf_annotations_import(zebkit_pdf* pdf,
       undo();
       return -1;
     }
+    if (pdf->closing)
+      return fail("a hook closed the document");
   }
   return static_cast<int>(pending.size());
 }

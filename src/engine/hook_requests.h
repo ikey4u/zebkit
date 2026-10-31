@@ -97,6 +97,7 @@ class HookRequests {
     return true;
   }
   uintptr_t last_id() const { return last_id_; }
+  bool Pending(uintptr_t id) const { return pending_.contains(id); }
 
   // The request when it is still pending. A deadline passed, or a view gone,
   // settles it first: blocked hosts cannot answer after their deadline.

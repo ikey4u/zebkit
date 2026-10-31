@@ -63,7 +63,16 @@ impl Canvas {
             return Err(unsafe { take_error(error, "the canvas cannot be made") });
         }
         let mut canvas = Canvas { raw, owned: true };
-        Ok(draw(&mut canvas))
+        let answer = draw(&mut canvas);
+        // Swapped out with `mem::swap`, it would outlive the pixels it writes to.
+        if !canvas.is(raw) {
+            std::process::abort();
+        }
+        Ok(answer)
+    }
+
+    pub(crate) fn is(&self, raw: *mut sys::zebkit_canvas) -> bool {
+        self.raw == raw
     }
 
     pub(crate) fn borrowed(raw: *mut sys::zebkit_canvas) -> Canvas {

@@ -781,13 +781,14 @@ zebkit_canvas* zebkit_canvas_wrap(uint8_t* rgba,
     Failed(error, "no pixels, a size that is not positive, or too small a stride");
     return nullptr;
   }
-  if (flags & ZEBKIT_CANVAS_UNPREMULTIPLIED)
-    ConvertAlpha(rgba, width, height, stride, false);
   zebkit_canvas* canvas = MakeSkia(rgba, width, height, stride);
   if (!canvas) {
     Failed(error, "the canvas cannot be made");
     return nullptr;
   }
+  // Only over rows Skia has taken: a stride it refuses says no such rows.
+  if (flags & ZEBKIT_CANVAS_UNPREMULTIPLIED)
+    ConvertAlpha(rgba, width, height, stride, false);
   canvas->unpremultiply_at_close = flags & ZEBKIT_CANVAS_UNPREMULTIPLIED;
   return canvas;
 }

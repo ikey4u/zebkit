@@ -725,6 +725,8 @@ static const char *const hostile_xfdf[] = {
     "<xfdf><annots><line page=\"0\" rect=\"1,1,2,2\" start=\"1\" end=\"2,2\"/></annots></xfdf>",
     "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>not json</zebkit-entries></text></annots></xfdf>",
     "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>{\"AP\":{}}</zebkit-entries></text></annots></xfdf>",
+    "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>{\"Popup\":{\"ref\":1}}</zebkit-entries></text></annots></xfdf>",
+    "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>{\"FS\":{\"F\":\"x\"}}</zebkit-entries></text></annots></xfdf>",
     "<xfdf><annots><ink page=\"0\" rect=\"1,1,2,2\"><inklist><gesture>1,2,3</gesture></inklist></ink></annots></xfdf>",
     /* A cycle of replies. */
     "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\" name=\"a\" inreplyto=\"b\"/>"
@@ -971,6 +973,140 @@ static void test_malformed(void) {
     zebkit_pdf_close(pdf);
 }
 
+/* A file of one page with @annots in its /Annots, and the objects @more. */
+static size_t page_with(char *out, size_t room, const char *annots, const char *more) {
+    return (size_t)snprintf(out, room,
+                            "%%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+                            "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+                            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [%s] >> endobj\n"
+                            "%strailer << /Root 1 0 R >>\n%%%%EOF\n",
+                            annots, more);
+}
+
+static void test_hostile(void) {
+    char *error = NULL;
+    /* A measurement too long to write. */
+    zebkit_pdf *pdf = blank(100, 100);
+    add(pdf, 0, "{\"type\":\"line\",\"rect\":[0,0,9,9],\"entries\":{\"L\":[0,0,3e38,0],"
+                "\"Measure\":{\"X\":[{\"C\":3e38,\"U\":\"m\"}]}}}");
+    check(listed(pdf, 0, "\"text\":\"1000000000000000000.00 m\""), "a number too long to write", NULL);
+
+    /* What a file says in /CO is not known to be numbers. */
+    add(pdf, 0, "{\"type\":\"line\",\"line\":[1,1,9,9],\"entries\":{\"CO\":[\"/x\",\"(y\"]}}");
+    size_t size = 0;
+    zebkit_free(zebkit_pdf_annotations_export(pdf, ZEBKIT_PDF_XFDF, 0, -1, &size, NULL));
+    check(size > 0, "an offset that is no numbers", NULL);
+    zebkit_pdf_close(pdf);
+
+    /* /RC as Acrobat writes it goes through XFDF. */
+    pdf = blank(100, 100);
+    add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[1,1,99,99],\"contents\":\"hi\",\"richText\":\"<?xml version=\\\"1.0\\\"?>"
+                "<body xmlns=\\\"http://www.w3.org/1999/xhtml\\\"><p>hi</p></body>\"}");
+    uint8_t *xfdf = zebkit_pdf_annotations_export(pdf, ZEBKIT_PDF_XFDF, -1, -1, &size, NULL);
+    zebkit_pdf *other = blank(100, 100);
+    const int read = zebkit_pdf_annotations_import(other, ZEBKIT_PDF_XFDF, xfdf, size, &error);
+    check(read == 1 && listed(other, 0, "\\u003Cp>hi\\u003C/p>"), "rich text with its declaration, read back", error);
+    zebkit_free(error);
+    error = NULL;
+    zebkit_free(xfdf);
+    zebkit_pdf_close(other);
+    zebkit_pdf_close(pdf);
+
+    /* The longest chain of replies a file can have, ending in a cycle. */
+    enum { kChain = 60000 };
+    char *chain = malloc((size_t)kChain * 64 + 64);
+    size_t length = (size_t)sprintf(chain, "<xfdf><annots>");
+    for (int i = 0; i < kChain; ++i) {
+        length += (size_t)sprintf(chain + length, "<text page=\"0\" rect=\"1,1,2,2\" name=\"n%d\" inreplyto=\"n%d\"/>",
+                                  i, i + 1 < kChain ? i + 1 : kChain - 2);
+    }
+    length += (size_t)sprintf(chain + length, "</annots></xfdf>");
+    pdf = blank(100, 100);
+    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, chain, length, &error) < 0 && error && strstr(error, "cycle"),
+          "a long chain is judged at once", error);
+    zebkit_free(error);
+    error = NULL;
+    free(chain);
+
+    /* A file's references are to its own objects, not this document's: 1 is its catalog. */
+    static const char fdf[] =
+        "%FDF-1.2\n1 0 obj\n<</FDF <</Annots [2 0 R]>>>>\nendobj\n"
+        "2 0 obj\n<</Subtype /Text /Rect [1 1 2 2] /Page 0 /Measure 1 0 R /Foo [1 0 R]>>\nendobj\n"
+        "trailer\n<</Root 1 0 R>>\n%%EOF\n";
+    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, fdf, sizeof(fdf) - 1, &error) == 1, "an FDF with references", error);
+    zebkit_free(error);
+    error = NULL;
+    check(!listed(pdf, 0, "Catalog") && !listed(pdf, 0, "\"ref\""), "they do not reach this document", NULL);
+    static const char with_ref[] =
+        "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>{\"Measure\":{\"ref\":1}}</zebkit-entries></text></annots></xfdf>";
+    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, with_ref, sizeof(with_ref) - 1, NULL) == 1 && !listed(pdf, 0, "Catalog"),
+          "nor from XFDF", NULL);
+    zebkit_pdf_close(pdf);
+
+    /* Arrays of references to arrays of references: small to write, 200^8 to read. */
+    enum { kWidth = 200 };
+    char *objects = malloc(64 * 1024);
+    length = 0;
+    for (int level = 0; level < 8; ++level) {
+        length += (size_t)sprintf(objects + length, "%d 0 obj [", 10 + level);
+        for (int i = 0; i < kWidth; ++i)
+            length += (size_t)sprintf(objects + length, "%d 0 R ", 11 + level);
+        length += (size_t)sprintf(objects + length, "] endobj\n");
+    }
+    length += (size_t)sprintf(objects + length, "18 0 obj 1 endobj\n"
+                                                "4 0 obj << /Type /Annot /Subtype /Square /Rect [1 1 9 9] /Foo 10 0 R >> endobj\n");
+    char *file = malloc(128 * 1024);
+    size_t file_size = page_with(file, 128 * 1024, "4 0 R", objects);
+    pdf = zebkit_pdf_open(file, file_size, NULL, &error);
+    check(pdf != NULL, "the small file opens", error);
+    zebkit_free(error);
+    error = NULL;
+    char *json = zebkit_pdf_annotations(pdf, 0, &error);
+    check(json && strstr(json, "\"Foo\":[") && strstr(json, "\"ref\":"), "read, as far as is reasonable", error);
+    zebkit_free(json);
+    zebkit_free(error);
+    error = NULL;
+    zebkit_pdf_close(pdf);
+    free(file);
+    free(objects);
+
+    /* A chain of replies against the order of the page: each round finds one. */
+    enum { kReplies = 1500 };
+    objects = malloc((size_t)kReplies * 128);
+    char *annots = malloc((size_t)kReplies * 16);
+    length = 0;
+    size_t annots_length = 0;
+    for (int i = 0; i < kReplies; ++i) {
+        annots_length += (size_t)sprintf(annots + annots_length, "%d 0 R ", 10 + i);
+        length += (size_t)sprintf(objects + length, "%d 0 obj << /Type /Annot /Subtype /Text /Rect [1 1 2 2]", 10 + i);
+        if (i + 1 < kReplies)
+            length += (size_t)sprintf(objects + length, " /IRT %d 0 R", 11 + i);
+        length += (size_t)sprintf(objects + length, " >> endobj\n");
+    }
+    file = malloc((size_t)kReplies * 160 + 512);
+    file_size = page_with(file, (size_t)kReplies * 160 + 512, annots, objects);
+    pdf = zebkit_pdf_open(file, file_size, NULL, NULL);
+    check(zebkit_pdf_annotation_remove(pdf, 0, kReplies - 1, &error) && count_annotations(pdf, 0) == 0, "the whole thread goes", error);
+    zebkit_free(error);
+    error = NULL;
+    zebkit_pdf_close(pdf);
+    free(file);
+    free(annots);
+    free(objects);
+
+    /* A change that fails leaves what it cannot describe: the file, and no popup. */
+    pdf = blank(100, 100);
+    const int attached = add(pdf, 0, "{\"type\":\"fileAttachment\",\"rect\":[1,1,9,9]}");
+    check(zebkit_pdf_annotation_attach_file(pdf, 0, attached, "a.txt", "file", 4, NULL), "attached", NULL);
+    refused(!zebkit_pdf_annotation_update(pdf, 0, attached, "{\"popup\":{\"rect\":[1,1,2,2]},\"zz\":1}", &error), &error, "an unknown key");
+    check(count_annotations(pdf, 0) == 1, "no popup stays", NULL);
+    size_t got = 0;
+    uint8_t *bytes = zebkit_pdf_annotation_file(pdf, 0, attached, NULL, &got, NULL);
+    check(bytes && got == 4 && !memcmp(bytes, "file", 4), "the file stays after a change that failed", NULL);
+    zebkit_free(bytes);
+    zebkit_pdf_close(pdf);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: pdf_annotations <font.ttf>\n");
@@ -988,6 +1124,7 @@ int main(int argc, char **argv) {
     test_viewers();
     test_interchange();
     test_malformed();
+    test_hostile();
     free(font_bytes);
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

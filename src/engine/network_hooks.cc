@@ -214,8 +214,15 @@ class Loader : public network::mojom::URLLoader,
   void OnReceiveResponse(network::mojom::URLResponseHeadPtr head, mojo::ScopedDataPipeConsumerHandle body,
                          std::optional<mojo_base::BigBuffer> metadata) override {
     Observe("response", head.get(), false, net::OK);
-    if (Stage(false) != Hold::kHold || !Ask("response", head.get())) {
+    const Hold hold = Stage(false);
+    if (hold == Hold::kNone) {
       client_->OnReceiveResponse(std::move(head), std::move(body), std::move(metadata));
+      return;
+    }
+    // A rule holds it and it cannot be held, or no policy is left: not past either.
+    if (hold == Hold::kBlocked || !Ask("response", head.get())) {
+      Drop();
+      Finish(network::URLLoaderCompletionStatus(net::ERR_BLOCKED_BY_CLIENT));
       return;
     }
     head_ = std::move(head);
@@ -299,8 +306,14 @@ class Loader : public network::mojom::URLLoader,
       Finish(network::URLLoaderCompletionStatus(net::ERR_BLOCKED_BY_CLIENT));
       return;
     }
-    if (hold == Hold::kHold && Ask("request", nullptr))
+    if (hold == Hold::kHold) {
+      // Too many held already must not be how a page gets past a rule.
+      if (Ask("request", nullptr))
+        return;
+      Drop();
+      Finish(network::URLLoaderCompletionStatus(net::ERR_BLOCKED_BY_CLIENT));
       return;
+    }
     Send();
   }
 

@@ -1644,7 +1644,7 @@ class Canvas:
         """Over a bytearray, R, G, B, A, kept until close()."""
         if not isinstance(pixels, bytearray):
             raise TypeError("pixels are a bytearray")
-        if len(pixels) < (stride or width * 4) * height:
+        if stride < 0 or len(pixels) < (stride or width * 4) * height:
             raise ValueError("too few pixels")
         self = cls.__new__(cls)
         buffer = (ctypes.c_uint8 * len(pixels)).from_buffer(pixels)
@@ -1871,7 +1871,18 @@ def _keep(*things):
 
 
 def _give(text):
-    return _pdf_string(text.encode())
+    # What a hook says must get to the engine, whatever it holds.
+    return _pdf_string(text.encode("utf-8", "replace"))
+
+
+def _lent(handle, draw):
+    """Runs draw(canvas) over a canvas that is the engine's for this call: one
+    the function keeps afterwards draws on nothing, not on what has gone."""
+    canvas = Canvas(_handle=handle)
+    try:
+        return draw(canvas)
+    finally:
+        canvas._handle = None
 
 
 class PdfHooks:
@@ -1884,25 +1895,30 @@ class PdfHooks:
 
     @property
     def _handle(self):
-        return self._pdf._handle if self._pdf else None
+        # A closed document's hook must not become one for all documents.
+        if self._pdf is not None and not self._pdf._handle:
+            raise Error("the document is closed")
+        return self._pdf._handle if self._pdf is not None else None
 
     def before(self, event, function):
         """function(operation): None goes on, False or {"refuse": why} refuses,
         another operation changes what happens. An exception refuses."""
         def call(pdf, operation, change, reason, data):
+            # All of it in here: what leaves this function as an exception
+            # comes to C as 0, which is "go on".
             try:
                 answer = function(json.loads(operation))
-            except Exception as e:  # noqa: BLE001
+                if answer is False or (isinstance(answer, dict) and "refuse" in answer):
+                    why = answer["refuse"] if answer is not False else None
+                    if why:
+                        reason[0] = _give(str(why))
+                    return 1
+                if isinstance(answer, dict):
+                    change[0] = _give(json.dumps(answer))
+                return 0
+            except BaseException as e:  # noqa: BLE001
                 reason[0] = _give(f"a hook failed: {e}")
                 return 1
-            if answer is False or (isinstance(answer, dict) and "refuse" in answer):
-                why = answer["refuse"] if answer is not False else None
-                if why:
-                    reason[0] = _give(str(why))
-                return 1
-            if isinstance(answer, dict):
-                change[0] = _give(json.dumps(answer))
-            return 0
         thunk = _BEFORE(call)
         return _register_before(self._handle, event.encode(), thunk, _keep(thunk), _hook_destroy)
 
@@ -1916,7 +1932,7 @@ class PdfHooks:
         canvas writes PDF operators: units are points, the origin its top left."""
         def call(canvas, pdf, page, index, annotation, width, height, data):
             try:
-                return bool(function(Canvas(_handle=canvas), json.loads(annotation), width, height))
+                return bool(_lent(canvas, lambda lent: function(lent, json.loads(annotation), width, height)))
             except Exception:  # noqa: BLE001
                 return False
         thunk = _APPEARANCE(call)
@@ -1926,16 +1942,17 @@ class PdfHooks:
         """A kind of annotation of the application's own."""
         def draw_call(canvas, pdf, page, index, annotation, width, height, data):
             try:
-                return bool(draw(Canvas(_handle=canvas), json.loads(annotation), width, height))
+                return bool(_lent(canvas, lambda lent: draw(lent, json.loads(annotation), width, height)))
             except Exception:  # noqa: BLE001
                 return False
 
         def check_call(data_json, data):
+            # As for before(): nothing back is "the data is fine".
             try:
                 problem = check(json.loads(data_json))
-            except Exception as e:  # noqa: BLE001
-                problem = f"a check failed: {e}"
-            return _give(str(problem)) if problem else None
+                return _give(str(problem)) if problem else None
+            except BaseException as e:  # noqa: BLE001
+                return _give(f"a check failed: {e}")
 
         def hit_call(pdf, page, index, annotation, x, y, data):
             try:
@@ -1944,12 +1961,14 @@ class PdfHooks:
                 return False
         thunks = (_CHECK(check_call) if check else _CHECK(), _APPEARANCE(draw_call) if draw else _APPEARANCE(),
                   _HIT(hit_call) if hit_test else _HIT())
+        kept = _keep(*thunks)
         raw = _Kind(name.encode(), prefix.encode(), subtype.encode() if subtype else None,
                     json.dumps(schema).encode() if schema is not None else None, thunks[0], thunks[1], thunks[2],
-                    _keep(*thunks), _hook_destroy)
+                    kept, _hook_destroy)
         error = ctypes.c_void_p()
         hook = _register_kind(self._handle, ctypes.byref(raw), ctypes.byref(error))
         if hook < 0:
+            _hook_keep.pop(kept, None)  # what fails to register is not destroyed
             _raise(error, "the kind cannot be registered")
         return hook
 
@@ -1957,8 +1976,8 @@ class PdfHooks:
         """function(canvas, page, info): over the page's bitmap, in page space."""
         def call(canvas, pdf, page, info, data):
             i = info.contents
-            function(Canvas(_handle=canvas), page, {"width": i.width, "height": i.height, "scale": i.scale,
-                                                    "rotation": i.rotation, "matrix": list(i.matrix)})
+            _lent(canvas, lambda lent: function(lent, page, {"width": i.width, "height": i.height, "scale": i.scale,
+                                                             "rotation": i.rotation, "matrix": list(i.matrix)}))
         thunk = _LAYER(_guard(call))
         return _register_layer(self._handle, 1 if above else 0, thunk, _keep(thunk), _hook_destroy)
 

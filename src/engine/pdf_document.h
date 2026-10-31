@@ -40,4 +40,30 @@ struct zebkit_pdf {
   std::map<int, std::vector<OcrLine>> ocr;
 };
 
+namespace zebkit::pdf {
+
+// Ends the document, now.
+void DestroyDocument(zebkit_pdf* pdf);
+
+// Around a call that runs hooks: a hook may close the document, which then
+// goes when the outermost call is done with it. Declared before any lock.
+class ApiScope {
+ public:
+  explicit ApiScope(zebkit_pdf* pdf) : pdf_(pdf) {
+    if (pdf_)
+      ++pdf_->depth;
+  }
+  ~ApiScope() {
+    if (pdf_ && --pdf_->depth == 0 && pdf_->closing)
+      DestroyDocument(pdf_);
+  }
+  ApiScope(const ApiScope&) = delete;
+  ApiScope& operator=(const ApiScope&) = delete;
+
+ private:
+  zebkit_pdf* pdf_;
+};
+
+}  // namespace zebkit::pdf
+
 #endif  // ZEBKIT_ENGINE_PDF_DOCUMENT_H_

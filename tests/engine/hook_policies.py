@@ -185,12 +185,17 @@ def run(language, command, mode):
             assert not fixture.peers, fixture.peers
         if mode in ('net-block', 'net-fulfill', 'net-navigation', 'net-redirect'):
             assert '/held' not in fixture.received, fixture.received
+        if mode == 'net-flood':
+            assert not any('/held' in path for path in fixture.received), fixture.received
         if mode == 'net-headers':
             assert any(h.get('X-Zebkit') == 'yes' for h in fixture.echoed), fixture.echoed
         print(f'ok {language} {mode}', flush=True)
 
 
 language, group = sys.argv[1].split(':')
+# More requests than may wait: what asks them is the same in every language.
+if group == 'network' and language == 'c':
+    MODES[group].append('net-flood')
 for mode in (os.environ["ONLY"].split(",") if os.environ.get("ONLY") else MODES[group]):
     try:
         run(language, sys.argv[2:], mode)

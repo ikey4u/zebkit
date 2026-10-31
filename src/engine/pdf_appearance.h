@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,19 @@ struct AppearanceFonts {
   std::map<std::string, FPDF_FONT> loaded;
 };
 void CloseAppearanceFonts(AppearanceFonts& fonts);
+
+// A copy of an annotation's dictionary as it is, streams and references
+// included, to put back when a change of it fails.
+class AnnotationBackup {
+ public:
+  explicit AnnotationBackup(FPDF_ANNOTATION annot);
+  ~AnnotationBackup();
+  void Restore(FPDF_ANNOTATION annot) const;
+
+ private:
+  struct Entries;
+  std::unique_ptr<Entries> entries_;
+};
 
 // Makes an annotation of /Subtype @subtype on @page, always an indirect object,
 // and returns it to FPDFPage_CloseAnnot(). Unlike FPDFPage_CreateAnnot() it

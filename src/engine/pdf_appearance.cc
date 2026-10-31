@@ -1669,6 +1669,27 @@ void CloseAppearanceFonts(AppearanceFonts& fonts) {
   fonts.loaded.clear();
 }
 
+struct AnnotationBackup::Entries {
+  RetainPtr<const CPDF_Dictionary> copy;
+};
+
+AnnotationBackup::AnnotationBackup(FPDF_ANNOTATION annot) : entries_(std::make_unique<Entries>()) {
+  if (RetainPtr<CPDF_Dictionary> dict = Dict(annot))
+    entries_->copy = ToDictionary(dict->Clone());
+}
+
+AnnotationBackup::~AnnotationBackup() = default;
+
+void AnnotationBackup::Restore(FPDF_ANNOTATION annot) const {
+  RetainPtr<CPDF_Dictionary> dict = Dict(annot);
+  if (!dict || !entries_->copy)
+    return;
+  for (const ByteString& key : dict->GetKeys())
+    dict->RemoveFor(key.AsStringView());
+  for (const ByteString& key : entries_->copy->GetKeys())
+    dict->SetFor(key, entries_->copy->GetObjectFor(key.AsStringView())->Clone());
+}
+
 FPDF_ANNOTATION CreateAnnotation(FPDF_PAGE page, const char* subtype) {
   CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
   if (!pdf_page || !subtype || !*subtype)

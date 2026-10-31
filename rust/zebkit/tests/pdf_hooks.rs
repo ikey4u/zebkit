@@ -1,8 +1,7 @@
 //! `<zebkit/canvas.h>`, `<zebkit/text.h>` and `<zebkit/pdf.h>`'s annotations and
 //! hooks from Rust. None of it needs the engine running.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use zebkit::canvas::{shape_text, Canvas, Font};
 use zebkit::pdf::{self, Decision, Document, Interchange, Kind, RenderOptions};
 
@@ -78,10 +77,10 @@ fn annotations_and_interchange() {
 #[test]
 fn hooks_refuse_change_and_undo() {
     let mut document = Document::open(PAGE, None).unwrap();
-    let inverses = Rc::new(RefCell::new(Vec::new()));
+    let inverses = Arc::new(Mutex::new(Vec::new()));
     let kept = inverses.clone();
     pdf::hook_after(Some(&document), "annotation.add", move |_, operation| {
-        kept.borrow_mut().push(operation.to_string());
+        kept.lock().unwrap().push(operation.to_string());
     })
     .unwrap();
     let refusing = pdf::hook_before(Some(&document), "annotation.add", |_, _| Decision::Refuse("not today".into())).unwrap();
@@ -89,7 +88,7 @@ fn hooks_refuse_change_and_undo() {
     assert_eq!(error.message(), "not today");
     assert!(refusing.remove());
     assert!(!refusing.remove());
-    assert_eq!(inverses.borrow().len(), 0);
+    assert_eq!(inverses.lock().unwrap().len(), 0);
 
     let change = pdf::hook_before(Some(&document), "annotation.add", |_, _| {
         Decision::Change(
@@ -100,8 +99,8 @@ fn hooks_refuse_change_and_undo() {
     document.add_annotation(0, r#"{"type":"square","rect":[1,1,2,2]}"#).unwrap();
     assert!(near(pixel(&mut document, 30, 30), [0, 0, 255]));
     change.remove();
-    assert_eq!(inverses.borrow().len(), 1);
-    let operation = inverses.borrow()[0].clone();
+    assert_eq!(inverses.lock().unwrap().len(), 1);
+    let operation = inverses.lock().unwrap()[0].clone();
     let start = operation.find("\"inverse\":").unwrap() + "\"inverse\":".len();
     // A removal's inverse holds no object of its own: it ends at the first brace.
     let end = start + operation[start..].find('}').unwrap() + 1;

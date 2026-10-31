@@ -710,8 +710,10 @@ pub enum Trust {
 /// A hook of `<zebkit/pdf.h>`: every function here takes the document it is
 /// for, or `None` for all. It goes when [`Hook::remove`] is called or its
 /// document does; dropping this value alone leaves it in place. Callbacks run
-/// on the thread that made the call that needs them, and may call on the
-/// document they are given, whose owner holds it too.
+/// on the thread that made the call that needs them, which for a document
+/// that moves or for all documents is any thread, at the same time: they are
+/// `Send + Sync`. They may call on the document they are given, whose owner
+/// holds it too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hook(c_int);
 
@@ -744,6 +746,14 @@ fn borrowed(pdf: *mut sys::zebkit_pdf) -> ManuallyDrop<Document> {
     ManuallyDrop::new(Document { raw: pdf })
 }
 
+/// What a callback was lent must be what it gives back: with `mem::swap` it
+/// would have kept, in safe code, a pointer that goes when the call is over.
+fn kept_or_abort(kept: bool) {
+    if !kept {
+        std::process::abort();
+    }
+}
+
 fn give_string(text: &str) -> *mut c_char {
     unsafe { sys::zebkit_pdf_string(c_string(text).as_ptr()) }
 }
@@ -763,7 +773,9 @@ where
     let mut document = borrowed(pdf);
     let target = (!pdf.is_null()).then_some(&mut *document as &mut Document);
     // A hook that panics has decided nothing it can stand by.
-    match catch_unwind(AssertUnwindSafe(|| function(target, &text))) {
+    let answer = catch_unwind(AssertUnwindSafe(|| function(target, &text)));
+    kept_or_abort(document.raw == pdf);
+    match answer {
         Ok(Decision::Continue) => sys::ZEBKIT_PDF_CONTINUE,
         Ok(Decision::Change(json)) => {
             *change = give_string(&json);
@@ -788,12 +800,13 @@ where
     let text = string_from(operation).unwrap_or_default();
     let mut document = borrowed(pdf);
     let _ = catch_unwind(AssertUnwindSafe(|| function(&mut document, &text)));
+    kept_or_abort(document.raw == pdf);
 }
 
 /// Runs `function` before `event` ("annotation.add", ..., or "*").
 pub fn hook_before<F>(document: Option<&Document>, event: &str, function: F) -> Result<Hook, Error>
 where
-    F: Fn(Option<&mut Document>, &str) -> Decision + 'static,
+    F: Fn(Option<&mut Document>, &str) -> Decision + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_before(
@@ -809,7 +822,7 @@ where
 /// Runs `function` after `event`, given the operation as JSON.
 pub fn hook_after<F>(document: Option<&Document>, event: &str, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&mut Document, &str) + 'static,
+    F: Fn(&mut Document, &str) + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_after(
@@ -837,8 +850,11 @@ where
 {
     let function = &*data.cast::<F>();
     let text = string_from(annotation).unwrap_or_default();
-    let mut canvas = Canvas::borrowed(canvas);
-    catch_unwind(AssertUnwindSafe(|| function(&mut canvas, &text, width, height))).unwrap_or(false)
+    let raw = canvas;
+    let mut canvas = Canvas::borrowed(raw);
+    let drawn = catch_unwind(AssertUnwindSafe(|| function(&mut canvas, &text, width, height))).unwrap_or(false);
+    kept_or_abort(canvas.is(raw));
+    drawn
 }
 
 /// Draws type `kind`'s appearance (or `"*"`'s): given a canvas that writes
@@ -846,7 +862,7 @@ where
 /// False leaves it to the generator.
 pub fn hook_appearance<F>(document: Option<&Document>, kind: &str, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&mut Canvas, &str, f64, f64) -> bool + 'static,
+    F: Fn(&mut Canvas, &str, f64, f64) -> bool + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_appearance(
@@ -874,7 +890,7 @@ pub struct Kind<'a, F> {
 /// Registers a kind.
 pub fn hook_kind<F>(document: Option<&Document>, kind: Kind<'_, F>) -> Result<Hook, Error>
 where
-    F: Fn(&mut Canvas, &str, f64, f64) -> bool + 'static,
+    F: Fn(&mut Canvas, &str, f64, f64) -> bool + Send + Sync + 'static,
 {
     let name = c_string(kind.name);
     let prefix = c_string(kind.prefix);
@@ -910,14 +926,16 @@ unsafe extern "C" fn layer_trampoline<F>(
     F: Fn(&mut Canvas, usize, &sys::zebkit_pdf_layer_info) + 'static,
 {
     let function = &*data.cast::<F>();
-    let mut canvas = Canvas::borrowed(canvas);
+    let raw = canvas;
+    let mut canvas = Canvas::borrowed(raw);
     let _ = catch_unwind(AssertUnwindSafe(|| function(&mut canvas, page.max(0) as usize, &*info)));
+    kept_or_abort(canvas.is(raw));
 }
 
 /// Draws above (or below) a page's content when it is rendered, in page space.
 pub fn hook_layer<F>(document: Option<&Document>, above: bool, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&mut Canvas, usize, &sys::zebkit_pdf_layer_info) + 'static,
+    F: Fn(&mut Canvas, usize, &sys::zebkit_pdf_layer_info) + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_layer(
@@ -955,7 +973,7 @@ where
 /// pixels per point, it returns `[{"text", "box"}]` as JSON.
 pub fn hook_ocr<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
 where
-    F: Fn(usize, &[u8], u32, u32, f64) -> Option<String> + 'static,
+    F: Fn(usize, &[u8], u32, u32, f64) -> Option<String> + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_ocr(Document::raw_or_null(document), ocr_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
@@ -985,7 +1003,7 @@ where
 /// Fonts for free text, by family; `""` for what the standard fonts lack.
 pub fn hook_font<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&str) -> Option<Vec<u8>> + 'static,
+    F: Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_font(Document::raw_or_null(document), font_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
@@ -1015,7 +1033,7 @@ where
 /// Trust in a signer: given the signature as JSON and its PKCS#7.
 pub fn hook_trust<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&str, &[u8]) -> Trust + 'static,
+    F: Fn(&str, &[u8]) -> Trust + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_trust(Document::raw_or_null(document), trust_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
@@ -1034,7 +1052,7 @@ where
 /// Actions, given as JSON: true when the application has done it.
 pub fn hook_action<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&str) -> bool + 'static,
+    F: Fn(&str) -> bool + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_action(Document::raw_or_null(document), action_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
@@ -1062,7 +1080,7 @@ where
 /// A filter of `tool`'s points: JSON in, new points or `None` for no change.
 pub fn hook_input<F>(document: Option<&Document>, tool: &str, function: F) -> Result<Hook, Error>
 where
-    F: Fn(&str, &str) -> Option<String> + 'static,
+    F: Fn(&str, &str) -> Option<String> + Send + Sync + 'static,
 {
     hook_result(unsafe {
         sys::zebkit_pdf_hook_input(

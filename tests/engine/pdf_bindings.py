@@ -209,6 +209,45 @@ pdf.add_annotation(0, {"type": "square", "rect": [10, 10, 50, 50], "interiorColo
 check(near(page_pixel(pdf.render(0), 30, 30), 0, 0, 255), "changed by a hook")
 zebkit.remove_pdf_hook(hook)
 
+# What leaves the function as an exception would come to C as "go on".
+hook = pdf.hooks.before("annotation.add", lambda operation: {"not json": object()})
+refuses(lambda: pdf.add_annotation(0, {"type": "square", "rect": [1, 1, 2, 2]}), "a change that cannot be written refuses")
+zebkit.remove_pdf_hook(hook)
+
+
+def exits(operation):
+    raise SystemExit(0)
+
+
+hook = pdf.hooks.before("annotation.add", exits)
+refuses(lambda: pdf.add_annotation(0, {"type": "square", "rect": [1, 1, 2, 2]}), "SystemExit refuses too")
+zebkit.remove_pdf_hook(hook)
+
+# A canvas kept after its call draws on nothing.
+kept_canvases = []
+hook = pdf.hooks.layer(lambda canvas, index, info: kept_canvases.append(canvas))
+pdf.render(0)
+zebkit.remove_pdf_hook(hook)
+kept_canvases[0].begin_path()
+kept_canvases[0].rect(1, 1, 2, 2)
+kept_canvases[0].fill()
+check(kept_canvases[0].width == 0, "a canvas kept after its call has nothing behind it")
+
+# A closed document's hook is not one for every document.
+gone = zebkit.Pdf(bytes(pdf.save()))
+gone.close()
+refuses(lambda: gone.hooks.before("open", lambda operation: {"refuse": "all"}), "no hook on a closed document")
+gone = zebkit.Pdf(bytes(pdf.save()))
+gone.close()
+
+# A stride below zero is not a large one.
+refuses_value = False
+try:
+    zebkit.Canvas.over(bytearray(16), 1, 1, stride=-4, unpremultiplied=True)
+except ValueError:
+    refuses_value = True
+check(refuses_value, "a negative stride")
+
 # A hook that removes itself, and one that closes the document.
 holder = {}
 

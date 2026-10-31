@@ -186,6 +186,43 @@ await check('pdf in a page granted it: bytes, not paths', () => new Promise((res
   });
 }));
 
+await check("a page cannot remove the application's PDF hooks", () => new Promise((resolve, reject) => {
+  const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
+  view.grant(base, ['pdf']);
+  view.on('load', async (event) => {
+    if (event !== 'finished') return;
+    try {
+      const own = await zebkit.pdf.create();
+      await own.insertPage(0, 100, 100);
+      await own.use({kinds: {App_Kept: {prefix: 'App_'}}});
+      // As any page can, without what zebkit.pdf gives it: every id there can be.
+      const removed = await view.evaluate(`(async () => {
+        const call = async (method, args) => {
+          const json = new TextEncoder().encode(JSON.stringify({module: 'pdf', method, args}));
+          const body = new Uint8Array(4 + json.length);
+          new DataView(body.buffer).setUint32(0, json.length, true);
+          body.set(json, 4);
+          const reply = await fetch('zebkit://call', {method: 'POST', body, cache: 'no-store'});
+          const buffer = await reply.arrayBuffer();
+          const size = new DataView(buffer).getUint32(0, true);
+          return JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, size))).value;
+        };
+        const doc = await call('create', []);
+        let removed = 0;
+        for (let id = 1; id < 256; ++id)
+          if (await call('removeHook', [doc, id])) ++removed;
+        return removed;
+      })()`);
+      const added = await own.addAnnotation(0, {type: 'App_Kept', rect: [1, 1, 9, 9], data: {}});
+      await own.close();
+      view.close();
+      resolve(removed === 0 && added === 0);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}));
+
 await check('canvas, text and a PDF plugin in a page: by its grants', () => new Promise((resolve, reject) => {
   const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
   view.grant(base, ['pdf', 'image']);

@@ -542,6 +542,105 @@ static zebkit_pdf_decision recurses(zebkit_pdf *pdf, const char *operation, char
     return ZEBKIT_PDF_CONTINUE;
 }
 
+static zebkit_pdf_decision closes_other(zebkit_pdf *pdf, const char *operation, char **change, char **reason, void *data) {
+    (void)pdf; (void)operation; (void)change; (void)reason;
+    zebkit_pdf_close(data);
+    return ZEBKIT_PDF_CONTINUE;
+}
+
+static int layer_removed_id;
+static void layer_removes_itself(zebkit_canvas *canvas, zebkit_pdf *pdf, int page, const zebkit_pdf_layer_info *info, void *data) {
+    (void)canvas; (void)pdf; (void)page; (void)info; (void)data;
+    zebkit_pdf_hook_remove(layer_removed_id);
+}
+static void destroy_calls_in(void *data) {
+    destroyed += zebkit_pdf_page_count(data);
+}
+
+static char *kept_inverse;
+static void keeps_inverse(zebkit_pdf *pdf, const char *operation, void *data) {
+    (void)pdf; (void)data;
+    const char *from = strstr(operation, "\"inverse\":");
+    const char *to = from;
+    for (const char *at = from; at && (at = strstr(at + 1, ",\"page\":"));)
+        to = at;
+    free(kept_inverse);
+    kept_inverse = strndup(from + 10, (size_t)(to - from - 10));
+}
+
+static char *input_changes(zebkit_pdf *pdf, const char *tool, const char *points, void *data) {
+    (void)pdf; (void)tool; (void)points; (void)data;
+    return zebkit_pdf_string("[[7,7]]");
+}
+
+static zebkit_pdf_decision goes_on(zebkit_pdf *pdf, const char *operation, char **change, char **reason, void *data) {
+    (void)pdf; (void)operation; (void)change; (void)reason; (void)data;
+    return ZEBKIT_PDF_CONTINUE;
+}
+
+static void test_more_reentrancy(void) {
+    char *error = NULL;
+    /* An "after open" hook closes it: the caller is not handed what has gone. */
+    int global = zebkit_pdf_hook_after(NULL, "open", closes_after, NULL, NULL);
+    after_close_calls = 0;
+    zebkit_pdf *pdf = zebkit_pdf_open(form_pdf, sizeof(form_pdf) - 1, NULL, &error);
+    check(!pdf && after_close_calls == 1, "opened and closed by a hook: nothing comes back", NULL);
+    refused(!pdf, &error, "said so");
+    zebkit_pdf_hook_remove(global);
+
+    /* Closing while a file of annotations is read. */
+    static const char xfdf[] = "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"/><text page=\"0\" rect=\"3,3,4,4\"/></annots></xfdf>";
+    pdf = blank(100, 100);
+    zebkit_pdf_hook_after(pdf, "annotation.add", closes_after, NULL, NULL);
+    after_close_calls = 0;
+    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, xfdf, sizeof(xfdf) - 1, &error) < 0 && after_close_calls == 1,
+          "an import stops where a hook closed the document", NULL);
+    refused(after_close_calls == 1, &error, "said so");
+
+    /* Closing the document pages come from. */
+    pdf = blank(100, 100);
+    zebkit_pdf *source = blank(50, 50);
+    int hook = zebkit_pdf_hook_before(pdf, "page.import", closes_other, source, NULL);
+    check(zebkit_pdf_pages_import(pdf, source, NULL, 0, 0, NULL) && zebkit_pdf_page_count(pdf) == 2, "the source stays for the import", NULL);
+    zebkit_pdf_hook_remove(hook);
+
+    /* A layer that removes itself, whose destroy function calls in. */
+    destroyed = 0;
+    layer_removed_id = zebkit_pdf_hook_layer(pdf, ZEBKIT_PDF_LAYER_ABOVE, layer_removes_itself, pdf, destroy_calls_in);
+    shot s = render(pdf, 0);
+    done(&s);
+    check(destroyed == 2, "destroyed when the render is over, outside its lock", NULL);
+
+    /* A redaction whose areas cannot be read is not of the page's marks. */
+    hook = zebkit_pdf_hook_before(pdf, "redact", goes_on, NULL, NULL);
+    refused(zebkit_pdf_redact(pdf, 0, "not json", 0xff, &error) < 0, &error, "areas that are not JSON, with a hook");
+    zebkit_pdf_hook_remove(hook);
+
+    /* No tool is no tool's filter. */
+    hook = zebkit_pdf_hook_input(pdf, "ink", input_changes, NULL, NULL);
+    char *points = zebkit_pdf_filter_input(pdf, "", "[[1,1]]", NULL, NULL);
+    check(points && !strstr(points, "7"), "a filter of another tool is not run", points);
+    zebkit_free(points);
+    zebkit_pdf_hook_remove(hook);
+
+    /* An undo leaves what it does not change: a file. */
+    const int attached = zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"fileAttachment\",\"rect\":[1,1,9,9]}", NULL);
+    check(zebkit_pdf_annotation_attach_file(pdf, 0, attached, "a.txt", "file", 4, NULL), "attached", NULL);
+    hook = zebkit_pdf_hook_after(pdf, "annotation.update", keeps_inverse, NULL, NULL);
+    check(zebkit_pdf_annotation_update(pdf, 0, attached, "{\"contents\":\"changed\"}", NULL) && kept_inverse, "changed", NULL);
+    zebkit_pdf_hook_remove(hook);
+    check(zebkit_pdf_apply(pdf, kept_inverse, &error), "undone", error);
+    zebkit_free(error);
+    error = NULL;
+    size_t got = 0;
+    uint8_t *bytes = zebkit_pdf_annotation_file(pdf, 0, attached, NULL, &got, NULL);
+    check(bytes && got == 4 && !memcmp(bytes, "file", 4) && !listed(pdf, 0, "changed"), "the file stays after an undo", NULL);
+    zebkit_free(bytes);
+    free(kept_inverse);
+    kept_inverse = NULL;
+    zebkit_pdf_close(pdf);
+}
+
 static void test_reentrancy(void) {
     zebkit_pdf *pdf = blank(100, 100);
     destroyed = 0;
@@ -990,6 +1089,7 @@ int main(int argc, char **argv) {
     test_events();
     test_changes();
     test_reentrancy();
+    test_more_reentrancy();
     test_providers();
     test_layers();
     test_other_providers();

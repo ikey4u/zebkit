@@ -58,6 +58,15 @@ int main(int argc, char **argv) {
     check(!zebkit_canvas_new(40000, 40000, &error) && error, "a huge canvas fails");
     zebkit_free(error);
     error = NULL;
+    {
+        /* A stride refused leaves the pixels as they were. */
+        uint8_t rows[2 * 9] = {200, 100, 50, 128, 0, 0, 0, 0, 0, 200, 100, 50, 128};
+        zebkit_canvas *odd = zebkit_canvas_wrap(rows, 1, 2, 9, ZEBKIT_CANVAS_UNPREMULTIPLIED, &error);
+        check(!odd && error && rows[0] == 200 && rows[9] == 200, "a stride refused touches nothing");
+        zebkit_canvas_close(odd);
+        zebkit_free(error);
+        error = NULL;
+    }
     uint8_t tiny[16];
     check(!zebkit_canvas_wrap(tiny, 2, 2, 4, 0, &error) && error, "too small a stride fails");
     zebkit_free(error);

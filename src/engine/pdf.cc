@@ -87,6 +87,25 @@ base::Lock& PdfiumLock() {
   return *lock;
 }
 
+}  // namespace
+
+namespace zebkit::pdf {
+
+void DestroyDocument(zebkit_pdf* pdf) {
+  RemoveHooksOf(pdf);
+  base::AutoLock lock(PdfiumLock());
+  CloseAppearanceFonts(pdf->fonts);
+  if (pdf->form)
+    FPDFDOC_ExitFormFillEnvironment(pdf->form);
+  if (pdf->document)
+    FPDF_CloseDocument(pdf->document);
+  delete pdf;
+}
+
+}  // namespace zebkit::pdf
+
+namespace {
+
 void InitializeOnce() {
   static const bool initialized = [] {
     FPDF_LIBRARY_CONFIG config = {};
@@ -97,35 +116,8 @@ void InitializeOnce() {
   (void)initialized;
 }
 
-void DestroyDocument(zebkit_pdf* pdf) {
-  zebkit::pdf::RemoveHooksOf(pdf);
-  base::AutoLock lock(PdfiumLock());
-  zebkit::pdf::CloseAppearanceFonts(pdf->fonts);
-  if (pdf->form)
-    FPDFDOC_ExitFormFillEnvironment(pdf->form);
-  if (pdf->document)
-    FPDF_CloseDocument(pdf->document);
-  delete pdf;
-}
-
-// Around a call that runs hooks: a hook may close the document, which then
-// goes when the outermost call is done with it. Declared before any lock.
-class ApiScope {
- public:
-  explicit ApiScope(zebkit_pdf* pdf) : pdf_(pdf) {
-    if (pdf_)
-      ++pdf_->depth;
-  }
-  ~ApiScope() {
-    if (pdf_ && --pdf_->depth == 0 && pdf_->closing)
-      DestroyDocument(pdf_);
-  }
-  ApiScope(const ApiScope&) = delete;
-  ApiScope& operator=(const ApiScope&) = delete;
-
- private:
-  zebkit_pdf* pdf_;
-};
+using zebkit::pdf::ApiScope;
+using zebkit::pdf::DestroyDocument;
 
 std::nullptr_t Fail(char** error, const std::string& message) {
   if (error)
@@ -480,10 +472,17 @@ static zebkit_pdf* OpenWithHooks(const void* data,
   zebkit_pdf* pdf =
       path ? OpenPath(path, password, error) : OpenBytes(data, size, password, error);
   if (pdf && HasEventHooks(pdf, "open", false)) {
-    ApiScope scope(pdf);
-    base::DictValue operation;
-    operation.Set("pages", zebkit_pdf_page_count(pdf));
-    RunAfter(pdf, "open", std::move(operation));
+    bool closed = false;
+    {
+      ApiScope scope(pdf);
+      base::DictValue operation;
+      operation.Set("pages", zebkit_pdf_page_count(pdf));
+      RunAfter(pdf, "open", std::move(operation));
+      closed = pdf->closing;
+    }
+    // It went with the scope: the caller gets none to use or close.
+    if (closed)
+      return Fail(error, "a hook closed the document");
   }
   return pdf;
 }
@@ -743,6 +742,9 @@ static uint8_t* RenderPage(zebkit_pdf* pdf,
   const float scale = options.scale > 0 ? options.scale : 1;
   if (options.rotation % 90)
     return Fail(error, "the rotation is not a multiple of 90");
+  // Before the lock: a hook that removed itself is destroyed when this goes,
+  // and its destroy function may call in.
+  std::vector<Hooks> ran;
   base::AutoLock lock(PdfiumLock());
   Page page(pdf, index);
   if (!page.get())
@@ -786,6 +788,7 @@ static uint8_t* RenderPage(zebkit_pdf* pdf,
     const Hooks hooks = HooksFor(HookType::kLayer, pdf, position);
     if (hooks.empty())
       return;
+    ran.push_back(hooks);
     base::AutoUnlock unlock(PdfiumLock());
     zebkit_canvas* canvas = zebkit::WrapCanvasInPageSpace(
         static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bitmap)), tile_width, tile_height,
@@ -1988,7 +1991,8 @@ void DescribeEntries(zebkit_pdf* pdf, const base::DictValue& entries, base::Dict
 base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
                                    FPDF_PAGE page,
                                    FPDF_ANNOTATION annot,
-                                   int index) {
+                                   int index,
+                                   size_t* budget = nullptr) {
   base::DictValue item;
   item.Set("index", index);
   if (const int object = zebkit::pdf::AnnotationObjectNumber(annot))
@@ -2098,7 +2102,7 @@ base::DictValue DescribeAnnotation(zebkit_pdf* pdf,
       appearances.Append(kAppearanceModes[mode]);
   }
   item.Set("appearances", std::move(appearances));
-  base::Value entries = EntryToJson(zebkit::pdf::AnnotationEntries(annot));
+  base::Value entries = EntryToJson(zebkit::pdf::AnnotationEntries(annot, budget));
   if (entries.is_dict()) {
     DescribeEntries(pdf, entries.GetDict(), item);
     item.Set("entries", std::move(entries.GetDict()));
@@ -2241,6 +2245,10 @@ DefaultAppearance ParseDa(const std::string& text) {
 
 // A number in text, whatever the locale.
 std::string FixedText(double value, int precision) {
+  // to_chars() writes nothing that can be used when it does not fit.
+  if (!std::isfinite(value))
+    value = 0;
+  value = std::clamp(value, -1e18, 1e18);
   char buffer[64];
   const char* end = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, precision).ptr;
   return std::string(buffer, static_cast<size_t>(end - buffer));
@@ -3139,11 +3147,13 @@ char* zebkit_pdf_annotations(zebkit_pdf* pdf, int index, char** error) {
     return Fail(error, "no page " + std::to_string(index));
   base::ListValue list;
   const int count = FPDFPage_GetAnnotCount(page.get());
+  // What a page's annotations may reach through references, all together.
+  size_t budget = size_t{1} << 22;
   for (int i = 0; i < count; ++i) {
     FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
     if (!annot)
       continue;
-    list.Append(DescribeAnnotation(pdf, page.get(), annot, i));
+    list.Append(DescribeAnnotation(pdf, page.get(), annot, i, &budget));
     FPDFPage_CloseAnnot(annot);
   }
   // Who replies to whom on this page. A file's cycle of /IRT is only two lists.
@@ -3514,6 +3524,8 @@ bool zebkit_pdf_annotation_update(zebkit_pdf* pdf,
     if (!annot)
       return FailFalse(error, "no annotation " + std::to_string(annotation));
     number = zebkit::pdf::MakeAnnotationIndirect(page.get(), annotation);
+    const zebkit::pdf::AnnotationBackup backup(annot);
+    const int annotations_before = FPDFPage_GetAnnotCount(page.get());
     const zebkit::pdf::Value before = zebkit::pdf::AnnotationEntries(annot);
     const int before_appearance = zebkit::pdf::AppearanceObject(annot);
     std::string problem = ExpandTextRange(page.get(), *object);
@@ -3526,21 +3538,17 @@ bool zebkit_pdf_annotation_update(zebkit_pdf* pdf,
     }
     const zebkit::pdf::Value after = zebkit::pdf::AnnotationEntries(annot);
     if (!problem.empty()) {
-      // All or nothing: what it had, back.
-      for (const auto& [key, value] : after.entries) {
-        if (key != "Subtype")
-          zebkit::pdf::RemoveAnnotationEntry(annot, key.c_str());
-      }
-      for (const auto& [key, value] : before.entries) {
-        if (key != "Subtype")
-          zebkit::pdf::SetAnnotationEntry(pdf->document, annot, key, value);
-      }
+      // All or nothing: what it had, back, and a popup it made gone.
+      backup.Restore(annot);
       FPDFPage_CloseAnnot(annot);
+      for (int i = FPDFPage_GetAnnotCount(page.get()) - 1; i >= annotations_before; --i)
+        FPDFPage_RemoveAnnot(page.get(), i);
       return FailFalse(error, problem);
     }
     if (told) {
       base::Value old_entries = EntryToJson(before);
-      if (old_entries.is_dict()) {
+      base::Value new_entries = EntryToJson(after);
+      if (old_entries.is_dict() && new_entries.is_dict()) {
         base::DictValue& dict = old_entries.GetDict();
         dict.Remove("Subtype");
         for (const auto& [key, value] : after.entries) {
@@ -3549,6 +3557,12 @@ bool zebkit_pdf_annotation_update(zebkit_pdf* pdf,
         }
         const base::Value* old_date = dict.Find("M");
         inverse_changes.Set("modified", old_date ? old_date->Clone() : base::Value());
+        // Only what changed: "entries" cannot say a stream, and what it cannot
+        // say (a file attachment's file) would go with the undoing.
+        for (const auto [key, value] : new_entries.GetDict()) {
+          if (const base::Value* old_value = dict.Find(key); old_value && *old_value == value)
+            dict.Remove(key);
+        }
         inverse_changes.Set("entries", std::move(dict));
       }
       inverse_changes.Set("regenerate", false);
@@ -3601,24 +3615,30 @@ bool zebkit_pdf_annotation_remove(zebkit_pdf* pdf,
     // It, its popup, what replies to any of those, and their popups.
     std::vector<bool> going(static_cast<size_t>(count), false);
     going[annotation] = true;
+    // Read once: a file's long chain of replies would have them read each round.
+    struct Links {
+      int popup = -1, answered = -1, parent = -1;
+    };
+    std::vector<Links> links(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+      FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
+      if (!annot)
+        continue;
+      auto linked = [&](const char* key) {
+        FPDF_ANNOTATION other = FPDFAnnot_GetLinkedAnnot(annot, key);
+        if (!other)
+          return -1;
+        const int at = FPDFPage_GetAnnotIndex(page.get(), other);
+        FPDFPage_CloseAnnot(other);
+        return at;
+      };
+      links[i] = {linked("Popup"), linked("IRT"), linked("Parent")};
+      FPDFPage_CloseAnnot(annot);
+    }
     for (bool grew = true; grew;) {
       grew = false;
       for (int i = 0; i < count; ++i) {
-        FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), i);
-        if (!annot)
-          continue;
-        auto linked = [&](const char* key) {
-          FPDF_ANNOTATION other = FPDFAnnot_GetLinkedAnnot(annot, key);
-          if (!other)
-            return -1;
-          const int at = FPDFPage_GetAnnotIndex(page.get(), other);
-          FPDFPage_CloseAnnot(other);
-          return at;
-        };
-        const int popup = linked("Popup");
-        const int answered = linked("IRT");
-        const int parent = linked("Parent");
-        FPDFPage_CloseAnnot(annot);
+        const auto [popup, answered, parent] = links[i];
         const bool popup_of_going = parent >= 0 && going[parent];
         if (!going[i] && ((answered >= 0 && going[answered]) || popup_of_going)) {
           going[i] = true;
@@ -4380,7 +4400,8 @@ char* zebkit_pdf_filter_input(zebkit_pdf* pdf,
   }
   std::string out = WritePoints(*points);
   ApiScope scope(pdf);
-  if (tool) {
+  // HooksFor() takes "" for every key: no tool is not all of them.
+  if (tool && *tool) {
     for (const auto& hook : HooksFor(HookType::kInput, pdf, tool)) {
       if (hook->removed.load() || (pdf && pdf->closing))
         continue;
@@ -4426,9 +4447,9 @@ bool zebkit_pdf_annotation_set_image(zebkit_pdf* pdf,
   } else {
     // PDFium's bitmaps are B, G, R, A.
     bitmap = FPDFBitmap_Create(width, height, /*alpha=*/1);
-    auto* out = static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
-    const int stride = FPDFBitmap_GetStride(bitmap);
-    for (int y = 0; y < height; ++y) {
+    auto* out = bitmap ? static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bitmap)) : nullptr;
+    const int stride = bitmap ? FPDFBitmap_GetStride(bitmap) : 0;
+    for (int y = 0; out && y < height; ++y) {
       const uint8_t* from = rgba + static_cast<size_t>(y) * width * 4;
       uint8_t* to = out + static_cast<size_t>(y) * stride;
       for (int x = 0; x < width; ++x) {
@@ -4438,9 +4459,9 @@ bool zebkit_pdf_annotation_set_image(zebkit_pdf* pdf,
         to[x * 4 + 3] = from[x * 4 + 3];
       }
     }
-    image = FPDFPageObj_NewImageObj(pdf->document);
+    image = out ? FPDFPageObj_NewImageObj(pdf->document) : nullptr;
     FPDF_PAGE pages[] = {page.get()};
-    if (!FPDFImageObj_SetBitmap(pages, 1, image, bitmap) ||
+    if (!image || !FPDFImageObj_SetBitmap(pages, 1, image, bitmap) ||
         !FPDFImageObj_SetMatrix(image, rect.right - rect.left, 0, 0,
                                 rect.top - rect.bottom, rect.left,
                                 rect.bottom)) {
@@ -4679,6 +4700,11 @@ int zebkit_pdf_redact(zebkit_pdf* pdf,
     operation.Set("page", index);
     std::optional<base::Value> parsed =
         has_areas ? base::JSONReader::Read(areas, base::JSON_PARSE_CHROMIUM_EXTENSIONS) : std::nullopt;
+    // Not "the page's marks", which null says: a redaction not done as asked.
+    if (has_areas && !parsed) {
+      Fail(error, "the areas are not a JSON array of [l, b, r, t]");
+      return -1;
+    }
     operation.Set("areas", parsed ? std::move(*parsed) : base::Value());
     operation.Set("fill", static_cast<double>(fill));
     if (!RunBefore(pdf, "redact", operation, error))
@@ -5217,6 +5243,7 @@ bool zebkit_pdf_page_insert(zebkit_pdf* pdf, int at, double width, double height
 
 bool zebkit_pdf_pages_import(zebkit_pdf* pdf, zebkit_pdf* from, const int* pages, int count, int at, char** error) {
   ApiScope scope(pdf);
+  ApiScope from_scope(from);
   std::vector<int> list(pages, pages && count > 0 ? pages + count : pages);
   bool all = !pages;
   if (HasEventHooks(pdf, "page.import", true)) {

@@ -528,6 +528,7 @@ static void network(void) {
     else if (IS("net-server-redirect") || IS("net-post") || IS("net-headers")) rules = "[{\"url\":\"**/echo\"}]";
     else if (IS("net-worker")) rules = "[{\"url\":\"**/echo?worker\"}]";
     else if (IS("net-navigation")) rules = "[{\"url\":\"**/held\",\"frames\":\"main\",\"resourceTypes\":[\"document\"]}]";
+    else if (IS("net-flood")) rules = "[{\"url\":\"**/held*\"}]";
     char *error = NULL;
     CHECK(!zebkit_view_set_network_filter(view, "[{\"mode\":\"sometimes\"}]", &error) && error);
     zebkit_free(error);
@@ -544,6 +545,8 @@ static void network(void) {
     const char *url = (IS("net-none") || IS("net-observe") || IS("net-response") || IS("net-response-block") || IS("net-filter") || IS("net-headers") || IS("net-post")) ? "/echo" : IS("net-server-redirect") ? "/server-redirect" : "/held";
     char script[512];
     if (IS("net-worker")) snprintf(script, sizeof script, "new Promise(ok => { const w = new Worker('/net-worker'); w.onmessage = e => ok(e.data); })");
+    /* What is past the queue is refused, not let through: nothing here is answered. */
+    else if (IS("net-flood")) snprintf(script, sizeof script, "Promise.race(Array.from({length: 1100}, (_, i) => fetch('/held?' + i).then(() => 'through', () => 'failed')))");
     else snprintf(script, sizeof script, "fetch('%s'%s).then(async r => [r.status, r.redirected, r.headers.get('x-added'), await r.text()].join('|'), e => 'failed')", url, IS("net-post") ? ", {method: 'POST', body: 'posted'}" : "");
     ev_later(script);
     if (IS("net-close")) { WAIT(closed); CHECK(!zebkit_network_request_info(net_request)); return; }
@@ -572,6 +575,7 @@ static void network(void) {
     else if (IS("net-worker")) { CHECK(!strcmp(answer, "\"from-host\"")); }
     else if (IS("net-observe")) { CHECK(!asked); WAIT(net_request_told && net_response_told && net_finished_told); }
     else if (IS("net-timeout")) { WAIT(net_timeout); CHECK(!zebkit_network_request_info(net_request)); }
+    else if (IS("net-flood")) { CHECK(!strcmp(answer, "\"failed\"") && asked >= 1024); }
     zebkit_view_close(view);
 }
 
