@@ -1,0 +1,24 @@
+[package]
+name = "zebkit-mcp"
+description = "The engine's capabilities as MCP tools for AI agents, over standard input and over HTTP"
+version = "0.0.1-alpha.12"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+publish = false
+build = "build.rs"
+
+# A workspace of its own: rust/ stays free of crates from outside, as it is published.
+[workspace]
+
+[dependencies]
+zebkit = { path = "../../rust/zebkit" }
+serde_json = "1"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
