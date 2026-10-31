@@ -1,0 +1,34 @@
+# zebkit-base: slim
+#
+# The slim profile on Windows, for x64: zebkit.dll, with the same functions as
+# on Linux. Built on Linux against MSVC's C++ library and the Windows SDK
+# (scripts/windows-toolchain.sh), as Chromium's own builders compile for
+# Windows on Linux machines.
+
+target_os = "win"
+target_cpu = "x64"
+
+# Linux's alone: packed ELF relocations applied by the engine, and the
+# thread-local model of an ELF library.
+zebkit_pack_relocations = false
+zebkit_v8_tls_local_dynamic = false
+
+# Vtables as offsets: Chromium has them only on Android and Fuchsia, and on
+# neither with COFF.
+use_relative_vtables_abi = false
+
+# The size-trained inliner is wired up for ELF linkers
+# (patches/1008-ml-size-inliner-for-linux.patch): off until it is measured with
+# lld-link.
+use_ml_inliner = false
+
+# Upstream's //media/cdm for Windows (Media Foundation's CDM) needs the library
+# CDM's paths, whose target exists only with library CDMs: slim's false does
+# not generate on Windows. Nothing is loaded without a CDM to load (Widevine
+# stays off); a patch to media/cdm/BUILD.gn could keep slim's false.
+enable_library_cdms = true
+
+# V8's instance types from Torque, its other way of making them, instead of
+# from metagen, which reads the build graph again with gn desc and so without
+# the root that scripts/build.sh gives gn gen (as on macOS).
+v8_use_metagen_instance_types = false

@@ -63,6 +63,10 @@ link_engine() {
         # then compiles the whole macOS engine again.
         cp -a -u "$macos/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
     fi
+    # What scripts/windows-toolchain.sh set up for building Windows on Linux.
+    if [[ "$ZEBKIT_HOST" == linux && -f "$CACHE_DIR/windows/win_toolchain.json" ]]; then
+        "$ZEBKIT_ROOT/scripts/windows-toolchain.sh" --link
+    fi
 }
 
 apply_patch() {
