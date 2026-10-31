@@ -64,6 +64,8 @@ pub use engine::{
 };
 pub use script::Script;
 pub use media::{MediaCapture, MediaTap};
+mod view_hooks;
+pub use view_hooks::{ClientCertificateAction, ClientCertificateRequest, DownloadRequest, FileChooserRequest, FullscreenPolicy, MediaAccessRequest, NetworkRequest};
 pub use view::{Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.

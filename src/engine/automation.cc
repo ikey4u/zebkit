@@ -109,6 +109,7 @@
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/page.h"
+#include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/playwright/us_keyboard_layout.h"
 #include "zebkit/engine/view.h"
@@ -5557,6 +5558,8 @@ void InstallAutomationHooks() {
       [](content::RenderFrameHost* frame,
          scoped_refptr<content::FileSelectListener> listener,
          const blink::mojom::FileChooserParams& params) {
+        if (HandleFileChooserHook(frame, listener, params))
+          return true;
         content::WebContents* contents =
             content::WebContents::FromRenderFrameHost(frame);
         Automation* automation =

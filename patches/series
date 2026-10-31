@@ -54,3 +54,6 @@
 1054-leveldb-for-the-embedder.patch
 1055-permission-reset-keeps-view-rules.patch
 1056-viz-no-reconnect-without-gpu-host.patch
+1057-content-shell-download-target-to-the-embedder.patch
+1058-content-shell-page-decisions-to-the-embedder.patch
+1059-content-shell-downloads-saved-without-a-prompt.patch

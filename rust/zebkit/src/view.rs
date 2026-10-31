@@ -215,6 +215,7 @@ pub(crate) struct Inner {
     certificate_generation: Cell<u64>,
     on_certificate_result: Slot<dyn FnMut(&str)>,
     certificate_result_generation: Cell<u64>,
+    pub(crate) hooks: crate::view_hooks::Slots,
     on_http_auth: Slot<dyn FnMut(HttpAuthRequest)>,
     http_auth_generation: Cell<u64>,
     on_http_auth_result: Slot<dyn FnMut(&str)>,
@@ -291,6 +292,7 @@ impl View {
             certificate_generation: Cell::new(0),
             on_certificate_result: RefCell::new(None),
             certificate_result_generation: Cell::new(0),
+            hooks: Default::default(),
             on_http_auth: RefCell::new(None),
             http_auth_generation: Cell::new(0),
             on_http_auth_result: RefCell::new(None),
@@ -951,6 +953,7 @@ unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     inner.on_console.borrow_mut().take();
     inner.on_certificate.borrow_mut().take();
     inner.on_certificate_result.borrow_mut().take();
+    inner.hooks.clear();
     inner.on_http_auth.borrow_mut().take();
     inner.on_http_auth_result.borrow_mut().take();
     inner.on_drop.borrow_mut().take();

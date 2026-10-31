@@ -124,7 +124,7 @@ build() {
         -I"$work/package/include" "$source" "$@" $(engine_link_options "$work/package") -o "$work/$name"
     "$patchelf" --set-interpreter "$loader" "$work/$name"
 }
-for name in vendor services pdf bridge page popup scheme media mode hooks certificate http_auth offscreen_scale; do
+for name in vendor services pdf bridge page popup scheme media mode hooks certificate http_auth hook_policies offscreen_scale; do
     build "$name" "$tests/$name.c"
 done
 build api "$tests/api.c" -pthread
@@ -204,6 +204,15 @@ if ! limited 180 python3 "$tests/http_auth_c.py" "$work/http_auth" \
     tail -20 "$work/http-auth.err"
 else
     cat "$work/http-auth.log"
+fi
+log "hook-policies"
+if ! PYTHONPATH="$tests" ZEBKIT_HOOK_CHILD_LIBRARY_PATH="$work/package:$root/usr/lib64" limited 180 \
+    python3 "$tests/hook_policies.py" c:download "$work/hook_policies" > "$work/hook-policies.log" 2> "$work/hook-policies.err"; then
+    failed=1
+    cat "$work/hook-policies.log"
+    tail -20 "$work/hook-policies.err"
+else
+    cat "$work/hook-policies.log"
 fi
 ZEBKIT_TEST_BASE="$base" run popup "$work/popup" "${engine_switches[@]}"
 finished popup

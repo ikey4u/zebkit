@@ -180,11 +180,16 @@ window integration below are still required.
 
 ### Agents
 
-- **TODO: hooks for every decision the engine makes** (owner,
-  2026-10-24): permissions, popups, navigation, network requests,
-  downloads, certificates and the rest, each with zebkit's default, from
-  native code and without patching zebkit: `docs/ROADMAP_HOOKS.md`. The
-  settings below are its first part.
+- **Hooks for every decision the engine makes: implemented on Linux** (owner,
+  2026-10-24; `docs/ROADMAP_HOOKS.md` has each one). Permissions, navigation,
+  popups, console, certificates, sign-in, user agent, settings, links to other
+  programs, downloads (saved in the profile's `Downloads` without a function),
+  isolated worlds, file choosers, camera and microphone, keys, context menu and
+  fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
+  requests (no WebSockets, shared or service workers, response bodies or
+  answers from a file or stream) and client certificates (no system stores).
+  The hook sources cross-compile for macOS; the patched content shell files
+  have not been compiled for it yet, and nothing has run there.
 - **TODO: every setting changeable at runtime, by the application and by
   agents** (owner, 2026-10-24), per view and for the whole engine, in the C
   API, the bindings, CDP where Chromium has a method and the MCP server:

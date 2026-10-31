@@ -226,6 +226,202 @@ ZEBKIT_API char *zebkit_http_auth_request_info(zebkit_http_auth_request*);
  */
 ZEBKIT_API bool zebkit_http_auth_respond(zebkit_http_auth_request*, const char *username, const char *password);
 
+/* Links to other programs: a navigation to a scheme the engine does not load
+ * (mailto:, zoommtg:). The engine opens nothing, with or without a function; the
+ * page stays where it is and the application decides. Told asynchronously:
+ * url, scheme, mainFrame, userGesture, initiatorOrigin (null when none), frameId.
+ * As Chrome, fenced frames and sandboxed frames without
+ * allow-top-navigation-to-custom-protocols are not told. At most 256 reports of
+ * this and the other told hooks wait per view; more are dropped. NULL removes it.
+ */
+typedef void (*zebkit_external_protocol_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_external_protocol(zebkit_view*, zebkit_external_protocol_func, void *data);
+
+/* Downloads. Without a function they are saved in Downloads in the profile's
+ * directory, a file already there kept ("report (1).bin"). With one, each is
+ * asked about: downloadId, url, suggestedName, mimeType, totalBytes (null unknown),
+ * userGesture, origin, timeoutMs, deadlineUnixMs. Reply once: save at an absolute
+ * path, whose directory exists and whose file is replaced, or cancel. Unanswered,
+ * replaced handlers and closed views cancel. A popup's opener decides until it has
+ * its own function; once that opener has closed, its downloads are cancelled, and
+ * so is one whose view has gone once any view has set a function.
+ * CDP's setDownloadBehavior keeps its own scope, ahead of this hook.
+ */
+typedef struct zebkit_download_request zebkit_download_request;
+typedef enum zebkit_download_action {
+    ZEBKIT_DOWNLOAD_SAVE = 0,
+    ZEBKIT_DOWNLOAD_CANCEL = 1
+} zebkit_download_action;
+typedef void (*zebkit_download_func)(zebkit_view*, zebkit_download_request*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_download(zebkit_view*, zebkit_download_func, void *data);
+/* Default 30000 ms; accepted range 1..300000. */
+ZEBKIT_API bool zebkit_view_set_download_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_download_request_info(zebkit_download_request*);
+/* Path only with SAVE. Invalid input leaves the request pending. */
+ZEBKIT_API bool zebkit_download_respond(zebkit_download_request*, zebkit_download_action action,
+                                        const char *path, char **error);
+/* Told for this view's downloads, asked or not: the decision (state save or
+ * cancelled with its reason), then downloadId, url, state (in-progress, complete,
+ * cancelled, interrupted), path, receivedBytes, totalBytes, reason, done. A download
+ * outlives its view, without reports. NULL removes it.
+ */
+typedef void (*zebkit_download_progress_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_download_progress(zebkit_view*, zebkit_download_progress_func, void *data);
+/* Cancels a download of this view by its downloadId; false when it has ended. */
+ZEBKIT_API bool zebkit_view_cancel_download(zebkit_view*, const char *download_id);
+
+/* Client certificates a TLS server asks for. Without a function, none is sent.
+ * Metadata: host, port, proxy, certificateAuthorities (base64 DER names),
+ * timeoutMs, deadlineUnixMs. NONE continues without one; PROVIDE sends a PEM
+ * chain, leaf first, with its PEM private key (RSA or EC); CANCEL fails the
+ * request. Unanswered, a replaced handler and a closed view cancel. Chromium
+ * remembers NONE and PROVIDE for that host and port in the whole context, so that
+ * other views are not asked again, and CANCEL is not remembered. The operating
+ * system's certificate stores are not offered.
+ */
+typedef struct zebkit_client_certificate_request zebkit_client_certificate_request;
+typedef enum zebkit_client_certificate_action {
+    ZEBKIT_CLIENT_CERTIFICATE_NONE = 0,
+    ZEBKIT_CLIENT_CERTIFICATE_PROVIDE = 1,
+    ZEBKIT_CLIENT_CERTIFICATE_CANCEL = 2
+} zebkit_client_certificate_action;
+typedef void (*zebkit_client_certificate_func)(zebkit_view*, zebkit_client_certificate_request*, const char *json, void *data);
+typedef void (*zebkit_client_certificate_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_client_certificate(zebkit_view*, zebkit_client_certificate_func, void *data);
+ZEBKIT_API void zebkit_view_on_client_certificate_result(zebkit_view*, zebkit_client_certificate_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_client_certificate_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_client_certificate_request_info(zebkit_client_certificate_request*);
+/* PEM only with PROVIDE. A key not matching the leaf, or anything invalid, leaves
+ * the request pending and returns false with the reason in *error.
+ */
+ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_request*,
+                                                  zebkit_client_certificate_action action,
+                                                  const char *certificate_pem, const char *key_pem, char **error);
+
+/* A script before the page's own in every new document, and at once in those there
+ * are. An empty or NULL world is the page's; a name is an isolated world, one per
+ * name, sharing the DOM and not the globals. Chromium gives these worlds universal
+ * access, as CDP's worldName has it: the world can read other origins.
+ * main_frame_only false runs it in every frame, other sites' included; true wraps
+ * it in a block, so that its top-level let, const and class are not global.
+ * False with a reason in *error on invalid input.
+ */
+ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view*, const char *world, const char *source,
+                                             bool main_frame_only, char **error);
+
+/* File choosers of a view. Without a function, the content shell's: its dialog, or
+ * cancelled without a display. Ahead of automation's file chooser events; CDP's
+ * interception stays ahead of this hook. Metadata: mode (open, open-multiple,
+ * upload-folder, save), title, defaultFileName, acceptTypes, capture, frameId,
+ * mainFrame, origin. Reply once with absolute paths: none cancels, one for open,
+ * save and upload-folder (a directory, whose files the page gets). Unanswered,
+ * replaced, closed or a frame that has gone: cancelled.
+ */
+typedef struct zebkit_file_chooser_request zebkit_file_chooser_request;
+typedef void (*zebkit_file_chooser_func)(zebkit_view*, zebkit_file_chooser_request*, const char *json, void *data);
+typedef void (*zebkit_file_chooser_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_file_chooser(zebkit_view*, zebkit_file_chooser_func, void *data);
+ZEBKIT_API void zebkit_view_on_file_chooser_result(zebkit_view*, zebkit_file_chooser_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_file_chooser_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_file_chooser_request_info(zebkit_file_chooser_request*);
+ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request*, const char *const *paths, size_t count,
+                                            char **error);
+
+/* Camera and microphone (getUserMedia). Without a function, Chromium's permission
+ * controller decides (zebkit_view_on_permission). With one it replaces that decision
+ * for this request; Permissions Policy still refuses first. Screen and tab capture
+ * stay refused. Metadata: audio, video, origin, frameId, mainFrame, userGesture,
+ * requestedAudioDevices, requestedVideoDevices, audioDevices and videoDevices ({id,
+ * name}). A device id NULL takes what the page asked for, else the first; a device
+ * that does not exist fails as without hardware. Unanswered: refused.
+ */
+typedef struct zebkit_media_access_request zebkit_media_access_request;
+typedef void (*zebkit_media_access_func)(zebkit_view*, zebkit_media_access_request*, const char *json, void *data);
+typedef void (*zebkit_media_access_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_media_access(zebkit_view*, zebkit_media_access_func, void *data);
+ZEBKIT_API void zebkit_view_on_media_access_result(zebkit_view*, zebkit_media_access_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_media_access_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_media_access_request_info(zebkit_media_access_request*);
+ZEBKIT_API bool zebkit_media_access_respond(zebkit_media_access_request*, bool allow, const char *audio_device_id,
+                                            const char *video_device_id);
+
+/* Keys the page does not get: a JSON array of "Ctrl+Shift+KeyI", modifiers Ctrl, Alt,
+ * Shift, Meta and a KeyboardEvent.code. [] clears. At most 256; invalid input changes
+ * nothing. As Chrome's accelerators, the page still sees the key's keyup. Then told
+ * asynchronously: combo, key, code, autoRepeat. A popup takes its opener's keys until
+ * it has its own.
+ */
+ZEBKIT_API bool zebkit_view_set_reserved_keys(zebkit_view*, const char *keys_json, char **error);
+typedef void (*zebkit_reserved_key_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_reserved_key(zebkit_view*, zebkit_reserved_key_func, void *data);
+
+/* With a function, the engine shows no context menu and tells what was asked: x, y,
+ * linkUrl, linkText, srcUrl, mediaType, selectionText, editable, pageUrl, frameUrl,
+ * frameId. Without one, the system's menu where there is a window.
+ */
+typedef void (*zebkit_context_menu_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_context_menu(zebkit_view*, zebkit_context_menu_func, void *data);
+
+/* Whether a page may go fullscreen; allowed by default. Denying leaves fullscreen if
+ * the page is in it. A popup takes its opener's policy until it has its own, and is
+ * denied once that opener has closed. Told asynchronously: entered.
+ */
+typedef enum zebkit_fullscreen_policy {
+    ZEBKIT_FULLSCREEN_ALLOW = 0,
+    ZEBKIT_FULLSCREEN_DENY = 1
+} zebkit_fullscreen_policy;
+ZEBKIT_API bool zebkit_view_set_fullscreen_policy(zebkit_view*, zebkit_fullscreen_policy policy);
+typedef void (*zebkit_fullscreen_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view*, zebkit_fullscreen_func, void *data);
+
+/* Network requests and responses of a view's frames and of their dedicated workers:
+ * a loader factory in front of the network's. Nothing costs anything until a filter
+ * is set. A filter is a JSON array of rules, replacing the last, of at most 256:
+ * {url: Playwright's glob (default every URL), mode: "hold" (default) or "observe",
+ * stage: "request" (default) or "response", resourceTypes: ["document", "stylesheet",
+ * "image", "media", "font", "script", "manifest", "fetch"], frames: "all", "main" or
+ * "sub"}. Invalid input changes nothing. Frames there are from then on; a worker
+ * running already, service workers, shared workers and WebSockets are not covered.
+ * Requests answered from a service worker never reach this. CDP's Fetch and Network
+ * stay behind it.
+ */
+ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_json, char **error);
+/* What a hold rule holds is asked: stage, requestId (the same across redirects), url,
+ * method, headers as the page gave them (the network adds Cookie, Origin, Referer and
+ * more), resourceType, frameId, mainFrame, worker, navigation, initiator, hasBody,
+ * bodySize, body (base64, up to 64 KiB), bodyComplete; for the response, status,
+ * statusText, responseHeaders, mimeType; timeoutMs, deadlineUnixMs. Each redirect's
+ * destination is a request again; a redirect response is told, not held.
+ * Unanswered or with its function replaced, a request goes on. A view closed ends its
+ * requests. A popup whose opener closed has its requests blocked, when that opener
+ * had set a filter.
+ */
+typedef struct zebkit_network_request zebkit_network_request;
+typedef void (*zebkit_network_func)(zebkit_view*, zebkit_network_request*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_network(zebkit_view*, zebkit_network_func, void *data);
+/* Reply once, JSON:
+ * {action: "continue", headers: [{name, value}]}: all of them when given. Headers
+ *   the network refuses a page are refused here. A response's change does not undo
+ *   a cookie already stored, nor CORS, which the network has checked.
+ * {action: "block", error: Playwright's name, default "blockedbyclient"}
+ * {action: "redirect", url}: http or https; not for redirect: "manual" or "error".
+ * {action: "fulfill", status, headers}, with @body of at most 64 MiB. As CDP's
+ *   Fetch.fulfillRequest, CORS is not applied and Set-Cookie is not stored here.
+ * Invalid replies return false with the reason and leave the request pending.
+ * The original response's body cannot be read or changed in place.
+ */
+ZEBKIT_API bool zebkit_network_respond(zebkit_network_request*, const char *reply_json, const void *body,
+                                       size_t body_size, char **error);
+/* Default 30000 ms; accepted range 1..300000. */
+ZEBKIT_API bool zebkit_view_set_network_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_network_request_info(zebkit_network_request*);
+/* What an observe rule matches, holding nothing: kind request, response, redirect,
+ * finished or failed (with error), and the fields above; dropped counts reports over
+ * 4096 waiting. Outcomes of held requests too: state, reason. Bodies are not read.
+ */
+typedef void (*zebkit_network_event_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_network_event(zebkit_view*, zebkit_network_event_func, void *data);
+
 #ifdef __cplusplus
 }
 #endif

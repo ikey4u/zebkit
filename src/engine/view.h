@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -37,6 +38,8 @@ class Origin;
 }
 
 namespace zebkit {
+
+struct NetworkRules;
 
 // How a call is answered: true with the result, or false with the message.
 // Bytes are binary values (base::Value::BlobStorage).
@@ -131,6 +134,10 @@ struct zebkit_view : public content::WebContentsObserver,
 
   // A script for every new document, before the page's own.
   void AddScript(const std::string& source, Reply reply = Reply());
+  // The same in a world of its own name ("" for the page's), in every frame,
+  // those of other sites' processes too, or only in the main frame.
+  void AddWorldScript(const std::string& world, const std::string& source,
+                      bool main_frame_only);
 
   void Evaluate(const char* script, zebkit_result_func func, void* data);
   void SetUserAgent(const char* user_agent);
@@ -235,6 +242,56 @@ struct zebkit_view : public content::WebContentsObserver,
   uint64_t http_auth_result_generation_ = 0;
   uint32_t http_auth_timeout_ms_ = 30000;
   uint32_t certificate_timeout_ms_ = 30000;
+  // Hooks of page_hooks.cc, download_hooks.cc and client_certificate.cc.
+  size_t told_pending_ = 0;
+  std::shared_ptr<const zebkit::NetworkRules> network_rules_;
+  bool network_ever_ = false;
+  zebkit_network_func on_network_ = nullptr;
+  void* on_network_data_ = nullptr;
+  zebkit_network_event_func on_network_event_ = nullptr;
+  void* on_network_event_data_ = nullptr;
+  uint64_t network_generation_ = 0;
+  uint32_t network_timeout_ms_ = 30000;
+  size_t network_events_pending_ = 0;
+  uint64_t network_events_dropped_ = 0;
+  zebkit_external_protocol_func on_external_protocol_ = nullptr;
+  void* on_external_protocol_data_ = nullptr;
+  uint64_t external_protocol_generation_ = 0;
+  zebkit_download_func on_download_ = nullptr;
+  void* on_download_data_ = nullptr;
+  zebkit_download_progress_func on_download_progress_ = nullptr;
+  void* on_download_progress_data_ = nullptr;
+  uint64_t download_generation_ = 0;
+  uint32_t download_timeout_ms_ = 30000;
+  zebkit_client_certificate_func on_client_certificate_ = nullptr;
+  void* on_client_certificate_data_ = nullptr;
+  zebkit_client_certificate_result_func on_client_certificate_result_ = nullptr;
+  void* on_client_certificate_result_data_ = nullptr;
+  uint64_t client_certificate_generation_ = 0;
+  uint32_t client_certificate_timeout_ms_ = 30000;
+  zebkit_file_chooser_func on_file_chooser_ = nullptr;
+  void* on_file_chooser_data_ = nullptr;
+  zebkit_file_chooser_result_func on_file_chooser_result_ = nullptr;
+  void* on_file_chooser_result_data_ = nullptr;
+  uint64_t file_chooser_generation_ = 0;
+  uint32_t file_chooser_timeout_ms_ = 30000;
+  zebkit_media_access_func on_media_access_ = nullptr;
+  void* on_media_access_data_ = nullptr;
+  zebkit_media_access_result_func on_media_access_result_ = nullptr;
+  void* on_media_access_result_data_ = nullptr;
+  uint64_t media_access_generation_ = 0;
+  uint32_t media_access_timeout_ms_ = 30000;
+  std::optional<std::set<std::string>> reserved_keys_;
+  zebkit_reserved_key_func on_reserved_key_ = nullptr;
+  void* on_reserved_key_data_ = nullptr;
+  uint64_t reserved_key_generation_ = 0;
+  zebkit_context_menu_func on_context_menu_ = nullptr;
+  void* on_context_menu_data_ = nullptr;
+  uint64_t context_menu_generation_ = 0;
+  std::optional<zebkit_fullscreen_policy> fullscreen_policy_;
+  zebkit_fullscreen_func on_fullscreen_ = nullptr;
+  void* on_fullscreen_data_ = nullptr;
+  uint64_t fullscreen_generation_ = 0;
   zebkit_popup_blocked_func on_popup_blocked_ = nullptr;
   void* on_popup_blocked_data_ = nullptr;
   zebkit_drop_func on_drop_ = nullptr;
@@ -270,7 +327,10 @@ struct zebkit_view : public content::WebContentsObserver,
                             const base::DictValue* result);
   void RemoveProtocolScript(size_t index, Reply reply);
   void RefreshOtherProtocolTargets(const std::string& current);
-  void SendScript(const std::string& source, Reply reply = Reply());
+  void SendScript(const std::string& source, Reply reply = Reply(),
+                  const std::string& world = std::string());
+  // Other sites' frames as targets of their own, for scripts in all frames.
+  void AttachFrameTargets(const std::string& target);
   void InstallBridge();
   const GrantEntry* GrantFor(const url::Origin& origin) const;
   void Load(zebkit_load_event event, const GURL& url);
@@ -288,6 +348,10 @@ struct zebkit_view : public content::WebContentsObserver,
   std::map<std::string, size_t> protocol_scripts_applied_;
   std::map<std::string, size_t> protocol_initializing_;
   std::vector<std::string> protocol_script_sources_;
+  std::map<size_t, std::string> protocol_script_worlds_;
+  std::set<size_t> protocol_all_frame_scripts_;
+  std::set<std::string> protocol_frame_targets_;
+  bool protocol_attach_frames_ = false;
   std::set<size_t> protocol_removed_scripts_;
   std::map<std::string, std::map<size_t, std::string>> protocol_script_ids_;
   std::optional<base::DictValue> protocol_user_agent_;

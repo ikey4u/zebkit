@@ -52,6 +52,7 @@
 #include "zebkit/engine/permissions.h"
 #include "zebkit/engine/certificate_hooks.h"
 #include "zebkit/engine/navigation_hooks.h"
+#include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/pdf_script.h"
 
@@ -176,6 +177,7 @@ zebkit_view::~zebkit_view() {
   zebkit::CancelNavigationRequests(this, "cancelled");
   zebkit::CancelPermissionRequests(this, "cancelled");
   zebkit::CancelCertificateRequests(this, "cancelled");
+  zebkit::CancelPageHookRequests(this);
   Views().erase(this);
   zebkit::ClosePdfsOf(this);
   zebkit::DetachView(this);
@@ -289,9 +291,14 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
   protocol_ready_targets_.erase(target);
   const size_t count = protocol_script_sources_.size();
   protocol_scripts_applied_[target] = count;
+  const bool frame_target = protocol_frame_targets_.contains(target);
+  auto skipped = [&](size_t index) {
+    return protocol_removed_scripts_.contains(index) ||
+           (frame_target && !protocol_all_frame_scripts_.contains(index));
+  };
   size_t scripts = 0;
   for (size_t index = applied; index < count; ++index)
-    if (!protocol_removed_scripts_.contains(index)) ++scripts;
+    if (!skipped(index)) ++scripts;
   if (!scripts && !user_agent) { InitializeProtocolTarget(target); return; }
   protocol_initializing_[target] = scripts + (scripts ? 1 : 0) + (user_agent ? 1 : 0);
   auto weak = GetWeakPtr();
@@ -310,10 +317,12 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
     if (!weak) return;
   }
   for (size_t index = applied; index < count; ++index) {
-    if (protocol_removed_scripts_.contains(index)) continue;
+    if (skipped(index)) continue;
     base::DictValue params;
     params.Set("source", protocol_script_sources_[index]);
     params.Set("runImmediately", true);
+    if (auto world = protocol_script_worlds_.find(index); world != protocol_script_worlds_.end())
+      params.Set("worldName", world->second);
     SendTargetCommand(target, "Page.addScriptToEvaluateOnNewDocument", std::move(params),
                       base::BindOnce([](base::WeakPtr<zebkit_view> view, std::string target,
                                         size_t index, const base::DictValue* result,
@@ -553,14 +562,56 @@ void zebkit_view::RefreshOtherProtocolTargets(const std::string& current) {
     if (weak) InitializeProtocolTarget(target);
 }
 
-void zebkit_view::SendScript(const std::string& source, Reply reply) {
+void zebkit_view::AddWorldScript(const std::string& world, const std::string& source,
+                                 bool main_frame_only) {
+  // As content scripts' all_frames: false. window and top cannot be replaced
+  // by a page, and a script of a frame has them before anything else runs.
+  const std::string script =
+      main_frame_only ? "if (window === window.top) {\n" + source + "\n}" : source;
+  if (!main_frame_only) {
+    protocol_all_frame_scripts_.insert(protocol_script_sources_.size());
+    if (!protocol_attach_frames_ && EnsureSession()) {
+      protocol_attach_frames_ = true;
+      std::vector<std::string> targets;
+      for (const auto& [target, session] : protocol_sessions_) targets.push_back(target);
+      auto weak = GetWeakPtr();
+      for (const auto& target : targets) {
+        if (!weak) return;
+        AttachFrameTargets(target);
+      }
+    }
+  }
+  Send("Page.enable", base::DictValue());
+  SendScript(script, Reply(), world);
+}
+
+void zebkit_view::AttachFrameTargets(const std::string& target) {
+  base::DictValue params;
+  params.Set("autoAttach", true);
+  params.Set("waitForDebuggerOnStart", true);
+  params.Set("flatten", true);
+  base::ListValue filter;
+  base::DictValue frames;
+  frames.Set("type", "iframe");
+  frames.Set("exclude", false);
+  filter.Append(std::move(frames));
+  base::DictValue rest;
+  rest.Set("exclude", true);
+  filter.Append(std::move(rest));
+  params.Set("filter", std::move(filter));
+  SendTargetCommand(target, "Target.setAutoAttach", std::move(params));
+}
+
+void zebkit_view::SendScript(const std::string& source, Reply reply, const std::string& world) {
   const size_t index = protocol_script_sources_.size();
   protocol_script_sources_.push_back(source);
+  if (!world.empty()) protocol_script_worlds_[index] = world;
   const std::string target = web_contents()
       ? content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId() : "";
   base::DictValue script;
   script.Set("source", source);
   script.Set("runImmediately", true);
+  if (!world.empty()) script.Set("worldName", world);
   ++scripts_pending_;
   // Answered, or failed when the page goes, either way once.
   Send("Page.addScriptToEvaluateOnNewDocument", std::move(script),
@@ -714,6 +765,9 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
       const auto* target = info ? info->FindString("targetId") : nullptr;
       if (session && target) {
         protocol_sessions_[*target] = *session;
+        const auto* type = info->FindString("type");
+        if (type && *type == "iframe") protocol_frame_targets_.insert(*target);
+        if (protocol_attach_frames_) AttachFrameTargets(*target);
         InitializeProtocolTarget(*target);
       }
     } else if (*method == "Target.detachedFromTarget") {
@@ -725,6 +779,7 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
       }
       if (target.empty()) return;
       protocol_ready_targets_.erase(target);
+      protocol_frame_targets_.erase(target);
       protocol_initializing_.erase(target);
       protocol_scripts_applied_.erase(target);
       protocol_script_ids_.erase(target);
@@ -775,6 +830,7 @@ void zebkit_view::AgentHostClosed(content::DevToolsAgentHost* agent_host) {
   if (protocol_closing_) return;
   devtools_ = nullptr;
   protocol_sessions_.clear();
+  protocol_frame_targets_.clear();
   protocol_ready_targets_.clear();
   protocol_initializing_.clear();
   protocol_scripts_applied_.clear();
@@ -848,7 +904,13 @@ void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
     zebkit::FinishCertificateNavigation(this, navigation->GetURL());
     if (!weak) return;
   }
-  if (navigation->HasCommitted()) zebkit::CheckPermissionDocuments(this);
+  if (navigation->HasCommitted()) {
+    auto weak = GetWeakPtr();
+    zebkit::CheckPermissionDocuments(this);
+    if (!weak) return;
+    zebkit::PageHooksFrameGone(this, nullptr);
+    if (!weak) return;
+  }
   if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
     return;
   if (navigation->HasCommitted() && !navigation->IsErrorPage())
@@ -859,6 +921,7 @@ void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
 
 void zebkit_view::RenderFrameDeleted(content::RenderFrameHost* frame) {
   zebkit::PermissionFrameDeleted(this, frame);
+  zebkit::PageHooksFrameGone(this, frame);
 }
 
 void zebkit_view::DidFinishLoad(content::RenderFrameHost* frame,
@@ -887,6 +950,7 @@ void zebkit_view::WebContentsDestroyed() {
   zebkit::CancelNavigationRequests(this, "cancelled");
   zebkit::CancelPermissionRequests(this, "cancelled");
   zebkit::CancelCertificateRequests(this, "cancelled");
+  zebkit::CancelPageHookRequests(this);
   if (devtools_) {
     devtools_->DetachClient(this);
     devtools_ = nullptr;
@@ -1400,6 +1464,18 @@ void zebkit_call_reject(zebkit_call* call, const char* message) {
 }
 
 }  // extern "C"
+
+extern "C" bool zebkit_view_add_world_script(zebkit_view* view, const char* world,
+                                             const char* source, bool main_frame_only,
+                                             char** error) {
+  auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
+  if (!view || !view->web_contents()) return fail("the view is closed");
+  if (!source || !base::IsStringUTF8(source)) return fail("the script must be UTF-8");
+  const std::string name = world ? world : "";
+  if (name.size() > 256 || !base::IsStringUTF8(name)) return fail("a world's name is UTF-8 of at most 256 bytes");
+  view->AddWorldScript(name, source, main_frame_only);
+  return true;
+}
 
 extern "C" void zebkit_view_on_console(zebkit_view* view, zebkit_console_func function, void* data) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents()) return;

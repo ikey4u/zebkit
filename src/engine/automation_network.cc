@@ -898,6 +898,10 @@ void ProxyFactory::CreateLoaderAndStart(
 
 }  // namespace
 
+std::string NetworkGlobToRegex(const std::string& glob) { return GlobToRegex(glob); }
+int NetworkErrorCode(const std::string& code) { return NetError(code); }
+const char* NetworkResourceType(const network::ResourceRequest& request) { return ResourceType(request); }
+
 Network* Network::For(content::WebContents* contents) {
   return NetworkImpl::FromWebContents(contents);
 }

@@ -15,6 +15,11 @@
 #include "zebkit/engine/settings.h"
 #include "zebkit/engine/permissions.h"
 #include "zebkit/engine/navigation_hooks.h"
+#include "content/public/browser/client_certificate_delegate.h"
+#include "net/ssl/client_cert_identity.h"
+#include "net/ssl/ssl_cert_request_info.h"
+#include "zebkit/engine/network_hooks.h"
+#include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/certificate_hooks.h"
 #include "zebkit/engine/http_auth.h"
 #include "zebkit/engine/popup_metadata.h"
@@ -697,6 +702,38 @@ void BrowserClient::AllowCertificateError(content::WebContents* contents, int er
   HandleCertificateError(contents, error, info, url, main_frame, strict, std::move(reply));
 }
 
+bool BrowserClient::HandleExternalProtocol(
+    const GURL& url,
+    base::RepeatingCallback<content::WebContents*()> web_contents_getter,
+    content::FrameTreeNodeId frame_tree_node_id,
+    content::NavigationUIData* navigation_data,
+    bool is_primary_main_frame,
+    bool is_in_fenced_frame_tree,
+    network::mojom::WebSandboxFlags sandbox_flags,
+    ui::PageTransition page_transition,
+    bool has_user_gesture,
+    const std::optional<url::Origin>& initiating_origin,
+    content::RenderFrameHost* initiator_document,
+    const net::IsolationInfo& isolation_info,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory>* out_factory) {
+  TellExternalProtocol(url, web_contents_getter.Run(), frame_tree_node_id,
+                       is_primary_main_frame, is_in_fenced_frame_tree, sandbox_flags,
+                       has_user_gesture, initiating_origin, initiator_document);
+  // Nothing is opened here. The navigation ends without an error page, as
+  // Chrome's does when it has handed a link to another program.
+  return true;
+}
+
+base::OnceClosure BrowserClient::SelectClientCertificate(
+    content::BrowserContext* browser_context,
+    int process_id,
+    content::WebContents* web_contents,
+    net::SSLCertRequestInfo* cert_request_info,
+    net::ClientCertIdentityList client_certs,
+    std::unique_ptr<content::ClientCertificateDelegate> delegate) {
+  return HandleClientCertificate(web_contents, *cert_request_info, std::move(delegate));
+}
+
 std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
     const net::AuthChallengeInfo& auth_info,
     content::WebContents* web_contents,
@@ -756,6 +793,17 @@ void BrowserClient::WillCreateURLLoaderFactory(
     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
     bool is_for_network_service) {
+  // Dedicated workers have their ancestor frame; shared and service workers
+  // have no view. Ahead of automation's, as ahead of CDP's.
+  if (type == URLLoaderFactoryType::kNavigation ||
+      type == URLLoaderFactoryType::kDocumentSubResource ||
+      type == URLLoaderFactoryType::kWorkerMainResource ||
+      type == URLLoaderFactoryType::kWorkerSubResource) {
+    InterceptNetworkHookFactory(frame,
+                                type == URLLoaderFactoryType::kWorkerMainResource ||
+                                    type == URLLoaderFactoryType::kWorkerSubResource,
+                                factory_builder);
+  }
   if (type == URLLoaderFactoryType::kNavigation ||
       type == URLLoaderFactoryType::kDocumentSubResource) {
     InterceptURLLoaderFactory(frame, factory_builder);
@@ -891,6 +939,10 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InstallCertificateHooks();
   InstallHttpAuthHooks();
   InstallNavigationHooks();
+  InstallPageHooks();
+  InstallDownloadHooks();
+  InstallClientCertificateHooks();
+  InstallNetworkHooks();
   AllowSchemes();
   content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
   content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
@@ -914,6 +966,10 @@ void BrowserMainParts::PostMainMessageLoopRun() {
   StopPermissionHooks();
   StopCertificateHooks();
   StopHttpAuthHooks();
+  StopPageHooks();
+  StopDownloadHooks();
+  StopClientCertificateHooks();
+  StopNetworkHooks();
   CloseAllViews();
   content::Shell::Shutdown();
   content::ShellBrowserMainParts::PostMainMessageLoopRun();

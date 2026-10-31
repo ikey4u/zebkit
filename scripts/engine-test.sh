@@ -56,6 +56,9 @@
 # - tests/engine/cdp_browser.py: what a page sees of the browser and of a
 #   CDP client: nothing of the client (errors described without the
 #   page's code), window.chrome, popups blocked, a real headless screen.
+# - tests/engine/hook_policies.py: the hooks of <zebkit/hooks.h> through C, Rust,
+#   Python and host JavaScript, against local HTTP and TLS servers that say what
+#   they received, with input a person would give over CDP.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -120,6 +123,7 @@ build_against_package "$package" "$work/edit-commands" "$tests/edit_commands.c"
 build_against_package "$package" "$work/hooks" "$tests/hooks.c"
 build_against_package "$package" "$work/certificate" "$tests/certificate.c"
 build_against_package "$package" "$work/http_auth" "$tests/http_auth.c"
+build_against_package "$package" "$work/hook-policies" "$tests/hook_policies.c"
 build_against_package "$package" "$work/offscreen-scale" "$tests/offscreen_scale.c"
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
 build_against_package "$package" "$work/scheme" "$tests/scheme.c"
@@ -370,6 +374,33 @@ mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
 
 mkdir -p "$work/script-files"
+# <zebkit/hooks.h> in every language, one engine per mode (tests/engine/hook_policies.py):
+# links to other programs, downloads, client certificates, isolated worlds, file
+# choosers, media, keys, context menus, fullscreen and the network.
+hook_groups=(external download certificate world page network)
+for hook_group in "${hook_groups[@]}"; do
+    run "hook-c-$hook_group" env PYTHONPATH="$tests" python3 "$tests/hook_policies.py" "c:$hook_group" "$work/hook-policies"
+    run "hook-javascript-$hook_group" env PYTHONPATH="$tests" python3 "$tests/hook_policies.py" "javascript:$hook_group" \
+        "$work/tools/zebkit-js" "$tests/script/hook_policies.mjs"
+    run "hook-python-$hook_group" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
+        python3 "$tests/hook_policies.py" "python:$hook_group" python3 "$tests/hook_policies_python.py"
+done
+run hook-python-popup env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
+    python3 "$tests/hook_policies.py" "python:popup" python3 "$tests/hook_policies_python.py"
+if command -v cargo > /dev/null; then
+    log "building the Rust hook program"
+    if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies); then
+        for hook_group in "${hook_groups[@]}"; do
+            run "hook-rust-$hook_group" env LD_LIBRARY_PATH="$package" PYTHONPATH="$tests" python3 "$tests/hook_policies.py" \
+                "rust:$hook_group" "$ZEBKIT_ROOT/rust/target/debug/examples/hook_policies"
+        done
+    else
+        echo "FAIL the Rust hook program did not build"; failed=1
+    fi
+else
+    log "hook-rust: skipped (no cargo)"
+fi
+
 run hooks-javascript "$work/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
 run certificate-bindings python3 "$tests/certificate_bindings.py" "$work/tools/zebkit-js"
 run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$work/tools/zebkit-js"

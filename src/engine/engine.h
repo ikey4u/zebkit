@@ -122,6 +122,27 @@ class BrowserClient : public content::ShellContentBrowserClient {
   void AllowCertificateError(content::WebContents* contents, int error,
       const net::SSLInfo& info, const GURL& url, bool main_frame, bool strict,
       base::OnceCallback<void(content::CertificateRequestResultType)> reply) override;
+  bool HandleExternalProtocol(
+      const GURL& url,
+      base::RepeatingCallback<content::WebContents*()> web_contents_getter,
+      content::FrameTreeNodeId frame_tree_node_id,
+      content::NavigationUIData* navigation_data,
+      bool is_primary_main_frame,
+      bool is_in_fenced_frame_tree,
+      network::mojom::WebSandboxFlags sandbox_flags,
+      ui::PageTransition page_transition,
+      bool has_user_gesture,
+      const std::optional<url::Origin>& initiating_origin,
+      content::RenderFrameHost* initiator_document,
+      const net::IsolationInfo& isolation_info,
+      mojo::PendingRemote<network::mojom::URLLoaderFactory>* out_factory) override;
+  base::OnceClosure SelectClientCertificate(
+      content::BrowserContext* browser_context,
+      int process_id,
+      content::WebContents* web_contents,
+      net::SSLCertRequestInfo* cert_request_info,
+      net::ClientCertIdentityList client_certs,
+      std::unique_ptr<content::ClientCertificateDelegate> delegate) override;
   void OverrideWebPreferences(content::WebContents* contents,
                               content::SiteInstance& main_frame_site,
                               blink::web_pref::WebPreferences* prefs) override;

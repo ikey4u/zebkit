@@ -1127,6 +1127,31 @@ a WebContents remain separate work. Real Linux HTTP 401/proxy 407 tests and
 Python/Rust/host JavaScript callback lifetime tests pass; this does not establish
 Mac runtime behavior.
 
+### What a page asks of its window, and its network
+
+`<zebkit/hooks.h>` has the details of each. Requests are single-use, on the engine
+thread, with a deadline of 1..300000 ms (default 30000): a function may answer later,
+replace itself or close the view. A popup's opener decides until the popup has its own
+function, and once that opener closed, the popup is refused.
+
+| Hook | C | Python | Rust | Host JavaScript | Unanswered |
+|---|---|---|---|---|---|
+| Links to other programs | `zebkit_view_on_external_protocol` | `on_external_protocol` | `on_external_protocol` | `onExternalProtocol` | told only |
+| Downloads | `zebkit_view_on_download`, `_progress`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `DownloadRequest.respond('save', path)` | `on_download`, `DownloadRequest::save`, `cancel` | `onDownload`, `respond('save', path)` | cancelled |
+| Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond` | `on_client_certificate`, `respond('provide', pem, key)` | `on_client_certificate`, `provide`, `respond` | `onClientCertificate`, `respond('provide', pem, key)` | request fails |
+| Isolated worlds | `zebkit_view_add_world_script` | `add_world_script(source, world, main_frame_only)` | `add_world_script` | `addWorldScript(source, {world, mainFrameOnly})` | not asked |
+| File choosers | `zebkit_view_on_file_chooser`, `zebkit_file_chooser_respond` | `on_file_chooser`, `respond([paths])` | `on_file_chooser`, `respond(&[paths])` | `onFileChooser`, `respond([paths])` | cancelled |
+| Camera, microphone | `zebkit_view_on_media_access`, `zebkit_media_access_respond` | `on_media_access`, `respond(allow)` | `on_media_access`, `respond(allow, None, None)` | `onMediaAccess`, `respond(allow)` | refused |
+| Keys | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | `set_reserved_keys`, `on_reserved_key` | same | `setReservedKeys`, `onReservedKey` | not asked |
+| Context menu | `zebkit_view_on_context_menu` | `on_context_menu` | `on_context_menu` | `onContextMenu` | told only |
+| Fullscreen | `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `setFullscreenPolicy`, `onFullscreen` | not asked |
+| Network | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
+
+Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
+Limits are in `docs/ROADMAP_HOOKS.md`: the network hook does not cover WebSockets,
+shared or service workers, or response bodies, and client certificates come from the
+application and not the system's stores.
+
 ### Native media processing tools
 
 For application-level FFmpeg/ffprobe functions (probe, remux, PCM extraction and

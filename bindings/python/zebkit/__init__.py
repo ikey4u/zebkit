@@ -30,7 +30,7 @@ import pathlib
 import sys
 
 __all__ = [
-    "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless",
+    "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless",
     "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
@@ -193,6 +193,113 @@ _view_on_http_auth_result = _declare("zebkit_view_on_http_auth_result", None, _V
 _view_http_auth_timeout = _declare("zebkit_view_set_http_auth_timeout", _B, _V, ctypes.c_uint32)
 _http_auth_info = _declare("zebkit_http_auth_request_info", _P, _P)
 _http_auth_respond = _declare("zebkit_http_auth_respond", _B, _P, _S, _S)
+
+
+_ASKED = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
+_TOLD = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_on_external_protocol = _declare("zebkit_view_on_external_protocol", None, _V, _TOLD, _P)
+_view_on_download = _declare("zebkit_view_on_download", None, _V, _ASKED, _P)
+_view_on_download_progress = _declare("zebkit_view_on_download_progress", None, _V, _TOLD, _P)
+_view_download_timeout = _declare("zebkit_view_set_download_timeout", _B, _V, ctypes.c_uint32)
+_download_info = _declare("zebkit_download_request_info", _P, _P)
+_download_respond = _declare("zebkit_download_respond", _B, _P, _I, _S, _P)
+_view_cancel_download = _declare("zebkit_view_cancel_download", _B, _V, _S)
+_view_on_client_certificate = _declare("zebkit_view_on_client_certificate", None, _V, _ASKED, _P)
+_view_on_client_certificate_result = _declare("zebkit_view_on_client_certificate_result", None, _V, _TOLD, _P)
+_view_client_certificate_timeout = _declare("zebkit_view_set_client_certificate_timeout", _B, _V, ctypes.c_uint32)
+_client_certificate_info = _declare("zebkit_client_certificate_request_info", _P, _P)
+_client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, _P, _I, _S, _S, _P)
+_view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _P)
+_view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED, _P)
+_view_on_file_chooser_result = _declare("zebkit_view_on_file_chooser_result", None, _V, _TOLD, _P)
+_view_file_chooser_timeout = _declare("zebkit_view_set_file_chooser_timeout", _B, _V, ctypes.c_uint32)
+_file_chooser_info = _declare("zebkit_file_chooser_request_info", _P, _P)
+_file_chooser_respond = _declare("zebkit_file_chooser_respond", _B, _P, ctypes.POINTER(ctypes.c_char_p), _Z, _P)
+_view_on_media_access = _declare("zebkit_view_on_media_access", None, _V, _ASKED, _P)
+_view_on_media_access_result = _declare("zebkit_view_on_media_access_result", None, _V, _TOLD, _P)
+_view_media_access_timeout = _declare("zebkit_view_set_media_access_timeout", _B, _V, ctypes.c_uint32)
+_media_access_info = _declare("zebkit_media_access_request_info", _P, _P)
+_media_access_respond = _declare("zebkit_media_access_respond", _B, _P, _B, _S, _S)
+_view_set_reserved_keys = _declare("zebkit_view_set_reserved_keys", _B, _V, _S, _P)
+_view_on_reserved_key = _declare("zebkit_view_on_reserved_key", None, _V, _TOLD, _P)
+_view_on_context_menu = _declare("zebkit_view_on_context_menu", None, _V, _TOLD, _P)
+_view_set_fullscreen_policy = _declare("zebkit_view_set_fullscreen_policy", _B, _V, _I)
+_view_on_fullscreen = _declare("zebkit_view_on_fullscreen", None, _V, _TOLD, _P)
+_view_set_network_filter = _declare("zebkit_view_set_network_filter", _B, _V, _S, _P)
+_view_on_network = _declare("zebkit_view_on_network", None, _V, _ASKED, _P)
+_view_on_network_event = _declare("zebkit_view_on_network_event", None, _V, _TOLD, _P)
+_view_network_timeout = _declare("zebkit_view_set_network_timeout", _B, _V, ctypes.c_uint32)
+_network_info = _declare("zebkit_network_request_info", _P, _P)
+_network_respond = _declare("zebkit_network_respond", _B, _P, _S, ctypes.c_char_p, _Z, _P)
+
+
+class _Request:
+    """An engine-thread request with a deadline: metadata stays, info ends with it."""
+    _info = None
+
+    def __init__(self, handle, metadata):
+        self._handle = handle
+        self.metadata = metadata
+
+    @property
+    def info(self):
+        value = _string(type(self)._info(self._handle))
+        return json.loads(value) if value else None
+
+
+class DownloadRequest(_Request):
+    _info = _download_info
+
+    def respond(self, action, path=None):
+        """respond('save', absolute_path) or respond('cancel'); False when stale or invalid."""
+        if action not in ("save", "cancel"):
+            raise ValueError("a download is saved or cancelled")
+        encoded = None if path is None else os.fsencode(path)
+        return bool(_download_respond(self._handle, 0 if action == "save" else 1, encoded, None))
+
+
+class ClientCertificateRequest(_Request):
+    _info = _client_certificate_info
+
+    def respond(self, action, certificate=None, key=None):
+        """respond('none'), respond('cancel') or respond('provide', pem_chain, pem_key)."""
+        actions = {"none": 0, "provide": 1, "cancel": 2}
+        if action not in actions:
+            raise ValueError("a client certificate is none, provide or cancel")
+        return bool(_client_certificate_respond(self._handle, actions[action],
+                                                 None if certificate is None else certificate.encode(),
+                                                 None if key is None else key.encode(), None))
+
+
+class FileChooserRequest(_Request):
+    _info = _file_chooser_info
+
+    def respond(self, paths=()):
+        """Absolute paths; none cancels. False when stale or invalid."""
+        if isinstance(paths, (str, bytes)):
+            raise TypeError("paths is a list")
+        encoded = [os.fsencode(path) for path in paths]
+        array = (ctypes.c_char_p * len(encoded))(*encoded)
+        return bool(_file_chooser_respond(self._handle, array, len(encoded), None))
+
+
+class MediaAccessRequest(_Request):
+    _info = _media_access_info
+
+    def respond(self, allow, audio_device=None, video_device=None):
+        return bool(_media_access_respond(self._handle, bool(allow),
+                                          None if audio_device is None else audio_device.encode(),
+                                          None if video_device is None else video_device.encode()))
+
+
+class NetworkRequest(_Request):
+    _info = _network_info
+
+    def respond(self, action, body=b"", **fields):
+        """respond('continue', headers=[...]), respond('block', error='failed'),
+        respond('redirect', url=...), respond('fulfill', body=bytes, status=200, headers=[...])."""
+        reply = dict(fields, action=action)
+        return bool(_network_respond(self._handle, json.dumps(reply).encode(), bytes(body), len(body), None))
 
 
 class HttpAuthRequest:
@@ -651,6 +758,123 @@ class View:
         self._set('http-auth-result', callback, _view_on_http_auth_result)
         if previous is not None:
             post(lambda previous=previous: None)
+
+    def _asked(self, kind, setter, request_type, function):
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError(kind + " handler must be callable or None")
+        previous = self._callbacks.get(kind)
+        callback = _ASKED(_guard(lambda h, request, payload, d:
+                    function(request_type(request, json.loads(payload))))) if function is not None else _ASKED()
+        self._set(kind, callback, setter)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def _told(self, kind, setter, function):
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError(kind + " observer must be callable or None")
+        previous = self._callbacks.get(kind)
+        callback = _TOLD(_guard(lambda h, payload, d:
+                    function(json.loads(payload)))) if function is not None else _TOLD()
+        self._set(kind, callback, setter)
+        if previous is not None:
+            post(lambda previous=previous: None)
+
+    def _deadline(self, setter, milliseconds):
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError("a deadline is an integer from 1 to 300000")
+        if not setter(self._check(), milliseconds):
+            raise Error("deadline rejected")
+
+    def on_external_protocol(self, function):
+        """function(dict): a link to another program. The engine opens nothing."""
+        self._told('external-protocol', _view_on_external_protocol, function)
+
+    def on_download(self, function):
+        """function(DownloadRequest); None cancels pending ones and removes it."""
+        self._asked('download', _view_on_download, DownloadRequest, function)
+
+    def on_download_progress(self, function):
+        self._told('download-progress', _view_on_download_progress, function)
+
+    def set_download_timeout(self, milliseconds):
+        self._deadline(_view_download_timeout, milliseconds)
+
+    def cancel_download(self, download_id):
+        return bool(_view_cancel_download(self._check(), download_id.encode()))
+
+    def on_client_certificate(self, function):
+        """function(ClientCertificateRequest); without one no certificate is sent."""
+        self._asked('client-certificate', _view_on_client_certificate, ClientCertificateRequest, function)
+
+    def on_client_certificate_result(self, function):
+        self._told('client-certificate-result', _view_on_client_certificate_result, function)
+
+    def set_client_certificate_timeout(self, milliseconds):
+        self._deadline(_view_client_certificate_timeout, milliseconds)
+
+    def add_world_script(self, source, world=None, main_frame_only=False):
+        """A script before the page's, in the named isolated world or the page's."""
+        if not _view_add_world_script(self._check(), None if world is None else world.encode(),
+                                      source.encode(), bool(main_frame_only), None):
+            raise Error("script or world name rejected")
+
+    def on_file_chooser(self, function):
+        """function(FileChooserRequest); None cancels pending ones and removes it."""
+        self._asked('file-chooser', _view_on_file_chooser, FileChooserRequest, function)
+
+    def on_file_chooser_result(self, function):
+        self._told('file-chooser-result', _view_on_file_chooser_result, function)
+
+    def set_file_chooser_timeout(self, milliseconds):
+        self._deadline(_view_file_chooser_timeout, milliseconds)
+
+    def on_media_access(self, function):
+        """function(MediaAccessRequest) for camera and microphone."""
+        self._asked('media-access', _view_on_media_access, MediaAccessRequest, function)
+
+    def on_media_access_result(self, function):
+        self._told('media-access-result', _view_on_media_access_result, function)
+
+    def set_media_access_timeout(self, milliseconds):
+        self._deadline(_view_media_access_timeout, milliseconds)
+
+    def set_reserved_keys(self, keys):
+        """Keys the page does not get, as ['Ctrl+Shift+KeyI']."""
+        if not _view_set_reserved_keys(self._check(), json.dumps(list(keys)).encode(), None):
+            raise Error("reserved keys rejected")
+
+    def on_reserved_key(self, function):
+        self._told('reserved-key', _view_on_reserved_key, function)
+
+    def on_context_menu(self, function):
+        """function(dict); while set, the engine shows no menu."""
+        self._told('context-menu', _view_on_context_menu, function)
+
+    def set_fullscreen_policy(self, policy):
+        if policy not in ("allow", "deny"):
+            raise ValueError("fullscreen is allow or deny")
+        if not _view_set_fullscreen_policy(self._check(), 0 if policy == "allow" else 1):
+            raise Error("fullscreen policy rejected")
+
+    def on_fullscreen(self, function):
+        self._told('fullscreen', _view_on_fullscreen, function)
+
+    def set_network_filter(self, rules):
+        """A list of rules, as <zebkit/hooks.h> says; [] holds and tells nothing."""
+        if not _view_set_network_filter(self._check(), json.dumps(rules).encode(), None):
+            raise Error("network filter rejected")
+
+    def on_network(self, function):
+        """function(NetworkRequest) for what a hold rule holds."""
+        self._asked('network', _view_on_network, NetworkRequest, function)
+
+    def on_network_event(self, function):
+        self._told('network-event', _view_on_network_event, function)
+
+    def set_network_timeout(self, milliseconds):
+        self._deadline(_view_network_timeout, milliseconds)
 
     def set_navigation_fail_closed(self, fail_closed):
         """With True, an unanswered navigation is cancelled instead of continued."""

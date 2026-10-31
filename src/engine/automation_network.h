@@ -21,6 +21,7 @@ class WebContents;
 
 namespace network {
 class URLLoaderFactoryBuilder;
+struct ResourceRequest;
 }  // namespace network
 
 namespace zebkit {
@@ -30,6 +31,12 @@ namespace zebkit {
 // zebkit's when the page has automation.
 void InterceptURLLoaderFactory(content::RenderFrameHost* frame,
                                network::URLLoaderFactoryBuilder& builder);
+
+// Shared with the network hook (network_hooks.cc): Playwright's glob as a regular
+// expression, its error names as net errors, its resource types.
+std::string NetworkGlobToRegex(const std::string& glob);
+int NetworkErrorCode(const std::string& code);
+const char* NetworkResourceType(const network::ResourceRequest& request);
 
 // What automation.cc does with a page's network.
 class Network {

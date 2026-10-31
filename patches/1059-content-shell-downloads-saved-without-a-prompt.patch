@@ -1,0 +1,31 @@
+Content shell: downloads saved without a prompt, nothing overwritten.
+
+The prompt exists only on Windows; on Linux and macOS its absence cancelled
+every download of a view with no download hook. They now go to Downloads in
+the profile, on every system, and a file already there is kept.
+
+--- a/content/shell/browser/shell_download_manager_delegate.cc
++++ b/content/shell/browser/shell_download_manager_delegate.cc
+@@ -57,7 +57,9 @@
+ }
+ 
+ ShellDownloadManagerDelegate::ShellDownloadManagerDelegate()
+-    : download_manager_(nullptr), suppress_prompting_(false) {}
++    // zebkit: saved without asking, the same on every system: only Windows has
++    // the prompt, and elsewhere its absence cancels the download.
++    : download_manager_(nullptr), suppress_prompting_(true) {}
+ 
+ ShellDownloadManagerDelegate::~ShellDownloadManagerDelegate() {
+   if (download_manager_) {
+@@ -154,6 +156,11 @@
+     base::CreateDirectory(suggested_directory);
+ 
+   base::FilePath suggested_path(suggested_directory.Append(generated_name));
++  // zebkit: what is already there is kept, as Chrome keeps it.
++  base::FilePath unique_path = base::GetUniquePath(suggested_path);
++  if (!unique_path.empty()) {
++    suggested_path = unique_path;
++  }
+   GetUIThreadTaskRunner({})->PostTask(
+       FROM_HERE, base::BindOnce(std::move(callback), suggested_path));
+ }

@@ -57,21 +57,21 @@ service worker's fetch, are for the engine (`zebkit_on_*`).
 | Permissions | `PermissionControllerDelegate::RequestPermissionsFromCurrentDocument`, `GetPermissionStatus` (`ShellPermissionManager`, `patches/1023`) | request waits; status on the spot | denied, but a screen wake lock | asked; status set |
 | Popups and new windows | `ContentBrowserClient::CanCreateWindow` (with `user_gesture`), `WebContentsDelegate::IsWebContentsCreationOverridden`, `AddNewContents` | on the spot | blocked without a click, as Chrome blocks them; `zebkit_view_on_new_window` takes the URL of one that opens, `zebkit_view_on_window_open` the window as a view with its opener (`patches/1027`) | set, then told |
 | Navigation and redirects | `ContentBrowserClient::CreateThrottlesForNavigation` (`NavigationThrottleRegistry`): a `NavigationThrottle`'s `WillStartRequest`, `WillRedirectRequest`, `WillProcessResponse` | waits (`DEFER`, then `Resume` or `CancelDeferredNavigation`) | allowed | asked |
-| Network requests and responses | `ContentBrowserClient::WillCreateURLLoaderFactory` (a factory in front of the network's, as Chrome's webRequest has), `CreateWebSocket` | waits | the application's scheme only (`zebkit_scheme_handle`) | asked; told |
+| Network requests and responses | `ContentBrowserClient::WillCreateURLLoaderFactory` (a factory in front of the network's, as Chrome's webRequest has), `CreateWebSocket` | waits | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_view_on_network_event`: nothing held or told without a filter; WebSockets not covered | asked; told |
 | User agent and client hints | `ContentBrowserClient::GetUserAgent`, `GetUserAgentMetadata`; per view `WebContents::SetUserAgentOverride` | on the spot | Chrome's for 155, `--headless` too; `zebkit_view_set_user_agent` sets the string | set |
-| Downloads | `DownloadManagerDelegate::DetermineDownloadTarget`, `InterceptDownloadIfApplicable`; `WebContentsDelegate::CanDownload` | waits | the content shell's: `Downloads` in the profile's directory | asked; told |
+| Downloads | `DownloadManagerDelegate::DetermineDownloadTarget`, `InterceptDownloadIfApplicable`; `WebContentsDelegate::CanDownload` | waits | `zebkit_view_on_download`, `zebkit_view_on_download_progress`; without a function saved in `Downloads` in the profile's directory | asked; told |
 | JavaScript dialogs, beforeunload | `JavaScriptDialogManager::RunJavaScriptDialog`, `RunBeforeUnloadDialog` | waits | done: `zebkit_view_on_dialog`, policy per view (`<zebkit/page.h>`) | asked |
-| Certificate errors | `ContentBrowserClient::AllowCertificateError`; client certificates `SelectClientCertificate` | waits | refused | asked |
+| Certificate errors | `ContentBrowserClient::AllowCertificateError`; client certificates `SelectClientCertificate` | waits | refused; client certificates `zebkit_view_on_client_certificate`, none sent by default | asked |
 | Sign-in (HTTP authentication) | `ContentBrowserClient::CreateLoginDelegate` | waits | cancelled | asked |
-| Links to other programs (`mailto:`, `zoommtg:`) | `ContentBrowserClient::HandleExternalProtocol` | on the spot | not opened | set, then told |
-| Console messages | `WebContentsDelegate::DidAddMessageToConsole` | told | not reported (`Shell::DidAddMessageToConsole`) | told |
-| Scripts at document start | `ContentRendererClient::RunScriptsAtDocumentStart`; isolated worlds as CDP's `Page.addScriptToEvaluateOnNewDocument` with `worldName` | in the renderer, before the page's script | main world only: `zebkit_view_add_script` | set |
-| Settings of a view | `ContentBrowserClient::OverrideWebPreferences`, `WebContents::NotifyPreferencesChanged` | on the spot | Chromium's defaults | set |
-| File choosers | `WebContentsDelegate::RunFileChooser` | waits | the content shell's: cancelled where it has no dialog | asked |
-| Camera, microphone, screen | `WebContentsDelegate::RequestMediaAccessPermission` | waits | refused (`NOT_SUPPORTED`) | asked |
-| Keys before the page | `WebContentsDelegate::PreHandleKeyboardEvent` | on the spot | the menu's shortcuts | set, then told |
-| Context menu | `WebContentsDelegate::HandleContextMenu` | told | the system's menu with a window (`docs/ROADMAP.md`) | told |
-| Fullscreen | `WebContentsDelegate::EnterFullscreenModeForTab`, `ExitFullscreenModeForTab` | on the spot | the window's | set, then told |
+| Links to other programs (`mailto:`, `zoommtg:`) | `ContentBrowserClient::HandleExternalProtocol` | on the spot | not opened; `zebkit_view_on_external_protocol` tells | told |
+| Console messages | `WebContentsDelegate::DidAddMessageToConsole` | told | `zebkit_view_on_console` | told |
+| Scripts at document start | `ContentRendererClient::RunScriptsAtDocumentStart`; isolated worlds as CDP's `Page.addScriptToEvaluateOnNewDocument` with `worldName` | in the renderer, before the page's script | `zebkit_view_add_script`, `zebkit_view_add_world_script` (named world, all frames or main frame) | set |
+| Settings of a view | `ContentBrowserClient::OverrideWebPreferences`, `WebContents::NotifyPreferencesChanged` | on the spot | Chromium's defaults; `zebkit_view_set_settings` | set |
+| File choosers | `WebContentsDelegate::RunFileChooser` | waits | `zebkit_view_on_file_chooser`; without a function the content shell's: cancelled where it has no dialog | asked |
+| Camera, microphone, screen | `WebContentsDelegate::RequestMediaAccessPermission` | waits | `zebkit_view_on_media_access` for camera and microphone; without a function the permission controller; screen refused | asked |
+| Keys before the page | `WebContentsDelegate::PreHandleKeyboardEvent` | on the spot | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | set, then told |
+| Context menu | `WebContentsDelegate::HandleContextMenu` | told | `zebkit_view_on_context_menu`; without a function the system's menu with a window (`docs/ROADMAP.md`) | told |
+| Fullscreen | `WebContentsDelegate::CanEnterFullscreenModeForTab`, `EnterFullscreenModeForTab`, `ExitFullscreenModeForTab` | on the spot | allowed; `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | set, then told |
 
 What exists in narrow form is made one of these, not kept beside them:
 `zebkit_view_on_new_window` becomes the popup hook's event,
@@ -145,7 +145,7 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   Rust, Python and host JavaScript. Patch 1051 prevents an earlier per-view
   allow decision leaking through pooled HTTP/1.1 or HTTP/2 connections; tests
   verify denied requests send no HTTP headers or body to the server.
-  Client certificate selection, requests without a WebContents,
+  Requests without a WebContents,
   finer subframe cancellation and platform validation remain open.
 - **Implemented: document navigation throttle hooks.** C, Rust, Python and
   host JavaScript receive start, redirect, response, failure and loader-less
@@ -172,17 +172,22 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   document's first script and worker UA values. Chromium's own content-layer
   throttles remain registered; full native UA metadata and cross-client override
   precedence are still separate work.
-- **TODO: network requests and responses.** A loader factory in front of
-  the network's gives the application each request of a view's frames and
-  workers before it is sent and each response before the page has it:
-  headers changed, the request blocked, redirected or answered by the
-  application (bytes, a file, or a stream), the response's headers
-  changed, and everything observed without being held (`observe` mode,
-  which costs no round trip). Only what the application asks for is held:
-  a filter by URL pattern, resource type and frame, as CDP's
-  `Fetch.enable` takes. A request the application does not answer within
-  the deadline goes on. CDP's Fetch and Network domains keep working
-  beside it: the hook sees requests before them.
+- **Partial: network requests and responses.** `network_hooks.cc`: a factory in
+  front of the network's for a view's frames and their dedicated workers, installed
+  once a view has a filter (`zebkit_view_set_network_filter`), and for frames there
+  already through `UpdateSubresourceLoaderFactories`. Rules choose by URL glob,
+  resource type, frame and stage (request or response), and either hold or observe.
+  Held requests are blocked, redirected, answered with bytes or continued with
+  changed headers; held responses get changed headers, or are blocked or replaced.
+  Unanswered or with the function replaced, they go on. Observing holds nothing and
+  reads no body. CDP's Fetch sits behind the hook; a test has it see the hook's
+  header. Not done: WebSockets (`CreateWebSocket`); shared and service workers, which
+  have no view; a dedicated worker running before the filter was set; reading or
+  streaming a response's body, and answering from a file or a stream; the `Cookie`
+  and other headers the network adds are not seen or changed; `redirect: "manual"`
+  or `"error"` fetches fail when the application redirects them. As CDP's
+  `Fetch.fulfillRequest`, an answered request skips CORS and does not store
+  `Set-Cookie`, and a response's changed headers come after the network's CORS check.
 - **Implemented foundation: user agent and client hints, per view.**
   `zebkit_view_set_user_agent_override` sets the string, optional language,
   platform and `userAgentMetadata` together using Chromium's validated CDP
@@ -192,11 +197,13 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   model, bitness, WoW64, form factors, Accept-CH request headers and workers;
   rejected updates preserve prior values. External CDP sessions retain their
   own scopes. Platform runtime and wider target/context coverage remain open.
-- **TODO: downloads.** A download is asked about with its URL, the
-  suggested name, the type and the size when known, and is saved where the
-  application says, opened by the application from its bytes, or
-  cancelled; progress and the end are told. Without a function, downloads
-  go to `Downloads` in the profile's directory, as today.
+- **Implemented: downloads** (`patches/1057`, `download_hooks.cc`). Asked with URL,
+  suggested name, type and size; saved at the absolute path given or cancelled;
+  progress and the end told; `zebkit_view_cancel_download` ends a running one.
+  Unanswered they are cancelled. Without a function they are saved in `Downloads`
+  in the profile's directory on every system, without a prompt (`patches/1059`),
+  a file already there kept as Chrome keeps it (`report (1).bin`). "Opened by the
+  application from its bytes" is not implemented.
 - **JavaScript dialogs and beforeunload: done** (0.0.1-alpha.6,
   `<zebkit/page.h>`), the model for the others: held for the application,
   answered by it or by a CDP client, a policy per view.
@@ -206,20 +213,20 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   pass real HTTP challenges; native tests also cover proxy 407. Global requests
   without a WebContents remain open. Chromium's context auth cache and earlier
   CDP interception retain their existing scopes.
-- **TODO: links to other programs.** A URL of a scheme the engine does not
-  load goes to the application (`HandleExternalProtocol`), which opens it
-  with the system or not; nothing is opened by default.
-- **TODO: console messages.** Each message of a view's pages and workers:
-  level, text, source URL, line. Told only, and taken from Chromium's
-  console as it is (`DidAddMessageToConsole`), never by serializing the
-  page's objects, so that listening changes nothing a page can see.
-- **TODO: scripts at document start, in isolated worlds too.** A script
-  run in every document of a view before the page's own, in the main world
-  (`zebkit_view_add_script`, today) or in a world of its own name that
-  shares the page's DOM and not its globals, as Electron's preload with
-  context isolation does and Chrome's content scripts do; for every frame
-  or the main frame only. `zebkit.*` can be given to an isolated world and
-  not to the page (`zebkit_view_grant` with a world).
+- **Implemented: links to other programs.** `HandleExternalProtocol` opens nothing
+  and tells the application, which opens the link or not; the page stays. As Chrome,
+  fenced frames and sandboxed frames without the permission are not told. The table
+  said "set": there is nothing to set, since the engine never opens one itself.
+- **Console messages:** see the native document-console events above. Worker
+  messages remain open.
+- **Implemented: scripts at document start, in isolated worlds.**
+  `zebkit_view_add_world_script` uses CDP's `worldName`, for every frame, those of
+  other sites' processes too (their targets are attached once such a script exists),
+  or the main frame only, by a guard around the script: its top-level `let`, `const`
+  and `class` are then not global. Chromium gives these worlds universal access, so
+  a world can read other origins, unlike a content script. Not done: `zebkit.*` for
+  a world and not for its page (`zebkit_view_grant` with a world). The browser cannot
+  tell which world a call to `zebkit.*` came from, so that needs more than a flag.
 - **Settings of a view: implemented** (2026-10-29). `<zebkit/hooks.h>`
   exposes `zebkit_view_set_settings(view, json, error)` and
   `zebkit_view_get_settings`. Changes merge by top-level key; null restores
@@ -250,11 +257,32 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
     Rust passes 61 integration checks, and the complete engine suite passes.
     macOS framework/package and C hooks ARM64 cross-link pass; runtime remains.
   Engine-wide settings and unifying more policy hooks remain open.
-- **TODO: file choosers, camera and microphone, keys, context menu,
-  fullscreen**: as the table says; the context menu is the one in
-  `docs/ROADMAP.md` ("What a window does besides").
+- **Implemented: file choosers, camera and microphone, keys, context menu,
+  fullscreen** (`patches/1058`, `page_hooks.cc`), as `<zebkit/hooks.h>` says. Asked
+  ones end when their document goes. Permissions Policy still refuses a frame before
+  the media function is asked. Not done: screen and tab capture, still refused. The
+  page still gets the keyup of a reserved key, as with Chrome's accelerators.
+- **Implemented, except for the system's stores: client certificates.** Asked with
+  host, port and the server's accepted authorities; answered with a PEM chain and key
+  checked against each other, with none, or by failing the request. Unanswered,
+  the request fails without Chromium remembering anything. Known limit: Chromium
+  remembers an answer for that host and port for the whole context, so a second view
+  is not asked, and a default of none holds even after a function is set. The operating
+  system's certificate stores (`CreateClientCertStore`) are not offered on any
+  platform.
+
+Known open: on a heavily loaded machine, input sent by a separate CDP client
+just as a page becomes ready is occasionally lost (a few runs in hundreds); the
+cause is not found. `tests/engine/hook_policies.py` retries those two modes once.
 
 ## In the bindings
+
+The hooks of `page_hooks.cc`, `download_hooks.cc`, `client_certificate.cc` and
+`network_hooks.cc` have the same shape in each language: Python `view.on_download`,
+Rust `View::on_download`, host JavaScript `view.onDownload`, each with a request's
+`metadata`, `info` and reply. `tests/engine/hook_policies.py` runs the same modes
+through all four on Linux; popup inheritance, two views, a running download's
+cancellation and the order with CDP's Fetch run through Python only.
 
 - **C**: `zebkit_view_on_<hook>(view, func, data)` and
   `zebkit_view_set_<setting>(view, ...)` in `<zebkit/hooks.h>`; a request

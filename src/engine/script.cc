@@ -205,6 +205,46 @@ constexpr char kBootstrap[] = R"js((function (native) {
         }));
       });
     }
+    // Hooks of <zebkit/hooks.h>: an asked hook's function gets a request with
+    // metadata, info and respond(...); a told hook's function gets the event.
+    #asked(kind, fn, responder) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError(`${kind} handler must be a function or null`);
+      return native.viewHook(this.#id, kind, fn === null ? null : metadata => {
+        const id = metadata.id;
+        fn(Object.freeze({metadata: Object.freeze(metadata),
+          get info() { return native.hookRequest(kind, 'info', id); },
+          respond(...args) { return responder(id, ...args); }
+        }));
+      });
+    }
+    #told(kind, fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError(`${kind} observer must be a function or null`);
+      return native.viewHook(this.#id, kind, fn);
+    }
+    setNetworkFilter(rules) { return native.viewHookCall(this.#id, 'network-filter', JSON.stringify(rules)); }
+    onNetwork(fn) { return this.#asked('network', fn, (id, reply, body = null) => native.hookRequest('network', 'respond', id, JSON.stringify(reply), body)); }
+    onNetworkEvent(fn) { return this.#told('network-event', fn); }
+    setNetworkTimeout(ms) { return native.viewHookTimeout(this.#id, 'network', ms); }
+    onExternalProtocol(fn) { return this.#told('external-protocol', fn); }
+    onDownload(fn) { return this.#asked('download', fn, (id, action, path = null) => native.hookRequest('download', 'respond', id, String(action), path)); }
+    onDownloadProgress(fn) { return this.#told('download-progress', fn); }
+    setDownloadTimeout(ms) { return native.viewHookTimeout(this.#id, 'download', ms); }
+    cancelDownload(id) { return native.viewHookCall(this.#id, 'cancel-download', String(id)); }
+    onClientCertificate(fn) { return this.#asked('client-certificate', fn, (id, action, certificate = null, key = null) => native.hookRequest('client-certificate', 'respond', id, String(action), certificate, key)); }
+    onClientCertificateResult(fn) { return this.#told('client-certificate-result', fn); }
+    setClientCertificateTimeout(ms) { return native.viewHookTimeout(this.#id, 'client-certificate', ms); }
+    addWorldScript(source, {world = '', mainFrameOnly = false} = {}) { return native.viewHookCall(this.#id, 'world-script', String(source), String(world), !!mainFrameOnly); }
+    onFileChooser(fn) { return this.#asked('file-chooser', fn, (id, paths = []) => native.hookRequest('file-chooser', 'respond', id, paths)); }
+    onFileChooserResult(fn) { return this.#told('file-chooser-result', fn); }
+    setFileChooserTimeout(ms) { return native.viewHookTimeout(this.#id, 'file-chooser', ms); }
+    onMediaAccess(fn) { return this.#asked('media-access', fn, (id, allow = false, audioDevice = null, videoDevice = null) => native.hookRequest('media-access', 'respond', id, !!allow, audioDevice, videoDevice)); }
+    onMediaAccessResult(fn) { return this.#told('media-access-result', fn); }
+    setMediaAccessTimeout(ms) { return native.viewHookTimeout(this.#id, 'media-access', ms); }
+    setReservedKeys(keys) { return native.viewHookCall(this.#id, 'reserved-keys', JSON.stringify(keys)); }
+    onReservedKey(fn) { return this.#told('reserved-key', fn); }
+    onContextMenu(fn) { return this.#told('context-menu', fn); }
+    setFullscreenPolicy(policy) { return native.viewHookCall(this.#id, 'fullscreen-policy', String(policy)); }
+    onFullscreen(fn) { return this.#told('fullscreen', fn); }
     setHttpAuthTimeout(milliseconds) { return native.viewHttpAuth(this.#id, 'timeout', milliseconds); }
     onHttpAuth(fn) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError('HTTP authentication handler must be a function or null');
@@ -523,6 +563,11 @@ struct zebkit_script {
   static void CertificateRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewHttpAuth(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void DeliverHook(void* data, const char* name, const char* json);
+  static void ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewHookTimeout(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
   enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kWindowOpenInfo };
@@ -619,6 +664,12 @@ zebkit_script::~zebkit_script() {
     if (view) zebkit_view_on_permission(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_certificate(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_http_auth(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_network(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_download(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_client_certificate(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_file_chooser(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_media_access(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_context_menu(view.get(), nullptr, nullptr);
   }
   ui_.reset();
   {
@@ -668,6 +719,10 @@ void zebkit_script::Install() {
   SetMethod(native, "certificateRequest", &CertificateRequest);
   SetMethod(native, "viewHttpAuth", &ViewHttpAuth);
   SetMethod(native, "httpAuthRequest", &HttpAuthRequest);
+  SetMethod(native, "viewHook", &ViewHookFunction);
+  SetMethod(native, "viewHookTimeout", &ViewHookTimeout);
+  SetMethod(native, "viewHookCall", &ViewHookCall);
+  SetMethod(native, "hookRequest", &HookRequest);
   SetMethod(native, "navigationRequest", &NavigationRequest);
   SetMethod(native, "viewEvaluate", &ViewEvaluate);
   SetMethod(native, "viewUserAgentOverride", &ViewUserAgentOverride);
@@ -1339,6 +1394,192 @@ void zebkit_script::HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& i
     PermissionTypeError(isolate, "HTTP authentication credentials must be NUL-free and at most 65536 UTF-8 bytes"); return;
   }
   info.GetReturnValue().Set(zebkit_http_auth_respond(request, username.c_str(), password.c_str()));
+}
+
+// One function per hook name, so that a plain C function reaches its handler.
+void zebkit_script::DeliverHook(void* data, const char* name, const char* json) {
+  auto* hook = static_cast<ViewHook*>(data);
+  if (!hook->script) return;
+  Scope scope(hook->script.get());
+  v8::Local<v8::Value> value;
+  if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+    hook->script->ViewEvent(hook->id, name, {value});
+}
+
+#define ZEBKIT_TOLD_HOOK(NAME, SETTER)                                        \
+  if (kind == NAME) {                                                         \
+    SETTER(entry->view, nullptr, nullptr);                                    \
+    entry = self->FindView(info);                                             \
+    if (!entry) { info.GetReturnValue().Set(false); return; }                 \
+    entry->handlers.erase(NAME);                                              \
+    if (info[2]->IsFunction()) {                                              \
+      entry->handlers[NAME].Reset(isolate, info[2].As<v8::Function>());       \
+      SETTER(entry->view, [](zebkit_view*, const char* json, void* data) {    \
+        DeliverHook(data, NAME, json);                                        \
+      }, entry->hook);                                                        \
+    }                                                                         \
+    info.GetReturnValue().Set(true);                                          \
+    return;                                                                   \
+  }
+#define ZEBKIT_ASKED_HOOK(NAME, SETTER, REQUEST)                              \
+  if (kind == NAME) {                                                         \
+    SETTER(entry->view, nullptr, nullptr);                                    \
+    entry = self->FindView(info);                                             \
+    if (!entry) { info.GetReturnValue().Set(false); return; }                 \
+    entry->handlers.erase(NAME);                                              \
+    if (info[2]->IsFunction()) {                                              \
+      entry->handlers[NAME].Reset(isolate, info[2].As<v8::Function>());       \
+      SETTER(entry->view, [](zebkit_view*, REQUEST*, const char* json, void* data) { \
+        DeliverHook(data, NAME, json);                                        \
+      }, entry->hook);                                                        \
+    }                                                                         \
+    info.GetReturnValue().Set(true);                                          \
+    return;                                                                   \
+  }
+
+void zebkit_script::ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info); auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto kind = Utf8(isolate, info[1]);
+  ZEBKIT_ASKED_HOOK("network", zebkit_view_on_network, zebkit_network_request)
+  ZEBKIT_TOLD_HOOK("network-event", zebkit_view_on_network_event)
+  ZEBKIT_TOLD_HOOK("external-protocol", zebkit_view_on_external_protocol)
+  ZEBKIT_ASKED_HOOK("download", zebkit_view_on_download, zebkit_download_request)
+  ZEBKIT_TOLD_HOOK("download-progress", zebkit_view_on_download_progress)
+  ZEBKIT_ASKED_HOOK("client-certificate", zebkit_view_on_client_certificate, zebkit_client_certificate_request)
+  ZEBKIT_TOLD_HOOK("client-certificate-result", zebkit_view_on_client_certificate_result)
+  ZEBKIT_ASKED_HOOK("file-chooser", zebkit_view_on_file_chooser, zebkit_file_chooser_request)
+  ZEBKIT_TOLD_HOOK("file-chooser-result", zebkit_view_on_file_chooser_result)
+  ZEBKIT_ASKED_HOOK("media-access", zebkit_view_on_media_access, zebkit_media_access_request)
+  ZEBKIT_TOLD_HOOK("media-access-result", zebkit_view_on_media_access_result)
+  ZEBKIT_TOLD_HOOK("reserved-key", zebkit_view_on_reserved_key)
+  ZEBKIT_TOLD_HOOK("context-menu", zebkit_view_on_context_menu)
+  ZEBKIT_TOLD_HOOK("fullscreen", zebkit_view_on_fullscreen)
+  PermissionTypeError(isolate, "unknown hook");
+}
+#undef ZEBKIT_TOLD_HOOK
+#undef ZEBKIT_ASKED_HOOK
+
+void zebkit_script::ViewHookTimeout(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info); auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto kind = Utf8(isolate, info[1]);
+  const uint32_t ms = info[2]->IsUint32() ? info[2].As<v8::Uint32>()->Value() : 0;
+  const bool ok = kind == "network" ? zebkit_view_set_network_timeout(entry->view, ms)
+      : kind == "download" ? zebkit_view_set_download_timeout(entry->view, ms)
+      : kind == "client-certificate" ? zebkit_view_set_client_certificate_timeout(entry->view, ms)
+      : kind == "file-chooser" ? zebkit_view_set_file_chooser_timeout(entry->view, ms)
+      : kind == "media-access" ? zebkit_view_set_media_access_timeout(entry->view, ms) : false;
+  if (!ok) { PermissionTypeError(isolate, "a deadline is from 1 to 300000"); return; }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info); auto* isolate = info.GetIsolate();
+  auto* entry = self->FindView(info);
+  if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
+  const auto kind = Utf8(isolate, info[1]);
+  char* error = nullptr;
+  bool ok = false;
+  if (kind == "cancel-download") {
+    info.GetReturnValue().Set(zebkit_view_cancel_download(entry->view, Utf8(isolate, info[2]).c_str()));
+    return;
+  } else if (kind == "world-script") {
+    ok = zebkit_view_add_world_script(entry->view, Utf8(isolate, info[3]).c_str(), Utf8(isolate, info[2]).c_str(),
+                                      info[4]->IsTrue(), &error);
+  } else if (kind == "network-filter") {
+    ok = zebkit_view_set_network_filter(entry->view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (kind == "reserved-keys") {
+    ok = zebkit_view_set_reserved_keys(entry->view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (kind == "fullscreen-policy") {
+    const auto policy = Utf8(isolate, info[2]);
+    ok = (policy == "allow" || policy == "deny") &&
+         zebkit_view_set_fullscreen_policy(entry->view, policy == "allow" ? ZEBKIT_FULLSCREEN_ALLOW : ZEBKIT_FULLSCREEN_DENY);
+  }
+  if (!ok) {
+    PermissionTypeError(isolate, error ? error : "invalid value");
+    zebkit_free(error);
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate(); uint64_t id = 0;
+  const auto kind = Utf8(isolate, info[0]);
+  const auto action = Utf8(isolate, info[1]);
+  if (!info[2]->IsString() || !base::StringToUint64(Utf8(isolate, info[2]), &id) || !id || id > UINTPTR_MAX) {
+    PermissionTypeError(isolate, "invalid request id"); return;
+  }
+  void* request = reinterpret_cast<void*>(static_cast<uintptr_t>(id));
+  if (action == "info") {
+    char* json = kind == "network" ? zebkit_network_request_info(static_cast<zebkit_network_request*>(request))
+        : kind == "download" ? zebkit_download_request_info(static_cast<zebkit_download_request*>(request))
+        : kind == "client-certificate" ? zebkit_client_certificate_request_info(static_cast<zebkit_client_certificate_request*>(request))
+        : kind == "file-chooser" ? zebkit_file_chooser_request_info(static_cast<zebkit_file_chooser_request*>(request))
+        : kind == "media-access" ? zebkit_media_access_request_info(static_cast<zebkit_media_access_request*>(request)) : nullptr;
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json); info.GetReturnValue().Set(value); return;
+  }
+  // A string, or nothing for null; C strings cannot hold what else there is.
+  auto optional = [&](int index, std::string* out) {
+    if (info[index]->IsNull() || info[index]->IsUndefined()) return true;
+    if (!info[index]->IsString()) return false;
+    *out = Utf8(isolate, info[index]);
+    return out->find('\0') == std::string::npos;
+  };
+  std::string first, second;
+  bool ok = false;
+  if (kind == "network") {
+    // Bytes are a Uint8Array or a string, taken as its UTF-8.
+    std::string bytes;
+    if (info[4]->IsArrayBufferView()) {
+      auto view = info[4].As<v8::ArrayBufferView>();
+      bytes.resize(view->ByteLength());
+      view->CopyContents(bytes.data(), bytes.size());
+    } else if (info[4]->IsString()) {
+      bytes = Utf8(isolate, info[4]);
+    }
+    ok = zebkit_network_respond(static_cast<zebkit_network_request*>(request), Utf8(isolate, info[3]).c_str(),
+                                bytes.data(), bytes.size(), nullptr);
+  } else if (kind == "download") {
+    const auto verb = Utf8(isolate, info[3]);
+    if ((verb != "save" && verb != "cancel") || !optional(4, &first)) { PermissionTypeError(isolate, "a download is saved or cancelled"); return; }
+    ok = zebkit_download_respond(static_cast<zebkit_download_request*>(request),
+                                 verb == "save" ? ZEBKIT_DOWNLOAD_SAVE : ZEBKIT_DOWNLOAD_CANCEL,
+                                 info[4]->IsString() ? first.c_str() : nullptr, nullptr);
+  } else if (kind == "client-certificate") {
+    const auto verb = Utf8(isolate, info[3]);
+    if ((verb != "none" && verb != "provide" && verb != "cancel") || !optional(4, &first) || !optional(5, &second)) {
+      PermissionTypeError(isolate, "a client certificate is none, provide or cancel"); return;
+    }
+    ok = zebkit_client_certificate_respond(static_cast<zebkit_client_certificate_request*>(request),
+        verb == "none" ? ZEBKIT_CLIENT_CERTIFICATE_NONE : verb == "provide" ? ZEBKIT_CLIENT_CERTIFICATE_PROVIDE : ZEBKIT_CLIENT_CERTIFICATE_CANCEL,
+        info[4]->IsString() ? first.c_str() : nullptr, info[5]->IsString() ? second.c_str() : nullptr, nullptr);
+  } else if (kind == "file-chooser") {
+    if (!info[3]->IsArray()) { PermissionTypeError(isolate, "paths is an array"); return; }
+    auto array = info[3].As<v8::Array>();
+    std::vector<std::string> paths;
+    std::vector<const char*> pointers;
+    for (uint32_t i = 0; i < array->Length() && i <= 65536; ++i) {
+      v8::Local<v8::Value> path;
+      if (!array->Get(isolate->GetCurrentContext(), i).ToLocal(&path) || !path->IsString()) { PermissionTypeError(isolate, "a path is a string"); return; }
+      paths.push_back(Utf8(isolate, path));
+    }
+    for (const auto& path : paths) pointers.push_back(path.c_str());
+    ok = zebkit_file_chooser_respond(static_cast<zebkit_file_chooser_request*>(request), pointers.data(), pointers.size(), nullptr);
+  } else if (kind == "media-access") {
+    if (!optional(4, &first) || !optional(5, &second)) { PermissionTypeError(isolate, "a device id is a string"); return; }
+    ok = zebkit_media_access_respond(static_cast<zebkit_media_access_request*>(request), info[3]->IsTrue(),
+        info[4]->IsString() ? first.c_str() : nullptr, info[5]->IsString() ? second.c_str() : nullptr);
+  }
+  info.GetReturnValue().Set(ok);
 }
 
 void zebkit_script::ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info) {
