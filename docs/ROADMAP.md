@@ -266,10 +266,17 @@ in `examples/native-host` (Done table). What is left:
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
-- **TODO: zebkit as an MCP server.** One program, `tools/zebkit-mcp`,
+- **zebkit as an MCP server: built on Linux** (2026-10-31, `docs/MCP.md`).
+  One program, `tools/zebkit-mcp`,
   that gives an AI agent the engine's capabilities as MCP tools, over
   standard input and over HTTP, on Linux and macOS alike. CDP stays for
-  clients that speak it; MCP is what agents are given.
+  clients that speak it; MCP is what agents are given. 66 tools, the protocol's
+  current revision and the handshake ones; a program of its own in Rust, about
+  1 MiB, outside the library. Still to do: an outside agent's real tasks
+  (the run in `tests/engine/` is scripted, on a local site); running on macOS
+  and Windows' standard input; the device flow against the real providers,
+  and refresh tokens; the runtime settings group below; engine fixes it works
+  around (`docs/MCP.md`, "What the engine does not do yet").
   - **Pages:** open, navigate, wait for a load; read a page as text,
     Markdown or its accessibility tree, with references to its elements;
     click, type, select, scroll and upload by those references; run
@@ -296,7 +303,12 @@ in `examples/native-host` (Done table). What is left:
     host can make itself, and it gives a token, not a signed-in page.
   - **Checked by:** an MCP client's own test suite and an agent doing
     real tasks (research on the web, filling a form, reading a long PDF),
-    with every tool covered by `tests/engine/`.
+    with every tool covered by `tests/engine/`. Today: the official client
+    over both transports with every tool and bounds' escapes
+    (`mcp_server.mjs`), four scenarios of the project's conformance suite
+    (`mcp_conformance.mjs`), and those tasks as a scripted run on a local site,
+    no model deciding (`mcp_agent_run.mjs`). Not yet an outside agent, nor the
+    open web, nor a client of the current revision: no SDK speaks it yet.
 ### Measurements
 
 - **Web pages against Electron 44.9: done for 14 pages, one left over.**

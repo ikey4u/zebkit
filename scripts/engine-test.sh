@@ -63,6 +63,11 @@
 #   Playwright endpoint (zebkit_automation_listen, no CDP); skipped when
 #   Node.js or playwright-core is not there (scripts/automation-bench.sh
 #   installs it).
+# - tests/engine/mcp_server.mjs, mcp_conformance.mjs, mcp_agent_run.mjs:
+#   tools/zebkit-mcp (docs/MCP.md) with the official MCP client over standard
+#   input and HTTP, every tool and the bounds' escapes; the MCP project's
+#   conformance suite; a scripted task through its tools. Skipped without cargo,
+#   Node.js or the network for the first install.
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
@@ -499,6 +504,40 @@ for owner in "${late_load_owners[@]}"; do
     run "late-load-$owner" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         python3 "$tests/late_load.py" "$owner" "${engine_switches[@]}"
 done
+# tools/zebkit-mcp, built against this package, with the official client and the
+# conformance suite as development dependencies (upstream.lock); not shipped.
+if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null && "$engine_test_node_ready"; then
+    mcp_tools="$CACHE_DIR/mcp-tools"
+    if [[ ! -d "$mcp_tools/node_modules/@modelcontextprotocol/sdk" ]]; then
+        log "installing the MCP client $MCP_SDK_VERSION and conformance suite $MCP_CONFORMANCE_VERSION"
+        mkdir -p "$mcp_tools"
+        (cd "$mcp_tools" && "${pw_node[@]/%node/npm}" install --silent --no-save \
+            "@modelcontextprotocol/sdk@$MCP_SDK_VERSION" "@modelcontextprotocol/conformance@$MCP_CONFORMANCE_VERSION") || true
+    fi
+    log "building tools/zebkit-mcp"
+    if (cd "$ZEBKIT_ROOT/tools/zebkit-mcp" && ZEBKIT_DIR="$package" cargo build -q --locked --target-dir "$work/mcp-target"); then
+        zebkit_mcp="$work/mcp-target/debug/zebkit-mcp"
+        if [[ -d "$mcp_tools/node_modules/@modelcontextprotocol/sdk" ]]; then
+            # Over standard input and HTTP, every tool twice: longer than the rest.
+            log mcp-server
+            if ! limited 900 "${pw_node[@]}" "$tests/mcp_server.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox > "$work/mcp-server.log" 2>&1; then
+                failed=1
+                grep -v '^ok' "$work/mcp-server.log" | tail -40
+            fi
+            tail -1 "$work/mcp-server.log"
+            grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-server.log" || { echo "FAIL the MCP server's test did not finish"; failed=1; }
+            run mcp-conformance "${pw_node[@]}" "$tests/mcp_conformance.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
+            run mcp-agent-run "${pw_node[@]}" "$tests/mcp_agent_run.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
+            grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-agent-run.log" || { echo "FAIL the scripted MCP run did not finish"; failed=1; }
+        else
+            log "mcp-server: skipped (the MCP client could not be installed)"
+        fi
+    else
+        echo "FAIL tools/zebkit-mcp did not build"; failed=1
+    fi
+else
+    log "mcp-server: skipped (prebuilt, or no cargo or Node.js)"
+fi
 run view-settings env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/view_settings.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 run navigation-hooks env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \

@@ -51,7 +51,7 @@ belong in a page; a window, a system dialog and a prompt belong in
   `<zebkit/zebkit.h>`; a host uses those to put views in windows of its
   own and ignores the rest.
 - JavaScript: `zebkit.ui` in `zebkit-js` (`docs/API.md`), and through the
-  MCP server for agents when it comes.
+  MCP server for agents (`docs/MCP.md`).
 - Hooks: every dialog `zebkit.ui` shows is a hook the host can answer
   instead.
 

@@ -68,10 +68,11 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   (`<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
   clients, in any of its languages, connect to it unchanged with
   `chromium.connect()`.
-- **Made for agents.** Agents drive zebkit through Playwright's API or over
-  CDP, Chromium's own DevTools server, headless or windowed. A general MCP
-  server giving them pages, PDFs, files, media and native windows as tools
-  is planned (`docs/ROADMAP.md`, "Agents").
+- **Made for agents.** `tools/zebkit-mcp` gives them pages, PDFs, files, media
+  and native windows as MCP tools, over standard input and HTTP, within bounds
+  its operator sets (`docs/MCP.md`). They can also drive zebkit through
+  Playwright's API or over CDP, Chromium's own DevTools server, headless or
+  windowed.
 - **Customise it from your code.** Native hooks decide what the engine
   does: new windows and popups, dialogs, drag and drop, your own URL
   schemes, what a page may call, scripts before the page's own.
@@ -363,9 +364,17 @@ Agents and tools that speak CDP drive zebkit as they would drive Chrome:
 tools/zebkit-run --headless --remote-debugging-port=9222 https://example.com/
 ```
 
-Any CDP client connects to `http://127.0.0.1:9222`. An MCP server that gives
-agents zebkit's capabilities as tools is planned (`docs/ROADMAP.md`,
-"Agents").
+Any CDP client connects to `http://127.0.0.1:9222`.
+
+An MCP client gets the engine's capabilities as tools from `tools/zebkit-mcp`, a
+separate program, with file access and origins denied until its operator grants
+them ([docs/MCP.md](docs/MCP.md)):
+
+```sh
+ZEBKIT_DIR=<package> cargo build --release --manifest-path tools/zebkit-mcp/Cargo.toml
+zebkit-mcp --allow-origin https://example.com --allow-write ~/agent-files   # on standard input and output
+zebkit-mcp --http 8931 --allow-origin '*'                                   # on 127.0.0.1, with a token
+```
 
 ### The examples
 
@@ -443,6 +452,7 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 | [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing, measuring and releasing; profiles and patches |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine is made, and what in this repository is what |
 | [docs/AUTOMATION.md](docs/AUTOMATION.md) | Playwright's API without CDP: how Playwright works, what zebkit does instead, the endpoint, what it costs |
+| [docs/MCP.md](docs/MCP.md) | `tools/zebkit-mcp`: the engine as MCP tools for agents, its bounds, what is weak |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
@@ -461,7 +471,7 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 | `src/engine/` | zebkit's own code, linked into Chromium as `//zebkit/engine`: the library, its C API and headers |
 | `src/ffmpeg/` | zebkit's FFmpeg configuration, from `scripts/ffmpeg-config.sh` |
 | `rust/`, `bindings/python/` | The Rust crates and the Python binding |
-| `tools/` | `zebkit-run` (open pages, serve CDP or Playwright's endpoint) and `zebkit-js` (applications in JavaScript) |
+| `tools/` | `zebkit-run` (open pages, serve CDP or Playwright's endpoint), `zebkit-js` (applications in JavaScript) and `zebkit-mcp` (the engine as MCP tools) |
 | `tests/` | Programs that test every layer of the API against a package; speed workloads |
 | `examples/` | A browser window in C, `zebkit.ui`, a library inside the engine, the Electron baseline |
 | `scripts/` | Every step, one script each; `mise tasks` lists the short forms |
