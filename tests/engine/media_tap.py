@@ -270,15 +270,27 @@ with tempfile.TemporaryDirectory(prefix='zebkit-media-tap-') as directory:
       await pcA.setRemoteDescription(pcB.localDescription);
       return true;
     })()''')
-    wait(lambda: evaluate('ready()'))
-    events = []
-    tap = MediaTap(view, inventory()[0]['id'], lambda m, d: events.append((m, d)), packets=False)
-    wait(lambda: tap.done or {'video', 'audio'} <= {m['type'] for m, _ in events})
-    assert not tap.done, tap.done
-    assert any(any(payload) for meta, payload in events if meta['type'] == 'audio')
-    tap.stop(); wait(lambda: tap.done); tap.close()
+    # On a Mac, peers in an unbundled program without the Local Network grant may never
+    # connect (mDNS names unresolved, checks unanswered), which a person has to grant.
+    connected = False
+    try:
+        wait(lambda: evaluate("pcA.iceConnectionState === 'connected' || pcA.iceConnectionState === 'completed'"))
+        connected = True
+    except AssertionError:
+        if sys.platform != 'darwin':
+            raise
+        print('skip WebRTC loopback: the peers did not connect, state '
+              + evaluate('JSON.stringify(pcA.iceConnectionState)') + ' (macOS Local Network permission?)', flush=True)
+    if connected:
+        wait(lambda: evaluate('ready()'))
+        events = []
+        tap = MediaTap(view, inventory()[0]['id'], lambda m, d: events.append((m, d)), packets=False)
+        wait(lambda: tap.done or {'video', 'audio'} <= {m['type'] for m, _ in events})
+        assert not tap.done, tap.done
+        assert any(any(payload) for meta, payload in events if meta['type'] == 'audio')
+        tap.stop(); wait(lambda: tap.done); tap.close()
+        print('ok WebRTC loopback decoded RGBA and PCM', flush=True)
     evaluate('pcA.close(); pcB.close(); nativeTestStream.getTracks().forEach(t=>t.stop()); clearInterval(paintTimer); ac.close(); reset(); true')
-    print('ok WebRTC loopback decoded RGBA and PCM', flush=True)
     print('ok MediaStream RGBA and PCM, explicit encoded-output refusal', flush=True)
 
     encryption = evaluate('encrypted().then(() => ({ok:true}), e => ({error:String(e), appended:state.appended, encrypted:state.encrypted}))')

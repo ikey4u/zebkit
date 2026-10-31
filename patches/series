@@ -57,3 +57,5 @@
 1057-content-shell-download-target-to-the-embedder.patch
 1058-content-shell-page-decisions-to-the-embedder.patch
 1059-content-shell-downloads-saved-without-a-prompt.patch
+1060-content-responsiveness-with-an-application-s-nsapplication.patch
+1061-gpu-hardware-compositing-on-apple-silicon-without-dawn.patch

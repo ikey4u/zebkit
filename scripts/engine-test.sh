@@ -2,7 +2,20 @@
 # Test the engine library from programs built against the package, as an
 # application is built against it.
 #
-#   scripts/engine-test.sh <profile>
+#   scripts/engine-test.sh <profile> [--only REGEX]
+#   scripts/engine-test.sh <profile> --build-only DIR
+#   DIR/scripts/engine-test.sh <profile> --prebuilt DIR/programs [--only REGEX]
+#
+# --build-only makes DIR, which holds all the suite needs: the programs (for a
+# macOS profile on Linux, cross-compiled and signed ad hoc), the package, the
+# tests' scripts and pages. Copy it to a machine with no compiler or source and
+# run the suite there with --prebuilt; docs/MACOS.md has the steps. --only runs the
+# tests whose names match.
+#
+# On macOS the suite keeps out of the person's files: HOME and the temporary
+# directory are its own, and the Keychain calls are answered from files
+# (tests/engine/macos_private_keychain.c) unless ENGINE_TEST_REAL_KEYCHAIN=1.
+# ENGINE_TEST_KEEP_WORK=1 keeps the logs and profiles.
 #
 # - The engine exports zebkit's names and nothing else.
 # - tests/engine/vendor.c, vendor.cc: the libraries inside the engine
@@ -66,6 +79,9 @@
 #   examples/native_parent.rs under a private Xvfb: a view's window inside a
 #   window of the host's (zebkit_view_attach_native), its tree, pixels, input
 #   through XTEST, resizing, each closed first. With --headless, the refusal.
+#   On macOS tests/engine/native_parent_mac.m, on an NSView, and examples/native-host's
+#   AppKit host, with ENGINE_TEST_WINDOWS=1.
+# - tests/engine/gpu_status.py, on macOS: hardware compositing and WebGL, as chrome://gpu has them.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -82,104 +98,158 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 profile="${1:-}"
 require_profile "$profile"
+shift
+build_only=
+prebuilt=
+only=
+while (( $# )); do
+    case "$1" in
+        --build-only) build_only="${2:?a directory}"; shift 2 ;;
+        --prebuilt) prebuilt="${2:?a directory}"; shift 2 ;;
+        --only) only="${2:?a regular expression}"; shift 2 ;;
+        *) die "unknown option $1" ;;
+    esac
+done
+set_target_for_profile "$profile"
+[[ "$ZEBKIT_TARGET" == "$ZEBKIT_HOST" || -n "$build_only" ]] \
+    || die "$profile's programs do not run on $ZEBKIT_HOST: use --build-only and run them there"
 package="${ZEBKIT_TEST_PACKAGE:-$OUT_DIR/$profile/package}"
 library="$(engine_library "$package")"
 [[ -f "$library" ]] || die "no engine in $package; run scripts/package.sh $profile first"
 
-work="$(mktemp -d)"
+work="$(mktemp -d "$TMPDIR/engine-test.XXXXXX")"
 pids=()
 offscreen_key_identity=
 webauthn_key_identity=
 cleanup() {
     for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
-    if [[ "$ZEBKIT_HOST" == macos && -n "$offscreen_key_identity" ]]; then
-        # Only the throwaway key created by this invocation's test executable.
-        /usr/bin/security delete-generic-password \
-            -s "Zebkit Cookies: $offscreen_key_identity" \
-            -a "$offscreen_key_identity" >/dev/null 2>&1 || true
+    if [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_REAL_KEYCHAIN:-}" ]]; then
+        # Only the throwaway keys of this invocation's test executables.
+        for identity in "$offscreen_key_identity" "$webauthn_key_identity"; do
+            /usr/bin/security delete-generic-password -s "Zebkit Cookies: $identity" \
+                -a "$identity" >/dev/null 2>&1 || true
+        done
     fi
-    if [[ "$ZEBKIT_HOST" == macos && -n "$webauthn_key_identity" ]]; then
-        /usr/bin/security delete-generic-password \
-            -s "Zebkit Cookies: $webauthn_key_identity" \
-            -a "$webauthn_key_identity" >/dev/null 2>&1 || true
-    fi
-    rm -rf "$work"
+    if [[ -n "${ENGINE_TEST_KEEP_WORK:-}" ]]; then echo "kept: $work"; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
 
-log "building the test programs against $package"
+# The programs: built for this run, or built before. In a directory that moves,
+# they find the engine from where they are.
+bin="$work"
+if [[ -n "$prebuilt" ]]; then
+    bin="$(cd "$prebuilt" && pwd -P)"
+elif [[ -n "$build_only" ]]; then
+    mkdir -p "$build_only/programs"
+    build_only="$(cd "$build_only" && pwd -P)"
+    bin="$build_only/programs"
+    origin='$ORIGIN'
+    [[ "$ZEBKIT_TARGET" == macos ]] && origin='@executable_path'
+    # programs/x and programs/tools/x.
+    ZEBKIT_TARGET_RPATHS="$origin/../out/blink/$profile/package $origin/../../out/blink/$profile/package"
+fi
 tests="$ZEBKIT_ROOT/tests/engine"
-build_against_package "$package" "$work/vendor" "$tests/vendor.c"
+# Reserved names: a recompiled ad hoc executable cannot read an older binary's
+# Keychain item without a prompt, so each gets disposable keys of its own.
+offscreen_test="$bin/offscreen"
+if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    offscreen_key_identity="zebkit-test-offscreen-$(basename "$bin" | tr -cd 'A-Za-z0-9.')"
+    offscreen_test="$bin/$offscreen_key_identity"
+fi
+webauthn_key_identity="zebkit-test-webauthn-$(basename "$bin" | tr -cd 'A-Za-z0-9.')"
+webauthn_host="$bin/$webauthn_key_identity"
+
+if [[ -z "$prebuilt" ]]; then
+log "building the test programs against $package"
+build_against_package "$package" "$bin/vendor" "$tests/vendor.c"
 # shellcheck disable=SC2046
-c++ -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
-    $(engine_link_options "$package") -o "$work/vendor-cxx"
-build_against_package "$package" "$work/services" "$tests/services.c"
-build_against_package "$package" "$work/pdf" "$tests/pdf.c"
-build_against_package "$package" "$work/canvas" "$tests/canvas.c"
-build_against_package "$package" "$work/pdf-annotations" "$tests/pdf_annotations.c"
-build_against_package "$package" "$work/pdf-hooks" "$tests/pdf_hooks.c" "$ZEBKIT_ROOT/examples/pdf-plugin/plugin.c" -- -D_GNU_SOURCE -I"$ZEBKIT_ROOT/examples/pdf-plugin"
-build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
-if [[ "$ZEBKIT_HOST" == linux ]]; then
-    cc -std=c11 -O1 -Wall -Werror -I"$package/include" "$tests/late_load.c" -ldl -pthread -o "$work/late-load"
-fi
-build_against_package "$package" "$work/lifecycle" "$tests/lifecycle.c" -- -pthread
-build_against_package "$package" "$work/host-loop" "$tests/host_loop.c" -- -pthread
-if [[ "$ZEBKIT_HOST" == linux ]] && pkg-config --exists glib-2.0; then
+target_cxx -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
+    $(engine_link_options "$package") -o "$bin/vendor-cxx"
+build_against_package "$package" "$bin/services" "$tests/services.c"
+build_against_package "$package" "$bin/pdf" "$tests/pdf.c"
+build_against_package "$package" "$bin/canvas" "$tests/canvas.c"
+build_against_package "$package" "$bin/pdf-annotations" "$tests/pdf_annotations.c"
+build_against_package "$package" "$bin/pdf-hooks" "$tests/pdf_hooks.c" "$ZEBKIT_ROOT/examples/pdf-plugin/plugin.c" -- -D_GNU_SOURCE -I"$ZEBKIT_ROOT/examples/pdf-plugin"
+build_against_package "$package" "$bin/api" "$tests/api.c" -- -pthread
+target_cc -std=c11 -O1 -Wall -Werror -I"$package/include" "$tests/late_load.c" -ldl -pthread -o "$bin/late-load"
+build_against_package "$package" "$bin/lifecycle" "$tests/lifecycle.c" -- -pthread
+build_against_package "$package" "$bin/host-loop" "$tests/host_loop.c" -- -pthread
+if [[ "$ZEBKIT_TARGET" == linux ]] && pkg-config --exists glib-2.0; then
     read -r -a glib_flags <<< "$(pkg-config --cflags --libs glib-2.0)"
-    build_against_package "$package" "$work/host-loop-glib" "$tests/host_loop_glib.c" -- "${glib_flags[@]}" -pthread
+    build_against_package "$package" "$bin/host-loop-glib" "$tests/host_loop_glib.c" -- "${glib_flags[@]}" -pthread
 fi
-build_against_package "$package" "$work/startup-settings" "$tests/startup_settings.c"
-build_against_package "$package" "$work/edit-commands" "$tests/edit_commands.c"
-build_against_package "$package" "$work/hooks" "$tests/hooks.c"
-build_against_package "$package" "$work/certificate" "$tests/certificate.c"
-build_against_package "$package" "$work/http_auth" "$tests/http_auth.c"
-build_against_package "$package" "$work/hook-policies" "$tests/hook_policies.c"
-build_against_package "$package" "$work/offscreen-scale" "$tests/offscreen_scale.c"
-build_against_package "$package" "$work/bridge" "$tests/bridge.c"
-if [[ "$ZEBKIT_HOST" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
-    build_against_package "$package" "$work/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
-    build_against_package "$package" "$work/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
+build_against_package "$package" "$bin/startup-settings" "$tests/startup_settings.c"
+build_against_package "$package" "$bin/edit-commands" "$tests/edit_commands.c"
+build_against_package "$package" "$bin/hooks" "$tests/hooks.c"
+build_against_package "$package" "$bin/certificate" "$tests/certificate.c"
+build_against_package "$package" "$bin/http_auth" "$tests/http_auth.c"
+build_against_package "$package" "$bin/hook-policies" "$tests/hook_policies.c"
+build_against_package "$package" "$bin/offscreen-scale" "$tests/offscreen_scale.c"
+build_against_package "$package" "$bin/bridge" "$tests/bridge.c"
+if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
+    build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
+    build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
 fi
-build_against_package "$package" "$work/scheme" "$tests/scheme.c"
+if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    build_against_package "$package" "$bin/native-parent-mac" "$tests/native_parent_mac.m" -- -fobjc-arc -framework Cocoa
+    target_cxx -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Wno-deprecated-declarations -I"$package/include" "$ZEBKIT_ROOT/examples/native-host/appkit.mm" \
+        -framework Cocoa -framework IOSurface $(engine_link_options "$package") -o "$bin/native-host-appkit"
+fi
+build_against_package "$package" "$bin/scheme" "$tests/scheme.c"
 offscreen_options=()
-[[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
-offscreen_test="$work/offscreen"
-if [[ "$ZEBKIT_HOST" == macos ]]; then
-    # Recompiled ad hoc executables cannot read an older binary's Keychain
-    # item without a user prompt. Use a reserved, disposable test identity.
-    offscreen_key_identity="zebkit-test-offscreen-$(basename "$work")"
-    offscreen_test="$work/$offscreen_key_identity"
-fi
+[[ "$ZEBKIT_TARGET" == macos ]] && offscreen_options=(-framework IOSurface)
 build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
-build_against_package "$package" "$work/page" "$tests/page.c"
-build_against_package "$package" "$work/popup" "$tests/popup.c"
-build_against_package "$package" "$work/cookie-host" "$tests/cookie_host.c"
-build_against_package "$package" "$work/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
-build_against_package "$package" "$work/automation" "$tests/automation.c"
-build_against_package "$package" "$work/media" "$tests/media.c"
-build_against_package "$package" "$work/media-probe" "$tests/media_probe.c"
-build_against_package "$package" "$work/mode" "$tests/mode.c"
-webauthn_key_identity="zebkit-test-webauthn-$(basename "$work")"
-webauthn_host="$work/$webauthn_key_identity"
+build_against_package "$package" "$bin/page" "$tests/page.c"
+build_against_package "$package" "$bin/popup" "$tests/popup.c"
+build_against_package "$package" "$bin/cookie-host" "$tests/cookie_host.c"
+build_against_package "$package" "$bin/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+build_against_package "$package" "$bin/automation" "$tests/automation.c"
+build_against_package "$package" "$bin/media" "$tests/media.c"
+build_against_package "$package" "$bin/media-probe" "$tests/media_probe.c"
+build_against_package "$package" "$bin/mode" "$tests/mode.c"
 build_against_package "$package" "$webauthn_host" "$tests/webauthn_host.c"
 render_options=(-pthread)
-[[ "$(uname)" == Darwin ]] && render_options+=(-framework IOSurface)
-build_against_package "$package" "$work/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
+[[ "$ZEBKIT_TARGET" == macos ]] && render_options+=(-framework IOSurface)
+build_against_package "$package" "$bin/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
 host_options=()
-[[ "$(uname)" == Darwin ]] && host_options=(-framework CoreVideo -framework IOSurface -framework CoreFoundation)
-cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$work/offscreen-show"
-build_against_package "$package" "$work/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
-build_against_package "$package" "$work/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
+[[ "$ZEBKIT_TARGET" == macos ]] && host_options=(-framework CoreVideo -framework IOSurface -framework CoreFoundation)
+target_cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$bin/offscreen-show"
+build_against_package "$package" "$bin/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+build_against_package "$package" "$bin/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
+if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    keychain_source="$tests/macos_private_keychain.c"
+    keychain_frameworks=(-framework Security -framework CoreFoundation)
+    target_cc -std=c11 -O1 -Wall -Werror -dynamiclib "$keychain_source" "${keychain_frameworks[@]}" -o "$bin/macos-private-keychain.dylib"
+    target_cc -std=c11 -O1 -Wall -Werror -DMACOS_KEYCHAIN_LAUNCH "$keychain_source" -o "$bin/macos-keychain-launch"
+    target_cc -std=c11 -O1 -Wall -Werror -DMACOS_KEYCHAIN_CHECK "$keychain_source" "${keychain_frameworks[@]}" -o "$bin/macos-keychain-check"
+fi
+fi
 
 engine_switches=(--no-sandbox --headless --user-data-dir="$work/profile")
 failed=0
+
+selected() { [[ -z "$only" || "$1" =~ $only ]]; }
+
+# finished <name> <what>: its log ends with every check passed.
+finished() {
+    selected "$1" || return 0
+    grep -q '^\([0-9]*\) of \1 checks passed$' "$work/$1.log" || { echo "FAIL $2 did not finish"; failed=1; }
+}
 
 # run <name> <command...>: a test program; its output, and the engine's on failure.
 run() {
     local name="$1"
     shift
+    selected "$name" || return 0
     log "$name"
-    if ! limited 180 "$@" > "$work/$name.log" 2> "$work/$name.err"; then
+    if ! (
+        # Protected programs clear DYLD_*, so env is done here, before the launcher.
+        if (( ${#launch[@]} )) && [[ "$1" == env ]]; then
+            shift
+            while [[ "$1" == *=* ]]; do export "${1%%=*}=${1#*=}"; shift; done
+        fi
+        limited 180 "${launch[@]}" "$@"
+    ) > "$work/$name.log" 2> "$work/$name.err"; then
         failed=1
         cat "$work/$name.log"
         echo "it printed on stderr:"; tail -20 "$work/$name.err"
@@ -188,73 +258,142 @@ run() {
     fi
 }
 
-log "what the engine exports"
-if [[ "$(uname)" == Darwin ]]; then
-    # Mach-O puts an underscore before every C name.
-    exported="$(nm -gU "$library" | awk '{ print substr($3, 2) }')"
-else
-    exported="$(nm -D --defined-only "$library" | awk '{ print $3 }')"
+# What the engine exports and loads, with the target's tools.
+check_engine_library() {
+    local nm_tool=(nm) otool_tool=(otool)
+    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+        nm_tool=("$llvm_bin/llvm-nm"); otool_tool=("$llvm_bin/llvm-otool")
+    fi
+    log "what the engine exports"
+    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+        # Mach-O puts an underscore before every C name.
+        exported="$("${nm_tool[@]}" -gU "$library" | awk '{ print substr($3, 2) }')"
+    else
+        exported="$("${nm_tool[@]}" -D --defined-only "$library" | awk '{ print $3 }')"
+    fi
+    foreign="$(grep -v '^zebkit_' <<< "$exported" | grep -v '^$' || true)"
+    if [[ -n "$foreign" ]]; then
+        echo "FAIL exports names that are not zebkit's: $(head -5 <<< "$foreign" | paste -sd' ' -)"; failed=1
+    else
+        echo "ok   $(wc -l <<< "$exported") names, all zebkit_*: $(grep -c '^zebkit_vendor_' <<< "$exported") of the libraries'"
+    fi
+
+    log "what the engine loads"
+    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+        # The system's frameworks and libraries, and the framework itself.
+        loads="$("${otool_tool[@]}" -L "$library" | tail -n +2 | awk '{ print $1 }')"
+        stray="$(grep -v -e '^/System/Library/' -e '^/usr/lib/' -e '^@rpath/Zebkit.framework/' <<< "$loads" || true)"
+    else
+        # Whatever the dynamic linker cannot find beside it or on the system.
+        stray="$(ldd "$library" | grep 'not found' || true)"
+    fi
+    if [[ -n "$stray" ]]; then
+        echo "FAIL loads what the package does not have: $(paste -sd' ' - <<< "$stray")"; failed=1
+    else
+        echo "ok   only the system's libraries"
+    fi
+}
+if [[ -n "$build_only" ]]; then
+    check_engine_library
+    # The Rust hook program, if this machine's toolchain has the target.
+    rust_target=
+    [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]] && rust_target=aarch64-apple-darwin
+    if command -v cargo > /dev/null && { [[ -z "$rust_target" ]] || rustup target list --installed 2> /dev/null | grep -qx "$rust_target"; }; then
+        log "building the Rust hook program"
+        rust_options=()
+        rust_env=(ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$work/rust-target")
+        rust_flags="-C link-arg=-Wl,-rpath,$origin/../../out/blink/$profile/package"
+        if [[ -n "$rust_target" ]]; then
+            printf '#!/bin/sh\nexec "%s" --target=arm64-apple-macos13 -isysroot "%s" -fuse-ld=lld "$@" -Wno-unused-command-line-argument\n' \
+                "$llvm_bin/clang" "$macos_sdk" > "$work/rust-linker"
+            chmod +x "$work/rust-linker"
+            rust_options=(--target "$rust_target")
+            rust_env+=(CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$work/rust-linker")
+        fi
+        mkdir -p "$bin/rust"
+        (cd "$ZEBKIT_ROOT/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
+            cargo build -q -p zebkit --example hook_policies "${rust_options[@]}") \
+            || die "the Rust hook program did not build"
+        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/hook_policies" "$bin/rust/hook_policies"
+    else
+        log "hook-rust: not built (no cargo or no ${rust_target:-host} target)"
+    fi
+    (( failed )) && die "the engine's checks failed"
+    log "copying what the suite needs into $build_only"
+    mkdir -p "$build_only/out/blink/$profile"
+    rm -rf "$build_only/out/blink/$profile/package"
+    cp -a "$package" "$build_only/out/blink/$profile/package"
+    ahem_relative="${SRC_DIR#"$ZEBKIT_ROOT"/}/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
+    tar -C "$ZEBKIT_ROOT" --exclude=__pycache__ -cf - scripts/engine-test.sh scripts/lib.sh upstream.lock profiles tests/serve.py \
+        tests/engine bindings/python examples/pdf-plugin examples/native-host/sample.pdf "$ahem_relative" | tar -C "$build_only" -xf -
+    log "built: run $build_only/scripts/engine-test.sh $profile --prebuilt $build_only/programs where they run"
+    exit 0
 fi
-foreign="$(grep -v '^zebkit_' <<< "$exported" | grep -v '^$' || true)"
-if [[ -n "$foreign" ]]; then
-    echo "FAIL exports names that are not zebkit's: $(head -5 <<< "$foreign" | paste -sd' ' -)"; failed=1
+if [[ -z "$prebuilt" ]]; then
+    check_engine_library
 else
-    echo "ok   $(wc -l <<< "$exported") names, all zebkit_*: $(grep -c '^zebkit_vendor_' <<< "$exported") of the libraries'"
+    log "what the engine exports and loads: checked by --build-only"
 fi
 
-log "what the engine loads"
-if [[ "$(uname)" == Darwin ]]; then
-    # The system's frameworks and libraries, and the framework itself.
-    loads="$(otool -L "$library" | tail -n +2 | awk '{ print $1 }')"
-    stray="$(grep -v -e '^/System/Library/' -e '^/usr/lib/' -e '^@rpath/Zebkit.framework/' <<< "$loads" || true)"
-else
-    # Whatever the dynamic linker cannot find beside it or on the system.
-    stray="$(ldd "$library" | grep 'not found' || true)"
-fi
-if [[ -n "$stray" ]]; then
-    echo "FAIL loads what the package does not have: $(paste -sd' ' - <<< "$stray")"; failed=1
-else
-    echo "ok   only the system's libraries"
+# A person's Mac: their files stay theirs, and their Keychain is not asked.
+launch=()
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    mkdir -p "$work/path" "$work/home" "$work/keychain" "$work/tmp"
+    export TMPDIR="$work/tmp" MAC_CHROMIUM_TMPDIR="$work/tmp"
+    ln -s "$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.executable))')" "$work/path/python3"
+    export PATH="$work/path:$PATH"
+    export HOME="$work/home" CFFIXED_USER_HOME="$work/home"
+    if [[ -z "${ENGINE_TEST_REAL_KEYCHAIN:-}" ]]; then
+        export ZEBKIT_TEST_KEYCHAIN_LIBRARY="$bin/macos-private-keychain.dylib" ZEBKIT_TEST_KEYCHAIN_DIR="$work/keychain"
+        launch=("$bin/macos-keychain-launch")
+        # Nothing is run until the calls are seen going to the files, from a
+        # program and from Python, which the Python tests start the engine in.
+        printf 'check' > "$work/keychain/$(printf 'zebkit-test-check' | od -An -tx1 | tr -d ' \n')-$(printf 'zebkit-test-check' | od -An -tx1 | tr -d ' \n')"
+        limited 30 "${launch[@]}" "$bin/macos-keychain-check" > /dev/null \
+            || die "the private Keychain is not in effect in a program; stopping before the login Keychain is touched"
+        [[ "$(limited 30 "${launch[@]}" python3 -I -c 'import os; print(os.environ.get("DYLD_INSERT_LIBRARIES", ""))')" == "$ZEBKIT_TEST_KEYCHAIN_LIBRARY" ]] \
+            || die "$(command -v python3) drops DYLD_INSERT_LIBRARIES (a protected Python?); another Python on PATH, or ENGINE_TEST_REAL_KEYCHAIN=1"
+    fi
 fi
 
-run vendor "$work/vendor" "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
-run vendor-cxx "$work/vendor-cxx"
-run services "$work/services"
-run pdf "$work/pdf"
+run vendor "$bin/vendor" "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
+run vendor-cxx "$bin/vendor-cxx"
+run services "$bin/services"
+run pdf "$bin/pdf"
 # Ahem: every glyph a box of one em, which makes text's pixels certain.
 ahem="$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
-run canvas "$work/canvas" "$ahem"
-run pdf-annotations "$work/pdf-annotations" "$ahem"
-run pdf-hooks "$work/pdf-hooks" "$ahem"
+run canvas "$bin/canvas" "$ahem"
+run pdf-annotations "$bin/pdf-annotations" "$ahem"
+run pdf-hooks "$bin/pdf-hooks" "$ahem"
 run pdf-bindings env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/pdf_bindings.py" "$ahem"
-run api "$work/api" "${engine_switches[@]}"
-run lifecycle "$work/lifecycle" --no-sandbox --headless --user-data-dir="$work/profile-lifecycle"
-run host-loop "$work/host-loop" --no-sandbox --headless --user-data-dir="$work/profile-host-loop"
-run edit-commands "$work/edit-commands" --no-sandbox --headless --user-data-dir="$work/profile-edit-commands"
-if [[ -x "$work/host-loop-glib" ]]; then
-    run host-loop-glib "$work/host-loop-glib" --no-sandbox --headless --user-data-dir="$work/profile-host-loop-glib"
+run api "$bin/api" "${engine_switches[@]}"
+run lifecycle "$bin/lifecycle" --no-sandbox --headless --user-data-dir="$work/profile-lifecycle"
+run host-loop "$bin/host-loop" --no-sandbox --headless --user-data-dir="$work/profile-host-loop"
+run edit-commands "$bin/edit-commands" --no-sandbox --headless --user-data-dir="$work/profile-edit-commands"
+if [[ -x "$bin/host-loop-glib" ]]; then
+    run host-loop-glib "$bin/host-loop-glib" --no-sandbox --headless --user-data-dir="$work/profile-host-loop-glib"
 fi
 mkdir -p "$work/startup-settings-files"
-ZEBKIT_TEST_SETTINGS_DIR="$work/startup-settings-files" run startup-settings "$work/startup-settings" --user-agent=argv-agent --user-data-dir="$work/unused-argv-profile"
+ZEBKIT_TEST_SETTINGS_DIR="$work/startup-settings-files" run startup-settings "$bin/startup-settings" --user-agent=argv-agent --user-data-dir="$work/unused-argv-profile"
 for log_mode in none file; do
     run "startup-settings-python-$log_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         ZEBKIT_TEST_LOG_MODE="$log_mode" python3 "$tests/startup_settings_python.py"
 done
-if [[ -x "$work/native-parent" ]]; then
-    run native-parent-refused "$work/native-parent" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
+if [[ -x "$bin/native-parent" ]]; then
+    run native-parent-refused "$bin/native-parent" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
     if command -v Xvfb > /dev/null; then
         exec 9< <(Xvfb -displayfd 1 -screen 0 2200x1400x24 -nolisten tcp 2> /dev/null)
         xvfb=$!
         pids+=("$xvfb")
         read -r -t 15 -u 9 xvfb_display || xvfb_display=
         if [[ -n "$xvfb_display" ]]; then
-            run native-parent env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$work/native-parent" \
+            run native-parent env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/native-parent" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent"
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
-            if command -v cargo > /dev/null; then
+            if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null; then
                 if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example native_parent); then
                     run native-parent-rust env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" LD_LIBRARY_PATH="$package" \
                         "$ZEBKIT_ROOT/rust/target/debug/examples/native_parent" \
@@ -272,16 +411,37 @@ if [[ -x "$work/native-parent" ]]; then
         log "native-parent: skipped (no Xvfb)"
     fi
 fi
-run hooks "$work/hooks" --no-sandbox --headless --user-data-dir="$work/profile-hooks"
-run hooks-startup-policy "$work/hooks" --no-sandbox --headless --disable-popup-blocking --user-data-dir="$work/profile-hooks-startup"
+# Windows on the screen, and the keyboard for a moment: only when asked, on a person's Mac.
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]/profile/profile-gpu}"
+    run native-parent-refused "$bin/native-parent-mac" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
+    if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
+        run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent"
+        finished native-parent "the attached view's test"
+        run gpu-status-window python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" --no-sandbox --user-data-dir="$work/profile-gpu-window"
+        # The AppKit host, its application and run loop its own: the panes' picture.
+        run native-host-appkit "$bin/native-host-appkit" --no-sandbox --user-data-dir="$work/profile-appkit" \
+            --url="data:text/html,<body style='background:%2312a456'>" --pdf="$ZEBKIT_ROOT/examples/native-host/sample.pdf" \
+            --smoke-test="$work/appkit.png"
+        # The page's green, through the frames' IOSurfaces into the host's own drawing;
+        # in the display's colours, so green above the others rather than an exact value.
+        if selected native-host-appkit && ! awk '/centre:/ { found = $5 > $4 + 40 && $5 > $6 + 30 } END { exit !found }' "$work/native-host-appkit.log"; then
+            echo "FAIL the AppKit host's web pane is not the page's colour"; failed=1
+        fi
+    else
+        log "native-parent: skipped (it needs windows: ENGINE_TEST_WINDOWS=1)"
+    fi
+fi
+run hooks "$bin/hooks" --no-sandbox --headless --user-data-dir="$work/profile-hooks"
+run hooks-startup-policy "$bin/hooks" --no-sandbox --headless --disable-popup-blocking --user-data-dir="$work/profile-hooks-startup"
 run lifecycle-python env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/lifecycle_python.py" --no-sandbox --headless --user-data-dir="$work/profile-lifecycle-python"
 run media-inventory env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/media_inventory.py" --no-sandbox --headless --js-flags=--expose-gc --user-data-dir="$work/profile-media-inventory"
-run mode-headless "$work/mode" "${engine_switches[@]}"
-run mode-automation "$work/mode" --no-sandbox --headless --enable-automation \
+run mode-headless "$bin/mode" "${engine_switches[@]}"
+run mode-automation "$bin/mode" --no-sandbox --headless --enable-automation \
     --expect-automation --user-data-dir="$work/profile-automation"
-run mode-driver-port "$work/mode" --no-sandbox --headless --remote-debugging-port=0 \
+run mode-driver-port "$bin/mode" --no-sandbox --headless --remote-debugging-port=0 \
     --expect-automation --user-data-dir="$work/profile-driver-port"
 
 port="${ENGINE_TEST_PORT:-8796}"
@@ -290,28 +450,28 @@ pids+=($!)
 sleep 1
 mkdir -p "$work/files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
-    ZEBKIT_TEST_FILES="$work/files" run bridge "$work/bridge" "${engine_switches[@]}"
+    ZEBKIT_TEST_FILES="$work/files" run bridge "$bin/bridge" "${engine_switches[@]}"
 
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_SHOTS="${ENGINE_TEST_SHOTS:-}" \
     run offscreen "$offscreen_test" "${engine_switches[@]}"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen.log" || { echo "FAIL the off-screen test did not finish"; failed=1; }
-run offscreen-host "$work/offscreen-show" --renderer="$work/offscreen-render" \
+finished offscreen "the off-screen test"
+run offscreen-host "$bin/offscreen-show" --renderer="$bin/offscreen-render" \
     --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \
     --test -- --no-sandbox --user-data-dir="$work/profile-host"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/offscreen-host.log" || { echo "FAIL the off-screen host did not finish"; failed=1; }
+finished offscreen-host "the off-screen host"
 
 mkdir -p "$work/page-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
-    run page "$work/page" "${engine_switches[@]}"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/page.log" || { echo "FAIL the page test did not finish"; failed=1; }
-ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" run automation "$work/automation" "${engine_switches[@]}"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/automation.log" || { echo "FAIL the automation test did not finish"; failed=1; }
-run user-agent-atomic python3 "$tests/user_agent_atomic.py" "$work/tools/zebkit-run" "${engine_switches[@]}"
+    run page "$bin/page" "${engine_switches[@]}"
+finished page "the page test"
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" run automation "$bin/automation" "${engine_switches[@]}"
+finished automation "the automation test"
+run user-agent-atomic python3 "$tests/user_agent_atomic.py" "$bin/tools/zebkit-run" "${engine_switches[@]}"
 run user-agent-clients env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/user_agent_clients.py"
 run user-agent-native env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/user_agent_native.py"
-run offscreen-scale "$work/offscreen-scale" "${engine_switches[@]}"
+run offscreen-scale "$bin/offscreen-scale" "${engine_switches[@]}"
 run automation-python env ZEBKIT_DIR="$package" python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 pw_node=(node)
 command -v mise > /dev/null && pw_node=(mise exec node@24 -- node)
@@ -323,21 +483,22 @@ if "${pw_node[@]}" --version > /dev/null 2>&1; then
 else
     log "certificate-h2: skipped (no Node.js)"
 fi
-run certificate-c python3 "$tests/certificate_c.py" "$work/certificate"
-run http-auth-c python3 "$tests/http_auth_c.py" "$work/http_auth"
+run certificate-c python3 "$tests/certificate_c.py" "$bin/certificate"
+run http-auth-c python3 "$tests/http_auth_c.py" "$bin/http_auth"
 if [[ -d "$CACHE_DIR/playwright-tools/node_modules/playwright-core" ]] && "$engine_test_node_ready"; then
     run playwright-connect "${pw_node[@]}" "$tests/playwright_connect.mjs" "$CACHE_DIR/playwright-tools/node_modules/playwright-core" \
-        "$work/tools/zebkit-run" --no-sandbox --headless --user-data-dir="$work/profile-connect"
+        "$bin/tools/zebkit-run" --no-sandbox --headless --user-data-dir="$work/profile-connect"
 else
     log "playwright-connect: skipped (no Node.js or playwright-core)"
 fi
-if [[ "$ZEBKIT_HOST" == linux ]]; then
-    for owner in main worker; do
-        run "late-load-c-$owner" "$work/late-load" "$library" "$owner" "${engine_switches[@]}"
-        run "late-load-$owner" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
-            python3 "$tests/late_load.py" "$owner" "${engine_switches[@]}"
-    done
-fi
+# On macOS the engine starts on the main thread only (<zebkit/zebkit.h>).
+late_load_owners=(main worker)
+[[ "$ZEBKIT_HOST" == macos ]] && late_load_owners=(main)
+for owner in "${late_load_owners[@]}"; do
+    run "late-load-c-$owner" "$bin/late-load" "$library" "$owner" "${engine_switches[@]}"
+    run "late-load-$owner" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+        python3 "$tests/late_load.py" "$owner" "${engine_switches[@]}"
+done
 run view-settings env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/view_settings.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 run navigation-hooks env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
@@ -370,42 +531,42 @@ for quality in 3G Slow-2G; do
         python3 "$tests/network_quality.py" "$quality" "${engine_switches[@]}"
 done
 run media-tools env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
-    ZEBKIT_MEDIA_PROBE="$work/media-probe" python3 "$tests/media_tools.py"
+    ZEBKIT_MEDIA_PROBE="$bin/media-probe" python3 "$tests/media_tools.py"
 run media-tap env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
-    ZEBKIT_MEDIA_PROBE="$work/media-probe" \
+    ZEBKIT_MEDIA_PROBE="$bin/media-probe" \
     python3 "$tests/media_tap.py" "http://127.0.0.1:$port" "${engine_switches[@]}" \
     --autoplay-policy=no-user-gesture-required
 
 for adaptive_mode in down up audio mkv clock; do
     run "media-resolution-$adaptive_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
-        ZEBKIT_MEDIA_PROBE="$work/media-probe" ZEBKIT_ADAPTIVE_MODE="$adaptive_mode" \
+        ZEBKIT_MEDIA_PROBE="$bin/media-probe" ZEBKIT_ADAPTIVE_MODE="$adaptive_mode" \
         python3 "$tests/media_resolution.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 done
 for clock_mode in hls hls-discontinuity webm off unknown; do
     run "media-clock-$clock_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
-        ZEBKIT_MEDIA_PROBE="$work/media-probe" \
+        ZEBKIT_MEDIA_PROBE="$bin/media-probe" \
         python3 "$tests/media_clock.py" "http://127.0.0.1:$port" "$clock_mode" "${engine_switches[@]}"
 done
-ZEBKIT_MEDIA_PROBE="$work/media-probe" run cdp-page python3 -I "$tests/cdp_page.py" "$work/tools/zebkit-run" "http://127.0.0.1:$port" \
+ZEBKIT_MEDIA_PROBE="$bin/media-probe" run cdp-page python3 -I "$tests/cdp_page.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
-ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$work/popup" "${engine_switches[@]}"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/popup.log" || { echo "FAIL the popup test did not finish"; failed=1; }
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$bin/popup" "${engine_switches[@]}"
+finished popup "the popup test"
 mkdir -p "$work/media-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/media-files" \
-    run media "$work/media" "${engine_switches[@]}" --autoplay-policy=no-user-gesture-required
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media.log" || { echo "FAIL the media test did not finish"; failed=1; }
+    run media "$bin/media" "${engine_switches[@]}" --autoplay-policy=no-user-gesture-required
+finished media "the media test"
 # zebkit_media_keep_history(), in an engine of its own.
 mkdir -p "$work/media-history-files"
 ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/media-history-files" \
-    run media-history "$work/media" "${engine_switches[@]/profile/profile-history}" \
+    run media-history "$bin/media" "${engine_switches[@]/profile/profile-history}" \
     --autoplay-policy=no-user-gesture-required
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/media-history.log" || { echo "FAIL the media history test did not finish"; failed=1; }
-run cdp-browser python3 -I "$tests/cdp_browser.py" "$work/tools/zebkit-run" "http://127.0.0.1:$port" \
+finished media-history "the media history test"
+run cdp-browser python3 -I "$tests/cdp_browser.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 
-run cookie-host python3 -I "$tests/cookie_host.py" "$work/cookie-host" --no-sandbox --headless
-run cookie-file python3 -I "$tests/cookie_file.py" "$work/cookie-host" --no-sandbox --headless
-run cookie-file-options python3 -I "$tests/cookie_file_options.py" "$work/cookie-file-runner" --no-sandbox --headless
+run cookie-host python3 -I "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
+run cookie-file python3 -I "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
+run cookie-file-options python3 -I "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
 
 run webauthn-plain-headless python3 -I "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view
@@ -419,11 +580,11 @@ run webauthn-no-activation python3 -I "$tests/webauthn.py" "$webauthn_host" \
 # Cookie encryption uses the real OS key store. Headless Linux builders
 # without a desktop keyring can opt into this integration test explicitly.
 if [[ "$ZEBKIT_HOST" == macos || "${ENGINE_TEST_PERSISTENT_COOKIES:-0}" == 1 ]]; then
-    run cookies python3 -I "$tests/cookies.py" "$work/tools/zebkit-run" --no-sandbox --headless
+    run cookies python3 -I "$tests/cookies.py" "$bin/tools/zebkit-run" --no-sandbox --headless
 fi
 
 mkdir -p "$work/scheme-files"
-ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$work/scheme" "${engine_switches[@]}"
+ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$bin/scheme" "${engine_switches[@]}"
 
 mkdir -p "$work/script-files"
 # <zebkit/hooks.h> in every language, one engine per mode (tests/engine/hook_policies.py):
@@ -431,52 +592,59 @@ mkdir -p "$work/script-files"
 # choosers, media, keys, context menus, fullscreen and the network.
 hook_groups=(external download certificate world page network)
 for hook_group in "${hook_groups[@]}"; do
-    run "hook-c-$hook_group" env PYTHONPATH="$tests" python3 "$tests/hook_policies.py" "c:$hook_group" "$work/hook-policies"
+    run "hook-c-$hook_group" env PYTHONPATH="$tests" python3 "$tests/hook_policies.py" "c:$hook_group" "$bin/hook-policies"
     run "hook-javascript-$hook_group" env PYTHONPATH="$tests" python3 "$tests/hook_policies.py" "javascript:$hook_group" \
-        "$work/tools/zebkit-js" "$tests/script/hook_policies.mjs"
+        "$bin/tools/zebkit-js" "$tests/script/hook_policies.mjs"
     run "hook-python-$hook_group" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
         python3 "$tests/hook_policies.py" "python:$hook_group" python3 "$tests/hook_policies_python.py"
 done
 run hook-python-popup env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
     python3 "$tests/hook_policies.py" "python:popup" python3 "$tests/hook_policies_python.py"
-if command -v cargo > /dev/null; then
+rust_hook_program=
+if [[ -n "$prebuilt" ]]; then
+    [[ -x "$bin/rust/hook_policies" ]] && rust_hook_program="$bin/rust/hook_policies"
+elif command -v cargo > /dev/null; then
     log "building the Rust hook program"
     if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies); then
-        for hook_group in "${hook_groups[@]}"; do
-            run "hook-rust-$hook_group" env LD_LIBRARY_PATH="$package" PYTHONPATH="$tests" python3 "$tests/hook_policies.py" \
-                "rust:$hook_group" "$ZEBKIT_ROOT/rust/target/debug/examples/hook_policies"
-        done
+        rust_hook_program="$ZEBKIT_ROOT/rust/target/debug/examples/hook_policies"
     else
         echo "FAIL the Rust hook program did not build"; failed=1
     fi
+fi
+if [[ -n "$rust_hook_program" ]]; then
+    for hook_group in "${hook_groups[@]}"; do
+        run "hook-rust-$hook_group" env LD_LIBRARY_PATH="$package" PYTHONPATH="$tests" python3 "$tests/hook_policies.py" \
+            "rust:$hook_group" "$rust_hook_program"
+    done
 else
-    log "hook-rust: skipped (no cargo)"
+    log "hook-rust: skipped (no program)"
 fi
 
-run hooks-javascript "$work/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
-run certificate-bindings python3 "$tests/certificate_bindings.py" "$work/tools/zebkit-js"
-run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$work/tools/zebkit-js"
-run user-agent-bindings python3 "$tests/user_agent_bindings.py" "$work/tools/zebkit-js"
-run window-open-javascript "$work/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
-grep -q '^ok JavaScript original popup adoption' "$work/window-open-javascript.log" || { echo "FAIL window-open script did not finish"; failed=1; }
-run script "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \
+run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
+run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"
+run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit-js"
+run user-agent-bindings python3 "$tests/user_agent_bindings.py" "$bin/tools/zebkit-js"
+run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
+! selected window-open-javascript || grep -q '^ok JavaScript original popup adoption' "$work/window-open-javascript.log" || { echo "FAIL window-open script did not finish"; failed=1; }
+run script "$bin/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \
     "http://127.0.0.1:$port" "$work/script-files"
 # It ends by itself once idle; ending before its last line is a failure.
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/script.log" || { echo "FAIL the script did not finish"; failed=1; }
+finished script "the script"
 
-run pdf-plugin "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/pdf_plugin.mjs" "$ahem"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/pdf-plugin.log" || { echo "FAIL the PDF plugin's script did not finish"; failed=1; }
+run pdf-plugin "$bin/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/pdf_plugin.mjs" "$ahem"
+finished pdf-plugin "the PDF plugin's script"
 
-run ui "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/ui/app.mjs"
-grep -q '^\([0-9]*\) of \1 checks passed$' "$work/ui.log" || { echo "FAIL zebkit.ui's script did not finish"; failed=1; }
+run ui "$bin/tools/zebkit-js" "${engine_switches[@]}" "$tests/ui/app.mjs"
+finished ui "zebkit.ui's script"
 
 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     run python-services python3 "$tests/test_python.py" --services-only
 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     run python python3 "$tests/test_python.py" "${engine_switches[@]}"
 
+if selected cdp-command-line; then
 log "CDP from the command line"
-"$work/tools/zebkit-run" "${engine_switches[@]}" --remote-debugging-port=0 about:blank \
+"${launch[@]}" "$bin/tools/zebkit-run" "${engine_switches[@]}" --remote-debugging-port=0 about:blank \
     > /dev/null 2> "$work/run.err" &
 pids+=($!)
 url=""
@@ -505,6 +673,7 @@ else
     else
         echo "FAIL /json/list has no page"; failed=1
     fi
+fi
 fi
 
 (( failed )) && die "engine tests failed"

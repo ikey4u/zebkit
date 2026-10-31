@@ -169,7 +169,7 @@ concurrent jobs. `scripts/engine-test.sh` includes this test.
 Validated on Linux: the media-tools integration test, independent decode of
 remuxed output, Rust example execution, Rust cancellation/panic-cleanup test,
 and C header compilation all passed. The macOS media-tools object also
-cross-compiled; macOS runtime behavior has not been tested in this change.
+cross-compiled, and the integration test passes on a Mac (2026-10-31, `docs/MACOS.md`).
 
 A runnable Rust entry-point example is
 [`rust/zebkit/examples/media_tools.rs`](../rust/zebkit/examples/media_tools.rs).

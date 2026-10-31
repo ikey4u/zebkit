@@ -56,12 +56,12 @@ camera and microphone capture, and the device APIs.
 | PDF hooks | `zebkit_pdf_hook_*`, Rust, Python, `zebkit.pdf.use()`: kinds, appearance providers, events as operations with inverses, render layers, OCR, fonts, trust, actions, input filters; `examples/pdf-plugin/` in C and JavaScript | 2026-10-30 |
 | Canvas and text | `<zebkit/canvas.h>` on Skia, `<zebkit/text.h>` on HarfBuzz. With the PDF work above: library +0.41 MB (146.04 to 146.45 MB, 0.28%), package +0.44 MB (0.26%), the library in xz +0.14 MB. No effect on page speed is expected, none was measured | 2026-10-30 |
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
-| macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
+| macOS | `Zebkit.framework` for Apple silicon, built on Linux. The whole suite, cross-built, run on a Mac (M4, macOS 27.0.1): all pass; what could not run, the real Keychain, real input and devices, WebRTC between peers, is listed in `docs/MACOS.md`. Hardware compositing on Metal, `zebkit_init()`, a view on an `NSView` and the AppKit example seen working | 2026-10-21, again 2026-10-31 |
 | Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
 | Media capture | `<zebkit/media.h>`: what a page's `<audio>` and `<video>` play copied into MP4, WebM or Matroska as it plays, without decoding: files, Media Source Extensions (DASH, HLS players), the engine's HLS; the stream's times, seeks, configuration changes, audio alone, encrypted media refused (`patches/1031`, `1032`; `tests/engine/media.c`) | 2026-10-25 |
 | Application's loop | `zebkit_init()`, `zebkit_pump()`, `zebkit_set_wakeup()`, `zebkit_shutdown()`; `zebkit_main()` stays. Host state left alone (signals, locale, thread names, process title, crash handlers, environment); startup settings as validated JSON. C, Rust and Python tests on Linux; a concurrent monitor shows the host's signal handlers are never replaced | 2026-10-30 |
-| Application's windows, frames | `examples/native-host`: web frames and a PDF view drawn in GTK, Qt, AppKit and winit windows through off-screen views, with no window of the engine's. GTK, Qt and winit run with real input on Linux; AppKit cross-compiles | 2026-10-30 |
-| Application's windows, handles | `zebkit_view_attach_native()`: the engine's window inside an X11 window of the host's, or on an `NSView` on macOS (cross-compiled, not run). C, Rust, Python (`examples/native-host/x11.c`; JavaScript has no host handle). `tests/engine/native_parent.c` under Xvfb: the tree, the pixels, XTEST clicks and keys, focus, resizing, a `<select>`'s list, either side closed first. Refused on Wayland and under `--headless`, naming off-screen views | 2026-10-30 |
+| Application's windows, frames | `examples/native-host`: web frames and a PDF view drawn in GTK, Qt, AppKit and winit windows through off-screen views, with no window of the engine's. GTK, Qt and winit run with real input on Linux; AppKit draws both panes and shuts down cleanly on a Mac, its input not driven | 2026-10-30 |
+| Application's windows, handles | `zebkit_view_attach_native()`: the engine's window inside an X11 window of the host's, or on an `NSView` on macOS (`tests/engine/native_parent_mac.m`, 43 checks on a Mac). C, Rust, Python (`examples/native-host/x11.c`; JavaScript has no host handle). `tests/engine/native_parent.c` under Xvfb: the tree, the pixels, XTEST clicks and keys, focus, resizing, a `<select>`'s list, either side closed first. Refused on Wayland and under `--headless`, naming off-screen views | 2026-10-30 |
 | Old Linux | glibc 2.17 and newer (CentOS 7): the one newer symbol, Rust's weak `getrandom`, answered inside the engine; `scripts/package.sh` refuses a package that needs more; the C tests pass on CentOS 7's glibc and libraries (`scripts/glibc-test.sh`) | 2026-10-26 |
 
 ## Next
@@ -73,10 +73,9 @@ loop, its windows and its process are its own: `zebkit_init()`,
 `zebkit_pump()`, `zebkit_set_wakeup()` and `zebkit_shutdown()`; the examples
 in `examples/native-host` (Done table). What is left:
 
-- **AppKit at run time.** The AppKit example, the macOS startup settings,
-  `zebkit_view_attach_native()` on an `NSView` and everything else marked
-  "macOS runtime" in this file are cross-compiled here and have not run on a
-  Mac: the build machine is not one.
+- **AppKit with a person.** The AppKit example, the macOS startup settings and
+  `zebkit_view_attach_native()` on an `NSView` ran on a Mac on 2026-10-31
+  (`docs/MACOS.md`). Input from the system itself and input methods are left.
 - **Win32 integration.** No loop adapter and no `HWND` parent exist; on
   Windows `zebkit_view_attach_native()` keeps the same signature and has no
   implementation yet (it is not built here, and the engine does not build for
@@ -142,14 +141,16 @@ in `examples/native-host` (Done table). What is left:
   pixels, including fractional scales. Pixel/DIP space reservation prevents
   large resizes overlapping other views. Multi-view input/frame regressions,
   the complete Linux/glibc 2.17 suites and Rust integration pass. The Mac
-  per-widget screen snapshot path is implemented with patch 1053 and compiles;
-  Mac runtime validation remains open.
+  per-widget screen snapshot path (patch 1053) passes `offscreen_scale.c` on a
+  Mac (2026-10-31).
 - **viz's own IOSurfaces on macOS.** Frames are read back and copied into
   IOSurfaces of the engine's; viz's blit into mappable shared images
   (`ZEBKIT_BUFFERS_GPU`) gives no frame for a page in no window. With it,
   the read-back and the copy go.
-- **GPU validation.** The build machine has no GPU, so nothing here has been
-  seen on one: dmabufs below, and attached windows
+- **GPU validation.** Done on macOS (2026-10-31, Apple M4): hardware compositing
+  and WebGL on Metal, attached views drawn with it, IOSurface frames from a page
+  composited on the GPU (`tests/engine/gpu_status.py`, `docs/MACOS.md`). Open on
+  Linux, where no machine with a GPU exists: dmabufs below, and attached windows
   (`zebkit_view_attach_native()`, only software compositing has drawn in them).
 - **dmabufs checked on a GPU.** The path is there (`ZEBKIT_BUFFERS_GPU` on
   Linux, the planes, strides and modifier passed on), but the build
@@ -160,7 +161,8 @@ in `examples/native-host` (Done table). What is left:
   Native editing commands now accompany one key via
   `zebkit_view_send_key_with_commands` (C and Rust); the AppKit example
   collects system editing selectors. Word deletion, Unicode command batches
-  and `preventDefault()` pass Linux behavior tests; Mac runtime remains.
+  and `preventDefault()` pass Linux behavior tests, and `edit_commands.c` on a Mac;
+  AppKit's selectors from real keys remain.
 
 ### Media capture
 
@@ -184,7 +186,7 @@ in `examples/native-host` (Done table). What is left:
   can supply a media/Unix anchor. Piecewise mappings survive buffered date
   discontinuities and closed gaps, in result JSON and container metadata.
   Native HLS, buffered jumps, WebM, explicit anchors, opt-out and unknown
-  dates pass Linux regressions; macOS runtime validation remains.
+  dates pass on Linux and on a Mac (2026-10-31).
 
 ### Agents
 
@@ -238,7 +240,7 @@ in `examples/native-host` (Done table). What is left:
   estimator now feeds its native tracker and render-process observer, for
   existing and new renderers. Chromium's 3G and Slow-2G test modes pass
   `tests/engine/network_quality.py`, with standard web privacy rounding;
-  real-network and macOS runtime validation remain.
+  they pass on a Mac too (2026-10-31); a real network remains.
 - **The privacy defaults tested on every change**: browserleaks.com's
   checks (WebRTC, permissions, client hints, TLS, JavaScript) in
   scripts/web-bench.sh, against what zebkit's defaults promise.
@@ -338,8 +340,8 @@ in `examples/native-host` (Done table). What is left:
 ### Platforms
 
 - **Windows**: the same profile and the same API.
-- **macOS**: real windows checked with a person at the Mac (attached
-  views, views on an application's `NSView`, drops, the menu bar's keys); Chromium's PGO profile for macOS;
+- **macOS**: what a person at the Mac has to check (`docs/MACOS.md`: real input and
+  devices, the real Keychain, WebRTC's peers, drops, the menu bar's keys); Chromium's PGO profile for macOS;
   signing with a Developer ID and notarization.
 
 ### Releases
@@ -404,7 +406,7 @@ in `examples/native-host` (Done table). What is left:
   compiled functions, package-relative macro headers and actual configuration;
   C/C++ initialization, outline rasterization and TrueType glyph loading pass
   on Linux and glibc 2.17. macOS framework packaging and C/C++ ARM64
-  cross-linking pass; macOS runtime validation remains.
+  cross-linking pass, and `vendor.c` on a Mac (2026-10-31).
 - **Bindings** generated from the headers for more languages: Go, C#,
   Node's N-API.
 - **Loading after threads have started: implemented on Linux** (2026-10-29).

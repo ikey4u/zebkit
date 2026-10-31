@@ -74,8 +74,8 @@ for marked text, insertion and candidate-window coordinates. AppKit's
 event using `zebkit_view_send_key_with_commands`, preserving the webpage's
 ability to cancel that event. Wheel over the PDF pane to turn pages.
 
-The AppKit source cross-compiles for Apple silicon with the repository's
-SDK. Its application and input behavior still require a Mac runtime test.
+It draws both panes and shuts down cleanly on a Mac (`--smoke-test`, in
+`scripts/engine-test.sh` with `ENGINE_TEST_WINDOWS=1`). Its input has not been driven there.
 
 ## Rust: winit
 

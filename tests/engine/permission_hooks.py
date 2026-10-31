@@ -335,15 +335,20 @@ try:
         return {kinds};
       } catch (error) { return {error:error.name}; }
     })()"""
+    # On macOS 27 a fake microphone's getUserMedia never settles, in Chrome 156 as
+    # here, so a grant is seen through the camera; a refusal needs no capture.
+    granted_script, granted_kinds, asked = media_script, ['audio', 'video'], {'camera', 'microphone'}
+    if sys.platform == 'darwin':
+        granted_script, granted_kinds, asked = media_script.replace('audio:true, ', ''), ['video'], {'camera'}
     rule(first, GRANTED, 'camera')
     rule(first, GRANTED, 'microphone')
-    assert evaluate(first, media_script) == {'kinds':['audio','video']}
+    assert evaluate(first, granted_script) == {'kinds':granted_kinds}
     assert evaluate(other, media_script) == {'error':'NotAllowedError'}
     reset(first)
     mode = 'grant-once'
     before = len(requests)
-    assert evaluate(first, media_script) == {'kinds':['audio','video']}
-    assert {event['permission'] for _, event, _ in requests[before:]} == {'camera','microphone'}
+    assert evaluate(first, granted_script) == {'kinds':granted_kinds}
+    assert {event['permission'] for _, event, _ in requests[before:]} == asked
     assert first.get_permission('camera', origin) == first.get_permission('microphone', origin) == 'prompt'
     mode = 'deny'
     assert evaluate(first, media_script) == {'error':'NotAllowedError'}

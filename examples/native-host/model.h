@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <IOSurface/IOSurfaceRef.h>
+#endif
+
 namespace native_host {
 struct Image {
   int width = 0, height = 0;
@@ -22,6 +26,19 @@ struct Image {
   zebkit_rect bounds{};
   std::vector<uint8_t> bgra;
   void Take(const zebkit_frame& frame) {
+    const uint8_t* pixels = frame.pixels;
+    size_t stride = frame.stride;
+#if defined(__APPLE__)
+    // On macOS a frame is an IOSurface, the engine's until it is released.
+    IOSurfaceRef surface = nullptr;
+    if (frame.kind == ZEBKIT_FRAME_IOSURFACE && frame.iosurface) {
+      surface = static_cast<IOSurfaceRef>(frame.iosurface);
+      if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr) != 0)
+        return;
+      pixels = static_cast<const uint8_t*>(IOSurfaceGetBaseAddress(surface));
+      stride = IOSurfaceGetBytesPerRow(surface);
+    } else
+#endif
     if (frame.kind != ZEBKIT_FRAME_SHARED_MEMORY || !frame.pixels)
       return;
     width = frame.width; height = frame.height;
@@ -29,10 +46,14 @@ struct Image {
     bgra.resize(static_cast<size_t>(width) * height * 4);
     for (int y = 0; y < height; ++y) {
       auto* to = bgra.data() + static_cast<size_t>(y) * width * 4;
-      std::memcpy(to, frame.pixels + static_cast<size_t>(y) * frame.stride, width * 4);
+      std::memcpy(to, pixels + static_cast<size_t>(y) * stride, width * 4);
       if (frame.format == ZEBKIT_FORMAT_RGBA8)
         for (int x = 0; x < width; ++x) std::swap(to[x * 4], to[x * 4 + 2]);
     }
+#if defined(__APPLE__)
+    if (surface)
+      IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+#endif
   }
 };
 

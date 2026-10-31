@@ -105,25 +105,64 @@ limited() {
     fi
 }
 
-# engine_library <package dir>: the file an application links, on this
-# system: libzebkit.so.1, or the framework's library on macOS.
-engine_library() {
-    if [[ "$(uname)" == Darwin ]]; then echo "$1/Zebkit.framework/Zebkit"; else echo "$1/libzebkit.so.1"; fi
+# What a program is built for: the system this runs on, or macOS for a profile
+# that builds it, cross-compiled here on Linux as the engine is (docs/MACOS.md).
+ZEBKIT_TARGET="$ZEBKIT_HOST"
+ZEBKIT_TARGET_RPATHS=""
+# set_target_for_profile <name>: the programs are for that profile's system.
+set_target_for_profile() {
+    case "$1" in
+        *macos*) ZEBKIT_TARGET=macos ;;
+        *) ZEBKIT_TARGET=linux ;;
+    esac
+    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+        macos_sdk="$CACHE_DIR/macos/xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
+        [[ -d "$macos_sdk" && -x "$llvm_bin/clang" ]] || die "no macOS SDK or clang; see scripts/macos-toolchain.sh"
+    fi
 }
 
-# engine_link_options <package dir>: how a program links the engine.
-engine_link_options() {
-    if [[ "$(uname)" == Darwin ]]; then
-        echo "-F$1 -framework Zebkit -Wl,-rpath,$1"
+# target_cc, target_cxx <options...>: the C and C++ compilers for the target. Across
+# systems, Chromium's clang, Apple's SDK and ld64.lld, which signs ad hoc for arm64.
+# That clang warns of what Xcode's and Linux's do not; -Werror is for what they share.
+target_cc() {
+    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+        "$llvm_bin/clang" --target=arm64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld "$@" -Wno-unused-but-set-global
     else
-        echo "-L$1 -l:libzebkit.so.1 -Wl,-rpath,$1"
+        cc "$@"
     fi
+}
+target_cxx() {
+    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+        "$llvm_bin/clang++" --target=arm64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld "$@" -Wno-unused-but-set-global
+    else
+        c++ "$@"
+    fi
+}
+
+# engine_library <package dir>: the file an application links, on the target:
+# libzebkit.so.1, or the framework's library on macOS.
+engine_library() {
+    if [[ "$ZEBKIT_TARGET" == macos ]]; then echo "$1/Zebkit.framework/Zebkit"; else echo "$1/libzebkit.so.1"; fi
+}
+
+# engine_link_options <package dir>: how a program links the engine. Its rpaths are
+# the package unless ZEBKIT_TARGET_RPATHS, for programs that move with it, says.
+engine_link_options() {
+    local rpath rpaths="${ZEBKIT_TARGET_RPATHS:-$1}" options
+    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+        options="-F$1 -framework Zebkit"
+    else
+        options="-L$1 -l:libzebkit.so.1"
+    fi
+    for rpath in $rpaths; do options+=" -Wl,-rpath,$rpath"; done
+    echo "$options"
 }
 
 # build_against_package <package dir> <output> <source...> [-- cc options]:
 # compile a C program that uses the engine, the way an application does:
 # the package's headers, its library, and an rpath to it. The system's C
-# compiler, as an application's would be.
+# compiler, as an application's would be, or the target's across systems.
 build_against_package() {
     local package="$1" output="$2"
     shift 2
@@ -133,6 +172,6 @@ build_against_package() {
     options=("$@")
     mkdir -p "$(dirname "$output")"
     # shellcheck disable=SC2046
-    cc -std=c11 -O1 -Wall -Werror -I"$package/include" "${sources[@]}" "${options[@]}" \
+    target_cc -std=c11 -O1 -Wall -Werror -I"$package/include" "${sources[@]}" "${options[@]}" \
         $(engine_link_options "$package") -o "$output"
 }

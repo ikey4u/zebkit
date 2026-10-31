@@ -1,0 +1,30 @@
+Content: the responsiveness watcher with an application's own NSApplication.
+
+An application that embeds the engine (zebkit_init()) owns NSApp, which is no
+class of Chromium's: Chrome's, Electron's and the shell's NSApplication each
+implement NativeEventProcessor, a plain NSApplication does not, and the first
+message killed the application at startup with an unrecognized selector. The
+watcher then goes without native events' timing, and nothing else depends on it.
+
+--- a/content/browser/scheduler/responsiveness/native_event_observer_mac.mm
++++ b/content/browser/scheduler/responsiveness/native_event_observer_mac.mm
+@@ -11,13 +11,17 @@
+ namespace content::responsiveness {
+ 
+ void BrowserUINativeEventObserver::RegisterObserver() {
+-  DCHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)]);
++  // zebkit: NSApp may be the embedding application's.
++  if (![NSApp conformsToProtocol:@protocol(NativeEventProcessor)])
++    return;
+   id<NativeEventProcessor> processor =
+       static_cast<id<NativeEventProcessor>>(NSApp);
+   [processor addNativeEventProcessorObserver:this];
+ }
+ void BrowserUINativeEventObserver::UnregisterObserver() {
+-  DCHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)]);
++  // zebkit: NSApp may be the embedding application's.
++  if (![NSApp conformsToProtocol:@protocol(NativeEventProcessor)])
++    return;
+   id<NativeEventProcessor> processor =
+       static_cast<id<NativeEventProcessor>>(NSApp);
+   [processor removeNativeEventProcessorObserver:this];

@@ -1,3 +1,4 @@
+#define _DARWIN_C_SOURCE
 /* A blocking host loop: wakes only for engine work or the next deadline. */
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L

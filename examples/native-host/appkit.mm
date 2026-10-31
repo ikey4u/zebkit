@@ -59,9 +59,11 @@ static unsigned Modifiers(NSEvent* event) {
   if (image.bgra.empty()) return;
   NSBitmapImageRep* bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:image.width
     pixelsHigh:image.height bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
-    colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:NSBitmapFormatAlphaFirst | NSBitmapFormatThirtyTwoBitLittleEndian
-    bytesPerRow:image.width * 4 bitsPerPixel:32];
+    colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:image.width * 4 bitsPerPixel:32];
+  // A bitmap image representation has its bytes as R, G, B, A.
   std::memcpy(bitmap.bitmapData, image.bgra.data(), image.bgra.size());
+  for (size_t i = 0; i < image.bgra.size(); i += 4)
+    std::swap(bitmap.bitmapData[i], bitmap.bitmapData[i + 2]);
   NSImage* picture = [[NSImage alloc] initWithSize:NSMakeSize(image.width, image.height)];
   [picture addRepresentation:bitmap];
   NSRect target = NSMakeRect(image.bounds.x, image.bounds.y, image.width / image.scale, image.height / image.scale);
@@ -294,6 +296,9 @@ static void Wake(int64_t delay, void* data) {
       NSView* view = host.window.contentView;
       NSBitmapImageRep* image = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
       [view cacheDisplayInRect:view.bounds toBitmapImageRep:image];
+      NSColor* web = [[image colorAtX:image.pixelsWide / 4 y:image.pixelsHigh / 2] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+      printf("web pane's centre: %d %d %d\n", (int)(web.redComponent * 255), (int)(web.greenComponent * 255), (int)(web.blueComponent * 255));
+      fflush(stdout);
       NSData* png = [image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
       [png writeToFile:[NSString stringWithUTF8String:host->_smoke.c_str()] atomically:YES];
       [timer invalidate]; [host stopEngine]; [NSApp stop:nil];

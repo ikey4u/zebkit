@@ -191,5 +191,5 @@ need platform/device coverage beyond this synthetic integration test.
 
 Linux verification passed for this integration test (including decode checks of
 recorded files) and all 123 existing C media checks. Rust and example type checks
-also passed. The macOS media objects cross-compiled successfully; this does not
-constitute a macOS runtime test.
+also passed. On a Mac (2026-10-31, `docs/MACOS.md`) it passes too, frames on the GPU read back,
+but for WebRTC's loopback, skipped where the peers do not connect.

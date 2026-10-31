@@ -99,7 +99,7 @@ case "$example" in
     macos-appkit)
         log "building examples/native-host/appkit.mm against $dist"
         c++ -std=c++17 -fobjc-arc -O1 -Wall -Wextra -o "$binary" \
-            "$ZEBKIT_ROOT/examples/native-host/appkit.mm" -I"$dist/include" -framework Cocoa "${link[@]}"
+            "$ZEBKIT_ROOT/examples/native-host/appkit.mm" -I"$dist/include" -framework Cocoa -framework IOSurface "${link[@]}"
         ;;
     ffmpeg)
         [[ -f "$dist/include/zebkit/vendor/ffmpeg.h" ]] || die "$dist does not expose FFmpeg"

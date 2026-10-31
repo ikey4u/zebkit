@@ -169,31 +169,87 @@ drawing. Making viz's own path work headless is on the roadmap.
   off-screen views (`zebkit_view_set_size()`): whole, 1, 2 or 3, as a
   Mac's screens are; a fractional one is not taken by a headless `NSView`.
 
+## Testing on a Mac without building there
+
+The test programs are cross-compiled like the engine, signed ad hoc by
+`ld64.lld`, and need neither a compiler nor Chromium's source on the Mac:
+
+```sh
+scripts/engine-test.sh slim-macos --build-only DIR    # on Linux; C, and Rust if the target is installed
+tar -C DIR -cJf bundle.tar.xz .                       # copy it to the Mac, unpack it as DIR there
+DIR/scripts/engine-test.sh slim-macos --prebuilt DIR/programs [--only REGEX]
+```
+
+On a Mac the suite leaves the person's files alone: `HOME`, `CFFIXED_USER_HOME`,
+`TMPDIR` and `MAC_CHROMIUM_TMPDIR` are its own, and the Keychain calls are answered
+from files (`tests/engine/macos_private_keychain.c`), since every persistent
+profile otherwise adds an item to the login Keychain under the program's name.
+`ENGINE_TEST_REAL_KEYCHAIN=1` uses the real one. What macOS writes itself is not
+redirected: a test program that crashes leaves a report in
+`~/Library/Logs/DiagnosticReports`. `ENGINE_TEST_WINDOWS=1` adds the tests with
+windows, which take no keyboard or pointer from the person at the Mac; their pixel
+checks need the display awake and Screen Recording for what started them, and say
+`skip` without.
+
 ## State
 
-`scripts/engine-test.sh slim-macos`, on the Mac against the package built
-on Linux, 2026-10-21:
+`scripts/engine-test.sh slim-macos --prebuilt`, the package and programs built on
+Linux, on an Apple M4 with macOS 27.0.1, 2026-10-31: every test passes, except what
+is listed as not run below. The last full run had 123 tests and about 2,400 checks;
+one test, `media-tap`, needed one correction to its own skip message and was then run
+again alone.
 
-| Test | |
+| Test | Checks |
 |---|---|
-| What the engine exports, what it loads | ok |
-| vendor (32), services (25), PDF (83), C API (26) | all passed |
-| bridge, schemes (10), script outside a page (15), `zebkit.ui` (11) | all passed |
-| Python, CDP from the command line | all passed |
-| Off-screen views (30) and a host in another process (13), on 2026-10-23: IOSurfaces read in the process and through mach ports, damage, input, `<select>`, scale 2 | all passed |
-| Dialogs, PDF, drag and drop (`page.c`, 101; `cdp_page.py`, 14) and off-screen views again (30), on 2026-10-24, macOS 27.0.1 | all passed |
+| Exports, loads (at `--build-only`, with `llvm-nm`, `llvm-otool`) | ok: 7,817 names |
+| Vendor libraries with LevelDB and FreeType (48), C++, services (25) | passed |
+| PDF (99), annotations (407), hooks (286), bindings (63), plugin (92), outline; canvas and text (57) | passed |
+| C API (28), bridge (4), schemes (11), script outside a page (22), `zebkit.ui` (11), Python, CDP | passed |
+| `zebkit_init`/`pump`/`shutdown`: lifecycle, host loop, late load on the main thread, startup settings (C, Python) | passed |
+| Off-screen views (30), another process (13), per-view scale, patch 1053 (23), native editing commands (17) | passed |
+| Hooks in C, JavaScript, Python and Rust (all groups), downloads saved by default among them | passed |
+| Media capture (123, history 9), resolution change, wall clock, tools | passed |
+| Permissions, navigation, user agents, certificates, HTTP authentication, network quality | passed |
+| Dialogs and drag and drop (101), automation (172, Python 31), CDP (27, 31), popups (12) | passed |
+| GPU in headless and with a window (`tests/engine/gpu_status.py`) | hardware compositing, raster and WebGL, ANGLE on Metal |
+| A view on an `NSView` (`tests/engine/native_parent_mac.m`) | 43 of 43 with pixels, hardware compositing |
+| AppKit host (`examples/native-host/appkit.mm`) | the page's and the PDF's pixels; clean shutdown |
 
-What macOS needed beyond Linux, found by those tests: the vendor headers'
-`#pragma redefine_extname` takes Mach-O's leading underscore; ICU's data
-is in the framework's resources, which services used before
-`zebkit_main()` set up themselves; `zebkit.ui`'s widgets need content's
-compositor from the views delegate; macOS's bash 3.2 takes an empty array
-for an unset variable.
+What those tests found, now fixed:
+
+- **Every `zebkit_init()` crashed.** Content's responsiveness watcher sends a message
+  a plain `NSApplication` does not have (`patches/1060`).
+- **Every page was composited in software.** On Apple silicon Chromium's only hardware
+  mode is Graphite on Dawn, which `slim` leaves out; only WebGL used the GPU, which hid
+  it. `patches/1061` allows Skia's GL back end on ANGLE's Metal, Chromium's mode for
+  Intel Macs, for no size: `chrome://gpu`'s features are now as in Chrome.
+- **Media tap crashed the renderer** on frames on the GPU; it reads them back now.
+- **The AppKit host showed no page and turned black text transparent:** it ignored
+  IOSurface frames, and took a bitmap image representation's bytes as B, G, R, A.
+
+Not run, or not fully:
+
+- **The real Keychain:** `tests/engine/cookies.py` and the off-screen and passkey tests
+  ran on the private store above. Passkeys' system interface was not shown.
+- **Real input:** events reach the views as AppKit hands them on, not from the system's
+  event source. Clicking into a window of another application, a `<select>`'s system
+  menu on an attached view and AppKit's input methods need a person.
+- **A real camera or microphone**, which need a person's permission. With fake devices
+  a microphone's `getUserMedia()` never settles on this Mac, in Chrome 156 as in zebkit
+  (cause not found), so `permission_hooks.py` grants through the camera there.
+- **WebRTC between two peers:** `media_tap.py` says `skip` on a Mac where they do not
+  connect. Here they do not in zebkit (mDNS names unresolved, then checks unanswered)
+  and do in Chrome 156. Local Network privacy is suspected, for a program with no
+  bundle and no grant; it is not confirmed, and may be a real gap.
+- **The Playwright client** (`playwright_connect.mjs`): playwright-core was not on the Mac.
+- **The sandbox:** nearly all of the suite runs with `--no-sandbox`.
+
+Measured with the fixes: `Zebkit` and the package are the same size to the byte
+(139,733,664 and 157,340,514 bytes). Page speed on the GPU was not measured.
 
 ## Left
 
-- Real windows: views attached in another's window, a view on an application's
-  `NSView` (`zebkit_view_attach_native()`, compiled, never run), files dropped on
-  a view, the menu bar's items and keys, with a person at the Mac.
+- Real windows with a person at the Mac: files dropped on a view, the menu bar's items
+  and keys, and what is under "Not run" above.
 - Signing for distribution (Developer ID) and notarization.
 - Intel Macs (x86-64), if they are wanted.

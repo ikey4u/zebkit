@@ -1,3 +1,4 @@
+#define _DARWIN_C_SOURCE
 /* Strict startup validation is repeatable and precedes profile/key/log IO. */
 #define _POSIX_C_SOURCE 200809L
 #include <zebkit/zebkit.h>

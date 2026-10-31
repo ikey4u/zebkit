@@ -11,13 +11,17 @@
 #include "base/timer/timer.h"
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/skia_paint_canvas.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/demuxer_tap.h"
 #include "media/base/timestamp_constants.h"
 #include "media/base/video_frame.h"
+#include "media/base/video_util.h"
+#include "media/renderers/paint_canvas_video_renderer.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
+#include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_audio_source_provider_impl.h"
 #include "third_party/blink/public/platform/web_media_capture.h"
 #include "third_party/blink/public/platform/web_media_player.h"
@@ -220,7 +224,21 @@ class NativeTap final : public NativeMediaTap {
     bitmap.eraseColor(SK_ColorTRANSPARENT);
     cc::SkiaPaintCanvas canvas(bitmap);
     cc::PaintFlags flags;
-    player_->Paint(&canvas, gfx::Rect(w, h), flags, true);
+    if (frame->HasSharedImage()) {
+      // A frame on the GPU cannot be painted on a bitmap: read it back first, as
+      // WebCodecs and WebRTC do, and paint what came back. A frame that cannot be
+      // read, with the context lost, is skipped: the next one may be.
+      auto provider = blink::Platform::Current()->SharedMainThreadContextProvider();
+      auto* raster = provider ? provider->RasterInterface() : nullptr;
+      auto in_memory = raster ? media::ReadbackTextureBackedFrameToMemorySync(*frame, raster) : nullptr;
+      if (!in_memory) return;
+      media::PaintCanvasVideoRenderer::PaintParams params;
+      params.dest_rect = gfx::RectF(w, h);
+      params.transformation = frame->metadata().transformation.value_or(media::kNoTransformation);
+      media::PaintCanvasVideoRenderer().Paint(in_memory, &canvas, flags, params, nullptr);
+    } else {
+      player_->Paint(&canvas, gfx::Rect(w, h), flags, true);
+    }
     last_frame_ = frame->unique_id();
     base::DictValue meta;
     meta.Set("type", "video"); meta.Set("format", "rgba8");

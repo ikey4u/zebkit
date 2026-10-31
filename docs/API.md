@@ -809,8 +809,8 @@ renderer's process or another:
 
 For a toolkit-owned window and loop, see `examples/native-host/`: GTK, Qt,
 AppKit and winit each display web frames and a native PDF pane. Linux
-examples have real X11 input regressions; the AppKit source is cross-compiled
-and still needs Mac runtime validation.
+examples have real X11 input regressions; the AppKit host draws both panes and
+shuts down on a Mac (`docs/MACOS.md`), its input not driven.
 
 Native key bindings can send their resolved editing commands with one DOWN
 using `zebkit_view_send_key_with_commands(view, &key, commands, count)`.

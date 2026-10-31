@@ -1,0 +1,24 @@
+GPU: hardware compositing on Apple silicon without Dawn.
+
+On arm64 Macs Chromium's only hardware mode is Graphite, on Dawn, which the
+slim profile leaves out for size (docs/SIZE_AND_SPEED.md). With neither, the
+GPU modes were display compositor alone: every page composited in software, on
+a machine with a Metal GPU, seen on a Mac as chrome://gpu's gpu_compositing:
+disabled_software, while WebGL ran on Metal through ANGLE. Skia's GL back end on
+that same ANGLE is the mode Chromium still has for Intel Macs; it is in the
+build already, and this costs no size.
+
+--- a/content/browser/gpu/gpu_data_manager_impl_private.cc
++++ b/content/browser/gpu/gpu_data_manager_impl_private.cc
+@@ -437,9 +437,8 @@
+ 
+ GpuDataManagerImplPrivate::GpuDataManagerImplPrivate(GpuDataManagerImpl* owner)
+     : owner_(owner),
+-#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
+-      supports_gpu_mode_hardware_gl_(false),
+-#elif BUILDFLAG(IS_ANDROID)
++// zebkit: on arm64 Macs too: without Dawn there is no Graphite, and GL on ANGLE's Metal draws.
++#if BUILDFLAG(IS_ANDROID)
+       supports_gpu_mode_hardware_gl_(
+           !base::android::device_info::is_desktop() ||
+           base::SysInfo::GetAndroidHardwareEGL() == "swiftshader" ||
