@@ -398,6 +398,8 @@ extern "C" {
         width: c_int,
         height: c_int,
     );
+    pub fn zebkit_view_attach_native(view: *mut zebkit_view, native_parent: usize, x: c_int, y: c_int, width: c_int, height: c_int, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_detach_native(view: *mut zebkit_view) -> bool;
     pub fn zebkit_view_set_bounds(view: *mut zebkit_view, x: c_int, y: c_int, width: c_int, height: c_int);
     pub fn zebkit_view_set_visible(view: *mut zebkit_view, visible: bool);
     pub fn zebkit_view_add_script(view: *mut zebkit_view, source: *const c_char);

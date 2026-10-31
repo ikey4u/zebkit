@@ -44,7 +44,7 @@ camera and microphone capture, and the device APIs.
 | Engine | Chromium 155's content layer as `libzebkit.so.1` and `zebkit-helper`, started by the application (`zebkit_main`) | 2026-10-20 |
 | Size | 214.8 MiB to 134.8 MiB with no web feature lost; then 157.3 MiB for speed | 2026-10-17 to 2026-10-21 |
 | Speed | Chromium's PGO profile, Blink's layout code at `-O2`, link-time optimization: text layout 13.2 to 8.7 ms (Chrome's own build: 6.8) | 2026-10-21 |
-| Libraries | 15 C libraries inside the engine exported under `zebkit_vendor_*`, 7,230 functions, found in the build | 2026-10-20 |
+| Libraries | 17 C libraries inside the engine exported under `zebkit_vendor_*`, 7,489 functions in Linux `slim`, found in the build | 2026-10-20, FreeType and LevelDB 2026-10-29, 2026-10-30 |
 | Services | Compression, cryptography, URLs, images, ICU's data, HTTP through the network stack | 2026-10-20 |
 | Bindings | Rust (`zebkit`, `zebkit-rs`, `zebkit-build`), Python (`ctypes`) | 2026-10-20 |
 | Page API | `zebkit.*` in pages the application grants, per origin and capability; calls over `zebkit://call`, bytes as they are | 2026-10-20, 2026-10-21 |
@@ -59,45 +59,45 @@ camera and microphone capture, and the device APIs.
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
 | Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
 | Media capture | `<zebkit/media.h>`: what a page's `<audio>` and `<video>` play copied into MP4, WebM or Matroska as it plays, without decoding: files, Media Source Extensions (DASH, HLS players), the engine's HLS; the stream's times, seeks, configuration changes, audio alone, encrypted media refused (`patches/1031`, `1032`; `tests/engine/media.c`) | 2026-10-25 |
+| Application's loop | `zebkit_init()`, `zebkit_pump()`, `zebkit_set_wakeup()`, `zebkit_shutdown()`; `zebkit_main()` stays. Host state left alone (signals, locale, thread names, process title, crash handlers, environment); startup settings as validated JSON. C, Rust and Python tests on Linux; a concurrent monitor shows the host's signal handlers are never replaced | 2026-10-30 |
+| Application's windows, frames | `examples/native-host`: web frames and a PDF view drawn in GTK, Qt, AppKit and winit windows through off-screen views, with no window of the engine's. GTK, Qt and winit run with real input on Linux; AppKit cross-compiles | 2026-10-30 |
+| Application's windows, handles | `zebkit_view_attach_native()`: the engine's window inside an X11 window of the host's, or on an `NSView` on macOS (cross-compiled, not run). C, Rust, Python (`examples/native-host/x11.c`; JavaScript has no host handle). `tests/engine/native_parent.c` under Xvfb: the tree, the pixels, XTEST clicks and keys, focus, resizing, a `<select>`'s list, either side closed first. Refused on Wayland and under `--headless`, naming off-screen views | 2026-10-30 |
 | Old Linux | glibc 2.17 and newer (CentOS 7): the one newer symbol, Rust's weak `getrandom`, answered inside the engine; `scripts/package.sh` refuses a package that needs more; the C tests pass on CentOS 7's glibc and libraries (`scripts/glibc-test.sh`) | 2026-10-26 |
 
 ## Next
 
 ### The library
 
-zebkit fits into the application (owner, 2026-10-25). The embedded entry
-now separates startup, host scheduling and teardown; toolkit and native
-window integration below are still required.
+zebkit fits into the application (owner, 2026-10-25). The application's
+loop, its windows and its process are its own: `zebkit_init()`,
+`zebkit_pump()`, `zebkit_set_wakeup()` and `zebkit_shutdown()`; the examples
+in `examples/native-host` (Done table). What is left:
 
-- **Implemented foundation: `zebkit_init()`, `zebkit_pump()` and
-  `zebkit_shutdown()`**. `zebkit_set_wakeup()` reports immediate and delayed
-  work from engine threads for an event-driven host loop; the host consumes
-  the earliest deadline and pumps on the initializing thread. `zebkit_main()`
-  remains available. Chromium initializes once per process. C, Rust and
-  Python host-loop tests pass on Linux; macOS runtime validation remains.
-- **Toolkit loop adapters implemented in the examples:** GTK (GLib), Qt,
-  AppKit and winit use wakeup deadlines and pump rather than polling. The
-  Linux GLib regression and GTK/Qt/winit native input tests pass. AppKit
-  runtime validation, a Win32 integration path and a dedicated engine thread
-  for loops the engine cannot join remain open.
-- **Implemented host-state isolation foundation.** Embedded startup skips
-  signal, locale, thread-name, process-title, crash-handler and environment
-  setup; macOS delegate/menu/Dock integration is opt-in. A concurrent
-  signal-handler monitor verifies that startup never temporarily replaces
-  the host handler. Logging is explicit and append-only. Cross-platform
-  runtime validation and toolkit integration remain open.
-- **Implemented: startup settings API**, validated JSON passed to
-  `zebkit_init_with_settings()` for profile, proxy, cookies, user agent,
-  GPU, logging, sandbox, headless mode and macOS application integration.
-  Unknown fields and malformed values fail before file IO. Real HTTP proxy,
-  UA, cookie-key/profile paths, logging and argv precedence tests pass.
-- **Application-owned windows via off-screen views:** `examples/native-host`
-  draws web frames and a PDF view inside GTK, Qt, AppKit and winit windows.
-  The toolkit owns the window and event loop; no engine browser window is
-  created. GTK/Qt/winit drawing, native keyboard/mouse and shutdown passed
-  on Linux. AppKit's source cross-compiles; its runtime validation remains.
-  Native parent-handle embedding and mixed engine-window/off-screen views
-  remain separate compositor/platform work.
+- **AppKit at run time.** The AppKit example, the macOS startup settings,
+  `zebkit_view_attach_native()` on an `NSView` and everything else marked
+  "macOS runtime" in this file are cross-compiled here and have not run on a
+  Mac: the build machine is not one.
+- **Win32 integration.** No loop adapter and no `HWND` parent exist; on
+  Windows `zebkit_view_attach_native()` keeps the same signature and has no
+  implementation yet (it is not built here, and the engine does not build for
+  Windows at all).
+- **A dedicated engine thread, for loops the engine cannot join.** Chromium's
+  UI thread is whichever thread initializes it, and it stays that thread: the
+  engine cannot move, and each call that needs the UI thread is made there.
+  What that allows differs by system:
+  - **Linux: possible today, by the host.** `zebkit_init()` on a thread of the
+    host's, which pumps, and `zebkit_post_task()` to reach it
+    (`tests/engine/late_load.c` runs it on a worker). The engine has its own X11
+    connection, so its windows do not share a thread with the host's toolkit.
+    Not done: a convenience for it in the API, and a marshalling of calls; every
+    view call has to be posted by the host.
+  - **macOS: not possible.** AppKit's windows and events belong to the process's
+    main thread, which the toolkit owns, and `zebkit_init()` is for that thread
+    only on macOS (`<zebkit/zebkit.h>`). There the only way is to join the loop with `zebkit_pump()`.
+  - **Windows: not known.** Nothing has been tried.
+- **Views with a window and off-screen views in one process.** See "Off-screen
+  views" below: off-screen needs `--headless`, an attached window needs no
+  `--headless`.
 
 ### The engine
 
@@ -106,9 +106,9 @@ window integration below are still required.
   keeps for tests. Its own `ContentBrowserClient`, window and context,
   started from the shell without its test hooks; Electron's
   `native_window_views.cc` is the reference for the windows.
-- **A window's native handle**, so that an application can parent the
-  system's dialogs to it (file dialogs through the XDG portal need
-  it).
+- **A window's native handle** given to the application, so that it can parent
+  the system's dialogs to it (file dialogs through the XDG portal need it). The
+  other way, an application's handle as a view's parent, is done.
 - **The sandbox where there is none.** Chromium's Linux sandbox needs
   unprivileged user namespaces or a set-user-ID helper, which containers
   and build machines often lack; the engine then refuses to start without
@@ -130,8 +130,10 @@ window integration below are still required.
 
 ### Off-screen views
 
-- **Off-screen views in a process with windows.** They need `--headless`
-  now: a view is a content shell window, drawn by the headless screen. A
+- **Mixed: off-screen views in a process with windows.** They need
+  `--headless` now: a view is a content shell window, drawn by the headless
+  screen. Consequently an application cannot have an attached window
+  (`zebkit_view_attach_native()`) and off-screen views at once. A
   `RenderWidgetHostView` of zebkit's own with its own compositor, as
   CEF's and Electron's off-screen views have, would let one process have
   both.
@@ -146,6 +148,9 @@ window integration below are still required.
   IOSurfaces of the engine's; viz's blit into mappable shared images
   (`ZEBKIT_BUFFERS_GPU`) gives no frame for a page in no window. With it,
   the read-back and the copy go.
+- **GPU validation.** The build machine has no GPU, so nothing here has been
+  seen on one: dmabufs below, and attached windows
+  (`zebkit_view_attach_native()`, only software compositing has drawn in them).
 - **dmabufs checked on a GPU.** The path is there (`ZEBKIT_BUFFERS_GPU` on
   Linux, the planes, strides and modifier passed on), but the build
   machine has no GPU: it has only been seen to fall back to shared
@@ -191,8 +196,12 @@ window integration below are still required.
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
   requests (no WebSockets, shared or service workers, response bodies or
   answers from a file or stream) and client certificates (no system stores).
-  The hook sources cross-compile for macOS; the patched content shell files
-  have not been compiled for it yet, and nothing has run there.
+  The hook sources and the patched content shell files compile for macOS (framework built on 2026-10-31); nothing has run there.
+- **Unexplained in the tests.** Neither is hidden, neither is understood yet:
+  input sent by a separate CDP client just as a page becomes ready is lost a few
+  runs in hundreds on a loaded machine (`docs/ROADMAP_HOOKS.md`;
+  `tests/engine/hook_policies.py` retries those two modes once); and an
+  off-screen view's frame now and then times out under load.
 - **TODO: every setting changeable at runtime, by the application and by
   agents** (owner, 2026-10-24), per view and for the whole engine, in the C
   API, the bindings, CDP where Chromium has a method and the MCP server:
@@ -330,7 +339,7 @@ window integration below are still required.
 
 - **Windows**: the same profile and the same API.
 - **macOS**: real windows checked with a person at the Mac (attached
-  views, drops, the menu bar's keys); Chromium's PGO profile for macOS;
+  views, views on an application's `NSView`, drops, the menu bar's keys); Chromium's PGO profile for macOS;
   signing with a Developer ID and notarization.
 
 ### Releases

@@ -117,6 +117,12 @@ def ready():
     check(refused, "app_set_menu refuses an unknown role, and takes a menu")
     check(zebkit.engine_version().startswith("Chromium "), "engine_version", zebkit.engine_version())
     view = zebkit.View("data:text/html,<title>python</title>", 640, 480)
+    try:
+        view.attach_native(1, 0, 0, 100, 100)
+        check(False, "attach_native is refused without a window")
+    except zebkit.Error as refused:
+        check("off-screen" in str(refused), "attach_native is refused without a window, naming off-screen views", refused)
+    check(view.detach_native() is False, "detach_native: nothing to detach")
     view.grant("*", zebkit.ALLOW_APP | zebkit.ALLOW_CRYPTO)
     view.bind("twice", lambda x, origin: x * 2)
     view.bind("broken", lambda origin: 1 / 0)

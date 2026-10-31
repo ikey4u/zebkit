@@ -56,15 +56,14 @@ system's frameworks and libraries; `scripts/engine-test.sh` checks that.
 
 | | Size |
 |---|---|
-| The package | **142.9 MiB** (39 MiB as `.tar.xz`) |
-| `Zebkit` | 127.1 MiB |
+| The package | **150.1 MiB** (40.8 MiB as `.tar.xz`) |
+| `Zebkit` | 133.3 MiB |
 | ICU's data | 6.5 MiB |
-| Headers | 7.5 MiB |
+| Headers | 8.4 MiB |
 
-Measured on 2026-10-21, before `slim` was built for speed. `slim-macos`
-has `slim`'s `-O2` directories and link-time optimization since, but not
-PGO, whose profile for macOS is not fetched yet
-(`docs/SIZE_AND_SPEED.md`); it has not been measured again.
+Measured on 2026-10-31. `slim-macos` has `slim`'s `-O2` directories and
+link-time optimization, but not PGO, whose profile for macOS is not fetched yet
+(`docs/SIZE_AND_SPEED.md`).
 
 ## Built on Linux
 
@@ -193,7 +192,8 @@ for an unset variable.
 
 ## Left
 
-- Real windows: views attached in another's window, files dropped on a
-  view, the menu bar's items and keys, with a person at the Mac.
+- Real windows: views attached in another's window, a view on an application's
+  `NSView` (`zebkit_view_attach_native()`, compiled, never run), files dropped on
+  a view, the menu bar's items and keys, with a person at the Mac.
 - Signing for distribution (Developer ID) and notarization.
 - Intel Macs (x86-64), if they are wanted.

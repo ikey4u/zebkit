@@ -13,6 +13,22 @@ an event or a real deadline. Startup, normal pumping and shutdown are
 separate. The C++ examples share `model.h`; the Rust example uses the
 existing `zebkit` and `zebkit-build` crates.
 
+## X11: the engine's window inside the application's
+
+`x11.c` is the other way, in about fifty lines of Xlib: the application gives
+its window to `zebkit_view_attach_native()` and the engine draws and takes
+input in a child window of it, with no frames to handle. Only X11 and macOS
+(`NSView*`) can do this, and it cannot be mixed with off-screen views; on
+Wayland it fails, naming off-screen views, which is why the toolkit examples
+below use them.
+
+```sh
+cc -Iout/blink/slim/package/include examples/native-host/x11.c \
+    -Lout/blink/slim/package -l:libzebkit.so.1 \
+    -Wl,-rpath,$PWD/out/blink/slim/package -lX11 -o /tmp/x11-host
+/tmp/x11-host --no-sandbox https://example.com/
+```
+
 ## Linux: GTK 3 and Qt 6
 
 From the repository root, after building and packaging the slim engine:

@@ -310,6 +310,21 @@ void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds);
 void SetAttachedVisible(zebkit_view* view, bool visible);
 void DetachView(zebkit_view* view);
 
+// The same in a window of the application's (attach.cc; engine_mac.mm). The
+// others are false when the view is not in one, and leave it to their callers.
+bool AttachViewNative(zebkit_view* view,
+                      uintptr_t native_parent,
+                      const gfx::Rect& bounds,
+                      std::string* error);
+bool SetAttachedNativeBounds(zebkit_view* view, const gfx::Rect& bounds);
+bool SetAttachedNativeSize(zebkit_view* view, const gfx::Size& size);
+bool SetAttachedNativeVisible(zebkit_view* view, bool visible);
+bool FocusAttachedNative(zebkit_view* view);
+// To its own window again.
+bool DetachViewNative(zebkit_view* view);
+// The view is closing, and its window with it.
+void ForgetAttachedNative(zebkit_view* view);
+
 // Closes the views the application holds, before the shell closes its
 // windows (view.cc).
 void CloseAllViews();

@@ -6,6 +6,7 @@
 import("//build/config/ui.gni")
 import("//build/config/clang/clang.gni")
 import("//build/config/features.gni")
+import("//build/config/ozone.gni")
 import("//build/config/sysroot.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
@@ -26,6 +27,9 @@ config("implementation") {
   ]
   if (is_linux && use_dbus) {
     defines += [ "ZEBKIT_COOKIES_USE_DBUS" ]
+  }
+  if (ozone_platform_x11) {
+    defines += [ "ZEBKIT_X11" ]
   }
   if (clang_use_raw_ptr_plugin) {
     # The embedder's C handles and callback payloads follow the host's
@@ -401,6 +405,13 @@ if (use_aura) {
   _deps += [
     "//ui/aura",
     "//ui/compositor",
+  ]
+}
+# Windows of the application's as parents (attach.cc).
+if (ozone_platform_x11) {
+  _deps += [
+    "//ui/gfx/x",
+    "//ui/platform_window",
   ]
 }
 _deps += _vendored_libraries

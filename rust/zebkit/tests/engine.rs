@@ -213,6 +213,14 @@ fn engine(page_port: u16) {
 
     // A page that calls the application and shows the answer in its title.
     let view = View::new(None, 800, 600);
+    // Headless, the view has no window to put in another's.
+    let refused = view.attach_native(1, 0, 0, 100, 100);
+    check(
+        refused.as_ref().is_err_and(|error| error.message().contains("off-screen")),
+        "attach_native: refused without a window, naming off-screen views",
+        refused.as_ref().err().map(|error| error.message().to_string()),
+    );
+    check(!view.detach_native(), "detach_native: nothing to detach", ());
     check(view.set_settings(r#"{"colorScheme":"dark","reducedMotion":true}"#).is_ok()
         && view.settings().is_some_and(|json| json.contains("dark") && json.contains("true")),
         "view settings: native preferences", view.settings());

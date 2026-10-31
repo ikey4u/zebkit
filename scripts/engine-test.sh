@@ -62,6 +62,10 @@
 # - tests/engine/hook_policies.py: the hooks of <zebkit/hooks.h> through C, Rust,
 #   Python and host JavaScript, against local HTTP and TLS servers that say what
 #   they received, with input a person would give over CDP.
+# - tests/engine/native_parent.c, native_parent_python.py and Rust's
+#   examples/native_parent.rs under a private Xvfb: a view's window inside a
+#   window of the host's (zebkit_view_attach_native), its tree, pixels, input
+#   through XTEST, resizing, each closed first. With --headless, the refusal.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -132,6 +136,10 @@ build_against_package "$package" "$work/http_auth" "$tests/http_auth.c"
 build_against_package "$package" "$work/hook-policies" "$tests/hook_policies.c"
 build_against_package "$package" "$work/offscreen-scale" "$tests/offscreen_scale.c"
 build_against_package "$package" "$work/bridge" "$tests/bridge.c"
+if [[ "$ZEBKIT_HOST" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
+    build_against_package "$package" "$work/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
+    build_against_package "$package" "$work/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
+fi
 build_against_package "$package" "$work/scheme" "$tests/scheme.c"
 offscreen_options=()
 [[ "$(uname)" == Darwin ]] && offscreen_options=(-framework IOSurface)
@@ -233,6 +241,37 @@ for log_mode in none file; do
     run "startup-settings-python-$log_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         ZEBKIT_TEST_LOG_MODE="$log_mode" python3 "$tests/startup_settings_python.py"
 done
+if [[ -x "$work/native-parent" ]]; then
+    run native-parent-refused "$work/native-parent" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
+    if command -v Xvfb > /dev/null; then
+        exec 9< <(Xvfb -displayfd 1 -screen 0 2200x1400x24 -nolisten tcp 2> /dev/null)
+        xvfb=$!
+        pids+=("$xvfb")
+        read -r -t 15 -u 9 xvfb_display || xvfb_display=
+        if [[ -n "$xvfb_display" ]]; then
+            run native-parent env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$work/native-parent" \
+                --no-sandbox --user-data-dir="$work/profile-native-parent"
+            run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
+                --no-sandbox --user-data-dir="$work/profile-native-parent-python"
+            if command -v cargo > /dev/null; then
+                if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example native_parent); then
+                    run native-parent-rust env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" LD_LIBRARY_PATH="$package" \
+                        "$ZEBKIT_ROOT/rust/target/debug/examples/native_parent" \
+                        --no-sandbox --user-data-dir="$work/profile-native-parent-rust"
+                else
+                    echo "FAIL the Rust native parent program did not build"; failed=1
+                fi
+            fi
+        else
+            echo "FAIL Xvfb did not start"; failed=1
+        fi
+        kill "$xvfb" 2>/dev/null || true
+        exec 9<&-
+    else
+        log "native-parent: skipped (no Xvfb)"
+    fi
+fi
 run hooks "$work/hooks" --no-sandbox --headless --user-data-dir="$work/profile-hooks"
 run hooks-startup-policy "$work/hooks" --no-sandbox --headless --disable-popup-blocking --user-data-dir="$work/profile-hooks-startup"
 run lifecycle-python env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \

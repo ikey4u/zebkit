@@ -280,6 +280,33 @@ ZEBKIT_API void zebkit_view_set_bounds(zebkit_view *view, int x, int y, int widt
 /* Shows or hides an attached view. */
 ZEBKIT_API void zebkit_view_set_visible(zebkit_view *view, bool visible);
 
+/*
+ * Puts @view's window inside a window of the application's, at (@x, @y),
+ * @width by @height: @native_parent is an X11 window id, on macOS an NSView*.
+ * The application keeps its window, toolkit and loop; the engine draws in its
+ * own child window, and takes its input from the system there. The units are
+ * the parent's: X11 pixels, AppKit points.
+ *
+ * zebkit_view_set_bounds(), _set_visible(), _resize() and _focus() then act in
+ * the parent. A click in the page gives it the keyboard; so does
+ * zebkit_view_focus(), which an application calls when focus comes to it. The
+ * view's window is shown as its own until this is called, so call it right
+ * after zebkit_view_new(). A view closed takes only its child window. On X11, a
+ * parent destroyed first takes the view's window with it and the view closes
+ * (zebkit_view_on_close()); on macOS, where a view outlives its superview, the
+ * view stays until the application closes or attaches it again.
+ *
+ * False, with the reason in @error (free with zebkit_free(); NULL if unwanted),
+ * for a parent that is not there, and where a window cannot be put in another:
+ * on Wayland, under --headless, and for an off-screen view. Those draw the page
+ * in the application's window with off-screen views (<zebkit/offscreen.h>),
+ * which work everywhere. Not available on Windows yet.
+ */
+ZEBKIT_API bool zebkit_view_attach_native(zebkit_view *view, uintptr_t native_parent, int x, int y, int width, int height, char **error);
+
+/* Makes the view its own window again, shown. False when it is in no window of the application's. */
+ZEBKIT_API bool zebkit_view_detach_native(zebkit_view *view);
+
 /* The title of the view's window; NULL for the page's, which it is by default. */
 ZEBKIT_API void zebkit_view_set_title(zebkit_view *view, const char *title);
 

@@ -393,8 +393,10 @@ ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_
  * statusText, responseHeaders, mimeType; timeoutMs, deadlineUnixMs. Each redirect's
  * destination is a request again; a redirect response is told, not held.
  * Unanswered or with its function replaced, a request goes on. A view closed ends its
- * requests. A popup whose opener closed has its requests blocked, when that opener
- * had set a filter.
+ * requests. At most 1024 of a view's requests are held: past that, a further request
+ * or response a hold rule matches fails with ERR_BLOCKED_BY_CLIENT, unasked, rather
+ * than getting past the rule. A popup whose opener closed, when that opener had set a
+ * filter, has no policy left: its requests and their responses fail the same way.
  */
 typedef struct zebkit_network_request zebkit_network_request;
 typedef void (*zebkit_network_func)(zebkit_view*, zebkit_network_request*, const char *json, void *data);

@@ -44,6 +44,7 @@
 #include "content/public/common/drop_data.h"
 #include "content/shell/browser/shell.h"
 #include "net/http/http_util.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -184,6 +185,7 @@ zebkit_view::~zebkit_view() {
   Views().erase(this);
   zebkit::ClosePdfsOf(this);
   zebkit::DetachView(this);
+  zebkit::ForgetAttachedNative(this);
   if (devtools_)
     devtools_->DetachClient(this);
 }
@@ -1215,11 +1217,41 @@ void zebkit_view_set_bounds(zebkit_view* view,
                             int y,
                             int width,
                             int height) {
-  zebkit::SetAttachedBounds(view, gfx::Rect(x, y, width, height));
+  if (!zebkit::SetAttachedNativeBounds(view, gfx::Rect(x, y, width, height)))
+    zebkit::SetAttachedBounds(view, gfx::Rect(x, y, width, height));
 }
 
 void zebkit_view_set_visible(zebkit_view* view, bool visible) {
-  zebkit::SetAttachedVisible(view, visible);
+  if (!zebkit::SetAttachedNativeVisible(view, visible))
+    zebkit::SetAttachedVisible(view, visible);
+}
+
+bool zebkit_view_attach_native(zebkit_view* view,
+                               uintptr_t native_parent,
+                               int x,
+                               int y,
+                               int width,
+                               int height,
+                               char** error) {
+  std::string failure;
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
+    failure = "call it on the thread that started the engine";
+  else if (!view || !view->web_contents())
+    failure = "the view is closed";
+  else if (!native_parent)
+    failure = "no window was given";
+  else if (view->offscreen_view_)
+    failure = "an off-screen view has no window to parent; its frames are the application's to draw";
+  else if (zebkit::AttachViewNative(view, native_parent, gfx::Rect(x, y, width, height), &failure))
+    return true;
+  if (error)
+    *error = strdup(failure.c_str());
+  return false;
+}
+
+bool zebkit_view_detach_native(zebkit_view* view) {
+  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) && view &&
+         zebkit::DetachViewNative(view);
 }
 
 void zebkit_view_set_title(zebkit_view* view, const char* title) {
@@ -1243,8 +1275,13 @@ void zebkit_view_set_size_limits(zebkit_view* view,
 }
 
 void zebkit_view_focus(zebkit_view* view) {
-  if (content::Shell* shell = view->shell())
+  content::Shell* shell = view->shell();
+  if (!shell)
+    return;
+  if (!zebkit::FocusAttachedNative(view))
     zebkit::FocusWindow(shell);
+  else if (shell->web_contents())
+    shell->web_contents()->Focus();
 }
 
 void zebkit_view_on_new_window(zebkit_view* view,
@@ -1374,6 +1411,8 @@ void zebkit_view_go_forward(zebkit_view* view) {
 }
 
 void zebkit_view_resize(zebkit_view* view, int width, int height) {
+  if (zebkit::SetAttachedNativeSize(view, gfx::Size(width, height)))
+    return;
   if (content::Shell* shell = view->shell())
     shell->ResizeWebContentForTests(gfx::Size(width, height));
 }

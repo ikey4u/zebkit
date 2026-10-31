@@ -431,6 +431,22 @@ impl View {
         }
     }
 
+    /// Places this view's window inside a window of the application's:
+    /// `native_parent` is an X11 window id, on macOS an `NSView*`. Fails,
+    /// naming off-screen views, on Wayland and under `--headless`.
+    pub fn attach_native(&self, native_parent: usize, x: i32, y: i32, width: i32, height: i32) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_view_attach_native(raw, native_parent, x, y, width, height, &mut error) };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "the window cannot be attached") }) }
+    }
+
+    /// Makes the view its own window again; false when it was in none of the
+    /// application's.
+    pub fn detach_native(&self) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_detach_native(raw) })
+    }
+
     /// Where an attached view is in its parent's window.
     pub fn set_bounds(&self, x: i32, y: i32, width: i32, height: i32) {
         if let Some(raw) = self.raw() {

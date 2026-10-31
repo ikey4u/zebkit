@@ -83,7 +83,7 @@ text(86, top + 30, "zebkit", "ink", 18, 800)
 text(86, top + 47, "libzebkit.so.1 on Linux, Zebkit.framework on macOS: inside your process", "muted", 12)
 text(916, top + 30, "no Node, no Chrome browser UI", "accent", 12, 600, "end")
 apis = [("zebkit.h", "views and windows"), ("schemes", "your own app://"), ("pdf.h", "PDF on PDFium"),
-        ("services.h", "HTTP, crypto, images"), ("vendor/*.h", "15 libraries, 7,230 fns"), ("zebkit.ui", "native windows in JS")]
+        ("services.h", "HTTP, crypto, images"), ("vendor/*.h", "17 libraries, 7,489 fns"), ("zebkit.ui", "native windows in JS")]
 for i, (a, b) in enumerate(apis):
     x = 44 + i * 147
     rect(x, top + 64, 137, 52, "chip", 8)

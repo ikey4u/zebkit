@@ -216,6 +216,7 @@ reference:
 | `zebkit_view_new`, `_close`, `_load_url`, `_reload`, `_stop`, `_go_back`, `_go_forward`, `_is_loading`, `_get_url`, `_get_title` | A view and its page |
 | `zebkit_view_resize`, `_set_size_limits`, `_set_title`, `_focus` | Its window: size, smallest size and whether it may be resized (Electron's `minWidth`, `minHeight`, `resizable`), title, raising |
 | `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
+| `zebkit_view_attach_native`, `_detach_native` | A view's window inside a window of the application's: an X11 window id, or an `NSView*` on macOS; `_set_bounds`, `_set_visible`, `_resize` and `_focus` then act there. Refused, naming off-screen views, on Wayland and under `--headless` |
 | `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
 | `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
 | `zebkit_view_on_window_open` | A window a page opens, to the application as a view still linked to its opener (a site's sign-in popup); off-screen when its opener is |

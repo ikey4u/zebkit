@@ -18,9 +18,11 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **Integrate it, don't build on it.** Electron is a base: an application
   is built inside it, on its runtime, its windows and its packaging.
   zebkit is a part: an application adds it, as it adds SQLite, and keeps
-  its process, its toolkit and its way of shipping. Running inside the
-  application's own event loop (GTK, Qt, AppKit, Win32, winit) is next on
-  the roadmap (`docs/ROADMAP.md`, "The library").
+  its process, its toolkit and its way of shipping. It runs inside the
+  application's own event loop (`zebkit_init()`, `zebkit_pump()`), and draws
+  in the application's windows, as frames you draw or, on X11 and macOS, in a
+  child of a window you give it (`examples/native-host`); Win32 is next
+  (`docs/ROADMAP.md`, "The library").
 - **Take what you need.** Web views, in a window or off-screen with their
   frames handed to you; a full PDF API; saving what a page plays; your own
   URL schemes; native UI from JavaScript; Playwright's API and CDP for
@@ -35,8 +37,8 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.
-- **Chromium's libraries are yours.** 16 C libraries inside the engine,
-  7,421 functions in Linux slim, exported under `zebkit_vendor_*`: SQLite, BoringSSL,
+- **Chromium's libraries are yours.** 17 C libraries inside the engine,
+  7,489 functions in Linux slim, exported under `zebkit_vendor_*`: SQLite, LevelDB, BoringSSL,
   zlib, Zstandard, Brotli, ICU, HarfBuzz, libxml2, libwebp, libjpeg-turbo,
   FFmpeg, dav1d, Opus, libvpx, FreeType and PDFium. You do not ship them twice.
 - **PDF built in.** A full API on Chromium's PDFium: rendering and tiles,
@@ -160,10 +162,10 @@ stack and web pages do.
 
 ### Add a web view
 
-Web pages need the engine running. Today the engine runs the loop: the
-program starts it with `zebkit_main()` and works in its callbacks.
-Starting it from inside the program's own loop (GTK, Qt, AppKit, Win32,
-winit) with `zebkit_init()` comes next (`docs/ROADMAP.md`, "The library").
+Web pages need the engine running. Here the engine runs the loop: the
+program starts it with `zebkit_main()` and works in its callbacks. A program
+with its own loop (GTK, Qt, AppKit, winit) starts it with `zebkit_init()` and
+calls `zebkit_pump()` (`examples/native-host`).
 
 ```c
 #include <stdio.h>

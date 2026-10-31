@@ -426,6 +426,8 @@ namespace {
 struct Attached {
   base::WeakPtr<zebkit_view> parent;
   NSView* __strong view = nil;
+  // In an NSView of the application's, not another view's window.
+  bool native = false;
 };
 
 std::map<const zebkit_view*, Attached>& AttachedViews() {
@@ -455,7 +457,7 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
     if (!zebkit_is_headless())
       return false;
     DetachView(view);
-    AttachedViews()[view] = {parent->GetWeakPtr(), nil};
+    AttachedViews()[view] = {parent->GetWeakPtr(), nil, false};
     view->shell()->ResizeWebContentForTests(bounds.size());
     return true;
   }
@@ -468,7 +470,7 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
   page.frame = Frame(container, bounds);
   if (own_window && own_window != parent_window)
     [own_window orderOut:nil];
-  AttachedViews()[view] = {parent->GetWeakPtr(), page};
+  AttachedViews()[view] = {parent->GetWeakPtr(), page, false};
   return true;
 }
 
@@ -482,6 +484,104 @@ void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
   }
   if (it->second.view.superview)
     it->second.view.frame = Frame(it->second.view.superview, bounds);
+}
+
+bool AttachViewNative(zebkit_view* view,
+                      uintptr_t native_parent,
+                      const gfx::Rect& bounds,
+                      std::string* error) {
+  if (zebkit_is_headless()) {
+    *error =
+        "the engine runs headless and the view has no window to parent; draw "
+        "the page in your view with off-screen views (<zebkit/offscreen.h>)";
+    return false;
+  }
+  if (bounds.width() <= 0 || bounds.height() <= 0) {
+    *error = "the bounds are empty";
+    return false;
+  }
+  NSView* container = (__bridge NSView*)reinterpret_cast<void*>(native_parent);
+  NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
+  if ([container isDescendantOf:page]) {
+    *error = "the view's own page cannot be its parent";
+    return false;
+  }
+  NSWindow* own_window = view->shell()->window().GetNativeNSWindow();
+  DetachView(view);
+  page.autoresizingMask = NSViewNotSizable;
+  [container addSubview:page positioned:NSWindowAbove relativeTo:nil];
+  page.frame = Frame(container, bounds);
+  if (own_window && own_window != container.window)
+    [own_window orderOut:nil];
+  Attached attached;
+  attached.view = page;
+  attached.native = true;
+  AttachedViews()[view] = attached;
+  return true;
+}
+
+bool SetAttachedNativeBounds(zebkit_view* view, const gfx::Rect& bounds) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end() || !it->second.native)
+    return false;
+  if (it->second.view.superview)
+    it->second.view.frame = Frame(it->second.view.superview, bounds);
+  return true;
+}
+
+bool SetAttachedNativeSize(zebkit_view* view, const gfx::Size& size) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end() || !it->second.native)
+    return false;
+  NSView* page = it->second.view;
+  if (page.superview) {
+    const NSRect frame = page.frame;
+    page.frame = NSMakeRect(
+        frame.origin.x,
+        page.superview.isFlipped
+            ? frame.origin.y
+            : NSMaxY(frame) - size.height(),
+        size.width(), size.height());
+  }
+  return true;
+}
+
+bool SetAttachedNativeVisible(zebkit_view* view, bool visible) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end() || !it->second.native)
+    return false;
+  it->second.view.hidden = !visible;
+  return true;
+}
+
+bool FocusAttachedNative(zebkit_view* view) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end() || !it->second.native)
+    return false;
+  [it->second.view.window makeFirstResponder:it->second.view];
+  return true;
+}
+
+bool DetachViewNative(zebkit_view* view) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end() || !it->second.native)
+    return false;
+  NSView* page = it->second.view;
+  [page removeFromSuperview];
+  AttachedViews().erase(it);
+  page.hidden = NO;
+  NSWindow* own_window = view->shell()->window().GetNativeNSWindow();
+  if (own_window) {
+    [own_window.contentView addSubview:page];
+    page.frame = own_window.contentView.bounds;
+    page.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [own_window makeKeyAndOrderFront:nil];
+  }
+  return true;
+}
+
+void ForgetAttachedNative(zebkit_view* view) {
+  // DetachView(), which the closing view calls too, forgets it here.
 }
 
 void SetAttachedVisible(zebkit_view* view, bool visible) {

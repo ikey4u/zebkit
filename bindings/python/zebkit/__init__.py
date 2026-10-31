@@ -210,6 +210,9 @@ _view_on_client_certificate_result = _declare("zebkit_view_on_client_certificate
 _view_client_certificate_timeout = _declare("zebkit_view_set_client_certificate_timeout", _B, _V, ctypes.c_uint32)
 _client_certificate_info = _declare("zebkit_client_certificate_request_info", _P, _P)
 _client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, _P, _I, _S, _S, _P)
+_view_attach_native = _declare("zebkit_view_attach_native", _B, _V, ctypes.c_size_t, _I, _I, _I, _I, _EP)
+_view_detach_native = _declare("zebkit_view_detach_native", _B, _V)
+_view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
 _view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _P)
 _view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED, _P)
 _view_on_file_chooser_result = _declare("zebkit_view_on_file_chooser_result", None, _V, _TOLD, _P)
@@ -636,6 +639,20 @@ class View:
 
     def resize(self, width, height):
         _view_resize(self._check(), width, height)
+
+    def attach_native(self, parent, x, y, width, height):
+        """In a window of the application's: an X11 window id, or an NSView* as an int."""
+        error = ctypes.c_void_p()
+        if not _view_attach_native(self._check(), parent, x, y, width, height, ctypes.byref(error)):
+            _raise(error, "the window cannot be attached")
+
+    def detach_native(self):
+        """Back to its own window; False when it was in none of the application's."""
+        return _view_detach_native(self._check())
+
+    def set_bounds(self, x, y, width, height):
+        """Where an attached view is in its parent."""
+        _view_set_bounds(self._check(), x, y, width, height)
 
     def set_settings(self, settings):
         """Merge native preferences; None values reset individual keys."""
