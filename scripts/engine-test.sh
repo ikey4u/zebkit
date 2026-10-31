@@ -8,6 +8,9 @@
 # - tests/engine/vendor.c, vendor.cc: the libraries inside the engine
 #   (<zebkit/vendor/*.h>), from C and from C++.
 # - tests/engine/services.c: <zebkit/services.h> without the engine running.
+# - tests/engine/canvas.c, pdf_annotations.c, pdf_hooks.c, pdf_bindings.py and
+#   script/pdf_plugin.mjs: <zebkit/canvas.h>, <zebkit/text.h>, annotations and
+#   hooks in pixels, with examples/pdf-plugin in C, Python and JavaScript.
 # - tests/engine/pdf.c: <zebkit/pdf.h>, a document opened, read, rendered,
 #   searched, changed and saved.
 # - tests/engine/api.c: the C API (zebkit.h). Starts the engine, serves
@@ -108,6 +111,9 @@ c++ -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
     $(engine_link_options "$package") -o "$work/vendor-cxx"
 build_against_package "$package" "$work/services" "$tests/services.c"
 build_against_package "$package" "$work/pdf" "$tests/pdf.c"
+build_against_package "$package" "$work/canvas" "$tests/canvas.c"
+build_against_package "$package" "$work/pdf-annotations" "$tests/pdf_annotations.c"
+build_against_package "$package" "$work/pdf-hooks" "$tests/pdf_hooks.c" "$ZEBKIT_ROOT/examples/pdf-plugin/plugin.c" -- -D_GNU_SOURCE -I"$ZEBKIT_ROOT/examples/pdf-plugin"
 build_against_package "$package" "$work/api" "$tests/api.c" -- -pthread
 if [[ "$ZEBKIT_HOST" == linux ]]; then
     cc -std=c11 -O1 -Wall -Werror -I"$package/include" "$tests/late_load.c" -ldl -pthread -o "$work/late-load"
@@ -207,6 +213,13 @@ run vendor "$work/vendor" "$SRC_DIR/third_party/pdfium/testing/resources/fonts/a
 run vendor-cxx "$work/vendor-cxx"
 run services "$work/services"
 run pdf "$work/pdf"
+# Ahem: every glyph a box of one em, which makes text's pixels certain.
+ahem="$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
+run canvas "$work/canvas" "$ahem"
+run pdf-annotations "$work/pdf-annotations" "$ahem"
+run pdf-hooks "$work/pdf-hooks" "$ahem"
+run pdf-bindings env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+    python3 "$tests/pdf_bindings.py" "$ahem"
 run api "$work/api" "${engine_switches[@]}"
 run lifecycle "$work/lifecycle" --no-sandbox --headless --user-data-dir="$work/profile-lifecycle"
 run host-loop "$work/host-loop" --no-sandbox --headless --user-data-dir="$work/profile-host-loop"
@@ -411,6 +424,9 @@ run script "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mj
     "http://127.0.0.1:$port" "$work/script-files"
 # It ends by itself once idle; ending before its last line is a failure.
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/script.log" || { echo "FAIL the script did not finish"; failed=1; }
+
+run pdf-plugin "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/pdf_plugin.mjs" "$ahem"
+grep -q '^\([0-9]*\) of \1 checks passed$' "$work/pdf-plugin.log" || { echo "FAIL the PDF plugin's script did not finish"; failed=1; }
 
 run ui "$work/tools/zebkit-js" "${engine_switches[@]}" "$tests/ui/app.mjs"
 grep -q '^\([0-9]*\) of \1 checks passed$' "$work/ui.log" || { echo "FAIL zebkit.ui's script did not finish"; failed=1; }

@@ -21,12 +21,16 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
+#include "zebkit/engine/include/zebkit/canvas.h"
 #include "zebkit/engine/include/zebkit/services.h"
+#include "zebkit/engine/include/zebkit/text.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -365,6 +369,68 @@ Result Compute(const std::string& module,
     }
     return Error("zebkit.image has no " + method);
   }
+  if (module == "canvas") {
+    // (width, height, operations, "png" | "pixels")
+    if (method != "render")
+      return Error("zebkit.canvas has no " + method);
+    const base::Value* w = arg(0);
+    const base::Value* h = arg(1);
+    if (!w || !h || !w->is_int() || !h->is_int())
+      return Error("a canvas has a width and a height");
+    zebkit_canvas* canvas = zebkit_canvas_new(w->GetInt(), h->GetInt(), &error);
+    if (!canvas)
+      return failed("the canvas cannot be made");
+    const base::Value* ops = arg(2);
+    const std::string json = ops ? base::WriteJson(*ops).value_or("[]") : "[]";
+    if (!zebkit_canvas_run(canvas, json.c_str(), &error)) {
+      zebkit_canvas_close(canvas);
+      return failed("the drawing failed");
+    }
+    base::Value answer;
+    if (text(3) == "png") {
+      size_t size = 0;
+      uint8_t* out = zebkit_canvas_png(canvas, &size, &error);
+      if (out) {
+        answer = Bytes(out, size);
+        free(out);
+      }
+    } else if (uint8_t* out = zebkit_canvas_pixels(canvas, &error)) {
+      base::DictValue image;
+      image.Set("width", w->GetInt());
+      image.Set("height", h->GetInt());
+      image.Set("data", Bytes(out, static_cast<size_t>(w->GetInt()) * h->GetInt() * 4));
+      free(out);
+      answer = base::Value(std::move(image));
+    }
+    zebkit_canvas_close(canvas);
+    if (answer.is_none())
+      return failed("the canvas cannot be read");
+    return Ok(std::move(answer));
+  }
+  if (module == "text") {
+    // (font bytes, size, text, {language, direction})
+    if (method != "shape")
+      return Error("zebkit.text has no " + method);
+    std::optional<std::string> font = GetBytes(arg(0));
+    const base::Value* size = arg(1);
+    if (!font || !size || (!size->is_int() && !size->is_double()))
+      return Error("shape takes a font's bytes, a size and text");
+    const base::Value* options = arg(3);
+    const std::string* language =
+        options && options->is_dict() ? options->GetDict().FindString("language") : nullptr;
+    const std::string* direction =
+        options && options->is_dict() ? options->GetDict().FindString("direction") : nullptr;
+    char* json = zebkit_text_shape(font->data(), font->size(), size->GetDouble(), text(2).c_str(),
+                                   language ? language->c_str() : nullptr,
+                                   direction ? direction->c_str() : nullptr, &error);
+    if (!json)
+      return failed("the text cannot be shaped");
+    std::optional<base::Value> parsed = base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    free(json);
+    if (!parsed)
+      return Error("an answer that is not JSON");
+    return Ok(std::move(*parsed));
+  }
   return Error("zebkit has no " + module);
 }
 
@@ -487,6 +553,9 @@ unsigned Needs(const std::string& module) {
     return ZEBKIT_ALLOW_URL;
   if (module == "pdf")
     return ZEBKIT_ALLOW_PDF;
+  // Drawing and shaping reach nothing outside what they are given.
+  if (module == "canvas" || module == "text")
+    return ZEBKIT_ALLOW_IMAGE;
   return 0;
 }
 

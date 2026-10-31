@@ -85,7 +85,13 @@ static void open_page(void) {
         char *url = zebkit_view_get_url(view);
         int here = url && strstr(url, "/page") != NULL;
         zebkit_free(url);
-        if (here && finished) return;
+        if (here && finished) {
+            /* The first document's own "finished" may be what was seen. */
+            char *state = ev("location.pathname + ' ' + document.readyState");
+            int ready = strstr(state, "/page complete") != NULL;
+            free(state);
+            if (ready) return;
+        }
         if (t > 15000) FAIL("page did not load");
         pump_once();
     }

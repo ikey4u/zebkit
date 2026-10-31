@@ -186,6 +186,49 @@ await check('pdf in a page granted it: bytes, not paths', () => new Promise((res
   });
 }));
 
+await check('canvas, text and a PDF plugin in a page: by its grants', () => new Promise((resolve, reject) => {
+  const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
+  view.grant(base, ['pdf', 'image']);
+  view.on('load', async (event) => {
+    if (event !== 'finished') return;
+    try {
+      const result = await view.evaluate(`(async () => {
+        const canvas = zebkit.canvas.create(10, 10).fillColor(0xff0000ff).rect(0, 0, 10, 10).fill();
+        const {data} = await canvas.pixels();
+        const doc = await zebkit.pdf.open(new TextEncoder().encode(${JSON.stringify(PDF)}));
+        await doc.use({
+          kinds: {App_Mark: {prefix: 'App_', draw: (c, a, {width, height}) => { c.fillColor(0x00ff00ff).rect(0, 0, width, height).fill(); }}},
+          before: {'annotation.remove': () => ({refuse: 'kept'})},
+        });
+        const at = await doc.addAnnotation(0, {type: 'App_Mark', rect: [0, 0, 20, 20], data: {a: 1}});
+        const image = await doc.render(0);
+        const pixel = image.data.subarray((image.height - 10) * image.width * 4 + 40, (image.height - 10) * image.width * 4 + 43);
+        const refused = await doc.removeAnnotation(0, at).then(() => '', (e) => e.message);
+        return {red: data[0], green: pixel[1], blue: pixel[0], refused};
+      })()`);
+      view.close();
+      resolve(result.red === 255 && result.green === 255 && result.blue === 0 && result.refused === 'kept');
+    } catch (e) {
+      reject(e);
+    }
+  });
+}));
+
+await check('canvas in a page not granted it: refused', () => new Promise((resolve, reject) => {
+  const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
+  view.grant(base, ['pdf']);
+  view.on('load', async (event) => {
+    if (event !== 'finished') return;
+    try {
+      const answer = await view.evaluate(`zebkit.canvas.create(1, 1).pixels().then(() => 'drawn', (e) => e.message)`);
+      view.close();
+      resolve(answer !== 'drawn');
+    } catch (e) {
+      reject(e);
+    }
+  });
+}));
+
 const failed = results.filter(([, outcome]) => outcome !== true);
 console.log(`${results.length - failed.length} of ${results.length} checks passed`);
 if (failed.length) throw new Error(`${failed.length} checks failed`);

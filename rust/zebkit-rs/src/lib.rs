@@ -449,6 +449,8 @@ extern "C" {
 }
 
 opaque!(zebkit_pdf);
+opaque!(zebkit_canvas);
+opaque!(zebkit_canvas_font);
 opaque!(zebkit_request);
 
 /// `zebkit_pdf_render_options`.
@@ -475,6 +477,363 @@ pub const ZEBKIT_PDF_RENDER_PRINTING: c_uint = 1 << 4;
 pub const ZEBKIT_PDF_RENDER_NO_SMOOTHING: c_uint = 1 << 5;
 pub const ZEBKIT_PDF_SEARCH_CASE: c_uint = 1 << 0;
 pub const ZEBKIT_PDF_SEARCH_WHOLE_WORD: c_uint = 1 << 1;
+
+pub const ZEBKIT_CANVAS_UNPREMULTIPLIED: c_uint = 1 << 0;
+pub const ZEBKIT_PDF_XFDF: c_int = 0;
+pub const ZEBKIT_PDF_FDF: c_int = 1;
+pub const ZEBKIT_PDF_CONTINUE: c_int = 0;
+pub const ZEBKIT_PDF_REFUSE: c_int = 1;
+pub const ZEBKIT_PDF_LAYER_BELOW: c_int = 0;
+pub const ZEBKIT_PDF_LAYER_ABOVE: c_int = 1;
+pub const ZEBKIT_PDF_UNTRUSTED: c_int = -1;
+pub const ZEBKIT_PDF_TRUST_UNKNOWN: c_int = 0;
+pub const ZEBKIT_PDF_TRUSTED: c_int = 1;
+
+pub type zebkit_pdf_before_func = unsafe extern "C" fn(
+    pdf: *mut zebkit_pdf,
+    operation: *const c_char,
+    change: *mut *mut c_char,
+    reason: *mut *mut c_char,
+    data: *mut c_void,
+) -> c_int;
+pub type zebkit_pdf_after_func = unsafe extern "C" fn(pdf: *mut zebkit_pdf, operation: *const c_char, data: *mut c_void);
+pub type zebkit_pdf_appearance_func = unsafe extern "C" fn(
+    canvas: *mut zebkit_canvas,
+    pdf: *mut zebkit_pdf,
+    page: c_int,
+    index: c_int,
+    annotation: *const c_char,
+    width: f64,
+    height: f64,
+    data: *mut c_void,
+) -> bool;
+pub type zebkit_pdf_destroy_func = unsafe extern "C" fn(data: *mut c_void);
+
+/// `zebkit_pdf_kind`.
+#[repr(C)]
+pub struct zebkit_pdf_kind {
+    pub name: *const c_char,
+    pub prefix: *const c_char,
+    pub subtype: *const c_char,
+    pub schema: *const c_char,
+    pub check: Option<unsafe extern "C" fn(data_json: *const c_char, data: *mut c_void) -> *mut c_char>,
+    pub draw: Option<zebkit_pdf_appearance_func>,
+    pub hit_test: Option<
+        unsafe extern "C" fn(
+            pdf: *mut zebkit_pdf,
+            page: c_int,
+            index: c_int,
+            annotation: *const c_char,
+            x: f64,
+            y: f64,
+            data: *mut c_void,
+        ) -> bool,
+    >,
+    pub data: *mut c_void,
+    pub destroy: Option<zebkit_pdf_destroy_func>,
+}
+
+/// `zebkit_pdf_layer_info`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct zebkit_pdf_layer_info {
+    pub width: c_int,
+    pub height: c_int,
+    pub scale: f64,
+    pub rotation: c_int,
+    pub matrix: [f64; 6],
+}
+
+pub type zebkit_pdf_layer_func = unsafe extern "C" fn(
+    canvas: *mut zebkit_canvas,
+    pdf: *mut zebkit_pdf,
+    page: c_int,
+    info: *const zebkit_pdf_layer_info,
+    data: *mut c_void,
+);
+pub type zebkit_pdf_ocr_func = unsafe extern "C" fn(
+    pdf: *mut zebkit_pdf,
+    page: c_int,
+    rgba: *const u8,
+    width: c_int,
+    height: c_int,
+    scale: f64,
+    data: *mut c_void,
+) -> *mut c_char;
+pub type zebkit_pdf_font_func =
+    unsafe extern "C" fn(pdf: *mut zebkit_pdf, family: *const c_char, size: *mut usize, data: *mut c_void) -> *mut u8;
+pub type zebkit_pdf_trust_func = unsafe extern "C" fn(
+    pdf: *mut zebkit_pdf,
+    signature: *const c_char,
+    contents: *const u8,
+    size: usize,
+    data: *mut c_void,
+) -> c_int;
+pub type zebkit_pdf_action_func =
+    unsafe extern "C" fn(pdf: *mut zebkit_pdf, action: *const c_char, data: *mut c_void) -> bool;
+pub type zebkit_pdf_input_func = unsafe extern "C" fn(
+    pdf: *mut zebkit_pdf,
+    tool: *const c_char,
+    points: *const c_char,
+    data: *mut c_void,
+) -> *mut c_char;
+
+extern "C" {
+    pub fn zebkit_text_shape(
+        font: *const c_void,
+        font_size: usize,
+        size: f64,
+        text: *const c_char,
+        language: *const c_char,
+        direction: *const c_char,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+
+    pub fn zebkit_canvas_new(width: c_int, height: c_int, error: *mut *mut c_char) -> *mut zebkit_canvas;
+    pub fn zebkit_canvas_wrap(
+        rgba: *mut u8,
+        width: c_int,
+        height: c_int,
+        stride: usize,
+        flags: c_uint,
+        error: *mut *mut c_char,
+    ) -> *mut zebkit_canvas;
+    pub fn zebkit_canvas_close(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_width(canvas: *mut zebkit_canvas) -> c_int;
+    pub fn zebkit_canvas_height(canvas: *mut zebkit_canvas) -> c_int;
+    pub fn zebkit_canvas_pixels(canvas: *mut zebkit_canvas, error: *mut *mut c_char) -> *mut u8;
+    pub fn zebkit_canvas_png(canvas: *mut zebkit_canvas, size: *mut usize, error: *mut *mut c_char) -> *mut u8;
+    pub fn zebkit_canvas_save(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_restore(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_translate(canvas: *mut zebkit_canvas, x: f64, y: f64);
+    pub fn zebkit_canvas_scale(canvas: *mut zebkit_canvas, x: f64, y: f64);
+    pub fn zebkit_canvas_rotate(canvas: *mut zebkit_canvas, degrees: f64);
+    pub fn zebkit_canvas_transform(canvas: *mut zebkit_canvas, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64);
+    pub fn zebkit_canvas_set_matrix(canvas: *mut zebkit_canvas, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64);
+    pub fn zebkit_canvas_set_fill_color(canvas: *mut zebkit_canvas, rgba: u32);
+    pub fn zebkit_canvas_set_stroke_color(canvas: *mut zebkit_canvas, rgba: u32);
+    pub fn zebkit_canvas_set_alpha(canvas: *mut zebkit_canvas, alpha: f64);
+    pub fn zebkit_canvas_set_blend(canvas: *mut zebkit_canvas, mode: *const c_char) -> bool;
+    pub fn zebkit_canvas_set_line_width(canvas: *mut zebkit_canvas, width: f64);
+    pub fn zebkit_canvas_set_line_cap(canvas: *mut zebkit_canvas, cap: c_int);
+    pub fn zebkit_canvas_set_line_join(canvas: *mut zebkit_canvas, join: c_int);
+    pub fn zebkit_canvas_set_miter_limit(canvas: *mut zebkit_canvas, limit: f64);
+    pub fn zebkit_canvas_set_dash(canvas: *mut zebkit_canvas, lengths: *const f64, count: c_int, phase: f64);
+    pub fn zebkit_canvas_set_linear_gradient(
+        canvas: *mut zebkit_canvas,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        offsets: *const f64,
+        colors: *const u32,
+        count: c_int,
+    ) -> bool;
+    pub fn zebkit_canvas_set_radial_gradient(
+        canvas: *mut zebkit_canvas,
+        x: f64,
+        y: f64,
+        radius: f64,
+        offsets: *const f64,
+        colors: *const u32,
+        count: c_int,
+    ) -> bool;
+    pub fn zebkit_canvas_begin_path(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_move_to(canvas: *mut zebkit_canvas, x: f64, y: f64);
+    pub fn zebkit_canvas_line_to(canvas: *mut zebkit_canvas, x: f64, y: f64);
+    pub fn zebkit_canvas_quad_to(canvas: *mut zebkit_canvas, cx: f64, cy: f64, x: f64, y: f64);
+    pub fn zebkit_canvas_curve_to(canvas: *mut zebkit_canvas, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64);
+    pub fn zebkit_canvas_arc(
+        canvas: *mut zebkit_canvas,
+        x: f64,
+        y: f64,
+        radius: f64,
+        start: f64,
+        end: f64,
+        counterclockwise: bool,
+    );
+    pub fn zebkit_canvas_rect(canvas: *mut zebkit_canvas, x: f64, y: f64, width: f64, height: f64);
+    pub fn zebkit_canvas_close_path(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_fill(canvas: *mut zebkit_canvas, even_odd: bool);
+    pub fn zebkit_canvas_stroke(canvas: *mut zebkit_canvas);
+    pub fn zebkit_canvas_clip(canvas: *mut zebkit_canvas, even_odd: bool);
+    pub fn zebkit_canvas_clear(canvas: *mut zebkit_canvas, rgba: u32);
+    pub fn zebkit_canvas_draw_image(
+        canvas: *mut zebkit_canvas,
+        rgba: *const u8,
+        width: c_int,
+        height: c_int,
+        x: f64,
+        y: f64,
+        dest_width: f64,
+        dest_height: f64,
+    ) -> bool;
+    pub fn zebkit_canvas_font_new(data: *const c_void, size: usize, error: *mut *mut c_char) -> *mut zebkit_canvas_font;
+    pub fn zebkit_canvas_font_close(font: *mut zebkit_canvas_font);
+    pub fn zebkit_canvas_set_font(canvas: *mut zebkit_canvas, font: *mut zebkit_canvas_font, size: f64);
+    pub fn zebkit_canvas_fill_text(
+        canvas: *mut zebkit_canvas,
+        text: *const c_char,
+        x: f64,
+        y: f64,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_canvas_text_path(
+        canvas: *mut zebkit_canvas,
+        text: *const c_char,
+        x: f64,
+        y: f64,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_canvas_measure_text(canvas: *mut zebkit_canvas, text: *const c_char) -> f64;
+    pub fn zebkit_canvas_run(canvas: *mut zebkit_canvas, ops: *const c_char, error: *mut *mut c_char) -> bool;
+
+    pub fn zebkit_pdf_annotation_at(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        x: f64,
+        y: f64,
+        tolerance: f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub fn zebkit_pdf_annotation_move(pdf: *mut zebkit_pdf, page: c_int, index: c_int, to: c_int, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_annotation_copy(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        target: *mut zebkit_pdf,
+        target_page: c_int,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub fn zebkit_pdf_annotation_flatten(pdf: *mut zebkit_pdf, page: c_int, index: c_int, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_annotation_stamp_page(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        source: *mut zebkit_pdf,
+        source_page: c_int,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_annotation_attach_file(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        name: *const c_char,
+        data: *const c_void,
+        size: usize,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_annotation_file(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        name: *mut *mut c_char,
+        size: *mut usize,
+        error: *mut *mut c_char,
+    ) -> *mut u8;
+    pub fn zebkit_pdf_annotation_draw(
+        pdf: *mut zebkit_pdf,
+        page: c_int,
+        index: c_int,
+        ops: *const c_char,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_annotation_action(pdf: *mut zebkit_pdf, page: c_int, index: c_int, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_annotations_export(
+        pdf: *mut zebkit_pdf,
+        format: c_int,
+        page: c_int,
+        index: c_int,
+        size: *mut usize,
+        error: *mut *mut c_char,
+    ) -> *mut u8;
+    pub fn zebkit_pdf_annotations_import(
+        pdf: *mut zebkit_pdf,
+        format: c_int,
+        data: *const c_void,
+        size: usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub fn zebkit_pdf_string(text: *const c_char) -> *mut c_char;
+    pub fn zebkit_pdf_bytes(data: *const c_void, size: usize) -> *mut u8;
+    pub fn zebkit_pdf_hook_remove(hook: c_int) -> bool;
+    pub fn zebkit_pdf_hook_before(
+        pdf: *mut zebkit_pdf,
+        event: *const c_char,
+        func: zebkit_pdf_before_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_after(
+        pdf: *mut zebkit_pdf,
+        event: *const c_char,
+        func: zebkit_pdf_after_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_apply(pdf: *mut zebkit_pdf, operation: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_pdf_hook_appearance(
+        pdf: *mut zebkit_pdf,
+        kind: *const c_char,
+        func: zebkit_pdf_appearance_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_kind(pdf: *mut zebkit_pdf, kind: *const zebkit_pdf_kind, error: *mut *mut c_char) -> c_int;
+    pub fn zebkit_pdf_page_data(pdf: *mut zebkit_pdf, page: c_int, prefix: *const c_char, error: *mut *mut c_char) -> *mut c_char;
+    pub fn zebkit_pdf_hook_layer(
+        pdf: *mut zebkit_pdf,
+        position: c_int,
+        func: zebkit_pdf_layer_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_ocr(
+        pdf: *mut zebkit_pdf,
+        func: zebkit_pdf_ocr_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_font(
+        pdf: *mut zebkit_pdf,
+        func: zebkit_pdf_font_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_font_add(
+        pdf: *mut zebkit_pdf,
+        family: *const c_char,
+        font: *const c_void,
+        size: usize,
+        error: *mut *mut c_char,
+    ) -> bool;
+    pub fn zebkit_pdf_hook_trust(
+        pdf: *mut zebkit_pdf,
+        func: zebkit_pdf_trust_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_action(
+        pdf: *mut zebkit_pdf,
+        func: zebkit_pdf_action_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_hook_input(
+        pdf: *mut zebkit_pdf,
+        tool: *const c_char,
+        func: zebkit_pdf_input_func,
+        data: *mut c_void,
+        destroy: Option<zebkit_pdf_destroy_func>,
+    ) -> c_int;
+    pub fn zebkit_pdf_filter_input(
+        pdf: *mut zebkit_pdf,
+        tool: *const c_char,
+        points: *const c_char,
+        options: *const c_char,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+}
 
 pub const ZEBKIT_SCHEME_STANDARD: c_uint = 1 << 0;
 pub const ZEBKIT_SCHEME_SECURE: c_uint = 1 << 1;

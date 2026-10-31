@@ -288,6 +288,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
 
   native.setViewFactory(id => new View('', {}, {key: VIEW_ADOPT, id}));
 
+  const pdf = (__ZEBKIT_PDF__)(call);
   globalThis.zebkit = Object.freeze({
     ui: native.ui,
     version: native.version,
@@ -302,7 +303,9 @@ constexpr char kBootstrap[] = R"js((function (native) {
     crypto: api('crypto', ['digest', 'hmac', 'randomBytes']),
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
-    pdf: (__ZEBKIT_PDF__)(call),
+    pdf,
+    canvas: pdf.canvas,
+    text: pdf.text,
   });
 }))js";
 

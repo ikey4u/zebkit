@@ -8,8 +8,11 @@
 //! thing at a time.
 
 use crate::services::Image;
-use crate::{c_string, sys, take_bytes, take_error, take_string, Error};
-use std::os::raw::c_int;
+use crate::canvas::Canvas;
+use crate::{c_string, string_from, sys, take_bytes, take_error, take_string, Error};
+use std::mem::ManuallyDrop;
+use std::os::raw::{c_char, c_int, c_void};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 /// What [`Document::render`] draws.
@@ -506,4 +509,587 @@ impl Drop for Document {
     fn drop(&mut self) {
         unsafe { sys::zebkit_pdf_close(self.raw) }
     }
+}
+
+/// An XFDF or FDF file, for [`Document::export_annotations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interchange {
+    Xfdf,
+    Fdf,
+}
+
+impl Interchange {
+    fn raw(self) -> c_int {
+        match self {
+            Interchange::Xfdf => sys::ZEBKIT_PDF_XFDF,
+            Interchange::Fdf => sys::ZEBKIT_PDF_FDF,
+        }
+    }
+}
+
+impl Document {
+    /// The top annotation at a point within `tolerance` points.
+    pub fn annotation_at(&mut self, page: usize, x: f64, y: f64, tolerance: f64) -> Result<Option<usize>, Error> {
+        let mut error = std::ptr::null_mut();
+        let at = unsafe { sys::zebkit_pdf_annotation_at(self.raw, page_index(page), x, y, tolerance, &mut error) };
+        if at < 0 && !error.is_null() {
+            return Err(unsafe { take_error(error, "no page") });
+        }
+        Ok(usize::try_from(at).ok())
+    }
+
+    /// Moves annotation `index` to `to` in the page's order: later is on top.
+    pub fn move_annotation(&mut self, page: usize, index: usize, to: usize) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_annotation_move(self.raw, page_index(page), page_index(index), page_index(to), &mut error)
+        };
+        self.done(ok, error, "the annotation cannot be moved")
+    }
+
+    /// Copies annotation `index` to `target_page` of `target`; `None` for this document.
+    pub fn copy_annotation(
+        &mut self,
+        page: usize,
+        index: usize,
+        target: Option<&mut Document>,
+        target_page: usize,
+    ) -> Result<usize, Error> {
+        let mut error = std::ptr::null_mut();
+        let to = target.map_or(self.raw, |document| document.raw);
+        let at = unsafe {
+            sys::zebkit_pdf_annotation_copy(self.raw, page_index(page), page_index(index), to, page_index(target_page), &mut error)
+        };
+        usize::try_from(at).map_err(|_| unsafe { take_error(error, "the annotation cannot be copied") })
+    }
+
+    /// Makes annotation `index`'s appearance part of the page, and removes it.
+    pub fn flatten_annotation(&mut self, page: usize, index: usize) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_annotation_flatten(self.raw, page_index(page), page_index(index), &mut error) };
+        self.done(ok, error, "the annotation cannot be flattened")
+    }
+
+    /// Makes `source_page` of `source`, as vectors, the appearance of stamp `index`.
+    pub fn stamp_from_page(&mut self, page: usize, index: usize, source: &mut Document, source_page: usize) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_annotation_stamp_page(self.raw, page_index(page), page_index(index), source.raw, page_index(source_page), &mut error)
+        };
+        self.done(ok, error, "the page cannot be made a stamp")
+    }
+
+    /// Embeds a file in file attachment annotation `index`.
+    pub fn attach_file(&mut self, page: usize, index: usize, name: &str, data: &[u8]) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_annotation_attach_file(self.raw, page_index(page), page_index(index), c_string(name).as_ptr(), data.as_ptr().cast(), data.len(), &mut error)
+        };
+        self.done(ok, error, "the file cannot be attached")
+    }
+
+    /// The name and bytes of the file in annotation `index`.
+    pub fn annotation_file(&mut self, page: usize, index: usize) -> Result<(String, Vec<u8>), Error> {
+        let (mut name, mut size, mut error) = (std::ptr::null_mut(), 0, std::ptr::null_mut());
+        unsafe {
+            let data = sys::zebkit_pdf_annotation_file(self.raw, page_index(page), page_index(index), &mut name, &mut size, &mut error);
+            if data.is_null() {
+                return Err(take_error(error, "the annotation has no file"));
+            }
+            Ok((take_string(name).unwrap_or_default(), take_bytes(data, size)))
+        }
+    }
+
+    /// Draws `ops` (see [`Canvas::run`]) as the appearance of annotation `index`.
+    pub fn draw_annotation(&mut self, page: usize, index: usize, ops: &str) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_annotation_draw(self.raw, page_index(page), page_index(index), c_string(ops).as_ptr(), &mut error)
+        };
+        self.done(ok, error, "the appearance cannot be drawn")
+    }
+
+    /// What activating annotation `index` means, as JSON.
+    pub fn annotation_action(&mut self, page: usize, index: usize) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_annotation_action(self.raw, page_index(page), page_index(index), &mut error) };
+        self.json(answer, error)
+    }
+
+    /// The annotations as a file: of `page`, or of all; only `index` of it, or all.
+    pub fn export_annotations(&mut self, format: Interchange, page: Option<usize>, index: Option<usize>) -> Result<Vec<u8>, Error> {
+        let (mut size, mut error) = (0, std::ptr::null_mut());
+        unsafe {
+            let data = sys::zebkit_pdf_annotations_export(
+                self.raw,
+                format.raw(),
+                page.map_or(-1, page_index),
+                index.map_or(-1, page_index),
+                &mut size,
+                &mut error,
+            );
+            if data.is_null() {
+                return Err(take_error(error, "the annotations cannot be written"));
+            }
+            Ok(take_bytes(data, size))
+        }
+    }
+
+    /// Adds the annotations of a file; how many.
+    pub fn import_annotations(&mut self, format: Interchange, data: &[u8]) -> Result<usize, Error> {
+        let mut error = std::ptr::null_mut();
+        let count = unsafe {
+            sys::zebkit_pdf_annotations_import(self.raw, format.raw(), data.as_ptr().cast(), data.len(), &mut error)
+        };
+        usize::try_from(count).map_err(|_| unsafe { take_error(error, "the annotations cannot be read") })
+    }
+
+    /// Runs an operation a hook saw, or its `"inverse"`, as JSON.
+    pub fn apply(&mut self, operation: &str) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_pdf_apply(self.raw, c_string(operation).as_ptr(), &mut error) };
+        self.done(ok, error, "the operation cannot be run")
+    }
+
+    /// What flatten kept of annotations with entries of `prefix`, as JSON.
+    pub fn page_data(&mut self, page: usize, prefix: &str) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let answer = unsafe { sys::zebkit_pdf_page_data(self.raw, page_index(page), c_string(prefix).as_ptr(), &mut error) };
+        self.json(answer, error)
+    }
+
+    /// Family `family` of free text is this file; `""` for what the rest lack.
+    pub fn add_font(&mut self, family: &str, font: &[u8]) -> Result<(), Error> {
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_pdf_font_add(self.raw, c_string(family).as_ptr(), font.as_ptr().cast(), font.len(), &mut error)
+        };
+        self.done(ok, error, "the font cannot be used")
+    }
+
+    /// The points of a drawing tool through the built-in filters and hooks: JSON in and out.
+    pub fn filter_input(&mut self, tool: &str, points: &str, options: Option<&str>) -> Result<String, Error> {
+        let mut error = std::ptr::null_mut();
+        let options = options.map(c_string);
+        let answer = unsafe {
+            sys::zebkit_pdf_filter_input(
+                self.raw,
+                c_string(tool).as_ptr(),
+                c_string(points).as_ptr(),
+                options.as_ref().map_or(std::ptr::null(), |o| o.as_ptr()),
+                &mut error,
+            )
+        };
+        self.json(answer, error)
+    }
+
+    fn raw_or_null(document: Option<&Document>) -> *mut sys::zebkit_pdf {
+        document.map_or(std::ptr::null_mut(), |d| d.raw)
+    }
+}
+
+/// What a "before" hook says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Go on as it is.
+    Continue,
+    /// Go on with this operation instead, as JSON.
+    Change(String),
+    /// Nothing happens; the call fails with this reason.
+    Refuse(String),
+}
+
+/// What a trust hook says of a signer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trust {
+    Trusted,
+    Untrusted,
+    Unknown,
+}
+
+/// A hook of `<zebkit/pdf.h>`: every function here takes the document it is
+/// for, or `None` for all. It goes when [`Hook::remove`] is called or its
+/// document does; dropping this value alone leaves it in place. Callbacks run
+/// on the thread that made the call that needs them, and may call on the
+/// document they are given, whose owner holds it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hook(c_int);
+
+impl Hook {
+    /// False when it is gone already.
+    pub fn remove(self) -> bool {
+        unsafe { sys::zebkit_pdf_hook_remove(self.0) }
+    }
+}
+
+fn hook_result(id: c_int) -> Result<Hook, Error> {
+    if id > 0 {
+        Ok(Hook(id))
+    } else {
+        Err(Error::new("the hook cannot be registered"))
+    }
+}
+
+/// A closure as a hook's data, freed by the engine once no call of it runs.
+fn boxed<F>(function: F) -> *mut c_void {
+    Box::into_raw(Box::new(function)).cast()
+}
+
+unsafe extern "C" fn destroy_boxed<F>(data: *mut c_void) {
+    drop(Box::from_raw(data.cast::<F>()));
+}
+
+/// The document a callback is given: not its owner.
+fn borrowed(pdf: *mut sys::zebkit_pdf) -> ManuallyDrop<Document> {
+    ManuallyDrop::new(Document { raw: pdf })
+}
+
+fn give_string(text: &str) -> *mut c_char {
+    unsafe { sys::zebkit_pdf_string(c_string(text).as_ptr()) }
+}
+
+unsafe extern "C" fn before_trampoline<F>(
+    pdf: *mut sys::zebkit_pdf,
+    operation: *const c_char,
+    change: *mut *mut c_char,
+    reason: *mut *mut c_char,
+    data: *mut c_void,
+) -> c_int
+where
+    F: Fn(Option<&mut Document>, &str) -> Decision + 'static,
+{
+    let function = &*data.cast::<F>();
+    let text = string_from(operation).unwrap_or_default();
+    let mut document = borrowed(pdf);
+    let target = (!pdf.is_null()).then_some(&mut *document as &mut Document);
+    // A hook that panics has decided nothing it can stand by.
+    match catch_unwind(AssertUnwindSafe(|| function(target, &text))) {
+        Ok(Decision::Continue) => sys::ZEBKIT_PDF_CONTINUE,
+        Ok(Decision::Change(json)) => {
+            *change = give_string(&json);
+            sys::ZEBKIT_PDF_CONTINUE
+        }
+        Ok(Decision::Refuse(why)) => {
+            *reason = give_string(&why);
+            sys::ZEBKIT_PDF_REFUSE
+        }
+        Err(_) => {
+            *reason = give_string("a hook panicked");
+            sys::ZEBKIT_PDF_REFUSE
+        }
+    }
+}
+
+unsafe extern "C" fn after_trampoline<F>(pdf: *mut sys::zebkit_pdf, operation: *const c_char, data: *mut c_void)
+where
+    F: Fn(&mut Document, &str) + 'static,
+{
+    let function = &*data.cast::<F>();
+    let text = string_from(operation).unwrap_or_default();
+    let mut document = borrowed(pdf);
+    let _ = catch_unwind(AssertUnwindSafe(|| function(&mut document, &text)));
+}
+
+/// Runs `function` before `event` ("annotation.add", ..., or "*").
+pub fn hook_before<F>(document: Option<&Document>, event: &str, function: F) -> Result<Hook, Error>
+where
+    F: Fn(Option<&mut Document>, &str) -> Decision + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_before(
+            Document::raw_or_null(document),
+            c_string(event).as_ptr(),
+            before_trampoline::<F>,
+            boxed(function),
+            Some(destroy_boxed::<F>),
+        )
+    })
+}
+
+/// Runs `function` after `event`, given the operation as JSON.
+pub fn hook_after<F>(document: Option<&Document>, event: &str, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&mut Document, &str) + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_after(
+            Document::raw_or_null(document),
+            c_string(event).as_ptr(),
+            after_trampoline::<F>,
+            boxed(function),
+            Some(destroy_boxed::<F>),
+        )
+    })
+}
+
+unsafe extern "C" fn appearance_trampoline<F>(
+    canvas: *mut sys::zebkit_canvas,
+    _pdf: *mut sys::zebkit_pdf,
+    _page: c_int,
+    _index: c_int,
+    annotation: *const c_char,
+    width: f64,
+    height: f64,
+    data: *mut c_void,
+) -> bool
+where
+    F: Fn(&mut Canvas, &str, f64, f64) -> bool + 'static,
+{
+    let function = &*data.cast::<F>();
+    let text = string_from(annotation).unwrap_or_default();
+    let mut canvas = Canvas::borrowed(canvas);
+    catch_unwind(AssertUnwindSafe(|| function(&mut canvas, &text, width, height))).unwrap_or(false)
+}
+
+/// Draws type `kind`'s appearance (or `"*"`'s): given a canvas that writes
+/// PDF operators, the annotation as JSON, and its width and height in points.
+/// False leaves it to the generator.
+pub fn hook_appearance<F>(document: Option<&Document>, kind: &str, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&mut Canvas, &str, f64, f64) -> bool + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_appearance(
+            Document::raw_or_null(document),
+            c_string(kind).as_ptr(),
+            appearance_trampoline::<F>,
+            boxed(function),
+            Some(destroy_boxed::<F>),
+        )
+    })
+}
+
+/// A kind of annotation of the application's own: [`hook_kind`].
+pub struct Kind<'a, F> {
+    pub name: &'a str,
+    pub prefix: &'a str,
+    /// `None`: /Subtype is `name`. Or a standard one, and /`prefix`Kind says which it is.
+    pub subtype: Option<&'a str>,
+    /// What "data" may hold, as JSON (`<zebkit/pdf.h>`).
+    pub schema: Option<&'a str>,
+    /// Its appearance, as [`hook_appearance`]'s.
+    pub draw: F,
+}
+
+/// Registers a kind.
+pub fn hook_kind<F>(document: Option<&Document>, kind: Kind<'_, F>) -> Result<Hook, Error>
+where
+    F: Fn(&mut Canvas, &str, f64, f64) -> bool + 'static,
+{
+    let name = c_string(kind.name);
+    let prefix = c_string(kind.prefix);
+    let subtype = kind.subtype.map(c_string);
+    let schema = kind.schema.map(c_string);
+    let raw = sys::zebkit_pdf_kind {
+        name: name.as_ptr(),
+        prefix: prefix.as_ptr(),
+        subtype: subtype.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        schema: schema.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        check: None,
+        draw: Some(appearance_trampoline::<F>),
+        hit_test: None,
+        data: boxed(kind.draw),
+        destroy: Some(destroy_boxed::<F>),
+    };
+    let mut error = std::ptr::null_mut();
+    let id = unsafe { sys::zebkit_pdf_hook_kind(Document::raw_or_null(document), &raw, &mut error) };
+    if id <= 0 {
+        unsafe { destroy_boxed::<F>(raw.data) };
+        return Err(unsafe { take_error(error, "the kind cannot be registered") });
+    }
+    Ok(Hook(id))
+}
+
+unsafe extern "C" fn layer_trampoline<F>(
+    canvas: *mut sys::zebkit_canvas,
+    _pdf: *mut sys::zebkit_pdf,
+    page: c_int,
+    info: *const sys::zebkit_pdf_layer_info,
+    data: *mut c_void,
+) where
+    F: Fn(&mut Canvas, usize, &sys::zebkit_pdf_layer_info) + 'static,
+{
+    let function = &*data.cast::<F>();
+    let mut canvas = Canvas::borrowed(canvas);
+    let _ = catch_unwind(AssertUnwindSafe(|| function(&mut canvas, page.max(0) as usize, &*info)));
+}
+
+/// Draws above (or below) a page's content when it is rendered, in page space.
+pub fn hook_layer<F>(document: Option<&Document>, above: bool, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&mut Canvas, usize, &sys::zebkit_pdf_layer_info) + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_layer(
+            Document::raw_or_null(document),
+            if above { sys::ZEBKIT_PDF_LAYER_ABOVE } else { sys::ZEBKIT_PDF_LAYER_BELOW },
+            layer_trampoline::<F>,
+            boxed(function),
+            Some(destroy_boxed::<F>),
+        )
+    })
+}
+
+unsafe extern "C" fn ocr_trampoline<F>(
+    _pdf: *mut sys::zebkit_pdf,
+    page: c_int,
+    rgba: *const u8,
+    width: c_int,
+    height: c_int,
+    scale: f64,
+    data: *mut c_void,
+) -> *mut c_char
+where
+    F: Fn(usize, &[u8], u32, u32, f64) -> Option<String> + 'static,
+{
+    let function = &*data.cast::<F>();
+    let (w, h) = (width.max(0) as usize, height.max(0) as usize);
+    let pixels = std::slice::from_raw_parts(rgba, w * h * 4);
+    match catch_unwind(AssertUnwindSafe(|| function(page.max(0) as usize, pixels, w as u32, h as u32, scale))) {
+        Ok(Some(json)) => give_string(&json),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Text for pages with none of their own: given the page as RGBA, its size and
+/// pixels per point, it returns `[{"text", "box"}]` as JSON.
+pub fn hook_ocr<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
+where
+    F: Fn(usize, &[u8], u32, u32, f64) -> Option<String> + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_ocr(Document::raw_or_null(document), ocr_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
+    })
+}
+
+unsafe extern "C" fn font_trampoline<F>(
+    _pdf: *mut sys::zebkit_pdf,
+    family: *const c_char,
+    size: *mut usize,
+    data: *mut c_void,
+) -> *mut u8
+where
+    F: Fn(&str) -> Option<Vec<u8>> + 'static,
+{
+    let function = &*data.cast::<F>();
+    let family = string_from(family).unwrap_or_default();
+    match catch_unwind(AssertUnwindSafe(|| function(&family))) {
+        Ok(Some(bytes)) => {
+            *size = bytes.len();
+            sys::zebkit_pdf_bytes(bytes.as_ptr().cast(), bytes.len())
+        }
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Fonts for free text, by family; `""` for what the standard fonts lack.
+pub fn hook_font<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&str) -> Option<Vec<u8>> + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_font(Document::raw_or_null(document), font_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
+    })
+}
+
+unsafe extern "C" fn trust_trampoline<F>(
+    _pdf: *mut sys::zebkit_pdf,
+    signature: *const c_char,
+    contents: *const u8,
+    size: usize,
+    data: *mut c_void,
+) -> c_int
+where
+    F: Fn(&str, &[u8]) -> Trust + 'static,
+{
+    let function = &*data.cast::<F>();
+    let signature = string_from(signature).unwrap_or_default();
+    let contents = if contents.is_null() { &[][..] } else { std::slice::from_raw_parts(contents, size) };
+    match catch_unwind(AssertUnwindSafe(|| function(&signature, contents))) {
+        Ok(Trust::Trusted) => sys::ZEBKIT_PDF_TRUSTED,
+        Ok(Trust::Untrusted) => sys::ZEBKIT_PDF_UNTRUSTED,
+        _ => sys::ZEBKIT_PDF_TRUST_UNKNOWN,
+    }
+}
+
+/// Trust in a signer: given the signature as JSON and its PKCS#7.
+pub fn hook_trust<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&str, &[u8]) -> Trust + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_trust(Document::raw_or_null(document), trust_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
+    })
+}
+
+unsafe extern "C" fn action_trampoline<F>(_pdf: *mut sys::zebkit_pdf, action: *const c_char, data: *mut c_void) -> bool
+where
+    F: Fn(&str) -> bool + 'static,
+{
+    let function = &*data.cast::<F>();
+    let action = string_from(action).unwrap_or_default();
+    catch_unwind(AssertUnwindSafe(|| function(&action))).unwrap_or(false)
+}
+
+/// Actions, given as JSON: true when the application has done it.
+pub fn hook_action<F>(document: Option<&Document>, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&str) -> bool + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_action(Document::raw_or_null(document), action_trampoline::<F>, boxed(function), Some(destroy_boxed::<F>))
+    })
+}
+
+unsafe extern "C" fn input_trampoline<F>(
+    _pdf: *mut sys::zebkit_pdf,
+    tool: *const c_char,
+    points: *const c_char,
+    data: *mut c_void,
+) -> *mut c_char
+where
+    F: Fn(&str, &str) -> Option<String> + 'static,
+{
+    let function = &*data.cast::<F>();
+    let tool = string_from(tool).unwrap_or_default();
+    let points = string_from(points).unwrap_or_default();
+    match catch_unwind(AssertUnwindSafe(|| function(&tool, &points))) {
+        Ok(Some(json)) => give_string(&json),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// A filter of `tool`'s points: JSON in, new points or `None` for no change.
+pub fn hook_input<F>(document: Option<&Document>, tool: &str, function: F) -> Result<Hook, Error>
+where
+    F: Fn(&str, &str) -> Option<String> + 'static,
+{
+    hook_result(unsafe {
+        sys::zebkit_pdf_hook_input(
+            Document::raw_or_null(document),
+            c_string(tool).as_ptr(),
+            input_trampoline::<F>,
+            boxed(function),
+            Some(destroy_boxed::<F>),
+        )
+    })
+}
+
+/// The built-in filters with no document: JSON in and out.
+pub fn filter_input(points: &str, options: Option<&str>) -> Result<String, Error> {
+    let mut error = std::ptr::null_mut();
+    let options = options.map(c_string);
+    let answer = unsafe {
+        sys::zebkit_pdf_filter_input(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            c_string(points).as_ptr(),
+            options.as_ref().map_or(std::ptr::null(), |o| o.as_ptr()),
+            &mut error,
+        )
+    };
+    if answer.is_null() {
+        return Err(unsafe { take_error(error, "the points cannot be filtered") });
+    }
+    Ok(unsafe { take_string(answer) }.unwrap_or_default())
 }

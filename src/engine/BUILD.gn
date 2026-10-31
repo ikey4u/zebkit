@@ -136,12 +136,38 @@ source_set("vendor") {
   deps = [ ":vendor_sources" ]
 }
 
+# <zebkit/canvas.h> and <zebkit/text.h>: Skia and HarfBuzz, which the engine
+# has anyway; a PDF hook's canvas (:pdf) is one of these.
+source_set("canvas") {
+  sources = [
+    "canvas.cc",
+    "canvas_internal.h",
+    "include/zebkit/canvas.h",
+    "include/zebkit/text.h",
+    "text.cc",
+    "text_internal.h",
+  ]
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
+  deps = [
+    "//base",
+    "//skia",
+    "//third_party/harfbuzz",
+  ]
+}
+
 # <zebkit/pdf.h>, with PDFium's configuration: it uses PDFium's classes
 # where its public API does not reach.
 source_set("pdf") {
   sources = [
     "include/zebkit/pdf.h",
     "pdf.cc",
+    "pdf_appearance.cc",
+    "pdf_appearance.h",
+    "pdf_document.h",
+    "pdf_hooks.cc",
+    "pdf_hooks.h",
+    "pdf_interchange.cc",
     "pdf_internal.cc",
     "pdf_internal.h",
   ]
@@ -151,8 +177,10 @@ source_set("pdf") {
   ]
   public_configs = [ ":public" ]
   deps = [
+    ":canvas",
     "//base",
     "//third_party/boringssl",
+    "//third_party/libxml",
     "//third_party/pdfium",
   ]
 }
@@ -298,6 +326,7 @@ _deps = [
   "//third_party/re2",
   ":automation_scripts",
   ":media_capture_mojom",
+  ":canvas",
   ":pdf",
   ":vendor",
   "//base",

@@ -13,7 +13,7 @@ cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
 |---|---|---|
 | 0. Core | `<zebkit/zebkit.h>`, `<zebkit/offscreen.h>`, `<zebkit/page.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; views drawn off-screen into shared surfaces; dialogs, printing to PDF, drag and drop |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
-| 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, over Chromium's own code |
+| 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>`, `<zebkit/canvas.h>`, `<zebkit/text.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, 2D drawing and shaping text, over Chromium's own code |
 | 3. Bindings | `rust/`, `bindings/python/zebkit` | Layers 0 and 2 for Rust and Python |
 | 4. JavaScript | `zebkit.*` in a page | Layers 0 and 2 for the page's script, as the application grants it |
 
@@ -401,6 +401,101 @@ worked on in the browser process, one call at a time on the thread pool;
 a page reaches only the documents it opened, and they close with its view.
 A PDF is untrusted input, and PDFium in the browser process is outside the
 renderer's sandbox: a sandboxed utility process for it is on the roadmap.
+
+### Annotations
+
+`zebkit_pdf_annotation_add()` and `_update()` take JSON; the header lists every
+key and its range. What fails, fails with an error and changes nothing.
+
+```c
+zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"line\",\"line\":[50,100,250,100],"
+    "\"lineEndings\":[\"none\",\"closedArrow\"],\"leader\":{\"length\":10},"
+    "\"measure\":{\"unit\":\"mm\",\"scale\":0.3528}}", &error);
+```
+
+| What | Keys and calls |
+|---|---|
+| Appearance | `lineEndings`, `leader`, `caption`, `borderStyle` (dashes), `borderEffect` (cloudy), `opacity`, `blend`, `rotation` |
+| Free text | `font`, `fontSize`, `textColor`, `borderColor`, `color` (background), `align`, `richText` (`/RC`), `defaultStyle` (`/DS`), `callout`, `calloutEnding`; fonts by `zebkit_pdf_font_add()` or a hook |
+| Stamps and the rest | `stamp` (the 14 standard ones), `stampText`; `zebkit_pdf_annotation_stamp_page()`: another document's page as vectors; `caretSymbol`; `icon` on notes and attachments; `zebkit_pdf_annotation_attach_file()` and `_file()` |
+| Discussion | `inReplyTo` (a cycle fails), `replyType`, `state`, `stateModel`, `popup`; reading gives `replies`. Removing takes the popup and the replies too |
+| Measurement | `measure` and `intent`: distance, perimeter, area, the value as `contents` and the caption, and reading gives `measure.value` and `.text` |
+| Viewers | `zebkit_pdf_annotation_at()`, `textRange`, `zebkit_pdf_annotation_move()`, `_copy()` (with appearance and an application's entries, to any document), `_flatten()`, `zebkit_pdf_annotation_action()` |
+| Interchange | `zebkit_pdf_annotations_export()` and `_import()`: XFDF and FDF. Read with no network, no entities and no DTD; all or nothing; at most 64 MiB and 100000 annotations. Appearances and embedded files are not carried |
+
+Generated appearances are form XObjects in the file, drawn by zebkit
+(`src/engine/pdf_appearance.cc`), with no patch to PDFium: highlights, underlines
+and ink stay PDFium's, with `blend` written into their state. A `rect` grows to
+what is drawn; its unturned box stays in the entry `/ZebkitBox`, and an appearance
+the application made is marked `/ZebkitOwnAppearance`, which only
+`"regenerate": true` replaces.
+
+### Hooks
+
+`zebkit_pdf_hook_*` (NULL for all documents), in C and the same in Rust
+(`zebkit::pdf::hook_*`), Python (`Pdf.hooks`, `zebkit.pdf_hooks`) and JavaScript
+(`doc.use(plugin)`, `zebkit.pdf.use(plugin)`). `examples/pdf-plugin/` is one
+plugin in C and in JavaScript: a kind with its own appearance, an undo history, OCR.
+
+| Hook | What it is for |
+|---|---|
+| `before`, `after` | Events: open, save, render, annotation add, update, remove, move, flatten; form set, reset; redact, flatten; page insert, move, delete, rotate, import. A `before` may refuse or give another operation. An `after` sees the operation, with `inverse` when it can be undone, which `zebkit_pdf_apply()` runs |
+| `kind` | A kind of annotation: name, prefix, schema, check, `draw`, hit test. Data under `/<prefix>Data`, kept through save, copy, XFDF and FDF, and into `/PieceInfo` by flatten (`zebkit_pdf_page_data()`) |
+| `appearance` | Any type's appearance, or `"*"`'s; false leaves it to the generator |
+| `layer` | Above or below a page's content when rendered, on its bitmap, in page space |
+| `ocr` | Text for pages without any: `zebkit_pdf_text()`, `_text_lines()`, `_search()` |
+| `font`, `trust`, `action` | Fonts for free text; `"trusted"` in `zebkit_pdf_signatures()`; what `zebkit_pdf_annotation_action()` means |
+| `input` | Filters of a drawing tool's points, after the built-in `smooth`, `simplify`, `snapGrid`, `snapAngle` and `constrain` (`zebkit_pdf_filter_input()`) |
+
+Callbacks run on the thread of the call that needs them, outside the lock around
+PDFium, and may call the API. A hook may remove itself; `destroy` waits for the end
+of its call. A hook may close the document: the call fails or finishes, and then
+it closes. Nesting stops at 16.
+
+An appearance is drawn on a canvas with `<zebkit/canvas.h>`'s calls that writes PDF
+operators, not Skia's pixels: Skia has no way to write one form XObject, and the
+appearance stays vectors. Text is outlines there, gradients are shadings without
+their stops' alpha, images are XObjects, and pixels and PNG fail on it.
+
+In JavaScript a plugin is an object:
+
+```js
+const remove = await doc.use({
+  kinds: {App_Mark: {prefix: 'App_', schema: {mood: {type: 'string'}}, check(data) {},
+                     draw(canvas, annotation, {width, height}) {}, hitTest(annotation, x, y) {}}},
+  before: {'annotation.add': (operation) => operation /* or false, or {refuse: why} */},
+  after: {'*': (operation) => history.push(operation.inverse)},
+  appearance: {stamp: (canvas, annotation, size) => {}},
+  layers: [{position: 'above', draw: (canvas, {page, scale}) => {}}],
+  ocr: (page, image) => [{text: '...', box: [1, 2, 3, 4]}],
+  font: (family) => bytes, trust: (signature) => true, action: (action) => true,
+  filters: {ink: (points) => points},
+});
+```
+
+They run in the script, around the calls it makes on that document, which may be
+awaited: the engine's PDF work is on another thread, where a script could not be
+waited for.
+
+### Canvas and text
+
+`<zebkit/canvas.h>`: a canvas on the engine's Skia over a bitmap of its own or the
+caller's RGBA pixels: a matrix, paths, fill and stroke, colours, blend modes,
+gradients, images, text in a font given as bytes (shaped by HarfBuzz, drawn as
+outlines), PNG out, and `zebkit_canvas_run()` for a JSON list of the same
+operations. `<zebkit/text.h>`: `zebkit_text_shape()`, a line of text to glyph ids,
+advances, offsets and clusters as JSON. Rust: `zebkit::canvas`. Python:
+`zebkit.Canvas`, `zebkit.Font`, `zebkit.shape_text`. JavaScript, in pages granted
+`image` and in the application's script:
+
+```js
+const canvas = zebkit.canvas.create(100, 100);
+canvas.fillColor(0xff0000ff).rect(10, 10, 20, 20).fill().font(fontBytes, 20).fillText('Hi', 10, 60);
+const png = await canvas.png();
+const shaped = await zebkit.text.shape(fontBytes, 20, 'Hi', {language: 'en', direction: 'ltr'});
+```
+
+Together they cost 0.4 MiB of the package; `docs/ROADMAP.md`'s Done row has the figures.
 
 ## 3. Bindings
 

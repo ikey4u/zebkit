@@ -40,9 +40,14 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   zlib, Zstandard, Brotli, ICU, HarfBuzz, libxml2, libwebp, libjpeg-turbo,
   FFmpeg, dav1d, Opus, libvpx, FreeType and PDFium. You do not ship them twice.
 - **PDF built in.** A full API on Chromium's PDFium: rendering and tiles,
-  text with layout, search, outline, links, annotations with appearances,
-  forms, redaction, page editing, merging, attachments, metadata, and
-  signatures checked for integrity. In C and in page JavaScript.
+  text with layout, search, outline, links, annotations as an editor has them
+  (line endings, cloudy borders, free text with callouts and rich text, stamps,
+  replies and states, measurement, XFDF and FDF), forms, redaction, page editing,
+  merging, attachments, metadata, and signatures checked for integrity; hooks for
+  an application's own annotation kinds, appearances, events with undo, render
+  layers, OCR, fonts, trust and actions. In C, Rust, Python and JavaScript.
+- **2D drawing and shaping.** `<zebkit/canvas.h>` on the engine's Skia and
+  `<zebkit/text.h>` on its HarfBuzz, without shipping either again.
 - **Media, saved as it plays.** Whatever a page plays, a file, MSE/DASH or
   HLS, written to MP4 or WebM as it was sent, without re-encoding and
   without a second download (`<zebkit/media.h>`).

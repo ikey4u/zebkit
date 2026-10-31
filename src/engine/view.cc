@@ -135,6 +135,7 @@ constexpr char kBridgeScript[] = R"js((() => {
   };
   const api = (module, methods) => Object.freeze(Object.fromEntries(
       methods.map((m) => [m, (...args) => send(module, m, args)])));
+  const pdf = makePdf(send);
   const zebkit = {
     app: new Proxy({}, {get: (_, name) =>
         typeof name === 'string' ? (...args) => send('app', name, args) : undefined}),
@@ -145,7 +146,9 @@ constexpr char kBridgeScript[] = R"js((() => {
     crypto: api('crypto', ['digest', 'hmac', 'randomBytes']),
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
-    pdf: makePdf(send),
+    pdf,
+    canvas: pdf.canvas,
+    text: pdf.text,
     // The path of a file dropped on the page from another application, when
     // the application asked for drops (zebkit_view_on_drop); otherwise ''.
     pathForFile: (file) => {

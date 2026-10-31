@@ -37,6 +37,7 @@ __all__ = [
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
     "ALLOW_APP", "ALLOW_FETCH", "ALLOW_FILES", "ALLOW_COMPRESS", "ALLOW_CRYPTO", "ALLOW_IMAGE",
     "ALLOW_URL", "ALLOW_PDF", "ALLOW_ALL",
+    "Canvas", "Font", "shape_text", "PdfHooks", "pdf_hooks", "remove_pdf_hook", "pdf_filter_input",
     "Pdf", "RENDER_ANNOTATIONS", "RENDER_FORMS", "RENDER_LCD_TEXT", "RENDER_GRAYSCALE", "RENDER_PRINTING",
     "RENDER_NO_SMOOTHING", "Request", "scheme_register", "scheme_handle",
     "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
@@ -1553,3 +1554,579 @@ def set_cookie_storage(storage="os", key_directory=None):
     if directory is not None and b"\0" in directory:
         raise ValueError("key directory contains a zero byte")
     return bool(_cookie_storage(0 if storage == "os" else 1, directory))
+
+
+# ---- Canvas and text: <zebkit/canvas.h>, <zebkit/text.h> ----
+
+_canvas_new = _declare("zebkit_canvas_new", _P, _I, _I, _EP)
+_canvas_wrap = _declare("zebkit_canvas_wrap", _P, _P, _I, _I, _Z, _U, _EP)
+_canvas_close = _declare("zebkit_canvas_close", None, _P)
+_canvas_width = _declare("zebkit_canvas_width", _I, _P)
+_canvas_height = _declare("zebkit_canvas_height", _I, _P)
+_canvas_pixels = _declare("zebkit_canvas_pixels", _P, _P, _EP)
+_canvas_png = _declare("zebkit_canvas_png", _P, _P, _ZP, _EP)
+_canvas_run = _declare("zebkit_canvas_run", _B, _P, _S, _EP)
+_font_new = _declare("zebkit_canvas_font_new", _P, _P, _Z, _EP)
+_font_close = _declare("zebkit_canvas_font_close", None, _P)
+_canvas_set_font = _declare("zebkit_canvas_set_font", None, _P, _P, ctypes.c_double)
+_canvas_fill_text = _declare("zebkit_canvas_fill_text", _B, _P, _S, ctypes.c_double, ctypes.c_double, _EP)
+_canvas_text_path = _declare("zebkit_canvas_text_path", _B, _P, _S, ctypes.c_double, ctypes.c_double, _EP)
+_canvas_measure_text = _declare("zebkit_canvas_measure_text", ctypes.c_double, _P, _S)
+_canvas_draw_image = _declare("zebkit_canvas_draw_image", _B, _P, _P, _I, _I, *([ctypes.c_double] * 4))
+_canvas_set_blend = _declare("zebkit_canvas_set_blend", _B, _P, _S)
+_canvas_set_dash = _declare("zebkit_canvas_set_dash", None, _P, ctypes.POINTER(ctypes.c_double), _I, ctypes.c_double)
+_canvas_linear = _declare("zebkit_canvas_set_linear_gradient", _B, _P, *([ctypes.c_double] * 4),
+                          ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint32), _I)
+_canvas_radial = _declare("zebkit_canvas_set_radial_gradient", _B, _P, *([ctypes.c_double] * 3),
+                          ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint32), _I)
+_text_shape = _declare("zebkit_text_shape", _P, _P, _Z, ctypes.c_double, _S, _S, _S, _EP)
+
+
+def _numbers_call(name, count):
+    function = _declare(name, None, _P, *([ctypes.c_double] * count))
+
+    def call(self, *numbers):
+        function(self._handle, *numbers)
+    return call
+
+
+def _simple_call(name):
+    function = _declare(name, None, _P)
+
+    def call(self):
+        function(self._handle)
+    return call
+
+
+def _color_call(name):
+    function = _declare(name, None, _P, ctypes.c_uint32)
+
+    def call(self, rgba):
+        function(self._handle, rgba)
+    return call
+
+
+class Font:
+    """A font from its bytes, for Canvas.set_font()."""
+
+    def __init__(self, data):
+        error = ctypes.c_void_p()
+        data = bytes(data)
+        self._handle = _font_new(data, len(data), ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "not a font")
+
+    def close(self):
+        if getattr(self, "_handle", None):
+            _font_close(self._handle)
+            self._handle = None
+
+    def __del__(self):
+        self.close()
+
+
+class Canvas:
+    """2D drawing on the engine's Skia: a canvas of width by height pixels, or
+    over a bytearray of RGBA with Canvas.over(). Colours are 0xRRGGBBAA."""
+
+    def __init__(self, width=None, height=None, _handle=None):
+        if _handle is not None:
+            self._handle, self._owned = _handle, False
+            return
+        error = ctypes.c_void_p()
+        self._owned = True
+        self._handle = _canvas_new(width, height, ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the canvas cannot be made")
+
+    @classmethod
+    def over(cls, pixels, width, height, stride=0, unpremultiplied=False):
+        """Over a bytearray, R, G, B, A, kept until close()."""
+        if not isinstance(pixels, bytearray):
+            raise TypeError("pixels are a bytearray")
+        if len(pixels) < (stride or width * 4) * height:
+            raise ValueError("too few pixels")
+        self = cls.__new__(cls)
+        buffer = (ctypes.c_uint8 * len(pixels)).from_buffer(pixels)
+        error = ctypes.c_void_p()
+        self._buffer, self._owned = buffer, True
+        self._handle = _canvas_wrap(ctypes.addressof(buffer), width, height, stride, 1 if unpremultiplied else 0,
+                                    ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the canvas cannot be made")
+        return self
+
+    def close(self):
+        if getattr(self, "_handle", None) and self._owned:
+            _canvas_close(self._handle)
+        self._handle = None
+        self._buffer = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    @property
+    def width(self):
+        return _canvas_width(self._handle)
+
+    @property
+    def height(self):
+        return _canvas_height(self._handle)
+
+    def pixels(self):
+        """RGBA, not premultiplied, width * height * 4 bytes."""
+        error = ctypes.c_void_p()
+        out = _canvas_pixels(self._handle, ctypes.byref(error))
+        if not out:
+            _raise(error, "this canvas has no pixels")
+        return _buffer(out, self.width * self.height * 4)
+
+    def png(self):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _canvas_png(self._handle, ctypes.byref(size), ctypes.byref(error))
+        if not out:
+            _raise(error, "the PNG cannot be made")
+        return _buffer(out, size.value)
+
+    save = _simple_call("zebkit_canvas_save")
+    restore = _simple_call("zebkit_canvas_restore")
+    translate = _numbers_call("zebkit_canvas_translate", 2)
+    scale = _numbers_call("zebkit_canvas_scale", 2)
+    rotate = _numbers_call("zebkit_canvas_rotate", 1)
+    transform = _numbers_call("zebkit_canvas_transform", 6)
+    set_matrix = _numbers_call("zebkit_canvas_set_matrix", 6)
+    set_fill_color = _color_call("zebkit_canvas_set_fill_color")
+    set_stroke_color = _color_call("zebkit_canvas_set_stroke_color")
+    set_alpha = _numbers_call("zebkit_canvas_set_alpha", 1)
+    set_line_width = _numbers_call("zebkit_canvas_set_line_width", 1)
+    set_miter_limit = _numbers_call("zebkit_canvas_set_miter_limit", 1)
+    begin_path = _simple_call("zebkit_canvas_begin_path")
+    move_to = _numbers_call("zebkit_canvas_move_to", 2)
+    line_to = _numbers_call("zebkit_canvas_line_to", 2)
+    quad_to = _numbers_call("zebkit_canvas_quad_to", 4)
+    curve_to = _numbers_call("zebkit_canvas_curve_to", 6)
+    rect = _numbers_call("zebkit_canvas_rect", 4)
+    close_path = _simple_call("zebkit_canvas_close_path")
+    stroke = _simple_call("zebkit_canvas_stroke")
+    clear = _color_call("zebkit_canvas_clear")
+
+    def set_line_cap(self, cap):
+        _declare("zebkit_canvas_set_line_cap", None, _P, _I)(self._handle, cap)
+
+    def set_line_join(self, join):
+        _declare("zebkit_canvas_set_line_join", None, _P, _I)(self._handle, join)
+
+    def set_blend(self, mode):
+        return _canvas_set_blend(self._handle, mode.encode())
+
+    def set_dash(self, lengths, phase=0.0):
+        values = (ctypes.c_double * len(lengths))(*lengths)
+        _canvas_set_dash(self._handle, values, len(lengths), phase)
+
+    def set_linear_gradient(self, x0, y0, x1, y1, offsets, colors):
+        n = len(offsets)
+        return n == len(colors) and _canvas_linear(self._handle, x0, y0, x1, y1, (ctypes.c_double * n)(*offsets),
+                                                   (ctypes.c_uint32 * n)(*colors), n)
+
+    def set_radial_gradient(self, x, y, radius, offsets, colors):
+        n = len(offsets)
+        return n == len(colors) and _canvas_radial(self._handle, x, y, radius, (ctypes.c_double * n)(*offsets),
+                                                   (ctypes.c_uint32 * n)(*colors), n)
+
+    def arc(self, x, y, radius, start, end, counterclockwise=False):
+        _declare("zebkit_canvas_arc", None, _P, *([ctypes.c_double] * 5), _B)(
+            self._handle, x, y, radius, start, end, counterclockwise)
+
+    def fill(self, even_odd=False):
+        _declare("zebkit_canvas_fill", None, _P, _B)(self._handle, even_odd)
+
+    def clip(self, even_odd=False):
+        _declare("zebkit_canvas_clip", None, _P, _B)(self._handle, even_odd)
+
+    def draw_image(self, rgba, width, height, x, y, dest_width=None, dest_height=None):
+        rgba = bytes(rgba)
+        if len(rgba) != width * height * 4:
+            return False
+        return _canvas_draw_image(self._handle, rgba, width, height, x, y,
+                                  width if dest_width is None else dest_width,
+                                  height if dest_height is None else dest_height)
+
+    def set_font(self, font, size=12.0):
+        _canvas_set_font(self._handle, font._handle if font else None, size)
+        self._font = font
+
+    def fill_text(self, text, x, y):
+        error = ctypes.c_void_p()
+        if not _canvas_fill_text(self._handle, text.encode(), x, y, ctypes.byref(error)):
+            _raise(error, "the text cannot be drawn")
+
+    def text_path(self, text, x, y):
+        error = ctypes.c_void_p()
+        if not _canvas_text_path(self._handle, text.encode(), x, y, ctypes.byref(error)):
+            _raise(error, "the text cannot be drawn")
+
+    def measure_text(self, text):
+        width = _canvas_measure_text(self._handle, text.encode())
+        return None if width < 0 else width
+
+    def run(self, operations):
+        """A list of operations, as <zebkit/canvas.h> says."""
+        error = ctypes.c_void_p()
+        if not _canvas_run(self._handle, json.dumps(operations).encode(), ctypes.byref(error)):
+            _raise(error, "the operations cannot be run")
+
+
+def shape_text(font, size, text, language=None, direction=None):
+    """Shapes a line of text on the engine's HarfBuzz: {direction, script,
+    unitsPerEm, advance, glyphs: [{glyph, cluster, advance, offset}]}."""
+    font = bytes(font)
+    error = ctypes.c_void_p()
+    out = _text_shape(font, len(font), size, text.encode(), language.encode() if language else None,
+                      direction.encode() if direction else None, ctypes.byref(error))
+    if not out:
+        _raise(error, "the text cannot be shaped")
+    return json.loads(_string(out))
+
+
+# ---- PDF, more annotations and hooks ----
+
+_D = ctypes.c_double
+_pdf_string = _declare("zebkit_pdf_string", _P, _S)
+_pdf_bytes = _declare("zebkit_pdf_bytes", _P, _P, _Z)
+_pdf_hook_remove = _declare("zebkit_pdf_hook_remove", _B, _I)
+_pdf_annotation_at = _declare("zebkit_pdf_annotation_at", _I, _P, _I, _D, _D, _D, _EP)
+_pdf_annotation_move = _declare("zebkit_pdf_annotation_move", _B, _P, _I, _I, _I, _EP)
+_pdf_annotation_copy = _declare("zebkit_pdf_annotation_copy", _I, _P, _I, _I, _P, _I, _EP)
+_pdf_annotation_flatten = _declare("zebkit_pdf_annotation_flatten", _B, _P, _I, _I, _EP)
+_pdf_annotation_stamp_page = _declare("zebkit_pdf_annotation_stamp_page", _B, _P, _I, _I, _P, _I, _EP)
+_pdf_annotation_attach_file = _declare("zebkit_pdf_annotation_attach_file", _B, _P, _I, _I, _S, _P, _Z, _EP)
+_pdf_annotation_file = _declare("zebkit_pdf_annotation_file", _P, _P, _I, _I, _EP, _ZP, _EP)
+_pdf_annotation_draw = _declare("zebkit_pdf_annotation_draw", _B, _P, _I, _I, _S, _EP)
+_pdf_annotation_action = _declare("zebkit_pdf_annotation_action", _P, _P, _I, _I, _EP)
+_pdf_annotations_export = _declare("zebkit_pdf_annotations_export", _P, _P, _I, _I, _I, _ZP, _EP)
+_pdf_annotations_import = _declare("zebkit_pdf_annotations_import", _I, _P, _I, _P, _Z, _EP)
+_pdf_apply = _declare("zebkit_pdf_apply", _B, _P, _S, _EP)
+_pdf_page_data = _declare("zebkit_pdf_page_data", _P, _P, _I, _S, _EP)
+_pdf_font_add = _declare("zebkit_pdf_font_add", _B, _P, _S, _P, _Z, _EP)
+_pdf_filter_input = _declare("zebkit_pdf_filter_input", _P, _P, _S, _S, _S, _EP)
+
+_HOOK_DESTROY_T = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+_BEFORE = ctypes.CFUNCTYPE(_I, _P, _S, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), _P)
+_AFTER = ctypes.CFUNCTYPE(None, _P, _S, _P)
+_APPEARANCE = ctypes.CFUNCTYPE(_B, _P, _P, _I, _I, _S, _D, _D, _P)
+_CHECK = ctypes.CFUNCTYPE(_P, _S, _P)
+_HIT = ctypes.CFUNCTYPE(_B, _P, _I, _I, _S, _D, _D, _P)
+
+
+class _LayerInfo(ctypes.Structure):
+    _fields_ = [("width", _I), ("height", _I), ("scale", _D), ("rotation", _I), ("matrix", _D * 6)]
+
+
+_LAYER = ctypes.CFUNCTYPE(None, _P, _P, _I, ctypes.POINTER(_LayerInfo), _P)
+_OCR = ctypes.CFUNCTYPE(_P, _P, _I, ctypes.POINTER(ctypes.c_uint8), _I, _I, _D, _P)
+_FONT = ctypes.CFUNCTYPE(_P, _P, _S, _ZP, _P)
+_TRUST = ctypes.CFUNCTYPE(_I, _P, _S, ctypes.POINTER(ctypes.c_uint8), _Z, _P)
+_ACTION = ctypes.CFUNCTYPE(_B, _P, _S, _P)
+_INPUT = ctypes.CFUNCTYPE(_P, _P, _S, _S, _P)
+
+
+class _Kind(ctypes.Structure):
+    _fields_ = [("name", _S), ("prefix", _S), ("subtype", _S), ("schema", _S), ("check", _CHECK),
+                ("draw", _APPEARANCE), ("hit_test", _HIT), ("data", _P), ("destroy", _HOOK_DESTROY_T)]
+
+
+_register_before = _declare("zebkit_pdf_hook_before", _I, _P, _S, _BEFORE, _P, _HOOK_DESTROY_T)
+_register_after = _declare("zebkit_pdf_hook_after", _I, _P, _S, _AFTER, _P, _HOOK_DESTROY_T)
+_register_appearance = _declare("zebkit_pdf_hook_appearance", _I, _P, _S, _APPEARANCE, _P, _HOOK_DESTROY_T)
+_register_kind = _declare("zebkit_pdf_hook_kind", _I, _P, ctypes.POINTER(_Kind), _EP)
+_register_layer = _declare("zebkit_pdf_hook_layer", _I, _P, _I, _LAYER, _P, _HOOK_DESTROY_T)
+_register_ocr = _declare("zebkit_pdf_hook_ocr", _I, _P, _OCR, _P, _HOOK_DESTROY_T)
+_register_font = _declare("zebkit_pdf_hook_font", _I, _P, _FONT, _P, _HOOK_DESTROY_T)
+_register_trust = _declare("zebkit_pdf_hook_trust", _I, _P, _TRUST, _P, _HOOK_DESTROY_T)
+_register_action = _declare("zebkit_pdf_hook_action", _I, _P, _ACTION, _P, _HOOK_DESTROY_T)
+_register_input = _declare("zebkit_pdf_hook_input", _I, _P, _S, _INPUT, _P, _HOOK_DESTROY_T)
+
+# What C holds of a hook lives here until the engine says it is done with it,
+# never while a call of it runs.
+_hook_keep = {}
+_hook_next = [1]
+
+
+@_HOOK_DESTROY_T
+def _hook_destroy(key):
+    _hook_keep.pop(key, None)
+
+
+def _keep(*things):
+    key = _hook_next[0]
+    _hook_next[0] += 1
+    _hook_keep[key] = things
+    return key
+
+
+def _give(text):
+    return _pdf_string(text.encode())
+
+
+class PdfHooks:
+    """Hooks of <zebkit/pdf.h> for one document (Pdf.hooks), or with no document
+    for all (zebkit.pdf_hooks). Each method returns the hook's id for
+    remove_pdf_hook(). Operations and annotations are Python values."""
+
+    def __init__(self, pdf=None):
+        self._pdf = pdf
+
+    @property
+    def _handle(self):
+        return self._pdf._handle if self._pdf else None
+
+    def before(self, event, function):
+        """function(operation): None goes on, False or {"refuse": why} refuses,
+        another operation changes what happens. An exception refuses."""
+        def call(pdf, operation, change, reason, data):
+            try:
+                answer = function(json.loads(operation))
+            except Exception as e:  # noqa: BLE001
+                reason[0] = _give(f"a hook failed: {e}")
+                return 1
+            if answer is False or (isinstance(answer, dict) and "refuse" in answer):
+                why = answer["refuse"] if answer is not False else None
+                if why:
+                    reason[0] = _give(str(why))
+                return 1
+            if isinstance(answer, dict):
+                change[0] = _give(json.dumps(answer))
+            return 0
+        thunk = _BEFORE(call)
+        return _register_before(self._handle, event.encode(), thunk, _keep(thunk), _hook_destroy)
+
+    def after(self, event, function):
+        """function(operation), with "inverse" when it can be undone."""
+        thunk = _AFTER(_guard(lambda pdf, operation, data: function(json.loads(operation))))
+        return _register_after(self._handle, event.encode(), thunk, _keep(thunk), _hook_destroy)
+
+    def appearance(self, type_name, function):
+        """function(canvas, annotation, width, height) -> True when drawn. The
+        canvas writes PDF operators: units are points, the origin its top left."""
+        def call(canvas, pdf, page, index, annotation, width, height, data):
+            try:
+                return bool(function(Canvas(_handle=canvas), json.loads(annotation), width, height))
+            except Exception:  # noqa: BLE001
+                return False
+        thunk = _APPEARANCE(call)
+        return _register_appearance(self._handle, type_name.encode(), thunk, _keep(thunk), _hook_destroy)
+
+    def kind(self, name, prefix, subtype=None, schema=None, check=None, draw=None, hit_test=None):
+        """A kind of annotation of the application's own."""
+        def draw_call(canvas, pdf, page, index, annotation, width, height, data):
+            try:
+                return bool(draw(Canvas(_handle=canvas), json.loads(annotation), width, height))
+            except Exception:  # noqa: BLE001
+                return False
+
+        def check_call(data_json, data):
+            try:
+                problem = check(json.loads(data_json))
+            except Exception as e:  # noqa: BLE001
+                problem = f"a check failed: {e}"
+            return _give(str(problem)) if problem else None
+
+        def hit_call(pdf, page, index, annotation, x, y, data):
+            try:
+                return bool(hit_test(json.loads(annotation), x, y))
+            except Exception:  # noqa: BLE001
+                return False
+        thunks = (_CHECK(check_call) if check else _CHECK(), _APPEARANCE(draw_call) if draw else _APPEARANCE(),
+                  _HIT(hit_call) if hit_test else _HIT())
+        raw = _Kind(name.encode(), prefix.encode(), subtype.encode() if subtype else None,
+                    json.dumps(schema).encode() if schema is not None else None, thunks[0], thunks[1], thunks[2],
+                    _keep(*thunks), _hook_destroy)
+        error = ctypes.c_void_p()
+        hook = _register_kind(self._handle, ctypes.byref(raw), ctypes.byref(error))
+        if hook < 0:
+            _raise(error, "the kind cannot be registered")
+        return hook
+
+    def layer(self, function, above=True):
+        """function(canvas, page, info): over the page's bitmap, in page space."""
+        def call(canvas, pdf, page, info, data):
+            i = info.contents
+            function(Canvas(_handle=canvas), page, {"width": i.width, "height": i.height, "scale": i.scale,
+                                                    "rotation": i.rotation, "matrix": list(i.matrix)})
+        thunk = _LAYER(_guard(call))
+        return _register_layer(self._handle, 1 if above else 0, thunk, _keep(thunk), _hook_destroy)
+
+    def ocr(self, function):
+        """function(page, width, height, rgba, scale) -> [{"text", "box"}] or None."""
+        def call(pdf, page, rgba, width, height, scale, data):
+            try:
+                lines = function(page, width, height, ctypes.string_at(rgba, width * height * 4), scale)
+            except Exception:  # noqa: BLE001
+                return None
+            return _give(json.dumps(lines)) if lines else None
+        thunk = _OCR(call)
+        return _register_ocr(self._handle, thunk, _keep(thunk), _hook_destroy)
+
+    def font(self, function):
+        """function(family) -> a font's bytes, or None. "" is for what the standard fonts lack."""
+        def call(pdf, family, size, data):
+            try:
+                bytes_ = function(family.decode())
+            except Exception:  # noqa: BLE001
+                return None
+            if not bytes_:
+                return None
+            size[0] = len(bytes_)
+            return _pdf_bytes(bytes_, len(bytes_))
+        thunk = _FONT(call)
+        return _register_font(self._handle, thunk, _keep(thunk), _hook_destroy)
+
+    def trust(self, function):
+        """function(signature, pkcs7) -> True, False or None."""
+        def call(pdf, signature, contents, size, data):
+            try:
+                answer = function(json.loads(signature), ctypes.string_at(contents, size) if contents else b"")
+            except Exception:  # noqa: BLE001
+                return 0
+            return 1 if answer is True else -1 if answer is False else 0
+        thunk = _TRUST(call)
+        return _register_trust(self._handle, thunk, _keep(thunk), _hook_destroy)
+
+    def action(self, function):
+        """function(action) -> True when the application has done it."""
+        def call(pdf, action, data):
+            try:
+                return bool(function(json.loads(action)))
+            except Exception:  # noqa: BLE001
+                return False
+        thunk = _ACTION(call)
+        return _register_action(self._handle, thunk, _keep(thunk), _hook_destroy)
+
+    def input(self, tool, function):
+        """function(points) -> new points, or None for no change."""
+        def call(pdf, tool_name, points, data):
+            try:
+                changed = function(json.loads(points))
+            except Exception:  # noqa: BLE001
+                return None
+            return _give(json.dumps(changed)) if changed is not None else None
+        thunk = _INPUT(call)
+        return _register_input(self._handle, tool.encode(), thunk, _keep(thunk), _hook_destroy)
+
+
+pdf_hooks = PdfHooks()
+
+
+def remove_pdf_hook(hook):
+    return _pdf_hook_remove(hook)
+
+
+def pdf_filter_input(points, options=None):
+    """The built-in filters of a drawing tool's points, with no document."""
+    error = ctypes.c_void_p()
+    out = _pdf_filter_input(None, None, json.dumps(points).encode(),
+                            json.dumps(options).encode() if options is not None else None, ctypes.byref(error))
+    if not out:
+        _raise(error, "the points cannot be filtered")
+    return json.loads(_string(out))
+
+
+def _pdf_more(cls):
+    """What Pdf has beyond the first part of this file."""
+    def annotation_at(self, index, x, y, tolerance=2.0):
+        """The top annotation at a point, or None."""
+        error = ctypes.c_void_p()
+        at = _pdf_annotation_at(self._handle, index, x, y, tolerance, ctypes.byref(error))
+        if at < 0 and error.value:
+            _raise(error, "no page")
+        return None if at < 0 else at
+
+    def move_annotation(self, index, annotation, to):
+        self._ok(_pdf_annotation_move, index, annotation, to, fallback="the annotation cannot be moved")
+
+    def copy_annotation(self, index, annotation, target=None, target_page=0):
+        error = ctypes.c_void_p()
+        target_handle = (target or self)._handle
+        at = _pdf_annotation_copy(self._handle, index, annotation, target_handle, target_page, ctypes.byref(error))
+        if at < 0:
+            _raise(error, "the annotation cannot be copied")
+        return at
+
+    def flatten_annotation(self, index, annotation):
+        self._ok(_pdf_annotation_flatten, index, annotation, fallback="the annotation cannot be flattened")
+
+    def stamp_from_page(self, index, annotation, source, source_page=0):
+        self._ok(_pdf_annotation_stamp_page, index, annotation, source._handle, source_page,
+                 fallback="the page cannot be made a stamp")
+
+    def attach_file(self, index, annotation, name, data):
+        data = bytes(data)
+        self._ok(_pdf_annotation_attach_file, index, annotation, name.encode(), data, len(data),
+                 fallback="the file cannot be attached")
+
+    def annotation_file(self, index, annotation):
+        """(name, bytes) of a file attachment annotation's file."""
+        name, size, error = ctypes.c_void_p(), ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_annotation_file(self._handle, index, annotation, ctypes.byref(name), ctypes.byref(size),
+                                   ctypes.byref(error))
+        if not out:
+            _raise(error, "the annotation has no file")
+        return _string(name.value), _buffer(out, size.value)
+
+    def draw_annotation(self, index, annotation, operations):
+        """A list of canvas operations as the annotation's appearance."""
+        self._ok(_pdf_annotation_draw, index, annotation, json.dumps(operations).encode(),
+                 fallback="the appearance cannot be drawn")
+
+    def annotation_action(self, index, annotation):
+        return self._json(_pdf_annotation_action, index, annotation, fallback="no annotation")
+
+    def export_annotations(self, format="xfdf", page=-1, index=-1):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_annotations_export(self._handle, 1 if format == "fdf" else 0, page, index, ctypes.byref(size),
+                                      ctypes.byref(error))
+        if not out:
+            _raise(error, "the annotations cannot be written")
+        return _buffer(out, size.value)
+
+    def import_annotations(self, data, format="xfdf"):
+        data = bytes(data)
+        error = ctypes.c_void_p()
+        count = _pdf_annotations_import(self._handle, 1 if format == "fdf" else 0, data, len(data), ctypes.byref(error))
+        if count < 0:
+            _raise(error, "the annotations cannot be read")
+        return count
+
+    def apply(self, operation):
+        """Runs an operation a hook saw, or its "inverse"."""
+        self._ok(_pdf_apply, json.dumps(operation).encode(), fallback="the operation cannot be run")
+
+    def page_data(self, index, prefix):
+        return self._json(_pdf_page_data, index, prefix.encode(), fallback="no page")
+
+    def add_font(self, family, font):
+        font = bytes(font)
+        self._ok(_pdf_font_add, family.encode(), font, len(font), fallback="the font cannot be used")
+
+    def filter_input(self, tool, points, options=None):
+        error = ctypes.c_void_p()
+        out = _pdf_filter_input(self._handle, tool.encode(), json.dumps(points).encode(),
+                                json.dumps(options).encode() if options is not None else None, ctypes.byref(error))
+        if not out:
+            _raise(error, "the points cannot be filtered")
+        return json.loads(_string(out))
+
+    for function in (annotation_at, move_annotation, copy_annotation, flatten_annotation, stamp_from_page,
+                     attach_file, annotation_file, draw_annotation, annotation_action, export_annotations,
+                     import_annotations, apply, page_data, add_font, filter_input):
+        setattr(cls, function.__name__, function)
+    cls.hooks = property(lambda self: PdfHooks(self))
+
+
+_pdf_more(Pdf)

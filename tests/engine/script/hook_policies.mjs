@@ -21,6 +21,9 @@ async function load(url) { finished = failed = false; view.load(url); }
 async function openPage() {
   await load(base + '/page');
   await until(() => finished && view.url === base + '/page', 'page');
+  // The first document's own "finished" may be what was seen.
+  for (let t = 0; t < 500 && await view.evaluate(`location.pathname + ' ' + document.readyState`) !== '/page complete'; t++)
+    await new Promise(done => setTimeout(done, 10));
 }
 const fail = error => { console.log(`FAIL ${error && error.stack || error}`); zebkit.quit(); throw error; };
 

@@ -52,6 +52,9 @@ camera and microphone capture, and the device APIs.
 | Schemes | The application's own URL schemes, answered by it, files in ranges for media | 2026-10-20 |
 | Views | Windows with titles, sizes and limits, views attached in another's window, profiles, user agents, pop-ups and drops to the application, the application's menu, files opened by the system | 2026-10-20, 2026-10-21 |
 | PDF | Chromium's PDFium in the engine; `<zebkit/pdf.h>` and `zebkit.pdf`: documents, rendering, text, search, outline, links, annotations with appearances, forms, redaction, page editing, attachments, metadata, images, signatures checked for integrity; PDFium patched where it had nothing | 2026-10-20, 2026-10-21 |
+| PDF annotations | Appearance (endings, leaders, captions, dashed and cloudy borders, opacity, blend, rotation), free text, stamps, carets, notes, attachments, discussion, measurement, viewers' helpers, XFDF and FDF, without a patch to PDFium. Checked in PDFium's pixels with save-and-reopen in `tests/engine/pdf_annotations.c`; one sample page of them looked at in poppler and Ghostscript, which draw it alike (poppler prints one "Bad appearance" warning, not explained yet) | 2026-10-30 |
+| PDF hooks | `zebkit_pdf_hook_*`, Rust, Python, `zebkit.pdf.use()`: kinds, appearance providers, events as operations with inverses, render layers, OCR, fonts, trust, actions, input filters; `examples/pdf-plugin/` in C and JavaScript | 2026-10-30 |
+| Canvas and text | `<zebkit/canvas.h>` on Skia, `<zebkit/text.h>` on HarfBuzz. With the PDF work above: library +0.41 MB (146.04 to 146.45 MB, 0.28%), package +0.44 MB (0.26%), the library in xz +0.14 MB. No effect on page speed is expected, none was measured | 2026-10-30 |
 | FFmpeg | zebkit's configuration: Chrome's decoders, and for applications the muxers, libswscale and libswresample | 2026-10-20 |
 | macOS | `Zebkit.framework` for Apple silicon, built on Linux, every test passing on a Mac (`docs/MACOS.md`) | 2026-10-21 |
 | Off-screen views | `<zebkit/offscreen.h>`: frames as IOSurfaces (macOS) or memfd shared memory (Linux) with damage, sequence, size and scale, given back by the application, held back when it holds its allowance, none while idle, a rate limit; mouse, wheel, keys, an input method, focus, cursor and caret; `<select>` lists and pickers as a popup layer; the Rust crate's `View::new_offscreen`; `examples/offscreen-host`, the frames shown by another process over a socket (fds, mach ports). Tested on Linux and on a Mac (`tests/engine/offscreen.c`) | 2026-10-23 |
@@ -338,66 +341,37 @@ window integration below are still required.
 
 ### The API
 
-- **TODO: annotations as a full PDF editor has them.** Today every type
-  is read, the common ones are made with their appearance, and redaction
-  removes content for good; what an editor needs beyond that, in this
-  order, each in `<zebkit/pdf.h>`, `zebkit.pdf` and its tests:
-  1. **Appearance**: line endings (open and closed arrows, circle,
-     square, diamond, butt, slash), leader lines and captions on lines;
-     dashed and cloudy borders on squares, circles and polygons; opacity,
-     fill and blend drawn into every generated appearance; an
-     annotation's own rotation.
-  2. **Free text**: font, size, colour and alignment (`/DA`, `/Q`), rich
-     text (`/RC`, `/DS`), background and border, the callout line with its
-     ending (`/CL`, `/LE`), rotation; the appearance drawn from all of it.
-  3. **Stamps and the rest made**: the standard stamps (Approved, Draft,
-     Confidential, ...) drawn, text stamps, stamps from another
-     document's page as vectors; carets; notes with each icon; file
-     attachments with the file embedded.
-  4. **Discussion**: replies (`/IRT`), review and marking states
-     (accepted, rejected, completed), groups (`/RT /Group`), and their
-     popups, read and made.
-  5. **Measurement**: distance, perimeter and area, with a scale
-     (`/Measure`) and the value as the caption.
-  6. **For viewers and editors**: the annotation at a point; markup made
-     from a range of the text; the order on the page changed; copying to
-     another page or document; one annotation flattened or exported.
-  7. **Interchange**: XFDF and FDF in and out, the formats Acrobat and
-     other tools exchange annotations in.
-  Every appearance checked against Acrobat's and PDF.js's rendering of
-  the same file; patches to PDFium where it lacks a generator, as
-  `patches/1015` does for lines and polygons.
-- **TODO: PDF extensible by applications, with hooks everywhere.** The
-  PDF library is the application's to extend, not a closed set of calls:
-  the same hooks in C (`zebkit_pdf_hook_*`), Rust, Python and
-  `zebkit.pdf` (`zebkit.pdf.use(plugin)` for a plugin of several).
-  - **Custom annotation types**: an application registers a kind of its
-    own (`/Subtype` or an application prefix): its properties and their
-    checks, the drawing of its appearance (a canvas API on Skia, written
-    into the appearance stream), its hit testing, and its data, kept in
-    the document under the application's prefix and carried through save,
-    copy, flatten and XFDF.
-  - **Appearance providers**: any type's appearance drawn by the
-    application instead of the built-in generator (its own stamps, fonts,
-    arrowheads), per document or for all.
-  - **Events, before and after**: opening, saving, a page rendered, an
-    annotation added, changed or removed, a form field changed, a
-    redaction applied, pages inserted, moved or deleted. A "before" hook
-    may change what is about to happen or refuse it; an "after" hook sees
-    what changed. Changes come as operations, so that an application can
-    keep an undo history or send them to collaborators.
-  - **Render layers**: drawing above or below a page's content when it is
-    rendered, in page space, for selections, search results, a
-    collaborator's cursor or a watermark.
-  - **Providers for what the library does not decide**: text for scanned
-    pages (an OCR engine of the application's), fonts for appearances and
-    free text, trust in a signer's certificate, and actions (links,
-    named, launch, JavaScript) handled by the application.
-  - **Tools for viewers**: input filters for drawing (smoothing ink,
-    snapping lines, constraining shapes) that a viewer's tools run through.
-  - **Checked by:** an example plugin that adds an annotation kind with
-    its own appearance, keeps an undo history and supplies OCR text, the
-    same in C and in JavaScript, with tests for every hook.
+- **Annotations as a full PDF editor has them: what is left.** Implemented
+  (2026-10-30, in `<zebkit/pdf.h>`, `zebkit.pdf`, Rust and Python; `docs/API.md`).
+  Not done:
+  - Checked against Acrobat's and PDF.js's rendering of the same file: not done.
+    Appearances are checked in PDFium's pixels, and looked at once in poppler
+    and Ghostscript (the Done row says what).
+  - XFDF and FDF carry no appearances and no embedded files: an image stamp, a
+    stamp from a page and a file attachment's file do not travel; what reads the
+    file draws the generated ones. XML rich text in XFDF is written only when it
+    is well formed.
+  - Standard stamps are drawn by zebkit (a frame and the name), not Acrobat's
+    artwork. A rotation is of generated appearances; text markup and ink are not
+    turned. Rich text covers paragraphs, spans, colour, size, family, bold,
+    italic, underline and alignment, not all of the XHTML subset the reference has.
+  - Fonts: without one given for it, text outside WinAnsi comes out as question
+    marks. Free text's own glyphs are not shaped (no ligatures, no right-to-left);
+    `<zebkit/text.h>` and a canvas appearance are.
+- **PDF extensible by applications: what is left.** Implemented (2026-10-30,
+  `zebkit_pdf_hook_*`, Rust, Python, `zebkit.pdf.use()`; `docs/API.md`,
+  `examples/pdf-plugin/`). Not done:
+  - The canvas an appearance is drawn on is not Skia written into the stream: it
+    writes PDF operators through the same `<zebkit/canvas.h>` calls, because Skia
+    has no way to write one form XObject (its PDF backend makes whole documents)
+    and pixels would not be vectors. Text is outlines; gradients are opaque
+    shadings, their stops' alpha not used; strokes do not take gradients.
+  - In JavaScript, plugins run on the script's own thread around the calls it
+    makes: what the engine does inside one call (an annotation added by an import)
+    is told to `after` hooks, but is not asked of `before` hooks.
+  - `zebkit_pdf_annotation_copy()`, a stamp from a page and attaching a file are
+    not events. Page deletion, redaction, flatten and page import have no inverse;
+    a move of several pages has none.
 - **PDF, beyond annotations**: trust in a signer's certificate (the chain,
   revocation), encrypted documents saved with new permissions, form fields
   renamed, a page's JavaScript actions. Outline replacement now supports
@@ -405,9 +379,13 @@ window integration below are still required.
   atomic validation and full/incremental-save regressions pass on Linux. PDFium in
   a sandboxed utility process for pages' documents, as Chrome's printing
   runs it.
-- **Services, later areas**: 2D drawing on Skia's canvas, shaping a line of
-  text, decoding media frames; the desktop's
-  clipboard, notifications, file dialogs, screens, power and keychain.
+- **Services, later areas**: decoding media frames; the desktop's clipboard,
+  notifications, file dialogs, screens, power and keychain. 2D drawing
+  (`<zebkit/canvas.h>`) and shaping a line of text (`<zebkit/text.h>`) are
+  implemented. Left of them: colour fonts draw nothing in a canvas (outlines only;
+  HarfBuzz's own drawing is compiled out of the engine, so glyphs come from Skia),
+  no image filters or text decoration, and `zebkit.canvas` keeps its operations
+  in the script until pixels are asked for.
 - **LevelDB export: implemented** (2026-10-30). The engine's own LevelDB,
   exported through its C API as `zebkit_vendor_leveldb_*` in `leveldb/c.h`,
   like the other libraries, with no key-value API of zebkit's beside it.

@@ -49,6 +49,8 @@ impl Run {
         let url = format!("{}/page", self.base);
         self.load(&url);
         wait("page", || self.finished.get() && self.view.url().as_deref() == Some(url.as_str()));
+        // The first document's own "finished" may be what was seen.
+        wait("page ready", || ev(&self.view, "location.pathname + ' ' + document.readyState").contains("/page complete"));
     }
     fn wait_closed(&self) { wait("closed", || self.closed.get()); }
 }
