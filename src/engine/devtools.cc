@@ -13,6 +13,7 @@
 //   each a profile in memory (zebkit_context_new());
 // - Browser.getWindowForTarget, getWindowBounds, setWindowBounds.
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -21,7 +22,6 @@
 #include <vector>
 
 #include "base/base64.h"
-#include "base/containers/contains.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -248,7 +248,7 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
     } else {
       window_id = params.FindInt("windowId").value_or(0);
       for (const auto& [window, known] : window_ids_) {
-        if (known == window_id && base::Contains(content::Shell::windows(), window))
+        if (known == window_id && std::ranges::contains(content::Shell::windows(), window))
           shell = window;
       }
       if (!shell) {
