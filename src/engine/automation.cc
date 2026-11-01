@@ -1728,10 +1728,14 @@ class Automation : public content::WebContentsObserver,
       return;
     }
     call->Log("waiting for " + call->String("selector"));
+    // frames.ts: a property is of the page's own objects.
     StepOnTarget(call, "expect", std::move(arg),
                  base::BindOnce([](Call* call, base::Value value) {
                    call->Done(std::move(value));
-                 }));
+                 }),
+                 call->String("expression") == "to.have.property"
+                     ? AutomationWorld::kMain
+                     : AutomationWorld::kUtility);
   }
 
   void WaitForTimeout(Call* call) {

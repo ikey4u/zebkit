@@ -540,6 +540,12 @@ void Connection::Received(const std::string& text) {
   if (const base::DictValue* metadata = dict.FindDict("metadata")) {
     if (std::optional<double> timeout = metadata->FindDouble("timeout"))
       command_params.Set("timeout", *timeout);
+
+    // Frame.expect's log begins with the call's title.
+    if (const std::string* title = metadata->FindString("title");
+        title && *method == "expect") {
+      command_params.Set("expectTitle", *title);
+    }
   }
   Command(id, *guid, *method, std::move(command_params));
 }

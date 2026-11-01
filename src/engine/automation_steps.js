@@ -593,7 +593,9 @@ steps.ariaSnapshot = arg => {
 steps.expect = async arg => {
   const options = { ...arg.options };
   const timeout = options.expectTimeout ?? arg.timeout;
+  const title = options.expectTitle;
   delete options.expectTimeout;
+  delete options.expectTitle;
   // The endpoint's: serialized, and its received value is to be serialized too.
   const serialized = options.expectedValueSerialized;
   delete options.expectedValueSerialized;
@@ -617,51 +619,70 @@ steps.expect = async arg => {
   const once = async say => {
     const elements = query({ selector, scope: arg.scope }, !isArray);
     if (!elements.length) {
-      say('locator resolved to 0 elements');
       let matches = options.isNot, received;
+      let missing = false;
       if (options.expression === 'to.have.count') {
+        say('  locator resolved to 0 elements');
         received = { value: 0 };
         matches = options.expectedNumber === 0;
       } else if (options.expression.endsWith('.array')) {
+        say('  locator resolved to 0 elements');
         received = { value: [] };
         matches = (options.expectedText?.length ?? 0) === 0;
       } else if (!options.isNot && ['to.be.hidden', 'to.be.detached'].includes(options.expression)) {
         matches = true;
       } else if (options.isNot && ['to.be.visible', 'to.be.attached', 'to.be.in.viewport'].includes(options.expression)) {
         matches = false;
+      } else {
+        missing = true;
       }
-      return { matches, received };
+      if (matches === options.isNot && !isArray && document.body)
+        received = { ...received, ariaSnapshot: injected.ariaSnapshotForExpectFailure(document.body, { mode: 'default' }) };
+      return { matches, received, errorMessage: missing ? 'element(s) not found' : undefined };
     }
     say(isArray
-      ? `locator resolved to ${elements.length} element${elements.length === 1 ? '' : 's'}`
-      : `locator resolved to ${injected.previewNode(elements[0])}`);
-    return await injected.expect(elements[0], options, elements, true);
+      ? `  locator resolved to ${elements.length} element${elements.length === 1 ? '' : 's'}`
+      : `  locator resolved to ${injected.previewNode(elements[0])}`);
+    const result = await injected.expect(elements[0], options, elements, true);
+    if (result.matches === options.isNot && !Array.isArray(result.received?.value))
+      say(`  unexpected value "${options.expression === 'to.match.aria' ? result.received?.value?.raw : result.received?.value}"`);
+    return result;
   };
   const log = [];
   const say = line => {
     if (log[log.length - 1] !== line)
       log.push(line);
   };
+  // dispatchers/frameDispatcher.ts: the call's title, first in its log.
+  if (title !== undefined) {
+    const locator = arg.selector === undefined ? '' : ' ' + asLocator('javascript', arg.selector);
+    log.push(`${title}${locator}${timeout ? ` with timeout ${timeout}ms` : ''}`);
+    if (arg.selector !== undefined)
+      log.push(`waiting for${locator}`);
+  }
+  // frames.ts: an error in the page, an invalid selector or a strictness
+  // violation ends the assertion; only a mismatch retries.
   try {
     last = await once(say);
     if (last.matches !== options.isNot)
       return answered({ ...last, log });
   } catch (e) {
-    if (e instanceof FatalError || /strict mode violation|selector/i.test(e.message))
-      return { matches: options.isNot, errorMessage: e.message, log };
+    return { matches: options.isNot, errorMessage: e.message, log };
   }
+  let thrown;
   const polled = await poll(timeout, kPollWaits, async () => {
     try {
       last = await once(say);
     } catch (e) {
-      if (/strict mode violation|selector/i.test(e.message))
-        throw e;
-      return undefined;
+      thrown = e;
+      return last = { matches: !options.isNot };
     }
     return last.matches !== options.isNot ? last : undefined;
   });
+  if (thrown)
+    return { matches: options.isNot, errorMessage: thrown.message, log };
   if (polled.timedOut)
-    return answered({ matches: options.isNot, received: last?.received, timedOut: true, log });
+    return answered({ matches: options.isNot, received: last?.received, errorMessage: last?.errorMessage, timedOut: true, log });
   return answered({ ...polled.result, log });
 };
 
