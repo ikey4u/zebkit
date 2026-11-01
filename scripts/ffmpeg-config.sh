@@ -4,7 +4,8 @@
 #
 #   scripts/ffmpeg-config.sh [--no-build]
 #
-# --no-build takes FFmpeg's builds already in the tree, from a run before.
+# --no-build takes FFmpeg's builds already in the tree, from a run before;
+# FFMPEG_ONLY=<os> builds that system's and takes the others from a run before.
 #
 # Chromium's FFmpeg has what a browser plays. Applications need more of it
 # (audio resampled for Whisper, frames scaled, files remuxed, VP8 and
@@ -16,7 +17,7 @@
 #
 # The work is Chromium's own tools for FFmpeg (media/ffmpeg/scripts): FFmpeg's
 # configure and make for each platform zebkit builds (Linux x86-64, macOS
-# arm64 from Linux), then generate_gn.py, which finds the sources of the
+# arm64 and Windows x64 from Linux), then generate_gn.py, which finds the sources of the
 # objects built. That writes into the FFmpeg tree it reads, so it runs on a
 # copy. Run again when Chromium's FFmpeg changes (a new CHROMIUM_VERSION).
 
@@ -32,7 +33,7 @@ FLAGS=(
     --enable-decoder=libvpx_vp8,libvpx_vp9
     "--extra-cflags=-I$SRC_DIR/third_party/libvpx/source/libvpx"
 )
-PLATFORMS=("linux x64" "mac arm64")
+PLATFORMS=("linux x64" "mac arm64" "win x64")
 
 ffmpeg="$SRC_DIR/third_party/ffmpeg"
 scripts="$SRC_DIR/media/ffmpeg/scripts"
@@ -48,11 +49,14 @@ stub_libvpx() {
     local os="$1" dir="$CACHE_DIR/ffmpeg-vpx-stub/$1"
     local target=x86_64-unknown-linux-gnu
     [[ "$os" == mac ]] && target=arm64-apple-macos13
+    [[ "$os" == win ]] && target=x86_64-pc-windows-msvc
     mkdir -p "$dir"
     printf 'void *vpx_codec_vp8_dx(void) { return 0; }\nvoid *vpx_codec_vp9_dx(void) { return 0; }\n' > "$dir/stub.c"
     clang --target="$target" -c "$dir/stub.c" -o "$dir/stub.o"
-    rm -f "$dir/libvpx.a"
+    rm -f "$dir/libvpx.a" "$dir/vpx.lib"
     llvm-ar rcs "$dir/libvpx.a" "$dir/stub.o"
+    # MSVC's naming, for link.exe's -lvpx.
+    [[ "$os" == win ]] && cp "$dir/libvpx.a" "$dir/vpx.lib"
     echo "$dir"
 }
 
@@ -60,11 +64,14 @@ build=1
 [[ "${1:-}" == --no-build ]] && build=0
 for platform in "${PLATFORMS[@]}"; do
     (( build )) || break
+    [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" ]] && continue
     log "configuring and building FFmpeg for $platform"
     stub="$(stub_libvpx "${platform%% *}")"
+    libpath="-L$stub"
+    [[ "${platform%% *}" == win ]] && libpath="/LIBPATH:$stub"
     # shellcheck disable=SC2086
     (cd "$ffmpeg" && python3 "$scripts/build_ffmpeg.py" $platform --branding Chrome -- "${FLAGS[@]}" \
-        "--extra-ldflags=-L$stub")
+        "--extra-ldflags=$libpath")
 done
 
 log "finding the sources of what was built"
@@ -86,8 +93,13 @@ done
 # It writes the files it renames relative to where it runs: in the copy.
 (cd "$copy" && python3 -W ignore "$scripts/generate_gn.py" -s "$copy" -b "$work/builds")
 
-log "writing $out"
-rm -rf "$out/config"
+# Into a copy, and over $out by content: a file that did not change keeps its
+# time, and a build going on elsewhere does not see it change.
+final="$out"
+out="$work/out"
+log "writing $final"
+mkdir -p "$out"
+cp -a "$final/ffmpeg_generated.gni" "$out/" 2>/dev/null || true
 for platform in "${PLATFORMS[@]}"; do
     read -r os arch <<< "$platform"
     # What copy_config.sh copies for Chromium's configurations.
@@ -100,8 +112,9 @@ for platform in "${PLATFORMS[@]}"; do
                 libavformat/muxer_list.c libavformat/protocol_list.c; do
         [[ -f "$from/$file" ]] || continue
         mkdir -p "$to/$(dirname "$file")"
-        # The configure line names the checkout; it is written relative to it.
-        sed "s|$ZEBKIT_ROOT/||g" "$from/$file" > "$to/$file"
+        # The configure line names the checkout, and the Windows SDK's place on
+        # this machine; neither belongs in the repository.
+        sed -E -e "s|$ZEBKIT_ROOT/||g" -e "s#(/winsysroot:?)[^ ']*#\1#g" "$from/$file" > "$to/$file"
     done
 done
 cp "$copy/ffmpeg_generated.gni" "$out/ffmpeg_generated.gni"
@@ -130,4 +143,17 @@ ffmpeg_c_sources += [ "libavformat/sdp.c" ]
 """
 gni.write_text(text)
 PY
-log "done: $out"
+python3 -I - "$out" "$final" <<'PY'
+import pathlib, shutil, sys
+new, old = map(pathlib.Path, sys.argv[1:])
+names = {p.relative_to(new) for p in new.rglob("*") if p.is_file()}
+# A renamed file's first line is the time it was generated.
+def text(path):
+    return path.read_bytes().split(b"\n", 1)[-1] if "autorename_" in path.name else path.read_bytes()
+for name in names:
+    target = old / name
+    if not target.exists() or text(new / name) != text(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(new / name, target)
+PY
+log "done: $final"

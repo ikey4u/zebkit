@@ -80,7 +80,7 @@ ffmpeg_asm_include_dirs += [
   "//third_party/ffmpeg/libswscale/x86",
 ]
 
-if ((is_apple && (current_cpu == "arm64" || current_cpu == "arm64e") && ffmpeg_branding == "Chrome") || (use_linux_config && current_cpu == "x64" && ffmpeg_branding == "Chrome")) {
+if ((is_apple && (current_cpu == "arm64" || current_cpu == "arm64e") && ffmpeg_branding == "Chrome") || (is_win && current_cpu == "x64" && ffmpeg_branding == "Chrome") || (use_linux_config && current_cpu == "x64" && ffmpeg_branding == "Chrome")) {
   ffmpeg_c_sources += [
     "libavcodec/aac/aacdec.c",
     "libavcodec/aac/aacdec_ac.c",
@@ -411,7 +411,7 @@ if ((is_apple && (current_cpu == "arm64" || current_cpu == "arm64e") && ffmpeg_b
   ]
 }
 
-if (use_linux_config && current_cpu == "x64" && ffmpeg_branding == "Chrome") {
+if ((is_win && current_cpu == "x64" && ffmpeg_branding == "Chrome") || (use_linux_config && current_cpu == "x64" && ffmpeg_branding == "Chrome")) {
   ffmpeg_c_sources += [
     "libavcodec/x86/aacpsdsp_init.c",
     "//zebkit/ffmpeg/autorename/libavcodec/x86/autorename_libavcodec_x86_videodsp_init.c",
