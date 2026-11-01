@@ -647,19 +647,20 @@ CDP in between:
   `tests/page` and `tests/library` at tag v1.64.1 through `chromium.connect()`,
   an engine for each worker, or the same tests on Chrome (`--target chrome`).
   What a test expects to fail is named with its reason in
-  `tests/playwright-suite/expected-failures.txt`. On 2026-11-01, the batch's final engine,
-  5262 tests, 15 s a test, three workers, no engine exit:
+  `tests/playwright-suite/expected-failures.txt`, by the tests that have the cause; a timeout
+  or a crash is never explained by the list and is counted apart. On 2026-11-01, 5262 tests,
+  30 s a test, four workers, no engine exit:
 
   | | Passed | Failed | Skipped |
   |---|---|---|---|
-  | zebkit, total | 3012 | 1183 | 1067 |
-  | Chrome 156 (launched, the same day, a little earlier), total | 4195 | 6 | 1061 |
+  | zebkit, total | 3029 | 1166 | 1067 |
+  | Chrome (launched, the same day), total | 4196 | 5 | 1061 |
 
-  Of the 4189 tests that pass on Chrome, 3011 pass here. Of the 1183 failures, 716 are listed with a
-  reason (what needs Playwright's own server or a browser the test starts itself, options and commands
-  not implemented, known differences), 5 fail on Chrome too, and 467 are not explained yet: 215 tests
-  of all failures end in the test's timeout, others differ in a value; not triaged one by one. The
-  endpoint is not at parity with Playwright's server, and this counts how far.
+  Of the 4190 tests that pass on Chrome, 3029 pass here. Of the 1166 failures, 580 are listed with a
+  reason, 5 fail on Chrome too, and 585 are not explained: 196 tests end in the test's timeout and 8
+  end with the client told the page or browser closed (no engine exited: `beforeunload` among them),
+  the others differ in a value. The endpoint is not at parity with Playwright's server, and this
+  counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
   endpoint and over CDP on the same build, and Playwright on Chrome. It is a standard test: a native command
