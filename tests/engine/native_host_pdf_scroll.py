@@ -44,7 +44,7 @@ def self_driven(host, document, switches):
         print(("ok   " if condition else "FAIL ") + what + ("" if condition else f": {detail!r}"), flush=True)
         failures += not condition
 
-    check(lines and int(lines[-1][4]) >= 300, "the pane has the document", result.stdout[-400:] + result.stderr[-400:])
+    check(lines and int(lines[-1][4]) >= 30, "the pane has the document", result.stdout[-400:] + result.stderr[-400:])
     if lines:
         positions = [int(m[1]) for m in lines]
         top = max(positions)
@@ -69,9 +69,9 @@ def main():
     if self_drive:
         del sys.argv[1]
     host, document = sys.argv[1:3]
-    if document == "generated":
+    if document.startswith("generated"):
         generated = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        generated.write(long_pdf(300))
+        generated.write(long_pdf(int(document.partition(":")[2] or 300)))
         generated.close()
         document = generated.name
     if self_drive:

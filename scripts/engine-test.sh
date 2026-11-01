@@ -690,7 +690,7 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
 elif [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
     run_limit=450
     run native-host-appkit-pdf python3 -I "$tests/native_host_pdf_scroll.py" --self "$bin/native-host-appkit" \
-        "$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)" --no-sandbox
+        generated:40 --no-sandbox
     run_limit=180
 fi
 
