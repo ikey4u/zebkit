@@ -784,6 +784,17 @@ function argument(arg, handles, plain) {
 
 // An evaluation's arguments, without Array.prototype.map, the page's to break.
 function parametersOf(args, handles, plain) {
+  // A function among them ({fn}, evaluate's exposeFunctions) calls the binding
+  // the client exposed under that name, through this (bindingsController.ts).
+  if (!plain && !globalThis.__playwright__binding__controller__) {
+    Object.defineProperty(globalThis, '__playwright__binding__controller__', {
+      configurable: true,
+      value: {
+        callBinding: (name, ...callArgs) => globalThis[name](...callArgs),
+        parseInitScriptArg: value => parseEvaluationResultValue(value),
+      },
+    });
+  }
   const list = Array.isArray(args) ? args : [args];
   const parameters = new Array(list.length);
   for (let i = 0; i < list.length; ++i)

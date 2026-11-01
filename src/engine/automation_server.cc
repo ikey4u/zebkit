@@ -75,6 +75,29 @@ std::optional<base::Value> Parse(const std::string& json) {
 
 // Playwright's protocol's form (protocol/src/serializers.ts) of a plain JSON
 // value.
+constexpr char kBindingsController[] =
+    "if (!globalThis.__playwright__binding__controller__) {"
+    "  const controller = {"
+    "    callBinding: (name, ...args) => globalThis[name](...args),"
+    "    parseInitScriptArg: value => {"
+    "      const parse = v => {"
+    "        if (v === null || typeof v !== 'object') return v;"
+    "        if ('v' in v) return ({ null: null, NaN: NaN, Infinity: Infinity, '-Infinity': -Infinity, '-0': -0 })[v.v];"
+    "        if ('d' in v) return new Date(v.d);"
+    "        if ('u' in v) return new URL(v.u);"
+    "        if ('bi' in v) return BigInt(v.bi);"
+    "        if ('r' in v) return new RegExp(v.r.p, v.r.f);"
+    "        if ('a' in v) return v.a.map(parse);"
+    "        if ('o' in v) { const o = {}; for (const { k, v: item } of v.o) o[k] = parse(item); return o; }"
+    "        if ('fn' in v) { const name = v.fn; return (...args) => controller.callBinding(name, ...args); }"
+    "        return v;"
+    "      };"
+    "      return parse(value);"
+    "    },"
+    "  };"
+    "  Object.defineProperty(globalThis, '__playwright__binding__controller__', { value: controller, configurable: true });"
+    "}\n";
+
 base::Value Serialize(const base::Value& value, int* next_id) {
   switch (value.type()) {
     case base::Value::Type::BOOLEAN:
@@ -1453,6 +1476,15 @@ void Connection::Command(int id,
     }
     ReplyError(id, "Target page, context or browser has been closed");
     return;
+  }
+  // addInitScript's exposeFunctions: the script finds Playwright's bindings
+  // controller in the document (clientHelper.ts); here the exposed bindings
+  // are functions of the window.
+  if (method == "addInitScript") {
+    if (const std::string* source = params.FindString("source");
+        source && source->find("__playwright__binding__controller__") != std::string::npos) {
+      params.Set("source", std::string(kBindingsController) + *source);
+    }
   }
   const std::string type = object->type;
   auto reply_as_is = base::BindOnce(

@@ -82,8 +82,13 @@ export PW_SUITE_REPO="$repo" PW_SUITE_OUT="$out" PW_SUITE_DIR="$suite" PW_SUITE_
     PW_SUITE_TIMEOUT="$timeout_ms" PW_SUITE_GLOBAL_TIMEOUT="$(( global_minutes * 60000 ))" \
     PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
 engines=
+runner=
 stop_engines() { [[ -n "$engines" ]] && kill "$engines" 2> /dev/null; engines=; }
-trap stop_engines EXIT
+# timeout(1) puts what it runs in a process group of its own, which a signal
+# to this script's group does not reach: it is stopped by its own group.
+stop_runner() { [[ -n "$runner" ]] && kill -- "-$runner" 2> /dev/null; runner=; }
+trap 'stop_runner; stop_engines' EXIT
+trap 'exit 143' TERM INT
 if [[ "$target" == zebkit ]]; then
     package="${ZEBKIT_TEST_PACKAGE:-$OUT_DIR/$profile/package}"
     [[ -d "$package" ]] || die "no package in $package: scripts/package.sh $profile"
@@ -116,7 +121,12 @@ arguments=(--config="$suite/playwright.config.ts")
 [[ -n "$project" ]] && arguments+=(--project="$project")
 [[ -n "$grep_for" ]] && arguments+=(--grep="$grep_for")
 # The runner's own limit is the global timeout; this one is for a runner that hangs.
-(cd "$repo" && nice -n 19 ionice -c3 timeout -k 30 "$(( global_minutes * 60 + 120 ))" \
-    "${node[@]}" node_modules/.bin/playwright test "${arguments[@]}" "${files[@]}") || true
+cd "$repo"
+nice -n 19 ionice -c3 timeout -k 30 "$(( global_minutes * 60 + 120 ))" \
+    "${node[@]}" node_modules/.bin/playwright test "${arguments[@]}" "${files[@]}" &
+runner=$!
+wait "$runner" || true
+runner=
+cd "$ZEBKIT_ROOT"
 stop_engines
 summarize
