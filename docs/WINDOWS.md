@@ -86,29 +86,56 @@ empty there (`src/engine/win/sandbox_startup.cc`).
 
 ## Testing without building there
 
-Test programs are built on Linux and copied (`tests/engine/win_*.c` were written for
-Windows; other tests build as they are or need POSIX parts ported). `scripts/engine-test.sh`
-does not run on Windows yet.
+Programs are built on Linux and copied, as for a Mac, and run under Git Bash:
+
+```sh
+scripts/engine-test.sh slim-windows --build-only DIR   # on Linux; C, and Rust if the target is installed
+tar -C DIR -cJf bundle.tar.xz .                        # copy it to Windows, unpack it as DIR there
+ENGINE_TEST_WINDOWS=1 DIR/scripts/engine-test.sh slim-windows --prebuilt DIR/programs [--only REGEX]
+```
+
+`tests/engine/win_compat` is the POSIX the tests use. `ENGINE_TEST_WINDOWS=1` adds what
+takes the mouse and the keyboard. Python comes from the machine; nothing is installed.
+A sandboxed child has no PATH of the parent's: `zebkit.dll` has to be beside the executable.
 
 ## State
 
-On Windows 10 19045, one CPU, VMware's display adapter, 2026-11-01:
+Windows 10 19045, 2 CPUs, VMware's display adapter, on a shared folder, 2026-11-01:
+142 groups of the suite, 18 with failures. 1,837 of the 1,843 checks in groups that print a
+total passed. Node.js's tests (Playwright, MCP, certificates over HTTP/2) did not run.
 
-| Test | Result |
+Pass, among others: `win_smoke`, `win_host` and `win_native_parent` (23 checks, real
+`SendInput`), with the sandbox and without; the control of `zebkit_sandbox.lib`'s stubs; `canvas`
+(57), `pdf` (99), `pdf-hooks` (286), `api` (28), `automation`, `vendor` (48); hooks in C, JavaScript,
+Python and Rust other than downloads; WebAuthn with the virtual authenticator; Rust with the sandbox.
+
+Fail:
+
+| What | Why |
 |---|---|
-| `win_smoke`: start, page, script, capture | the capture's pixels are the page's |
-| `win_host`: own window and loop, view in its `HWND`, sandbox on and off | pixels read back from the screen; children's tokens checked |
-| `win_offscreen`: `--headless`, frames | pixels through `frame->pixels` and the file mapping |
-| `services` 25 of 25, `pdf` 99 of 99, `scheme` 11 of 11, `mode`, `edit_commands`, `automation_reentry` | pass, with `--no-sandbox` |
-| `canvas` | 50 of 57, run without the Ahem font it is given by `engine-test.sh` |
-| Rust: `codecs`, `embedded` (host loop, popup hook, shutdown) | pass, with `--no-sandbox`; linked on Linux with `lld-link` |
+| `cookies`, `cookie-host` | cookies are written encrypted, and gone after a restart, with zebkit's DPAPI key and the host's key alike; so not DPAPI. Not known; the profile was on a shared folder |
+| `cookie-file*`, `startup-settings*` | file key storage refuses a directory without ACLs, which a shared folder has not: fail-closed. Not run on NTFS |
+| `hook-*-download` | a download ends `FILE_FAILED` when renamed into place. Not known; a shared folder too |
+| `offscreen` (2 of 31) | a new scale's frame times out. 31 of 31 on the build before patches 1069 to 1071; `offscreen.cc` is the same. Not known |
+| `offscreen-scale` (9) | one scale for all views, on Windows: Linux's displays need the headless screen, which Windows' views do not use |
+| `pdf-in-page` (2) | PDFs are not in a renderer of their own (patch 1071, new). Not looked into |
+| `win-webauthn` | Windows' route is not offered to the host, and Windows' window has never opened: the code for it is not proven |
+| `cdp-overrides` | clearing a locale override leaves `zh-CN` different from before. Not looked into |
+| `http-auth-bindings`, `runtime-settings-python` | a timeout, and a connection reset. Not looked into |
+
+## The network service
+
+It runs unsandboxed, as upstream's default. A page's renderer has to be broken first, but then
+the network service, with the user's rights and every site's cookies, is the next step, and
+a parser bug there (HTTP, DNS, certificates) needs nothing else. To turn on
+`kNetworkServiceSandbox`: Windows 10 and an LPAC AppContainer, access granted on every profile's
+`Network` and cache directories before use (`content/browser/network_sandbox.cc`), which a
+shared or FAT disk cannot take, and proxy resolution, system DNS and certificate paths tested
+under it. Chrome has it on through its own policy, not the default.
 
 ## Left
 
-- The rest of `scripts/engine-test.sh`: ported tests. Python's loader is untested: the
-  test machine has no Python. Rust needs `+crt-static` and a call for the sandbox.
-- D3D11 frames on a machine with a real GPU; WebAuthn's system interface; `zebkit.ui`
-  on Windows; printing through the system's dialog (printing to PDF runs); real input in
-  attached views.
-- The size-trained inliner with `lld-link`. `zebkit.dll` is 185.0 MiB, and the package
-  260.0 MiB, of which `zebkit_sandbox.lib` is 49.5 MiB and is not shipped with an application.
+- The failures above, on NTFS first.
+- `zebkit.ui` beyond its script's test; printing through the system's dialog.
+- One scale per off-screen view; the example of frames in another process.
+- D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.

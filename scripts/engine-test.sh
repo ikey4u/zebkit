@@ -182,7 +182,7 @@ build_against_package "$package" "$bin/vendor" "$tests/vendor.c"
 # shellcheck disable=SC2046
 target_cxx -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
     $(engine_link_options "$package") -o "$bin/vendor-cxx"
-build_against_package "$package" "$bin/services" "$tests/services.c"
+build_against_package "$package" "$bin/services-test" "$tests/services.c"
 build_against_package "$package" "$bin/pdf" "$tests/pdf.c"
 build_against_package "$package" "$bin/canvas" "$tests/canvas.c"
 build_against_package "$package" "$bin/pdf-annotations" "$tests/pdf_annotations.c"
@@ -454,7 +454,7 @@ fi
 
 run vendor "$bin/vendor" "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
 run vendor-cxx "$bin/vendor-cxx"
-run services "$bin/services"
+run services "$bin/services-test"
 run pdf "$bin/pdf"
 # Ahem: every glyph a box of one em, which makes text's pixels certain.
 ahem="$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
