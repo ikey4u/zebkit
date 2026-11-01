@@ -34,7 +34,7 @@
       box-shadow:0 1px 3px rgba(0,0,0,.5); z-index:1; user-select:none; white-space:nowrap; overflow:hidden }
     #toolbar button { font:inherit; color:inherit; min-width:28px; height:28px; border:0; border-radius:50%; background:none; cursor:pointer }
     #toolbar button:hover { background:rgba(255,255,255,.12) }
-    #toolbar input { font:inherit; color:inherit; border:0; border-radius:2px; background:#191b1c; height:22px; padding:0 4px }
+    #toolbar input { user-select:text; font:inherit; color:inherit; border:0; border-radius:2px; background:#191b1c; height:22px; padding:0 4px }
     #page { width:42px; text-align:right } #find { width:150px } .gap { flex:1 } #message { position:absolute; inset:40px 0 0;
       display:none; align-items:center; justify-content:center; color:#f1f3f4; font:15px system-ui,sans-serif; background:rgb(40,40,40) }
     #sizer { width:1px }`);

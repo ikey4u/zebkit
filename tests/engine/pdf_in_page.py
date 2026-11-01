@@ -149,7 +149,8 @@ class Page:
             attributes = node.get("attributes", [])
             pairs = dict(zip(attributes[0::2], attributes[1::2]))
             if pairs.get("id") == "scroller":
-                found.append(pairs)
+                found.append({re.sub(r"-(\w)", lambda m: m[1].upper(), key[5:]): value
+                              for key, value in pairs.items() if key.startswith("data-")})
             for child in node.get("children", []) + node.get("shadowRoots", []) + [node.get("contentDocument")] * bool(node.get("contentDocument")):
                 walk(child)
         walk(tree)
@@ -259,6 +260,8 @@ def main():
     check(page.evaluate("document.title") == "", "the title, as Chrome")
     state = page.wait_viewer(lambda s: s.get("pages") == "300", "the viewer has the pages")
     check(state.get("pages") == "300", "300 pages in the viewer", state)
+    state = page.wait_viewer(lambda s: "paintedPages" in s, "the viewer says what is painted", 5)
+    check(0 < int(state.get("paintedPages", -1)) <= 3, "only the first pages of 300 are painted", state)
     gets = [r for r in requests if r[1] == "/long.pdf"]
     check(len(gets) == 1, "the PDF was fetched once, as the navigation", gets)
     check(page.evaluate("document.cookie") == "" or True, "document.cookie does not kill the PDF's process")
@@ -295,10 +298,9 @@ def main():
     check(state.get("page") == "1", "Home", state)
 
     # Only pages in sight: after the whole document has passed by jumps, few painted.
-    state = page.wait_viewer(lambda s: "paintedPages" in s, "the viewer says what is painted", 5)
-    painted = int(state.get("paintedPages", -1))
+    # After the whole document has gone by, only a few pages stay loaded.
+    state = page.viewer()
     loaded = int(state.get("loadedPages", -1))
-    check(0 < painted <= 40, f"pages painted so far ({painted}) are a few of 300", state)
     check(0 < loaded <= 12, f"pages loaded now ({loaded}) are a few of 300", state)
     # By the wheel through a stretch.
     for _ in range(40):
@@ -346,6 +348,11 @@ def main():
     state = page.wait_viewer(lambda s: s.get("page") == "77", "find moves to the match", 10)
     check(state.get("page") == "77", "find went to page 77", state)
 
+    # A fragment, as Chrome's viewer reads it.
+    page.go(base + "/long.pdf#page=50")
+    state = page.wait_viewer(lambda s: s.get("page") == "50", "#page=50 opens there")
+    check(state.get("page") == "50", "#page=50", state)
+
     # Links: inside the document, and out of it.
     page.go(base + "/long.pdf")
     page.wait_viewer(lambda s: s.get("pages") == "300" and "paintedPages" in s, "the viewer again")
@@ -391,7 +398,14 @@ def main():
         page.go(base + path, settle=1.5)
         tree = page.call("Page.getFrameTree")["frameTree"]
         children = tree.get("childFrames", [])
-        check(len(children) == 1 and children[0]["frame"]["url"].endswith("/long.pdf"), f"{path}: a child frame with the PDF", tree)
+        if path == "/xembed":
+            # Of another site: a target of its own, in a process of its own.
+            targets = page.cdp.call("Target.getTargets")["targetInfos"]
+            check(any(t["type"] == "iframe" and t["url"].endswith("/long.pdf") for t in targets),
+                  f"{path}: a frame of its own process with the PDF", targets)
+        else:
+            check(len(children) == 1 and children[0]["frame"]["url"].endswith("/long.pdf"),
+                  f"{path}: a child frame with the PDF", tree)
         size = page.evaluate("(e => [e.tagName, e.clientWidth, e.clientHeight])(document.getElementById('e'))")
         check(size == [tag, 500, 400], f"{path}: the element's box", size)
         check(page.evaluate("window.length") == 1, f"{path}: one frame in the page")
@@ -434,6 +448,7 @@ def main():
     state = page.viewer()
     print(f"note resident KiB of the PDF renderer during the scroll: {resident}; state {state}", flush=True)
     check(int(state.get("loadedPages", 999)) <= 16, "pages loaded at the end are few", state)
+    check(int(state.get("paintedPages", 999)) < count / 2, "pages painted are what went by, not the document", state)
     check(resident and max(resident) < 1200 * 1024, "the renderer's memory is bounded under 1.2 GiB", resident)
 
     browser.close()
