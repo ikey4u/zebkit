@@ -542,14 +542,15 @@ if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == lin
         (cd "$cdp_clients" && "${pw_npm[@]}" install --silent --no-audit --no-fund --no-save --ignore-scripts \
             "puppeteer-core@$PUPPETEER_CORE_VERSION" "playwright-core@$PLAYWRIGHT_CORE_VERSION") || log "cdp-clients: the install failed"
     fi
-    # Unless named, the Chromium Playwright installed for itself, as it finds it.
-    cdp_chrome="${CHROME:-$(cd "$cdp_clients" && "${pw_node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())" 2> /dev/null)}"
+    # Unless named, the Chromium Playwright installed for itself, as it finds it:
+    # in the user's cache, which lib.sh's XDG_CACHE_HOME would hide (its ffmpeg too).
+    cdp_chrome="${CHROME:-$(cd "$cdp_clients" && env -u XDG_CACHE_HOME "${pw_node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())" 2> /dev/null)}"
     if [[ ! -x "$cdp_chrome" ]]; then
         log "cdp-clients: skipped (no Chrome)"
     elif [[ -d "$cdp_clients/node_modules/puppeteer-core" ]]; then
         # Not run(): two browsers, one after the other, take longer than its limit.
         log cdp-clients
-        if ! timeout -k 10 1800 "${pw_node[@]}" "$tests/cdp_clients.mjs" "$cdp_clients" "$tests/cdp_clients_expected.txt" \
+        if ! nice -n 19 ionice -c3 timeout -k 10 2400 env -u XDG_CACHE_HOME "${pw_node[@]}" "$tests/cdp_clients.mjs" "$cdp_clients" "$tests/cdp_clients_expected.txt" \
             --zebkit "$bin/tools/zebkit-run" --chrome "$cdp_chrome" --work "$work/cdp-clients" \
             > "$work/cdp-clients.log" 2> "$work/cdp-clients.err"; then
             failed=1

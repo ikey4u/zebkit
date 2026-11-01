@@ -112,7 +112,9 @@ if [[ "$target" == zebkit ]]; then
     done
     (( up )) || die "the engines serve nothing: see $out/engine-0.log"
 else
-    # Unless named, the Chromium Playwright installed for itself, as it finds it.
+    # Unless named, the Chromium Playwright installed for itself, as it finds it:
+    # in the user's cache, which lib.sh's XDG_CACHE_HOME would hide.
+    unset XDG_CACHE_HOME
     chrome="${CHROME:-$(cd "$repo" && "${node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())")}"
     [[ -x "$chrome" ]] || die "no Chrome: set CHROME"
     export PW_SUITE_CHROME="$chrome"

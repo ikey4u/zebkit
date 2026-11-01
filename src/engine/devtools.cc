@@ -10,7 +10,8 @@
 // - browser contexts: Target.createBrowserContext, disposeBrowserContext and
 //   getBrowserContexts, and Target.createTarget in one of them (which content
 //   leaves to the embedder, as headless Chrome's own target handler does),
-//   each a profile in memory (zebkit_context_new()).
+//   each a profile in memory (zebkit_context_new());
+// - Browser.getWindowForTarget, getWindowBounds, setWindowBounds.
 
 #include <map>
 #include <set>
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/containers/contains.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -39,6 +41,7 @@
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 #include "third_party/inspector_protocol/crdtp/span.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -141,6 +144,8 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
         CreateTargetInContext(channel, dispatchable)) {
       return;
     }
+    if (dispatchable.ok() && WindowCommand(channel, dispatchable))
+      return;
     content::ShellDevToolsManagerDelegate::HandleCommand(channel, message,
                                                          std::move(callback));
   }
@@ -192,6 +197,92 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
   }
 
  private:
+  // Browser.getWindowForTarget, getWindowBounds and setWindowBounds, as Chrome
+  // serves them: a window of its own for each shell, where the content shell
+  // answers 1 for all and has no setWindowBounds. Playwright over CDP sizes
+  // the window of each new page with them.
+  bool WindowCommand(content::DevToolsAgentHostClientChannel* channel,
+                     const crdtp::Dispatchable& dispatchable) {
+    const bool for_target = crdtp::SpanEquals(
+        crdtp::SpanFrom("Browser.getWindowForTarget"), dispatchable.Method());
+    const bool get_bounds = crdtp::SpanEquals(
+        crdtp::SpanFrom("Browser.getWindowBounds"), dispatchable.Method());
+    const bool set_bounds = crdtp::SpanEquals(
+        crdtp::SpanFrom("Browser.setWindowBounds"), dispatchable.Method());
+    if (!for_target && !get_bounds && !set_bounds)
+      return false;
+    base::DictValue params;
+    std::string json;
+    if (!dispatchable.Params().empty() &&
+        crdtp::json::ConvertCBORToJSON(dispatchable.Params(), &json).ok()) {
+      std::optional<base::Value> parsed =
+          base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+      if (parsed && parsed->is_dict())
+        params = std::move(parsed->GetDict());
+    }
+    const int id = dispatchable.CallId();
+    content::Shell* shell = nullptr;
+    int window_id = 0;
+    if (for_target) {
+      const std::string* target = params.FindString("targetId");
+      scoped_refptr<content::DevToolsAgentHost> host =
+          target ? content::DevToolsAgentHost::GetForId(*target)
+                 : scoped_refptr<content::DevToolsAgentHost>(channel->GetAgentHost());
+      content::WebContents* contents = host ? host->GetWebContents() : nullptr;
+      if (!contents) {
+        ReplyError(channel, id, -32602, "No target with given id found");
+        return true;
+      }
+      for (content::Shell* window : content::Shell::windows()) {
+        if (window->web_contents() == contents)
+          shell = window;
+      }
+      if (!shell) {
+        ReplyError(channel, id, -32000, "Browser window not found");
+        return true;
+      }
+      auto [found, added] = window_ids_.try_emplace(shell, next_window_id_);
+      if (added)
+        ++next_window_id_;
+      window_id = found->second;
+    } else {
+      window_id = params.FindInt("windowId").value_or(0);
+      for (const auto& [window, known] : window_ids_) {
+        if (known == window_id && base::Contains(content::Shell::windows(), window))
+          shell = window;
+      }
+      if (!shell) {
+        ReplyError(channel, id, -32000, "Browser window not found");
+        return true;
+      }
+    }
+    if (set_bounds) {
+      const base::DictValue* bounds = params.FindDict("bounds");
+      const std::optional<int> width = bounds ? bounds->FindInt("width") : std::nullopt;
+      const std::optional<int> height = bounds ? bounds->FindInt("height") : std::nullopt;
+      if (width && height)
+        shell->ResizeWebContentForTests(gfx::Size(*width, *height));
+    }
+    base::DictValue result;
+    if (for_target)
+      result.Set("windowId", window_id);
+    if (!set_bounds) {
+      const gfx::Rect rect = shell->web_contents()->GetContainerBounds();
+      base::DictValue bounds;
+      bounds.Set("left", rect.x());
+      bounds.Set("top", rect.y());
+      bounds.Set("width", rect.width());
+      bounds.Set("height", rect.height());
+      bounds.Set("windowState", "normal");
+      result.Set("bounds", std::move(bounds));
+    }
+    base::DictValue answer;
+    answer.Set("id", id);
+    answer.Set("result", std::move(result));
+    Reply(channel, std::move(answer));
+    return true;
+  }
+
   // Target.createTarget with a browserContextId of ours; false for the rest,
   // which content's handler serves.
   bool CreateTargetInContext(content::DevToolsAgentHostClientChannel* channel,
@@ -303,6 +394,9 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
             weak_factory_.GetWeakPtr(), channel, std::move(keep), id, stream));
   }
 
+  // Browser.getWindowForTarget's ids; a shell gone stays, unmatched.
+  std::map<content::Shell*, int> window_ids_;
+  int next_window_id_ = 1;
   // Target.createBrowserContext's, until disposed.
   std::map<content::BrowserContext*, raw_ptr<zebkit_context>> contexts_;
   base::WeakPtrFactory<DevToolsManagerDelegate> weak_factory_{this};
