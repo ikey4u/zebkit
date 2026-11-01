@@ -323,7 +323,7 @@ static void Wake(int64_t delay, void* data) {
       if (!host || !host->_started) { [timer invalidate]; return; }
       auto& pane = host->_model.pane;
       const bool end = pane.position + pane.height >= pane.total - 1;
-      if (end) ++up;
+      if (end || up > 0) ++up;
       if (up >= 60 || limit.timeIntervalSinceNow < 0) {
         [timer invalidate]; [host stopEngine]; [NSApp stop:nil];
         [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint

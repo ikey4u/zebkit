@@ -749,7 +749,7 @@ impl ApplicationHandler<Event> for App {
         // a wheel event calls.
         if self.scroll_test && self.started && self.scroll_due.is_none_or(|due| due <= Instant::now()) {
             self.scroll_due = Some(Instant::now() + Duration::from_millis(20));
-            if self.pane.position + self.pane.height as f64 >= self.pane.total - 1. {
+            if self.scroll_up > 0 || self.pane.position + self.pane.height as f64 >= self.pane.total - 1. {
                 self.scroll_up += 1;
             }
             if self.scroll_up >= 60 {
