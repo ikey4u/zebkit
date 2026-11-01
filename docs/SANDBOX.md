@@ -5,8 +5,8 @@ from the system: unprivileged user namespaces, or a set-user-ID helper. Containe
 and build machines often have neither. The answer (owner, 2026-10-31) is both of the
 following, and running without a sandbox is never silent.
 
-macOS has its own sandbox (`docs/MACOS.md`), which needs nothing installed. Windows is
-not built yet.
+macOS has its own sandbox (`docs/MACOS.md`), which needs nothing installed. Windows has
+Chromium's, with a call in the application's executable (`docs/WINDOWS.md`).
 
 ## What the engine does
 

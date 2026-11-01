@@ -77,10 +77,9 @@ in `examples/native-host` (Done table). What is left:
 - **AppKit with a person.** The AppKit example, the macOS startup settings and
   `zebkit_view_attach_native()` on an `NSView` ran on a Mac on 2026-10-31
   (`docs/MACOS.md`). Input from the system itself and input methods are left.
-- **Win32 integration.** No loop adapter and no `HWND` parent exist; on
-  Windows `zebkit_view_attach_native()` keeps the same signature and has no
-  implementation yet (it is not built here, and the engine does not build for
-  Windows at all).
+- **Win32 integration.** `zebkit_pump()` under the application's message loop and an
+  `HWND` as a view's parent ran on Windows 10 on 2026-11-01 (`docs/WINDOWS.md`);
+  Windows' own input in attached views is left.
 - **A dedicated engine thread, for loops the engine cannot join.** Chromium's
   UI thread is whichever thread initializes it, and it stays that thread: the
   engine cannot move, and each call that needs the UI thread is made there.
@@ -356,7 +355,9 @@ in `examples/native-host` (Done table). What is left:
 
 ### Platforms
 
-- **Windows**: the same profile and the same API.
+- **Windows**: `zebkit.dll`, sandbox on by default and pages checked by their pixels on
+  a Windows 10 machine (`docs/WINDOWS.md`). Left: the test suite and bindings, D3D11
+  textures for off-screen frames, system interfaces of WebAuthn, printing and `zebkit.ui`.
 - **macOS**: what a person at the Mac has to check (`docs/MACOS.md`: real input and
   devices, the real Keychain, WebRTC's peers, drops, the menu bar's keys); Chromium's PGO profile for macOS;
   signing with a Developer ID and notarization.

@@ -72,8 +72,7 @@ copied there.
 
 ## Windows
 
-Not built yet on Blink. The target is the same profile and the same API
-(`docs/ROADMAP.md`).
+Built on Linux, the same API: [docs/WINDOWS.md](WINDOWS.md).
 
 ## Profiles
 
@@ -83,6 +82,8 @@ Not built yet on Blink. The target is the same profile and the same API
 | `slim-macos` | `slim` for macOS on arm64; without PGO until Chromium's macOS profile is fetched |
 | `slim-macos-native` | macOS on arm64 with installed Xcode, without ML inlining or ThinLTO |
 | `slim-macos-native-dev` | The native macOS profile with debug information |
+| `slim-windows` | `slim` for Windows x64, built on Linux (`docs/WINDOWS.md`) |
+| `slim-windows-sandbox` | `zebkit_sandbox.lib` for the application's executable on Windows, without link-time optimization |
 | `slim-speed` | `slim` compiled for speed: `-O2` throughout, no size-trained inliner; 7 to 11% less CPU at layout and on animated pages, 30 MiB larger, 20 to 50 MB more memory a page (`docs/SIZE_AND_SPEED.md`) |
 | `slim-dev` | `slim` with debug information and without the link-time optimization pass, for debuggers and profilers (`mise run d`) |
 | `baseline` | Chromium's content shell with its release defaults, the "before" of every measurement |
