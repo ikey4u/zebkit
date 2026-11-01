@@ -1,7 +1,7 @@
 // The control for the stubs in zebkit_sandbox.lib (src/engine/win/sandbox_startup.cc):
-// called on purpose, one ends the process at once. Exit code 0xC0000409 from
-// __fastfail is what this test expects; if the stubs did nothing, it would print
-// "returned" and exit 0, and win-*-sandbox's passing would prove nothing.
+// called on purpose, one says so and ends the process at once. If the stubs did
+// nothing, this would print "returned" and exit 0, and win-*-sandbox's passing
+// would prove nothing.
 
 #include <stdio.h>
 

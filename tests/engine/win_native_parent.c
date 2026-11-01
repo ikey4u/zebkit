@@ -85,7 +85,8 @@ static void foreground(HWND hwnd) {
     /* Windows gives the foreground to the process with the last input event. */
     INPUT alt[2] = {{0}};
     alt[0].type = alt[1].type = INPUT_KEYBOARD;
-    alt[0].ki.wVk = alt[1].ki.wVk = VK_MENU;
+    /* Not Alt, which would put the window in its menu's modal loop. */
+    alt[0].ki.wVk = alt[1].ki.wVk = VK_SHIFT;
     alt[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, alt, sizeof(INPUT));
     SetForegroundWindow(hwnd);

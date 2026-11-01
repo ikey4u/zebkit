@@ -191,12 +191,14 @@ class WebAuthnRequest : public Request {
     // Only the platform provider that this adapter explicitly selects is held.
     // Other native implementations keep Chromium's normal dispatch behavior.
     return !IsVirtualEnvironmentEnabled() &&
-           authenticator.GetType() ==
-               device::AuthenticatorType::kICloudKeychain;
+           (authenticator.GetType() ==
+                device::AuthenticatorType::kICloudKeychain ||
+            authenticator.GetType() == device::AuthenticatorType::kWinNative);
   }
   void FidoAuthenticatorAdded(
       const device::FidoAuthenticator& authenticator) override {
-    if (authenticator.GetType() == device::AuthenticatorType::kICloudKeychain) {
+    if (authenticator.GetType() == device::AuthenticatorType::kICloudKeychain ||
+        authenticator.GetType() == device::AuthenticatorType::kWinNative) {
       system_id_ = authenticator.GetId();
       if (using_system_)
         DispatchSystem();
@@ -424,7 +426,11 @@ class WebAuthnRequest : public Request {
       ShowExternal();
     } else if (name == "system") {
       using_system_ = true;
+#if BUILDFLAG(IS_WIN)
+      Publish("waiting", "Complete verification in Windows' window", {"cancel"});
+#else
       Publish("waiting", "Complete verification on this Mac", {"cancel"});
+#endif
       DispatchSystem();
     } else if (name == "bluetooth") {
       // The permission callback can be asynchronous. Disable repeated actions.
@@ -485,6 +491,9 @@ class WebAuthnRequest : public Request {
   bool HasSystem() const {
 #if BUILDFLAG(IS_MAC)
     return info_.has_icloud_keychain && SystemPasskeysAvailable();
+#elif BUILDFLAG(IS_WIN)
+    // webauthn.dll: Windows Hello, and Windows' own security key and phone dialogs.
+    return info_.has_win_native_api_authenticator;
 #else
     return false;
 #endif

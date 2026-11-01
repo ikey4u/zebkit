@@ -91,8 +91,22 @@ WIN_COMPAT char *strndup(const char *text, size_t length) {
 #endif
 
 /* ---- the environment and the file system ---- */
+/* The environment as UTF-8, as the C API's strings are; getenv() gives the system's
+ * code page. A value is kept, as getenv's is, for the life of the process. */
+WIN_COMPAT char *win_compat_getenv(const char *name) {
+    wchar_t wide_name[256], wide[32768];
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, wide_name, 256);
+    const DWORD length = GetEnvironmentVariableW(wide_name, wide, 32768);
+    if (!length || length >= 32768)
+        return NULL;
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    char *value = (char *)malloc((size_t)size);
+    WideCharToMultiByte(CP_UTF8, 0, wide, -1, value, size, NULL, NULL);
+    return value;
+}
+#define getenv win_compat_getenv
 WIN_COMPAT int setenv(const char *name, const char *value, int overwrite) {
-    if (!overwrite && getenv(name))
+    if (!overwrite && GetEnvironmentVariableA(name, NULL, 0))
         return 0;
     return _putenv_s(name, value);
 }

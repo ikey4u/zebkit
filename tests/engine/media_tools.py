@@ -39,7 +39,8 @@ def main():
         assert set(ffprobe(['-show_streams', '-of', 'json', '-i', source])) == {'streams'}
         assert set(ffprobe(['-show_format', '-i', source])) == {'format'}
         # Actual Unicode and shell metacharacters are filename bytes, never code.
-        special = root / '媒体 "quoted";$(touch unexpected).mp4'
+        # What a shell would take apart; Windows' file names have no double quote.
+        special = root / ("媒体 'quoted';$(touch unexpected).mp4" if os.name == 'nt' else '媒体 "quoted";$(touch unexpected).mp4')
         special.write_bytes(source.read_bytes())
         assert probe(special)['format']['filename'] == str(special)
         print('ok probe JSON, section selection and literal Unicode paths')

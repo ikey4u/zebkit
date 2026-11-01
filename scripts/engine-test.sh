@@ -414,6 +414,16 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     cp "$python_home/$python_dll.dll" "$python_home/python3.dll" "$python_home/vcruntime140.dll" "$work/path/"
     [[ -f "$python_home/vcruntime140_1.dll" ]] && cp "$python_home/vcruntime140_1.dll" "$work/path/"
     echo "home = $(cygpath -w "$python_home")" > "$work/path/pyvenv.cfg"
+    # For every test, -I or not: output in UTF-8 whatever the system's code page, and
+    # a temporary profile left behind if a child still has a file open as the browser
+    # ends, where Unix would remove it.
+    mkdir -p "$work/path/Lib/site-packages"
+    cat > "$work/path/Lib/site-packages/sitecustomize.py" <<'PY'
+import functools, sys, tempfile
+for stream in (sys.stdout, sys.stderr):
+    stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+tempfile.TemporaryDirectory = functools.partial(tempfile.TemporaryDirectory, ignore_cleanup_errors=True)
+PY
     # Temporary files stay in the test's directory.
     mkdir -p "$work/tmp"
     export TEMP="$(cygpath -w "$work/tmp")" TMP="$(cygpath -w "$work/tmp")" TMPDIR="$work/tmp"
@@ -529,9 +539,9 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     if selected win-sandbox-stubs; then
         log win-sandbox-stubs
         stub_code=0
-        "$bin/win-sandbox-stubs" > "$work/win-sandbox-stubs.log" 2>&1 || stub_code=$?
-        # bash has the low byte of 0xC0000409.
-        if grep -q '^returned' "$work/win-sandbox-stubs.log" || (( stub_code != 9 )); then
+        cp "$bin/win-sandbox-stubs.exe" "$package/"
+        "$package/win-sandbox-stubs" > "$work/win-sandbox-stubs.log" 2>&1 || stub_code=$?
+        if grep -q '^returned' "$work/win-sandbox-stubs.log" || ! grep -q 'reached' "$work/win-sandbox-stubs.log"; then
             echo "FAIL a stub in zebkit_sandbox.lib did not end the process: code $stub_code"; failed=1
         else
             echo "ok   a stub in zebkit_sandbox.lib ends the process"

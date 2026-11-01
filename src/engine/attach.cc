@@ -41,6 +41,7 @@
 
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/base/win/hwnd_subclass.h"
 #endif
 
 namespace zebkit {
@@ -393,6 +394,28 @@ void ForgetAttachedNative(zebkit_view* view) {
 
 namespace {
 
+// A click takes the keyboard, as a click in a toolkit's own child window does:
+// Windows activates only the top-level window, which has the application's focus.
+class ClickTakesKeyboard : public ui::HWNDMessageFilter {
+ public:
+  bool FilterMessage(HWND hwnd,
+                     UINT message,
+                     WPARAM w_param,
+                     LPARAM l_param,
+                     LRESULT* result) override {
+    if (message == WM_MOUSEACTIVATE && !::IsChild(hwnd, ::GetFocus()) &&
+        ::GetFocus() != hwnd) {
+      ::SetFocus(hwnd);
+    }
+    return false;
+  }
+};
+
+ClickTakesKeyboard* Keyboard() {
+  static base::NoDestructor<ClickTakesKeyboard> filter;
+  return filter.get();
+}
+
 struct NativeAttached {
   HWND window = nullptr;
   HWND parent = nullptr;
@@ -467,6 +490,7 @@ bool AttachViewNative(zebkit_view* view,
   }
   Natives()[view] = entry;
   Place(entry);
+  ui::HWNDSubclass::AddFilterToTarget(window, Keyboard());
   return true;
 }
 
@@ -509,6 +533,9 @@ bool DetachViewNative(zebkit_view* view) {
     return false;
   const NativeAttached copy = *entry;
   Natives().erase(view);
+  ui::HWNDSubclass::RemoveFilterFromAllTargets(Keyboard());
+  for (const auto& [other, attached] : Natives())
+    ui::HWNDSubclass::AddFilterToTarget(attached.window, Keyboard());
   // Back on the desktop where it is on the screen.
   RECT screen = {};
   ::GetWindowRect(copy.window, &screen);
@@ -524,7 +551,11 @@ bool DetachViewNative(zebkit_view* view) {
 }
 
 void ForgetAttachedNative(zebkit_view* view) {
-  Natives().erase(view);
+  if (Natives().erase(view)) {
+    ui::HWNDSubclass::RemoveFilterFromAllTargets(Keyboard());
+    for (const auto& [other, attached] : Natives())
+      ui::HWNDSubclass::AddFilterToTarget(attached.window, Keyboard());
+  }
 }
 
 #else  // !defined(ZEBKIT_X11)
