@@ -615,6 +615,43 @@ steps.ariaSnapshot = arg => {
   });
 };
 
+// server/callLog.ts: repetitions as "N x", each line as the client prints it.
+function compressCallLog(log) {
+  const lines = [];
+  const same = (from, to, length) => {
+    for (let i = 0; i < length; ++i) {
+      if (log[from + i] !== log[to + i])
+        return false;
+    }
+    return true;
+  };
+  for (let i = 0; i < log.length;) {
+    let bestCount = 1, bestLength = 1;
+    for (let length = 1; length <= log.length - i; ++length) {
+      let count = 1;
+      while (i + length * (count + 1) <= log.length && same(i, i + length * count, length))
+        ++count;
+      if (count > 1 && count * length > bestCount * bestLength) {
+        bestCount = count;
+        bestLength = length;
+      }
+    }
+    for (let at = 0; at < bestLength; ++at) {
+      const line = log[i + at];
+      const prefix = '  ' + line.match(/^\s*/)[0];
+      const counted = `${bestCount} \u00d7 `;
+      if (bestCount > 1 && at === 0)
+        lines[lines.length] = prefix + counted + line.trim();
+      else if (bestCount > 1)
+        lines[lines.length] = prefix + ' '.repeat(counted.length - 2) + '- ' + line.trim();
+      else
+        lines[lines.length] = prefix + '- ' + line.trim();
+    }
+    i += bestCount * bestLength;
+  }
+  return lines;
+}
+
 // frames.ts's expect() and _expectInternal(): one check at once, then
 // again until it matches or the time is out. The answer is what
 // Playwright's FrameExpectResult has: matches, received, timedOut, log.
@@ -632,6 +669,8 @@ steps.expect = async arg => {
   const answered = result => {
     if (serialized && result.received && 'value' in result.received)
       result.received = { ...result.received, value: serialize(result.received.value) };
+    if (title !== undefined && result.log)
+      result.log = compressCallLog(result.log);
     return result;
   };
   if (options.expression === 'to.match.aria' && options.expectedValue) {
@@ -695,7 +734,7 @@ steps.expect = async arg => {
     if (last.matches !== options.isNot)
       return answered({ ...last, log });
   } catch (e) {
-    return { matches: options.isNot, errorMessage: e.message, log };
+    return answered({ matches: options.isNot, errorMessage: e.message, log });
   }
   let thrown;
   const polled = await poll(timeout, kPollWaits, async () => {
@@ -708,7 +747,7 @@ steps.expect = async arg => {
     return last.matches !== options.isNot ? last : undefined;
   });
   if (thrown)
-    return { matches: options.isNot, errorMessage: thrown.message, log };
+    return answered({ matches: options.isNot, errorMessage: thrown.message, log });
   if (polled.timedOut)
     return answered({ matches: options.isNot, received: last?.received, errorMessage: last?.errorMessage, timedOut: true, log });
   return answered({ ...polled.result, log });
@@ -838,11 +877,12 @@ function preview(value) {
       return 'JSHandle@node';
     }
   }
-  return renderPreview(value);
+  return describe(value);
 }
 
 // crExecutionContext.ts's renderPreview() over what Runtime's remote object
-// says of a value: its value, its description, its preview's properties.
+// says of a value, which has no preview unless asked for: its value or its
+// description.
 function describe(value) {
   switch (typeof value) {
     case 'string':
@@ -875,38 +915,6 @@ function describe(value) {
     return `${tag}(${value.length})`;
   return value.constructor?.name || tag;
 }
-function renderPreview(value) {
-  if (value === null || (typeof value !== 'object'))
-    return describe(value);
-  if (Array.isArray(value)) {
-    // sparseArrayToString(): V8's preview has the first hundred.
-    const tokens = [];
-    let last = -1, seen = 0;
-    for (const key of Object.keys(value)) {
-      const index = Number(key);
-      if (!Number.isInteger(index) || index < 0)
-        continue;
-      if (++seen > 100)
-        break;
-      const empty = index - last - 1;
-      if (empty === 1)
-        tokens[tokens.length] = 'empty';
-      else if (empty > 1)
-        tokens[tokens.length] = `empty x ${empty}`;
-      tokens[tokens.length] = describe(value[index]);
-      last = index;
-    }
-    return '[' + tokens.join(', ') + ']';
-  }
-  const description = describe(value);
-  if (description !== 'Object')
-    return description;
-  const tokens = [];
-  for (const key of Object.keys(value).slice(0, 5))
-    tokens[tokens.length] = `${key}: ${describe(value[key])}`;
-  return '{' + tokens.join(', ') + '}';
-}
-
 // The argument: Playwright's serialized value with {h: i} for handles, or
 // JSON with {"$h": i}.
 function argument(arg, handles, plain) {

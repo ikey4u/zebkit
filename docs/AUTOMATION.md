@@ -495,9 +495,11 @@ with `chromium.connect(url)`, and Playwright's test runner with
 
 ## 5. What is built, and what is not
 
-**Built (2026-10-27)**: the commands `zebkit_automation_commands()` lists,
-all of Playwright's protocol that a browser of Chromium's does, and
-Playwright's protocol itself over a WebSocket (4.8):
+**Built**: the commands `zebkit_automation_commands()` lists, and Playwright's
+protocol over a WebSocket (4.8). This names what exists, not how closely it
+behaves as Playwright's server does: section 7 has that, measured by
+Playwright's own tests, and `tests/playwright-suite/expected-failures.txt`
+what is known to differ, each with its reason.
 
 - `Frame`: evaluateExpression(Handle), evalOnSelector(All),
   querySelector(All), queryCount, textContent, innerText, innerHTML,
@@ -545,9 +547,11 @@ either:
   sizes come from network completion statistics; header sizes follow the
   observed HTTP header representation, rather than HTTP/2 or HTTP/3 framing.
   Upload streams without a known length report -1 for their body size.
-- **Playwright's own test suite** against the endpoint is run in part
-  (`tests/engine/playwright_connect.mjs`); the whole suite needs its
-  fixtures' servers and is the next step for conformance.
+- **Protocol commands not implemented yet**, which fail with "no command" or
+  are listed as expected failures: locator handlers, `Frame.drop`, custom
+  selector engines, JS and CSS coverage, `newCDPSession` (CDP has its own
+  endpoint), the context's `proxy` and `clientCertificates` options,
+  `page.frameLocator()` with no selector, WebMCP.
 
 Native `Page.addInitScript`, `Page.exposeBinding` and their context versions
 return `{registration, kind}`. Pass the registration token to

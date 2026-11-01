@@ -986,6 +986,9 @@ class Automation : public content::WebContentsObserver,
     if (!call || call->finished())
       return;
     if (status == AutomationStatus::kGone) {
+      // An assertion outlives a navigation, as frames.ts retries it.
+      if (step == "expect" && handles.empty())
+        frame_ref.follow = true;
       if (!handles.empty() || !frame_ref.follow) {
         call->Fail(handles.empty() ? kNavigated : kDetached);
         return;
