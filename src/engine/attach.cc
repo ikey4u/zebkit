@@ -453,7 +453,7 @@ bool AttachViewNative(zebkit_view* view,
                       const gfx::Rect& bounds,
                       std::string* error) {
   views::Widget* widget = WidgetOf(view);
-  if (!widget) {
+  if (!widget || zebkit_is_headless()) {
     *error = "the engine runs headless and the view has no window to parent; "
              "draw the page in your window with off-screen views "
              "(<zebkit/offscreen.h>)";
