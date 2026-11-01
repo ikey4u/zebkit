@@ -4734,6 +4734,7 @@ class Automation : public content::WebContentsObserver,
     hars_.erase(found);
     har->Export(base::FilePath::FromUTF8Unsafe(call->String("path")), Bodies(),
                 std::string(version_info::GetVersionNumber()),
+                call->String("mode") == "archive",
                 base::BindOnce(&Automation::Written, call->GetWeakPtr()));
   }
 

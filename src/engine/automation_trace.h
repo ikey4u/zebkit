@@ -48,10 +48,13 @@ class HarRecorder {
       const std::string& request)>;
   base::ListValue Entries(const BodyFunc& body) const;
 
-  // HAR 1.2 to @path (a temporary file when empty).
+  // HAR 1.2 to @path (a temporary file when empty); with @archive a zip of
+  // it as har.har, which is what a remote client asks for (harExport's mode
+  // "archive") and unpacks itself.
   void Export(base::FilePath path,
               const BodyFunc& body,
               const std::string& browser_version,
+              bool archive,
               WrittenCallback done) const;
 
  private:

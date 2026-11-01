@@ -76,7 +76,8 @@ base::ListValue Headers(const base::DictValue& from) {
 
 HarRecorder::HarRecorder(const base::DictValue& options) {
   const std::string* content = options.FindString("content");
-  embed_ = !content || *content == "embed";
+  // "attach" keeps the bodies with the entries too: a client reads either.
+  embed_ = !content || *content != "omit";
 }
 
 HarRecorder::~HarRecorder() = default;
@@ -180,9 +181,11 @@ base::ListValue HarRecorder::Entries(const BodyFunc& body) const {
 void HarRecorder::Export(base::FilePath path,
                          const BodyFunc& body,
                          const std::string& browser_version,
+                         bool archive,
                          WrittenCallback done) const {
   base::DictValue creator;
-  creator.Set("name", "zebkit");
+  // As Playwright's har tracer, whose format and readers this follows.
+  creator.Set("name", "Playwright");
   creator.Set("version", zebkit_version());
   base::DictValue browser;
   browser.Set("name", "chromium");
@@ -195,15 +198,20 @@ void HarRecorder::Export(base::FilePath path,
   log.Set("entries", Entries(body));
   base::DictValue har;
   har.Set("log", std::move(log));
-  path = OutputPath(path, ".har");
+  path = OutputPath(path, archive ? ".zip" : ".har");
   std::string text = Json(base::Value(std::move(har)));
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(
-          [](base::FilePath path, std::string text) {
-            return base::WriteFile(path, text);
+          [](base::FilePath path, bool archive, std::string text) {
+            if (!archive)
+              return base::WriteFile(path, text);
+            base::ScopedTempDir directory;
+            return directory.CreateUniqueTempDir() &&
+                   base::WriteFile(directory.GetPath().AppendASCII("har.har"), text) &&
+                   zip::Zip(directory.GetPath(), path, /*include_hidden_files=*/true);
           },
-          path, std::move(text)),
+          path, archive, std::move(text)),
       base::BindOnce(&Reply, std::move(done), path));
 }
 
