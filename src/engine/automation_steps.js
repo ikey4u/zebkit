@@ -464,6 +464,26 @@ steps.scrollIntoViewIfNeeded = arg => poll(arg.timeout, kActionWaits, async (say
   return { done: true };
 });
 
+// Frame.frameElement, here in the parent: the element whose window is the
+// child's, through open shadow roots.
+steps.frameOwner = (arg, out) => {
+  const child = window.frames[arg.index];
+  const visit = root => {
+    for (const element of root.querySelectorAll('*')) {
+      if ((element.localName === 'iframe' || element.localName === 'frame') && element.contentWindow === child)
+        return element;
+      const found = element.shadowRoot && visit(element.shadowRoot);
+      if (found)
+        return found;
+    }
+    return null;
+  };
+  const element = child && visit(document);
+  if (!element)
+    throw fatal('Frame has been detached.');
+  return { element: out(element) };
+};
+
 // ElementHandle.screenshot's wait, screenshotter.ts's
 // _waitAndScrollIntoViewIfNeeded(progress, waitForVisible): visible, stable, in view.
 steps.scrollIntoViewForScreenshot = arg => poll(arg.timeout, kActionWaits, async (say, attempt) => {

@@ -129,6 +129,7 @@ using Type = blink::WebInputEvent::Type;
 using Button = blink::WebPointerProperties::Button;
 
 constexpr int kDefaultTimeoutMs = 30000;
+constexpr char kFrameDetachedDot[] = "Frame has been detached.";
 // Playwright's messages.
 constexpr char kClosed[] = "Target page, context or browser has been closed";
 constexpr char kNavigated[] =
@@ -3975,6 +3976,29 @@ class Automation : public content::WebContentsObserver,
             call, path));
   }
 
+  // Frame.frameElement: the element of the frame in its parent's document,
+  // found by the parent's script (what crPage.ts asks DOM.getFrameOwner).
+  void FrameElement(Call* call) {
+    content::RenderFrameHost* frame = FrameOf(call);
+    content::RenderFrameHost* parent = frame ? frame->GetParent() : nullptr;
+    if (!parent) {
+      call->Fail(kFrameDetachedDot);
+      return;
+    }
+    const std::vector<content::RenderFrameHost*> children = Children(parent);
+    const auto found = std::find(children.begin(), children.end(), frame);
+    base::DictValue arg;
+    arg.Set("index", static_cast<int>(found - children.begin()));
+    RunStep(call, Follow(parent), AutomationWorld::kUtility, "frameOwner",
+            std::move(arg), {},
+            base::BindOnce(
+                [](base::WeakPtr<Call> call, Answerer answer, base::Value value) {
+                  if (call)
+                    std::move(answer).Run(call.get(), std::move(value));
+                },
+                call->GetWeakPtr(), AsKey("element", "element")));
+  }
+
   // Page.requestGC, as crPage.ts.
   void RequestGC(Call* call) {
     call->view()->Send("HeapProfiler.collectGarbage", base::DictValue(),
@@ -5415,6 +5439,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"APIRequestContext.fetch", &A::Fetch},
           {"Page.emulateMedia", &A::EmulateMedia},
           {"Page.requestGC", &A::RequestGC},
+          {"Frame.frameElement", &A::FrameElement},
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},
           {"Worker.evaluateExpression", &A::WorkerEvaluate},
