@@ -43,9 +43,22 @@ fn main() {
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos");
+    let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "windows");
     // What a package directory is known by.
-    let engine_name = if macos { "Zebkit.framework" } else { "libzebkit.so.1" };
-    let profile = if macos { "slim-macos" } else { "slim" };
+    let engine_name = if macos {
+        "Zebkit.framework"
+    } else if windows {
+        "zebkit.dll"
+    } else {
+        "libzebkit.so.1"
+    };
+    let profile = if macos {
+        "slim-macos"
+    } else if windows {
+        "slim-windows"
+    } else {
+        "slim"
+    };
     let root = manifest.join("../..");
     let mut locals = Vec::new();
     if macos {
@@ -88,6 +101,11 @@ fn main() {
         // framework as it helps to find a library. Dependents say this
         // themselves (zebkit-build).
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
+    } else if windows {
+        println!("cargo:rerun-if-changed={}", engine.display());
+        println!("cargo:rustc-link-search=native={}", directory.display());
+        // Its import library, zebkit.dll.lib.
+        println!("cargo:rustc-link-lib=dylib:+verbatim=zebkit.dll.lib");
     } else {
         println!("cargo:rerun-if-changed={}", engine.display());
         println!("cargo:rustc-link-search=native={}", directory.display());

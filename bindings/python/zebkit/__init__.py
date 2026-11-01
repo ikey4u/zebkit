@@ -15,7 +15,7 @@ The services work without the engine running:
     zebkit.digest(b"abc", "sha256").hex()
     zebkit.url_part("../b", "https://example.com/a/", "spec")
 
-The library is libzebkit.so.1 (Zebkit.framework on macOS) in $ZEBKIT_DIR,
+The library is libzebkit.so.1 (Zebkit.framework on macOS, zebkit.dll on Windows) in $ZEBKIT_DIR,
 or beside this package, or in the zebkit repository's package of the slim
 profile (slim-macos on macOS).
 
@@ -62,6 +62,9 @@ class Error(Exception):
 def _find_library():
     if sys.platform == "darwin":
         library, profile = "Zebkit.framework/Zebkit", "slim-macos"
+    elif sys.platform == "win32":
+        # python.exe cannot be the sandbox's child (docs/WINDOWS.md): --no-sandbox.
+        library, profile = "zebkit.dll", "slim-windows"
     else:
         library, profile = "libzebkit.so.1", "slim"
     names = []

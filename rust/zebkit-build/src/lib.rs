@@ -50,6 +50,13 @@ pub const DIRECTORY: &str = "zebkit";
 /// engine cannot be put there.
 pub fn bundle() {
     let engine = engine_directory();
+    // Windows has no run path: a DLL is found beside the executable itself.
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "windows") {
+        copy_engine(&engine, &executable_directory());
+        println!("cargo:rerun-if-changed={}", engine.join("zebkit.dll").display());
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
     let destination = executable_directory().join(DIRECTORY);
     copy_engine(&engine, &destination);
     // Beside the executable first, wherever that ends up; tests and
