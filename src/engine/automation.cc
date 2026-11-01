@@ -567,7 +567,7 @@ class Automation : public content::WebContentsObserver,
       view_->Send("Emulation.setLocaleOverride", std::move(params));
       const std::string* agent = options.FindString("userAgent");
       base::DictValue language;
-      language.Set("userAgent", agent ? *agent : content::GetContentClient()->browser()->GetUserAgent());
+      language.Set("userAgent", agent ? *agent : content::GetContentClientForTesting()->browser()->GetUserAgent());
       language.Set("acceptLanguage", *locale);
       view_->Send("Emulation.setUserAgentOverride", std::move(language));
     }
