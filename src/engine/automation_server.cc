@@ -1316,7 +1316,7 @@ void Connection::CreateTempFiles(int id, base::DictValue params) {
           [](std::string root, std::vector<std::string> names) {
             Made made;
             base::FilePath directory;
-            if (!base::CreateNewTempDirectory("zebkit-files-", &directory))
+            if (!base::CreateNewTempDirectory(FILE_PATH_LITERAL("zebkit-files-"), &directory))
               return made;
             made.root = root.empty() ? directory
                                      : directory.Append(base::FilePath::FromUTF8Unsafe(root).BaseName());

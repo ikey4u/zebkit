@@ -1393,7 +1393,12 @@ std::string CertificateTime(const ASN1_TIME* time) {
   const time_t when = static_cast<time_t>(seconds);
   struct tm utc = {};
   char text[32] = {};
-  if (!gmtime_r(&when, &utc) ||
+#if defined(_WIN32)
+  const bool converted = gmtime_s(&utc, &when) == 0;
+#else
+  const bool converted = gmtime_r(&when, &utc) != nullptr;
+#endif
+  if (!converted ||
       !strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc)) {
     return std::string();
   }

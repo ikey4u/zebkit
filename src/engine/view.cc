@@ -527,7 +527,7 @@ void zebkit_view::Grant(const std::string& origin,
   base::FilePath root;
   if (!files_root.empty()) {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    root = base::MakeAbsoluteFilePath(base::FilePath(files_root));
+    root = base::MakeAbsoluteFilePath(zebkit::PathFromUTF8(files_root));
   }
   grants_[origin] = {allow, root};
   InstallBridge();

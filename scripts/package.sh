@@ -7,7 +7,9 @@
 # The engine is libzebkit.so.1, with zebkit-helper for its child processes,
 # and the headers an application builds against in include/. For macOS
 # (slim-macos), the engine is Zebkit.framework, with its helper, its data
-# files and the libraries it loads inside, and include/ beside it. Its run-time
+# files and the libraries it loads inside, and include/ beside it. For Windows
+# (slim-windows), zebkit.dll with its import library and zebkit-helper.exe, with
+# the data files and libraries beside them. Its run-time
 # dependencies, as GN lists them, include the content shell's test fonts,
 # test data, mock Vulkan drivers, validation layers and a crash reporter;
 # the list below is what the engine needs to run, and nothing else is
@@ -76,6 +78,28 @@ if grep -q '^target_os = "mac"' <<< "$(profile_args "$profile")"; then
         codesign --force --sign - "$package/Zebkit.framework"
         codesign --verify --deep --strict "$package/Zebkit.framework"
     fi
+    log "package: $package"
+    exit 0
+fi
+
+if grep -q '^target_os = "win"' <<< "$(profile_args "$profile")"; then
+    [[ -f "$build_dir/zebkit.dll" ]] || die "profile '$profile' is not built; run scripts/build.sh $profile"
+    rm -rf "$package"
+    mkdir -p "$package"
+    for file in \
+        zebkit.dll             `# the engine` \
+        zebkit.dll.lib         `# its import library, to link an application with` \
+        zebkit-helper.exe      `# its renderer, GPU and utility processes` \
+        snapshot_blob.bin      `# V8's startup snapshot` \
+        libEGL.dll libGLESv2.dll `# ANGLE: OpenGL ES on Direct3D` \
+        vk_swiftshader.dll vk_swiftshader_icd.json vulkan-1.dll `# drawing without a GPU` \
+        d3dcompiler_47.dll     `# compiles ANGLE's shaders; older Windows has none of its own` \
+        ; do
+        [[ -f "$build_dir/$file" ]] || die "$file is not in $build_dir"
+        cp "$build_dir/$file" "$package/"
+    done
+    copy_data "$package"
+    copy_headers
     log "package: $package"
     exit 0
 fi

@@ -25,6 +25,7 @@
 // its first configuration, and what a capture holds is limited (tracks,
 // configurations, files, packets, bytes, times).
 
+#include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/media_capture_writer.h"
 
 #include <algorithm>
@@ -350,7 +351,7 @@ const Container& ChooseContainer(const std::string& requested,
                                  const base::FilePath& path,
                                  const std::vector<AVCodecID>& codecs) {
   for (const Container* wanted :
-       {ContainerNamed(requested), ContainerNamed(path.Extension())}) {
+       {ContainerNamed(requested), ContainerNamed(PathToUTF8(base::FilePath(path.Extension())))}) {
     if (wanted && Holds(*wanted, codecs)) {
       return *wanted;
     }
@@ -374,11 +375,11 @@ const Container& ChooseContainer(const std::string& requested,
 base::FilePath WithExtension(const base::FilePath& path,
                              const Container& container,
                              bool audio_only) {
-  if (ContainerNamed(path.Extension()) == &container) {
+  if (ContainerNamed(PathToUTF8(base::FilePath(path.Extension()))) == &container) {
     return path;
   }
-  return path.ReplaceExtension(audio_only ? container.audio_extension
-                                          : container.extension);
+  return path.ReplaceExtension(
+      PathFromUTF8(audio_only ? container.audio_extension : container.extension).value());
 }
 
 // The @index'th file of a capture (0 is the path itself): "name-2.mp4".

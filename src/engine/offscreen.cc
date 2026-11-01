@@ -30,7 +30,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <map>
@@ -114,7 +116,7 @@
 #include "ui/display/screen_infos.h"
 
 #include "zebkit/engine/offscreen_mac.h"
-#else
+#elif !defined(_WIN32)
 #include <sys/stat.h>
 #endif
 
@@ -145,6 +147,7 @@ class Buffer : public base::RefCountedThreadSafe<Buffer> {
   base::UnsafeSharedMemoryRegion writable;
   base::WritableSharedMemoryMapping writable_mapping;
   int fd = -1;
+  void* handle = nullptr;  // Windows' file mapping, in place of fd.
   // A GPU buffer: an IOSurface, or a dmabuf's planes.
   gfx::GpuMemoryBufferHandle gpu;
 
@@ -523,7 +526,9 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
     buffer->read_only_mapping = buffer->read_only.Map();
     if (!buffer->read_only_mapping.IsValid())
       return nullptr;
-#if !BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN)
+    buffer->handle = buffer->read_only.GetPlatformHandle();
+#elif !BUILDFLAG(IS_MAC)
     buffer->fd = buffer->read_only.GetPlatformHandle().fd;
 #endif
   } else if (data->is_unsafe_shmem_region()) {
@@ -537,7 +542,9 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
     buffer->writable_mapping = buffer->writable.Map();
     if (!buffer->writable_mapping.IsValid())
       return nullptr;
-#if !BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN)
+    buffer->handle = buffer->writable.GetPlatformHandle();
+#elif !BUILDFLAG(IS_MAC)
     buffer->fd = buffer->writable.GetPlatformHandle().fd;
 #endif
   } else if (data->is_gpu_memory_buffer_handle()) {
@@ -554,7 +561,9 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
         buffer->writable_mapping = buffer->writable.Map();
         if (!buffer->writable_mapping.IsValid())
           return nullptr;
-#if !BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN)
+        buffer->handle = buffer->writable.GetPlatformHandle();
+#elif !BUILDFLAG(IS_MAC)
         buffer->fd = buffer->writable.GetPlatformHandle().fd;
 #endif
         break;
@@ -672,6 +681,7 @@ void FrameStream::OnFrameCaptured(
     out.size = buffer->size();
     out.pixels = memory + out.offset;
     out.fd = buffer->fd;
+    out.handle = buffer->handle;
   }
 #if BUILDFLAG(IS_MAC)
   else if (buffer->gpu.type == gfx::IO_SURFACE_BUFFER) {

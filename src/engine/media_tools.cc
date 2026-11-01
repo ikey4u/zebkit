@@ -10,8 +10,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 // The vendor variant lets the same implementation be integration-tested
 // against a packaged engine, without rebuilding Chromium.
@@ -90,7 +95,11 @@ struct Job {
     av_packet_free(&packet);
     swr_free(&resampler);
     sws_freeContext(scaler);
+#if defined(_WIN32)
+    if (!temporary.empty()) DeleteFileW(Wide(temporary).c_str());
+#else
     if (!temporary.empty()) unlink(temporary.c_str());
+#endif
   }
   bool Fail(const std::string& s) { failure = s; return false; }
   bool Check(int code, const char* what) {
@@ -103,14 +112,75 @@ struct Job {
     return true;
   }
   bool Open(const std::string& path) {
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(Wide(path).c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)))
+      return Fail("input must be a local regular file: " + path);
+#else
     struct stat st;
     if (stat(path.c_str(), &st) || !S_ISREG(st.st_mode)) return Fail("input must be a local regular file: " + path);
+#endif
     // Explicit file: avoids interpreting a colon in a local filename as a protocol.
     if (!Check(avformat_open_input(&input, ("file:" + path).c_str(), nullptr, nullptr), "open input") ||
         !Check(avformat_find_stream_info(input, nullptr), "read stream information")) return false;
     packet = av_packet_alloc();
     return packet || Fail("allocate packet");
   }
+#if defined(_WIN32)
+  // The C API's paths are UTF-8, as FFmpeg's file protocol takes them here.
+  static std::wstring Wide(const std::string& text) {
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    std::wstring wide(length > 0 ? length : 1, L'\0');
+    if (length > 0) MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), length);
+    wide.resize(wcslen(wide.c_str()));
+    return wide;
+  }
+  static bool Identity(const std::string& path, BY_HANDLE_FILE_INFORMATION* info) {
+    HANDLE handle = CreateFileW(Wide(path).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    const bool ok = GetFileInformationByHandle(handle, info);
+    CloseHandle(handle);
+    return ok;
+  }
+  bool Stage(const std::string& path, const std::string& source, bool overwrite) {
+    const DWORD attributes = GetFileAttributesW(Wide(path).c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+      BY_HANDLE_FILE_INFORMATION dst, src;
+      if (Identity(path, &dst) && Identity(source, &src) && dst.dwVolumeSerialNumber == src.dwVolumeSerialNumber &&
+          dst.nFileIndexHigh == src.nFileIndexHigh && dst.nFileIndexLow == src.nFileIndexLow)
+        return Fail("input and output refer to the same file");
+      if (!overwrite) return Fail("output exists; use -y to replace it");
+      if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_REPARSE_POINT))
+        return Fail("output must be a regular file");
+    }
+    for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+      const std::string name = path + ".zebkit-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(attempt);
+      HANDLE handle = CreateFileW(Wide(name).c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (handle == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_FILE_EXISTS) continue;
+        return Fail("create output temporary file: error " + std::to_string(GetLastError()));
+      }
+      const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), 0);
+      file = fd < 0 ? nullptr : _fdopen(fd, "w+b");
+      if (!file) { if (fd < 0) CloseHandle(handle); else _close(fd); return Fail("open output temporary file"); }
+      temporary = name;
+      return true;
+    }
+    return Fail("create output temporary file: too many left behind");
+  }
+  bool Publish(const std::string& path, bool overwrite) {
+    if (file) { int r = fclose(file); file = nullptr; if (r) return Fail("close output failed"); }
+    // Without MOVEFILE_REPLACE_EXISTING the move does not clobber.
+    if (!MoveFileExW(Wide(temporary).c_str(), Wide(path).c_str(),
+                     MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0)))
+      return Fail("publish output: error " + std::to_string(GetLastError()));
+    temporary.clear();
+    return true;
+  }
+#else
   bool Stage(const std::string& path, const std::string& source, bool overwrite) {
     struct stat dst, src;
     bool replacing = false;
@@ -154,6 +224,7 @@ struct Job {
     temporary.clear();
     return true;
   }
+#endif  // defined(_WIN32)
   bool Write(const void* bytes, size_t length) {
     return fwrite(bytes, 1, length, file) == length || Fail("write output failed");
   }

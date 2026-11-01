@@ -28,6 +28,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
+#include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/include/zebkit/canvas.h"
 #include "zebkit/engine/include/zebkit/services.h"
 #include "zebkit/engine/include/zebkit/text.h"
@@ -113,10 +114,19 @@ std::optional<base::FilePath> Inside(const base::FilePath& root,
                                      const std::string& path) {
   if (root.empty())
     return std::nullopt;
+#if BUILDFLAG(IS_WIN)
+  // The whole file system (zebkit_script's), which has no one root here.
+  if (root.value() == FILE_PATH_LITERAL("/")) {
+    const base::FilePath absolute = PathFromUTF8(path);
+    return absolute.IsAbsolute() && !absolute.ReferencesParent()
+               ? std::optional<base::FilePath>(absolute)
+               : std::nullopt;
+  }
+#endif
   std::string relative = path;
   while (!relative.empty() && relative[0] == '/')
     relative.erase(0, 1);
-  base::FilePath inside(relative);
+  base::FilePath inside = PathFromUTF8(relative);
   if (inside.ReferencesParent())
     return std::nullopt;
   const base::FilePath full = relative.empty() ? root : root.Append(inside);
@@ -174,7 +184,7 @@ Result Files(const base::FilePath& root,
          name = enumerator.Next()) {
       base::FileEnumerator::FileInfo info = enumerator.GetInfo();
       base::DictValue entry;
-      entry.Set("name", name.BaseName().value());
+      entry.Set("name", PathToUTF8(name.BaseName()));
       entry.Set("directory", info.IsDirectory());
       entry.Set("size", static_cast<double>(info.GetSize()));
       entries.Append(std::move(entry));

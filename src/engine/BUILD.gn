@@ -1,6 +1,6 @@
 # The engine as a library: libzebkit.so.1, with zebkit-helper for its child
 # processes, on Linux; Zebkit.framework, with Zebkit Helper.app inside it,
-# on macOS. This directory is zebkit's src/engine, linked into the
+# on macOS; zebkit.dll with zebkit-helper.exe on Windows. This directory is zebkit's src/engine, linked into the
 # Chromium tree as //zebkit/engine by scripts/fetch-upstream.sh.
 
 import("//build/config/ui.gni")
@@ -16,6 +16,9 @@ if (is_mac) {
   import("//build/config/mac/mac_sdk.gni")
   import("//build/config/mac/rules.gni")
   import("//ui/gl/features.gni")
+}
+if (is_win) {
+  import("//build/config/win/visual_studio_version.gni")
 }
 
 _version = read_file("VERSION", "trim string")
@@ -99,6 +102,8 @@ _vendored_libraries = [
 
 if (is_mac) {
   _sysroot = mac_sdk_path
+} else if (is_win) {
+  _sysroot = visual_studio_path
 } else {
   _sysroot = sysroot
 }
@@ -111,10 +116,14 @@ action("vendor_sources") {
   outputs = [ "$target_gen_dir/vendor/libraries.txt" ]
   foreach(library, _vendored) {
     outputs += [
-      "$target_gen_dir/vendor/$library.S",
       "$target_gen_dir/vendor/$library.txt",
       "$target_gen_dir/include/zebkit/vendor/$library.h",
     ]
+    if (is_win) {
+      outputs += [ "$target_gen_dir/vendor/$library.c" ]
+    } else {
+      outputs += [ "$target_gen_dir/vendor/$library.S" ]
+    }
   }
   args = [
            "--target",
@@ -136,7 +145,12 @@ action("vendor_sources") {
 
 source_set("vendor") {
   testonly = true
-  sources = filter_include(get_target_outputs(":vendor_sources"), [ "*.S" ])
+  # On Windows no code: the linker's export of one name for another.
+  sources = filter_include(get_target_outputs(":vendor_sources"),
+                           [
+                             "*.S",
+                             "*.c",
+                           ])
   deps = [ ":vendor_sources" ]
 }
 
@@ -294,6 +308,7 @@ _sources = [
   "include/zebkit/media_tap.h",
   "offscreen.cc",
   "page_internal.h",
+  "path_utf8.h",
   "pdf_bridge.cc",
   "pdf_script.h",
   "print.cc",
@@ -409,6 +424,14 @@ if (is_linux) {
     "//sandbox/policy",
   ]
 }
+if (is_win) {
+  # The sandbox's and the system's parts of the engine (engine_win.cc).
+  _deps += [
+    "//sandbox/policy",
+    "//sandbox/win:sandbox",
+  ]
+  _sources += [ "engine_win.cc" ]
+}
 if (!is_mac) {
   _sources += [ "webauthn_views.cc" ]
   _deps += [ "//components/qr_code_generator:qr_code_generator" ]
@@ -448,7 +471,53 @@ declare_args() {
   zebkit_lto_optimize = false
 }
 
-if (!is_mac) {
+if (is_win) {
+  _sources += [ "attach.cc" ]
+
+  # zebkit.dll and its import library zebkit.dll.lib. What it exports is what
+  # the headers mark ZEBKIT_API, and the libraries' functions under zebkit's
+  # names (vendor/gen_vendor.py).
+  shared_library("zebkit") {
+    testonly = true
+    output_name = "zebkit"
+    sources = _sources
+    configs += [ ":implementation" ]
+    if (zebkit_lto_optimize) {
+      configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
+      configs += [ "//build/config/compiler:thinlto_optimize_max" ]
+    }
+    # Fewer modules loaded ahead of the sandbox, as chrome.dll's.
+    configs += [ "//build/config/win:delayloads" ]
+    public_configs = [ ":public" ]
+    deps = _deps
+    data_deps = [ "//content/shell:pak" ]
+  }
+
+  executable("zebkit-helper") {
+    testonly = true
+    sources = [ "helper.c" ]
+    deps = [
+      ":zebkit",
+      "//build/win:default_exe_manifest",
+    ]
+    # No console for child processes, with C's main() all the same.
+    configs -= [ "//build/config/win:console" ]
+    configs += [ "//build/config/win:windowed" ]
+    # 8 MiB as chrome.exe's: a renderer's main thread runs V8 and Blink here.
+    ldflags = [
+      "/ENTRY:mainCRTStartup",
+      "/STACK:0x800000",
+    ]
+  }
+
+  group("engine") {
+    testonly = true
+    deps = [
+      ":zebkit",
+      ":zebkit-helper",
+    ]
+  }
+} else if (!is_mac) {
   _sources += [
     "attach.cc",
     "glibc_compat.cc",

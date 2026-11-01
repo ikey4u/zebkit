@@ -11,6 +11,8 @@
  *   Linux   BGRA pixels in shared memory, a file descriptor the
  *           application maps or passes to another process; or a dmabuf
  *           (planes, strides, a modifier), where the GPU makes one.
+ *   Windows BGRA pixels in shared memory, a file mapping the application
+ *           maps or duplicates into another process.
  *
  * Each frame says what changed since the one before (damage rectangles),
  * its sequence number, its size in pixels and its scale. Frames come only
@@ -160,6 +162,12 @@ typedef struct zebkit_frame {
     uint32_t offsets[4];
     uint64_t modifier;
     uint32_t fourcc;
+
+    /* ZEBKIT_FRAME_SHARED_MEMORY on Windows, where @fd is -1: the file
+     * mapping (a HANDLE), the engine's until the frame is released:
+     * MapViewOfFile(@size bytes at 0), the pixels at @offset, or
+     * DuplicateHandle() into another process. NULL elsewhere. */
+    void *handle;
 } zebkit_frame;
 
 /*

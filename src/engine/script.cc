@@ -46,6 +46,7 @@
 #include "v8/include/v8-promise.h"
 #include "v8/include/v8-script.h"
 #include "v8/include/v8-typed-array.h"
+#include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/pdf_script.h"
 #include "zebkit/engine/ui.h"
@@ -941,7 +942,7 @@ void zebkit_script::Call(const v8::FunctionCallbackInfo<v8::Value>& info) {
     call.args = std::move(args.GetList());
   call.origin = "the application";
   call.allow = ZEBKIT_ALLOW_ALL & ~ZEBKIT_ALLOW_APP;
-  call.files_root = base::FilePath("/");
+  call.files_root = zebkit::PathFromUTF8("/");
   call.reply = base::BindOnce(
       [](base::WeakPtr<zebkit_script> script, int id, bool ok,
          base::Value value) {
@@ -2151,7 +2152,7 @@ void zebkit_script::UiListen(const v8::FunctionCallbackInfo<v8::Value>& info) {
 
 v8::MaybeLocal<v8::Module> zebkit_script::LoadModule(
     const base::FilePath& path) {
-  auto it = modules_.find(path.value());
+  auto it = modules_.find(zebkit::PathToUTF8(path));
   if (it != modules_.end())
     return it->second.Get(isolate());
   std::string text;
@@ -2159,19 +2160,19 @@ v8::MaybeLocal<v8::Module> zebkit_script::LoadModule(
     base::ScopedAllowBlockingForTesting allow_blocking;
     if (!base::ReadFileToString(path, &text)) {
       isolate()->ThrowException(v8::Exception::Error(
-          String8(isolate(), "cannot read the module " + path.value())));
+          String8(isolate(), "cannot read the module " + zebkit::PathToUTF8(path))));
       return {};
     }
   }
-  v8::ScriptOrigin origin(String8(isolate(), "file://" + path.value()), 0, 0,
+  v8::ScriptOrigin origin(String8(isolate(), "file://" + zebkit::PathToUTF8(path)), 0, 0,
                           false, -1, v8::Local<v8::Value>(), false, false,
                           /*is_module=*/true);
   v8::ScriptCompiler::Source source(String8(isolate(), text), origin);
   v8::Local<v8::Module> module;
   if (!v8::ScriptCompiler::CompileModule(isolate(), &source).ToLocal(&module))
     return {};
-  modules_[path.value()].Reset(isolate(), module);
-  module_paths_[module->GetIdentityHash()] = path.value();
+  modules_[zebkit::PathToUTF8(path)].Reset(isolate(), module);
+  module_paths_[module->GetIdentityHash()] = zebkit::PathToUTF8(path);
   return module;
 }
 
@@ -2195,8 +2196,8 @@ v8::MaybeLocal<v8::Module> zebkit_script::Resolve(
     return {};
   }
   base::FilePath path = name.starts_with("/")
-                            ? base::FilePath(name)
-                            : base::FilePath(from->second).DirName().Append(name);
+                            ? zebkit::PathFromUTF8(name)
+                            : zebkit::PathFromUTF8(from->second).DirName().Append(zebkit::PathFromUTF8(name));
   base::FilePath absolute;
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
@@ -2204,7 +2205,7 @@ v8::MaybeLocal<v8::Module> zebkit_script::Resolve(
   }
   if (absolute.empty()) {
     isolate->ThrowException(v8::Exception::Error(
-        String8(isolate, "no module " + path.value())));
+        String8(isolate, "no module " + zebkit::PathToUTF8(path))));
     return {};
   }
   return self->LoadModule(absolute);
@@ -2294,7 +2295,7 @@ void zebkit_script::RunModule(const std::string& file,
   base::FilePath path;
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    path = base::MakeAbsoluteFilePath(base::FilePath(file));
+    path = base::MakeAbsoluteFilePath(zebkit::PathFromUTF8(file));
   }
   v8::Local<v8::Module> module;
   v8::Local<v8::Value> result;

@@ -26,7 +26,9 @@
 #include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/page_internal.h"
 
+#if !BUILDFLAG(IS_WIN)
 #include <dlfcn.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -121,8 +123,10 @@ namespace zebkit {
 bool g_external_loop = false;
 bool g_application_integration = false;
 
+#if !BUILDFLAG(IS_WIN)
 // Where libzebkit is: the engine's data files and zebkit-helper are beside
 // it. On macOS, the framework's version directory, which has them inside.
+// (Windows': engine_win.cc.)
 base::FilePath LibraryDirectory() {
   Dl_info info;
   if (!dladdr(reinterpret_cast<void*>(&zebkit_main), &info) || !info.dli_fname)
@@ -134,8 +138,9 @@ base::FilePath LibraryDirectory() {
   free(real);
   return path.DirName();
 }
+#endif  // !BUILDFLAG(IS_WIN)
 
-#if !BUILDFLAG(IS_MAC)
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
 base::FilePath HelperPath(const base::FilePath& library) {
   return library.Append("zebkit-helper");
 }
@@ -181,13 +186,15 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
   const base::FilePath library = LibraryDirectory();
   if (!HasSwitch(argc, argv, switches::kBrowserSubprocessPath)) {
     args.push_back(std::string("--") + switches::kBrowserSubprocessPath + "=" +
-                   HelperPath(library).value());
+                   PathToUTF8(HelperPath(library)));
   }
   if (!HasSwitch(argc, argv, switches::kContentShellUserDataDir)) {
     std::string config;
 #if BUILDFLAG(IS_MAC)
     if (const char* home = getenv("HOME"); home && *home)
       config = std::string(home) + "/Library/Application Support";
+#elif BUILDFLAG(IS_WIN)
+    config = DefaultConfigDirectory();
 #else
     if (const char* xdg = getenv("XDG_CONFIG_HOME"); xdg && *xdg)
       config = xdg;
@@ -195,7 +202,12 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
       config = std::string(home) + "/.config";
 #endif
     if (!config.empty()) {
+#if BUILDFLAG(IS_WIN)
+      const std::string program = PathToUTF8(
+          base::FilePath(base::UTF8ToWide(args[0])).BaseName().RemoveFinalExtension());
+#else
       const std::string program = base::FilePath(args[0]).BaseName().value();
+#endif
       args.push_back(std::string("--") + switches::kContentShellUserDataDir +
                      "=" + config + "/zebkit/" + program);
     }
@@ -289,8 +301,12 @@ scoped_refptr<base::RefCountedMemory> NetResourceProvider(int key) {
 
 int RunContent(int argc, char** argv, MainDelegate* delegate) {
   content::ContentMainParams params(delegate);
+#if BUILDFLAG(IS_WIN)
+  SetUpWindowsMainParams(argc, argv, &params);
+#else
   params.argc = argc;
   params.argv = const_cast<const char**>(argv);
+#endif
   return content::ContentMain(std::move(params));
 }
 
@@ -377,7 +393,7 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
     // Translations would be in locales/, which Chromium creates when it is
     // not there; zebkit has none, and leaves its package as it is.
     base::PathService::OverrideAndCreateIfNeeded(
-        ui::DIR_LOCALES, library.Append("locales"), /*is_absolute=*/true,
+        ui::DIR_LOCALES, library.AppendASCII("locales"), /*is_absolute=*/true,
         /*create=*/false);
   }
 #endif
@@ -1260,8 +1276,13 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
   engine->argv.push_back(nullptr);
   content::ContentMainParams params(&engine->delegate);
   params.preserve_process_state = true;
+#if BUILDFLAG(IS_WIN)
+  zebkit::SetUpWindowsMainParams(static_cast<int>(engine->args.size()),
+                                 const_cast<char**>(engine->argv.data()), &params);
+#else
   params.argc = static_cast<int>(engine->args.size());
   params.argv = engine->argv.data();
+#endif
   g_engine_started = true;
   zebkit::g_external_loop = true;
   zebkit::g_application_integration = application_integration;

@@ -1,8 +1,8 @@
 // zebkit_view_attach() on views (Linux): the view's page in a WebView of
 // its own, over the parent's page in the parent's window, placed by bounds
 // rather than by the window's layout. zebkit_view_attach_native() on X11: the
-// view's whole window becomes a child of the application's. engine_mac.mm has
-// macOS's.
+// view's whole window becomes a child of the application's, as on Windows with
+// an HWND. engine_mac.mm has macOS's.
 
 #include <algorithm>
 #include <limits>
@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "build/build_config.h"
 #include "content/public/browser/web_contents.h"
 #include "content/shell/browser/shell.h"
 #include "ui/views/controls/webview/webview.h"
@@ -33,6 +34,13 @@
 #include "ui/gfx/x/xproto.h"
 #include "ui/platform_window/extensions/x11_extension.h"
 #include "ui/platform_window/platform_window.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
 #endif
 
 namespace zebkit {
@@ -381,6 +389,144 @@ void ForgetAttachedNative(zebkit_view* view) {
   Natives().Remove(view);
 }
 
+#elif BUILDFLAG(IS_WIN)
+
+namespace {
+
+struct NativeAttached {
+  HWND window = nullptr;
+  HWND parent = nullptr;
+  LONG_PTR style = 0;
+  LONG_PTR ex_style = 0;
+  gfx::Rect bounds;
+};
+
+std::map<const zebkit_view*, NativeAttached>& Natives() {
+  static base::NoDestructor<std::map<const zebkit_view*, NativeAttached>> attached;
+  return *attached;
+}
+
+NativeAttached* NativeOf(const zebkit_view* view) {
+  auto it = Natives().find(view);
+  return it == Natives().end() ? nullptr : &it->second;
+}
+
+void Place(const NativeAttached& entry) {
+  ::SetWindowPos(entry.window, nullptr, entry.bounds.x(), entry.bounds.y(),
+                 entry.bounds.width(), entry.bounds.height(),
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+}  // namespace
+
+bool AttachViewNative(zebkit_view* view,
+                      uintptr_t native_parent,
+                      const gfx::Rect& bounds,
+                      std::string* error) {
+  views::Widget* widget = WidgetOf(view);
+  if (!widget) {
+    *error = "the engine runs headless and the view has no window to parent; "
+             "draw the page in your window with off-screen views "
+             "(<zebkit/offscreen.h>)";
+    return false;
+  }
+  if (bounds.width() <= 0 || bounds.height() <= 0) {
+    *error = "the bounds are empty";
+    return false;
+  }
+  const HWND parent = reinterpret_cast<HWND>(native_parent);
+  if (!::IsWindow(parent)) {
+    *error = "there is no window " + base::NumberToString(native_parent);
+    return false;
+  }
+  const HWND window = widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget();
+  // Its own window, or one inside it, cannot be its parent.
+  if (window == parent || ::IsChild(window, parent)) {
+    *error = "that window cannot be the parent";
+    return false;
+  }
+  DetachView(view);
+  DetachViewNative(view);
+  NativeAttached entry;
+  entry.window = window;
+  entry.parent = parent;
+  entry.bounds = bounds;
+  entry.style = ::GetWindowLongPtrW(window, GWL_STYLE);
+  entry.ex_style = ::GetWindowLongPtrW(window, GWL_EXSTYLE);
+  ::SetWindowLongPtrW(
+      window, GWL_STYLE,
+      (entry.style & ~(WS_POPUP | WS_OVERLAPPEDWINDOW)) | WS_CHILD | WS_CLIPSIBLINGS);
+  ::SetWindowLongPtrW(window, GWL_EXSTYLE,
+                      entry.ex_style & ~(WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME));
+  if (!::SetParent(window, parent)) {
+    ::SetWindowLongPtrW(window, GWL_STYLE, entry.style);
+    ::SetWindowLongPtrW(window, GWL_EXSTYLE, entry.ex_style);
+    *error = "Windows refused that window as the parent: error " +
+             base::NumberToString(::GetLastError());
+    return false;
+  }
+  Natives()[view] = entry;
+  Place(entry);
+  return true;
+}
+
+bool SetAttachedNativeBounds(zebkit_view* view, const gfx::Rect& bounds) {
+  NativeAttached* entry = NativeOf(view);
+  if (!entry)
+    return false;
+  entry->bounds = gfx::Rect(bounds.origin(), gfx::Size(std::max(bounds.width(), 1),
+                                                       std::max(bounds.height(), 1)));
+  Place(*entry);
+  return true;
+}
+
+bool SetAttachedNativeSize(zebkit_view* view, const gfx::Size& size) {
+  NativeAttached* entry = NativeOf(view);
+  return entry && SetAttachedNativeBounds(
+                      view, gfx::Rect(entry->bounds.origin(), size));
+}
+
+bool SetAttachedNativeVisible(zebkit_view* view, bool visible) {
+  NativeAttached* entry = NativeOf(view);
+  if (!entry)
+    return false;
+  // Shown without taking the keyboard from the application.
+  ::ShowWindow(entry->window, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+  return true;
+}
+
+bool FocusAttachedNative(zebkit_view* view) {
+  NativeAttached* entry = NativeOf(view);
+  if (!entry)
+    return false;
+  ::SetFocus(entry->window);
+  return true;
+}
+
+bool DetachViewNative(zebkit_view* view) {
+  NativeAttached* entry = NativeOf(view);
+  if (!entry)
+    return false;
+  const NativeAttached copy = *entry;
+  Natives().erase(view);
+  // Back on the desktop where it is on the screen.
+  RECT screen = {};
+  ::GetWindowRect(copy.window, &screen);
+  ::SetParent(copy.window, nullptr);
+  ::SetWindowLongPtrW(copy.window, GWL_STYLE, copy.style);
+  ::SetWindowLongPtrW(copy.window, GWL_EXSTYLE, copy.ex_style);
+  ::SetWindowPos(copy.window, nullptr, screen.left, screen.top,
+                 screen.right - screen.left, screen.bottom - screen.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  if (views::Widget* widget = WidgetOf(view))
+    widget->Show();
+  return true;
+}
+
+void ForgetAttachedNative(zebkit_view* view) {
+  Natives().erase(view);
+}
+
 #else  // !defined(ZEBKIT_X11)
 
 bool AttachViewNative(zebkit_view* view,
@@ -407,6 +553,6 @@ bool DetachViewNative(zebkit_view* view) {
 }
 void ForgetAttachedNative(zebkit_view* view) {}
 
-#endif  // defined(ZEBKIT_X11)
+#endif  // defined(ZEBKIT_X11), BUILDFLAG(IS_WIN)
 
 }  // namespace zebkit

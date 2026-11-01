@@ -8,6 +8,7 @@
 #include <string>
 #include <variant>
 
+#include "base/files/file_path.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/shell/app/shell_main_delegate.h"
@@ -18,6 +19,7 @@
 #include "content/shell/renderer/shell_content_renderer_client.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
+#include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace base {
@@ -25,6 +27,7 @@ class FilePath;
 }
 
 namespace content {
+struct ContentMainParams;
 class BrowserMainRunner;
 class BrowserContext;
 class RenderFrame;
@@ -274,6 +277,15 @@ base::FilePath LibraryDirectory();
 
 // The program the engine's child processes run.
 base::FilePath HelperPath(const base::FilePath& library);
+
+#if BUILDFLAG(IS_WIN)
+// engine_win.cc: the user's per-machine application data directory, in UTF-8.
+std::string DefaultConfigDirectory();
+// Windows' ContentMain takes no arguments and reads the process's command
+// line: the engine's arguments become that, and params get the module and the
+// sandbox.
+void SetUpWindowsMainParams(int argc, char** argv, content::ContentMainParams* params);
+#endif
 
 #if BUILDFLAG(IS_MAC)
 // engine_mac.mm: the framework as the bundle Chromium finds its files in;

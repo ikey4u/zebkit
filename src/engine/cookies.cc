@@ -15,6 +15,9 @@
 #include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
+#if BUILDFLAG(IS_WIN)
+#include "base/strings/utf_string_conversions.h"
+#endif
 #include "components/os_crypt/async/browser/key_provider.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
 #include "components/os_crypt/async/common/algorithm.mojom.h"
@@ -132,7 +135,14 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
   auto& state = HostKey();
   if (state.locked)
     return false;
+#if BUILDFLAG(IS_WIN)
+  base::CommandLine::StringVector wide_args;
+  for (const std::string& arg : args)
+    wide_args.push_back(base::UTF8ToWide(arg));
+  base::CommandLine command(wide_args);
+#else
   base::CommandLine command(args);
+#endif
   if (command.HasSwitch("zebkit-cookie-storage")) {
     std::string mode = command.GetSwitchValueASCII("zebkit-cookie-storage");
     if (mode != "os" && mode != "file") {

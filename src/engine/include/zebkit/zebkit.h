@@ -31,7 +31,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(ZEBKIT_IMPLEMENTATION)
+#if defined(ZEBKIT_IMPLEMENTATION) && defined(_WIN32)
+#define ZEBKIT_API __declspec(dllexport)
+#elif defined(ZEBKIT_IMPLEMENTATION)
 #define ZEBKIT_API __attribute__((visibility("default")))
 #else
 #define ZEBKIT_API

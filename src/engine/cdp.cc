@@ -153,7 +153,7 @@ std::string CdpUrl() {
   // with the port, and one with /devtools/browser/<id>.
   base::ScopedAllowBlockingForTesting allow_blocking;
   const base::FilePath file =
-      endpoint.directory.GetPath().Append("DevToolsActivePort");
+      endpoint.directory.GetPath().AppendASCII("DevToolsActivePort");
   for (int attempt = 0; attempt < 200; ++attempt) {
     std::string text;
     if (base::ReadFileToString(file, &text)) {
