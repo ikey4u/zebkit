@@ -148,6 +148,9 @@ static void on_frame(zebkit_view *v, const zebkit_frame *frame, void *data) {
     int fds[4], fd_count = 0;
     const int fresh = !is_known(frame->buffer_id);
     switch (frame->kind) {
+    case ZEBKIT_FRAME_D3D11:
+        /* This example's other process is on POSIX systems. */
+        break;
     case ZEBKIT_FRAME_SHARED_MEMORY:
         message.kind = ZKO_SHARED_MEMORY;
         message.stride = frame->stride, message.offset = frame->offset, message.size = frame->size;
