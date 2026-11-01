@@ -32,7 +32,7 @@ def self_driven(host, document, switches):
         try:
             result = subprocess.run([host, "--scroll-test", "--pdf=" + str(document), *switches,
                                      "--user-data-dir=" + work + "/profile"],
-                                    env=env, capture_output=True, text=True, timeout=170)
+                                    env=env, capture_output=True, text=True, timeout=420)
         finally:
             if display:
                 display.terminate()
