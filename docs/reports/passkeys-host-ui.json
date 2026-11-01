@@ -79,7 +79,7 @@
     "real_account_credentials_used": false
   },
   "artifact": {
-    "artifact": "dist/authentication/the host.app",
+    "artifact": "dist/authentication/Host.app",
     "platform": "macOS arm64",
     "desktop_profile": "release-desktop, stripped",
     "signing": "ad hoc; deep strict verification passed",
