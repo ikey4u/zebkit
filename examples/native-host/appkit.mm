@@ -317,6 +317,8 @@ static void Wake(int64_t delay, void* data) {
     // and keyboard stay theirs (tests/engine/native_host_pdf_scroll.py).
     __weak HostController* weak = self;
     __block int up = 0;
+    // Not napped behind the person's own windows while it runs.
+    __block id activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical reason:@"scroll test"];
     NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:180];
     [NSTimer scheduledTimerWithTimeInterval:0.02 repeats:YES block:^(NSTimer* timer) {
       HostController* host = weak;
@@ -325,6 +327,7 @@ static void Wake(int64_t delay, void* data) {
       const bool end = pane.position + pane.height >= pane.total - 1;
       if (end || up > 0) ++up;
       if (up >= 60 || limit.timeIntervalSinceNow < 0) {
+        [NSProcessInfo.processInfo endActivity:activity]; activity = nil;
         [timer invalidate]; [host stopEngine]; [NSApp stop:nil];
         [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
           modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
