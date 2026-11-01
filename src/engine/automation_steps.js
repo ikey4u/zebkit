@@ -592,6 +592,8 @@ steps.ariaSnapshot = arg => {
 // Playwright's FrameExpectResult has: matches, received, timedOut, log.
 steps.expect = async arg => {
   const options = { ...arg.options };
+  const timeout = options.expectTimeout ?? arg.timeout;
+  delete options.expectTimeout;
   // The endpoint's: serialized, and its received value is to be serialized too.
   const serialized = options.expectedValueSerialized;
   delete options.expectedValueSerialized;
@@ -648,7 +650,7 @@ steps.expect = async arg => {
     if (e instanceof FatalError || /strict mode violation|selector/i.test(e.message))
       return { matches: options.isNot, errorMessage: e.message, log };
   }
-  const polled = await poll(arg.timeout, kPollWaits, async () => {
+  const polled = await poll(timeout, kPollWaits, async () => {
     try {
       last = await once(say);
     } catch (e) {

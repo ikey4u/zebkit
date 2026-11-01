@@ -2060,6 +2060,14 @@ void Connection::Command(int id,
   bool is_not = false;
   if (method == "expect") {
     is_not = params.FindBool("isNot").value_or(false);
+    // frames.ts checks once whatever the timeout (timeout: 1 passes when it
+    // already holds), then retries until it: the step keeps that time, the
+    // command's own limit only guards against a step that never answers.
+    if (const std::optional<double> timeout = params.FindDouble("timeout");
+        timeout && *timeout > 0) {
+      params.Set("expectTimeout", *timeout);
+      params.Set("timeout", *timeout + 2000);
+    }
     // A serialized value, which the step makes the value it was (a Date, a
     // URL, undefined), as frameDispatcher.ts's parseArgument().
     if (base::Value* expected = params.Find("expectedValue"); expected && expected->is_dict()) {
