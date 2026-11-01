@@ -6,6 +6,7 @@
 #ifndef ZEBKIT_ENGINE_AUTOMATION_CONTEXT_H_
 #define ZEBKIT_ENGINE_AUTOMATION_CONTEXT_H_
 
+#include "url/gurl.h"
 #include <optional>
 #include <string>
 
@@ -18,6 +19,12 @@ class WebContents;
 }  // namespace content
 
 namespace zebkit {
+
+// httpCredentials of a command: the protocol's list, or one as the C API takes it.
+base::ListValue HttpCredentialsOf(const base::DictValue& params);
+// browserContext.ts's findMatchingHttpCredentials(): the first for @url's origin.
+const base::DictValue* MatchingHttpCredentials(const base::ListValue& credentials,
+                                               const GURL& url);
 
 using ContextDone =
     base::OnceCallback<void(base::Value result, const std::string& error)>;

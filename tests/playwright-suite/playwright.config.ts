@@ -11,8 +11,15 @@ const out = process.env.PW_SUITE_OUT!;
 const basePort = Number(process.env.PW_SUITE_BASE_PORT || 0);
 if (basePort) {
   // Each worker has an engine of its own, so a crash costs one worker's test.
-  // The worker's fixtures read this (connectOptionsFromEnv) in the worker.
-  process.env.PW_TEST_CONNECT_WS_ENDPOINT = `ws://127.0.0.1:${basePort + Number(process.env.TEST_PARALLEL_INDEX || 0)}/`;
+  // The worker's fixtures read this (connectOptionsFromEnv) in the worker. The
+  // url has the engine's token: engines.mjs keeps it in a file while the engine
+  // lives, and a worker started after a crash waits for the next engine's.
+  const file = `${out}/engine-${Number(process.env.TEST_PARALLEL_INDEX || 0)}.url`;
+  const fs = process.getBuiltinModule('node:fs');
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (let waited = 0; waited < 300 && !fs.existsSync(file); ++waited)
+    Atomics.wait(sleeper, 0, 0, 100);
+  process.env.PW_TEST_CONNECT_WS_ENDPOINT = fs.readFileSync(file, 'utf8').trim();
 }
 process.env.PWTEST_UNDER_TEST = '1';
 const executablePath = process.env.PW_SUITE_CHROME || undefined;

@@ -136,6 +136,7 @@ async def test(base):
 
     url = await listen(0)
     check(url.startswith("ws://127.0.0.1:"), "listen() serves Playwright's protocol", url)
+    check(len(url.rsplit("/", 1)[1]) >= 32, "listen()'s url has its random token", url)
 
 
 def main():

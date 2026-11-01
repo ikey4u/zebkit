@@ -110,6 +110,10 @@ class RendererClient : public content::ShellContentRendererClient {
   bool OverrideCreatePlugin(content::RenderFrame* render_frame,
                             const blink::WebPluginParams& params,
                             blink::WebPlugin** plugin) override;
+  // A PDF renderer has no data of any origin, as Chrome's: script in a PDF's
+  // document sees no storage and starts no worker (pdf_viewer_renderer.cc).
+  bool IsDomStorageDisabled() const override;
+  bool AreDedicatedWorkersDisabled() const override;
   // Workers for automation (automation_renderer.cc).
   void DidInitializeWorkerContextOnWorkerThread(
       v8::Local<v8::Context> context) override;
@@ -312,6 +316,12 @@ content::BrowserContext* GetBrowserContext();
 content::BrowserContext* ProfileOf(zebkit_context* context);
 // What a new profile has of the engine's own: client hints, cookies.
 void ConfigureContext(content::BrowserContext* profile);
+// A closed context's profile, deleted when nothing uses it (view.cc), and what the
+// engine keeps of it: automation's, the cookie setting's, the worker policy's.
+void DestroyProfileWhenUnused(content::ShellBrowserContext* profile, int tries);
+void ForgetAutomationContext(content::BrowserContext* profile);
+void ForgetContextCookies(content::BrowserContext* profile);
+void ForgetWorkerPolicy(content::BrowserContext* profile);
 
 // CDP (cdp.cc).
 unsigned CdpListen(const std::string& address, unsigned port, std::string* error);

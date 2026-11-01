@@ -1400,7 +1400,8 @@ async def new_context(**options):
 def listen(port=0):
     """Serves Playwright's own protocol on 127.0.0.1:@port (0 picks one):
     chromium.connect(url) of any Playwright client drives this engine. A
-    Future of the url."""
+    Future of the url, which has a random token: only it connects, and no
+    request with an Origin header, so it is the credential to keep."""
     future = Future()
 
     def done(url, error, data):

@@ -62,7 +62,8 @@ interface AutomationAgent {
   // Runs step @step of automation_steps.js in @world with @arg, a JSON
   // object whose {"$h": i} are @handles[i]. A step that asks for text to
   // be typed ({insertText}) has it committed into the focused element, as
-  // an IME commits it, before the answer.
+  // an IME commits it, before the answer. A handle -1 - n is the element, in any
+  // tree of this frame's document, of its child n in the frame tree's order.
   Step(AutomationWorld world, string step, string arg, array<int32> handles)
       => (AutomationStatus status, string result,
           array<AutomationHandle> handles);

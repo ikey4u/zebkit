@@ -26,6 +26,8 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
@@ -42,7 +44,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/drop_data.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/shell/browser/shell.h"
+#include "content/shell/browser/shell_browser_context.h"
 #include "net/http/http_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -876,7 +880,8 @@ void zebkit_view::OnDidAddMessageToConsole(content::RenderFrameHost* frame,
   event.Set("frameId", frame ? "f" + base::NumberToString(frame->GetFrameTreeNodeId().value()) : "");
   event.Set("mainFrame", frame && frame->IsInPrimaryMainFrame());
   event.Set("origin", frame ? frame->GetLastCommittedOrigin().Serialize() : "null");
-  if (stack) event.Set("stackTrace", text(*stack, 65536));
+  // A first character of 1 marks console.error("Uncaught x") (patches/1071).
+  if (stack) event.Set("stackTrace", text(stack->starts_with(u'\x01') ? stack->substr(1) : *stack, 65536));
   else event.Set("stackTrace", base::Value());
   event.Set("truncated", truncated);
   ++console_pending_;
@@ -1145,6 +1150,39 @@ std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
   return std::make_unique<ViewDelegate>(contents, std::move(inner));
 }
 
+// What Chrome's ProfileDestroyer does: a closed context's profile goes when its
+// pages and their processes have, which is after they are closed, as content wants
+// it until then. @tries, at 100 ms: a process that does not go keeps the profile
+// (never deleted under it), and a task the engine's end drops loses only memory.
+void DestroyProfileWhenUnused(content::ShellBrowserContext* profile, int tries) {
+  bool used = false;
+  for (content::Shell* shell : content::Shell::windows()) {
+    if (shell->web_contents() && shell->web_contents()->GetBrowserContext() == profile)
+      used = true;
+  }
+  if (!used) {
+    // Lets go of the processes' keep-alives and of a spare.
+    profile->NotifyWillBeDestroyed();
+    for (auto hosts = content::RenderProcessHost::AllHostsIterator(); !hosts.IsAtEnd();
+         hosts.Advance()) {
+      if (hosts.GetCurrentValue()->GetBrowserContext() == profile)
+        used = true;
+    }
+  }
+  if (!used) {
+    ForgetAutomationContext(profile);
+    ForgetContextCookies(profile);
+    ForgetWorkerPolicy(profile);
+    delete profile;
+    return;
+  }
+  if (tries > 0) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, base::BindOnce(&DestroyProfileWhenUnused, profile, tries - 1),
+        base::Milliseconds(100));
+  }
+}
+
 }  // namespace zebkit
 
 extern "C" {
@@ -1171,9 +1209,7 @@ void zebkit_context_close(zebkit_context* context) {
   }
   for (zebkit_view* view : views)
     view->Close();
-  // The profile stays until the engine stops: its pages' processes go
-  // after them, and content wants it while they do.
-  std::ignore = context->profile.release();
+  zebkit::DestroyProfileWhenUnused(context->profile.release(), 300);
   delete context;
 }
 

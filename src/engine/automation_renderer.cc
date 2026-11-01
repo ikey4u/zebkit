@@ -996,6 +996,14 @@ class Agent : public content::RenderFrameObserver,
         v8::Array::New(isolate, static_cast<int>(handles.size()));
     for (size_t i = 0; i < handles.size(); ++i) {
       v8::Local<v8::Value> value = v8::Undefined(isolate);
+      // -1 - n: the element of this frame's child n, as automation.mojom's Step says.
+      if (handles[i] < 0) {
+        blink::WebElement owner = ChildOwner(-1 - handles[i]);
+        if (!owner.IsNull())
+          value = owner.ToV8Value(isolate);
+        values->Set(context, static_cast<uint32_t>(i), value).Check();
+        continue;
+      }
       auto found = handles_.find(handles[i]);
       if (found != handles_.end()) {
         value = found->second.value.Get(isolate);
@@ -1009,6 +1017,15 @@ class Agent : public content::RenderFrameObserver,
       values->Set(context, static_cast<uint32_t>(i), value).Check();
     }
     return values;
+  }
+
+  // The <iframe>, in whichever tree of this document, of child @index in the frame
+  // tree's order, which is the browser's: window.frames skips shadow trees.
+  blink::WebElement ChildOwner(int32_t index) {
+    blink::WebFrame* child = render_frame()->GetWebFrame()->FirstChild();
+    while (child && index-- > 0)
+      child = child->NextSibling();
+    return child ? child->FrameOwnerElement() : blink::WebElement();
   }
 
   int32_t WorldIdOf(v8::Local<v8::Context> context) {

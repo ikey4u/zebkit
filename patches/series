@@ -68,3 +68,4 @@
 1068-size-on-windows-clang-cl-takes-oz-through-clang.patch
 1069-network-header-client-told-the-headers-as-sent.patch
 1070-devtools-interceptor-includes-raw-headers.patch
+1071-pdf-always-in-a-pdf-renderer.patch

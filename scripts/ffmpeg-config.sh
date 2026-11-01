@@ -20,6 +20,11 @@
 # arm64 and Windows x64 from Linux), then generate_gn.py, which finds the sources of the
 # objects built. That writes into the FFmpeg tree it reads, so it runs on a
 # copy. Run again when Chromium's FFmpeg changes (a new CHROMIUM_VERSION).
+#
+# Windows needs the Windows SDK (scripts/windows-toolchain.sh). Without it
+# Windows is not built: FFmpeg's Windows build from a run before is taken if
+# the tree has one; if not, only the other systems' configurations are
+# written, and the source list, which needs every system, stays as it is.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -43,6 +48,21 @@ work="$CACHE_DIR/ffmpeg-gen"
 [[ -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] || die "no macOS SDK; run scripts/macos-toolchain.sh first"
 export PATH="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin:$PATH"
 
+# Whether FFmpeg can be built for Windows here, and whether a run before did.
+windows_sdk=0
+[[ -f "$SDK_DIR/windows/win_toolchain.json" ]] && windows_sdk=1
+windows_built=0
+[[ -d "$ffmpeg/build.x64.win/Chrome" ]] && windows_built=1
+if (( ! windows_sdk )); then
+    [[ "${FFMPEG_ONLY:-}" == win ]] && die "FFMPEG_ONLY=win needs the Windows SDK; run scripts/windows-toolchain.sh first"
+    if (( windows_built )); then
+        log "no Windows SDK: skipping FFmpeg's build for Windows, taking the one of a run before (scripts/windows-toolchain.sh sets the SDK up)"
+    else
+        log "no Windows SDK and no build of a run before: skipping Windows; src/ffmpeg/ffmpeg_generated.gni and its renamed files stay as they are, only the other systems' configurations are written (scripts/windows-toolchain.sh sets the SDK up)"
+        PLATFORMS=("linux x64" "mac arm64")
+    fi
+fi
+
 # configure checks that libvpx links, which the engine's does in the end:
 # a library with the two entry points does for the check.
 stub_libvpx() {
@@ -65,6 +85,7 @@ build=1
 for platform in "${PLATFORMS[@]}"; do
     (( build )) || break
     [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" ]] && continue
+    [[ "${platform%% *}" == win ]] && (( ! windows_sdk )) && continue
     log "configuring and building FFmpeg for $platform"
     stub="$(stub_libvpx "${platform%% *}")"
     libpath="-L$stub"
@@ -74,6 +95,9 @@ for platform in "${PLATFORMS[@]}"; do
         "--extra-ldflags=$libpath")
 done
 
+# Only over every system's builds: a list of two would leave Windows without sources.
+regenerate=1
+(( windows_sdk || windows_built )) || regenerate=0
 log "finding the sources of what was built"
 # The copy is laid out as in Chromium's tree, src/third_party/ffmpeg, beside
 # the license checker the script runs.
@@ -91,7 +115,7 @@ for platform in "${PLATFORMS[@]}"; do
     ln -s "$ffmpeg/build.$arch.$os" "$work/builds/build.$arch.$os"
 done
 # It writes the files it renames relative to where it runs: in the copy.
-(cd "$copy" && python3 -W ignore "$scripts/generate_gn.py" -s "$copy" -b "$work/builds")
+(( regenerate )) && (cd "$copy" && python3 -W ignore "$scripts/generate_gn.py" -s "$copy" -b "$work/builds")
 
 # Into a copy, and over $out by content: a file that did not change keeps its
 # time, and a build going on elsewhere does not see it change.
@@ -117,6 +141,7 @@ for platform in "${PLATFORMS[@]}"; do
         sed -E -e "s|$ZEBKIT_ROOT/||g" -e "s#(/winsysroot:?)[^ ']*#\1#g" "$from/$file" > "$to/$file"
     done
 done
+if (( regenerate )); then
 cp "$copy/ffmpeg_generated.gni" "$out/ffmpeg_generated.gni"
 # Files generate_gn.py made for sources whose objects would share a name.
 (cd "$copy" && find . -name 'autorename_*' -newer "$work/builds" -type f) | while read -r file; do
@@ -143,6 +168,10 @@ ffmpeg_c_sources += [ "libavformat/sdp.c" ]
 """
 gni.write_text(text)
 PY
+else
+    # The list as it is.
+    rm -f "$out/ffmpeg_generated.gni"
+fi
 python3 -I - "$out" "$final" <<'PY'
 import pathlib, shutil, sys
 new, old = map(pathlib.Path, sys.argv[1:])

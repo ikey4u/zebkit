@@ -18,6 +18,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
+#include "components/pdf/renderer/internal_plugin_renderer_helpers.h"
 #include "components/pdf/renderer/pdf_view_web_plugin_client.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
@@ -255,6 +256,17 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
 };
 
 }  // namespace
+
+// As ChromeContentRendererClient: the browser process kills a PDF renderer that
+// asks for storage or a worker, which script in its document could otherwise do
+// (a driver's, DevTools'). localStorage is null, Worker throws a SecurityError.
+bool RendererClient::IsDomStorageDisabled() const {
+  return pdf::IsPdfRenderer();
+}
+
+bool RendererClient::AreDedicatedWorkersDisabled() const {
+  return pdf::IsPdfRenderer();
+}
 
 bool RendererClient::OverrideCreatePlugin(content::RenderFrame* render_frame,
                                           const blink::WebPluginParams& params,

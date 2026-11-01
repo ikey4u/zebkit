@@ -33,6 +33,19 @@ const endpoint = await new Promise((resolve, reject) => {
 });
 
 let failed = 0;
+// The status of a WebSocket upgrade: 101 when the endpoint takes it.
+function upgrade(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url.replace(/^ws:/, 'http:'), {
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13',
+                 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers },
+    });
+    request.on('upgrade', (response, socket) => { socket.destroy(); resolve(response.statusCode); });
+    request.on('response', response => { response.resume(); request.destroy(); resolve(response.statusCode); });
+    request.on('error', reject);
+    request.end();
+  });
+}
 async function check(name, body) {
   try {
     await body();
@@ -55,6 +68,20 @@ const page_html = `<!doctype html><title>Connect</title>
 <input id=file type=file>
 <ul>${Array.from({ length: 5 }, (_, i) => `<li class=item>item ${i}</li>`).join('')}</ul>
 <iframe id=child srcdoc="<p id=inner>inside</p>"></iframe>`;
+
+// Open to no web page, and only to who has the url (automation_server.cc).
+await check('the endpoint refuses a request with an Origin header', async () => {
+  equal(await upgrade(endpoint, { Origin: 'https://evil.example' }), 403);
+  equal(await upgrade(endpoint, { Origin: 'null' }), 403);
+});
+await check('the endpoint refuses a path without its token', async () => {
+  const url = new URL(endpoint);
+  if (url.pathname.length < 33)
+    throw new Error(`no token in ${endpoint}`);
+  equal(await upgrade(`ws://${url.host}/`), 403);
+  equal(await upgrade(`ws://${url.host}${url.pathname}x`), 403);
+});
+await check('the endpoint takes its own url', async () => equal(await upgrade(endpoint), 101));
 
 let browser, context, page;
 await check('connect', async () => {
@@ -347,6 +374,116 @@ await check('real network timing and encoded transfer sizes', async () => {
   } finally {
     await isolated.close();
     await new Promise(resolve => server.close(resolve));
+  }
+});
+await check('navigator.webdriver is true on a page a client drives', async () => {
+  equal(await page.evaluate(() => navigator.webdriver), true);
+});
+await check('console.error("Uncaught x") is a console message, a throw a page error', async () => {
+  const errors = [], messages = [];
+  const onError = error => errors.push(error.message), onConsole = message => messages.push(message.text());
+  page.on('pageerror', onError);
+  page.on('console', onConsole);
+  await page.evaluate(() => console.error('Uncaught forged'));
+  await page.evaluate(() => { setTimeout(() => { throw new Error('real'); }); });
+  await page.waitForTimeout(300);
+  page.off('pageerror', onError);
+  page.off('console', onConsole);
+  equal(errors, ['real']);
+  equal(messages.filter(text => text.includes('forged')), ['Uncaught forged']);
+});
+await check('a frame in a shadow root: its element, and clicks into it', async () => {
+  const framed = await context.newPage();
+  await framed.setContent('<div id=host></div>');
+  await framed.evaluate(() => {
+    const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+    shadow.innerHTML = `<iframe id=shadowed style="margin-left:200px" srcdoc="<button onclick='window.hit=1' style='width:100%;height:100px'>x</button>"></iframe>`;
+    const light = document.createElement('iframe');
+    light.id = 'light';
+    light.srcdoc = '<p>light</p>';
+    document.body.append(light);
+  });
+  await framed.waitForLoadState();
+  const inner = framed.frames().find(f => f !== framed.mainFrame() && f.childFrames().length === 0 && !f.isDetached() && f === framed.frames()[1]);
+  const element = await inner.frameElement();
+  equal(await element.evaluate(e => e.id), 'shadowed');
+  const other = await framed.frames()[2].frameElement();
+  equal(await other.evaluate(e => e.id), 'light');
+  await inner.locator('button').click();
+  equal(await inner.evaluate(() => window.hit), 1);
+  await framed.close();
+});
+await check('page.request has the context\'s baseURL and httpCredentials', async () => {
+  const seen = [];
+  const server = http.createServer((request, response) => {
+    seen.push(request.headers.authorization || '');
+    if (request.url === '/open') {
+      response.end('open');
+    } else if (request.headers.authorization) {
+      response.end(request.headers.authorization);
+    } else {
+      response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="r"' });
+      response.end();
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const basic = `Basic ${Buffer.from('user:pass').toString('base64')}`;
+  const made = [];
+  try {
+    const plain = await browser.newContext({ baseURL: base });
+    made.push(plain);
+    equal(await (await plain.request.get('/open')).text(), 'open');
+    equal((await plain.request.get('/secret')).status(), 401);
+    const asked = await browser.newContext({ baseURL: base, httpCredentials: { username: 'user', password: 'pass' } });
+    made.push(asked);
+    equal(await (await asked.request.get('/secret')).text(), basic);
+    seen.length = 0;
+    const always = await browser.newContext({ baseURL: base, httpCredentials: { username: 'user', password: 'pass', send: 'always' } });
+    made.push(always);
+    await always.request.get('/open');
+    equal(seen, [basic]);
+    const elsewhere = await browser.newContext({ baseURL: base, httpCredentials: { username: 'user', password: 'pass', origin: 'http://elsewhere.example' } });
+    made.push(elsewhere);
+    equal((await elsewhere.request.get('/secret')).status(), 401);
+    // The request context's own tracing.
+    await plain.request.storageState();
+  } finally {
+    for (const made_context of made)
+      await made_context.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+await check('omitBackground does not stay after a screenshot that timed out', async () => {
+  const shot = await context.newPage();
+  await shot.setContent('<!doctype html><body></body>');
+  // The second byte of IDAT's image type is not readable here: compare with a page that never had it.
+  const before = await shot.screenshot();
+  for (let timeout = 1; timeout < 40; timeout += 3)
+    await shot.screenshot({ omitBackground: true, timeout }).catch(() => {});
+  await shot.waitForTimeout(200);
+  const after = await shot.screenshot();
+  equal(after.equals(before), true);
+  await shot.close();
+});
+await check('a screenshot right after a change of the page has the change', async () => {
+  const shot = await context.newPage();
+  await shot.setContent('<!doctype html><body style="background:rgb(1,2,3)"></body>');
+  const first = await shot.screenshot();
+  await shot.evaluate(() => { document.body.style.background = 'rgb(200,10,10)'; });
+  const second = await shot.screenshot();
+  equal(second.equals(first), false);
+  await shot.evaluate(() => { document.body.style.background = 'rgb(1,2,3)'; });
+  equal((await shot.screenshot()).equals(first), true);
+  await shot.close();
+});
+await check('contexts closed and made again: profiles go, and addresses come back', async () => {
+  for (let i = 0; i < 60; ++i) {
+    const made = await browser.newContext();
+    await (await made.newPage()).setContent('<p>x</p>');
+    await made.close();
+    if (i % 3 === 0)
+      await new Promise(resolve => setTimeout(resolve, 150));
   }
 });
 await check('close', async () => {

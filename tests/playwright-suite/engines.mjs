@@ -1,6 +1,7 @@
 // One zebkit-run for each Playwright worker, at <base port> + index, restarted
 // when it exits, so that a crash costs one worker's test and not the run.
-// Each exit is logged: they are counted as crashes.
+// Each exit is logged: they are counted as crashes. The url each engine gives,
+// with its token, is in <work dir>/engine-<index>.url while it lives.
 //
 //   node engines.mjs <zebkit-run> <base port> <count> <work dir>
 //
@@ -18,12 +19,28 @@ function start(index, generation) {
   const profile = path.join(work, 'profiles', `${index}-${generation}`);
   fs.mkdirSync(profile, { recursive: true });
   const log = fs.openSync(path.join(work, `engine-${index}.log`), 'a');
+  const urlFile = path.join(work, `engine-${index}.url`);
   const child = spawn(executable, ['--headless', '--no-sandbox', `--user-data-dir=${profile}`, `--playwright-port=${Number(base) + index}`],
-      { stdio: ['ignore', log, log], detached: true });
+      { stdio: ['ignore', log, 'pipe'], detached: true });
   children.add(child);
+  let said = '';
+  child.stderr.on('data', data => {
+    fs.writeSync(log, data);
+    if (said === null)
+      return;
+    said += data;
+    const found = said.match(/Playwright listening on (ws:\/\/\S+)/);
+    if (found) {
+      said = null;
+      // At once whole for whoever reads it.
+      fs.writeFileSync(`${urlFile}.new`, found[1]);
+      fs.renameSync(`${urlFile}.new`, urlFile);
+    }
+  });
+  child.stderr.on('close', () => fs.closeSync(log));
   child.on('exit', (code, signal) => {
     children.delete(child);
-    fs.closeSync(log);
+    fs.rmSync(urlFile, { force: true });
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3 });
     if (stopping)
       return;

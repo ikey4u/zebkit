@@ -171,7 +171,8 @@ fn string_member(json: &str, key: &str) -> Option<String> {
 
 /// Serves Playwright's own protocol on 127.0.0.1:`port` (0 picks one), what
 /// `chromium.connect(url)` of each Playwright client speaks; `done` gets
-/// the url (`ws://127.0.0.1:<port>/`).
+/// the url (`ws://127.0.0.1:<port>/<random token>`), the credential to connect
+/// with: only that path connects, and no request with an `Origin` header.
 pub fn listen<F: FnOnce(Result<String, Error>) + 'static>(port: u16, done: F) {
     let data = Box::into_raw(Box::new(done));
     unsafe { sys::zebkit_automation_listen(port as i32, Some(on_listen::<F>), data.cast()) }

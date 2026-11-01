@@ -277,6 +277,12 @@ static const command commands[] = {
      "{\"context\": \"@X\", \"cookies\": [{\"name\": \"only\", \"value\": \"x\", \"url\": \"%s/\"}]}", "{}"},
     {"the context's cookies", "BrowserContext.cookies", "{\"context\": \"@X\"}", "\"only\""},
     {"BrowserContext.close", "BrowserContext.close", "{\"context\": \"@X\"}", "{}"},
+    /* Not the default profile's for a context that has closed. */
+    {"BrowserContext.pages of a closed context", "BrowserContext.pages", "{\"context\": \"@X\"}", "!has been closed"},
+    {"APIRequestContext.fetch of a closed context", "APIRequestContext.fetch", "{\"context\": \"@X\", \"url\": \"%s/\"}", "!has been closed"},
+    /* A host's own view says nothing of automation; only an endpoint's page does. */
+    {"navigator.webdriver of a host's view", "Frame.evaluateExpression",
+     "{\"expression\": \"() => navigator.webdriver\", \"isFunction\": true}", "{\"value\":false}"},
     /* Geolocation. */
     {"grantPermissions geolocation", "BrowserContext.grantPermissions", "{\"permissions\": [\"geolocation\"]}", "{}"},
     {"setGeolocation", "BrowserContext.setGeolocation", "{\"geolocation\": {\"latitude\": 59.95, \"longitude\": 30.31}}", "{}"},

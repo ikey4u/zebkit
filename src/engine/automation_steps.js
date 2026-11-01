@@ -494,24 +494,12 @@ steps.webStorage = arg => {
   }
 };
 
-// Frame.frameElement, here in the parent: the element whose window is the
-// child's, through open shadow roots.
+// Frame.frameElement, here in the parent: the agent has found the child's
+// element, in any tree of this document.
 steps.frameOwner = (arg, out) => {
-  const child = window.frames[arg.index];
-  const visit = root => {
-    for (const element of root.querySelectorAll('*')) {
-      if ((element.localName === 'iframe' || element.localName === 'frame') && element.contentWindow === child)
-        return element;
-      const found = element.shadowRoot && visit(element.shadowRoot);
-      if (found)
-        return found;
-    }
-    return null;
-  };
-  const element = child && visit(document);
-  if (!element)
+  if (!arg.owner)
     throw fatal('Frame has been detached.');
-  return { element: out(element) };
+  return { element: out(arg.owner) };
 };
 
 // ElementHandle.screenshot's wait, screenshotter.ts's
@@ -538,7 +526,13 @@ steps.prepareScreenshot = arg => {
     (document.head || document.documentElement).append(style);
     screenshotUndo.push(() => style.remove());
   };
-  if (arg.caret !== 'initial')
+  // No caret without a focused element or an editable document: nothing to hide,
+  // and no style to recalculate for the whole page (screenshotter.ts adds it always,
+  // over a round trip per frame; this is what a plain screenshot then costs).
+  const active = document.activeElement;
+  const mayHaveCaret = (active && active !== document.body && active !== document.documentElement) ||
+      document.designMode === 'on' || document.body?.isContentEditable || document.documentElement?.isContentEditable;
+  if (arg.caret !== 'initial' && mayHaveCaret)
     add('*:not(#playwright-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa):not(#playwright-bbb) { caret-color: transparent !important; }');
   if (arg.style)
     add(arg.style);
@@ -818,23 +812,19 @@ steps.content = () => injected.documentContent(false);
 steps.viewport = () => ({ width: innerWidth, height: innerHeight });
 steps.frameOffset = () => frameOffset();
 
-// Where the content box of the <iframe> of child frame @index is in this
-// frame's viewport: what the browser adds to a point of the child's to
-// have it in this frame (automation.cc's ToRoot()). window.frames is in
-// the frame tree's order, as the browser's children are.
+// Where the content box of a child frame's <iframe>, which the agent has found,
+// is in this frame's viewport: what the browser adds to a point of the child's
+// to have it in this frame (automation.cc's ToRoot()).
 steps.childFrameBox = arg => {
-  const child = window.frames[arg.index];
-  for (const owner of document.querySelectorAll('iframe, frame')) {
-    if (owner.contentWindow !== child)
-      continue;
-    const rect = owner.getBoundingClientRect();
-    const style = owner.ownerDocument.defaultView.getComputedStyle(owner);
-    return {
-      x: rect.left + owner.clientLeft + parseFloat(style.paddingLeft || '0'),
-      y: rect.top + owner.clientTop + parseFloat(style.paddingTop || '0'),
-    };
-  }
-  return { x: 0, y: 0 };
+  const owner = arg.owner;
+  if (!owner)
+    return { x: 0, y: 0 };
+  const rect = owner.getBoundingClientRect();
+  const style = owner.ownerDocument.defaultView.getComputedStyle(owner);
+  return {
+    x: rect.left + owner.clientLeft + parseFloat(style.paddingLeft || '0'),
+    y: rect.top + owner.clientTop + parseFloat(style.paddingTop || '0'),
+  };
 };
 
 // ---- Evaluation, as javascript.ts and utilityScript.ts do it -------------
@@ -881,8 +871,21 @@ function serialize(value, plain) {
   }) ?? 'null');
 }
 
-// A node of any document: Node of this realm is not that of another frame's.
-const isNode = value => !!value && typeof value === 'object' && typeof value.nodeType === 'number' && typeof value.nodeName === 'string';
+// A node of any document: Node of this realm is not that of another frame's, but
+// its getter takes any. A forged {nodeType, nodeName} is no node, and a Proxy runs
+// none of its traps here: the getter throws on both.
+// (A worker has no nodes; a page may have broken its Node.)
+const nodeTypeOf = globalThis.Node && Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType')?.get;
+const applyGetter = Reflect.apply;
+const isNode = value => {
+  if (!nodeTypeOf || !value || typeof value !== 'object')
+    return false;
+  try {
+    return applyGetter(nodeTypeOf, value, []) > 0;
+  } catch (e) {
+    return false;
+  }
+};
 
 // What Playwright shows of a handle (JSHandle@object, Array(3), the node, as
 // dom.ts's ElementHandle sets its preview).

@@ -459,7 +459,7 @@ base::Value RegistrationResult(const std::string& id, const std::string& kind) {
 struct ContextState {
   base::DictValue options;
   std::optional<content::GeolocationOverride> geolocation;
-  std::optional<base::DictValue> credentials;
+  base::ListValue credentials;
   base::ListValue extra_headers;
   bool offline = false;
   // Commands of the context's for each of its pages, new ones too
@@ -582,12 +582,6 @@ class Automation : public content::WebContentsObserver,
       language.Set("acceptLanguage", *locale);
       view_->Send("Emulation.setUserAgentOverride", std::move(language));
     }
-    {
-      // navigator.webdriver, as Chromium under Playwright's --enable-automation.
-      base::DictValue params;
-      params.Set("enabled", true);
-      view_->Send("Emulation.setAutomationOverride", std::move(params));
-    }
     const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
     const bool mobile = options.FindBool("isMobile").value_or(false);
     const base::DictValue* screen = options.FindDict("screen");
@@ -663,10 +657,7 @@ class Automation : public content::WebContentsObserver,
   // password, origin}}, answering the context's HTTP authentication
   // (CreateAutomationLoginDelegate()).
   void SetHttpCredentials(Call* call) {
-    const base::DictValue* credentials = call->params().FindDict("httpCredentials");
-    Context().credentials =
-        credentials ? std::optional<base::DictValue>(credentials->Clone())
-                    : std::nullopt;
+    Context().credentials = HttpCredentialsOf(call->params());
     call->Done();
   }
 
@@ -1121,6 +1112,24 @@ class Automation : public content::WebContentsObserver,
       start = at + sizeof(kEnterFrame) - 1;
     }
     chunks.push_back(selector.substr(start));
+    // frameSelectors.ts's splitSelectorByFrame().
+    if (selector.starts_with("internal:control=enter-frame >> ") ||
+        selector == "internal:control=enter-frame") {
+      call->Fail("Selector cannot start with entering frame, select the iframe first");
+      return;
+    }
+    if (selector.ends_with(" >> internal:control=enter-frame")) {
+      call->Fail("Selector cannot end with entering frame, while parsing selector " + selector);
+      return;
+    }
+    for (size_t i = 0; i + 1 < chunks.size(); ++i) {
+      if (chunks[i].starts_with("*") || chunks[i].find(" >> *") != std::string::npos) {
+        call->Fail(
+            "Can not capture the selector before diving into the frame. Only use * after the "
+            "last frame has been selected");
+        return;
+      }
+    }
     target.selector = chunks.back();
     chunks.pop_back();
     EnterFrames(call->GetWeakPtr(), std::move(target), std::move(chunks), 0,
@@ -1198,6 +1207,8 @@ class Automation : public content::WebContentsObserver,
     if (!call)
       return;
     content::RenderFrameHost* child = FrameAtPath(path);
+    if (child && !InReachOf(content::RenderFrameHost::FromID(parent_id), child->GetParent()))
+      child = nullptr;
     if (!child) {
       call->Fail("Selector \"" + chunks[index] + "\" resolved to " + preview +
                  ", <iframe> was expected");
@@ -1840,7 +1851,8 @@ class Automation : public content::WebContentsObserver,
         handle->id,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
             base::BindOnce(&Automation::FrameAnswer, weak_factory_.GetWeakPtr(),
-                           call->GetWeakPtr(), std::optional<std::string>()),
+                           call->GetWeakPtr(), frame->GetGlobalId(), true,
+                           std::optional<std::string>()),
             std::vector<int32_t>{-1}));
   }
 
@@ -1857,7 +1869,8 @@ class Automation : public content::WebContentsObserver,
         handle->id,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
             base::BindOnce(&Automation::FrameAnswer, weak_factory_.GetWeakPtr(),
-                           call->GetWeakPtr(), std::optional<std::string>(FrameId(frame))),
+                           call->GetWeakPtr(), frame->GetGlobalId(), false,
+                           std::optional<std::string>(FrameId(frame))),
             std::vector<int32_t>{-1}));
   }
 
@@ -1875,13 +1888,28 @@ class Automation : public content::WebContentsObserver,
     return found;
   }
 
-  // {frame} at @path from the main frame; @otherwise when there is none.
+  // A renderer's path is its word: the document it names must be one it could
+  // have had an element of, a document in its own process.
+  static bool InReachOf(content::RenderFrameHost* requester,
+                        content::RenderFrameHost* document) {
+    return requester && document &&
+           requester->GetProcess() == document->GetProcess();
+  }
+
+  // {frame} at @path from the main frame; @otherwise when there is none. The
+  // element is in @content_frame's frame's parent's document, or in that frame's.
   void FrameAnswer(base::WeakPtr<Call> call,
+                   content::GlobalRenderFrameHostId requester,
+                   bool content_frame,
                    std::optional<std::string> otherwise,
                    const std::vector<int32_t>& path) {
     if (!call)
       return;
     content::RenderFrameHost* found = FrameAtPath(path);
+    if (found && !InReachOf(content::RenderFrameHost::FromID(requester),
+                            content_frame ? found->GetParent() : found)) {
+      found = nullptr;
+    }
     base::DictValue answer;
     if (found)
       answer.Set("frame", FrameId(found));
@@ -1918,11 +1946,14 @@ class Automation : public content::WebContentsObserver,
     std::vector<content::RenderFrameHost*> children = Children(parent);
     const int index = static_cast<int>(
         std::find(children.begin(), children.end(), frame) - children.begin());
+    // The agent gives the step the child's element (automation.mojom's Step).
+    base::DictValue owner;
+    owner.Set("$h", 0);
     base::DictValue arg;
-    arg.Set("index", index);
+    arg.Set("owner", std::move(owner));
     Agent(parent)->Step(
         AutomationWorld::kUtility, "childFrameBox",
-        Json(base::Value(std::move(arg))), {},
+        Json(base::Value(std::move(arg))), {-1 - index},
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
             base::BindOnce(
                 [](base::WeakPtr<Automation> self, FrameRef parent,
@@ -2184,7 +2215,7 @@ class Automation : public content::WebContentsObserver,
         static_cast<int>(call->Number("clickCount", action.click_count));
     const int delay = static_cast<int>(call->Number("delay"));
     const int steps = std::max(1, static_cast<int>(call->Number("steps", 1)));
-    MouseMoveIn(widget, in_widget, in_root, action.up_only ? steps : 1);
+    MouseMoveIn(widget, in_widget, in_root, action.down_only ? 1 : steps);
     if (action.down_only) {
       MouseDownIn(widget, button, 1);
       WhenAcked(Type::kMouseDown, std::move(restored));
@@ -2874,9 +2905,12 @@ class Automation : public content::WebContentsObserver,
       const std::u16string& source,
       const std::optional<std::u16string>& stack) override {
     // An uncaught exception is the page's error, not a console message, as
-    // Runtime.exceptionThrown is apart from Runtime.consoleAPICalled.
+    // Runtime.exceptionThrown is apart from Runtime.consoleAPICalled. The page's
+    // own console.error("Uncaught x") stays a console message (patches/1071
+    // marks its stack).
     if (level == blink::mojom::ConsoleMessageLevel::kError &&
-        message.starts_with(u"Uncaught ")) {
+        message.starts_with(u"Uncaught ") &&
+        !(stack && stack->starts_with(u'\x01'))) {
       base::DictValue where;
       where.Set("url", base::UTF16ToUTF8(source));
       where.Set("lineNumber", line);
@@ -3856,8 +3890,12 @@ class Automation : public content::WebContentsObserver,
   void ScreenshotMeasured(base::WeakPtr<Call> call,
                           std::optional<gfx::RectF> clip,
                           base::Value metrics) {
-    if (!call || !metrics.is_dict())
+    if (!call)
       return;
+    if (!metrics.is_dict()) {
+      RestoreScreenshot(call, std::string(), "zebkit: no metrics of the page");
+      return;
+    }
     const base::DictValue& m = metrics.GetDict();
     const double scroll_x = m.FindDouble("scrollX").value_or(0);
     const double scroll_y = m.FindDouble("scrollY").value_or(0);
@@ -3930,21 +3968,22 @@ class Automation : public content::WebContentsObserver,
         "Page.captureScreenshot", std::move(params),
         base::BindOnce(
             [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
-               bool transparent, const base::DictValue* result,
-               const std::string& error) {
+               base::WeakPtr<zebkit_view> view, bool transparent,
+               const base::DictValue* result, const std::string& error) {
+              // Also when the call has timed out: the page keeps no override.
+              if (transparent && view) {
+                view->Send("Emulation.setDefaultBackgroundColorOverride",
+                           base::DictValue());
+              }
               if (!self || !call)
                 return;
-              if (transparent) {
-                call->view()->Send("Emulation.setDefaultBackgroundColorOverride",
-                                   base::DictValue());
-              }
               const std::string* data = result ? result->FindString("data") : nullptr;
               self->RestoreScreenshot(
                   call, data ? *data : std::string(),
                   data ? std::string()
                        : (error.empty() ? std::string("zebkit: no picture") : error));
             },
-            weak_factory_.GetWeakPtr(), call, transparent));
+            weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent));
   }
 
   // The page as it was, then the answer: @base64 or @error.
@@ -4014,10 +4053,14 @@ class Automation : public content::WebContentsObserver,
     }
     const std::vector<content::RenderFrameHost*> children = Children(parent);
     const auto found = std::find(children.begin(), children.end(), frame);
+    // The agent gives the step the child's element (automation.mojom's Step),
+    // in a shadow tree too, where window.frames does not count it.
+    base::DictValue owner;
+    owner.Set("$h", 0);
     base::DictValue arg;
-    arg.Set("index", static_cast<int>(found - children.begin()));
+    arg.Set("owner", std::move(owner));
     RunStep(call, Follow(parent), AutomationWorld::kUtility, "frameOwner",
-            std::move(arg), {},
+            std::move(arg), {-1 - static_cast<int>(found - children.begin())},
             base::BindOnce(
                 [](base::WeakPtr<Call> call, Answerer answer, base::Value value) {
                   if (call)
@@ -5647,8 +5690,7 @@ void NewContext(Call* call) {
         geolocation->FindDouble("longitude").value_or(0),
         geolocation->FindDouble("accuracy").value_or(0)};
   }
-  if (const base::DictValue* credentials = state.options.FindDict("httpCredentials"))
-    state.credentials = credentials->Clone();
+  state.credentials = HttpCredentialsOf(state.options);
   if (const base::ListValue* headers = state.options.FindList("extraHTTPHeaders"))
     state.extra_headers = headers->Clone();
   state.offline = state.options.FindBool("offline").value_or(false);
@@ -5734,7 +5776,13 @@ void NewPage(Call* call) {
 
 // BrowserContext.pages: the context's pages ({pages: [ids]}).
 void Pages(Call* call) {
-  zebkit_context* context = Registered().Context(call->String("context"));
+  const std::string id = call->String("context");
+  zebkit_context* context = id.empty() ? nullptr : Registered().Context(id);
+  // Not the default profile's pages for a context that has closed.
+  if (!id.empty() && !context) {
+    call->Fail(kClosed);
+    return;
+  }
   content::BrowserContext* profile = ProfileOf(context);
   base::ListValue pages;
   for (zebkit_view* view : zebkit_view::Views()) {
@@ -5890,10 +5938,7 @@ void ContextCommand(Call* call) {
       if (const base::ListValue* headers = params.FindList("headers"))
         state.extra_headers = headers->Clone();
     } else if (name == "setHTTPCredentials") {
-      if (const base::DictValue* credentials = params.FindDict("httpCredentials"))
-        state.credentials = credentials->Clone();
-      else
-        state.credentials.reset();
+      state.credentials = HttpCredentialsOf(params);
     } else if (name == "storageState") {
       ContextCookies(profile, base::DictValue(),
                      base::BindOnce(
@@ -5972,10 +6017,15 @@ void ContextCommand(Call* call) {
 void ContextFetchCommand(Call* call) {
   const std::string id = call->String("context");
   zebkit_context* context = id.empty() ? nullptr : Registered().Context(id);
+  // Not in the default profile, with its cookies, for a context or page that has closed.
+  if ((call->view() && !call->view()->web_contents()) ||
+      (!call->view() && !id.empty() && !context)) {
+    call->Fail(kClosed);
+    return;
+  }
   content::BrowserContext* profile =
-      call->view() && call->view()->web_contents()
-          ? call->view()->web_contents()->GetBrowserContext()
-          : ProfileOf(context);
+      call->view() ? call->view()->web_contents()->GetBrowserContext()
+                   : ProfileOf(context);
   ContextFetch(profile, call->params(),
                base::BindOnce(
                    [](base::WeakPtr<Call> call, base::Value result,
@@ -6029,20 +6079,23 @@ class LoginDelegate : public content::LoginDelegate {
 
 }  // namespace
 
+void ForgetAutomationContext(content::BrowserContext* profile) {
+  ContextStates().erase(profile);
+}
+
 std::unique_ptr<content::LoginDelegate> CreateAutomationLoginDelegate(
     const net::AuthChallengeInfo& challenge,
     content::BrowserContext* profile,
     bool first_attempt,
     content::LoginDelegate::LoginAuthRequiredCallback callback) {
   auto found = ContextStates().find(profile);
-  if (found == ContextStates().end() || !found->second.credentials)
+  if (found == ContextStates().end())
     return nullptr;
-  const base::DictValue& credentials = *found->second.credentials;
-  const std::string* origin = credentials.FindString("origin");
-  if (origin && !origin->empty() &&
-      url::SchemeHostPort(GURL(*origin)) != challenge.challenger) {
+  const base::DictValue* matching =
+      MatchingHttpCredentials(found->second.credentials, challenge.challenger.GetURL());
+  if (!matching)
     return nullptr;
-  }
+  const base::DictValue& credentials = *matching;
   std::optional<net::AuthCredentials> answer;
   if (first_attempt) {
     const std::string* username = credentials.FindString("username");

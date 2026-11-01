@@ -244,6 +244,7 @@ def main():
 
     # What a page says of itself, before any PDF.
     page.go(base + "/blank", settle=0)
+    page.evaluate("document.cookie='own=1';localStorage.setItem('own','1')")
     check(page.evaluate("navigator.pdfViewerEnabled") is True, "navigator.pdfViewerEnabled, as Chrome")
     plugins = page.evaluate("[...navigator.plugins].map(x=>[x.name,x.filename,x.description,x.length])")
     check(plugins == CHROME_PLUGINS, "navigator.plugins, as Chrome", plugins)
@@ -264,13 +265,22 @@ def main():
     check(0 < int(state.get("paintedPages", -1)) <= 3, "only the first pages of 300 are painted", state)
     gets = [r for r in requests if r[1] == "/long.pdf"]
     check(len(gets) == 1, "the PDF was fetched once, as the navigation", gets)
-    check(page.evaluate("document.cookie") == "" or True, "document.cookie does not kill the PDF's process")
-    check(page.evaluate("1+1") == 2, "the page lives after document.cookie")
-    try:
-        storage = page.evaluate("(()=>{try{localStorage.getItem('x');return 'ok'}catch(e){return e.name}})()")
-    except Exception as error:  # noqa: BLE001
-        storage = repr(error)
-    check(page.evaluate("1+1") == 2, "the page lives after localStorage", storage)
+    # A PDF renderer has no data of any origin, as Chrome's: neither what the
+    # origin keeps, nor a way to ask for it, and asking does not kill it.
+    check(page.evaluate("document.cookie") == "", "document.cookie is empty in a PDF's document", page.evaluate("document.cookie"))
+    check(page.evaluate("window.localStorage === null && window.sessionStorage === null"),
+          "localStorage and sessionStorage are null, as Chrome's IsDomStorageDisabled")
+    worker = page.evaluate("(()=>{try{new Worker('/blank');return 'made'}catch(e){return e.name}})()")
+    check(worker == "SecurityError", "a Worker throws SecurityError, as Chrome's AreDedicatedWorkersDisabled", worker)
+    for script in ("indexedDB.open('x')&&0", "caches.open('x').catch(()=>0)&&0", "navigator.locks.query().catch(()=>0)&&0",
+                   "(cookieStore.getAll().catch(()=>0),0)", "(navigator.serviceWorker.getRegistrations().catch(()=>0),0)"):
+        try:
+            page.evaluate(f"(()=>{{try{{return {script}}}catch(e){{return 0}}}})()")
+            time.sleep(.2)
+            alive = page.evaluate("1+1") == 2
+        except Exception as error:  # noqa: BLE001
+            alive = repr(error)
+        check(alive is True, f"the PDF renderer lives after {script}", alive)
 
     # Sandboxed where Chromium has it: a renderer, its own, for PDFs.
     renderers = pdf_renderers(browser.process.pid)
@@ -395,26 +405,25 @@ def main():
     state = page.wait_viewer(lambda s: s.get("progress") == "-1", "a broken file says so")
     check(page.evaluate("1+1") == 2, "a broken file does not take the process")
 
-    # Elements: frames, as in Chrome, in the PDF's own process if it is another's.
+    # Elements: frames, always in a process of their own, whatever the parent's origin.
     for path, tag in (("/embed", "EMBED"), ("/iframe", "IFRAME"), ("/object", "OBJECT"), ("/xembed", "EMBED")):
         page.go(base + path, settle=1.5)
-        tree = page.call("Page.getFrameTree")["frameTree"]
-        children = tree.get("childFrames", [])
-        if path == "/xembed":
-            # Of another site: a target of its own, in a process of its own.
-            targets = page.cdp.call("Target.getTargets")["targetInfos"]
-            check(any(t["type"] == "iframe" and t["url"].endswith("/long.pdf") for t in targets),
-                  f"{path}: a frame of its own process with the PDF", targets)
-        else:
-            check(len(children) == 1 and children[0]["frame"]["url"].endswith("/long.pdf"),
-                  f"{path}: a child frame with the PDF", tree)
+        targets = page.cdp.call("Target.getTargets")["targetInfos"]
+        check(any(t["type"] == "iframe" and t["url"].endswith("/long.pdf") for t in targets),
+              f"{path}: a frame of its own process with the PDF", targets)
+        check(len(page.call("Page.getFrameTree")["frameTree"].get("childFrames", [])) == 0,
+              f"{path}: not a frame of the page's process")
         size = page.evaluate("(e => [e.tagName, e.clientWidth, e.clientHeight])(document.getElementById('e'))")
         check(size == [tag, 500, 400], f"{path}: the element's box", size)
         check(page.evaluate("window.length") == 1, f"{path}: one frame in the page")
-    # The same-origin frame's document can be reached, as in Chrome.
+    # A same-origin frame's PDF is parsed in a PDF renderer too, as Chrome's plugin:
+    # no process of the page's has it, so the page does not reach its document.
     page.go(base + "/iframe", settle=1.5)
-    inner = page.evaluate("document.getElementById('e').contentDocument.documentElement.outerHTML")
-    check(inner == CHROME_DOCUMENT, "a same-origin frame's document is Chrome's", inner)
+    check(len(pdf_renderers(browser.process.pid)) >= 1, "a same-origin frame's PDF is in a PDF renderer")
+    check(page.evaluate("document.getElementById('e').contentDocument") is None,
+          "a same-origin parent does not reach the PDF's document")
+    reach = page.evaluate("(()=>{try{return String(document.getElementById('e').contentWindow.document)}catch(e){return e.name}})()")
+    check(reach == "SecurityError", "nor through contentWindow", reach)
 
     # Printing, through the plugin.
     page.go(base + "/text.pdf")

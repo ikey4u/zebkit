@@ -185,11 +185,19 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
     contexts_.erase(found);
     // Its pages, Target.createTarget's and their popups: shells without a
     // view, which zebkit_context_close() does not know of.
-    const std::vector<content::Shell*> windows = content::Shell::windows();
-    for (content::Shell* shell : windows) {
-      if (shell->web_contents() &&
-          shell->web_contents()->GetBrowserContext() == profile) {
-        shell->Close();
+    // Each from the list as it is now: closing one can close another (a host's
+    // on_close), which a copy would still point to.
+    std::set<content::Shell*> closed;
+    for (bool found = true; found;) {
+      found = false;
+      for (content::Shell* shell : content::Shell::windows()) {
+        if (!closed.contains(shell) && shell->web_contents() &&
+            shell->web_contents()->GetBrowserContext() == profile) {
+          closed.insert(shell);
+          found = true;
+          shell->Close();
+          break;
+        }
       }
     }
     zebkit_context_close(context);

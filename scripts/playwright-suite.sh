@@ -77,7 +77,7 @@ if [[ ! -e "$repo/packages/playwright-core/lib/coreBundle.js" ]]; then
 fi
 
 : > "$out/engine-exits.log"
-rm -rf "$out/test-results" "$out/profiles"
+rm -rf "$out/test-results" "$out/profiles" "$out"/engine-*.url
 # As the server of Playwright under its own tests: window.builtins in pages.
 export PWTEST_UNDER_TEST=1
 export PW_SUITE_REPO="$repo" PW_SUITE_OUT="$out" PW_SUITE_DIR="$suite" PW_SUITE_WORKERS="$workers" \
@@ -105,8 +105,9 @@ if [[ "$target" == zebkit ]]; then
     up=0
     for _ in $(seq 300); do
         up=1
+        # Each writes its url, with its token, when it listens (engines.mjs).
         for (( i = 0; i < workers; ++i )); do
-            (exec 3<> "/dev/tcp/127.0.0.1/$(( PW_SUITE_BASE_PORT + i ))") 2> /dev/null || up=0
+            [[ -s "$out/engine-$i.url" ]] || up=0
         done
         (( up )) && break
         kill -0 "$engines" 2> /dev/null || die "the engines stopped: see $out"

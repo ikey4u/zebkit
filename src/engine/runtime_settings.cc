@@ -93,8 +93,8 @@ EngineSettings& Engine() {
 bool g_running = false;
 
 // Every context that has a network context. Those made later ask
-// BlocksThirdPartyCookies() when theirs is made. A context stays until the engine
-// stops (zebkit_context_close()).
+// BlocksThirdPartyCookies() when theirs is made. A context stays until its
+// profile goes (ForgetContextCookies()).
 std::set<content::BrowserContext*>& CookieContexts() {
   static base::NoDestructor<std::set<content::BrowserContext*>> contexts;
   return *contexts;
@@ -191,6 +191,11 @@ void StopRuntimeSettings() {
   g_running = false;
   CookieContexts().clear();
   ContextCookies().clear();
+}
+
+void ForgetContextCookies(content::BrowserContext* context) {
+  CookieContexts().erase(context);
+  ContextCookies().erase(context);
 }
 
 bool BlocksThirdPartyCookies(content::BrowserContext* context) {

@@ -12,10 +12,15 @@
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "net/base/net_errors.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_inclusion_status.h"
@@ -28,6 +33,7 @@
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/public/mojom/url_loader_network_service_observer.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-shared.h"
@@ -283,7 +289,8 @@ void ContextClearCookies(content::BrowserContext* profile,
 // (maxRedirects, 0 for the redirect itself as the answer; over it an error), the
 // credentials a caller gave left behind at another origin, and a bound on the
 // body, streamed rather than held twice.
-class ContextFetcher : public network::SimpleURLLoaderStreamConsumer {
+class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
+                       public network::mojom::URLLoaderNetworkServiceObserver {
  public:
   static constexpr int64_t kDefaultMaxBody = 256 * 1024 * 1024;
 
@@ -291,6 +298,15 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer {
       : done_(std::move(done)),
         max_redirects_(max_redirects),
         max_body_(max_body) {}
+
+  // What fetch.ts's ignoreHTTPSErrors does in its own client: the network service
+  // asks the observer of a request about a certificate.
+  mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver> IgnoreCertificateErrors() {
+    ignore_certificate_errors_ = true;
+    mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver> remote;
+    observers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
+  }
 
   void Start(std::unique_ptr<network::SimpleURLLoader> loader,
              network::mojom::URLLoaderFactory* factory) {
@@ -303,6 +319,71 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer {
   }
 
  private:
+  // network::mojom::URLLoaderNetworkServiceObserver
+  void OnSSLCertificateError(const GURL& url,
+                             int net_error,
+                             const net::SSLInfo& ssl_info,
+                             bool fatal,
+                             OnSSLCertificateErrorCallback response) override {
+    std::move(response).Run(ignore_certificate_errors_ ? net::OK : net_error);
+  }
+  void OnCertificateRequested(
+      const std::optional<base::UnguessableToken>& window_id,
+      const scoped_refptr<net::SSLCertRequestInfo>& cert_info,
+      mojo::PendingRemote<network::mojom::ClientCertificateResponder> responder) override {
+    mojo::Remote<network::mojom::ClientCertificateResponder>(std::move(responder))
+        ->ContinueWithoutCertificate();
+  }
+  void OnAuthRequired(
+      const std::optional<base::UnguessableToken>& window_id,
+      int32_t request_id,
+      const GURL& url,
+      bool first_auth_attempt,
+      const net::AuthChallengeInfo& auth_info,
+      const scoped_refptr<net::HttpResponseHeaders>& head_headers,
+      mojo::PendingRemote<network::mojom::AuthChallengeResponder> responder) override {
+    // A 401 is the caller's to see (ContextFetch answers fetch.ts's way).
+    mojo::Remote<network::mojom::AuthChallengeResponder>(std::move(responder))
+        ->OnAuthCredentials(std::nullopt);
+  }
+  void OnLocalNetworkAccessPermissionRequired(
+      network::mojom::TransportType type,
+      network::mojom::IPAddressSpace ip_address_space,
+      OnLocalNetworkAccessPermissionRequiredCallback callback) override {
+    std::move(callback).Run(network::mojom::LocalNetworkAccessResult::kDenied);
+  }
+  void OnPlatformLocalNetworkPermissionRequired(
+      OnPlatformLocalNetworkPermissionRequiredCallback callback) override {
+    std::move(callback).Run(false);
+  }
+  void OnClearSiteData(const GURL& url,
+                       const std::string& header_value,
+                       int32_t load_flags,
+                       const std::optional<net::CookiePartitionKey>& cookie_partition_key,
+                       bool partitioned_state_allowed_only,
+                       OnClearSiteDataCallback callback) override {
+    std::move(callback).Run();
+  }
+  void OnLoadingStateUpdate(network::mojom::LoadInfoPtr info,
+                            OnLoadingStateUpdateCallback callback) override {
+    std::move(callback).Run();
+  }
+  void OnDataUseUpdate(int32_t network_traffic_annotation_id_hash,
+                       base::ByteSize recv_bytes,
+                       base::ByteSize sent_bytes) override {}
+  void Clone(mojo::PendingReceiver<network::mojom::URLLoaderNetworkServiceObserver>
+                 observer) override {
+    observers_.Add(this, std::move(observer));
+  }
+  void OnWebSocketConnectedToLocalNetwork(
+      const GURL& request_url,
+      network::mojom::IPAddressSpace ip_address_space) override {}
+  void OnUrlLoaderConnectedToLocalNetwork(
+      const GURL& request_url,
+      network::mojom::IPAddressSpace response_address_space,
+      network::mojom::IPAddressSpace client_address_space,
+      network::mojom::IPAddressSpace target_address_space) override {}
+
   void Redirected(const GURL& from,
                   const net::RedirectInfo& info,
                   const network::mojom::URLResponseHead& head,
@@ -390,8 +471,32 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer {
   int redirects_ = 0;
   std::string url_, body_, error_;
   scoped_refptr<net::HttpResponseHeaders> head_;
+  bool ignore_certificate_errors_ = false;
+  mojo::ReceiverSet<network::mojom::URLLoaderNetworkServiceObserver> observers_;
   std::unique_ptr<network::SimpleURLLoader> loader_;
 };
+
+base::ListValue HttpCredentialsOf(const base::DictValue& params) {
+  base::ListValue list;
+  if (const base::ListValue* given = params.FindList("httpCredentials"))
+    list = given->Clone();
+  else if (const base::DictValue* one = params.FindDict("httpCredentials"))
+    list.Append(one->Clone());
+  return list;
+}
+
+const base::DictValue* MatchingHttpCredentials(const base::ListValue& credentials,
+                                               const GURL& url) {
+  const std::string origin = url::Origin::Create(url).Serialize();
+  for (const base::Value& entry : credentials) {
+    if (!entry.is_dict())
+      continue;
+    const std::string* wanted = entry.GetDict().FindString("origin");
+    if (!wanted || wanted->empty() || base::EqualsCaseInsensitiveASCII(*wanted, origin))
+      return &entry.GetDict();
+  }
+  return nullptr;
+}
 
 void ContextFetch(content::BrowserContext* profile,
                   const base::DictValue& params,
@@ -419,6 +524,71 @@ void ContextFetch(content::BrowserContext* profile,
   const int max_redirects = params.FindInt("maxRedirects").value_or(20);
   request->credentials_mode = network::mojom::CredentialsMode::kInclude;
   request->site_for_cookies = net::SiteForCookies::FromUrl(target);
+  double limit = params.FindDouble("maxBodySize")
+                     .value_or(ContextFetcher::kDefaultMaxBody);
+  if (limit <= 0 || limit > ContextFetcher::kDefaultMaxBody)
+    limit = ContextFetcher::kDefaultMaxBody;
+  // fetch.ts's httpCredentials, for @target's origin and with no Authorization of
+  // the caller's: at once with send "always", else again after a Basic 401.
+  const base::ListValue credentials = HttpCredentialsOf(params);
+  if (const base::DictValue* given = MatchingHttpCredentials(credentials, target)) {
+    const std::string* username = given->FindString("username");
+    const std::string* password = given->FindString("password");
+    const std::string* send = given->FindString("send");
+    if (username && !request->headers.HasHeader("Authorization")) {
+      const std::string basic =
+          "Basic " + base::Base64Encode(*username + ":" + (password ? *password : std::string()));
+      if (send && *send == "always") {
+        request->headers.SetHeader("Authorization", basic);
+      } else {
+        base::DictValue again = params.Clone();
+        again.Remove("httpCredentials");
+        base::DictValue header;
+        header.Set("name", "Authorization");
+        header.Set("value", basic);
+        if (base::ListValue* headers = again.FindList("headers")) {
+          headers->Append(std::move(header));
+        } else {
+          base::ListValue list;
+          list.Append(std::move(header));
+          again.Set("headers", std::move(list));
+        }
+        done = base::BindOnce(
+            [](base::WeakPtr<content::BrowserContext> profile, base::DictValue again,
+               ContextDone done, base::Value result, const std::string& error) {
+              const base::DictValue* response =
+                  result.is_dict() ? result.GetDict().FindDict("response") : nullptr;
+              bool challenged = false;
+              if (response && response->FindInt("status").value_or(0) == 401) {
+                if (const base::ListValue* headers = response->FindList("headers")) {
+                  for (const base::Value& header : *headers) {
+                    const std::string* name = header.GetDict().FindString("name");
+                    const std::string* value = header.GetDict().FindString("value");
+                    challenged = challenged ||
+                                 (name && value &&
+                                  base::EqualsCaseInsensitiveASCII(*name, "www-authenticate") &&
+                                  base::StartsWith(base::TrimWhitespaceASCII(*value, base::TRIM_ALL), "Basic"));
+                  }
+                }
+              }
+              if (challenged && profile) {
+                ContextFetch(profile.get(), again, std::move(done));
+                return;
+              }
+              std::move(done).Run(std::move(result), error);
+            },
+            profile->GetWeakPtr(), std::move(again), std::move(done));
+      }
+    }
+  }
+  // Deletes itself when it answers.
+  auto* fetcher = new ContextFetcher(std::move(done), max_redirects,
+                                     static_cast<int64_t>(limit));
+  if (params.FindBool("ignoreHTTPSErrors").value_or(false)) {
+    request->trusted_params = network::ResourceRequest::TrustedParams();
+    request->trusted_params->url_loader_network_observer =
+        fetcher->IgnoreCertificateErrors();
+  }
   std::unique_ptr<network::SimpleURLLoader> loader =
       network::SimpleURLLoader::Create(std::move(request), kAnnotation);
   if (const std::string* post = params.FindString("postData")) {
@@ -442,13 +612,6 @@ void ContextFetch(content::BrowserContext* profile,
   const double timeout = params.FindDouble("timeout").value_or(30000);
   if (timeout > 0)
     loader->SetTimeoutDuration(base::Milliseconds(timeout));
-  double limit = params.FindDouble("maxBodySize")
-                     .value_or(ContextFetcher::kDefaultMaxBody);
-  if (limit <= 0 || limit > ContextFetcher::kDefaultMaxBody)
-    limit = ContextFetcher::kDefaultMaxBody;
-  // Deletes itself when it answers.
-  auto* fetcher = new ContextFetcher(std::move(done), max_redirects,
-                                     static_cast<int64_t>(limit));
   fetcher->Start(std::move(loader),
                  profile->GetDefaultStoragePartition()
                      ->GetURLLoaderFactoryForBrowserProcess()

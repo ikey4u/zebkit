@@ -240,7 +240,8 @@ zebkit_view *zebkit_automation_page(const char *page);
 char *zebkit_automation_page_id(zebkit_view *view);
 
 /* Playwright's own endpoint: Playwright's protocol over a WebSocket on
- * 127.0.0.1:@port (0 picks one), what chromium.connect(url) speaks. */
+ * 127.0.0.1:@port (0 picks one), what chromium.connect(url) speaks. @func
+ * gets the url, with its random token. */
 void zebkit_automation_listen(int port, zebkit_automation_listen_func func,
                               void *data);
 ```
@@ -488,7 +489,22 @@ with `chromium.connect(url)`, and Playwright's test runner with
 - **Files** (traces, HAR, video, downloads) reach a remote client as the
   protocol's streams (`Artifact.saveAsStream`, `Stream.read`).
 - A client's contexts close when it disconnects, as with
-  `launchServer()`. It listens on 127.0.0.1 only.
+  `launchServer()`.
+- **`navigator.webdriver`** is true on the pages of this endpoint, as under
+  Playwright's `--enable-automation`. A host's own view driven through
+  `<zebkit/automation.h>` says nothing of the kind, and has no DevTools session
+  until a command needs one.
+- **Who connects**: it listens on 127.0.0.1 only, on
+  `ws://127.0.0.1:<port>/<random token>`, the url the host gets from
+  `zebkit_automation_listen()`, new at each start, as `launchServer()`'s
+  `wsPath`. Another path gets 403, and so does any request with an `Origin`
+  header, as Chromium's DevTools handler refuses origins without
+  `--remote-allow-origins`: a web page's WebSocket always has one. The url is
+  the credential (a client writes files, with `Page.screenshot`'s `path`): the
+  host gives it only to what should drive the engine. CDP's own endpoint
+  (`--remote-debugging-port`) is Chromium's handler, unchanged: it refuses
+  origins the same way, `--remote-allow-origins` lets the named ones in, and
+  it has no token, as in Chrome.
 
 `tools/zebkit-run --playwright-port=0` serves it;
 `tests/engine/playwright_connect.mjs` is Playwright's client against it.

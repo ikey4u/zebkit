@@ -1,0 +1,90 @@
+A PDF is always in a PDF renderer, with no data of any origin, as Chrome's.
+
+- NavigationRequest: a PDF to be shown is committed in a PDF renderer of its site
+  whatever its parent's origin. 1066 kept a PDF of its parent's origin in the parent's
+  renderer, so a page's process parsed it; Chrome never does: only its stub document is
+  in the parent's process, and the plugin's frame is in a PDF process. zebkit has one
+  document for both, so a same-origin parent does not reach it.
+- ChildProcessSecurityPolicy: back to Chromium's, a PDF renderer reaches the data of no
+  origin. The engine's renderer client says so to Blink, as Chrome's does
+  (IsDomStorageDisabled, AreDedicatedWorkersDisabled), and document.cookie is empty.
+- FrameConsole: console.error("Uncaught x") is told from an uncaught exception.
+- ShellBrowserContext: marked live when made, as Chrome's Profile, so that a closed
+  context's address can be used again now that a closed context's profile is deleted.
+
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -5197,17 +5197,15 @@
+         !ShouldRenderFallbackContentForResponse(*response_head_->headers)));
+ 
+   // A PDF to be shown is parsed in a PDF renderer of its site, as Chrome's
+-  // inner PDF frame is; unless its frame's parent is of its own origin, whose
+-  // script may reach into it as in Chrome, which needs them in one process.
++  // inner PDF frame always is: never in a process of a page, whatever the page's
++  // origin. Chrome's stub document is what a same-origin parent reaches; here
++  // one document is both, so a parent does not reach it: as a frame of another
++  // process, its contentDocument is null.
+   if (response_should_be_rendered_ && !is_download &&
+       embedder_isolation_info_.is_none() &&
+       (response_head_->mime_type == "application/pdf" ||
+        response_head_->mime_type == "text/pdf")) {
+-    RenderFrameHostImpl* parent = frame_tree_node_->parent();
+-    if (!parent ||
+-        !parent->GetLastCommittedOrigin().IsSameOriginWith(GetURL())) {
+-      embedder_isolation_info_ = EmbedderIsolationInfo::CreateForPdf();
+-    }
++    embedder_isolation_info_ = EmbedderIsolationInfo::CreateForPdf();
+   }
+ 
+   if (!response_should_be_rendered_) {
+--- a/content/browser/security/cpsp/child_process_security_policy_impl.cc
++++ b/content/browser/security/cpsp/child_process_security_policy_impl.cc
+@@ -2534,11 +2534,8 @@
+     case AccessType::kCanCommitNewOrigin:
+     case AccessType::kHostsOrigin:
+       return true;
+-    // In zebkit a PDF's document, with what a page's script or a driver may do
+-    // in it (localStorage, document.cookie), is in this process, as Chrome's stub is
+-    // not: refusing would kill the process. It is still locked to the PDF's origin.
+     case AccessType::kCanAccessDataForCommittedOrigin:
+-      return true;
++      return false;
+   }
+ }
+ 
+--- a/third_party/blink/renderer/core/frame/frame_console.cc
++++ b/third_party/blink/renderer/core/frame/frame_console.cc
+@@ -87,6 +87,13 @@
+       if (!full_location->IsUnknown())
+         stack_trace = full_location->ToString();
+     }
++    // console.error("Uncaught x") says what an exception's message says, and
++    // the browser sees only the text: the first character tells them apart
++    // for zebkit's automation (automation.cc), where Runtime has two events.
++    if (level == mojom::blink::ConsoleMessageLevel::kError &&
++        message.starts_with("Uncaught ")) {
++      stack_trace = "\x01" + stack_trace;
++    }
+   } else {
+     if (!location->IsUnknown() &&
+         frame_->GetChromeClient()
+--- a/content/shell/browser/shell_browser_context.cc
++++ b/content/shell/browser/shell_browser_context.cc
+@@ -41,6 +41,9 @@
+ ShellBrowserContext::ShellBrowserContext(bool off_the_record,
+                                          bool delay_services_creation)
+     : off_the_record_(off_the_record) {
++  // As Chrome's Profile: a context closed before may have had this address, which
++  // the dependency manager remembers as dead.
++  BrowserContextDependencyManager::GetInstance()->MarkBrowserContextLive(this);
+   InitWhileIOAllowed();
+ #if BUILDFLAG(IS_WIN)
+   base::SetExtraNoExecuteAllowedPath(SHELL_DIR_USER_DATA);
+@@ -80,6 +83,7 @@
+ 
+ void ShellBrowserContext::FinishInitWhileIOAllowed() {
+   key_ = std::make_unique<SimpleFactoryKey>(path_, off_the_record_);
++  SimpleDependencyManager::GetInstance()->MarkContextLive(key_.get());
+   SimpleKeyMap::GetInstance()->Associate(this, key_.get());
+ }
+ 

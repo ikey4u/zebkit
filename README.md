@@ -351,11 +351,11 @@ Playwright's own clients, its test runner and its other languages included,
 connect to the engine's Playwright endpoint unchanged:
 
 ```sh
-tools/zebkit-run --headless --playwright-port=0   # prints "Playwright listening on ws://127.0.0.1:<port>/"
+tools/zebkit-run --headless --playwright-port=0   # prints "Playwright listening on ws://127.0.0.1:<port>/<token>"
 ```
 
 ```js
-const browser = await chromium.connect('ws://127.0.0.1:<port>/');
+const browser = await chromium.connect('ws://127.0.0.1:<port>/<token>');
 const page = await (await browser.newContext()).newPage();
 ```
 

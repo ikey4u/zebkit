@@ -428,9 +428,10 @@ renderer's sandbox: a sandboxed utility process for it is on the roadmap.
 
 A view that navigates to a PDF (`application/pdf`, `text/pdf`), or an `<embed>`, `<object>` or
 `<iframe>` of one, shows it as Chrome does, with nothing to call (2026-11-01). Chromium's own plugin
-(`//pdf`) parses and draws it, in a sandboxed renderer of the PDF's site (`--pdf-renderer`, no JIT)
-unless its frame's parent is of its own origin, whose script reaches into it, and so shares that
-process, as Chrome does not; the browser process does not parse it. A small viewer
+(`//pdf`) parses and draws it, always in a sandboxed renderer of the PDF's site (`--pdf-renderer`, no
+JIT, no storage, cookies or workers of any origin), as Chrome's; neither the browser process nor a page's
+process parses it. So a same-origin parent does not reach the frame's document (`contentDocument` is
+null), where Chrome's parent reaches a stub document of its own process. A small viewer
 (`src/engine/pdf_viewer.js`) in a closed shadow root is what Chrome's extension is:
 
 - Continuous vertical scrolling: wheel, trackpad, scrollbar, Arrow keys, Page Up, Page Down, Home, End,

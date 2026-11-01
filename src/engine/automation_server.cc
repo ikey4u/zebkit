@@ -32,17 +32,20 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/log/net_log_source.h"
+#include "net/http/http_status_code.h"
 #include "net/server/http_server.h"
 #include "net/server/http_server_request_info.h"
 #include "net/socket/tcp_server_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
+#include "zebkit/engine/view.h"
 #include "zebkit/engine/include/zebkit/automation.h"
 #include "zebkit/engine/include/zebkit/hooks.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
@@ -780,6 +783,18 @@ std::string Connection::ResponseGuid(const std::string& page_guid,
 // the headers and the request context's defaults.
 void Connection::PrepareFetch(base::DictValue& params, const base::DictValue& defaults) {
   std::string url = params.FindString("url") ? *params.FindString("url") : std::string();
+  // network.ts's constructURLBasedOnBaseURL().
+  if (const std::string* base_url = defaults.FindString("baseURL")) {
+    const GURL resolved = GURL(*base_url).Resolve(url);
+    if (resolved.is_valid())
+      url = resolved.spec();
+  }
+  if (!params.FindBool("ignoreHTTPSErrors") &&
+      defaults.FindBool("ignoreHTTPSErrors").value_or(false)) {
+    params.Set("ignoreHTTPSErrors", true);
+  }
+  if (const base::Value* credentials = defaults.Find("httpCredentials"))
+    params.Set("httpCredentials", credentials->Clone());
   std::string separator = url.find('?') == std::string::npos ? "?" : "&";
   if (const std::string* encoded = params.FindString("encodedParams")) {
     url += separator + *encoded;
@@ -909,6 +924,7 @@ void Connection::NewRequest(int id, const std::string& parent, base::DictValue p
                object.data.Set("ownContext", true);
                const std::string request =
                    self->Create(parent, "APIRequestContext", std::move(initializer), std::move(object));
+               self->Find(tracing)->context = request;
                base::DictValue answer;
                answer.Set("request", Ref(request));
                self->Reply(id, base::Value(std::move(answer)));
@@ -938,8 +954,16 @@ void Connection::NewContext(int id, base::DictValue params) {
                                 std::move(tracing_object));
                base::DictValue request_init;
                request_init.Set("tracing", Ref(tracing));
+               // page.request's defaults: the context's options, as
+               // BrowserContextAPIRequestContext._defaultOptions().
                Object request_object;
                request_object.id = *context;
+               if (const std::string* base_url = options.FindString("baseURL"))
+                 request_object.data.Set("baseURL", *base_url);
+               if (options.FindBool("ignoreHTTPSErrors").value_or(false))
+                 request_object.data.Set("ignoreHTTPSErrors", true);
+               if (const base::Value* credentials = options.Find("httpCredentials"))
+                 request_object.data.Set("httpCredentials", credentials->Clone());
                const std::string request = self->Create(
                    self->browser_, "APIRequestContext", std::move(request_init),
                    std::move(request_object));
@@ -1010,11 +1034,23 @@ void Connection::NewPage(int id, const std::string& context_guid) {
              weak_factory_.GetWeakPtr(), id, context_guid));
 }
 
+// navigator.webdriver, as Chromium under Playwright's --enable-automation: a
+// page a Playwright client drives says so. A host's own views do not, and this
+// is what opens a DevTools session on the page.
+static void MarkAutomated(zebkit_view* view) {
+  if (!view)
+    return;
+  base::DictValue params;
+  params.Set("enabled", true);
+  view->Send("Emulation.setAutomationOverride", std::move(params));
+}
+
 std::string Connection::AdoptPage(const std::string& context_guid,
                                   const std::string& page_id,
                                   const base::Value& frames,
                                   const std::string& opener) {
   zebkit_view* view = zebkit_automation_page(page_id.c_str());
+  MarkAutomated(view);
   // The page's object first in name, so that its frames know it.
   Object page_object;
   page_object.id = page_id;
@@ -1103,6 +1139,8 @@ void Connection::OnWindowOpen(zebkit_view* opener,
   char* id = zebkit_automation_page_id(opened);
   if (!id)
     return;
+  // As soon as the popup is there, before its first document runs.
+  MarkAutomated(opened);
   struct Pending {
     base::WeakPtr<Connection> connection;
     std::string context;
@@ -2320,8 +2358,15 @@ class Socket : public net::HttpServer::Delegate {
   using Received = base::RepeatingCallback<void(int connection, std::string message)>;
   using Opened = base::RepeatingCallback<void(int connection, bool open)>;
 
-  Socket(scoped_refptr<base::SequencedTaskRunner> ui, Received received, Opened opened)
-      : ui_(std::move(ui)), received_(std::move(received)), opened_(std::move(opened)) {}
+  // Only a client that was given the url, with @path, connects (Endpoint::Url).
+  Socket(scoped_refptr<base::SequencedTaskRunner> ui,
+         std::string path,
+         Received received,
+         Opened opened)
+      : ui_(std::move(ui)),
+        path_(std::move(path)),
+        received_(std::move(received)),
+        opened_(std::move(opened)) {}
 
   int Listen(int port) {
     auto socket = std::make_unique<net::TCPServerSocket>(nullptr, net::NetLogSource());
@@ -2346,6 +2391,15 @@ class Socket : public net::HttpServer::Delegate {
   }
   void OnWebSocketRequest(int connection,
                           const net::HttpServerRequestInfo& request) override {
+    // A web page's WebSocket always says its Origin, and Playwright's clients
+    // say none: as Chromium's DevTools handler without --remote-allow-origins,
+    // no origin is let in. The path is the secret launchServer()'s is, so that
+    // nothing else on this machine connects either: this endpoint writes files.
+    if (request.headers.contains("origin") || request.path != path_) {
+      server_->Send(connection, net::HTTP_FORBIDDEN, "Connection rejected",
+                    "text/plain", kAnnotation);
+      return;
+    }
     server_->AcceptWebSocket(connection, request, kAnnotation);
     ui_->PostTask(FROM_HERE, base::BindOnce(opened_, connection, true));
   }
@@ -2358,6 +2412,7 @@ class Socket : public net::HttpServer::Delegate {
 
  private:
   scoped_refptr<base::SequencedTaskRunner> ui_;
+  const std::string path_;
   Received received_;
   Opened opened_;
   std::unique_ptr<net::HttpServer> server_;
@@ -2386,8 +2441,10 @@ class Endpoint {
         func(nullptr, "zebkit: the endpoint's thread could not start", data);
       return;
     }
+    path_ = "/" + base::UnguessableToken::Create().ToString();
     socket_ = new Socket(
         base::SequencedTaskRunner::GetCurrentDefault(),
+        path_,
         base::BindRepeating(&Endpoint::Received, base::Unretained(this)),
         base::BindRepeating(&Endpoint::Opened, base::Unretained(this)));
     thread_->task_runner()->PostTaskAndReplyWithResult(
@@ -2411,7 +2468,7 @@ class Endpoint {
 
  private:
   std::string Url() const {
-    return "ws://127.0.0.1:" + base::NumberToString(port_) + "/";
+    return "ws://127.0.0.1:" + base::NumberToString(port_) + path_;
   }
 
   void Opened(int connection, bool open) {
@@ -2438,6 +2495,8 @@ class Endpoint {
   // Lives on the thread, as long as the engine.
   raw_ptr<Socket> socket_ = nullptr;
   int port_ = 0;
+  // Random, in the url the host is given: launchServer()'s wsPath.
+  std::string path_;
   std::map<int, std::unique_ptr<Connection>> connections_;
 };
 
