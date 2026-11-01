@@ -4,6 +4,10 @@
 
 #include "pdf_support.h"
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 static size_t font_size;
 static char *font_bytes;
 
@@ -1066,6 +1070,14 @@ static void test_hostile(void) {
     zebkit_free(json);
     zebkit_free(error);
     error = NULL;
+#if defined(__linux__)
+    /* The whole test so far, this file's reading the largest of it: not tens of GiB. */
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    char peak[64];
+    snprintf(peak, sizeof(peak), "peak %ld MiB", usage.ru_maxrss / 1024);
+    check(usage.ru_maxrss / 1024 < 2048, "and within its memory", peak);
+#endif
     zebkit_pdf_close(pdf);
     free(file);
     free(objects);
@@ -1112,6 +1124,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: pdf_annotations <font.ttf>\n");
         return 2;
     }
+#if defined(__linux__)
+    /* A file that asks for too much ends this test, not the machine. */
+    const struct rlimit data = {(rlim_t)4 << 30, (rlim_t)4 << 30};
+    setrlimit(RLIMIT_DATA, &data);
+#endif
     font_bytes = read_file(argv[1], &font_size);
     check(font_bytes != NULL, "the font is there", argv[1]);
     test_line_endings();

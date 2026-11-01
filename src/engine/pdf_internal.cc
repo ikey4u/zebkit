@@ -475,11 +475,12 @@ Value ToValue(const CPDF_Object* object,
               std::vector<uint32_t>& followed,
               size_t& budget) {
   Value value;
-  if (!object || depth > kMaxDepth)
-    return value;
-  // What the file spells out itself is as large as the file: not counted.
+  // What the file spells out itself is as large as the file: not counted. What
+  // is past the depth costs its place in a list all the same, and counts.
   if (followed.size() > 1 && budget)
     --budget;
+  if (!object || depth > kMaxDepth)
+    return value;
   if (const CPDF_Reference* reference = object->AsReference()) {
     const uint32_t number = reference->GetRefObjNum();
     RetainPtr<const CPDF_Object> target = reference->GetDirect();
