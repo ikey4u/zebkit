@@ -27,6 +27,7 @@ static unsigned Modifiers(NSEvent* event) {
  @public
   native_host::Model* model;
   BOOL document;
+  NSTimer* animation;
   NSRect caret;
  @private
   NSString* _marked;
@@ -76,11 +77,27 @@ static unsigned Modifiers(NSEvent* event) {
   [picture drawInRect:target fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1
        respectFlipped:YES hints:nil];
 }
+- (void)animatePdf {
+  if (animation || !model->pane.Animating()) return;
+  __weak HostPane* weak = self;
+  animation = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer* timer) {
+    HostPane* pane = weak;
+    if (!pane) { [timer invalidate]; return; }
+    pane->model->pane.Tick();
+    if (!pane->model->pane.Animating()) { [timer invalidate]; pane->animation = nil; }
+  }];
+}
 - (void)resetCursorRects { [self addCursorRect:self.bounds cursor:self.pointer ?: NSCursor.arrowCursor]; }
 - (void)drawRect:(NSRect)dirty {
   [(document ? NSColor.lightGrayColor : NSColor.whiteColor) setFill]; NSRectFill(dirty);
   if (!model) return;
-  if (document) [self drawImage:model->document fit:YES];
+  if (document) {
+    const NSSize size = [self convertSizeToBacking:self.bounds.size];
+    model->pane.Resize(std::max(1, (int)size.width), std::max(1, (int)size.height), self.window.backingScaleFactor ?: 1);
+    native_host::Image& image = const_cast<native_host::Image&>(model->pane.Canvas());
+    image.bounds = zebkit_rect{0, 0, (int)self.bounds.size.width, (int)self.bounds.size.height};
+    [self drawImage:image fit:NO];
+  }
   else { [self drawImage:model->web fit:NO]; if (model->popup_shown) [self drawImage:model->popup fit:NO]; }
 }
 - (void)mouse:(NSEvent*)event type:(zebkit_mouse_type)type button:(zebkit_mouse_button)button {
@@ -102,7 +119,12 @@ static unsigned Modifiers(NSEvent* event) {
 - (void)otherMouseDragged:(NSEvent*)event { [self mouseMoved:event]; }
 - (void)mouseExited:(NSEvent*)event { [self mouse:event type:ZEBKIT_MOUSE_LEAVE button:ZEBKIT_BUTTON_NONE]; }
 - (void)scrollWheel:(NSEvent*)event {
-  if (document) { if (event.scrollingDeltaY) model->Turn(event.scrollingDeltaY < 0 ? 1 : -1); return; }
+  if (document) {
+    if (event.hasPreciseScrollingDeltas) model->pane.Wheel(-event.scrollingDeltaY, true);
+    else model->pane.WheelNotches(-event.scrollingDeltaY / 3);
+    [self animatePdf];
+    return;
+  }
   if (!model->view) return;
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
   const double factor = event.hasPreciseScrollingDeltas ? 1 : 40;
@@ -234,6 +256,7 @@ static void Wake(int64_t delay, void* data) {
     _web = [[HostPane alloc] initWithFrame:NSMakeRect(0, 0, 600, 740)]; _web->model = &_model;
     _pdf = [[HostPane alloc] initWithFrame:NSMakeRect(601, 0, 599, 740)]; _pdf->model = &_model; _pdf->document = YES;
     [split addArrangedSubview:_web]; [split addArrangedSubview:_pdf];
+    // Report on a Mac: the same lines as Linux's hosts, for the suite.
     [window.contentView addSubview:split];
     __weak HostController* weak = self;
     _model.redraw = [weak] { HostController* host = weak; if (host) { [host->_web setNeedsDisplay:YES]; [host->_pdf setNeedsDisplay:YES]; } };
@@ -242,11 +265,13 @@ static void Wake(int64_t delay, void* data) {
 }
 - (void)start {
   std::string url, pdf;
+  BOOL scroll_test = NO;
   for (int i = 1; i < host_argc; ++i) {
     const std::string arg = host_argv[i];
     if (arg.rfind("--url=", 0) == 0) url = arg.substr(6);
     if (arg.rfind("--pdf=", 0) == 0) pdf = arg.substr(6);
     if (arg.rfind("--smoke-test=", 0) == 0) _smoke = arg.substr(13);
+    if (arg == "--scroll-test") scroll_test = YES;
   }
   zebkit_set_wakeup(Wake, (__bridge void*)self);
   char* error = nullptr;
@@ -287,6 +312,29 @@ static void Wake(int64_t delay, void* data) {
   [self showWindow:nil]; [self.window center]; [self.window makeKeyAndOrderFront:nil];
   [self.window makeFirstResponder:_web]; [_web setFrameSize:_web.frame.size];
   [self scheduleAt:HostClock::now()];
+  if (scroll_test) {
+    // Wheel events as AppKit makes them, to this pane alone: the person's pointer
+    // and keyboard stay theirs (tests/engine/native_host_pdf_scroll.py).
+    __weak HostController* weak = self;
+    __block int up = 0;
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:180];
+    [NSTimer scheduledTimerWithTimeInterval:0.02 repeats:YES block:^(NSTimer* timer) {
+      HostController* host = weak;
+      if (!host || !host->_started) { [timer invalidate]; return; }
+      auto& pane = host->_model.pane;
+      const bool end = pane.position + pane.height >= pane.total - 1;
+      if (end) ++up;
+      if (up >= 60 || limit.timeIntervalSinceNow < 0) {
+        [timer invalidate]; [host stopEngine]; [NSApp stop:nil];
+        [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
+          modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
+        return;
+      }
+      CGEventRef wheel = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 1, up > 0 ? 3 : -3);
+      [host->_pdf scrollWheel:[NSEvent eventWithCGEvent:wheel]];
+      CFRelease(wheel);
+    }];
+  }
   if (!_smoke.empty()) {
     __weak HostController* weak = self;
     [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer* timer) {

@@ -72,6 +72,8 @@ class MainDelegate : public content::ShellMainDelegate {
 class ContentClient : public content::ShellContentClient {
  public:
   void AddAdditionalSchemes(Schemes* schemes) override;
+  // Chrome's PDF viewer, as a plugin of Chromium's own (pdf_viewer_renderer.cc).
+  void AddPlugins(std::vector<content::WebPluginInfo>* plugins) override;
 };
 
 // The client hints delegate of the browser contexts (client_hints.cc).
@@ -101,6 +103,10 @@ class RendererClient : public content::ShellContentRendererClient {
   void RenderThreadStarted() override;
   // Printing in the page (print.cc).
   void RenderFrameCreated(content::RenderFrame* render_frame) override;
+  // PDF in pages (pdf_viewer_renderer.cc).
+  bool OverrideCreatePlugin(content::RenderFrame* render_frame,
+                            const blink::WebPluginParams& params,
+                            blink::WebPlugin** plugin) override;
   // Workers for automation (automation_renderer.cc).
   void DidInitializeWorkerContextOnWorkerThread(
       v8::Local<v8::Context> context) override;

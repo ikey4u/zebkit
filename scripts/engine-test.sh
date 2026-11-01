@@ -87,6 +87,12 @@
 #   On macOS tests/engine/native_parent_mac.m, on an NSView, and examples/native-host's
 #   AppKit host, with ENGINE_TEST_WINDOWS=1.
 # - tests/engine/gpu_status.py, on macOS: hardware compositing and WebGL, as chrome://gpu has them.
+# - tests/engine/pdf_in_page.py: a page that opens a PDF, as Chrome's: what the page
+#   sees, scrolling, zoom, find, copy, links, printing, a long real document's memory
+#   ($PDF_REAL_URL, fetched into the cache if the network allows).
+# - tests/engine/native_host_pdf_scroll.py: the native hosts' PDF pane through the
+#   whole document with the wheel: on Linux with XTest, if the hosts of
+#   examples/native-host are built; on a Mac, AppKit's by itself.
 # - tests/engine/scheme.c: URL schemes of the application's own, a page
 #   and its fetches answered by it, files in ranges.
 # - tests/engine/script/app.mjs, run by tools/zebkit-js: an application in
@@ -302,6 +308,14 @@ check_engine_library() {
         echo "ok   only the system's libraries"
     fi
 }
+# The real long PDF the suite opens; nothing fails without it.
+real_pdf="${ZEBKIT_TEST_REAL_PDF:-$CACHE_DIR/pdf/PDF32000_2008.pdf}"
+if [[ -z "$prebuilt" && ! -f "$real_pdf" ]]; then
+    mkdir -p "$(dirname "$real_pdf")"
+    curl -fsSL --max-time 120 -o "$real_pdf.part" "$PDF_REAL_URL" \
+        && [[ "$(sha256 "$real_pdf.part" | cut -d' ' -f1)" == "$PDF_REAL_SHA256" ]] \
+        && mv "$real_pdf.part" "$real_pdf" || rm -f "$real_pdf.part"
+fi
 if [[ -n "$build_only" ]]; then
     check_engine_library
     # The Rust hook program, if this machine's toolchain has the target.
@@ -336,6 +350,10 @@ if [[ -n "$build_only" ]]; then
     ahem_relative="${SRC_DIR#"$ZEBKIT_ROOT"/}/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
     tar -C "$ZEBKIT_ROOT" --exclude=__pycache__ -cf - scripts/engine-test.sh scripts/lib.sh upstream.lock profiles tests/serve.py \
         tests/engine bindings/python examples/pdf-plugin examples/native-host/sample.pdf "$ahem_relative" | tar -C "$build_only" -xf -
+    if [[ -f "$real_pdf" ]]; then
+        mkdir -p "$build_only/.cache/pdf"
+        cp "$real_pdf" "$build_only/.cache/pdf/"
+    fi
     log "built: run $build_only/scripts/engine-test.sh $profile --prebuilt $build_only/programs where they run"
     exit 0
 fi
@@ -618,6 +636,21 @@ run cdp-browser python3 -I "$tests/cdp_browser.py" "$bin/tools/zebkit-run" "http
 run cdp-overrides python3 -I "$tests/cdp_overrides.py" "$bin/tools/zebkit-run" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-overrides"
 finished cdp-overrides "the CDP overrides test"
+run pdf-in-page env ZEBKIT_TEST_REAL_PDF="$real_pdf" python3 -I "$tests/pdf_in_page.py" "$bin/tools/zebkit-run" \
+    --no-sandbox --headless --user-data-dir="$work/profile-pdf-in-page"
+finished pdf-in-page "the PDF in pages test"
+# The PDF pane of the native hosts: built apart (examples/native-host/README.md) on Linux.
+if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
+    for pdf_host in "$OUT_DIR/examples/gtk-host" "$OUT_DIR/examples/qt-host" \
+        "$ZEBKIT_ROOT/examples/native-host/winit/target/debug/zebkit-winit-host"; do
+        [[ -x "$pdf_host" ]] || { log "native-host-pdf: no $pdf_host"; continue; }
+        run "native-host-pdf-$(basename "$pdf_host")" python3 -I "$tests/native_host_pdf_scroll.py" "$pdf_host" \
+            "$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)" --no-sandbox --disable-gpu
+    done
+elif [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
+    run native-host-appkit-pdf python3 -I "$tests/native_host_pdf_scroll.py" --self "$bin/native-host-appkit" \
+        "$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)" --no-sandbox --user-data-dir="$work/profile-appkit-pdf"
+fi
 
 if [[ "$ZEBKIT_HOST" == linux ]]; then
     run sandbox-startup python3 -I "$tests/sandbox_startup.py" "$bin/tools/zebkit-run"

@@ -226,7 +226,19 @@ action("automation_scripts") {
   ]
 }
 
+# The viewer of a PDF in a page, as an array.
+action("pdf_viewer_script") {
+  script = "pdf_viewer_script.py"
+  inputs = [ "pdf_viewer.js" ]
+  outputs = [ "$target_gen_dir/pdf_viewer_script.h" ]
+  args = [
+    rebase_path("pdf_viewer.js", root_build_dir),
+    rebase_path("$target_gen_dir/pdf_viewer_script.h", root_build_dir),
+  ]
+}
+
 _sources = [
+  "pdf_viewer_renderer.cc",
   "app.cc",
   "app.h",
   "automation.cc",
@@ -330,6 +342,11 @@ _deps = [
   "//third_party/zlib/google:zip",
   "//third_party/re2",
   ":automation_scripts",
+  ":pdf_viewer_script",
+  "//components/pdf/renderer",
+  "//pdf:pdf_view_web_plugin",
+  "//pdf/mojom",
+  "//gin",
   ":media_capture_mojom",
   ":canvas",
   ":pdf",

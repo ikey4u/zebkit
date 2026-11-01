@@ -5,6 +5,7 @@
 #pragma allow_unsafe_buffers
 #endif
 
+#include "content/public/common/webplugininfo.h"
 #include "zebkit/engine/engine.h"
 
 #if BUILDFLAG(IS_POSIX)
@@ -430,6 +431,22 @@ content::ContentRendererClient* MainDelegate::CreateContentRendererClient() {
 void ContentClient::AddAdditionalSchemes(Schemes* schemes) {
   content::ShellContentClient::AddAdditionalSchemes(schemes);
   AddSchemes(schemes);
+}
+
+void ContentClient::AddPlugins(std::vector<content::WebPluginInfo>* plugins) {
+  content::ShellContentClient::AddPlugins(plugins);
+  // A switch to have PDFs as downloads, as the setting "Download PDFs" in
+  // Chrome: then navigator.pdfViewerEnabled is false as well.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-pdf-viewer"))
+    return;
+  content::WebPluginInfo info;
+  info.name = u"Chrome PDF Viewer";
+  info.path = base::FilePath(FILE_PATH_LITERAL("internal-pdf-viewer"));
+  info.desc = u"Portable Document Format";
+  info.type = content::WebPluginInfo::PLUGIN_TYPE_BROWSER_INTERNAL_PLUGIN;
+  info.mime_types.emplace_back("application/pdf", "pdf", "Portable Document Format");
+  info.mime_types.emplace_back("text/pdf", "pdf", "Portable Document Format");
+  plugins->push_back(std::move(info));
 }
 
 void RendererClient::RenderThreadStarted() {

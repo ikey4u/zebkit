@@ -12,7 +12,7 @@ struct Host {
   std::mutex mutex;
   gint64 deadline = G_MAXINT64;
   bool queued = false, active = true;
-  guint timer = 0;
+  guint timer = 0, pdf_timer = 0;
   std::string smoke;
   int pumps = 0;
 
@@ -29,6 +29,16 @@ struct Host {
         return G_SOURCE_REMOVE;
       }, &self, nullptr);
     }
+  }
+  void AnimatePdf() {
+    if (pdf_timer || !model.pane.Animating()) return;
+    pdf_timer = g_timeout_add(16, [](void* data) -> gboolean {
+      auto& host = *static_cast<Host*>(data);
+      host.model.pane.Tick();
+      if (host.model.pane.Animating()) return G_SOURCE_CONTINUE;
+      host.pdf_timer = 0;
+      return G_SOURCE_REMOVE;
+    }, this);
   }
   void Dispatch() {
     gint64 due;
@@ -93,10 +103,12 @@ struct Host {
     GtkWidget* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(box), toolbar, FALSE, FALSE, 4);
     for (int delta : {-1, 1}) {
-      GtkWidget* button = gtk_button_new_with_label(delta < 0 ? "Previous PDF page" : "Next PDF page");
+      GtkWidget* button = gtk_button_new_with_label(delta < 0 ? "PDF: a screen up" : "PDF: a screen down");
       g_object_set_data(G_OBJECT(button), "delta", GINT_TO_POINTER(delta));
       g_signal_connect(button, "clicked", G_CALLBACK(+[](GtkButton* button, void* data) {
-        static_cast<Host*>(data)->model.Turn(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "delta")));
+        auto& host = *static_cast<Host*>(data);
+        host.model.pane.Pages(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "delta")));
+        host.AnimatePdf();
       }), this);
       gtk_box_pack_start(GTK_BOX(toolbar), button, FALSE, FALSE, 0);
     }
@@ -110,7 +122,25 @@ struct Host {
     gtk_widget_add_events(web, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
       GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_KEY_PRESS_MASK |
       GDK_KEY_RELEASE_MASK | GDK_FOCUS_CHANGE_MASK);
+    gtk_widget_add_events(pdf, GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
     model.redraw = [this] { gtk_widget_queue_draw(web); gtk_widget_queue_draw(pdf); };
+    g_signal_connect(pdf, "scroll-event", G_CALLBACK(+[](GtkWidget*, GdkEventScroll* event, void* data) -> gboolean {
+      auto& host = *static_cast<Host*>(data);
+      double dx = 0, dy = 0;
+      // A real wheel gives whole notches, in steps of one; a trackpad less, often.
+      if (gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent*>(event), &dx, &dy)) {
+        const bool precise = dy != std::floor(dy);
+        if (precise) host.model.pane.Wheel(dy * 40, true);
+        else host.model.pane.WheelNotches(dy);
+      } else if (event->direction == GDK_SCROLL_UP || event->direction == GDK_SCROLL_DOWN) {
+        host.model.pane.WheelNotches(event->direction == GDK_SCROLL_DOWN ? 1 : -1);
+      }
+      host.AnimatePdf();
+      return TRUE;
+    }), this);
+    g_signal_connect(pdf, "size-allocate", G_CALLBACK(+[](GtkWidget*, GtkAllocation* size, void* data) {
+      static_cast<Host*>(data)->model.pane.Resize(std::max(1, size->width), std::max(1, size->height));
+    }), this);
     g_signal_connect(web, "draw", G_CALLBACK(+[](GtkWidget*, cairo_t* cr, void* data) -> gboolean {
       auto& host = *static_cast<Host*>(data);
       Paint(cr, host.model.web, false);
@@ -118,9 +148,9 @@ struct Host {
       return TRUE;
     }), this);
     g_signal_connect(pdf, "draw", G_CALLBACK(+[](GtkWidget* widget, cairo_t* cr, void* data) -> gboolean {
-      cairo_set_source_rgb(cr, .85, .85, .85); cairo_paint(cr);
-      Paint(cr, static_cast<Host*>(data)->model.document, true,
-            gtk_widget_get_allocated_width(widget), gtk_widget_get_allocated_height(widget));
+      auto& pane = static_cast<Host*>(data)->model.pane;
+      pane.Resize(std::max(1, gtk_widget_get_allocated_width(widget)), std::max(1, gtk_widget_get_allocated_height(widget)));
+      Paint(cr, pane.Canvas(), false);
       return TRUE;
     }), this);
     g_signal_connect(web, "size-allocate", G_CALLBACK(+[](GtkWidget* widget, GtkAllocation* size, void* data) {
@@ -273,6 +303,7 @@ int main(int argc, char** argv) {
   gtk_main();
   { std::lock_guard<std::mutex> lock(host.mutex); host.active = false; }
   if (host.timer) g_source_remove(host.timer);
+  if (host.pdf_timer) g_source_remove(host.pdf_timer);
   // The widgets went with the window; what closing calls back must not draw.
   host.model.redraw = nullptr;
   host.model.Close();

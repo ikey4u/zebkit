@@ -231,10 +231,17 @@ in `examples/native-host` (Done table). What is left:
     The same slim binary passes Google's email/Next check with these queries,
     rejects it without them, and passes again after restoring them
     ([comparison](GOOGLE_SIGNIN.md)).
-- **TODO: PDF in pages**, on zebkit's PDFium: a page that opens a PDF shows
-  it, as Chrome's viewer does, and `navigator.pdfViewerEnabled` and
-  `navigator.plugins` then say what Chrome says. Today both are empty,
-  which browserleaks.com shows and bot checks read as a headless browser.
+- **PDF in pages: design (2026-11-01).** Chromium's plugin, zebkit's viewer. Chrome's viewer is two
+  parts: the plugin (`//pdf`, `PdfViewWebPlugin` and `PDFiumEngine`, which draw only visible pages,
+  select, find, follow links, fill forms and print) and an extension (`chrome/browser/resources/pdf`)
+  with its scrolling and toolbar, which needs the extensions system and WebUI that `slim` removed. So
+  the plugin is Chromium's, in a sandboxed renderer: a dedicated `--pdf-renderer` one without JIT as
+  Chrome's, and the browser process never parses a page's PDF; and the part the extension does is a small
+  viewer of zebkit's (`src/engine/pdf_viewer.js`, 12 KB of script), in an isolated world and a closed shadow
+  root of Chrome's stub document, so the page sees what Chrome's page sees. A viewer of zebkit's over
+  `zebkit.pdf` would be smaller by the plugin's code but would parse in the browser process, or need
+  PDFium bound into renderers all the same, and would write selection, find, forms and accessibility
+  again. Size and what was measured: `docs/SIZE_AND_SPEED.md`.
 - **Network quality estimates: implemented.** Chromium's network-service
   estimator now feeds its native tracker and render-process observer, for
   existing and new renderers. Chromium's 3G and Slow-2G test modes pass

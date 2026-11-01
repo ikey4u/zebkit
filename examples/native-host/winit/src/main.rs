@@ -40,17 +40,17 @@ struct App {
     window: Option<Rc<Window>>,
     view: Option<View>,
     pdf: Option<Document>,
-    document: Option<Bitmap>,
+    pane: PdfPane,
     web: Option<Bitmap>,
     popup: Option<Bitmap>,
     popup_shown: bool,
-    page: usize,
     cursor: PhysicalPosition<f64>,
     modifiers: ModifiersState,
     buttons: Modifiers,
     clicks: u32,
     last_press: Option<(offscreen::MouseButton, std::time::Instant)>,
     deadline: Option<Instant>,
+    pdf_tick: Option<Instant>,
     smoke_due: Option<Instant>,
     smoke: Option<PathBuf>,
     arguments: Vec<std::ffi::OsString>,
@@ -59,37 +59,221 @@ struct App {
     pumps: usize,
     last_pixels: Vec<u32>,
 }
-impl App {
-    fn render_pdf(&mut self) {
-        let image = self
-            .pdf
-            .as_mut()
-            .unwrap()
+/// The PDF as one continuous scrolling document, as model.h's PdfPane for the C++
+/// hosts: pages placed from their sizes, only those in the pane rendered.
+#[derive(Default)]
+struct PdfPane {
+    pages: Vec<PdfPage>,
+    rendered: Vec<RenderedPage>,
+    canvas: Vec<u32>,
+    width: u32,
+    height: u32,
+    total: f64,
+    position: f64,
+    target: f64,
+    clock: u64,
+    renders: usize,
+    dirty: bool,
+}
+#[derive(Default, Clone)]
+struct PdfPage {
+    width: f64,
+    height: f64,
+    top: f64,
+    pixels_high: f64,
+}
+struct RenderedPage {
+    page: usize,
+    width: usize,
+    height: usize,
+    pixels: Vec<u32>,
+    used: u64,
+}
+impl PdfPane {
+    const GAP: f64 = 8.;
+    const MARGIN: u32 = 8;
+    const CACHE_PIXELS: usize = 128 << 18;
+    fn open(&mut self, pdf: &mut Document) {
+        let count = pdf.page_count();
+        self.pages = (0..count)
+            .map(|i| {
+                let json = pdf.page(i).unwrap_or_default();
+                let number = |key: &str, fallback: f64| {
+                    json.find(key)
+                        .map(|at| &json[at + key.len()..])
+                        .and_then(|rest| {
+                            let end = rest
+                                .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+                                .unwrap_or(rest.len());
+                            rest[..end].parse().ok()
+                        })
+                        .unwrap_or(fallback)
+                };
+                PdfPage {
+                    width: number("\"width\":", 612.),
+                    height: number("\"height\":", 792.),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        self.dirty = true;
+    }
+    fn pixels_per_point(&self, page: &PdfPage) -> f64 {
+        self.width.saturating_sub(2 * Self::MARGIN).max(1) as f64 / page.width
+    }
+    fn resize(&mut self, width: u32, height: u32) {
+        if (width, height) == (self.width, self.height) {
+            return;
+        }
+        let place = if self.total > 0. {
+            self.position / self.total
+        } else {
+            0.
+        };
+        self.width = width;
+        self.height = height;
+        self.rendered.clear();
+        self.total = Self::GAP;
+        for i in 0..self.pages.len() {
+            let high = (self.pages[i].height * self.pixels_per_point(&self.pages[i])).ceil();
+            self.pages[i].top = self.total;
+            self.pages[i].pixels_high = high;
+            self.total += high + Self::GAP;
+        }
+        self.position = self.clamp(place * self.total);
+        self.target = self.position;
+        self.dirty = true;
+    }
+    fn clamp(&self, value: f64) -> f64 {
+        value.min(self.total - self.height as f64).max(0.)
+    }
+    fn wheel(&mut self, delta: f64, precise: bool) {
+        self.target = self.clamp(self.target + delta);
+        if precise {
+            self.position = self.target;
+        }
+        self.dirty = true;
+    }
+    fn wheel_notches(&mut self, notches: f64) {
+        self.wheel(notches * 120., false);
+    }
+    fn screens(&mut self, count: f64) {
+        self.wheel(count * self.height as f64 * 0.9, false);
+    }
+    fn animating(&self) -> bool {
+        self.position != self.target
+    }
+    fn tick(&mut self) {
+        let left = self.target - self.position;
+        self.position = if left.abs() < 1. {
+            self.target
+        } else {
+            self.position + left * 0.3
+        };
+        self.dirty = true;
+    }
+    fn render(&mut self, pdf: &mut Document, index: usize) -> Option<usize> {
+        self.clock += 1;
+        if let Some(found) = self.rendered.iter().position(|one| one.page == index) {
+            self.rendered[found].used = self.clock;
+            return Some(found);
+        }
+        let scale = self.pixels_per_point(&self.pages[index]) as f32;
+        let image = pdf
             .render(
-                self.page,
+                index,
                 &RenderOptions {
-                    scale: 1.5,
+                    scale,
                     ..Default::default()
                 },
             )
-            .expect("render PDF");
-        let pixels = image
-            .rgba
-            .chunks_exact(4)
-            .map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
-            .collect();
-        self.document = Some(Bitmap {
-            width: image.width,
-            height: image.height,
-            pixels,
-            bounds: offscreen::Rect {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 0,
-            },
+            .ok()?;
+        self.renders += 1;
+        self.rendered.push(RenderedPage {
+            page: index,
+            width: image.width as usize,
+            height: image.height as usize,
+            pixels: image
+                .rgba
+                .chunks_exact(4)
+                .map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
+                .collect(),
+            used: self.clock,
         });
+        Some(self.rendered.len() - 1)
     }
+    fn canvas(&mut self, pdf: &mut Document) -> &[u32] {
+        if !self.dirty {
+            return &self.canvas;
+        }
+        self.dirty = false;
+        let (width, height) = (self.width as usize, self.height as usize);
+        self.canvas.clear();
+        self.canvas.resize(width * height, 0xc8c8c8);
+        let (top, bottom) = (self.position, self.position + height as f64);
+        let first = self
+            .pages
+            .partition_point(|page| page.top + page.pixels_high <= top);
+        let mut last = first;
+        for index in first..self.pages.len() {
+            if self.pages[index].top >= bottom {
+                break;
+            }
+            last = index;
+            let Some(found) = self.render(pdf, index) else {
+                continue;
+            };
+            let page = &self.rendered[found];
+            let x = (width.saturating_sub(page.width)) / 2;
+            let y = (self.pages[index].top - self.position).round() as i64;
+            let copy = page.width.min(width - x);
+            for row in 0..page.height {
+                let to = y + row as i64;
+                if to < 0 || to >= height as i64 {
+                    continue;
+                }
+                let to = to as usize * width + x;
+                let from = row * page.width;
+                self.canvas[to..to + copy].copy_from_slice(&page.pixels[from..from + copy]);
+            }
+        }
+        let mut kept: usize = self.rendered.iter().map(|one| one.pixels.len()).sum();
+        while kept > Self::CACHE_PIXELS {
+            let oldest = self
+                .rendered
+                .iter()
+                .enumerate()
+                .filter(|(_, one)| one.page < first || one.page > last)
+                .min_by_key(|(_, one)| one.used)
+                .map(|(i, _)| i);
+            let Some(oldest) = oldest else { break };
+            kept -= self.rendered.swap_remove(oldest).pixels.len();
+        }
+        if std::env::var_os("NATIVE_HOST_PDF_REPORT").is_some() {
+            let sum = self
+                .canvas
+                .iter()
+                .step_by(16)
+                .fold(0u32, |sum, p| sum.wrapping_mul(31).wrapping_add(*p));
+            println!(
+                "pdf-pane: position={:.0} total={:.0} page={} pages={} visible={}-{} renders={} kept={} bytes={} checksum={:08x}",
+                self.position,
+                self.total,
+                self.pages
+                    .partition_point(|page| page.top <= self.position + height as f64 / 2.),
+                self.pages.len(),
+                first + 1,
+                last + 1,
+                self.renders,
+                self.rendered.len(),
+                kept * 4,
+                sum
+            );
+        }
+        &self.canvas
+    }
+}
+impl App {
     fn resize_web(&self) {
         if let (Some(window), Some(view)) = (&self.window, &self.view) {
             let size = window.inner_size();
@@ -154,18 +338,14 @@ impl App {
                 );
             }
         }
-        if let Some(pdf) = &self.document {
-            let scale = ((size.width - left).saturating_sub(24) as f64 / pdf.width as f64)
-                .min(size.height.saturating_sub(24) as f64 / pdf.height as f64);
-            let width = (pdf.width as f64 * scale) as u32;
-            let height = (pdf.height as f64 * scale) as u32;
-            draw(
-                pdf,
-                (left + (size.width - left - width) / 2) as i32,
-                ((size.height - height) / 2) as i32,
-                width,
-                height,
-            );
+        if let Some(pdf) = self.pdf.as_mut() {
+            self.pane.resize(size.width - left, size.height);
+            let canvas = self.pane.canvas(pdf);
+            let width = (size.width - left) as usize;
+            for y in 0..size.height as usize {
+                let to = y * size.width as usize + left as usize;
+                buffer[to..to + width].copy_from_slice(&canvas[y * width..(y + 1) * width]);
+            }
         }
         self.last_pixels = buffer.to_vec();
         buffer.present().unwrap();
@@ -211,18 +391,12 @@ impl App {
     fn over_pdf(&self) -> bool {
         self.cursor.x >= (self.window.as_ref().unwrap().inner_size().width / 2) as f64
     }
-    fn turn(&mut self, forward: bool) {
-        let count = self.pdf.as_mut().unwrap().page_count();
-        let next = if forward {
-            (self.page + 1).min(count - 1)
-        } else {
-            self.page.saturating_sub(1)
-        };
-        if next != self.page {
-            self.page = next;
-            self.render_pdf();
-            self.window.as_ref().unwrap().request_redraw();
+    fn scroll_pdf(&mut self, change: impl FnOnce(&mut PdfPane)) {
+        change(&mut self.pane);
+        if self.pane.animating() && self.pdf_tick.is_none() {
+            self.pdf_tick = Some(Instant::now() + Duration::from_millis(16));
         }
+        self.window.as_ref().unwrap().request_redraw();
     }
 }
 impl ApplicationHandler<Event> for App {
@@ -234,7 +408,7 @@ impl ApplicationHandler<Event> for App {
             event_loop
                 .create_window(
                     Window::default_attributes()
-                        .with_title("zebkit — winit web / PDF (scroll over PDF to turn pages)")
+                        .with_title("zebkit — winit web / PDF (the wheel scrolls the PDF)")
                         .with_inner_size(LogicalSize::new(1200., 740.)),
                 )
                 .unwrap(),
@@ -261,7 +435,7 @@ impl ApplicationHandler<Event> for App {
             }
             .expect("open PDF"),
         );
-        self.render_pdf();
+        self.pane.open(self.pdf.as_mut().unwrap());
         let view = View::new_offscreen(None, 600, 740, window.scale_factor() as f32)
             .expect("off-screen view");
         view.set_frame_buffers(Buffers::SharedMemory);
@@ -453,7 +627,14 @@ impl ApplicationHandler<Event> for App {
                 };
                 if self.over_pdf() {
                     if dy != 0. {
-                        self.turn(dy < 0.);
+                        // dy is positive up the document here.
+                        self.scroll_pdf(|pane| {
+                            if precise {
+                                pane.wheel(-dy as f64, true)
+                            } else {
+                                pane.wheel_notches(-dy as f64 / 40.)
+                            }
+                        });
                     }
                 } else if let Some(view) = &self.view {
                     let (x, y) = self.logical_cursor();
@@ -472,9 +653,9 @@ impl ApplicationHandler<Event> for App {
                 if self.over_pdf() {
                     if event.state == ElementState::Pressed {
                         if event.logical_key == Key::Named(NamedKey::PageDown) {
-                            self.turn(true);
+                            self.scroll_pdf(|pane| pane.screens(1.));
                         } else if event.logical_key == Key::Named(NamedKey::PageUp) {
-                            self.turn(false);
+                            self.scroll_pdf(|pane| pane.screens(-1.));
                         }
                     }
                     return;
@@ -560,6 +741,14 @@ impl ApplicationHandler<Event> for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.pdf_tick.is_some_and(|due| due <= Instant::now()) {
+            self.pane.tick();
+            self.pdf_tick = self
+                .pane
+                .animating()
+                .then(|| Instant::now() + Duration::from_millis(16));
+            self.window.as_ref().unwrap().request_redraw();
+        }
         if self.started && self.deadline.is_some_and(|due| due <= Instant::now()) {
             self.deadline = None;
             self.pumps += 1;
@@ -588,10 +777,10 @@ impl ApplicationHandler<Event> for App {
             event_loop.exit();
             return;
         }
-        let next = match (self.deadline, self.smoke_due) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let next = [self.deadline, self.smoke_due, self.pdf_tick]
+            .into_iter()
+            .flatten()
+            .min();
         event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 }
@@ -611,11 +800,12 @@ fn main() {
         window: None,
         view: None,
         pdf: None,
+        pane: PdfPane::default(),
+        pdf_tick: None,
         document: None,
         web: None,
         popup: None,
         popup_shown: false,
-        page: 0,
         cursor: PhysicalPosition::new(0., 0.),
         modifiers: ModifiersState::empty(),
         buttons: Modifiers::NONE,

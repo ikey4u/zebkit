@@ -49,7 +49,10 @@ libraries and any development symlinks needed by that root.
 
 Both applications forward mouse, wheel, focus, raw keys, input-method
 composition/commit and caret coordinates. They draw popup-widget layers
-and honor page cursor changes. The PDF buttons turn pages.
+and honor page cursor changes. The PDF pane scrolls continuously and smoothly
+through the whole document with the wheel or a trackpad (`PdfPane` in `model.h`):
+only pages in the pane are rendered, each once at the pane's width, 128 MiB kept.
+Its buttons move a screen.
 
 ## macOS: AppKit
 
@@ -72,7 +75,8 @@ the engine in `applicationDidFinishLaunching`. It uses `NSTextInputClient`
 for marked text, insertion and candidate-window coordinates. AppKit's
 `doCommandBySelector` results are collected and sent with one native key
 event using `zebkit_view_send_key_with_commands`, preserving the webpage's
-ability to cancel that event. Wheel over the PDF pane to turn pages.
+ability to cancel that event. The wheel over the PDF pane scrolls it, precise
+deltas followed at once, as a trackpad's are.
 
 It draws both panes and shuts down cleanly on a Mac (`--smoke-test`, in
 `scripts/engine-test.sh` with `ENGINE_TEST_WINDOWS=1`). Its input has not been driven there.
@@ -89,7 +93,8 @@ the engine beside the executable. Winit owns the window and sends wakeup
 notifications through `EventLoopProxy`; `ControlFlow::WaitUntil` handles
 engine deadlines. Softbuffer presents the web and PDF panes in one surface.
 The window handles focus, keyboard, mouse, wheel, IME, caret position, popup
-layers and cursor changes. Wheel over the PDF pane to turn pages.
+layers and cursor changes. The wheel over the PDF pane scrolls continuously,
+pages rendered as they come into it (`PdfPane` in `src/main.rs`).
 
 ## Options and validation
 
@@ -113,6 +118,12 @@ python3 tests/engine/native_host_input.py examples/native-host/winit/target/debu
 It checks focus, typing, backspace, button clicks and a select popup. It
 requires Xvfb and X11/XTest runtime libraries. Complex language input-method
 behavior still needs testing with the host's actual input methods.
+
+`tests/engine/native_host_pdf_scroll.py` wheels through a long PDF in each
+toolkit's window with XTest under a private Xvfb, and reads what the pane says it
+did (`NATIVE_HOST_PDF_REPORT=1`): that the position moved in steps smaller than a
+wheel notch, the pixels changed, the document's end was reached, and that few pages
+were rendered and kept.
 
 These examples use CPU-readable shared-memory web frames, not a zero-copy
 GPU presentation path. Mixed engine-window/off-screen views and independent

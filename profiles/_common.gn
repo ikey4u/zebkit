@@ -31,6 +31,10 @@ treat_warnings_as_errors = false
 # turns on for Chrome's viewer. A PDF's scripts are not run.
 pdf_enable_xfa = false
 pdf_enable_v8 = false
+# PDF in pages uses Chromium's plugin (//pdf); not its ink annotations, nor
+# saving to Google Drive, which its extension's interface offers.
+enable_pdf_ink2 = false
+enable_pdf_save_to_drive = false
 
 # zebkit's configuration of FFmpeg: Chrome's, with what applications need
 # besides (libswresample, libswscale, muxers, VP8 and VP9 decoders):

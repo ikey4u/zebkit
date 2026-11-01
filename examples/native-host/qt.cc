@@ -38,18 +38,17 @@ class Pane : public QWidget {
     setAttribute(Qt::WA_InputMethodEnabled, !document);
   }
   QRect caret;
+  std::function<void()> scrolled;
  protected:
   void paintEvent(QPaintEvent*) override {
     QPainter painter(this);
     painter.fillRect(rect(), document_ ? QColor(220, 220, 220) : Qt::white);
     if (document_) {
-      const auto& image = model_.document;
+      model_.pane.Resize(std::max(1, width()), std::max(1, height()));
+      const auto& image = model_.pane.Canvas();
       if (image.bgra.empty()) return;
-      QSize size(image.width, image.height);
-      size.scale(this->size() - QSize(20, 20), Qt::KeepAspectRatio);
-      QRect target(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
-      painter.drawImage(target, QImage(image.bgra.data(), image.width, image.height, image.width * 4,
-                                     QImage::Format_ARGB32));
+      painter.drawImage(QPoint(0, 0), QImage(image.bgra.data(), image.width, image.height, image.width * 4,
+                                             QImage::Format_ARGB32));
       return;
     }
     auto paint = [&](const native_host::Image& image) {
@@ -82,7 +81,12 @@ class Pane : public QWidget {
       zebkit_view_send_mouse(model_.view, ZEBKIT_MOUSE_LEAVE, 0, 0, ZEBKIT_BUTTON_NONE, 0, 0);
   }
   void wheelEvent(QWheelEvent* event) override {
-    if (document_) { model_.Turn(event->angleDelta().y() < 0 ? 1 : -1); return; }
+    if (document_) {
+      if (!event->pixelDelta().isNull()) model_.pane.Wheel(-event->pixelDelta().y(), true);
+      else model_.pane.WheelNotches(-event->angleDelta().y() / 120.);
+      if (scrolled) scrolled();
+      return;
+    }
     if (!model_.view) return;
     const bool precise = !event->pixelDelta().isNull();
     const QPointF delta = precise ? QPointF(event->pixelDelta()) : QPointF(event->angleDelta()) / 3;
@@ -143,7 +147,7 @@ class Host : public QWidget {
  public:
   native_host::Model model;
   Pane *web, *pdf;
-  QTimer timer;
+  QTimer timer, pdf_timer;
   std::mutex mutex;
   Clock::time_point deadline = Clock::time_point::max();
   bool queued = false, active = true;
@@ -154,18 +158,25 @@ class Host : public QWidget {
     auto* toolbar = new QHBoxLayout;
     layout->addLayout(toolbar);
     for (int delta : {-1, 1}) {
-      auto* button = new QPushButton(delta < 0 ? "Previous PDF page" : "Next PDF page");
+      auto* button = new QPushButton(delta < 0 ? "PDF: a screen up" : "PDF: a screen down");
       toolbar->addWidget(button);
-      connect(button, &QPushButton::clicked, this, [this, delta] { model.Turn(delta); });
+      connect(button, &QPushButton::clicked, this, [this, delta] { model.pane.Pages(delta); AnimatePdf(); });
     }
     auto* split = new QSplitter;
     layout->addWidget(split);
     web = new Pane(model, false); pdf = new Pane(model, true);
     split->addWidget(web); split->addWidget(pdf); split->setSizes({600, 600});
     model.redraw = [this] { web->update(); pdf->update(); };
+    pdf->scrolled = [this] { AnimatePdf(); };
+    pdf_timer.setInterval(16);
+    connect(&pdf_timer, &QTimer::timeout, this, [this] {
+      model.pane.Tick();
+      if (!model.pane.Animating()) pdf_timer.stop();
+    });
     timer.setSingleShot(true);
     connect(&timer, &QTimer::timeout, this, [this] { Dispatch(); });
   }
+  void AnimatePdf() { if (model.pane.Animating() && !pdf_timer.isActive()) pdf_timer.start(); }
   static void Wake(int64_t delay, void* data) {
     auto& host = *static_cast<Host*>(data);
     std::lock_guard<std::mutex> lock(host.mutex);
@@ -245,7 +256,7 @@ int main(int argc, char** argv) {
   }
   app.exec();
   { std::lock_guard<std::mutex> lock(host.mutex); host.active = false; }
-  host.timer.stop(); host.model.Close();
+  host.timer.stop(); host.pdf_timer.stop(); host.model.Close();
   const bool stopped = zebkit_shutdown();
   std::printf("Qt host: %d frames, %d event-driven pumps, shutdown=%s\n", host.model.frames, host.pumps, stopped ? "ok" : "failed");
   return stopped && captured && host.model.frames > 0 ? 0 : 1;

@@ -1,0 +1,393 @@
+PDF in pages, as Chrome shows them, on Chromium's own plugin (//pdf) with zebkit's
+small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
+
+- UrlLoader, PdfViewWebPlugin: the plugin takes the bytes of its document's own
+  response through blink::WebPlugin::DidReceiveData (`load_manually`), as Chrome's
+  stream does, with no second request; range requests stay the plugin's.
+- PDFiumEngine, PdfViewWebPlugin: how many pages are loaded and have been painted,
+  for the viewer and its test.
+- PluginDocument: a PDF's document is Chrome's stub, to the byte, and the plugin is
+  in a closed shadow root of its body in a scroller, as Chrome hides its frame.
+- HTMLPlugInElement: <embed> and <object> of a PDF are a frame, as in Chrome,
+  in a process of the PDF's site; only the frame's document holds the plugin.
+- NavigationRequest: a PDF to be shown is committed in a PDF renderer of its
+  site (--pdf-renderer, no JIT), as Chrome's inner frame is, unless its parent is of
+  its own origin, whose script reaches into it as in Chrome.
+- pdf/BUILD.gn: visible to the engine.
+
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -5196,6 +5196,20 @@
+         response_head_->headers->response_code() != net::HTTP_RESET_CONTENT &&
+         !ShouldRenderFallbackContentForResponse(*response_head_->headers)));
+ 
++  // A PDF to be shown is parsed in a PDF renderer of its site, as Chrome's
++  // inner PDF frame is; unless its frame's parent is of its own origin, whose
++  // script may reach into it as in Chrome, which needs them in one process.
++  if (response_should_be_rendered_ && !is_download &&
++      embedder_isolation_info_.is_none() &&
++      (response_head_->mime_type == "application/pdf" ||
++       response_head_->mime_type == "text/pdf")) {
++    RenderFrameHostImpl* parent = frame_tree_node_->parent();
++    if (!parent ||
++        !parent->GetLastCommittedOrigin().IsSameOriginWith(GetURL())) {
++      embedder_isolation_info_ = EmbedderIsolationInfo::CreateForPdf();
++    }
++  }
++
+   if (!response_should_be_rendered_) {
+     net_error_ = net::ERR_ABORTED;
+     error_navigation_trigger_ =
+--- a/content/browser/renderer_host/navigation_request.h
++++ b/content/browser/renderer_host/navigation_request.h
+@@ -3454,7 +3454,7 @@
+   // The embedder-imposed isolation policy that applies to this navigation.
+   // As an example, this is used to specify that the navigation is for a PDF
+   // or another MimeHandler.
+-  const EmbedderIsolationInfo embedder_isolation_info_;
++  EmbedderIsolationInfo embedder_isolation_info_;
+ 
+   // Indicates that this navigation is an embedder-initiated navigation of a
+   // fenced frame root. That is to say, the navigation is caused by a `src`
+--- a/pdf/BUILD.gn
++++ b/pdf/BUILD.gn
+@@ -409,6 +409,7 @@
+     visibility = [
+       ":*",
+       "//components/pdf/renderer",
++      "//zebkit/engine:*",
+     ]
+ 
+     sources = [
+--- a/pdf/loader/url_loader.cc
++++ b/pdf/loader/url_loader.cc
+@@ -140,6 +140,12 @@
+   blink_loader_->LoadAsynchronously(blink_request, this);
+ }
+ 
++void UrlLoader::OpenWithoutRequest(OpenCallback callback) {
++  DCHECK_EQ(state_, LoadingState::kWaitingToOpen);
++  state_ = LoadingState::kOpening;
++  open_callback_ = std::move(callback);
++}
++
+ // Modeled on `ppapi::proxy::URLLoaderResource::ReadResponseBody()`.
+ void UrlLoader::ReadResponseBody(base::span<uint8_t> buffer,
+                                  base::OnceCallback<void(int)> callback) {
+@@ -209,6 +215,10 @@
+ 
+ // Modeled on `content::PepperURLLoaderHost::DidReceiveData()`.
+ void UrlLoader::DidReceiveData(base::span<const char> data) {
++  // A response given by the embedder keeps coming after `Close()`.
++  if (!blink_loader_ && state_ != LoadingState::kStreamingData) {
++    return;
++  }
+   DCHECK_EQ(state_, LoadingState::kStreamingData);
+ 
+   // It's surprisingly difficult to guarantee that this is always >0.
+@@ -219,7 +229,8 @@
+   buffer_.insert(buffer_.end(), data.begin(), data.end());
+ 
+   // Defer loading if the buffer is too full.
+-  if (!deferring_loading_ && buffer_.size() >= buffer_upper_threshold_) {
++  if (blink_loader_ && !deferring_loading_ &&
++      buffer_.size() >= buffer_upper_threshold_) {
+     deferring_loading_ = true;
+     blink_loader_->SetDefersLoading(true);
+   }
+@@ -229,6 +240,9 @@
+ 
+ // Modeled on `content::PepperURLLoaderHost::DidFinishLoading()`.
+ void UrlLoader::DidFinishLoading() {
++  if (!blink_loader_ && state_ != LoadingState::kStreamingData) {
++    return;
++  }
+   DCHECK_EQ(state_, LoadingState::kStreamingData);
+ 
+   SetLoadComplete(Result::kSuccess);
+@@ -237,6 +251,9 @@
+ 
+ // Modeled on `content::PepperURLLoaderHost::DidFail()`.
+ void UrlLoader::DidFail(const blink::WebURLError& error) {
++  if (!blink_loader_ && state_ == LoadingState::kLoadComplete) {
++    return;
++  }
+   DCHECK(state_ == LoadingState::kOpening ||
+          state_ == LoadingState::kStreamingData)
+       << static_cast<int>(state_);
+--- a/pdf/loader/url_loader.h
++++ b/pdf/loader/url_loader.h
+@@ -131,6 +131,12 @@
+ 
+   // Mimic `pp::URLLoader`:
+   void Open(const UrlRequest& request, OpenCallback callback);
++
++  // Like `Open()` for a response the embedder already has: the document's own,
++  // given to the plugin by its PluginDocument. The caller then calls
++  // `DidReceiveResponse()`, `DidReceiveData()`, `DidFinishLoading()`, `DidFail()`.
++  void OpenWithoutRequest(OpenCallback callback);
++  base::WeakPtr<UrlLoader> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
+   void ReadResponseBody(base::span<uint8_t> buffer,
+                         base::OnceCallback<void(int)> callback);
+   void Close();
+@@ -177,6 +183,7 @@
+   void SetLoadComplete(Result result);
+ 
+   base::WeakPtr<Client> client_;
++  base::WeakPtrFactory<UrlLoader> weak_factory_{this};
+ 
+   LoadingState state_ = LoadingState::kWaitingToOpen;
+   Result complete_result_ = Result::kSuccess;
+--- a/pdf/pdf_view_web_plugin.cc
++++ b/pdf/pdf_view_web_plugin.cc
+@@ -568,6 +568,7 @@
+   // Allow the plugin to handle find requests.
+   client_->UsePluginAsFindHandler();
+ 
++  manual_load_ = initial_params_.load_manually;
+   std::optional<ParsedParams> params = ParseWebPluginParams(initial_params_);
+ 
+   // The contents of `initial_params_` are no longer needed.
+@@ -622,8 +623,10 @@
+   }
+ 
+   last_progress_sent_ = 0;
+-  LoadUrl(params->src_url, base::BindOnce(&PdfViewWebPlugin::DidOpen,
+-                                          weak_factory_.GetWeakPtr()));
++  if (!manual_load_) {
++    LoadUrl(params->src_url, base::BindOnce(&PdfViewWebPlugin::DidOpen,
++                                            weak_factory_.GetWeakPtr()));
++  }
+   url_ = params->original_url;
+ 
+   metrics_handler_ = std::make_unique<MetricsHandler>();
+@@ -859,13 +862,43 @@
+ }
+ 
+ void PdfViewWebPlugin::DidReceiveResponse(
+-    const blink::WebURLResponse& response) {}
++    const blink::WebURLResponse& response) {
++  if (!manual_load_) {
++    return;
++  }
++  auto loader = std::make_unique<UrlLoader>(weak_factory_.GetWeakPtr());
++  manual_loader_ = loader->GetWeakPtr();
++  UrlLoader* raw_loader = loader.get();
++  raw_loader->OpenWithoutRequest(base::BindOnce(
++      &PdfViewWebPlugin::DidOpen, weak_factory_.GetWeakPtr(), std::move(loader)));
++  raw_loader->DidReceiveResponse(response);
++}
++
++void PdfViewWebPlugin::DidReceiveData(base::span<const char> data) {
++  if (manual_loader_) {
++    manual_loader_->DidReceiveData(data);
++  }
++}
+ 
+-void PdfViewWebPlugin::DidReceiveData(base::span<const char> data) {}
++void PdfViewWebPlugin::DidFinishLoading() {
++  if (manual_loader_) {
++    manual_loader_->DidFinishLoading();
++  }
++}
+ 
+-void PdfViewWebPlugin::DidFinishLoading() {}
++void PdfViewWebPlugin::DidFailLoading(const blink::WebURLError& error) {
++  if (manual_loader_) {
++    manual_loader_->DidFail(error);
++  }
++}
+ 
+-void PdfViewWebPlugin::DidFailLoading(const blink::WebURLError& error) {}
++int PdfViewWebPlugin::LoadedPageCount() const {
++  return engine_ ? engine_->LoadedPageCount() : 0;
++}
++
++int PdfViewWebPlugin::PaintedPageCount() const {
++  return engine_ ? engine_->PaintedPageCount() : 0;
++}
+ 
+ bool PdfViewWebPlugin::SupportsPaginatedPrint() {
+   return true;
+--- a/pdf/pdf_view_web_plugin.h
++++ b/pdf/pdf_view_web_plugin.h
+@@ -281,6 +281,11 @@
+   PdfViewWebPlugin(const PdfViewWebPlugin& other) = delete;
+   PdfViewWebPlugin& operator=(const PdfViewWebPlugin& other) = delete;
+ 
++  // What an embedder's viewer shows and tests read: the pages PDFium has
++  // loaded now, and the pages painted since the document opened.
++  int LoadedPageCount() const;
++  int PaintedPageCount() const;
++
+   // blink::WebPlugin:
+   bool Initialize(blink::WebPluginContainer* container) override;
+   void Destroy() override;
+@@ -573,6 +578,10 @@
+       uint32_t block_size);
+ 
+  private:
++  // Bytes of the document itself come through the PluginDocument's `load_manually`.
++  bool manual_load_ = false;
++  base::WeakPtr<UrlLoader> manual_loader_;
++
+   // Callback that runs after `LoadUrl()`. The `loader` is the loader used to
+   // load the URL, and `result` is the result code for the load.
+   using LoadUrlCallback =
+--- a/pdf/pdfium/pdfium_engine.cc
++++ b/pdf/pdfium/pdfium_engine.cc
+@@ -4016,7 +4016,16 @@
+   return adjacent_page_index;
+ }
+ 
++int PDFiumEngine::LoadedPageCount() const {
++  int count = 0;
++  for (const auto& page : pages_) {
++    count += page->IsLoaded() ? 1 : 0;
++  }
++  return count;
++}
++
+ size_t PDFiumEngine::StartPaint(uint32_t page_index, const gfx::Rect& dirty) {
++  painted_pages_.insert(page_index);
+   // For the first time we hit paint, do nothing and just record the paint for
+   // the next callback.  This keeps the UI responsive in case the user is doing
+   // a lot of scrolling.
+--- a/pdf/pdfium/pdfium_engine.h
++++ b/pdf/pdfium/pdfium_engine.h
+@@ -17,6 +17,7 @@
+ #include <vector>
+ 
+ #include "base/containers/flat_map.h"
++#include "base/containers/flat_set.h"
+ #include "base/containers/span.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+@@ -696,6 +697,10 @@
+     return find_results_;
+   }
+ 
++ public:
++  int LoadedPageCount() const;
++  int PaintedPageCount() const { return static_cast<int>(painted_pages_.size()); }
++
+  private:
+   // This is a base class for shared functions and data needed for change
+   // invalidators. Subclasses are used to detect the difference in change rects
+@@ -997,6 +1002,7 @@
+   // Starts a progressive paint operation given a rectangle in screen
+   // coordinates. Returns the index in `progressive_paints_`.
+   size_t StartPaint(uint32_t page_index, const gfx::Rect& dirty);
++  base::flat_set<uint32_t> painted_pages_;
+ 
+   // Continues a paint operation that was started earlier.  Returns true if the
+   // paint is done, or false if it needs to be continued.
+--- a/pdf/pdfium/pdfium_page.h
++++ b/pdf/pdfium/pdfium_page.h
+@@ -96,6 +96,7 @@
+   // Unloads the PDFium data for this page from memory. Returns true if the
+   // unload happened, or false if an unload preventer blocked it.
+   bool Unload();
++  bool IsLoaded() const { return !!page_; }
+ 
+   // Gets the FPDF_PAGE for this page, loading and parsing it if necessary.
+   FPDF_PAGE GetPage();
+--- a/third_party/blink/renderer/core/html/html_plugin_element.cc
++++ b/third_party/blink/renderer/core/html/html_plugin_element.cc
+@@ -654,6 +654,12 @@
+   PluginData* plugin_data = GetDocument().GetFrame()->GetPluginData();
+   bool plugin_supports_mime_type =
+       plugin_data && plugin_data->SupportsMimeType(mime_type);
++  // A PDF is a frame, as in Chrome: in a process of its site, not the
++  // embedder's. Only the document of that frame holds the plugin.
++  if (plugin_supports_mime_type && !IsA<PluginDocument>(GetDocument()) &&
++      (mime_type == "application/pdf" || mime_type == "text/pdf")) {
++    return ObjectContentType::kFrame;
++  }
+   if (plugin_supports_mime_type &&
+       plugin_data->IsExternalPluginMimeType(mime_type)) {
+     return ObjectContentType::kExternalPlugin;
+--- a/third_party/blink/renderer/core/html/plugin_document.cc
++++ b/third_party/blink/renderer/core/html/plugin_document.cc
+@@ -27,7 +27,12 @@
+ #include "third_party/blink/renderer/core/css/css_color.h"
+ #include "third_party/blink/renderer/core/dom/events/event.h"
+ #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
++#include "third_party/blink/renderer/core/dom/comment.h"
+ #include "third_party/blink/renderer/core/dom/focus_params.h"
++#include "third_party/blink/renderer/core/dom/shadow_root.h"
++#include "third_party/blink/renderer/core/dom/text.h"
++#include "third_party/blink/renderer/core/html/html_div_element.h"
++#include "third_party/blink/renderer/core/html/html_head_element.h"
+ #include "third_party/blink/renderer/core/dom/raw_data_document_parser.h"
+ #include "third_party/blink/renderer/core/events/before_unload_event.h"
+ #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
+@@ -99,12 +104,68 @@
+   if (!frame->GetSettings() || !frame->Loader().AllowPlugins())
+     return;
+ 
++  // A PDF's document is what Chrome's is: to the page, Chrome's stub, with the
++  // viewer in a closed shadow root of its body. The viewer's script fills the
++  // shadow root, and scrolls the plugin in its scroller.
++  const AtomicString& mime_type = GetDocument()->Loader()->MimeType();
++  const bool is_pdf = mime_type == "application/pdf" || mime_type == "text/pdf";
++
+   auto* root_element = MakeGarbageCollected<HTMLHtmlElement>(*GetDocument());
+   GetDocument()->AppendChild(root_element);
+   root_element->InsertedByParser();
+   if (IsStopped())
+     return;  // runScriptsAtDocumentElementAvailable can detach the frame.
+ 
++  if (is_pdf) {
++    root_element->setAttribute(html_names::kStyleAttr,
++                               AtomicString("height:100%;width:100%"));
++    root_element->AppendChild(Comment::Create(
++        *GetDocument(),
++        " the placeholder in the body style is for an optional "
++        "background-color "));
++    root_element->AppendChild(
++        MakeGarbageCollected<HTMLHeadElement>(*GetDocument()));
++    auto* body = MakeGarbageCollected<HTMLBodyElement>(*GetDocument());
++    body->setAttribute(
++        html_names::kStyleAttr,
++        AtomicString("height:100%;width:100%;overflow:hidden;margin:0;"
++                     "padding:0;background-color:rgb(40,40,40);"));
++    root_element->AppendChild(body);
++    if (IsStopped())
++      return;
++    body->AppendChild(Text::Create(*GetDocument(), "\n    \n  \n\n"));
++    ShadowRoot& shadow =
++        body->AttachShadowRootForTesting(ShadowRootMode::kClosed);
++    auto* scroller = MakeGarbageCollected<HTMLDivElement>(*GetDocument());
++    scroller->setAttribute(html_names::kIdAttr, AtomicString("scroller"));
++    scroller->setAttribute(
++        html_names::kStyleAttr,
++        AtomicString("position:absolute;inset:0;overflow:auto"));
++    shadow.AppendChild(scroller);
++    embed_element_ = MakeGarbageCollected<HTMLEmbedElement>(*GetDocument());
++    embed_element_->setAttribute(
++        html_names::kStyleAttr,
++        AtomicString("display:block;position:sticky;left:0;top:0;width:100%;"
++                     "height:100%"));
++    embed_element_->setAttribute(html_names::kSrcAttr,
++                                 AtomicString(GetDocument()->Url().GetString()));
++    embed_element_->setAttribute(html_names::kTypeAttr, mime_type);
++    scroller->AppendChild(embed_element_);
++    if (IsStopped())
++      return;
++    To<PluginDocument>(GetDocument())->SetPluginNode(embed_element_);
++    GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kPlugin);
++    frame->View()->FlushAnyPendingPostLayoutTasks();
++    if (frame->IsMainFrame()) {
++      embed_element_->Focus();
++      if (IsStopped())
++        return;
++    }
++    if (WebPluginContainerImpl* view = GetPluginView())
++      view->DidReceiveResponse(GetDocument()->Loader()->GetResponse());
++    return;
++  }
++
+   auto* body = MakeGarbageCollected<HTMLBodyElement>(*GetDocument());
+   body->SetInlineStyleProperty(CSSPropertyID::kHeight, 100.0,
+                                CSSPrimitiveValue::UnitType::kPercentage);
