@@ -3743,37 +3743,23 @@ class Automation : public content::WebContentsObserver,
   // Page.screenshot and ElementHandle.screenshot, from the view's surface:
   // the viewport, "clip" ({x, y, width, height} in CSS pixels), or the
   // element's box; PNG.
-  // Page.screenshot, ElementHandle.screenshot: as screenshotter.ts, what the
-  // surface alone gives when nothing else is asked (a plain picture of the
-  // view, the quickest), Page.captureScreenshot otherwise.
+  // Page.screenshot, ElementHandle.screenshot: as screenshotter.ts, over
+  // Page.captureScreenshot (formats, clips beyond the view, scales).
   void Screenshot(Call* call) {
-    const std::string type = call->String("type");
-    const bool plain = !call->OnHandle() && (type.empty() || type == "png") &&
-                       !call->Flag("fullPage") && !call->Flag("omitBackground") &&
-                       !call->Has("mask") && !call->Has("style") &&
-                       call->String("animations") != "disabled" &&
-                       call->String("scale") != "css" && !HasDeviceScale();
-    if (plain) {
-      std::optional<gfx::Rect> clip;
-      if (const base::DictValue* given = call->params().FindDict("clip")) {
-        clip = gfx::ToEnclosingRect(gfx::RectF(
-            given->FindDouble("x").value_or(0),
-            given->FindDouble("y").value_or(0),
-            given->FindDouble("width").value_or(0),
-            given->FindDouble("height").value_or(0)));
+    // screenshotter.ts's validateScreenshotOptions().
+    if (const base::DictValue* clip = call->params().FindDict("clip")) {
+      if (clip->FindDouble("width").value_or(0) <= 0) {
+        call->Fail("Expected options.clip.width to be greater than 0");
+        return;
       }
-      Capture(call, clip);
-      return;
+      if (clip->FindDouble("height").value_or(0) <= 0) {
+        call->Fail("Expected options.clip.height to be greater than 0");
+        return;
+      }
     }
     ScreenshotStyled(call, base::BindOnce(&Automation::ScreenshotPrepared,
                                           weak_factory_.GetWeakPtr(),
                                           call->GetWeakPtr()));
-  }
-
-  bool HasDeviceScale() {
-    content::RenderWidgetHost* widget = MainWidget();
-    content::RenderWidgetHostView* view = widget ? widget->GetView() : nullptr;
-    return view && view->GetDeviceScaleFactor() != 1.0f;
   }
 
   void ScreenshotStyled(Call* call, base::OnceClosure next) {
@@ -3984,45 +3970,6 @@ class Automation : public content::WebContentsObserver,
                   Deliver(call, std::vector<uint8_t>(bytes.begin(), bytes.end()));
                 },
                 call, std::move(base64), std::move(error)));
-  }
-
-  void Capture(Call* call, std::optional<gfx::Rect> clip) {
-    content::RenderWidgetHost* widget = MainWidget();
-    content::RenderWidgetHostView* view = widget ? widget->GetView() : nullptr;
-    if (!view) {
-      call->Fail(kClosed);
-      return;
-    }
-    gfx::Rect source;
-    if (clip) {
-      source = *clip;
-      source.Intersect(gfx::Rect(view->GetViewBounds().size()));
-      if (source.IsEmpty()) {
-        call->Fail(
-            "Clipped area is either empty or outside the resulting image");
-        return;
-      }
-    }
-    view->CopyFromSurface(
-        source, gfx::Size(), base::Seconds(10),
-        base::BindOnce(&Automation::Captured, call->GetWeakPtr()));
-  }
-
-  static void Captured(base::WeakPtr<Call> call,
-                       const content::CopyFromSurfaceResult& result) {
-    if (!call)
-      return;
-    if (!result.has_value() || result->bitmap.drawsNothing()) {
-      call->Fail("zebkit: the page has no picture yet");
-      return;
-    }
-    std::optional<std::vector<uint8_t>> png =
-        gfx::PNGCodec::EncodeBGRASkBitmap(result->bitmap, false);
-    if (!png) {
-      call->Fail("zebkit: the picture could not be encoded");
-      return;
-    }
-    Deliver(call, std::move(*png));
   }
 
   // The picture to the client or to "path".
@@ -4817,7 +4764,11 @@ class Automation : public content::WebContentsObserver,
     const std::string log = "globalThis.__pwClock.controller.log('" + method +
                             "', " + now + (value.empty() ? "" : ", " + value) +
                             ")";
-    zebkit_view_add_script(call->view(), log.c_str());
+    // For documents to come, as server/clock.ts's addInitScript: scripts here
+    // also run at once, and this document gets the command itself below; a new
+    // document has no root element yet.
+    const std::string replay = "if (!document.documentElement) " + log + ";";
+    zebkit_view_add_script(call->view(), replay.c_str());
     scripts += "\nglobalThis.__pwClock.controller." + method + "(" + value + ");";
     EvaluateInAllFrames(call, scripts);
   }
