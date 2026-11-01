@@ -1,0 +1,2 @@
+# Expected differences between zebkit and Chrome under tests/engine/cdp_clients.mjs:
+# "<client>: <case> | <reason>", one a line.

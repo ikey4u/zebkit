@@ -1,0 +1,1 @@
+# Playwright tests expected to fail on zebkit: "<project/file glob> | <title regex or *> | REASON".

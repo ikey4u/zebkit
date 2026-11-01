@@ -27,6 +27,11 @@ PLAYWRIGHT_ESBUILD_VERSION=0.28.1
 # playwright-core from npm, the latest stable release, for
 # scripts/automation-bench.sh's comparison over CDP.
 PLAYWRIGHT_CORE_VERSION=1.64.1
+# Puppeteer's client, development only, for tests/engine/cdp_clients.mjs.
+PUPPETEER_CORE_VERSION=25.16.0
+# Playwright's own tests, the tag of the protocol zebkit's endpoint speaks,
+# for scripts/playwright-suite.sh.
+PLAYWRIGHT_SUITE_TAG=v1.64.1
 # The YAML library Playwright pins (its package.json), bundled with the
 # injected script for ariaSnapshot's YAML.
 PLAYWRIGHT_YAML_VERSION=2.9.0
