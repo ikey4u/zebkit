@@ -874,8 +874,14 @@ function serialize(value, plain) {
 // A node of any document: Node of this realm is not that of another frame's, but
 // its getter takes any. A forged {nodeType, nodeName} is no node, and a Proxy runs
 // none of its traps here: the getter throws on both.
-// (A worker has no nodes; a page may have broken its Node.)
-const nodeTypeOf = globalThis.Node && Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType')?.get;
+// (A worker has no nodes; a page may have nulled its Node: from the document.)
+const nodeTypeOf = (() => {
+  for (let prototype = globalThis.document; prototype; prototype = Object.getPrototypeOf(prototype)) {
+    const getter = Object.getOwnPropertyDescriptor(prototype, 'nodeType')?.get;
+    if (getter)
+      return getter;
+  }
+})();
 const applyGetter = Reflect.apply;
 const isNode = value => {
   if (!nodeTypeOf || !value || typeof value !== 'object')

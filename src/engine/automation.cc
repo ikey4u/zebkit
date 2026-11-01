@@ -2215,19 +2215,31 @@ class Automation : public content::WebContentsObserver,
         static_cast<int>(call->Number("clickCount", action.click_count));
     const int delay = static_cast<int>(call->Number("delay"));
     const int steps = std::max(1, static_cast<int>(call->Number("steps", 1)));
-    MouseMoveIn(widget, in_widget, in_root, action.down_only ? 1 : steps);
-    if (action.down_only) {
-      MouseDownIn(widget, button, 1);
-      WhenAcked(Type::kMouseDown, std::move(restored));
-    } else if (action.up_only) {
-      MouseUpIn(widget, button, 1);
-      WhenAcked(Type::kMouseUp, std::move(restored));
-    } else if (action.click) {
-      PressAndRelease(call.get(), widget, button, click_count, 1, delay,
-                      std::move(restored));
-    } else {
-      WhenAcked(Type::kMouseMove, std::move(restored));
-    }
+    MouseStepsThen(
+        widget, in_widget, in_root, action.down_only ? 1 : steps,
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+               content::RenderWidgetHost* widget, bool down_only, bool up_only, bool click,
+               Button button, int click_count, int delay, base::OnceClosure restored) {
+              if (!self || !call || self->mouse_widget_.get() != widget) {
+                std::move(restored).Run();
+                return;
+              }
+              if (down_only) {
+                self->MouseDownIn(widget, button, 1);
+                self->WhenAcked(Type::kMouseDown, std::move(restored));
+              } else if (up_only) {
+                self->MouseUpIn(widget, button, 1);
+                self->WhenAcked(Type::kMouseUp, std::move(restored));
+              } else if (click) {
+                self->PressAndRelease(call.get(), widget, button, click_count, 1, delay,
+                                      std::move(restored));
+              } else {
+                self->WhenAcked(Type::kMouseMove, std::move(restored));
+              }
+            },
+            weak_factory_.GetWeakPtr(), call->GetWeakPtr(), widget, action.down_only,
+            action.up_only, action.click, button, click_count, delay, std::move(restored)));
   }
 
   void PointerDone(base::WeakPtr<Call> call,
@@ -3355,10 +3367,16 @@ class Automation : public content::WebContentsObserver,
                        gfx::PointF local) {
                       if (!self || !call)
                         return;
-                      self->MouseMoveIn(
+                      base::OnceClosure moved = base::BindOnce(
+                          [](base::WeakPtr<Automation> self, base::OnceClosure done) {
+                            if (self)
+                              self->WhenAcked(Type::kMouseMove, std::move(done));
+                          },
+                          self, self->InputDone(call.get()));
+                      self->MouseStepsThen(
                           widget, local, to,
-                          std::max(1, static_cast<int>(call->Number("steps", 1))));
-                      self->WhenAcked(Type::kMouseMove, self->InputDone(call.get()));
+                          std::max(1, static_cast<int>(call->Number("steps", 1))),
+                          std::move(moved));
                     },
                     weak_factory_.GetWeakPtr(), call->GetWeakPtr(), to));
   }
@@ -3383,14 +3401,21 @@ class Automation : public content::WebContentsObserver,
                        gfx::PointF local) {
                       if (!self || !call)
                         return;
-                      self->MouseMoveIn(
+                      self->MouseStepsThen(
                           widget, local, to,
-                          std::max(1, static_cast<int>(call->Number("steps", 1))));
-                      self->PressAndRelease(
-                          call.get(), widget, ButtonOf(call->String("button")),
-                          static_cast<int>(call->Number("clickCount", 1)), 1,
-                          static_cast<int>(call->Number("delay")),
-                          self->InputDone(call.get()));
+                          std::max(1, static_cast<int>(call->Number("steps", 1))),
+                          base::BindOnce(
+                              [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                                 content::RenderWidgetHost* widget) {
+                                if (!self || !call || self->mouse_widget_.get() != widget)
+                                  return;
+                                self->PressAndRelease(
+                                    call.get(), widget, ButtonOf(call->String("button")),
+                                    static_cast<int>(call->Number("clickCount", 1)), 1,
+                                    static_cast<int>(call->Number("delay")),
+                                    self->InputDone(call.get()));
+                              },
+                              self, call, widget));
                     },
                     weak_factory_.GetWeakPtr(), call->GetWeakPtr(), to));
   }
@@ -3505,6 +3530,44 @@ class Automation : public content::WebContentsObserver,
     mouse_widget_ = widget;
     mouse_in_widget_ = to;
     mouse_ = root;
+  }
+
+  // input.ts's move(): each step acknowledged before the next, as each CDP call of
+  // it is; sent at once, the input queue coalesces them into the last.
+  void MouseStepsThen(content::RenderWidgetHost* widget,
+                      const gfx::PointF& to,
+                      const gfx::PointF& root,
+                      int steps,
+                      base::OnceClosure then) {
+    if (steps <= 1) {
+      MouseMoveIn(widget, to, root, 1);
+      std::move(then).Run();
+      return;
+    }
+    const gfx::PointF from = widget == Widget() ? mouse_in_widget_ : to;
+    mouse_widget_ = widget;
+    mouse_in_widget_ = to;
+    mouse_ = root;
+    NextMouseStep(widget, from, to, 1, steps, std::move(then));
+  }
+
+  void NextMouseStep(content::RenderWidgetHost* widget,
+                     gfx::PointF from,
+                     gfx::PointF to,
+                     int step,
+                     int steps,
+                     base::OnceClosure then) {
+    // The widget went while it was waited for (RenderWidgetHostDestroyed).
+    if (mouse_widget_.get() != widget || step > steps) {
+      std::move(then).Run();
+      return;
+    }
+    const gfx::PointF middle(from.x() + (to.x() - from.x()) * step / steps,
+                             from.y() + (to.y() - from.y()) * step / steps);
+    SendMouse(widget, Type::kMouseMove, middle, last_button_, 0);
+    WhenAcked(Type::kMouseMove,
+              base::BindOnce(&Automation::NextMouseStep, weak_factory_.GetWeakPtr(), widget, from,
+                             to, step + 1, steps, std::move(then)));
   }
 
   void MouseDownIn(content::RenderWidgetHost* widget,
