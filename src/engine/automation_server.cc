@@ -207,6 +207,24 @@ base::Value ToProtocol(const base::Value& value) {
   return base::Value(std::move(result));
 }
 
+// Without the fields of dictionaries that are null, at any depth.
+void RemoveNulls(base::Value& value) {
+  if (value.is_list()) {
+    for (base::Value& item : value.GetList())
+      RemoveNulls(item);
+  } else if (value.is_dict()) {
+    std::vector<std::string> empty;
+    for (auto [key, item] : value.GetDict()) {
+      if (item.is_none())
+        empty.push_back(key);
+      else
+        RemoveNulls(item);
+    }
+    for (const std::string& key : empty)
+      value.GetDict().Remove(key);
+  }
+}
+
 // A serialized value (the protocol's) as plain JSON (what is lost:
 // undefined, dates, ...).
 base::Value Plain(const base::Value& value) {
@@ -315,6 +333,9 @@ class Connection {
   void Reply(int id, base::Value result) {
     base::DictValue message;
     message.Set("id", TakeId(id));
+    // The protocol's optional fields are absent, never null: the client's
+    // validator throws on null, in a place where its call then never ends.
+    RemoveNulls(result);
     if (!result.is_none())
       message.Set("result", std::move(result));
     send_.Run(Json(base::Value(std::move(message))));
@@ -500,7 +521,14 @@ void Connection::Received(const std::string& text) {
     Initialize(id);
     return;
   }
-  Command(id, *guid, *method, params ? std::move(*params) : base::DictValue());
+  base::DictValue command_params = params ? std::move(*params) : base::DictValue();
+  // Since 1.60 or so the client's timeout travels in the call's metadata, not
+  // in its parameters (channelOwner.ts); the native commands take "timeout".
+  if (const base::DictValue* metadata = dict.FindDict("metadata")) {
+    if (std::optional<double> timeout = metadata->FindDouble("timeout"))
+      command_params.Set("timeout", *timeout);
+  }
+  Command(id, *guid, *method, std::move(command_params));
 }
 
 void Connection::Initialize(int id) {

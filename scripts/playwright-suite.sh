@@ -78,6 +78,8 @@ fi
 
 : > "$out/engine-exits.log"
 rm -rf "$out/test-results" "$out/profiles"
+# As the server of Playwright under its own tests: window.builtins in pages.
+export PWTEST_UNDER_TEST=1
 export PW_SUITE_REPO="$repo" PW_SUITE_OUT="$out" PW_SUITE_DIR="$suite" PW_SUITE_WORKERS="$workers" \
     PW_SUITE_TIMEOUT="$timeout_ms" PW_SUITE_GLOBAL_TIMEOUT="$(( global_minutes * 60000 ))" \
     PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
