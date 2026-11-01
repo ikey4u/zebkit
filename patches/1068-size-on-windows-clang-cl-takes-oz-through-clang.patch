@@ -1,0 +1,35 @@
+Size on Windows: patches/1007's flags reach clang-cl.
+
+clang-cl warns that -Oz and -Os are unused, and compiles without optimizing:
+targets in zebkit_min_size_patterns had no optimization until link time. /clang:
+passes them through. Linux and macOS are unchanged.
+
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -2668,7 +2668,12 @@
+ # zebkit: the smallest code, for the targets zebkit_min_size_patterns names
+ # (//build/config/BUILDCONFIG.gn).
+ config("optimize_min_size") {
+-  cflags = [ "-Oz" ] + common_optimize_on_cflags
++  if (is_win) {
++    # clang-cl ignores -Oz, and the object would not be optimized at all.
++    cflags = [ "/clang:-Oz" ] + common_optimize_on_cflags
++  } else {
++    cflags = [ "-Oz" ] + common_optimize_on_cflags
++  }
+   rustflags = [ "-Copt-level=z" ]
+   ldflags = common_optimize_on_ldflags
+ }
+@@ -2676,7 +2681,11 @@
+ # zebkit: -Os without the ML inliner, for the targets zebkit_speed_patterns
+ # names.
+ config("optimize_size_default_inliner") {
+-  cflags = [ "-Os" ] + common_optimize_on_cflags
++  if (is_win) {
++    cflags = [ "/clang:-Os" ] + common_optimize_on_cflags
++  } else {
++    cflags = [ "-Os" ] + common_optimize_on_cflags
++  }
+   rustflags = [ "-Copt-level=s" ]
+   ldflags = common_optimize_on_ldflags
+ }
