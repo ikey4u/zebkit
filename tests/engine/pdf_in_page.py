@@ -373,17 +373,19 @@ def main():
     check(state.get("page") == "40", "an internal link", state)
 
     # Selection and copy, as a person: all of it, and what is on the clipboard.
-    page.go(base + "/text.pdf")
-    page.wait_viewer(lambda s: s.get("pages") == "3", "a small PDF")
-    time.sleep(.5)
-    page.key("a", "KeyA", 65, modifiers=2)
-    page.key("c", "KeyC", 67, modifiers=2, commands=["copy"])
-    time.sleep(.3)
-    page.go(base + "/blank", settle=0)
-    page.cdp.call("Browser.grantPermissions", {"permissions": ["clipboardReadWrite"], "origin": base})
-    page.call("Page.bringToFront")
-    copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
-    check("needle2" in (copied or ""), "Select All and Copy give the text of the pages", copied)
+    # On a Mac the clipboard is the person's: not touched, and so not checked there.
+    if sys.platform != "darwin":
+        page.go(base + "/text.pdf")
+        page.wait_viewer(lambda s: s.get("pages") == "3", "a small PDF")
+        time.sleep(.5)
+        page.key("a", "KeyA", 65, modifiers=2)
+        page.key("c", "KeyC", 67, modifiers=2, commands=["copy"])
+        time.sleep(.3)
+        page.go(base + "/blank", settle=0)
+        page.cdp.call("Browser.grantPermissions", {"permissions": ["clipboardReadWrite"], "origin": base})
+        page.call("Page.bringToFront")
+        copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
+        check("needle2" in (copied or ""), "Select All and Copy give the text of the pages", copied)
 
     # Another type, a broken file, an attachment.
     requests.clear()
