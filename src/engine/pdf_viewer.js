@@ -231,6 +231,12 @@
     if (fit === 'page') goTo(currentPage());
   });
 
+  // The fragment's #page=N, again when only it changes, as Chrome's viewer.
+  win.addEventListener('hashchange', () => {
+    const page = parseInt(new URLSearchParams(win.location.hash.slice(1)).get('page'), 10);
+    if (page > 0) goTo(page - 1);
+  });
+
   let lastFind = '';
   const doFind = (forward) => {
     const text = findInput.value;
