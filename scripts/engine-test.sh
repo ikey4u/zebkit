@@ -267,7 +267,7 @@ run() {
             shift
             while [[ "$1" == *=* ]]; do export "${1%%=*}=${1#*=}"; shift; done
         fi
-        limited 180 "${launch[@]}" "$@"
+        limited "${run_limit:-180}" "${launch[@]}" "$@"
     ) > "$work/$name.log" 2> "$work/$name.err"; then
         failed=1
         cat "$work/$name.log"
@@ -682,7 +682,8 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
         self_driven=()
         pdf_document="$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)"
         # It is a debug build, and wheels by itself: the generated document is long enough.
-        [[ "$pdf_host" == *winit* ]] && { self_driven=(--self); pdf_document=generated; }
+        run_limit=180
+        [[ "$pdf_host" == *winit* ]] && { self_driven=(--self); pdf_document=generated; run_limit=450; }
         run "native-host-pdf-$(basename "$pdf_host")" env LD_LIBRARY_PATH="$CACHE_DIR/native-toolkits/usr/lib/x86_64-linux-gnu" python3 -I "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
             "$pdf_document" --no-sandbox --disable-gpu
     done
