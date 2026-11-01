@@ -97,6 +97,8 @@
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -543,6 +545,47 @@ class Automation : public content::WebContentsObserver,
     }
     if (!media.empty())
       ContextEmulateMedia(web_contents(), media, base::DoNothing());
+    // What crPage.ts sets on each page's session for the context's options.
+    if (options.FindBool("ignoreHTTPSErrors").value_or(false)) {
+      base::DictValue params;
+      params.Set("ignore", true);
+      view_->Send("Security.setIgnoreCertificateErrors", std::move(params));
+    }
+    if (options.FindBool("bypassCSP").value_or(false)) {
+      base::DictValue params;
+      params.Set("enabled", true);
+      view_->Send("Page.setBypassCSP", std::move(params));
+    }
+    if (const std::string* timezone = options.FindString("timezoneId")) {
+      base::DictValue params;
+      params.Set("timezoneId", *timezone);
+      view_->Send("Emulation.setTimezoneOverride", std::move(params));
+    }
+    if (const std::string* locale = options.FindString("locale")) {
+      base::DictValue params;
+      params.Set("locale", *locale);
+      view_->Send("Emulation.setLocaleOverride", std::move(params));
+      const std::string* agent = options.FindString("userAgent");
+      base::DictValue language;
+      language.Set("userAgent", agent ? *agent : content::GetContentClient()->browser()->GetUserAgent());
+      language.Set("acceptLanguage", *locale);
+      view_->Send("Emulation.setUserAgentOverride", std::move(language));
+    }
+    const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
+    const bool mobile = options.FindBool("isMobile").value_or(false);
+    const base::DictValue* screen = options.FindDict("screen");
+    if (scale || mobile || screen) {
+      const int width = options.FindIntByDottedPath("viewport.width").value_or(1280);
+      const int height = options.FindIntByDottedPath("viewport.height").value_or(720);
+      base::DictValue params;
+      params.Set("width", width);
+      params.Set("height", height);
+      params.Set("deviceScaleFactor", scale.value_or(1));
+      params.Set("mobile", mobile);
+      params.Set("screenWidth", screen ? screen->FindInt("width").value_or(width) : width);
+      params.Set("screenHeight", screen ? screen->FindInt("height").value_or(height) : height);
+      view_->Send("Emulation.setDeviceMetricsOverride", std::move(params));
+    }
     // The context's commands, again for this page, once it has its
     // automation.
     for (const auto& [method, params] : state.replay) {
@@ -2806,6 +2849,10 @@ class Automation : public content::WebContentsObserver,
     // Runtime.exceptionThrown is apart from Runtime.consoleAPICalled.
     if (level == blink::mojom::ConsoleMessageLevel::kError &&
         message.starts_with(u"Uncaught ")) {
+      base::DictValue where;
+      where.Set("url", base::UTF16ToUTF8(source));
+      where.Set("lineNumber", line);
+      where.Set("columnNumber", 0);
       const std::string text = base::UTF16ToUTF8(message.substr(9));
       base::DictValue error;
       const size_t colon = text.find(": ");
@@ -2820,6 +2867,7 @@ class Automation : public content::WebContentsObserver,
       error.Set("stack", trace);
       base::DictValue params;
       params.Set("error", std::move(error));
+      params.Set("location", std::move(where));
       Emit("Page.pageError", std::move(params));
       return;
     }
@@ -4133,6 +4181,31 @@ class Automation : public content::WebContentsObserver,
     zebkit_view_close(view);
   }
 
+  // page.close({runBeforeUnload: true}): the page's handlers decide, and it
+  // goes on its own when they let it.
+  void RunBeforeUnload(Call* call) {
+    web_contents()->ClosePage();
+    call->Done();
+  }
+
+  // Page.webStorage*: of the main frame's origin.
+  void WebStorage(Call* call) {
+    base::DictValue arg;
+    for (const char* key : {"kind", "name", "value"}) {
+      if (const std::string* value = call->params().FindString(key))
+        arg.Set(key, *value);
+    }
+    arg.Set("command", call->Name());
+    RunStep(call, Follow(MainFrame()), AutomationWorld::kUtility, "webStorage",
+            std::move(arg), {},
+            base::BindOnce(
+                [](base::WeakPtr<Call> call, base::Value value) {
+                  if (call)
+                    call->Done(std::move(value));
+                },
+                call->GetWeakPtr()));
+  }
+
   void BringToFront(Call* call) {
     zebkit_view_focus(call->view());
     call->Done();
@@ -5443,6 +5516,12 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"APIRequestContext.fetch", &A::Fetch},
           {"Page.emulateMedia", &A::EmulateMedia},
           {"Page.requestGC", &A::RequestGC},
+          {"Page.runBeforeUnload", &A::RunBeforeUnload},
+          {"Page.webStorageItems", &A::WebStorage},
+          {"Page.webStorageGetItem", &A::WebStorage},
+          {"Page.webStorageSetItem", &A::WebStorage},
+          {"Page.webStorageRemoveItem", &A::WebStorage},
+          {"Page.webStorageClear", &A::WebStorage},
           {"Frame.frameElement", &A::FrameElement},
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},

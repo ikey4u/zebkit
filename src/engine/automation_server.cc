@@ -42,6 +42,7 @@
 #include "net/server/http_server_request_info.h"
 #include "net/socket/tcp_server_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "url/gurl.h"
 #include "zebkit/engine/include/zebkit/automation.h"
 
 namespace zebkit {
@@ -930,6 +931,8 @@ void Connection::NewContext(int id, base::DictValue params) {
                initializer.Set("options", std::move(options));
                Object object;
                object.id = *context;
+               if (const std::string* base_url = options.FindString("baseURL"))
+                 object.data.Set("baseURL", *base_url);
                const std::string guid = self->Create(self->browser_, "BrowserContext",
                                                      std::move(initializer), std::move(object));
                self->Find(tracing)->context = guid;
@@ -1150,6 +1153,8 @@ void Connection::PageEvent(const std::string& page_guid,
     }
     base::DictValue message;
     message.Set("error", std::move(serialized));
+    if (const base::DictValue* location = params.FindDict("location"))
+      message.Set("location", location->Clone());
     message.Set("page", Ref(page_guid));
     Event(context, "pageError", std::move(message));
   } else if (event == "BrowserContext.dialog") {
@@ -2026,6 +2031,18 @@ void Connection::Command(int id,
     // In the words of the dispatchers' validator.
     ReplyError(id, "arg.handles: no object with guid");
     return;
+  }
+  if (method == "goto") {
+    // frames.ts's constructURLBasedOnBaseURL().
+    Object* page = Find(page_guid);
+    Object* context = page ? Find(page->context) : nullptr;
+    const std::string* base_url = context ? context->data.FindString("baseURL") : nullptr;
+    const std::string* given = params.FindString("url");
+    if (base_url && given) {
+      const GURL resolved = GURL(*base_url).Resolve(*given);
+      if (resolved.is_valid())
+        params.Set("url", resolved.spec());
+    }
   }
   if (method == "setInputFiles") {
     // A remote client's files, written to the engine's (createTempFiles).

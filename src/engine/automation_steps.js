@@ -464,6 +464,34 @@ steps.scrollIntoViewIfNeeded = arg => poll(arg.timeout, kActionWaits, async (say
   return { done: true };
 });
 
+// Page.webStorage*.
+steps.webStorage = arg => {
+  const storage = arg.kind === 'session' ? sessionStorage : localStorage;
+  switch (arg.command) {
+    case 'webStorageItems': {
+      const items = [];
+      for (let i = 0; i < storage.length; ++i) {
+        const name = storage.key(i);
+        items.push({ name, value: storage.getItem(name) });
+      }
+      return { items };
+    }
+    case 'webStorageGetItem': {
+      const value = storage.getItem(arg.name);
+      return value === null ? {} : { value };
+    }
+    case 'webStorageSetItem':
+      storage.setItem(arg.name, arg.value);
+      return {};
+    case 'webStorageRemoveItem':
+      storage.removeItem(arg.name);
+      return {};
+    default:
+      storage.clear();
+      return {};
+  }
+};
+
 // Frame.frameElement, here in the parent: the element whose window is the
 // child's, through open shadow roots.
 steps.frameOwner = (arg, out) => {
