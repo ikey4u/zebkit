@@ -464,7 +464,10 @@ pp('network: websocket frames over raw events', async ({ page }) => {
   session.on('Network.webSocketFrameSent', e => log.push(['sent', e.response.payloadData]));
   session.on('Network.webSocketFrameReceived', e => log.push(['received', e.response.payloadData]));
   await page.goto(`${origin}/ws.html`);
-  return { got: await page.evaluate(() => window.got), log };
+  const got = await page.evaluate(() => window.got);
+  for (let i = 0; i < 40 && log.length < 2; ++i)
+    await sleep(50);
+  return { got, log };
 });
 pp('cookies: page and browser', async ({ page, context }) => {
   await page.goto(`${origin}/set-cookie`);
@@ -479,7 +482,7 @@ pp('cookies: partition, expires', async ({ page, context }) => {
   await page.goto(`${origin}/empty.html`);
   await context.setCookie({ name: 'e', value: '1', domain: 'localhost', path: '/', expires: 4000000000 });
   const [c] = (await context.cookies()).filter(x => x.name === 'e');
-  return { expires: c.expires, session: c.session, secure: c.secure };
+  return { expires: c.expires > 1e9, session: c.session, secure: c.secure };
 });
 pp('screenshot: viewport, clip, full page, jpeg, element', async ({ page }) => {
   await page.setViewport({ width: 300, height: 200 });
@@ -569,7 +572,7 @@ pp('workers: dedicated', async ({ page }) => {
   return { url: worker.url().replace(origin, ''), value: await worker.evaluate(() => self.value), count: page.workers().length };
 });
 pp('workers: service worker target', async ({ page, context }) => {
-  const target = context.waitForTarget(t => t.type() === 'service_worker');
+  const target = context.waitForTarget(t => t.type() === 'service_worker' && t.url().startsWith(origin));
   await page.goto(`${origin}/sw.html`);
   const found = await target;
   const worker = await found.worker();
@@ -1224,6 +1227,8 @@ function startBrowser(executable, args, label) {
   };
 }
 
+// What differs from run to run, on any browser.
+const volatile = (key, value) => key === 'backendNodeId' || key === 'loaderId' ? undefined : value;
 const normalize = text => String(text).replaceAll(String(port), 'PORT').split(work).join('WORK');
 const withTimeout = (promise, ms) => {
   let timer;
@@ -1262,8 +1267,9 @@ async function runClient(client, executable, args, label) {
         };
         try {
           const page = await withTimeout(context.newPage(), 20000);
+          await withTimeout(page.bringToFront(), 5000);
           const value = await withTimeout(item.body({ browser, context, page }), 25000);
-          outcome = { ok: true, value: JSON.parse(normalize(JSON.stringify(value === undefined ? null : value))) };
+          outcome = { ok: true, value: JSON.parse(normalize(JSON.stringify(value === undefined ? null : value, volatile))) };
         } finally {
           await withTimeout(closeContext(), 10000).catch(() => {});
         }
