@@ -574,7 +574,8 @@ class Automation : public content::WebContentsObserver,
     const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
     const bool mobile = options.FindBool("isMobile").value_or(false);
     const base::DictValue* screen = options.FindDict("screen");
-    if (scale || mobile || screen) {
+    // The view has the scale factor of its own (NewPage).
+    if (mobile || screen) {
       const int width = options.FindIntByDottedPath("viewport.width").value_or(1280);
       const int height = options.FindIntByDottedPath("viewport.height").value_or(720);
       base::DictValue params;

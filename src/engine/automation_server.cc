@@ -928,11 +928,11 @@ void Connection::NewContext(int id, base::DictValue params) {
                initializer.Set("debugger", Ref(debugger));
                initializer.Set("requestContext", Ref(request));
                initializer.Set("tracing", Ref(tracing));
-               initializer.Set("options", std::move(options));
                Object object;
                object.id = *context;
                if (const std::string* base_url = options.FindString("baseURL"))
                  object.data.Set("baseURL", *base_url);
+               initializer.Set("options", std::move(options));
                const std::string guid = self->Create(self->browser_, "BrowserContext",
                                                      std::move(initializer), std::move(object));
                self->Find(tracing)->context = guid;
