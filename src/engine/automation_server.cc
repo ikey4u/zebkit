@@ -44,6 +44,8 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
 #include "zebkit/engine/include/zebkit/automation.h"
+#include "zebkit/engine/include/zebkit/hooks.h"
+#include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace zebkit {
 
@@ -289,8 +291,10 @@ class Connection {
 
   ~Connection() {
     // No more events to this connection, before its pages go.
-    for (const auto& [view, guid] : pages_)
+    for (const auto& [view, guid] : pages_) {
       zebkit_automation_on_event(view, nullptr, nullptr);
+      zebkit_view_on_window_open(view, nullptr, nullptr);
+    }
     // The client's contexts go with it, as the pages of Playwright's
     // launchServer() do when its client disconnects.
     for (const auto& [guid, object] : objects_) {
@@ -468,7 +472,9 @@ class Connection {
   void PrepareFetch(base::DictValue& params, const base::DictValue& defaults);
   void NewPage(int id, const std::string& context_guid);
   std::string AdoptPage(const std::string& context_guid, const std::string& page_id,
-                        const base::Value& frames);
+                        const base::Value& frames,
+                        const std::string& opener = std::string());
+  static void OnWindowOpen(zebkit_view* opener, zebkit_view* opened, const char* url, void* data);
   void PageEvent(const std::string& page_guid, const std::string& event,
                  base::DictValue params);
   void Tracing(int id, const std::string& guid, const std::string& method,
@@ -657,7 +663,7 @@ std::string Connection::FrameGuid(const std::string& page_guid,
   base::DictValue initializer;
   const std::string* url = initial ? initial->FindString("url") : nullptr;
   const std::string* name = initial ? initial->FindString("name") : nullptr;
-  initializer.Set("url", url ? *url : "about:blank");
+  initializer.Set("url", url && !url->empty() ? *url : "about:blank");
   initializer.Set("name", name ? *name : "");
   if (const std::string* parent = initial ? initial->FindString("parentFrame") : nullptr) {
     const std::string parent_guid = Known("frame", page_guid, *parent);
@@ -987,7 +993,8 @@ void Connection::NewPage(int id, const std::string& context_guid) {
 
 std::string Connection::AdoptPage(const std::string& context_guid,
                                   const std::string& page_id,
-                                  const base::Value& frames) {
+                                  const base::Value& frames,
+                                  const std::string& opener) {
   zebkit_view* view = zebkit_automation_page(page_id.c_str());
   // The page's object first in name, so that its frames know it.
   Object page_object;
@@ -1012,6 +1019,8 @@ std::string Connection::AdoptPage(const std::string& context_guid,
   }
   base::DictValue initializer;
   initializer.Set("mainFrame", Ref(main_frame));
+  if (!opener.empty())
+    initializer.Set("opener", Ref(opener));
   base::DictValue viewport;
   viewport.Set("width", 1280);
   viewport.Set("height", 720);
@@ -1028,6 +1037,10 @@ std::string Connection::AdoptPage(const std::string& context_guid,
   }
   pages_[view] = reserved;
   zebkit_automation_on_event(view, &Connection::OnEvent, this);
+  // Playwright launches Chromium with --disable-popup-blocking; its popups
+  // are pages of the context, with their opener.
+  zebkit_view_set_popup_policy(view, ZEBKIT_POPUP_POLICY_ALLOW);
+  zebkit_view_on_window_open(view, &Connection::OnWindowOpen, this);
   // A trace or a HAR the context started before it had this page.
   if (Object* context = Find(context_guid)) {
     for (const char* key : {"tracingStart", "tracingChunk", "har"}) {
@@ -1045,6 +1058,42 @@ std::string Connection::AdoptPage(const std::string& context_guid,
   page_event.Set("page", Ref(reserved));
   Event(context_guid, "page", std::move(page_event));
   return reserved;
+}
+
+void Connection::OnWindowOpen(zebkit_view* opener,
+                              zebkit_view* opened,
+                              const char* url,
+                              void* data) {
+  auto* self = static_cast<Connection*>(data);
+  auto found = self->pages_.find(opener);
+  Object* page = found == self->pages_.end() ? nullptr : self->Find(found->second);
+  if (!page)
+    return;
+  char* id = zebkit_automation_page_id(opened);
+  if (!id)
+    return;
+  struct Pending {
+    base::WeakPtr<Connection> connection;
+    std::string context;
+    std::string opener;
+    std::string page;
+  };
+  auto* pending = new Pending{self->weak_factory_.GetWeakPtr(), page->context,
+                              found->second, id};
+  zebkit_free(id);
+  zebkit_automation_call(
+      opened, "Page.frames", "{}",
+      [](zebkit_view*, const char* json, const char*, void* data) {
+        std::unique_ptr<Pending> pending(static_cast<Pending*>(data));
+        if (!pending->connection || !json)
+          return;
+        std::optional<base::Value> frames = Parse(json);
+        if (frames) {
+          pending->connection->AdoptPage(pending->context, pending->page, *frames,
+                                         pending->opener);
+        }
+      },
+      pending);
 }
 
 void Connection::OnEvent(zebkit_view* view,
@@ -1088,6 +1137,8 @@ void Connection::PageEvent(const std::string& page_guid,
       }
       navigated.Set("newDocument", base::DictValue());
       for (const char* state : {"domcontentloaded", "load", "networkidle"}) {
+        if (Object* frame_object = Find(frame))
+          frame_object->data.Remove(std::string("state.") + state);
         base::DictValue remove;
         remove.Set("remove", state);
         Event(frame, "loadstate", std::move(remove));
@@ -1098,7 +1149,15 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string frame = frame_of("frame");
     base::DictValue add;
     const std::string* state = params.FindString("state");
-    add.Set("add", state ? *state : "load");
+    // Once for a document, as frames.ts's _firedLifecycleEvents.
+    Object* frame_object = Find(frame);
+    const std::string name = state ? *state : "load";
+    if (frame_object) {
+      if (frame_object->data.FindBool("state." + name).value_or(false))
+        return;
+      frame_object->data.Set("state." + name, true);
+    }
+    add.Set("add", name);
     Event(frame, "loadstate", std::move(add));
   } else if (event == "Page.frameAttached") {
     const std::string frame = frame_of("frame");
@@ -1465,6 +1524,8 @@ void Connection::Tracing(int id,
     context->data.Remove("tracingStart");
     context->data.Remove("tracingChunk");
   } else if (method == "harStart") {
+    // The id is the client's from here on, whichever page records.
+    params.Set("harId", "har@c" + base::NumberToString(++next_guid_));
     context->data.Set("har", params.Clone());
   }
   zebkit_view* view = nullptr;
@@ -1487,8 +1548,8 @@ void Connection::Tracing(int id,
     base::DictValue answer;
     if (method == "tracingStartChunk")
       answer.Set("traceName", title.empty() ? "trace" : title);
-    if (method == "harStart")
-      answer.Set("harId", "har1");
+    if (const std::string* har = method == "harStart" ? params.FindString("harId") : nullptr)
+      answer.Set("harId", *har);
     Reply(id, base::Value(std::move(answer)));
     return;
   }
@@ -2117,6 +2178,13 @@ void Connection::Command(int id,
                }
                if (navigation && result.is_dict()) {
                  if (base::DictValue* response = result.GetDict().FindDict("response")) {
+                   // Chromium has no response for these, as Network has no event.
+                   const std::string* response_url = response->FindString("url");
+                   if (response_url && (response_url->starts_with("about:") ||
+                                        response_url->starts_with("data:"))) {
+                     self->Reply(id, base::Value(base::DictValue()));
+                     return;
+                   }
                    base::DictValue request = response->Clone();
                    Object* frame = self->Find(frame_guid);
                    if (frame)

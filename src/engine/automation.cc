@@ -571,6 +571,12 @@ class Automation : public content::WebContentsObserver,
       language.Set("acceptLanguage", *locale);
       view_->Send("Emulation.setUserAgentOverride", std::move(language));
     }
+    {
+      // navigator.webdriver, as Chromium under Playwright's --enable-automation.
+      base::DictValue params;
+      params.Set("enabled", true);
+      view_->Send("Emulation.setAutomationOverride", std::move(params));
+    }
     const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
     const bool mobile = options.FindBool("isMobile").value_or(false);
     const base::DictValue* screen = options.FindDict("screen");
@@ -4688,7 +4694,8 @@ class Automation : public content::WebContentsObserver,
   // Tracing.harStart: {options: {content, mode}}; {harId}.
   void HarStart(Call* call) {
     const base::DictValue* options = call->params().FindDict("options");
-    const std::string id = "har@" + base::NumberToString(++next_har_);
+    const std::string given = call->String("harId");
+    const std::string id = given.empty() ? "har@" + base::NumberToString(++next_har_) : given;
     hars_[id] = std::make_unique<HarRecorder>(options ? options->Clone() : base::DictValue());
     base::DictValue answer;
     answer.Set("harId", id);
