@@ -5,7 +5,7 @@
 // The plugin is told where to draw and which pages it may need, and tells the
 // viewer about the document, by messages. Chrome's viewer exchanges them over
 // the element's postMessage; here the viewer is in an isolated world of the PDF
-// document, in a closed shadow root (patches/1065), and the messages go to it
+// document, in a closed shadow root (patches/1066), and the messages go to it
 // directly, so the page sees neither it nor them.
 
 #include <memory>
@@ -271,7 +271,7 @@ bool RendererClient::OverrideCreatePlugin(content::RenderFrame* render_frame,
   // rgb(40,40,40), the document's background in Chrome.
   viewer_params.attribute_names.push_back(blink::WebString::FromAscii("background-color"));
   viewer_params.attribute_values.push_back(blink::WebString::FromAscii("4280821800"));
-  // Only the document in the frame holds the plugin (patches/1065); nothing else
+  // Only the document in the frame holds the plugin (patches/1066); nothing else
   // gets to ask for it. A <embed> elsewhere is a frame.
   if (!params.load_manually) {
     *plugin = nullptr;

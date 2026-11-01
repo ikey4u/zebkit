@@ -13,6 +13,11 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
 - NavigationRequest: a PDF to be shown is committed in a PDF renderer of its
   site (--pdf-renderer, no JIT), as Chrome's inner frame is, unless its parent is of
   its own origin, whose script reaches into it as in Chrome.
+- ChildProcessSecurityPolicy: a PDF renderer may reach its origin's data, because here
+  the document a page's script or a driver touches is in it; otherwise localStorage kills it.
+- LocalFrame: in a PDF's document, text goes to the viewer's focused field, not the plugin.
+- ResourceBundle: a string the package does not hold is empty, not a crash; the plugin
+  asks for Chrome's strings (page sizes, accessibility labels).
 - pdf/BUILD.gn: visible to the engine.
 
 --- a/content/browser/renderer_host/navigation_request.cc
@@ -49,6 +54,21 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  
    // Indicates that this navigation is an embedder-initiated navigation of a
    // fenced frame root. That is to say, the navigation is caused by a `src`
+--- a/content/browser/security/cpsp/child_process_security_policy_impl.cc
++++ b/content/browser/security/cpsp/child_process_security_policy_impl.cc
+@@ -2534,8 +2534,11 @@
+     case AccessType::kCanCommitNewOrigin:
+     case AccessType::kHostsOrigin:
+       return true;
++    // In zebkit a PDF's document, with what a page's script or a driver may do
++    // in it (localStorage, document.cookie), is in this process, as Chrome's stub is
++    // not: refusing would kill the process. It is still locked to the PDF's origin.
+     case AccessType::kCanAccessDataForCommittedOrigin:
+-      return false;
++      return true;
+   }
+ }
+ 
 --- a/pdf/BUILD.gn
 +++ b/pdf/BUILD.gn
 @@ -409,6 +409,7 @@
@@ -130,14 +150,15 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    void ReadResponseBody(base::span<uint8_t> buffer,
                          base::OnceCallback<void(int)> callback);
    void Close();
-@@ -177,6 +183,7 @@
-   void SetLoadComplete(Result result);
+@@ -196,6 +202,8 @@
  
-   base::WeakPtr<Client> client_;
+   base::OnceCallback<void(int)> read_callback_;
+   base::raw_span<uint8_t> client_buffer_;
++
 +  base::WeakPtrFactory<UrlLoader> weak_factory_{this};
+ };
  
-   LoadingState state_ = LoadingState::kWaitingToOpen;
-   Result complete_result_ = Result::kSuccess;
+ }  // namespace chrome_pdf
 --- a/pdf/pdf_view_web_plugin.cc
 +++ b/pdf/pdf_view_web_plugin.cc
 @@ -568,6 +568,7 @@
@@ -292,6 +313,23 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  
    // Gets the FPDF_PAGE for this page, loading and parsing it if necessary.
    FPDF_PAGE GetPage();
+--- a/third_party/blink/renderer/core/frame/local_frame.cc
++++ b/third_party/blink/renderer/core/frame/local_frame.cc
+@@ -2586,7 +2586,13 @@
+ }
+ 
+ WebPluginContainerImpl* LocalFrame::GetWebPluginContainer(Node* node) const {
+-  if (auto* plugin_document = DynamicTo<PluginDocument>(GetDocument())) {
++  // A PDF's document has a viewer beside its plugin: its fields take text themselves.
++  auto* plugin_document = DynamicTo<PluginDocument>(GetDocument());
++  if (plugin_document && !node && GetDocument()->FocusedElement() &&
++      GetDocument()->FocusedElement() != plugin_document->PluginNode()) {
++    return nullptr;
++  }
++  if (plugin_document) {
+     return plugin_document->GetPluginView();
+   }
+   if (!node) {
 --- a/third_party/blink/renderer/core/html/html_plugin_element.cc
 +++ b/third_party/blink/renderer/core/html/html_plugin_element.cc
 @@ -654,6 +654,12 @@
@@ -391,3 +429,17 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    auto* body = MakeGarbageCollected<HTMLBodyElement>(*GetDocument());
    body->SetInlineStyleProperty(CSSPropertyID::kHeight, 100.0,
                                 CSSPrimitiveValue::UnitType::kPercentage);
+--- a/ui/base/resource/resource_bundle.cc
++++ b/ui/base/resource/resource_bundle.cc
+@@ -1293,6 +1293,11 @@
+       break;
+     }
+   }
++  // zebkit's packages hold the strings of what they use: Chrome's for the PDF
++  // plugin's metadata and accessibility labels are not among them, and are empty.
++  if (!data.has_value() && GetRawDataResource(resource_id).empty()) {
++    return std::u16string();
++  }
+   if (!data.has_value()) {
+     // Fall back on the main data pack (shouldn't be any strings here except
+     // in unittests).
