@@ -11,7 +11,7 @@
     "final_x_google_account_authorization_tested": false
   },
   "artifact": {
-    "path": "dist/cookie-host/Host.app",
+    "path": "dist/cookie-host/the host.app",
     "platform": "macOS arm64",
     "desktop_profile": "release-desktop, stripped",
     "signing": "ad hoc, deep strict verification passed",

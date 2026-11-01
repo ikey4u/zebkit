@@ -44,7 +44,7 @@
   ],
   "apple_browser_entitlement_available": false,
   "artifacts": {
-    "host_test_copy": "dist/passkeys/Host.app",
+    "host_test_copy": "dist/passkeys/the host.app",
     "framework_binary_bytes": 226423040,
     "host_copy_framework_sha256": "ab8d0e9125f7f638cf3e385b7e1a573e974c3457c971f34e4c3aa9ec9729cbc1",
     "host_helper_sha256": "57c7579bf44b77f6c128ad77d08a27fc8c133840d8966e60e38ec050b5b12e74",

@@ -153,9 +153,9 @@ Temporary publication never overwrites an existing key.
 The default file is `<profile>/Secrets/cookie.key`. Its 53-byte version-1
 format (`Zebkit Cookie Key v1` plus newline and 32 key bytes), `zbh`
 encryption tag and `Network/Cookies.host` database are unchanged from the
-previous Host implementation. Existing Host file-backed sign-ins therefore
+previous host implementation. Existing the host file-backed sign-ins therefore
 survive the move into Zebkit without key rotation or another sign-in.
-Host now makes one `set_cookie_storage(File, None)` call and contains no
+The host now makes one `set_cookie_storage(File, None)` call and contains no
 key-file implementation. Source/header detection only enables that call
 when building against an engine package with the built-in interface.
 
@@ -187,14 +187,14 @@ it contains no file-key implementation. It verifies automatic private-key
 creation, encrypted/HttpOnly cookies, first-request authentication after
 restart, session expiry, logout, separate per-profile keys and unchanged
 OS cookie data. Another fixture creates a cookie store with the prior
-host-supplied key API, places a compatible former Host key file beside it,
+host-supplied key API, places a compatible former host key file beside it,
 and confirms the built-in backend restores that login without replacement.
 
 A normal runner separately tests command-line selection, a Unicode custom
 key directory and refusal to start with a missing/invalid key. Its existing
 cookie database remains byte-identical on those failures. Standalone C++
 backend tests exercise restart, legacy format, permissions and links. Rust
-and Python expose the same engine selection. Host's real helper regression
+and Python expose the same engine selection. The host's real helper regression
 checks file-key reuse and cookies after restart alongside its existing POST
 popup/redirect/opener behavior.
 

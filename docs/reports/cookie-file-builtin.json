@@ -19,7 +19,7 @@
     "format": "unchanged 53-byte v1",
     "cookie_database": "Network/Cookies.host",
     "encryption_tag": "zbh",
-    "prior_Host_file_backed_login": "confirmed restored without key rotation",
+    "prior_host_file_backed_login": "confirmed restored without key rotation",
     "original_OS_cookies_retained": true
   },
   "validation": {
@@ -31,8 +31,8 @@
     "Python_selection": "passed",
     "Rust_unit": "1 passed",
     "Rust_engine_integration": "53 passed, 0 failed; workspace doctests passed",
-    "Host_helper_unit": "9 passed, 0 failed; key-file tests now belong to Zebkit",
-    "Host_real_helper_integration": "passed; key/cookies reused on restart and POST/303/opener popup behavior retained; explicit no-sandbox fixture"
+    "host_helper_unit": "9 passed, 0 failed; key-file tests now belong to Zebkit",
+    "host_real_helper_integration": "passed; key/cookies reused on restart and POST/303/opener popup behavior retained; explicit no-sandbox fixture"
   },
   "platform_checks": {
     "macOS_arm64": "backend runtime and actual engine/host integration passed",

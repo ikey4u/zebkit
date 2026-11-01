@@ -12,7 +12,7 @@ service is linked in.
 Blink exposing `navigator.credentials` does not provide a browser's request
 UI. Zebkit previously inherited content embedder defaults: no real resident
 keys, no macOS window supplied to iCloud discovery, and no phone/PIN/account
-selection UI. Host renders through a separate off-screen helper, so attaching
+selection UI. The host renders through a separate off-screen helper, so attaching
 a sheet only to the C example's window could not fix its browser panel.
 This is separate from the earlier Google unsafe-browser check and cookie
 persistence.
@@ -28,7 +28,7 @@ verification method can be selected.
 | --- | --- | --- |
 | C/Rust/Python events and actions | Shared implementation | Shared implementation |
 | Chromium FIDO, USB PIN/account selection, phone hybrid transport | Shared implementation | Shared implementation |
-| Host embedded panel and private transport | Shared implementation | Shared implementation |
+| The host embedded panel and private transport | Shared implementation | Shared implementation |
 | Default presentation | Cocoa sheets | Chromium views for visible desktop views |
 | OS platform passkeys | iCloud, subject to Apple's entitlement/permission | No built-in platform credential store integration |
 
@@ -104,7 +104,7 @@ the browser-validated `origin`, `rp_id`, a descriptive `title`, and an
 `qr` is Chromium's opaque FIDO hybrid pairing payload. Render it as a QR
 code with sharp square modules and at least four modules of white quiet
 zone. It is short-lived secret pairing material, not a URL to navigate to.
-Zebkit does not force a platform image format or QR library on hosts. Host
+Zebkit does not force a platform image format or QR library on hosts. The host
 uses its existing QR renderer; the macOS default uses Core Image.
 
 ### Actions
@@ -164,9 +164,9 @@ Rust exposes `view.on_authentication()`, `view.authentication_action()` and
 `view.clear_authentication_handler()`; JSON parsing is the host's choice.
 Python exposes equivalent methods using dictionaries.
 
-## Host integration
+## the host integration
 
-Host's helper sends events and receives operations on the inherited private
+The host's helper sends events and receives operations on the inherited private
 frames socket, negotiated as wire version 3. PIN/QR material is not sent over
 CDP, webpage JavaScript, the agent API or a remote Worker. The desktop stores
 request state only in its live tab model, renders a panel over the page,
@@ -230,13 +230,13 @@ only the browser presentation responsibilities.
 origin/challenge/RP hash, presence, user verification and ECDSA signatures.
 `webauthn_ui.py` tests actual host events, malformed/stale/duplicate replies,
 cancel, abort, navigation and handler removal on an owned localhost page.
-Host adds private-channel integration, state-ordering/redaction tests and
+The host adds private-channel integration, state-ordering/redaction tests and
 native panel rendering checks. Virtual tests do not establish successful
 physical-device authentication or real Google sign-in.
 
 ### Verified on 2026-10-27
 
-The macOS arm64 engine and optimized Host desktop/helper builds passed.
+The macOS arm64 engine and optimized the host desktop/helper builds passed.
 The full engine regression suite passed, including rendering, idle frames,
 page/media/browser behavior and encrypted cookie persistence. Rust workspace
 and documentation tests passed. Final focused tests also covered an ordinary
@@ -248,11 +248,11 @@ callback removal and rejection of malformed/stale/duplicate operations.
 The Rust integration also disables UI from inside its callback, receives the
 deferred close event, and closes the view from the callback. The C host-API
 lifecycle tests also passed in a LaunchServices-launched app with Chromium's
-sandbox enabled. Host's real helper/private-channel integration passed in a separate
+sandbox enabled. The host's real helper/private-channel integration passed in a separate
 no-sandbox fixture. Its 43 browser-client unit tests and the authentication
 state/QR tests passed, including fresh requests after a helper restart.
 
-The actual Host component rendered five states at four window sizes in both
+The actual the host component rendered five states at four window sizes in both
 themes (40 checks). Tests decoded the rendered QR screenshots, and checked
 that Cancel remained visible in short panes. Its action footer stays outside
 the scrolling body. PIN fields have explicit names and password semantics;
@@ -283,8 +283,8 @@ The slim optimization profiles are unchanged; no full Chrome layer or idle
 polling was added. The packaged engine remains about 216 MiB. This is not a
 new comparative performance benchmark.
 
-The optimized local test application is `dist/authentication/Host.app`.
-Quit the running Host before opening it because it uses the normal Host
+The optimized local test application is `dist/authentication/the host.app`.
+Quit the running the host before opening it because it uses the normal the host
 profile. The installed application was not overwritten. The native profile
 package and `dist/release` contain the final engine. See the
 [validation record](reports/passkeys-host-ui.json) for artifact hashes,

@@ -58,7 +58,7 @@ def main():
             legacy_key.write_bytes(b'Zebkit Cookie Key v1\n' + raw.read_bytes()); legacy_key.chmod(0o600)
             restored = run(binary, switches, legacy, base + '/check')
             assert restored['sent_auth'] and restored['cookies'] == ['zebkit_probe_auth', 'zebkit_probe_js']
-            print('ok former Host key format and host-encrypted login survive backend move without rotation')
+            print('ok former host key format and host-encrypted login survive backend move without rotation')
     finally:
         server.shutdown(); server.server_close()
 

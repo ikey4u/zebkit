@@ -7,7 +7,7 @@
     "shared": [
       "Chromium FIDO controller",
       "versioned C/Rust/Python host events and actions",
-      "Host embedded panel and private wire protocol"
+      "the host embedded panel and private wire protocol"
     ],
     "existing_engine_platforms": [
       "macOS arm64",
@@ -79,7 +79,7 @@
     "real_account_credentials_used": false
   },
   "artifact": {
-    "artifact": "dist/authentication/Host.app",
+    "artifact": "dist/authentication/the host.app",
     "platform": "macOS arm64",
     "desktop_profile": "release-desktop, stripped",
     "signing": "ad hoc; deep strict verification passed",

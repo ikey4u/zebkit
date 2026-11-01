@@ -158,7 +158,7 @@ adding the interface to normal page contexts.
 
 ## Integrated browser: preserve the original authorization popup
 
-On 2026-10-27 the separate Host off-screen integration had another issue:
+On 2026-10-27 a separate host's off-screen integration had another issue:
 its helper installed `View::on_new_window`, which deliberately cancels
 Chromium's popup and reports only its URL. The client then called
 `open_tab_from(url, opener)` to create an independent off-screen view.
@@ -182,7 +182,7 @@ Zebkit already provides `on_window_open`, which transfers the existing popup
 view while Chromium retains its request and opener. The added
 `zebkit_view_get_target_id()` / Rust `View::target_id()` identifies that
 exact view to the host's CDP client. Rust also allows clearing an earlier
-URL-only handler. Host's wire version 4 transports the existing view ID and
+URL-only handler. The host's wire version 4 transports the existing view ID and
 CDP target ID; its client binds rendering/input and attaches to that target
 instead of navigating a replacement. The new popup receives the same
 frame, input, close, authentication and drag handlers as other tabs.
@@ -191,7 +191,7 @@ This works in the shared Mac/Linux integration without loading Chrome UI.
 
 ### Controlled regression
 
-`crates/host-browser-client/tests/popup.rs` in Host launches the real helper
+the host's own popup test launches the real helper
 against two owned localhost origins. A genuine mouse click opens a named
 popup, submits a form by POST to a fixture `/gsi/transform`, follows a 303
 to `/callback`, posts a synthetic result to its actual opener and closes.

@@ -32,7 +32,7 @@
     "sandboxed_c_host_application": "passed; the same C fixture in its own ad hoc signed app, launched through LaunchServices, Chromium sandbox enabled"
   },
   "artifact": {
-    "path": "dist/cookie-host/Host.app",
+    "path": "dist/cookie-host/the host.app",
     "platform": "macOS arm64",
     "desktop_profile": "release-desktop, stripped",
     "signing": "ad hoc, deep strict verification passed",
