@@ -3,3 +3,4 @@
 # reported; it fails no run, and one that stops differing is reported.
 puppeteer: raw: screencast frames | Page.screencastFrame's metadata.monotonicTimestamp is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
 puppeteer: raw: DevTools HTTP endpoints seen by a target | /json/version's File-Path-Style is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
+playwright: emulation: context options | (1234.5).toLocaleString() in de-DE: the package's ICU data holds English and CJK only (the size budget); navigator.language is de-DE as on Chrome

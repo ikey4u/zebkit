@@ -661,7 +661,7 @@ pp('pages: several, popups', async ({ page, context }) => {
   const popup = new Promise(resolve => page.once('popup', resolve));
   await page.click('#l');
   const opened = await popup;
-  await opened.waitForFunction(() => document.readyState === 'complete');
+  await opened.waitForFunction(() => document.readyState === 'complete', { polling: 50 });
   const count = (await context.pages()).length;
   await second.close();
   return { count, url: opened.url().replace(origin, ''), after: (await context.pages()).length, opener: await opened.evaluate(() => !!window.opener) };
@@ -1066,7 +1066,7 @@ pw('workers: service worker', async ({ page, context }) => {
   const created = context.waitForEvent('serviceworker');
   await page.goto(`${origin}/sw.html`);
   const worker = await created;
-  return { url: worker.url().replace(origin, ''), value: await worker.evaluate(() => self.value), active: await page.evaluate(() => window.reg), count: context.serviceWorkers().length };
+  return { url: worker.url().replace(origin, ''), value: await worker.evaluate(() => self.value), active: await page.evaluate(() => window.reg), count: context.serviceWorkers().filter(w => w.url().startsWith(origin)).length };
 });
 pw('emulation: context options', async ({ browser }) => {
   const context = await browser.newContext({ ...devices['Pixel 5'], locale: 'de-DE', timezoneId: 'Asia/Tokyo', colorScheme: 'dark', reducedMotion: 'reduce', forcedColors: 'active', contrast: 'more', geolocation: { latitude: 10, longitude: 20 }, permissions: ['geolocation'] });
