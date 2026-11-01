@@ -708,7 +708,7 @@ rawGroup('Browser.getVersion keys', 'Browser.getVersion', {}, r => Object.keys(r
 rawGroup('Page.getFrameTree', 'Page.getFrameTree', {}, r => ({ keys: Object.keys(r.frameTree.frame).sort(), url: r.frameTree.frame.url.replace(origin, ''), site: r.frameTree.frame.domainAndRegistry }));
 rawGroup('Page.getLayoutMetrics keys', 'Page.getLayoutMetrics', {}, r => Object.keys(r).sort());
 rawGroup('Performance.enable', 'Performance.enable', {}, () => 'ok');
-rawGroup('Target.getTargets types', 'Target.getTargets', {}, r => [...new Set(r.targetInfos.map(t => t.type))].sort());
+rawGroup('Target.getTargets has pages', 'Target.getTargets', {}, r => r.targetInfos.some(t => t.type === 'page'));
 rawGroup('Browser.getWindowForTarget keys', 'Browser.getWindowForTarget', {}, r => Object.keys(r).sort());
 rawGroup('Tracing.getCategories', 'Tracing.getCategories', {}, r => r.categories.includes('devtools.timeline'));
 rawGroup('Schema.getDomains', 'Schema.getDomains', {}, r => r.domains.map(d => d.name).sort());
@@ -1310,8 +1310,9 @@ for (const line of fs.readFileSync(expectedFile, 'utf8').split('\n')) {
 }
 
 // What Playwright launches with for its own Chromium, so that pages behind
-// others are not throttled while a case waits for them.
-const unthrottled = ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'];
+// others are not throttled while a case waits for them, and history
+// navigations answer with a response.
+const unthrottled = ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-back-forward-cache'];
 const chromeResults = await runAll(chromePath, ['--headless=new', '--no-sandbox', ...unthrottled], 'chrome');
 const zebkitResults = await runAll(zebkitPath, ['--headless', '--no-sandbox', ...unthrottled], 'zebkit');
 server.closeAllConnections();

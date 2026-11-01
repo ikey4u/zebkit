@@ -1,2 +1,5 @@
 # Expected differences between zebkit and Chrome under tests/engine/cdp_clients.mjs:
-# "<client>: <case> | <reason>", one a line.
+# "<client>: <case> | <reason>", one a line. A case listed here is still run and
+# reported; it fails no run, and one that stops differing is reported.
+puppeteer: raw: screencast frames | Page.screencastFrame's metadata.monotonicTimestamp is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
+puppeteer: raw: DevTools HTTP endpoints seen by a target | /json/version's File-Path-Style is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
