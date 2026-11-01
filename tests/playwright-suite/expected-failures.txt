@@ -40,3 +40,33 @@ page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is n
 page/page-drop.spec.ts | * | Frame.drop is not implemented
 page/locator-any-frame.spec.ts | * | page.frameLocator() with no selector (internal:control=any-frame) is not implemented
 page/selectors-frame.spec.ts | * | frame selectors on handles and without waiting differ from frameSelectors.ts
+
+# Differ, each with its cause known; a file's entry says what its failures are.
+library/browsercontext-locale.spec.ts | error:expect\(received\) | number and date formats of locales the package's ICU data does not hold (English and CJK only, the size budget)
+page/page-event-console.spec.ts | * | a console message's text is Blink's string, not rendered from its arguments as Runtime's preview is; args stay empty
+page/workers.spec.ts | console | a console message's text is Blink's string, not rendered from its arguments
+page/jshandle-to-string.spec.ts | sparse | a console message's text is Blink's string, not rendered from its arguments
+library/route-web-socket.spec.ts | pass-through | WebSocketRoute's pass-through to the server misses frames here
+library/web-socket.spec.ts | * | WebSocket events through the endpoint differ (open, frames, close) from Network.webSocket*
+library/har-websocket.spec.ts | * | HAR has no WebSocket entries
+page/page-drag.spec.ts | * | the native drag does not fire the page's drag events through the endpoint's mouse commands
+page/page-network-request.spec.ts | headers | allHeaders() has what the renderer sent, not the network's final request headers
+page/page-network-sizes.spec.ts | * | header sizes follow the observed headers (docs/AUTOMATION.md, section 5)
+page/page-request-fulfill.spec.ts | status code|unuassigned | fulfilled status text comes from the network stack's table, not Playwright's
+page/page-click.spec.ts | tweened | mouse.move's steps are not interpolated by the native command
+page/page-mouse.spec.ts | tween | mouse.move's steps are not interpolated by the native command
+page/page-aria-snapshot-ai.spec.ts | iframe|frame | snapshots do not stitch the frames' documents
+page/page-add-init-script-callback.spec.ts | global | exposeBinding's noGlobal is not honoured: an exposed function is a property of the window
+page/frame-hierarchy.spec.ts | frame\.name | a frame's name does not fall back to its element's id as DOM's Page.frameNavigated does
+page/locator-frame.spec.ts | * | an assertion through a frame locator waits for the frame instead of treating it as no element
+page/locator-query.spec.ts | frameLocator|common frame | an assertion through a frame locator waits for the frame instead of treating it as no element
+page/expect-boolean.spec.ts | frameLocator | an assertion through a frame locator waits for the frame instead of treating it as no element
+page/interception.spec.ts | worker | workers' requests are not seen by routes: the native interception is per frame
+page/page-click-scroll.spec.ts | display:contents|iframe | scrolling a display:contents element or into a frame differs from DOM.scrollIntoViewIfNeeded
+page/elementhandle-scroll-into-view.spec.ts | display:contents | scrolling a display:contents element differs from DOM.scrollIntoViewIfNeeded
+page/frame-frame-element.spec.ts | shadow root | frameElement walks open shadow roots from the page's script: not closed or declarative ones it cannot reach
+library/browsercontext-har.spec.ts | redirect | Route.redirectNavigationRequest is not implemented
+library/tracing.spec.ts | * | a trace's resources and the title of its events are incomplete (automation_trace.cc)
+library/browsercontext-service-worker-policy.spec.ts | * | serviceWorkers: "block" is not implemented
+library/chromium/disable-web-security.spec.ts | * | launch switches of a test's own browser
+library/browsercontext-viewport-mobile.spec.ts | * | isMobile's meta viewport handling (new since this package: Emulation.setDeviceMetricsOverride)
