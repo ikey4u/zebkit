@@ -66,12 +66,21 @@ def rejected(function, argument):
 
 def renderers():
     """This engine's renderers: descendants of this process."""
-    lines = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,command='], stdout=subprocess.PIPE, text=True, check=True).stdout
     parents, kinds = {}, {}
-    for line in lines.splitlines():
-        pid, ppid, command = line.split(None, 2)
-        parents[int(pid)] = int(ppid)
-        kinds[int(pid)] = command
+    if os.name == 'nt':
+        rows = subprocess.run(['wmic', 'process', 'get', 'CommandLine,ParentProcessId,ProcessId', '/format:csv'],
+                              stdout=subprocess.PIPE, text=True, errors='replace', check=True).stdout
+        for row in rows.splitlines():
+            fields = row.rsplit(',', 2)
+            if len(fields) == 3 and fields[1].isdigit() and fields[2].isdigit():
+                parents[int(fields[2])] = int(fields[1])
+                kinds[int(fields[2])] = fields[0]
+    else:
+        lines = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,command='], stdout=subprocess.PIPE, text=True, check=True).stdout
+        for line in lines.splitlines():
+            pid, ppid, command = line.split(None, 2)
+            parents[int(pid)] = int(ppid)
+            kinds[int(pid)] = command
     def ours(pid):
         while pid in parents and pid > 1:
             if pid == os.getpid():

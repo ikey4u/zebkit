@@ -550,6 +550,7 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     fi
     # Takes the mouse and the keyboard: only when asked.
     if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
+        run win-webauthn python3 "$tests/win_webauthn.py" "$webauthn_host" --no-sandbox
         run win-native-parent "$bin/win-native-parent" --no-sandbox --user-data-dir="$work/profile-win-native-parent"
         finished win-native-parent "the attached view's test"
         run win-native-parent-sandbox "$package/win-native-parent-sandbox" --user-data-dir="$work/profile-win-native-parent-sandbox"

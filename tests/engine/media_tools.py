@@ -87,8 +87,12 @@ def main():
         assert digest(copied) == original
         fails(lambda: remux(source, source, overwrite=True))
         alias = root / 'alias.mp4'
-        os.link(special, alias)
-        fails(lambda: remux(special, alias, overwrite=True))
+        try:
+            os.link(special, alias)
+        except OSError:
+            pass  # A file system without hard links: a VM's shared folder.
+        else:
+            fails(lambda: remux(special, alias, overwrite=True))
         fails(lambda: remux(source, copied, overwrite=True, progress=lambda n, t: n < 8), Cancelled)
         assert digest(copied) == original
         fresh = root / 'cancelled.mkv'

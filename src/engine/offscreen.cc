@@ -102,7 +102,7 @@
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/webauthn.h"
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #endif
@@ -413,10 +413,10 @@ class Offscreen : public content::WebContentsObserver,
   bool mouse_in_popup_ = false;
   // Configure backing displays; macOS overrides the widget snapshot separately.
   void UpdateDisplay();
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
   float own_scale_ = 1;
 #endif
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
   std::optional<display::Display> own_display_;
 #endif
   base::WeakPtrFactory<Offscreen> weak_factory_{this};
@@ -893,12 +893,12 @@ void InstallHooks() {
 }
 
 // Legacy platforms without a per-view backend still share their display scale.
-#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_MAC)
+#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_MAC)
 float g_scale = 1;
 #endif
 
 float Offscreen::scale() const {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
   return own_scale_;
 #else
   return g_scale;
@@ -921,7 +921,7 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
   // page, rather than a menu of the system's.
   std::ignore = web_contents()->ForbidExternalPopupMenus().Release();
 #endif
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
 #else
@@ -943,7 +943,7 @@ Offscreen::~Offscreen() {
   if (main_widget_)
     main_widget_->RemoveObserver(this);
   All().erase(view_);
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
   if (own_display_)
     display::HeadlessScreenManager::Get()->RemoveDisplay(own_display_->id());
 #endif
@@ -984,7 +984,7 @@ gfx::Size Offscreen::PixelSize(content::RenderWidgetHostView* view) const {
 }
 
 void Offscreen::UpdateDisplay() {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
   auto* manager = display::HeadlessScreenManager::Get();
   gfx::Size screen_size = size_;
   screen_size.Enlarge(1024, 1024);
@@ -1041,7 +1041,7 @@ void Offscreen::PlaceWindow() {
   // The page the view's size, whatever the window's frame takes; the
   // display gives it its scale.
   if (content::Shell* shell = view_->shell()) {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
     auto pin = [&] {
       auto* native = web_contents() ? web_contents()->GetNativeView() : nullptr;
       auto* host = native && native->GetRootWindow() ? native->GetRootWindow()->GetHost() : nullptr;
@@ -1056,7 +1056,7 @@ void Offscreen::PlaceWindow() {
     pin();
 #endif
     shell->ResizeWebContentForTests(size_);
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
     pin();
 #endif
   }
@@ -1065,7 +1065,7 @@ void Offscreen::PlaceWindow() {
 void Offscreen::SetSize(const gfx::Size& size, float scale) {
   if (!size.IsEmpty())
     size_ = size;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
   PlaceWindow();

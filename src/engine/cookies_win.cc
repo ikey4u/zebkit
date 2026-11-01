@@ -13,6 +13,7 @@
 #include "base/files/file_util.h"
 #include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/rand_util.h"
 #include "base/task/thread_pool.h"
 #include "components/os_crypt/async/browser/key_provider.h"
@@ -65,8 +66,14 @@ base::expected<Key, KeyError> ReadKey(const base::FilePath& path) {
   }
   auto generated = base::RandBytesAsVector(Key::kAES256GCMKeySize);
   auto protected_key = Protect(generated);
-  if (!protected_key || !base::CreateDirectory(path.DirName()) ||
-      !base::ImportantFileWriter::WriteFileAtomically(path, *protected_key)) {
+  if (!protected_key || !base::CreateDirectory(path.DirName())) {
+    LOG(ERROR) << "Cannot protect the cookie key for " << path;
+    return base::unexpected(KeyError::kTemporarilyUnavailable);
+  }
+  // Not every file system replaces a file atomically (a VM's shared folder does not).
+  if (!base::ImportantFileWriter::WriteFileAtomically(path, *protected_key) &&
+      !base::WriteFile(path, *protected_key)) {
+    LOG(ERROR) << "Cannot write the cookie key to " << path;
     return base::unexpected(KeyError::kTemporarilyUnavailable);
   }
   return Key(generated, os_crypt_async::mojom::Algorithm::kAES256GCM);
@@ -75,9 +82,12 @@ base::expected<Key, KeyError> ReadKey(const base::FilePath& path) {
 class CookieKeyProvider : public os_crypt_async::KeyProvider {
  public:
   void GetKey(KeyCallback callback) override {
-    const base::FilePath directory =
-        base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
-            switches::kContentShellUserDataDir);
+    // The profile the application named, else the engine's default one.
+    const base::CommandLine& command = *base::CommandLine::ForCurrentProcess();
+    base::FilePath directory = command.GetSwitchValuePath("user-data-dir");
+    if (directory.empty())
+      directory = command.GetSwitchValuePath(switches::kContentShellUserDataDir);
+    directory = base::MakeAbsoluteFilePath(directory.empty() ? base::FilePath(FILE_PATH_LITERAL(".")) : directory);
     base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
         base::BindOnce(&ReadKey,
