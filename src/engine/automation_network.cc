@@ -453,6 +453,18 @@ class Loader : public network::mojom::URLLoader,
     value.Set("frame", frame_);
     if (!redirected_from_.empty())
       value.Set("redirectedFrom", redirected_from_);
+    // The body the page gave, as base64 (the protocol's binary).
+    if (request_.request_body) {
+      std::string body;
+      for (const auto& element : *request_.request_body->elements()) {
+        if (element.type() != network::DataElement::Tag::kBytes)
+          continue;
+        const auto bytes = element.As<network::DataElementBytes>().bytes();
+        body.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      }
+      if (!body.empty())
+        value.Set("postData", base::Base64Encode(body));
+    }
     return value;
   }
 

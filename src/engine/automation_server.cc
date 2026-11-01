@@ -670,10 +670,23 @@ std::string Connection::FrameGuid(const std::string& page_guid,
     if (!parent_guid.empty())
       initializer.Set("parentFrame", Ref(parent_guid));
   }
-  initializer.Set("loadStates", base::ListValue());
+  // A new page's about:blank has loaded by the time a client has the page, as
+  // Page.createTarget's does; its events, which come later here, are not sent.
+  const bool loaded = initial && initial->FindBool("initialBlank").value_or(false);
+  base::ListValue load_states;
+  if (loaded) {
+    for (const char* state : {"commit", "domcontentloaded", "load", "networkidle"})
+      load_states.Append(state);
+  }
+  initializer.Set("loadStates", std::move(load_states));
   Object object;
   object.id = frame_id;
   object.page = page_guid;
+  if (loaded) {
+    object.data.Set("initialBlank", true);
+    for (const char* state : {"domcontentloaded", "load", "networkidle"})
+      object.data.Set(std::string("state.") + state, true);
+  }
   Object* page = Find(page_guid);
   object.context = page ? page->context : std::string();
   guid = Create(page && !page->context.empty() ? page->context : page_guid, "Frame",
@@ -704,6 +717,8 @@ std::string Connection::RequestGuid(const std::string& page_guid,
   initializer.Set("headers", headers ? headers->Clone() : base::ListValue());
   initializer.Set("isNavigationRequest",
                   request.FindBool("isNavigationRequest").value_or(!id));
+  if (const std::string* post_data = request.FindString("postData"))
+    initializer.Set("postData", *post_data);
   if (const std::string* from = request.FindString("redirectedFrom")) {
     if (std::string from_guid = Known("request", page_guid, *from); !from_guid.empty())
       initializer.Set("redirectedFrom", Ref(from_guid));
@@ -1016,7 +1031,10 @@ std::string Connection::AdoptPage(const std::string& context_guid,
       const std::string* id = frame.GetDict().FindString("frame");
       if (!id)
         continue;
-      const std::string guid = FrameGuid(reserved, *id, &frame.GetDict());
+      base::DictValue known_frame = frame.GetDict().Clone();
+      if (opener.empty() && !known_frame.FindString("parentFrame"))
+        known_frame.Set("initialBlank", true);
+      const std::string guid = FrameGuid(reserved, *id, &known_frame);
       if (!frame.GetDict().FindString("parentFrame"))
         main_frame = guid;
     }
@@ -1139,6 +1157,12 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string frame = frame_of("frame");
     base::DictValue navigated;
     const std::string* url = params.FindString("url");
+    if (Object* frame_object = Find(frame);
+        frame_object && frame_object->data.FindBool("initialBlank").value_or(false)) {
+      frame_object->data.Remove("initialBlank");
+      if (url && (url->empty() || *url == "about:blank"))
+        return;
+    }
     navigated.Set("url", url ? *url : "");
     const std::string* name = params.FindString("name");
     navigated.Set("name", name ? *name : "");
@@ -1148,7 +1172,16 @@ void Connection::PageEvent(const std::string& page_guid,
         records.console_mark = records.console.size();
         records.errors_mark = records.errors.size();
       }
-      navigated.Set("newDocument", base::DictValue());
+      // Its request, which waitForNavigation() answers with the response of.
+      base::DictValue new_document;
+      if (Object* frame_object = Find(frame)) {
+        if (const std::string* request = frame_object->data.FindString("navigationRequest")) {
+          if (Find(*request))
+            new_document.Set("request", Ref(*request));
+          frame_object->data.Remove("navigationRequest");
+        }
+      }
+      navigated.Set("newDocument", std::move(new_document));
       for (const char* state : {"domcontentloaded", "load", "networkidle"}) {
         if (Object* frame_object = Find(frame))
           frame_object->data.Remove(std::string("state.") + state);
@@ -1252,6 +1285,12 @@ void Connection::PageEvent(const std::string& page_guid,
     Event(context, "dialog", std::move(dialog));
   } else if (event == "Page.request") {
     const std::string request = RequestGuid(page_guid, params);
+    if (params.FindBool("isNavigationRequest").value_or(false)) {
+      if (const std::string* frame_id = params.FindString("frame")) {
+        if (Object* frame_object = Find(Known("frame", page_guid, *frame_id)))
+          frame_object->data.Set("navigationRequest", request);
+      }
+    }
     base::DictValue sent;
     sent.Set("request", Ref(request));
     sent.Set("page", Ref(page_guid));
