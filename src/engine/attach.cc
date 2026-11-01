@@ -403,10 +403,16 @@ class ClickTakesKeyboard : public ui::HWNDMessageFilter {
                      WPARAM w_param,
                      LPARAM l_param,
                      LRESULT* result) override {
-    if (message == WM_MOUSEACTIVATE && !::IsChild(hwnd, ::GetFocus()) &&
-        ::GetFocus() != hwnd) {
+    // The press itself, or through the page's own child window, which keeps its
+    // WM_MOUSEACTIVATE to itself but tells its parent of a press.
+    const UINT child_event = LOWORD(w_param);
+    const bool press =
+        message == WM_MOUSEACTIVATE ||
+        (message == WM_PARENTNOTIFY &&
+         (child_event == WM_LBUTTONDOWN || child_event == WM_RBUTTONDOWN ||
+          child_event == WM_MBUTTONDOWN));
+    if (press && ::GetFocus() != hwnd && !::IsChild(hwnd, ::GetFocus()))
       ::SetFocus(hwnd);
-    }
     return false;
   }
 };

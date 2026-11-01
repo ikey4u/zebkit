@@ -6,6 +6,7 @@ ZEBKIT_TEST_HOLD seconds (for a picture of the screen from outside): what is che
 is that Windows was offered and asked, and the page told when it ended.
 """
 
+import ctypes
 import http.server
 import json
 import os
@@ -31,13 +32,13 @@ class Page(http.server.BaseHTTPRequestHandler):
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-url = f"http://127.0.0.1:{server.server_port}/"
+url = f"http://localhost:{server.server_port}/"
 hold = float(os.environ.get("ZEBKIT_TEST_HOLD", "8"))
 
 CREATE = """navigator.credentials.create({publicKey: {
-  challenge: new Uint8Array(32), rp: {name: 'zebkit', id: '127.0.0.1'},
+  challenge: new Uint8Array(32), rp: {name: 'zebkit', id: 'localhost'},
   user: {id: new Uint8Array(8), name: 'u', displayName: 'u'},
-  pubKeyCredParams: [{type: 'public-key', alg: -7}], timeout: 60000}})
+  pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}], timeout: 60000}})
   .then(() => 'created', e => e.name)"""
 
 failures = []
@@ -71,18 +72,23 @@ def ready():
 
             zebkit.post(cancel, int(hold * 1000))
 
+    view.set_authentication_ui(True)
     view.on_authentication(on_event)
 
     def finished(answer, error=None):
         print("the page's promise:", answer, error, flush=True)
         check(state["chosen"], "Windows' route was offered to the host")
-        check(answer == '"NotAllowedError"', "the page is told when it ends", answer)
+        check(answer == "NotAllowedError", "the page is told when it ends", answer)
         view.close()
         zebkit.quit()
 
     def uvpaa(answer, error=None):
         print("isUserVerifyingPlatformAuthenticatorAvailable:", answer, flush=True)
-        view.evaluate(CREATE, finished)
+        # WebAuthn wants the page focused.
+        set_focus = zebkit._lib.zebkit_view_set_focus
+        set_focus.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        set_focus(view._check(), True)
+        zebkit.post(lambda: view.evaluate(CREATE, finished), 500)
 
     def loaded(event, _url):
         if event == zebkit.LOAD_FINISHED:

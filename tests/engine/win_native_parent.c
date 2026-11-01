@@ -187,6 +187,7 @@ int main(int argc, char **argv) {
 
     foreground(window);
     /* (40,30) is where the view starts in the client area. */
+    check(GetForegroundWindow() == window, "the application's window is the foreground one");
     click(window, 40 + 60, 30 + 60);
     printf("after the click: %s\n", ask("JSON.stringify(log)"));
     check(strstr(answer, "click\\\",60,60,true") != NULL, "a real click reaches the page where it was, trusted");
