@@ -101,7 +101,7 @@ A sandboxed child has no PATH of the parent's: `zebkit.dll` has to be beside the
 ## State
 
 Windows 10 19045, 2 CPUs, VMware's display adapter, on a shared folder, 2026-11-01:
-142 groups of the suite, 18 with failures of their own (`services` too, only because the shared folder alters a file of that name; it passes as `services-test`). 1,837 of the 1,843 checks in groups that print a
+142 groups of the suite, 18 with failures of their own (and `services`, whose program did not arrive intact: see below). 1,837 of the 1,843 checks in groups that print a
 total passed. Node.js's tests (Playwright, MCP, certificates over HTTP/2) did not run.
 
 Pass, among others: `win_smoke`, `win_host` and `win_native_parent` (23 checks, real
@@ -122,6 +122,10 @@ Fail:
 | `win-webauthn` | Windows' route is not offered to the host, and Windows' window has never opened: the code for it is not proven |
 | `cdp-overrides` | clearing a locale override leaves `zh-CN` different from before. Not looked into |
 | `http-auth-bindings`, `runtime-settings-python` | a timeout, and a connection reset. Not looked into |
+
+Copies to the shared folder are not always intact: two copies of `zebkit.dll` had one wrong
+bit each, and one build of the `services` program never arrived intact under any name, and
+could then not be run. Compare SHA-256 after every copy.
 
 ## The network service
 
