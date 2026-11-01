@@ -80,7 +80,7 @@ target macOS; what only a Mac has is Apple's SDK.
    ```
 
 2. On Linux, `scripts/macos-toolchain.sh MacOSX.sdk.tar.xz version.plist`
-   lays them out as a copy of Xcode under `.cache/macos/xcode`, linked in
+   lays them out as a copy of Xcode under `~/.cache/zebkit-sdk/macos/xcode` (`ZEBKIT_SDK_DIR`, `scripts/zsdk-create.sh`), linked in
    as `build/mac_files/xcode_binaries` (Chromium's hermetic Xcode), and
    fetches what DEPS pins for macOS: `mig` for Linux, clang's macOS
    runtime, ANGLE's Metal shader tools.

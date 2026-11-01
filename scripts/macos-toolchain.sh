@@ -15,7 +15,7 @@
 # The rest comes from where Chromium's DEPS says, at the versions it pins,
 # for a checkout that builds macOS on Linux: the Mach interface generator
 # for Linux, clang's runtime library for macOS, and ANGLE's Metal shaders.
-# All of it goes under .cache/macos and is linked into the tree;
+# All of it goes under $SDK_DIR/macos (scripts/lib.sh) and is linked into the tree;
 # scripts/fetch-upstream.sh links it again after a sync.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -26,7 +26,7 @@ version_plist="${2:-}"
     || die "usage: $(basename "$0") <MacOSX.sdk.tar.xz> <Xcode version.plist>"
 [[ -f "$SRC_DIR/DEPS" ]] || die "no upstream tree; run scripts/fetch-upstream.sh first"
 
-macos="$CACHE_DIR/macos"
+macos="$SDK_DIR/macos"
 xcode="$macos/xcode"
 mkdir -p "$macos"
 
@@ -78,5 +78,5 @@ done <<< "$pins"
 log "fetching the Mach interface generator and ANGLE's Metal shaders"
 cipd ensure -root "$macos/cipd" -ensure-file "$ensure" >/dev/null
 
-"$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
+[[ -n "${ZEBKIT_SDK_NO_LINK:-}" ]] || "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
 log "ready to build profiles/slim-macos.gn"

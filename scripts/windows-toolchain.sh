@@ -6,10 +6,11 @@
 #
 #   scripts/windows-toolchain.sh          fetch and lay out what is missing, and link it in
 #   scripts/windows-toolchain.sh --link   only link in what is there
+#   scripts/windows-toolchain.sh --no-link   fetch and lay out, leaving the tree alone
 #
 # Running it means accepting Microsoft's licence terms for Visual Studio and
-# the Windows SDK. Those files stay on this machine, under .cache/windows,
-# which nothing cleans: never in the repository, nor in a package.
+# the Windows SDK. Those files stay on this machine, in $SDK_DIR/windows
+# (scripts/lib.sh), which nothing cleans: never in the repository, nor in a package.
 #
 # From Microsoft, by SHA-256 (scripts/windows-toolchain.py): MSVC and the DIA
 # SDK from Visual Studio's manifest, the SDK and the debuggers from NuGet.
@@ -23,7 +24,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-windows="$CACHE_DIR/windows"
+windows="$SDK_DIR/windows"
 [[ -f "$SRC_DIR/DEPS" ]] || die "no upstream tree; run scripts/fetch-upstream.sh first"
 [[ "$ZEBKIT_HOST" == linux ]] || die "this sets up a Linux machine"
 
@@ -143,6 +144,6 @@ fi
 mkdir -p "$windows"
 python3 -I "$ZEBKIT_ROOT/scripts/windows-toolchain.py" "$windows" "$SRC_DIR"
 fetch_pinned
-link_in
+[[ "${1:-}" == --no-link ]] || link_in
 log "$(tr '\n' ';' < "$windows/VERSIONS")"
 log "ready to build profiles/slim-windows.gn"

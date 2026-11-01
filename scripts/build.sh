@@ -29,7 +29,7 @@ targets=("${@:-zebkit/engine:engine}")
 
 build_dir="$SRC_DIR/out/$profile"
 mkdir -p "$build_dir"
-jobs="${ZEBKIT_JOBS:-20}"
+jobs="${ZEBKIT_JOBS:-12}"
 if [[ "$ZEBKIT_HOST" == macos && -z "${ZEBKIT_JOBS:-}" ]]; then
     # Two GiB per compiler keeps the local build from exhausting memory.
     memory_jobs=$(( $(sysctl -n hw.memsize) / 2147483648 ))

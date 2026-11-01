@@ -44,7 +44,7 @@ esac
 
 # Asked for before the build, which is long, and not after it.
 command -v xz > /dev/null || die "xz is missing; \"mise run r\" brings it (mise.toml), or install it"
-[[ -d "$ZEBKIT_ROOT/.cache/macos/xcode" ]] \
+[[ -d "$SDK_DIR/macos/xcode" ]] \
     || die "the macOS engine needs Apple's SDK laid out first: scripts/macos-toolchain.sh (docs/MACOS.md)"
 
 engines="$ZEBKIT_ROOT/rust/zebkit-rs/engines.txt"

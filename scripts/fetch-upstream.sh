@@ -52,7 +52,7 @@ link_engine() {
     # What scripts/macos-toolchain.sh set up for building macOS on Linux:
     # Apple's SDK in a copy of Xcode, and what DEPS fetches for a macOS
     # checkout.
-    local macos="$CACHE_DIR/macos"
+    local macos="$SDK_DIR/macos"
     if [[ "$ZEBKIT_HOST" == linux && -d "$macos/xcode" ]]; then
         mkdir -p "$SRC_DIR/build/mac_files"
         ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
@@ -64,7 +64,7 @@ link_engine() {
         cp -a -u "$macos/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
     fi
     # What scripts/windows-toolchain.sh set up for building Windows on Linux.
-    if [[ "$ZEBKIT_HOST" == linux && -f "$CACHE_DIR/windows/win_toolchain.json" ]]; then
+    if [[ "$ZEBKIT_HOST" == linux && -f "$SDK_DIR/windows/win_toolchain.json" ]]; then
         "$ZEBKIT_ROOT/scripts/windows-toolchain.sh" --link
     fi
 }

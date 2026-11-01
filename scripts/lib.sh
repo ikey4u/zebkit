@@ -30,6 +30,9 @@ log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 CACHE_DIR="$ZEBKIT_ROOT/.cache"
+# Apple's and Microsoft's SDKs for building on Linux, in one place for every
+# checkout (scripts/zsdk-create.sh): never deleted by a clean.
+SDK_DIR="${ZEBKIT_SDK_DIR:-$HOME/.cache/zebkit-sdk}"
 UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
 # Packages and reports per profile. The builds themselves are in
 # $SRC_DIR/out/<profile>, where Chromium's tools expect them.
@@ -116,7 +119,7 @@ set_target_for_profile() {
         *) ZEBKIT_TARGET=linux ;;
     esac
     if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
-        macos_sdk="$CACHE_DIR/macos/xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        macos_sdk="$SDK_DIR/macos/xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
         llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
         [[ -d "$macos_sdk" && -x "$llvm_bin/clang" ]] || die "no macOS SDK or clang; see scripts/macos-toolchain.sh"
     fi
