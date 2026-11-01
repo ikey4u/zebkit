@@ -1554,8 +1554,10 @@ void Connection::Tracing(int id,
   const std::string title = params.FindString("title") ? *params.FindString("title") : "";
   if (!view) {
     // Kept for the context's first page.
+    // Nothing was recorded without a page: no artifact, which the protocol
+    // allows, rather than an error for a context that has no pages left.
     if (method == "tracingStopChunk" || method == "harExport") {
-      ReplyError(id, "zebkit: the context has no page to trace");
+      Reply(id, base::Value(base::DictValue()));
       return;
     }
     base::DictValue answer;

@@ -23,7 +23,7 @@ export default class Reporter {
     this.counts[outcome] = (this.counts[outcome] || 0) + 1;
     fs.writeSync(this.file, JSON.stringify({
       project,
-      file: path.basename(path.dirname(test.location.file)) === project ? path.basename(file) : path.relative(path.dirname(this.projectDir(test)), test.location.file),
+      file: path.relative(this.projectDir(test), test.location.file),
       title: title.join(' > '),
       line: test.location.line,
       status: result.status,

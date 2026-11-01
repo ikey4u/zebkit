@@ -1,6 +1,40 @@
-# Playwright tests expected to fail on zebkit: "<project/file glob> | <title regex or *> | REASON".
-# Not implemented by the endpoint yet, each observed as "zebkit: no command ...".
-page/frame-frame-element.spec.ts | * | Frame.frameElement is not implemented by the endpoint
-page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented by the endpoint
-page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented by the endpoint
-page/page-drop.spec.ts | * | Frame.drop is not implemented by the endpoint
+# Playwright tests expected to fail on zebkit's endpoint:
+#   <project/file glob> | <title regex or *> | REASON
+# The first entry that matches a failure explains it. A file's entry covers the
+# reason named; a test of that file failing for another reason is hidden by it,
+# so the entries are for what a whole file is about. summarize.py lists entries
+# that matched nothing, which is how a fix is noticed.
+
+# Not this endpoint's to do: a test that starts a browser of its own, or asks
+# for Playwright's own server, which a connected client does not have.
+library/browsertype-launch*.spec.ts | * | launches a browser itself: the endpoint is connected to, not launched (docs/AUTOMATION.md, section 5)
+library/browsercontext-reuse.spec.ts | * | launches a browser itself to reuse its context
+library/proxy.spec.ts | * | launches a browser itself with a proxy
+library/logger.spec.ts | * | launches a browser itself to read its logs
+library/launcher.spec.ts | * | launches a browser itself
+library/chromium/launcher.spec.ts | * | launches a browser itself
+library/chromium/connect-over-cdp.spec.ts | * | launches a browser itself and connects over CDP; zebkit's CDP is covered by tests/engine/cdp_clients.mjs
+library/chromium/extensions.spec.ts | * | launches a persistent browser with extensions, which a content-layer engine does not have
+library/inspector/*.spec.ts | * | the recorder and code generator are Playwright's tools in its own server (docs/AUTOMATION.md, section 5)
+library/debugger.spec.ts | * | page.pause() and the Debugger object need Playwright's own server (docs/AUTOMATION.md, section 5)
+library/trace-viewer*.spec.ts | * | launches Playwright's trace viewer in a browser of its own
+
+# Not implemented by the endpoint.
+library/browsercontext-proxy.spec.ts | * | newContext's proxy option is not implemented
+library/client-certificates.spec.ts | * | newContext's clientCertificates option is not implemented
+library/chromium/session.spec.ts | * | newCDPSession is not implemented over this protocol; CDP has its own endpoint
+library/chromium/oopif.spec.ts | * | uses CDP sessions and launches, not available through this protocol
+library/chromium/chromium.spec.ts | * | service worker targets and CDP sessions, not available through this protocol
+library/chromium/tracing.spec.ts | * | Browser.startTracing is not implemented over this protocol
+library/chromium/css-coverage.spec.ts | * | Page.startCSSCoverage is not implemented
+library/chromium/js-coverage.spec.ts | * | Page.startJSCoverage is not implemented
+library/coverage.spec.ts | * | coverage is not implemented
+library/selectors-register.spec.ts | * | BrowserContext.registerSelectorEngine is not implemented
+library/browsercontext-credentials.spec.ts | * | BrowserContext.credentials* (virtual authenticator) work only with a page, and differ
+library/browsercontext-webauthn.spec.ts | * | BrowserContext.credentials* need a page of the context here
+library/webmcp*.spec.ts | * | Frame.webmcpTools and webmcpCallTool are not implemented
+page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented
+page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented
+page/page-drop.spec.ts | * | Frame.drop is not implemented
+page/locator-any-frame.spec.ts | * | page.frameLocator() with no selector (internal:control=any-frame) is not implemented
+page/selectors-frame.spec.ts | * | frame selectors on handles and without waiting differ from frameSelectors.ts
