@@ -644,8 +644,13 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
     for pdf_host in "$OUT_DIR/examples/gtk-host" "$OUT_DIR/examples/qt-host" \
         "$ZEBKIT_ROOT/examples/native-host/winit/target/debug/zebkit-winit-host"; do
         [[ -x "$pdf_host" ]] || { log "native-host-pdf: no $pdf_host"; continue; }
-        run "native-host-pdf-$(basename "$pdf_host")" python3 -I "$tests/native_host_pdf_scroll.py" "$pdf_host" \
-            "$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)" --no-sandbox --disable-gpu
+        # winit drops XTest's wheel: that host wheels itself.
+        self_driven=()
+        pdf_document="$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)"
+        # It is a debug build, and wheels by itself: the generated document is long enough.
+        [[ "$pdf_host" == *winit* ]] && { self_driven=(--self); pdf_document=generated; }
+        run "native-host-pdf-$(basename "$pdf_host")" python3 -I "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
+            "$pdf_document" --no-sandbox --disable-gpu
     done
 elif [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
     run native-host-appkit-pdf python3 -I "$tests/native_host_pdf_scroll.py" --self "$bin/native-host-appkit" \

@@ -21,8 +21,21 @@ LINE = re.compile(r"pdf-pane: position=(\d+) total=(\d+) page=(\d+) pages=(\d+) 
 
 def self_driven(host, document, switches):
     """On a Mac: the host wheels itself (--scroll-test); the person's input stays theirs."""
-    result = subprocess.run([host, "--scroll-test", "--pdf=" + str(document), *switches],
-                            env=dict(os.environ, NATIVE_HOST_PDF_REPORT="1"), capture_output=True, text=True, timeout=240)
+    # Its own private display where one is needed (Linux); on a Mac it is the person's desktop.
+    display = None
+    env = dict(os.environ, NATIVE_HOST_PDF_REPORT="1")
+    if sys.platform.startswith("linux"):
+        display = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1400x900x24", "-nolisten", "tcp"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        env.update(DISPLAY=":" + display.stdout.readline().strip())
+    with tempfile.TemporaryDirectory(prefix="zebkit-pdf-scroll-") as work:
+        try:
+            result = subprocess.run([host, "--scroll-test", "--pdf=" + str(document), *switches,
+                                     "--user-data-dir=" + work + "/profile"],
+                                    env=env, capture_output=True, text=True, timeout=170)
+        finally:
+            if display:
+                display.terminate()
     lines = [LINE.search(line) for line in result.stdout.splitlines() if "pdf-pane:" in line]
     failures = 0
 
@@ -127,8 +140,11 @@ def main():
             check(len(distinct) >= 4 and max(steps) < 110, "one notch is smooth: several small steps", distinct)
             check(lines()[-1][10] != first[10], "the pixels changed", first[10])
 
+            if failures:
+                print(log_path.read_text(errors="replace")[-800:])
+                raise SystemExit(1)
             # Down through the whole document, as far as it goes.
-            end = time.monotonic() + 180
+            end = time.monotonic() + float(os.environ.get("PDF_SCROLL_LIMIT", 180))
             last = lines()[-1]
             while time.monotonic() < end and int(last[1]) + 900 < int(last[2]) - 1:
                 notch(True, 40, .005)

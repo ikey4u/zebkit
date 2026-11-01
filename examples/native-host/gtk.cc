@@ -126,7 +126,7 @@ struct Host {
     model.redraw = [this] { gtk_widget_queue_draw(web); gtk_widget_queue_draw(pdf); };
     g_signal_connect(pdf, "scroll-event", G_CALLBACK(+[](GtkWidget*, GdkEventScroll* event, void* data) -> gboolean {
       auto& host = *static_cast<Host*>(data);
-      double dx = 0, dy = 0;
+      double dx = 0; double dy = 0;
       // A real wheel gives whole notches, in steps of one; a trackpad less, often.
       if (gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent*>(event), &dx, &dy)) {
         const bool precise = dy != std::floor(dy);

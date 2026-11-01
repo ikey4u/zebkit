@@ -51,6 +51,9 @@ struct App {
     last_press: Option<(offscreen::MouseButton, std::time::Instant)>,
     deadline: Option<Instant>,
     pdf_tick: Option<Instant>,
+    scroll_test: bool,
+    scroll_due: Option<Instant>,
+    scroll_up: u32,
     smoke_due: Option<Instant>,
     smoke: Option<PathBuf>,
     arguments: Vec<std::ffi::OsString>,
@@ -741,6 +744,22 @@ impl ApplicationHandler<Event> for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // winit drops the wheel XTest gives (it is flagged as emulated), so
+        // tests/engine/native_host_pdf_scroll.py has this host wheel itself, through what
+        // a wheel event calls.
+        if self.scroll_test && self.started && self.scroll_due.is_none_or(|due| due <= Instant::now()) {
+            self.scroll_due = Some(Instant::now() + Duration::from_millis(20));
+            if self.pane.position + self.pane.height as f64 >= self.pane.total - 1. {
+                self.scroll_up += 1;
+            }
+            if self.scroll_up >= 60 {
+                self.stop();
+                event_loop.exit();
+                return;
+            }
+            let notches = if self.scroll_up > 0 { -1. } else { 3. };
+            self.scroll_pdf(|pane| pane.wheel_notches(notches));
+        }
         if self.pdf_tick.is_some_and(|due| due <= Instant::now()) {
             self.pane.tick();
             self.pdf_tick = self
@@ -777,7 +796,7 @@ impl ApplicationHandler<Event> for App {
             event_loop.exit();
             return;
         }
-        let next = [self.deadline, self.smoke_due, self.pdf_tick]
+        let next = [self.deadline, self.smoke_due, self.pdf_tick, self.scroll_due]
             .into_iter()
             .flatten()
             .min();
@@ -802,7 +821,9 @@ fn main() {
         pdf: None,
         pane: PdfPane::default(),
         pdf_tick: None,
-        document: None,
+        scroll_test: arguments.iter().any(|a| a == "--scroll-test"),
+        scroll_due: None,
+        scroll_up: 0,
         web: None,
         popup: None,
         popup_shown: false,
