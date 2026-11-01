@@ -111,4 +111,4 @@ On Windows 10 19045, one CPU, VMware's display adapter, 2026-11-01:
   on Windows; printing through the system's dialog (printing to PDF runs); real input in
   attached views.
 - The size-trained inliner with `lld-link`. `zebkit.dll` is 185.0 MiB, and the package
-  248.9 MiB, of which `zebkit_sandbox.lib` is 49.5 MiB and is not shipped with an application.
+  260.0 MiB, of which `zebkit_sandbox.lib` is 49.5 MiB and is not shipped with an application.
