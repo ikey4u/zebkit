@@ -215,6 +215,12 @@ again alone.
 | A view on an `NSView` (`tests/engine/native_parent_mac.m`) | 43 of 43 with pixels, hardware compositing |
 | AppKit host (`examples/native-host/appkit.mm`) | the page's and the PDF's pixels; clean shutdown |
 
+Run again on 2026-11-01 with PDF in pages and the suites' fixes, 137 tests: every one passes (1,800 checks counted
+from what prints a count; `pdf-in-page` 49 of 49, a 756-page document at 270 MiB in its renderer; the AppKit host's PDF
+pane through a 40-page document, wheel events AppKit makes, to its end and back). Library 139,733,664 to 140,114,288
+bytes, +0.27%. The clipboard is the person's, so copying from a PDF is not checked on a Mac. The AppKit pane rendered
+a page of a long real document in about two seconds in one measure, not understood.
+
 What those tests found, now fixed:
 
 - **Every `zebkit_init()` crashed.** Content's responsiveness watcher sends a message
@@ -242,7 +248,10 @@ Not run, or not fully:
   and do in Chrome 156. Local Network privacy is suspected, for a program with no
   bundle and no grant; it is not confirmed, and may be a real gap.
 - **The Playwright client** (`playwright_connect.mjs`): playwright-core was not on the Mac.
-- **The sandbox:** nearly all of the suite runs with `--no-sandbox`.
+- **The sandbox:** nearly all of the suite runs with `--no-sandbox`. Without it, on 2026-11-01, helpers crash at
+  their start and the engine says "the sandbox could not be entered", on this batch's engine and on the one before
+  it (`base::apple::SetOverrideFrameworkBundlePath` called from `SetUpBundle` under `zebkit_helper_main`), in the
+  test bundle, signed ad hoc. So a PDF has not been seen parsing inside the seatbelt: a real gap, not looked into.
 
 Measured with the fixes: `Zebkit` and the package are the same size to the byte
 (139,733,664 and 157,340,514 bytes). Page speed on the GPU was not measured.

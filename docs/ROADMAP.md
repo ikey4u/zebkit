@@ -235,7 +235,7 @@ in `examples/native-host` (Done table). What is left:
   select, find, follow links, fill forms and print) and an extension (`chrome/browser/resources/pdf`)
   with its scrolling and toolbar, which needs the extensions system and WebUI that `slim` removed. So
   the plugin is Chromium's, in a sandboxed renderer: a dedicated `--pdf-renderer` one without JIT as
-  Chrome's, and the browser process never parses a page's PDF; and the part the extension does is a small
+  Chrome's, and the browser process never parses a page's PDF (sandboxed in principle: this build machine has no user namespaces and the Mac's seatbelt does not start in the test bundle, `docs/MACOS.md`, so it has been run with `--no-sandbox`); and the part the extension does is a small
   viewer of zebkit's (`src/engine/pdf_viewer.js`, 12 KB of script), in an isolated world and a closed shadow
   root of Chrome's stub document, so the page sees what Chrome's page sees. A viewer of zebkit's over
   `zebkit.pdf` would be smaller by the plugin's code but would parse in the browser process, or need
