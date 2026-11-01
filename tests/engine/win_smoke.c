@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zebkit/page.h>
 #include <zebkit/zebkit.h>
 #ifdef ZEBKIT_TEST_SANDBOX
 #include <zebkit/win_sandbox.h>
@@ -24,6 +25,16 @@ static const char page[] =
     "div{position:fixed;left:50%25;top:0;right:0;bottom:0;background:%230000ff}"
     "</style><div></div>";
 
+static void printed(zebkit_view *view, const uint8_t *pdf, size_t size, const char *error, void *data) {
+    (void)data;
+    printf("print to PDF: %zu bytes, starts %.4s, error %s\n", size, pdf ? (const char *)pdf : "", error ? error : "none");
+    if (!pdf || size < 100 || memcmp(pdf, "%PDF", 4))
+        result = 1;
+    fflush(stdout);
+    zebkit_view_close(view);
+    zebkit_quit();
+}
+
 static void captured(zebkit_view *view, const uint8_t *png, size_t size, const char *error, void *data) {
     (void)data;
     printf("capture: %zu bytes, error %s\n", size, error ? error : "none");
@@ -37,8 +48,7 @@ static void captured(zebkit_view *view, const uint8_t *png, size_t size, const c
         }
     }
     fflush(stdout);
-    zebkit_view_close(view);
-    zebkit_quit();
+    zebkit_view_print_to_pdf(view, NULL, printed, NULL);
 }
 
 static void evaluated(zebkit_view *view, const char *json, const char *error, void *data) {
