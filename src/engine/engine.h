@@ -281,6 +281,8 @@ base::FilePath HelperPath(const base::FilePath& library);
 #if BUILDFLAG(IS_WIN)
 // engine_win.cc: the user's per-machine application data directory, in UTF-8.
 std::string DefaultConfigDirectory();
+// Whether the executable called zebkit_win_startup(), with its sandbox.
+bool HasExecutableSandbox();
 // Windows' ContentMain takes no arguments and reads the process's command
 // line: the engine's arguments become that, and params get the module and the
 // sandbox.

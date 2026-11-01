@@ -294,6 +294,8 @@ LIBRARIES = {
     },
     "ffmpeg": {
         "title": "FFmpeg",
+        # libavutil/common.h: #ifndef av_log2.
+        "declare_if_macro": ["int av_log2(unsigned v);"],
         "version": ("libavutil/ffversion.h", r'#define FFMPEG_VERSION "([^"]+)"'),
         # zebkit's configuration of FFmpeg (src/ffmpeg, scripts/ffmpeg-config.sh),
         # for the system the engine is built for: "{config}" is filled in.
@@ -549,6 +551,8 @@ def generate(name, spec, args):
     if TARGET == "win":
         # MSVC's cl has no such pragma; a macro does for any compiler there.
         lines += [f"#define {symbol} {prefix}{function}" for function, symbol in functions]
+        # A declaration the library's header leaves out when the name is a macro.
+        lines += spec.get("declare_if_macro", [])
     else:
         lines += [f"#pragma redefine_extname {symbol} {mangle}{prefix}{function}" for function, symbol in functions]
     lines += [

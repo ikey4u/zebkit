@@ -67,6 +67,9 @@
 #include "sandbox/linux/services/credentials.h"
 #include "sandbox/policy/switches.h"
 #endif
+#if BUILDFLAG(IS_WIN)
+#include "sandbox/policy/switches.h"
+#endif
 #include "components/embedder_support/switches.h"
 #include "net/http/http_util.h"
 #include "net/proxy_resolution/proxy_config.h"
@@ -375,6 +378,27 @@ bool CheckSandbox(const base::CommandLine& command) {
 }
 #endif  // BUILDFLAG(IS_LINUX)
 
+#if BUILDFLAG(IS_WIN)
+// The sandbox on Windows takes a call from the application's executable
+// (<zebkit/win_sandbox.h>). Never without one unless told.
+bool CheckSandbox(const base::CommandLine& command) {
+  if (command.HasSwitch(sandbox::policy::switches::kNoSandbox)) {
+    fprintf(stderr, "zebkit: running pages without the sandbox (--no-sandbox)\n");
+    LOG(WARNING) << "Running pages without the sandbox (--no-sandbox)";
+    return true;
+  }
+  if (HasExecutableSandbox())
+    return true;
+  fprintf(stderr,
+          "zebkit: no sandbox for the page processes, and pages do not run without one "
+          "unless told to.\n"
+          "  Link zebkit_sandbox.lib and call zebkit_win_startup() first in main() "
+          "(<zebkit/win_sandbox.h>), or pass --no-sandbox where something else isolates "
+          "the process, and only for pages you trust that much.\n");
+  return false;
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 std::optional<int> MainDelegate::BasicStartupComplete() {
   // Chromium finds its data files beside the executable, which for an
   // application is not where the engine is. (On macOS, in the framework
@@ -399,7 +423,7 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
 #endif
   auto result = content::ShellMainDelegate::BasicStartupComplete();
   const auto& command = *base::CommandLine::ForCurrentProcess();
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   // In the browser process: never without a sandbox unless told, and a refusal
   // that says what to do, ahead of Chromium's fatal message.
   if (!result && !command.HasSwitch("type") && !CheckSandbox(command))

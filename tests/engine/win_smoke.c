@@ -10,6 +10,9 @@
 #include <string.h>
 
 #include <zebkit/zebkit.h>
+#ifdef ZEBKIT_TEST_SANDBOX
+#include <zebkit/win_sandbox.h>
+#endif
 
 static const char *picture = "win_smoke.png";
 static int result = 1;
@@ -77,6 +80,13 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+#ifdef ZEBKIT_TEST_SANDBOX
+    /* Built with zebkit_sandbox.lib: this executable is the engine's sandboxed
+     * children too. */
+    int child_code;
+    if (zebkit_win_startup(&child_code))
+        return child_code;
+#endif
     char **engine = calloc((size_t)argc + 1, sizeof(char *));
     int count = 0;
     for (int i = 0; i < argc; ++i) {

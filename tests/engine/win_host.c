@@ -9,12 +9,17 @@
 #include <windows.h>
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "advapi32.lib")
+#include <tlhelp32.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <zebkit/zebkit.h>
+#ifdef ZEBKIT_TEST_SANDBOX
+#include <zebkit/win_sandbox.h>
+#endif
 
 static const char page[] =
     "data:text/html,<!doctype html><title>host</title><style>"
@@ -50,6 +55,40 @@ static COLORREF pixel(int x, int y) {
     return color;
 }
 
+/* The engine's children and how far each is shut in: its token's integrity
+ * level, and whether a job holds it. Returns the lowest level. */
+static DWORD children(void) {
+    DWORD lowest = 0xffffffff;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32W entry = {sizeof(entry)};
+    for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ParentProcessID != GetCurrentProcessId())
+            continue;
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+        HANDLE token = NULL;
+        BYTE buffer[256];
+        DWORD size = 0, level = 0xffffffff;
+        BOOL job = FALSE;
+        if (process && OpenProcessToken(process, TOKEN_QUERY, &token) &&
+            GetTokenInformation(token, TokenIntegrityLevel, buffer, sizeof(buffer), &size)) {
+            PSID sid = ((TOKEN_MANDATORY_LABEL *)buffer)->Label.Sid;
+            level = *GetSidSubAuthority(sid, *GetSidSubAuthorityCount(sid) - 1);
+        }
+        if (process)
+            IsProcessInJob(process, NULL, &job);
+        printf("child %lu %ls: integrity 0x%lx, in a job %d\n", entry.th32ProcessID, entry.szExeFile, level, (int)job);
+        if (level < lowest)
+            lowest = level;
+        if (token)
+            CloseHandle(token);
+        if (process)
+            CloseHandle(process);
+    }
+    CloseHandle(snapshot);
+    fflush(stdout);
+    return lowest;
+}
+
 static LRESULT CALLBACK proc(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_SIZE && view)
         zebkit_view_set_bounds(view, 10, 10, LOWORD(l) - 20, HIWORD(l) - 20);
@@ -80,6 +119,13 @@ static void loaded(zebkit_view *v, zebkit_load_event event, const char *url, voi
 }
 
 int main(int argc, char **argv) {
+#ifdef ZEBKIT_TEST_SANDBOX
+    /* Built with zebkit_sandbox.lib: this executable is the engine's sandboxed
+     * children too. */
+    int child_code;
+    if (zebkit_win_startup(&child_code))
+        return child_code;
+#endif
     wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     check(zebkit_set_wakeup(wakeup, NULL), "zebkit_set_wakeup() before the engine");
 
@@ -140,6 +186,14 @@ int main(int argc, char **argv) {
           "red on the screen, inside the application's window");
     check(GetRValue(right) <= 5 && GetGValue(right) <= 5 && GetBValue(right) >= 250,
           "blue on the screen, inside the application's window");
+
+    const DWORD lowest = children();
+#ifdef ZEBKIT_TEST_SANDBOX
+    /* A renderer is at untrusted, the lowest there is. */
+    check(lowest == 0, "a child at untrusted integrity: the sandbox is on");
+#else
+    (void)lowest;
+#endif
 
     zebkit_view_close(view);
     view = NULL;

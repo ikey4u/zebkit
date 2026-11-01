@@ -1,0 +1,11 @@
+# zebkit-base: slim-windows
+#
+# zebkit_sandbox.lib, which an application's executable links on Windows
+# (<zebkit/win_sandbox.h>): plain objects for any linker, not the bitcode of
+# link-time optimization.
+#
+#   scripts/build.sh slim-windows-sandbox zebkit/engine:zebkit_sandbox
+
+use_thin_lto = false
+is_cfi = false
+chrome_pgo_phase = 0

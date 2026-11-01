@@ -513,6 +513,41 @@ if (is_win) {
     ]
   }
 
+  # The sandbox, for the application's executable (<zebkit/win_sandbox.h>). An
+  # application's linker need not read LLVM's bitcode: this is built in a profile
+  # of its own without link-time optimization (profiles/slim-windows-sandbox.gn,
+  # docs/WINDOWS.md).
+  static_library("zebkit_sandbox_objects") {
+    complete_static_lib = true
+    sources = [
+      "include/zebkit/win_sandbox.h",
+      "win/sandbox_startup.cc",
+    ]
+    deps = [
+      # Chromium's C++ library, which GN gives only to what it links.
+      "//build/config:executable_deps",
+      "//sandbox/win:sandbox",
+    ]
+  }
+
+  action("zebkit_sandbox") {
+    script = "win/flatten_lib.py"
+    deps = [ ":zebkit_sandbox_objects" ]
+    _objects = "$target_out_dir/zebkit_sandbox_objects.lib"
+    inputs = [ _objects ]
+    outputs = [ "$root_out_dir/zebkit_sandbox.lib" ]
+    args = [
+      "--ar",
+      rebase_path("$clang_base_path/bin/llvm-ar", root_build_dir),
+      "--lld-link",
+      rebase_path("$clang_base_path/bin/lld-link", root_build_dir),
+      "--in",
+      rebase_path(_objects, root_build_dir),
+      "--out",
+      rebase_path("$root_out_dir/zebkit_sandbox.lib", root_build_dir),
+    ]
+  }
+
   group("engine") {
     testonly = true
     deps = [

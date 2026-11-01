@@ -26,6 +26,9 @@ namespace zebkit {
 
 namespace {
 
+// The executable's own sandbox (zebkit_win_startup()), or none.
+sandbox::SandboxInterfaceInfo* g_executable_sandbox = nullptr;
+
 // argv from the host's main() is in the system's code page, from a host that
 // knows better in UTF-8, which is what the C API speaks everywhere.
 std::wstring ArgumentToWide(const char* argument) {
@@ -52,7 +55,20 @@ base::FilePath LibraryDirectory() {
   return base::FilePath(path).DirName();
 }
 
+bool HasExecutableSandbox() {
+  return g_executable_sandbox != nullptr;
+}
+
 base::FilePath HelperPath(const base::FilePath& library) {
+  // The sandbox needs its children to be this same executable.
+  if (g_executable_sandbox) {
+    std::wstring path(32768, L'\0');
+    const DWORD length = ::GetModuleFileNameW(nullptr, path.data(), path.size());
+    if (length && length != path.size()) {
+      path.resize(length);
+      return base::FilePath(path);
+    }
+  }
   return library.Append(FILE_PATH_LITERAL("zebkit-helper.exe"));
 }
 
@@ -73,11 +89,21 @@ void SetUpWindowsMainParams(int argc, char** argv, content::ContentMainParams* p
     base::CommandLine::ForCurrentProcess()->InitFromArgv(wide);
   }
   params->instance = ::GetModuleHandleW(nullptr);
+  if (g_executable_sandbox) {
+    params->sandbox_info = g_executable_sandbox;
+    return;
+  }
   // The library's own copy of the sandbox's services, which works only with
-  // --no-sandbox: the broker and its targets have to be one image.
+  // --no-sandbox: the broker and its targets have to be one image
+  // (MainDelegate::BasicStartupComplete() refuses otherwise).
   static base::NoDestructor<sandbox::SandboxInterfaceInfo> sandbox_info;
   content::InitializeSandboxInfo(sandbox_info.get());
   params->sandbox_info = sandbox_info.get();
 }
 
 }  // namespace zebkit
+
+extern "C" ZEBKIT_API void zebkit_win_set_sandbox(void* sandbox_interface_info) {
+  zebkit::g_executable_sandbox =
+      static_cast<sandbox::SandboxInterfaceInfo*>(sandbox_interface_info);
+}
