@@ -108,7 +108,7 @@ class DesktopKeyProvider : public os_crypt_async::KeyProvider {
 #endif
 }  // namespace
 
-#if !BUILDFLAG(IS_MAC)
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
 std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider() {
 #if defined(ZEBKIT_COOKIES_USE_DBUS)
   return std::make_unique<DesktopKeyProvider>();

@@ -66,7 +66,7 @@ static void ready(void *data) {
     (void)data;
     printf("engine %s, %s; headless %d\n", zebkit_version(), zebkit_engine_version(), (int)zebkit_is_headless());
     fflush(stdout);
-    zebkit_view *view = zebkit_view_new(NULL, 800, 600);
+    zebkit_view *view = zebkit_view_new(page, 800, 600);
     printf("view %p\n", (void *)view);
     fflush(stdout);
     if (!view) {
@@ -74,7 +74,6 @@ static void ready(void *data) {
         return;
     }
     zebkit_view_on_load(view, loaded, NULL);
-    zebkit_view_load_url(view, page);
 }
 
 int main(int argc, char **argv) {

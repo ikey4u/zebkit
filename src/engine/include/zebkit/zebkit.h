@@ -302,7 +302,7 @@ ZEBKIT_API void zebkit_view_set_visible(zebkit_view *view, bool visible);
  * for a parent that is not there, and where a window cannot be put in another:
  * on Wayland, under --headless, and for an off-screen view. Those draw the page
  * in the application's window with off-screen views (<zebkit/offscreen.h>),
- * which work everywhere. Not available on Windows yet.
+ * which work everywhere. On Windows @native_parent is an HWND.
  */
 ZEBKIT_API bool zebkit_view_attach_native(zebkit_view *view, uintptr_t native_parent, int x, int y, int width, int height, char **error);
 
