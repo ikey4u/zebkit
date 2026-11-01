@@ -153,7 +153,7 @@ Temporary publication never overwrites an existing key.
 The default file is `<profile>/Secrets/cookie.key`. Its 53-byte version-1
 format (`Zebkit Cookie Key v1` plus newline and 32 key bytes), `zbh`
 encryption tag and `Network/Cookies.host` database are unchanged from the
-previous host implementation. Existing the host file-backed sign-ins therefore
+previous host implementation. Existing file-backed sign-ins therefore
 survive the move into Zebkit without key rotation or another sign-in.
 The host now makes one `set_cookie_storage(File, None)` call and contains no
 key-file implementation. Source/header detection only enables that call

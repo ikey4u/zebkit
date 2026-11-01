@@ -28,7 +28,7 @@ verification method can be selected.
 | --- | --- | --- |
 | C/Rust/Python events and actions | Shared implementation | Shared implementation |
 | Chromium FIDO, USB PIN/account selection, phone hybrid transport | Shared implementation | Shared implementation |
-| The host embedded panel and private transport | Shared implementation | Shared implementation |
+| Embedded panel and private transport | Shared implementation | Shared implementation |
 | Default presentation | Cocoa sheets | Chromium views for visible desktop views |
 | OS platform passkeys | iCloud, subject to Apple's entitlement/permission | No built-in platform credential store integration |
 
@@ -164,7 +164,7 @@ Rust exposes `view.on_authentication()`, `view.authentication_action()` and
 `view.clear_authentication_handler()`; JSON parsing is the host's choice.
 Python exposes equivalent methods using dictionaries.
 
-## the host integration
+## Host integration
 
 The host's helper sends events and receives operations on the inherited private
 frames socket, negotiated as wire version 3. PIN/QR material is not sent over
@@ -236,7 +236,7 @@ physical-device authentication or real Google sign-in.
 
 ### Verified on 2026-10-27
 
-The macOS arm64 engine and optimized the host desktop/helper builds passed.
+The macOS arm64 engine and optimized host desktop/helper builds passed.
 The full engine regression suite passed, including rendering, idle frames,
 page/media/browser behavior and encrypted cookie persistence. Rust workspace
 and documentation tests passed. Final focused tests also covered an ordinary
@@ -252,7 +252,7 @@ sandbox enabled. The host's real helper/private-channel integration passed in a 
 no-sandbox fixture. Its 43 browser-client unit tests and the authentication
 state/QR tests passed, including fresh requests after a helper restart.
 
-The actual the host component rendered five states at four window sizes in both
+The host's actual component rendered five states at four window sizes in both
 themes (40 checks). Tests decoded the rendered QR screenshots, and checked
 that Cancel remained visible in short panes. Its action footer stays outside
 the scrolling body. PIN fields have explicit names and password semantics;
@@ -283,8 +283,8 @@ The slim optimization profiles are unchanged; no full Chrome layer or idle
 polling was added. The packaged engine remains about 216 MiB. This is not a
 new comparative performance benchmark.
 
-The optimized local test application is `dist/authentication/the host.app`.
-Quit the running the host before opening it because it uses the normal the host
+The optimized local test application is `dist/authentication/Host.app`.
+Quit the running host before opening it because it uses the normal host
 profile. The installed application was not overwritten. The native profile
 package and `dist/release` contain the final engine. See the
 [validation record](reports/passkeys-host-ui.json) for artifact hashes,

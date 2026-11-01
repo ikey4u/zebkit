@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
   auto file = profile / "Secrets/cookie.key";
   assert(Read(file).size() == 53);
   assert(LoadOrCreate(profile, {}, NoRandom, key, error)); assert(key == previous);
-  // An already deployed the host file uses the exact same format.
+  // An already deployed host's file uses the exact same format.
   auto legacy = root / "legacy";
   assert(LoadOrCreate(legacy, {}, RandomBytes, key, error));
   std::string existing = "Zebkit Cookie Key v1\n" + std::string(32, 'q');
