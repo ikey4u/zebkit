@@ -657,6 +657,7 @@ pp('accessibility: aria selectors', async ({ page }) => {
 });
 pp('pages: several, popups', async ({ page, context }) => {
   const second = await context.newPage();
+  await page.bringToFront();
   await page.goto(`${origin}/popup.html`);
   const popup = new Promise(resolve => page.once('popup', resolve));
   await page.click('#l');

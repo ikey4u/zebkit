@@ -5,6 +5,8 @@
 # so the entries are for what a whole file is about. summarize.py lists entries
 # that matched nothing, which is how a fix is noticed.
 
+* | error:browserType\.launch.*Executable doesn't exist | starts a browser of its own, which this run hides so that it cannot pass without the engine: the endpoint is connected to, not launched
+
 # Not this endpoint's to do: a test that starts a browser of its own, or asks
 # for Playwright's own server, which a connected client does not have.
 library/browsertype-launch*.spec.ts | * | launches a browser itself: the endpoint is connected to, not launched (docs/AUTOMATION.md, section 5)

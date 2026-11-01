@@ -4,8 +4,9 @@
   summarize.py <results.jsonl> <expected-failures.txt> <summary.txt>
       [--reference <Chrome's results.jsonl>] [--exits <engine-exits.log>]
 
-An entry of the expected list is "<file glob> | <title regex or *> | REASON";
-the first that matches a failure explains it. Exits 1 when a failure is
+An entry of the expected list is "<file glob> | <title regex, error:<regex> for
+the error's first line, or *> | REASON"; the first that matches a failure
+explains it. Exits 1 when a failure is
 explained by neither the list nor failing on Chrome as well.
 """
 
@@ -46,14 +47,25 @@ with open(args.expected) as lines:
         if len(parts) != 3 or not parts[2]:
             sys.exit(f"{args.expected}:{number}: needs <file> | <title> | REASON")
         entries.append(
-            {"file": parts[0], "title": None if parts[1] == "*" else re.compile(parts[1]), "reason": parts[2], "hits": 0}
+            {
+                "file": parts[0],
+                "title": None if parts[1] == "*" or parts[1].startswith("error:") else re.compile(parts[1]),
+                "error": re.compile(parts[1][6:]) if parts[1].startswith("error:") else None,
+                "reason": parts[2],
+                "hits": 0,
+            }
         )
 
 
 def explain(test):
     name = f"{test['project']}/{test['file']}"
     for entry in entries:
-        if fnmatch.fnmatch(name, entry["file"]) and (not entry["title"] or entry["title"].search(test["title"])):
+        first_line = (test.get("error") or "").split("\n")[0]
+        if (
+            fnmatch.fnmatch(name, entry["file"])
+            and (not entry["title"] or entry["title"].search(test["title"]))
+            and (not entry["error"] or entry["error"].search(first_line))
+        ):
             entry["hits"] += 1
             return entry["reason"]
     return None
@@ -109,7 +121,7 @@ for reason, tests in sorted(by_reason.items(), key=lambda item: -len(item[1])):
 stale = [e for e in entries if not e["hits"]]
 if stale:
     lines += ["", "Listed, matching no failure in this run:"]
-    lines += [f"  {e['file']} | {e['title'].pattern if e['title'] else '*'}" for e in stale]
+    lines += [f"  {e['file']} | {e['title'].pattern if e['title'] else e['error'].pattern if e['error'] else '*'}" for e in stale]
 lines += ["", f"Unexplained failures: {len(unexplained)}"]
 for test in unexplained:
     first = (test.get("error") or test["status"]).split("\n")[0][:200]
