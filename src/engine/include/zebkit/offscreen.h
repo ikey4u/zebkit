@@ -88,6 +88,8 @@ typedef enum {
     ZEBKIT_FRAME_IOSURFACE = 2,
     /* A dmabuf (Linux): @plane_count planes of @fds, @strides, @offsets, with @modifier. */
     ZEBKIT_FRAME_DMABUF = 3,
+    /* A D3D11 texture shared by a handle, on Windows. */
+    ZEBKIT_FRAME_D3D11 = 4,
 } zebkit_frame_kind;
 
 typedef enum {
@@ -166,7 +168,10 @@ typedef struct zebkit_frame {
     /* ZEBKIT_FRAME_SHARED_MEMORY on Windows, where @fd is -1: the file
      * mapping (a HANDLE), the engine's until the frame is released:
      * MapViewOfFile(@size bytes at 0), the pixels at @offset, or
-     * DuplicateHandle() into another process. NULL elsewhere. */
+     * DuplicateHandle() into another process.
+     * ZEBKIT_FRAME_D3D11: an NT handle to a shared BGRA texture, the engine's
+     * until the frame is released: ID3D11Device1::OpenSharedResource1(). NULL
+     * elsewhere. */
     void *handle;
 } zebkit_frame;
 
@@ -197,8 +202,8 @@ typedef enum {
     ZEBKIT_BUFFERS_AUTO = 0,
     /* Pixels in shared memory, everywhere. */
     ZEBKIT_BUFFERS_SHARED_MEMORY = 1,
-    /* GPU buffers: IOSurfaces, dmabufs on Linux where the GPU makes them
-     * (shared memory where it does not). */
+    /* GPU buffers: IOSurfaces, dmabufs on Linux where the GPU makes them,
+     * D3D11 textures on Windows (shared memory where it does not). */
     ZEBKIT_BUFFERS_GPU = 2,
 } zebkit_frame_buffers;
 

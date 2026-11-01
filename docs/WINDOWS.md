@@ -68,7 +68,9 @@ empty there (`src/engine/win/sandbox_startup.cc`).
 ## What differs
 
 - **Frames.** `zebkit_frame.handle` is a file mapping's `HANDLE`, and `fd` is -1.
-  GPU textures (D3D11) are not done: an off-screen view's frames are shared memory.
+  `ZEBKIT_BUFFERS_GPU` asks for `ZEBKIT_FRAME_D3D11`, an NT handle to a shared texture.
+  That path has never run: the test machine's display adapter has no D3D shared images,
+  so frames stay in shared memory there (without the check the GPU process dies).
 - **A view in the application's window.** `zebkit_view_attach_native()` takes an
   `HWND`.
 - **The host's loop.** `zebkit_set_wakeup()`, `zebkit_init()`, `zebkit_pump()` under the
@@ -99,10 +101,14 @@ On Windows 10 19045, one CPU, VMware's display adapter, 2026-11-01:
 | `win_offscreen`: `--headless`, frames | pixels through `frame->pixels` and the file mapping |
 | `services` 25 of 25, `pdf` 99 of 99, `scheme` 11 of 11, `mode`, `edit_commands`, `automation_reentry` | pass, with `--no-sandbox` |
 | `canvas` | 50 of 57, run without the Ahem font it is given by `engine-test.sh` |
+| Rust: `codecs`, `embedded` (host loop, popup hook, shutdown) | pass, with `--no-sandbox`; linked on Linux with `lld-link` |
 
 ## Left
 
-- The rest of `scripts/engine-test.sh`: ported tests, Python and Rust bindings.
-- D3D11 textures for off-screen frames; WebAuthn's and printing's system interfaces;
-  `zebkit.ui` on Windows; Windows' own input in attached views.
-- The size-trained inliner with `lld-link`; size against `slim`'s.
+- The rest of `scripts/engine-test.sh`: ported tests. Python's loader is untested: the
+  test machine has no Python. Rust needs `+crt-static` and a call for the sandbox.
+- D3D11 frames on a machine with a real GPU; WebAuthn's system interface; `zebkit.ui`
+  on Windows; printing through the system's dialog (printing to PDF runs); real input in
+  attached views.
+- The size-trained inliner with `lld-link`. `zebkit.dll` is 185.0 MiB, and the package
+  248.9 MiB, of which `zebkit_sandbox.lib` is 49.5 MiB and is not shipped with an application.

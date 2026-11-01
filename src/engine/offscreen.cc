@@ -65,6 +65,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/embedder_widget_hooks.h"
 #include "content/public/browser/gpu_data_manager.h"
+#include "gpu/config/gpu_info.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
@@ -449,6 +450,13 @@ void FrameStream::Start(content::RenderWidgetHostView* view,
   // buffers to ask for: viz would stop on the request.
   if (!content::GpuDataManager::GetInstance()->HardwareAccelerationEnabled())
     gpu = false;
+#if BUILDFLAG(IS_WIN)
+  // viz asks for a shared texture the GPU process cannot make where D3D's shared
+  // images are not there, as under VMware's display adapter, and the GPU process
+  // dies on it.
+  if (!content::GpuDataManager::GetInstance()->GetGPUInfo().shared_image_d3d)
+    gpu = false;
+#endif
 #if BUILDFLAG(IS_MAC)
   // IOSurfaces by default: the GPU's read back, copied into surfaces of
   // the engine's. viz's own IOSurfaces (ZEBKIT_BUFFERS_GPU) come only for
@@ -579,6 +587,17 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
         buffer->gpu = std::move(handle);
         break;
       }
+#elif BUILDFLAG(IS_WIN)
+      case gfx::DXGI_SHARED_HANDLE: {
+        const gfx::DXGIHandle& dxgi = handle.dxgi_handle();
+        if (!dxgi.IsValid())
+          return nullptr;
+        key = "dxgi:" + dxgi.token().ToString();
+        if (auto it = buffers_.find(key); it != buffers_.end())
+          return it->second;
+        buffer->gpu = std::move(handle);
+        break;
+      }
 #elif BUILDFLAG(IS_OZONE)
       case gfx::NATIVE_PIXMAP: {
         const gfx::NativePixmapHandle& pixmap = handle.native_pixmap_handle();
@@ -687,6 +706,11 @@ void FrameStream::OnFrameCaptured(
   else if (buffer->gpu.type == gfx::IO_SURFACE_BUFFER) {
     out.kind = ZEBKIT_FRAME_IOSURFACE;
     out.iosurface = buffer->gpu.io_surface().get();
+  }
+#elif BUILDFLAG(IS_WIN)
+  else if (buffer->gpu.type == gfx::DXGI_SHARED_HANDLE) {
+    out.kind = ZEBKIT_FRAME_D3D11;
+    out.handle = buffer->gpu.dxgi_handle().buffer_handle();
   }
 #elif BUILDFLAG(IS_OZONE)
   else if (buffer->gpu.type == gfx::NATIVE_PIXMAP) {
