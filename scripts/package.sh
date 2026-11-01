@@ -93,13 +93,16 @@ if grep -q '^target_os = "win"' <<< "$(profile_args "$profile")"; then
         snapshot_blob.bin      `# V8's startup snapshot` \
         libEGL.dll libGLESv2.dll `# ANGLE: OpenGL ES on Direct3D` \
         vk_swiftshader.dll vk_swiftshader_icd.json vulkan-1.dll `# drawing without a GPU` \
-        d3dcompiler_47.dll     `# compiles ANGLE's shaders; older Windows has none of its own` \
         ; do
         [[ -f "$build_dir/$file" ]] || die "$file is not in $build_dir"
         cp "$build_dir/$file" "$package/"
     done
     copy_data "$package"
     copy_headers
+    # For the application's executable (<zebkit/win_sandbox.h>).
+    sandbox_lib="$SRC_DIR/out/$profile-sandbox/zebkit_sandbox.lib"
+    [[ -f "$sandbox_lib" ]] || die "no zebkit_sandbox.lib; run scripts/build.sh $profile-sandbox zebkit/engine:zebkit_sandbox"
+    cp "$sandbox_lib" "$package/"
     log "package: $package"
     exit 0
 fi
