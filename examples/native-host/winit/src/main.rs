@@ -757,7 +757,7 @@ impl ApplicationHandler<Event> for App {
                 event_loop.exit();
                 return;
             }
-            let notches = if self.scroll_up > 0 { -1. } else { 3. };
+            let notches = if self.scroll_up > 0 { -1. } else { 12. };
             self.scroll_pdf(|pane| pane.wheel_notches(notches));
         }
         if self.pdf_tick.is_some_and(|due| due <= Instant::now()) {
