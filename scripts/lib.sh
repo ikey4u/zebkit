@@ -30,9 +30,10 @@ log() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 CACHE_DIR="$ZEBKIT_ROOT/.cache"
-# Apple's and Microsoft's SDKs for building on Linux, in one place for every
-# checkout (scripts/zsdk-create.sh): never deleted by a clean.
-SDK_DIR="${ZEBKIT_SDK_DIR:-$HOME/.cache/zebkit-sdk}"
+# Apple's and Microsoft's SDKs for building on Linux (scripts/zsdk-create.sh):
+# never deleted by a clean. ZEBKIT_SDK_DIR, or a link here, shares them between
+# checkouts.
+SDK_DIR="${ZEBKIT_SDK_DIR:-$CACHE_DIR/sdk}"
 UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
 # Packages and reports per profile. The builds themselves are in
 # $SRC_DIR/out/<profile>, where Chromium's tools expect them.
