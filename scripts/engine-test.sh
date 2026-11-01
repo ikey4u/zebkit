@@ -532,8 +532,7 @@ else
 fi
 # Real CDP clients, Chrome's results as the reference (tests/engine/cdp_clients.mjs).
 cdp_clients="$CACHE_DIR/cdp-clients"
-cdp_chrome="${CHROME:-$(ls -d "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux64/chrome 2> /dev/null | sort -V | tail -n 1)}"
-if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == linux && -x "$cdp_chrome" ]]; then
+if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == linux ]]; then
     if [[ "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/puppeteer-core/package.json" 2> /dev/null | head -n 1)" != "$PUPPETEER_CORE_VERSION" \
         || "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/playwright-core/package.json" 2> /dev/null | head -n 1)" != "$PLAYWRIGHT_CORE_VERSION" ]]; then
         pw_npm=(npm)
@@ -543,7 +542,11 @@ if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == lin
         (cd "$cdp_clients" && "${pw_npm[@]}" install --silent --no-audit --no-fund --no-save --ignore-scripts \
             "puppeteer-core@$PUPPETEER_CORE_VERSION" "playwright-core@$PLAYWRIGHT_CORE_VERSION") || log "cdp-clients: the install failed"
     fi
-    if [[ -d "$cdp_clients/node_modules/puppeteer-core" ]]; then
+    # Unless named, the Chromium Playwright installed for itself, as it finds it.
+    cdp_chrome="${CHROME:-$(cd "$cdp_clients" && "${pw_node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())" 2> /dev/null)}"
+    if [[ ! -x "$cdp_chrome" ]]; then
+        log "cdp-clients: skipped (no Chrome)"
+    elif [[ -d "$cdp_clients/node_modules/puppeteer-core" ]]; then
         # Not run(): two browsers, one after the other, take longer than its limit.
         log cdp-clients
         if ! timeout -k 10 1800 "${pw_node[@]}" "$tests/cdp_clients.mjs" "$cdp_clients" "$tests/cdp_clients_expected.txt" \
@@ -554,7 +557,7 @@ if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == lin
         cat "$work/cdp-clients.log"
     fi
 else
-    selected cdp-clients && log "cdp-clients: skipped (no Node.js or no Chrome)"
+    selected cdp-clients && log "cdp-clients: skipped (no Node.js)"
 fi
 # On macOS the engine starts on the main thread only (<zebkit/zebkit.h>).
 late_load_owners=(main worker)

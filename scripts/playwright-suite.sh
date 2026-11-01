@@ -112,7 +112,8 @@ if [[ "$target" == zebkit ]]; then
     done
     (( up )) || die "the engines serve nothing: see $out/engine-0.log"
 else
-    chrome="${CHROME:-$(ls -d "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux64/chrome 2> /dev/null | sort -V | tail -n 1)}"
+    # Unless named, the Chromium Playwright installed for itself, as it finds it.
+    chrome="${CHROME:-$(cd "$repo" && "${node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())")}"
     [[ -x "$chrome" ]] || die "no Chrome: set CHROME"
     export PW_SUITE_CHROME="$chrome"
 fi
