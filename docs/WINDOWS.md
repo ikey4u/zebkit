@@ -101,7 +101,7 @@ A sandboxed child has no PATH of the parent's: `zebkit.dll` has to be beside the
 ## State
 
 Windows 10 19045, 2 CPUs, VMware's display adapter, on a shared folder, 2026-11-01:
-142 groups of the suite, 18 with failures. 1,837 of the 1,843 checks in groups that print a
+142 groups of the suite, 18 with failures of their own (`services` too, only because the shared folder alters a file of that name; it passes as `services-test`). 1,837 of the 1,843 checks in groups that print a
 total passed. Node.js's tests (Playwright, MCP, certificates over HTTP/2) did not run.
 
 Pass, among others: `win_smoke`, `win_host` and `win_native_parent` (23 checks, real
@@ -128,10 +128,10 @@ Fail:
 It runs unsandboxed, as upstream's default. A page's renderer has to be broken first, but then
 the network service, with the user's rights and every site's cookies, is the next step, and
 a parser bug there (HTTP, DNS, certificates) needs nothing else. To turn on
-`kNetworkServiceSandbox`: Windows 10 and an LPAC AppContainer, access granted on every profile's
+`kNetworkServiceSandbox`: an AppContainer for the process, access granted on every profile's
 `Network` and cache directories before use (`content/browser/network_sandbox.cc`), which a
-shared or FAT disk cannot take, and proxy resolution, system DNS and certificate paths tested
-under it. Chrome has it on through its own policy, not the default.
+disk without ACLs cannot take, and proxy resolution, system DNS and certificate paths tested
+under it. Not tried here. Chrome decides it in its own code, not by the default.
 
 ## Left
 
@@ -139,3 +139,6 @@ under it. Chrome has it on through its own policy, not the default.
 - `zebkit.ui` beyond its script's test; printing through the system's dialog.
 - One scale per off-screen view; the example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
+
+`zebkit.dll` is 185.1 MiB, `zebkit_sandbox.lib` 29.4 MiB, the package 239.9 MiB; as `.tar.xz`
+without that library, which an application does not ship, 68.2 MiB (Linux's: 54.9 MiB, 160.9 MiB unpacked).
