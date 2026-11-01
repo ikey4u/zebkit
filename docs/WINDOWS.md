@@ -67,6 +67,10 @@ empty there (`src/engine/win/sandbox_startup.cc`).
 
 ## What differs
 
+- **Scale.** A scale for each off-screen view is Chromium's capture scale override
+  (`SetScaleOverrideForCapture`), not a display as on Linux: displays on Windows' headless
+  screen are laid out by Chromium itself, and a window takes a scale only when resized.
+
 - **Frames.** `zebkit_frame.handle` is a file mapping's `HANDLE`, and `fd` is -1.
   `ZEBKIT_BUFFERS_GPU` asks for `ZEBKIT_FRAME_D3D11`, an NT handle to a shared texture.
   That path has never run: the test machine's display adapter has no D3D shared images,
@@ -115,13 +119,12 @@ Fail:
 |---|---|
 | `cookies`, `cookie-host` | cookies are written encrypted, and gone after a restart, with zebkit's DPAPI key and the host's key alike; so not DPAPI. Not known; the profile was on a shared folder |
 | `cookie-file*`, `startup-settings*` | file key storage refuses a directory without ACLs, which a shared folder has not: fail-closed. Not run on NTFS |
-| `hook-*-download` | a download ends `FILE_FAILED` when renamed into place. Not known; a shared folder too |
-| `offscreen` (2 of 31) | a new scale's frame times out. 31 of 31 on the build before patches 1069 to 1071; `offscreen.cc` is the same. Not known |
-| `offscreen-scale` (9) | one scale for all views, on Windows: Linux's displays need the headless screen, which Windows' views do not use |
-| `pdf-in-page` (2) | PDFs are not in a renderer of their own (patch 1071, new). Not looked into |
-| `win-webauthn` | Windows' route is not offered to the host, and Windows' window has never opened: the code for it is not proven |
-| `cdp-overrides` | clearing a locale override leaves `zh-CN` different from before. Not looked into |
-| `http-auth-bindings`, `runtime-settings-python` | a timeout, and a connection reset. Not looked into |
+| `hook-*-download` | a download ends `FILE_FAILED`. Not known; a shared folder too |
+| `offscreen` (2 of 31, about two runs in three) | after a change of scale part of the frame stays `fcfcfc` for good. Not understood |
+| `cdp-overrides` | clearing a locale override gives `en-US`, not the system's `zh-CN` it started with: `LocaleController` restores its own default. Not fixed |
+
+Windows' WebAuthn route (webauthn.dll) has never been tried: the test machine's `WebAuthNGetApiVersionNumber()`
+is 0, so Chromium does not offer it; `win-webauthn` says so and skips.
 
 Copies to the shared folder are not always intact: two copies of `zebkit.dll` had one wrong
 bit each, and one build of the `services` program never arrived intact under any name, and
@@ -141,7 +144,7 @@ under it. Not tried here. Chrome decides it in its own code, not by the default.
 
 - The failures above, on NTFS first.
 - `zebkit.ui` beyond its script's test; printing through the system's dialog.
-- One scale per off-screen view; the example of frames in another process.
+- The example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
 
 `zebkit.dll` is 185.1 MiB, `zebkit_sandbox.lib` 29.4 MiB, the package 239.9 MiB; as `.tar.xz`
