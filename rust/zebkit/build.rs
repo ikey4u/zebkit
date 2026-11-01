@@ -11,6 +11,9 @@ fn main() {
         println!("cargo:dir={directory}");
         // For everything of this crate that is linked: its examples, its
         // tests and the unit tests in the library. Not for its dependents.
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{directory}");
+        // (On Windows a DLL has no run path: it is found beside the program.)
+        if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system != "windows") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{directory}");
+        }
     }
 }

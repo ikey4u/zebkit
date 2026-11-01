@@ -54,6 +54,8 @@ pub fn bundle() {
     if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "windows") {
         copy_engine(&engine, &executable_directory());
         println!("cargo:rerun-if-changed={}", engine.join("zebkit.dll").display());
+        // chrome.exe's main thread: a renderer's main thread runs V8 and Blink here.
+        println!("cargo:rustc-link-arg=/STACK:0x800000");
         println!("cargo:rerun-if-changed=build.rs");
         return;
     }

@@ -1,5 +1,5 @@
 //! Raw bindings to the zebkit engine: `libzebkit.so.1` on Linux,
-//! `Zebkit.framework` on macOS. Declarations only, and everything here is
+//! `Zebkit.framework` on macOS, `zebkit.dll` on Windows. Declarations only, and everything here is
 //! `unsafe`; the `zebkit` crate is the safe interface over them.
 //!
 //! - The engine, views, the page's calls to the application, script
@@ -171,6 +171,9 @@ pub struct zebkit_response {
 pub type zebkit_response_func = unsafe extern "C" fn(response: *const zebkit_response, data: *mut c_void);
 
 extern "C" {
+    /// In `zebkit_sandbox.lib`: `<zebkit/win_sandbox.h>`.
+    #[cfg(all(windows, target_feature = "crt-static"))]
+    pub fn zebkit_win_startup(exit_code: *mut c_int) -> bool;
     pub fn zebkit_version() -> *const c_char;
     pub fn zebkit_engine_version() -> *const c_char;
     pub fn zebkit_free(pointer: *mut c_void);

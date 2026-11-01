@@ -68,6 +68,18 @@ pub use script::Script;
 pub use media::{MediaCapture, MediaTap};
 mod view_hooks;
 pub use view_hooks::{ClientCertificateAction, ClientCertificateRequest, DownloadRequest, FileChooserRequest, FullscreenPolicy, MediaAccessRequest, NetworkRequest, NetworkStream};
+/// On Windows, with the static C runtime (`+crt-static`): this executable as the
+/// engine's sandboxed child process, which Chromium's sandbox there needs. Call it
+/// first in `main`; `Some(code)` when this process was a child and has finished,
+/// to exit with. Without it the engine runs only with `--no-sandbox`
+/// (`docs/WINDOWS.md`).
+#[cfg(all(windows, target_feature = "crt-static"))]
+pub fn win_startup() -> Option<i32> {
+    let mut code = 0;
+    // SAFETY: called with a place for the code; the function takes nothing else.
+    unsafe { zebkit_rs::zebkit_win_startup(&mut code) }.then_some(code)
+}
+
 pub use view::{Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.

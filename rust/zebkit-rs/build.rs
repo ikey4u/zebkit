@@ -106,6 +106,13 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", directory.display());
         // Its import library, zebkit.dll.lib.
         println!("cargo:rustc-link-lib=dylib:+verbatim=zebkit.dll.lib");
+        // The sandbox, for an executable with the static C runtime as it needs
+        // (<zebkit/win_sandbox.h>): zebkit::win_startup().
+        if env::var("CARGO_CFG_TARGET_FEATURE").is_ok_and(|features| features.split(',').any(|f| f == "crt-static"))
+            && directory.join("zebkit_sandbox.lib").exists()
+        {
+            println!("cargo:rustc-link-lib=static:+verbatim=zebkit_sandbox.lib");
+        }
     } else {
         println!("cargo:rerun-if-changed={}", engine.display());
         println!("cargo:rustc-link-search=native={}", directory.display());
