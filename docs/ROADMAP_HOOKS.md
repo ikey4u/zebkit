@@ -201,9 +201,20 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
     gone (`zebkit_network_stream_is_open`), `zebkit_network_stream_on_writable`, no sniffing.
   - **`redirect: "manual"` and `"error"`** fetches now work when the application redirects them,
     as DevTools' does.
-  Not done: **the headers the network adds** (`Cookie`, `Set-Cookie`), which `header_client` and
-  `kURLLoadOptionUseHeaderClient` admit with no patch, about 250 lines with a new mandatory CORS
-  preflight client and two more held stages each hop: left for its own change. Early hints,
+  - **The headers the network adds** (`header_client`, `kURLLoadOptionUseHeaderClient`, `patches/1069`,
+    `tests/engine/network_stages.py`): three stages inside the network, each hop. `sendHeaders` has the
+    Cookie, before the transaction; a rule holds it, and the application may change or remove any
+    header or block. `sent` has the headers as sent, with what the transaction adds after that
+    (`Authorization`, `Proxy-Authorization`, `Host`, `Connection`), and only observes, as DevTools'
+    `Network.requestWillBeSentExtraInfo`; nothing can change those any more, in Chrome either.
+    `headersReceived` has the raw response before the cookie store; a removed `Set-Cookie` stores
+    nothing. Rules here fail closed: no function, no policy, too many held, no answer in time or the
+    function replaced each end the request with `ERR_BLOCKED_BY_CLIENT`, where the page's stages go on.
+    A preflight is a request of its own there (`preflight`, type `preflight`), as in DevTools' Network;
+    CDP's Fetch does not hold one. Only with such a rule does a request use the client.
+  Not done: a WebSocket's Cookie, whose handshake has its own client: it is seen at the request stage
+  only. A rule of these stages set after a request started does not reach that request, nor one
+  answered by the HTTP cache at `sent`, which sends nothing. Early hints,
   prefetch and background fetch factories do not pass the hook, so a 103's preload gets past a rule.
   Handshake outcomes of WebSockets are not told. A service worker's socket in a two-profile engine
   is refused rather than decided. As CDP's `Fetch.fulfillRequest`, an answered request skips CORS

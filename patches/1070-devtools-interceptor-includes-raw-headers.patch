@@ -1,0 +1,12 @@
+The header client message of patches/1069: DevTools' interceptor has what its type needs.
+
+--- a/content/browser/devtools/devtools_url_loader_interceptor.cc
++++ b/content/browser/devtools/devtools_url_loader_interceptor.cc
+@@ -58,6 +58,7 @@
+ #include "services/network/public/cpp/url_loader_completion_status.h"
+ #include "services/network/public/mojom/early_hints.mojom.h"
+ #include "services/network/public/mojom/encoded_body_length.mojom.h"
++#include "services/network/public/mojom/http_raw_headers.mojom.h"
+ #include "services/network/public/mojom/network_context.mojom.h"
+ #include "services/network/public/mojom/url_loader.mojom.h"
+ #include "third_party/blink/public/platform/resource_request_blocked_reason.h"

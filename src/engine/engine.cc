@@ -921,13 +921,13 @@ void BrowserClient::WillCreateURLLoaderFactory(
   // have no view. Ahead of automation's, as ahead of CDP's.
   if (type == URLLoaderFactoryType::kNavigation ||
       type == URLLoaderFactoryType::kDocumentSubResource) {
-    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kFrame, factory_builder);
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kFrame, factory_builder, header_client);
   } else if (type == URLLoaderFactoryType::kWorkerMainResource ||
              type == URLLoaderFactoryType::kWorkerSubResource) {
-    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kWorker, factory_builder);
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kWorker, factory_builder, header_client);
   } else if (type == URLLoaderFactoryType::kServiceWorkerScript ||
              type == URLLoaderFactoryType::kServiceWorkerSubResource) {
-    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kServiceWorker, factory_builder);
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kServiceWorker, factory_builder, header_client);
   }
   if (type == URLLoaderFactoryType::kNavigation ||
       type == URLLoaderFactoryType::kDocumentSubResource) {

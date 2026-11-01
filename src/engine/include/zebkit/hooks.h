@@ -412,7 +412,7 @@ ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view*, zebkit_fullscreen_func, 
  * shared or service worker. A filter is a JSON array of rules, replacing the last, of
  * at most 256:
  * {url: Playwright's glob (default every URL), mode: "hold" (default) or "observe",
- * stage: "request" (default) or "response", resourceTypes: ["document", "stylesheet",
+ * stage: "request" (default), "sendHeaders", "sent", "headersReceived" or "response" (below), resourceTypes: ["document", "stylesheet",
  * "image", "media", "font", "script", "manifest", "fetch", "websocket"], frames: "all",
  * "main" or "sub", body: true (zebkit_view_on_network_body; response stage)}. Invalid
  * input changes nothing. Frames there are from then on; a dedicated worker running
@@ -440,8 +440,8 @@ ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_
  */
 ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on);
 /* What a hold rule holds is asked: stage, requestId (the same across redirects), url,
- * method, headers as the page gave them (the network adds Cookie, Origin, Referer and
- * more), resourceType, frameId, mainFrame, worker, workerType, navigation, initiator, hasBody,
+ * method, headers as the page gave them (at the request stage the network has yet to add Cookie,
+ * Origin, Referer and more), resourceType, frameId, mainFrame, worker, workerType, navigation, initiator, hasBody,
  * bodySize, body (base64, up to 64 KiB), bodyComplete; for the response, status,
  * statusText, responseHeaders, mimeType; timeoutMs, deadlineUnixMs. Each redirect's
  * destination is a request again; a redirect response is told, not held.
@@ -450,6 +450,20 @@ ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on
  * or response a hold rule matches fails with ERR_BLOCKED_BY_CLIENT, unasked, rather
  * than getting past the rule. A popup whose opener closed, when that opener had set a
  * filter, has no policy left: its requests and their responses fail the same way.
+ */
+/* Inside the network, each hop, with what it adds; not for WebSockets. Values are secrets
+ * the page's own stages do not have.
+ * sendHeaders: headers with the Cookie, before the transaction. Continue, with any valid
+ *   headers (Cookie too), or block.
+ * sent: observe only (mode must say so), kind "sent": headers as sent, with Authorization,
+ *   Proxy-Authorization and Host, which a transaction adds after sendHeaders; again for each
+ *   attempt, as after a 401; none when the HTTP cache answers. As DevTools' ExtraInfo.
+ * headersReceived: status, statusText, responseHeaders with Set-Cookie, before the cookie store.
+ *   Continue, with headers (a Set-Cookie left out is not stored), or block.
+ * A rule at these fails closed: without a function, no policy left, too many held, no answer by
+ * the deadline, or the function replaced, the request ends with ERR_BLOCKED_BY_CLIENT and
+ * its outcome is told as state refused. A CORS preflight has its own requestId, preflight
+ * true, resourceType "preflight", and no body. A rule must be set before a request starts to reach it.
  */
 typedef struct zebkit_network_request zebkit_network_request;
 typedef void (*zebkit_network_func)(zebkit_view*, zebkit_network_request*, const char *json, void *data);

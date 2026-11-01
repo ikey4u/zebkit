@@ -114,6 +114,8 @@ class HookRequests {
       return;
     Entry entry = std::move(it->second);
     pending_.erase(it);
+    if constexpr (requires { Traits::Settling(entry.metadata, decision); })
+      Traits::Settling(entry.metadata, decision);
     entry.metadata.Set("state", Traits::State(decision));
     entry.metadata.Set("reason", reason);
     Report(entry.view, std::move(entry.metadata));

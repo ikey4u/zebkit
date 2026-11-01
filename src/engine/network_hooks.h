@@ -28,7 +28,8 @@ enum class NetworkHookFactory { kFrame, kWorker, kServiceWorker };
 // From WillCreateURLLoaderFactory(), ahead of automation's and CDP's. @frame is null
 // for shared and service workers, which a profile's policy decides.
 void InterceptNetworkHookFactory(content::BrowserContext* profile, content::RenderFrameHost* frame,
-                                 NetworkHookFactory kind, network::URLLoaderFactoryBuilder& builder);
+                                 NetworkHookFactory kind, network::URLLoaderFactoryBuilder& builder,
+                                 mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>* header_client);
 // From WillInterceptWebSocket() and CreateWebSocket(); @frame as above.
 bool WillInterceptNetworkHookWebSocket(content::RenderFrameHost* frame);
 void CreateNetworkHookWebSocket(content::RenderFrameHost* frame,

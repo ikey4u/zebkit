@@ -1285,9 +1285,12 @@ function, and once that opener closed, the popup is refused.
 | Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
 
 Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
-Limits are in `docs/ROADMAP_HOOKS.md`: the network hook does not cover WebSockets,
-shared or service workers, or response bodies, and client certificates come from the
-application and not the system's stores.
+Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` stages see what the
+network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
+that hold fail closed (`<zebkit/hooks.h>`).
+
+Limits are in `docs/ROADMAP_HOOKS.md`: client certificates come from the application and not the
+system's stores.
 
 ### Native media processing tools
 

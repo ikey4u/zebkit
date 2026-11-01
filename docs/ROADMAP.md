@@ -196,7 +196,7 @@ in `examples/native-host` (Done table). What is left:
   programs, downloads (saved in the profile's `Downloads` without a function),
   isolated worlds, file choosers, camera and microphone, keys, context menu and
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
-  requests (the headers the network adds are not seen; `docs/ROADMAP_HOOKS.md`) and client
+  requests (a WebSocket's Cookie is not seen, the headers the network adds otherwise are; `docs/ROADMAP_HOOKS.md`) and client
   certificates (no system stores).
   The hook sources and the patched content shell files compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
 - **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).

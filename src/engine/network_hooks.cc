@@ -3,7 +3,8 @@
 // put one. Requests a rule holds wait for the application, up to a deadline;
 // those it observes are told and do not wait; the rest pass. A frame's WebSocket
 // handshake goes through the same rules, and a view can take on the workers of its
-// profile, which have no view.
+// profile, which have no view. Rules of the network's stages also take the network's
+// header client, as extensions' webRequest and DevTools' Fetch do, to see what it adds.
 
 #include "zebkit/engine/network_hooks.h"
 
@@ -33,12 +34,14 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/global_request_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/zebkit_automation.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/data_pipe_producer.h"
 #include "mojo/public/cpp/system/file_data_source.h"
@@ -57,6 +60,7 @@
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/cpp/url_loader_factory_builder.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/http_raw_headers.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
@@ -74,6 +78,7 @@ struct NetworkRule {
   bool hold = true;
   bool request_stage = true;
   bool body = false;  // Told as it passes; holds nothing.
+  const char* network_stage = nullptr;  // One of the network's stages; null: the page's.
   std::set<std::string> resource_types;  // Empty: every type.
   enum class Frames { kAll, kMain, kSub } frames = Frames::kAll;
 };
@@ -90,6 +95,15 @@ constexpr int kPumpBurst = 16;
 constexpr uint32_t kPipeSize = 512 * 1024;
 constexpr size_t kStreamBuffer = 1024 * 1024;
 constexpr char kWebSocket[] = "websocket";
+// The stages inside the network, with the headers it adds; "request" and "response"
+// are outside it, with the page's.
+constexpr char kSendHeaders[] = "sendHeaders";
+constexpr char kSent[] = "sent";
+constexpr char kHeadersReceived[] = "headersReceived";
+
+bool IsNetworkStage(const std::string* stage) {
+  return stage && (*stage == kSendHeaders || *stage == kSent || *stage == kHeadersReceived);
+}
 
 enum class Action { kContinue, kBlock, kRedirect, kFulfill, kFile, kStream };
 enum class Worker { kNone, kDedicated, kShared, kService };
@@ -124,12 +138,51 @@ struct Traits {
   }
   // A deadline passed or a function replaced: the request goes on.
   static Decision Unanswered() { return {}; }
+  // Except inside the network: what a rule there is for must not be got past by
+  // saying nothing. The outcome told says so.
+  static void Settling(const base::DictValue& metadata, Decision& decision) {
+    if (IsNetworkStage(metadata.FindString("stage")) && !strcmp(decision.state, "continued")) {
+      decision.action = Action::kBlock;
+      decision.state = "refused";
+    }
+  }
   static const char* State(const Decision& decision) { return decision.state; }
 };
 using Requests = HookRequests<Traits>;
 
+class Loader;
+
+// The network's header client of one factory. It stays as long as the network's
+// factory does: a redirect's preflight can come after the page's factory has gone.
+class HeaderClient : public network::mojom::TrustedURLLoaderHeaderClient {
+ public:
+  HeaderClient(base::WeakPtr<zebkit_view> view, content::BrowserContext* profile, std::string frame, bool main_frame,
+               Worker worker, mojo::PendingReceiver<network::mojom::TrustedURLLoaderHeaderClient> receiver)
+      : view_(std::move(view)), profile_(profile), frame_(std::move(frame)), main_frame_(main_frame), worker_(worker),
+        receiver_(this, std::move(receiver)) {}
+
+  void Add(int32_t id, Loader* loader) { loaders_[id] = loader; }
+  void Remove(int32_t id) { loaders_.erase(id); }
+
+  // network::mojom::TrustedURLLoaderHeaderClient
+  void OnLoaderCreated(int32_t request_id, mojo::PendingReceiver<network::mojom::TrustedHeaderClient> client) override;
+  void OnLoaderForCorsPreflightCreated(const network::ResourceRequest& request,
+                                       mojo::PendingReceiver<network::mojom::TrustedHeaderClient> client) override;
+
+ private:
+  base::WeakPtr<zebkit_view> view_;
+  content::BrowserContext* profile_;
+  std::string frame_;
+  bool main_frame_;
+  Worker worker_;
+  std::map<int32_t, Loader*> loaders_;
+  mojo::UniqueReceiverSet<network::mojom::TrustedHeaderClient> others_;
+  mojo::Receiver<network::mojom::TrustedURLLoaderHeaderClient> receiver_;
+};
+
 struct Target : base::RefCounted<Target> {
   mojo::Remote<network::mojom::URLLoaderFactory> factory;
+  std::unique_ptr<HeaderClient> header_client;  // Null: this factory cannot have one.
  private:
   friend class base::RefCounted<Target>;
   ~Target() = default;
@@ -188,20 +241,59 @@ std::map<content::BrowserContext*, base::WeakPtr<zebkit_view>>& WorkerPolicies()
   return *policies;
 }
 
+bool RuleApplies(const NetworkRule& rule, const std::string& type, const GURL& url, bool main_frame) {
+  if (rule.frames == NetworkRule::Frames::kMain && !main_frame) return false;
+  if (rule.frames == NetworkRule::Frames::kSub && main_frame) return false;
+  if (!rule.resource_types.empty() && !rule.resource_types.contains(type)) return false;
+  return !rule.url || RE2::FullMatch(url.spec(), *rule.url);
+}
+
 bool RulesMatch(zebkit_view* decider, const std::string& type, const GURL& url, bool main_frame,
                 bool request_stage, bool hold, bool body) {
   if (!decider->network_rules_)
     return false;
   for (const NetworkRule& rule : decider->network_rules_->rules) {
-    if (rule.hold != hold || rule.request_stage != request_stage) continue;
+    if (rule.network_stage || rule.hold != hold || rule.request_stage != request_stage) continue;
     if (body && !rule.body) continue;
-    if (rule.frames == NetworkRule::Frames::kMain && !main_frame) continue;
-    if (rule.frames == NetworkRule::Frames::kSub && main_frame) continue;
-    if (!rule.resource_types.empty() && !rule.resource_types.contains(type)) continue;
-    if (rule.url && !RE2::FullMatch(url.spec(), *rule.url)) continue;
-    return true;
+    if (RuleApplies(rule, type, url, main_frame))
+      return true;
   }
   return false;
+}
+
+bool NetworkStageMatches(zebkit_view* decider, const char* stage, const std::string& type, const GURL& url,
+                         bool main_frame, bool hold) {
+  if (!decider->network_rules_)
+    return false;
+  for (const NetworkRule& rule : decider->network_rules_->rules) {
+    if (!rule.network_stage || strcmp(rule.network_stage, stage) || rule.hold != hold) continue;
+    if (RuleApplies(rule, type, url, main_frame))
+      return true;
+  }
+  return false;
+}
+
+// The view whose filter a request answers to. Shared and service workers have
+// none of their own: a profile's policy, once set, stays, and without its view
+// they are refused.
+zebkit_view* PolicyViewFor(const base::WeakPtr<zebkit_view>& view, content::BrowserContext* profile, Worker worker,
+                           bool* refused) {
+  if (worker == Worker::kShared || worker == Worker::kService) {
+    auto it = WorkerPolicies().find(profile);
+    if (it != WorkerPolicies().end()) {
+      *refused = !it->second;
+      return it->second.get();
+    }
+  }
+  return view.get();
+}
+
+std::string RawResponseHeaders(const std::string& status_line,
+                               const std::vector<std::pair<std::string, std::string>>& headers) {
+  std::string raw = status_line + "\r\n";
+  for (const auto& [name, value] : headers)
+    raw += name + ": " + value + "\r\n";
+  return net::HttpUtil::AssembleRawHeaders(raw + "\r\n");
 }
 
 // Told, without waiting. Bounded, and what was dropped is counted.
@@ -471,7 +563,158 @@ OpenedFile OpenAnswerFile(const base::FilePath& path) {
   return opened;
 }
 
-class Loader;
+// The network's stages of one network loader or preflight, every hop of it. What a
+// hold rule is for fails closed here: no function, no policy, too many held, no answer in
+// time, each ends the request. It goes with its pipe, and what it holds with it.
+class HeaderWatch : public network::mojom::TrustedHeaderClient {
+ public:
+  using Describe = base::RepeatingCallback<base::DictValue(const char*)>;
+
+  HeaderWatch(base::WeakPtr<zebkit_view> view, content::BrowserContext* profile, Worker worker, std::string type,
+              bool main_frame, Describe describe)
+      : had_view_(!!view), view_(std::move(view)), profile_(profile), worker_(worker), type_(std::move(type)),
+        main_frame_(main_frame), describe_(std::move(describe)) {}
+  ~HeaderWatch() override { Requests::Get().Abandon(held_); }
+
+  // network::mojom::TrustedHeaderClient
+  void OnBeforeSendHeaders(const GURL& url, const net::HttpRequestHeaders& headers,
+                           OnBeforeSendHeadersCallback callback) override {
+    url_ = url;
+    base::DictValue description = describe_.Run(kSendHeaders);
+    description.Set("url", url.spec());
+    description.Set("headers", RequestHeaderList(headers));
+    Tell(kSendHeaders, description);
+    send_ = std::move(callback);
+    Requests::Reply reply = base::BindOnce(&HeaderWatch::SendDecided, weak_factory_.GetWeakPtr());
+    if (!Hold(kSendHeaders, std::move(description), reply) && reply)
+      std::move(reply).Run(Pass());
+  }
+  void OnHeadersReceived(const std::string& headers, const net::IPEndPoint& endpoint,
+                         const std::optional<net::SSLInfo>& ssl_info, OnHeadersReceivedCallback callback) override {
+    auto parsed = base::MakeRefCounted<net::HttpResponseHeaders>(headers);
+    status_line_ = parsed->GetStatusLine();
+    base::DictValue description = describe_.Run(kHeadersReceived);
+    description.Set("url", url_.spec());
+    description.Set("status", parsed->response_code());
+    description.Set("statusText", parsed->GetStatusText());
+    description.Set("responseHeaders", ResponseHeaderList(parsed.get()));
+    Tell(kHeadersReceived, description);
+    received_ = std::move(callback);
+    Requests::Reply reply = base::BindOnce(&HeaderWatch::ReceivedDecided, weak_factory_.GetWeakPtr());
+    if (!Hold(kHeadersReceived, std::move(description), reply) && reply)
+      std::move(reply).Run(Pass());
+  }
+  void OnRequestHeadersSent(std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override {
+    base::DictValue description = describe_.Run(kSent);
+    base::ListValue list;
+    for (const auto& header : headers) {
+      base::DictValue entry;
+      entry.Set("name", header->key);
+      entry.Set("value", header->value);
+      list.Append(std::move(entry));
+    }
+    description.Set("url", url_.spec());
+    description.Set("headers", std::move(list));
+    Tell(kSent, description);
+  }
+
+ private:
+  static Traits::Decision Pass() {
+    Traits::Decision decision;
+    decision.state = "answered";
+    return decision;
+  }
+  static Traits::Decision Refuse() {
+    Traits::Decision decision;
+    decision.action = Action::kBlock;
+    decision.state = "refused";
+    return decision;
+  }
+
+  void Tell(const char* stage, const base::DictValue& description) {
+    bool refused = false;
+    zebkit_view* view = PolicyViewFor(view_, profile_, worker_, &refused);
+    zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
+    if (!decider || !view->on_network_event_ || !NetworkStageMatches(decider, stage, type_, url_, main_frame_, false))
+      return;
+    base::DictValue event = description.Clone();
+    event.Set("kind", stage);
+    PostEvent(view, std::move(event));
+  }
+
+  // True when @reply has been given to the application, or to a refusal; false when
+  // no rule holds this.
+  bool Hold(const char* stage, base::DictValue description, Requests::Reply& reply) {
+    bool refused = false;
+    zebkit_view* view = PolicyViewFor(view_, profile_, worker_, &refused);
+    // A view that closed, or a popup whose opener did, has no policy left.
+    zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
+    if (refused || (!view && had_view_) || (view && !decider)) {
+      std::move(reply).Run(Refuse());
+      return true;
+    }
+    if (!decider || !NetworkStageMatches(decider, stage, type_, url_, main_frame_, true))
+      return false;
+    auto& requests = Requests::Get();
+    if (!Requests::HasDecider(view) || !requests.Ask(view, std::move(description), reply)) {
+      std::move(reply).Run(Refuse());
+      return true;
+    }
+    held_ = requests.last_id();
+    return true;
+  }
+
+  void SendDecided(Traits::Decision decision) {
+    held_ = 0;
+    auto callback = std::move(send_);
+    if (decision.action != Action::kContinue)
+      std::move(callback).Run(decision.error, std::nullopt, std::nullopt);
+    else
+      std::move(callback).Run(net::OK, decision.request_headers, std::nullopt);
+  }
+
+  void ReceivedDecided(Traits::Decision decision) {
+    held_ = 0;
+    auto callback = std::move(received_);
+    if (decision.action != Action::kContinue) {
+      std::move(callback).Run(decision.error, std::nullopt, std::nullopt);
+      return;
+    }
+    std::optional<std::string> headers;
+    if (decision.response_headers)
+      headers = RawResponseHeaders(status_line_, *decision.response_headers);
+    std::move(callback).Run(net::OK, headers, std::nullopt);
+  }
+
+  const bool had_view_;
+  base::WeakPtr<zebkit_view> view_;
+  content::BrowserContext* profile_;
+  Worker worker_;
+  std::string type_;
+  bool main_frame_;
+  Describe describe_;
+  GURL url_;
+  std::string status_line_;
+  OnBeforeSendHeadersCallback send_;
+  OnHeadersReceivedCallback received_;
+  uintptr_t held_ = 0;
+  base::WeakPtrFactory<HeaderWatch> weak_factory_{this};
+};
+
+// A loader or preflight no rule of the network's stages is for, in a factory that has a
+// header client: another proxy's flag asks for one. As DevTools' NoOpHeaderClient.
+class HeaderPass : public network::mojom::TrustedHeaderClient {
+ public:
+  void OnBeforeSendHeaders(const GURL&, const net::HttpRequestHeaders&, OnBeforeSendHeadersCallback callback) override {
+    std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
+  }
+  void OnHeadersReceived(const std::string&, const net::IPEndPoint&, const std::optional<net::SSLInfo>&,
+                         OnHeadersReceivedCallback callback) override {
+    std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
+  }
+  void OnRequestHeadersSent(std::vector<network::mojom::HttpRawHeaderPairPtr>) override {}
+};
+
 std::set<Loader*>& Loaders() {
   static base::NoDestructor<std::set<Loader*>> loaders;
   return *loaders;
@@ -504,9 +747,21 @@ class Loader : public network::mojom::URLLoader,
   ~Loader() override {
     Loaders().erase(this);
     Requests::Get().Abandon(held_);
+    if (network_request_id_ && target_->header_client)
+      target_->header_client->Remove(*network_request_id_);
   }
 
   void Start() { AskAtRequest(); }
+
+  // The network's loader for this request has started.
+  void WatchHeaders(mojo::PendingReceiver<network::mojom::TrustedHeaderClient> client) {
+    // A second loader for the same request, as CORS restarts one, takes over.
+    header_watch_.Clear();
+    header_watch_.Add(std::make_unique<HeaderWatch>(
+                          view_, profile_, worker_, NetworkResourceType(request_), main_frame_,
+                          base::BindRepeating(&Loader::DescribeNetworkStage, base::Unretained(this))),
+                      std::move(client));
+  }
 
   // network::mojom::URLLoader
   void FollowRedirect(network::HttpRequestHeadersUpdateParams params,
@@ -674,24 +929,46 @@ class Loader : public network::mojom::URLLoader,
       Finish(network::URLLoaderCompletionStatus(net::ERR_FAILED));
       return;
     }
-    target_->factory->CreateLoaderAndStart(network_.BindNewPipeAndPassReceiver(), request_id_, options_,
+    uint32_t options = options_;
+    int32_t request_id = request_id_;
+    bool any = false, hold = false;
+    NetworkStageRules(&any, &hold);
+    if (any && target_->header_client) {
+      // Ours to tell apart: a page chooses its request's number.
+      options |= network::mojom::kURLLoadOptionUseHeaderClient;
+      request_id = content::GlobalRequestID::MakeBrowserInitiated().request_id;
+      network_request_id_ = request_id;
+      target_->header_client->Add(request_id, this);
+    } else if (hold) {
+      // A rule that cannot be kept is not how a request gets past it.
+      Finish(network::URLLoaderCompletionStatus(net::ERR_BLOCKED_BY_CLIENT));
+      return;
+    }
+    target_->factory->CreateLoaderAndStart(network_.BindNewPipeAndPassReceiver(), request_id, options,
                                            request_, network_client_.BindNewPipeAndPassRemote(), annotation_);
     network_client_.set_disconnect_handler(base::BindOnce(&Loader::NetworkGone, base::Unretained(this)));
   }
 
-  // The view whose filter this request answers to. Shared and service workers have
-  // none of their own: a profile's policy, once set, stays, and without its view
-  // they are refused. A shared worker's script comes through its first client's frame.
-  zebkit_view* PolicyView(bool* refused) const {
-    if (worker_ == Worker::kShared || worker_ == Worker::kService) {
-      auto it = WorkerPolicies().find(profile_);
-      if (it != WorkerPolicies().end()) {
-        *refused = !it->second;
-        return it->second.get();
+  // A shared worker's script comes through its first client's frame.
+  zebkit_view* PolicyView(bool* refused) const { return PolicyViewFor(view_, profile_, worker_, refused); }
+
+  // Whether rules of the network's stages exist, whatever URL: a redirect can reach one
+  // that matches, and a loader has its header client from its start or never.
+  void NetworkStageRules(bool* any, bool* hold) const {
+    bool refused = false;
+    zebkit_view* view = PolicyView(&refused);
+    zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
+    if (!decider || !decider->network_rules_)
+      return;
+    for (const NetworkRule& rule : decider->network_rules_->rules) {
+      if (rule.network_stage) {
+        *any = true;
+        *hold = *hold || rule.hold;
       }
     }
-    return view_.get();
   }
+
+  base::DictValue DescribeNetworkStage(const char* stage) const { return Describe(stage, nullptr); }
 
   // The filter for this stage. A popup whose opener closed has no policy left.
   Hold Stage(bool request_stage) {
@@ -888,17 +1165,9 @@ class Loader : public network::mojom::URLLoader,
     client_->OnReceiveRedirect(info, std::move(head));
   }
 
-  static std::string RawHeaders(const std::string& status_line,
-                                const std::vector<std::pair<std::string, std::string>>& headers) {
-    std::string raw = status_line + "\r\n";
-    for (const auto& [name, value] : headers)
-      raw += name + ": " + value + "\r\n";
-    return net::HttpUtil::AssembleRawHeaders(raw + "\r\n");
-  }
-
   void ReplaceResponseHeaders(const std::vector<std::pair<std::string, std::string>>& headers) {
     const std::string line = head_->headers ? head_->headers->GetStatusLine() : "HTTP/1.1 200 OK";
-    head_->headers = base::MakeRefCounted<net::HttpResponseHeaders>(RawHeaders(line, headers));
+    head_->headers = base::MakeRefCounted<net::HttpResponseHeaders>(RawResponseHeaders(line, headers));
     std::string mime, charset;
     head_->headers->GetMimeTypeAndCharset(&mime, &charset);
     if (!mime.empty()) {
@@ -917,7 +1186,7 @@ class Loader : public network::mojom::URLLoader,
     const std::string line = "HTTP/1.1 " + base::NumberToString(status) + " " +
                              std::string(net::GetHttpReasonPhrase(static_cast<net::HttpStatusCode>(status)));
     head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
-        RawHeaders(line, headers.value_or(std::vector<std::pair<std::string, std::string>>())));
+        RawResponseHeaders(line, headers.value_or(std::vector<std::pair<std::string, std::string>>())));
     head->headers->GetMimeTypeAndCharset(&head->mime_type, &head->charset);
     head->request_time = head->response_time = base::Time::Now();
     if (options_ & network::mojom::kURLLoadOptionSniffMimeType) {
@@ -1101,6 +1370,9 @@ class Loader : public network::mojom::URLLoader,
   bool answered_ = false;
   std::unique_ptr<mojo::DataPipeProducer> file_;
   std::unique_ptr<AnswerStream> stream_;
+  // The network's stages.
+  std::optional<int32_t> network_request_id_;
+  mojo::UniqueReceiverSet<network::mojom::TrustedHeaderClient> header_watch_;
   mojo::Receiver<network::mojom::URLLoader> receiver_;
   mojo::Remote<network::mojom::URLLoaderClient> client_;
   mojo::Remote<network::mojom::URLLoader> network_;
@@ -1108,17 +1380,62 @@ class Loader : public network::mojom::URLLoader,
   base::WeakPtrFactory<Loader> weak_factory_{this};
 };
 
+void HeaderClient::OnLoaderCreated(int32_t request_id,
+                                   mojo::PendingReceiver<network::mojom::TrustedHeaderClient> client) {
+  auto it = loaders_.find(request_id);
+  if (it != loaders_.end())
+    it->second->WatchHeaders(std::move(client));
+  else
+    others_.Add(std::make_unique<HeaderPass>(), std::move(client));
+}
+
+// As in DevTools' Network, a request of its own, which CDP's Fetch does not hold and
+// a rule of the network's stages does. It has no loader here to tell it from another.
+void HeaderClient::OnLoaderForCorsPreflightCreated(const network::ResourceRequest& request,
+                                                   mojo::PendingReceiver<network::mojom::TrustedHeaderClient> client) {
+  auto describe = [](std::string id, std::string frame, bool main_frame, Worker worker, std::string method,
+                     std::string initiator, const char* stage) {
+    base::DictValue value;
+    value.Set("stage", stage);
+    value.Set("requestId", id);
+    value.Set("method", method);
+    value.Set("resourceType", "preflight");
+    value.Set("preflight", true);
+    value.Set("frameId", frame);
+    value.Set("mainFrame", main_frame);
+    value.Set("worker", worker != Worker::kNone);
+    if (worker != Worker::kNone)
+      value.Set("workerType", WorkerName(worker));
+    value.Set("navigation", false);
+    value.Set("initiator", initiator);
+    value.Set("hasBody", false);
+    value.Set("bodySize", 0.0);
+    value.Set("bodyComplete", true);
+    return value;
+  };
+  others_.Add(std::make_unique<HeaderWatch>(
+                  view_, profile_, worker_, "preflight", main_frame_,
+                  base::BindRepeating(describe, NextRequestId(), frame_, main_frame_, worker_, request.method,
+                                      request.request_initiator ? request.request_initiator->Serialize() : "")),
+              std::move(client));
+}
+
 // Deletes itself when the page's factory and its clones go. Loaders keep the
 // network's factory for as long as they want it.
 class Factory : public network::mojom::URLLoaderFactory {
  public:
   Factory(base::WeakPtr<zebkit_view> view, content::BrowserContext* profile, std::string frame, bool main_frame,
           Worker worker, mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
-          mojo::PendingRemote<network::mojom::URLLoaderFactory> target)
+          mojo::PendingRemote<network::mojom::URLLoaderFactory> target,
+          mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>* header_client)
       : view_(std::move(view)), profile_(profile), frame_(std::move(frame)), main_frame_(main_frame),
         worker_(worker), target_(base::MakeRefCounted<Target>()) {
     Factories().insert(this);
     target_->factory.Bind(std::move(target));
+    if (header_client && !*header_client) {
+      target_->header_client = std::make_unique<HeaderClient>(view_, profile_, frame_, main_frame_, worker_,
+                                                              header_client->InitWithNewPipeAndPassReceiver());
+    }
     receivers_.Add(this, std::move(receiver));
     receivers_.set_disconnect_handler(base::BindRepeating(&Factory::Disconnected, base::Unretained(this)));
   }
@@ -1296,6 +1613,10 @@ bool ParseAnswer(Requests::Entry* entry, const char* json, Traits::Decision* dec
   std::vector<std::pair<std::string, std::string>> pairs;
   const base::ListValue* headers = reply.FindList("headers");
   if (headers && !ParseHeaders(*headers, &pairs)) { *error = "invalid headers"; return false; }
+  if (IsNetworkStage(entry->metadata.FindString("stage"))) {
+    *error = "inside the network a request is continued or blocked";
+    return false;
+  }
   decision->response_headers = std::move(pairs);
   decision->state = "answered";
   return true;
@@ -1317,8 +1638,13 @@ void StopNetworkHooks() {
 }
 void CancelNetworkHookRequests(zebkit_view* view) { Requests::Get().CancelAll(view, "cancelled"); }
 
+void ForgetWorkerPolicy(content::BrowserContext* profile) {
+  WorkerPolicies().erase(profile);
+}
+
 void InterceptNetworkHookFactory(content::BrowserContext* profile, content::RenderFrameHost* frame,
-                                 NetworkHookFactory kind, network::URLLoaderFactoryBuilder& builder) {
+                                 NetworkHookFactory kind, network::URLLoaderFactoryBuilder& builder,
+                                 mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>* header_client) {
   if (!Requests::Get().Ready())
     return;
   const Worker worker = kind == NetworkHookFactory::kWorker
@@ -1328,7 +1654,7 @@ void InterceptNetworkHookFactory(content::BrowserContext* profile, content::Rend
     if (worker == Worker::kNone)
       return;
     auto [receiver, target] = builder.Append();
-    new Factory(nullptr, profile, std::string(), false, worker, std::move(receiver), std::move(target));
+    new Factory(nullptr, profile, std::string(), false, worker, std::move(receiver), std::move(target), header_client);
     return;
   }
   zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
@@ -1340,7 +1666,7 @@ void InterceptNetworkHookFactory(content::BrowserContext* profile, content::Rend
   auto [receiver, target] = builder.Append();
   new Factory(view && HasNetworkPolicy(view) ? view->GetWeakPtr() : base::WeakPtr<zebkit_view>(), profile,
               "f" + base::NumberToString(frame->GetFrameTreeNodeId().value()),
-              !frame->GetParentOrOuterDocument(), worker, std::move(receiver), std::move(target));
+              !frame->GetParentOrOuterDocument(), worker, std::move(receiver), std::move(target), header_client);
 }
 
 bool WillInterceptNetworkHookWebSocket(content::RenderFrameHost* frame) {
@@ -1425,8 +1751,13 @@ bool zebkit_view_set_network_filter(zebkit_view* view, const char* json, char** 
       rule.hold = *mode == "hold";
     }
     if (const std::string* stage = dict.FindString("stage")) {
-      if (*stage != "request" && *stage != "response") return fail("stage is request or response");
+      if (*stage == kSendHeaders) rule.network_stage = kSendHeaders;
+      else if (*stage == kSent) rule.network_stage = kSent;
+      else if (*stage == kHeadersReceived) rule.network_stage = kHeadersReceived;
+      else if (*stage != "request" && *stage != "response")
+        return fail("stage is request, sendHeaders, sent, headersReceived or response");
       rule.request_stage = *stage == "request";
+      if (*stage == kSent && rule.hold) return fail("what is sent has gone: a rule at sent observes");
     }
     if (const std::string* frames = dict.FindString("frames")) {
       if (*frames == "main") rule.frames = NetworkRule::Frames::kMain;
@@ -1440,7 +1771,7 @@ bool zebkit_view_set_network_filter(zebkit_view* view, const char* json, char** 
       }
     }
     if (dict.FindBool("body").value_or(false)) {
-      if (rule.request_stage) return fail("body is told at the response stage");
+      if (rule.request_stage || rule.network_stage) return fail("body is told at the response stage");
       const std::string* mode = dict.FindString("mode");
       if (mode && *mode == "hold") return fail("a rule with body holds nothing");
       rule.body = true;
@@ -1513,13 +1844,16 @@ bool zebkit_network_respond(zebkit_network_request* request, const char* json, c
   const base::DictValue& reply = parsed->GetDict();
   const std::string* action = reply.FindString("action");
   const std::string* stage = entry->metadata.FindString("stage");
-  const bool response_stage = stage && *stage == "response";
+  const bool network_stage = IsNetworkStage(stage);
+  const bool response_stage = stage && (*stage == "response" || *stage == kHeadersReceived);
   if (!action) return fail("a reply has an action");
   if (body_size && *action != "fulfill") return fail("only fulfill takes a body");
   const std::string* type = entry->metadata.FindString("resourceType");
   const bool websocket = type && *type == kWebSocket;
   if (websocket && *action != "continue" && *action != "block")
     return fail("a WebSocket is continued or blocked");
+  if (network_stage && *action != "continue" && *action != "block")
+    return fail("inside the network a request is continued or blocked");
   Traits::Decision decision;
   decision.state = "answered";
   const base::ListValue* headers = reply.FindList("headers");
@@ -1532,6 +1866,12 @@ bool zebkit_network_respond(zebkit_network_request* request, const char* json, c
     } else if (headers) {
       net::HttpRequestHeaders set;
       for (const auto& [name, value] : pairs) {
+        // Inside the network, past the checks on a page's headers: a Cookie is the
+        // application's to change there, as an extension's with extraHeaders.
+        if (network_stage) {
+          set.SetHeader(name, value);
+          continue;
+        }
         // What the network refuses a page outright, closing all its requests.
         if (!network::IsRequestHeaderSafe(name, value)) return fail("the network does not allow this header");
         // What the network would leave out of a handshake, saying nothing.
@@ -1543,7 +1883,8 @@ bool zebkit_network_respond(zebkit_network_request* request, const char* json, c
       }
       std::string forbidden;
       net::HttpRequestHeaders checked = set;
-      if (network::ContainsForbiddenSecurityHeader(checked, &forbidden)) return fail("the network does not allow this header");
+      if (!network_stage && network::ContainsForbiddenSecurityHeader(checked, &forbidden))
+        return fail("the network does not allow this header");
       decision.request_headers = std::move(set);
     }
   } else if (*action == "block") {
