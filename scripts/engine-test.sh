@@ -417,8 +417,9 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     # For every test, -I or not: output in UTF-8 whatever the system's code page, and
     # a temporary profile left behind if a child still has a file open as the browser
     # ends, where Unix would remove it.
-    mkdir -p "$work/path/Lib/site-packages"
-    cat > "$work/path/Lib/site-packages/sitecustomize.py" <<'PY'
+    # (The prefix of a Python with pyvenv.cfg beside it is the directory above.)
+    mkdir -p "$work/Lib/site-packages"
+    cat > "$work/Lib/site-packages/sitecustomize.py" <<'PY'
 import functools, sys, tempfile
 for stream in (sys.stdout, sys.stderr):
     stream.reconfigure(encoding="utf-8", errors="backslashreplace")
