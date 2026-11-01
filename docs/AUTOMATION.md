@@ -614,8 +614,39 @@ CDP in between:
   `tests/engine/automation.c` has its expected result from running the
   same command through Playwright on Chrome (the reference);
   `tests/engine/playwright_connect.mjs` runs Playwright's own client
-  against the endpoint (`scripts/engine-test.sh`); Playwright's own test
-  suite against it is next.
+  against the endpoint (`scripts/engine-test.sh`).
+- **Real CDP clients, Chrome as the reference**: `tests/engine/cdp_clients.mjs`
+  (test `cdp-clients`) runs puppeteer-core and playwright-core's
+  `connectOverCDP` against zebkit and Chrome in the same run, with no result
+  hard-coded, and prints the differences; those expected have their reasons
+  in `tests/engine/cdp_clients_expected.txt`. On 2026-11-01, engine commit
+  30c4ae9 against Chrome 156, 137 cases: 134 the same, 3 expected differences
+  (two fields newer than Chromium 155; number formats of a locale the
+  package's ICU data does not hold), none unexpected.
+- **Playwright's own test suite**: `scripts/playwright-suite.sh` runs
+  `tests/page` and `tests/library` at tag v1.64.1 through `chromium.connect()`,
+  an engine for each worker, or the same tests on Chrome (`--target chrome`).
+  What a test expects to fail is named with its reason in
+  `tests/playwright-suite/expected-failures.txt`. On 2026-11-01, engine commit
+  30c4ae9, 5262 tests, 15 s a test, no engine exit:
+
+  | | Passed | Failed | Skipped |
+  |---|---|---|---|
+  | zebkit, `tests/page` | 1987 | 579 | 48 |
+  | zebkit, `tests/library` | 759 | 753 | 1136 |
+  | zebkit, total | 2746 | 1332 | 1184 |
+  | Chrome 156 (launched), total | 4195 | 6 | 1061 |
+
+  Of the 4073 tests that pass on Chrome and were not skipped on zebkit, 2745
+  pass on zebkit. Of the 1332 failures, 457 are listed with a reason
+  (mostly what needs Playwright's own server or a browser the test starts
+  itself, and options not implemented), 4 fail on Chrome too, and 874 are not
+  yet explained. The 125 `tests/page` tests that ran out of time at 15 s were
+  run again at Playwright's 30 s: 124 still fail, so these are hangs and not
+  slowness. Later source fixes (popups, HAR, context options, `ignoreHTTPSErrors`
+  and others) are not in these counts. The endpoint is not yet at parity with
+  Playwright's server: section 5's list of what is built names commands, not
+  conformance.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
   endpoint and over CDP on the same build, and Playwright on Chrome. It is a standard test: a native command
