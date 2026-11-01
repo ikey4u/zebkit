@@ -27,6 +27,15 @@ engine laid text out twice as slowly as Chrome's own build. What is checked
 now is speed against Chrome's build of the same version, and size against
 Electron.
 
+## PDF in pages: what it cost
+
+Measured 2026-11-01, Linux `slim`, against the package before it (which also lacks the same build's
+Playwright and CDP fixes, so this is an upper bound): library 146,512,520 to 146,872,968 bytes, +0.25%;
+package +0.21%; library in xz +0.17 MB, +0.33%. No page without a PDF does anything more; no speed
+was measured, none is expected. Chromium's plugin is that cheap because PDFium was in the engine already,
+and `enable_pdf_ink2` and `enable_pdf_save_to_drive` are off. A 756-page document scrolled from end
+to end kept its PDF renderer at 183 MiB.
+
 ## The baseline: Electron
 
 `scripts/electron-baseline.sh` packages a hello-world application

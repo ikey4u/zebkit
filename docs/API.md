@@ -424,6 +424,26 @@ a page reaches only the documents it opened, and they close with its view.
 A PDF is untrusted input, and PDFium in the browser process is outside the
 renderer's sandbox: a sandboxed utility process for it is on the roadmap.
 
+### A PDF in a page
+
+A view that navigates to a PDF (`application/pdf`, `text/pdf`), or an `<embed>`, `<object>` or
+`<iframe>` of one, shows it as Chrome does, with nothing to call (2026-11-01). Chromium's own plugin
+(`//pdf`) parses and draws it, in a sandboxed renderer of the PDF's site (`--pdf-renderer`, no JIT)
+unless its frame's parent is of its own origin, whose script reaches into it, and so shares that
+process, as Chrome does not; the browser process does not parse it. A small viewer
+(`src/engine/pdf_viewer.js`) in a closed shadow root is what Chrome's extension is:
+
+- Continuous vertical scrolling: wheel, trackpad, scrollbar, Arrow keys, Page Up, Page Down, Home, End,
+  Space. Only pages in sight are loaded and painted.
+- Zoom (the toolbar, Control with `+`, `-`, `0`, Control and the wheel, a pinch), the page number, find
+  (Control F), selecting and copying text, links, forms, download, print, `Page.printToPDF`, `#page=`,
+  `#zoom=`, `#toolbar=0`.
+- To the page, as Chrome: `navigator.pdfViewerEnabled`, `navigator.plugins`, `mimeTypes`, the document's
+  HTML to the byte, one request for the file. Differences: `embed.postMessage` (Chrome's scripting API)
+  is not there; one frame, not Chrome's stub, extension frame and inner frame; forms' JavaScript is not
+  run; no thumbnails or outline sidebar.
+- `--disable-pdf-viewer`: PDFs are downloads and `pdfViewerEnabled` is false, as Chrome's "Download PDFs".
+
 ### Annotations
 
 `zebkit_pdf_annotation_add()` and `_update()` take JSON; the header lists every
