@@ -1,1 +1,6 @@
 # Playwright tests expected to fail on zebkit: "<project/file glob> | <title regex or *> | REASON".
+# Not implemented by the endpoint yet, each observed as "zebkit: no command ...".
+page/frame-frame-element.spec.ts | * | Frame.frameElement is not implemented by the endpoint
+page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented by the endpoint
+page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented by the endpoint
+page/page-drop.spec.ts | * | Frame.drop is not implemented by the endpoint
