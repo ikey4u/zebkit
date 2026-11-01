@@ -316,6 +316,7 @@ steps.pointerPrepare = arg => poll(arg.timeout, kActionWaits, async (say, attemp
   }
   if (!arg.force) {
     const states = arg.waitForEnabled ? ['visible', 'enabled', 'stable', 'non-inert'] : ['visible', 'stable'];
+    say(`waiting for element to be ${arg.waitForEnabled ? 'visible, enabled and stable' : 'visible and stable'}`);
     if (!(await checkStates(element, states, say)))
       return undefined;
   }
@@ -326,6 +327,7 @@ steps.pointerPrepare = arg => poll(arg.timeout, kActionWaits, async (say, attemp
     if (arg.force)
       throw fatal(point === 'error:notvisible' ? 'Element is not visible' : 'Element is outside of the viewport');
     say(messages[point]);
+    say(`retrying ${arg.action || 'click'} action`);
     return undefined;
   }
   const rounded = roundPoint(point);

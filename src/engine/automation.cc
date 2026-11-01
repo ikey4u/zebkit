@@ -147,6 +147,17 @@ constexpr char kFrameDetached[] = "Frame was detached";
 // How a selector enters the next frame (frameSelectors.ts).
 constexpr char kEnterFrame[] = " >> internal:control=enter-frame >> ";
 
+// A selector in a call log as Playwright's asLocator() shows a CSS one; one of
+// its own engines' chains stays as it is.
+std::string LocatorText(const std::string& selector) {
+  if (selector.find(" >> ") != std::string::npos ||
+      selector.find("internal:") != std::string::npos ||
+      selector.find('=') != std::string::npos) {
+    return selector;
+  }
+  return "locator('" + selector + "')";
+}
+
 std::string Json(const base::Value& value) {
   return base::WriteJson(value).value_or("null");
 }
@@ -1131,7 +1142,7 @@ class Automation : public content::WebContentsObserver,
     }
     Target frame_target = target;
     frame_target.selector = chunks[index];
-    call->Log("waiting for " + chunks[index]);
+    call->Log("waiting for " + LocatorText(chunks[index]));
     base::DictValue arg;
     arg.Set("state", "attached");
     TargetStep(call.get(), frame_target, "waitForSelector", std::move(arg),
@@ -1626,7 +1637,7 @@ class Automation : public content::WebContentsObserver,
   void Read(Call* call, const std::string& what, base::DictValue extra = {}) {
     extra.Set("what", what);
     if (!call->OnHandle())
-      call->Log("waiting for " + call->String("selector"));
+      call->Log("waiting for " + LocatorText(call->String("selector")));
     StepOnTarget(call, "read", std::move(extra), AsPolledValue());
   }
 
@@ -1676,7 +1687,7 @@ class Automation : public content::WebContentsObserver,
     }
     if (state.empty())
       state = "visible";
-    call->Log("waiting for " + call->String("selector") +
+    call->Log("waiting for " + LocatorText(call->String("selector")) +
               (state == "attached" ? "" : " to be " + state));
     base::DictValue arg;
     arg.Set("state", state);
@@ -1787,7 +1798,7 @@ class Automation : public content::WebContentsObserver,
                 }));
       return;
     }
-    call->Log("waiting for " + call->String("selector"));
+    call->Log("waiting for " + LocatorText(call->String("selector")));
     // frames.ts: a property is of the page's own objects.
     StepOnTarget(call, "expect", std::move(arg),
                  base::BindOnce([](Call* call, base::Value value) {
@@ -2025,7 +2036,7 @@ class Automation : public content::WebContentsObserver,
     if (action.checked)
       arg.Set("checked", *action.checked);
     if (!call->Flag("force") && !call->OnHandle())
-      call->Log("waiting for " + target.selector);
+      call->Log("waiting for " + LocatorText(target.selector));
     TargetStep(call.get(), target, "pointerPrepare", std::move(arg),
                base::BindOnce(&Automation::PointerPrepared,
                               weak_factory_.GetWeakPtr(), call, action, target));
@@ -2305,7 +2316,7 @@ class Automation : public content::WebContentsObserver,
     arg.Set("value", call->String("value"));
     arg.Set("force", call->Flag("force"));
     if (!call->OnHandle())
-      call->Log("waiting for " + call->String("selector"));
+      call->Log("waiting for " + LocatorText(call->String("selector")));
     StepOnTarget(call, "fill", std::move(arg),
                  base::BindOnce(
                      [](base::WeakPtr<Automation> self, Call* call,
@@ -2327,7 +2338,7 @@ class Automation : public content::WebContentsObserver,
     base::DictValue arg;
     arg.Set("resetSelection", reset_selection);
     if (!call->OnHandle())
-      call->Log("waiting for " + call->String("selector"));
+      call->Log("waiting for " + LocatorText(call->String("selector")));
     StepOnTarget(call, "focus", std::move(arg),
                  base::BindOnce([](base::OnceClosure then, Call*,
                                    base::Value) { std::move(then).Run(); },

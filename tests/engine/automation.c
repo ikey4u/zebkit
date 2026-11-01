@@ -159,7 +159,7 @@ static const command commands[] = {
     {"waitForSelector, visible", "Frame.waitForSelector", "{\"selector\": \"#go\"}", "\"element\":{\"element\":true"},
     {"waitForSelector, hidden", "Frame.waitForSelector", "{\"selector\": \"#hidden\", \"state\": \"hidden\"}", "{}"},
     {"a timeout with its call log", "Frame.click", "{\"selector\": \"#nothing\", \"timeout\": 300}",
-     "!Timeout 300ms exceeded.\nCall log:\n  - waiting for #nothing"},
+     "!Timeout 300ms exceeded.\nCall log:\n  - waiting for locator('#nothing')"},
     {"a link navigates in the document", "Frame.click", "{\"selector\": \"#link\"}", "{}"},
     {"the fragment", "Frame.evaluateExpression", "{\"expression\": \"location.hash\"}", "\"#second\""},
     {"goBack", "Page.goBack", NULL, "{"},
