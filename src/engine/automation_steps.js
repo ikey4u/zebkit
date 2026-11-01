@@ -771,6 +771,10 @@ steps.setContent = async arg => {
 
 // frames.ts's addScriptTag() and addStyleTag(): the element, once loaded.
 steps.addTag = (arg, out) => new Promise((fulfill, reject) => {
+  if (!arg.url && typeof arg.content !== 'string') {
+    reject(fatal('Provide an object with a `url`, `path` or `content` property'));
+    return;
+  }
   const script = arg.tag === 'script';
   const element = document.createElement(script ? 'script' : arg.url ? 'link' : 'style');
   if (script) {
@@ -791,9 +795,20 @@ steps.addTag = (arg, out) => new Promise((fulfill, reject) => {
     element.onload = done;
     element.onerror = () => reject(fatal(script ? 'Failed to load script at ' + arg.url : 'Error: Failed to load stylesheet'));
   }
+  // frames.ts's _raceWithCSPError(): a policy that refuses it is an error.
+  let refused = null;
+  const violation = e => { refused = e; };
+  document.addEventListener('securitypolicyviolation', violation);
   (document.head || document.documentElement).appendChild(element);
-  if (!arg.url)
-    done();
+  if (!arg.url) {
+    builtins.setTimeout(() => {
+      document.removeEventListener('securitypolicyviolation', violation);
+      if (refused)
+        reject(fatal(`Refused to apply inline ${script ? 'script' : 'style'}: it violates the Content Security Policy directive "${refused.violatedDirective}"`));
+      else
+        done();
+    }, 0);
+  }
 });
 
 steps.title = () => document.title;
@@ -1034,8 +1049,15 @@ return {
   waitForFunction(compiled, isFunction, argJson, handles, polling, timeout, plain) {
     return answer(async out => {
       const args = parseJson(argJson);
+      // locator.waitForFunction(): the agent puts the locator first; the
+      // function takes its element, found again at each try.
+      const on = Array.isArray(args) && args[0]?.waitOnSelector !== undefined ? args.shift() : null;
       const parameters = parametersOf(args, handles, plain);
       const predicate = () => {
+        if (on) {
+          const element = query({ selector: on.waitOnSelector, strict: on.strict })[0];
+          return element ? compiled(element, ...parameters) : undefined;
+        }
         if (isFunction === true || (isFunction === undefined && typeof compiled === 'function'))
           return compiled(...parameters);
         return compiled;

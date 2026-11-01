@@ -1532,6 +1532,13 @@ class Automation : public content::WebContentsObserver,
                         &handles)) {
       return;
     }
+    if (call->Has("selector") && args.size() > 1 && args[0] == '[') {
+      base::DictValue on;
+      on.Set("waitOnSelector", call->String("selector"));
+      on.Set("strict", call->Flag("strict"));
+      const bool empty = args[1] == ']';
+      args = "[" + Json(base::Value(std::move(on))) + (empty ? "" : ",") + args.substr(1);
+    }
     Agent(frame)->WaitForFunction(
         AutomationWorld::kMain, call->String("expression"), KindOf(call), args,
         handles, static_cast<int>(call->Number("pollingInterval")),
