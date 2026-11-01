@@ -483,6 +483,19 @@ class Connection {
   std::map<std::string, std::string> known_;
   std::map<zebkit_view*, std::string> pages_;
   std::map<std::string, std::string> fetched_;
+  std::map<std::string, base::ListValue> fetch_logs_;
+  // page.consoleMessages(), pageErrors(), requests(): what the page has had,
+  // as page.ts keeps it, and where the last main frame's navigation left them.
+  struct PageRecords {
+    std::vector<base::DictValue> console;
+    std::vector<base::DictValue> errors;
+    size_t console_mark = 0;
+    size_t errors_mark = 0;
+    std::vector<std::string> requests;
+  };
+  static constexpr size_t kMaxPageRecords = 200;
+  static constexpr size_t kMaxPageRequests = 100;
+  std::map<std::string, PageRecords> page_records_;
   // Stream objects' contents (Artifact.saveAsStream): what is left to read.
   std::map<std::string, std::string> streams_;
   // A remote client's files (BrowserContext.createTempFiles,
@@ -690,6 +703,10 @@ std::string Connection::RequestGuid(const std::string& page_guid,
   const std::string scope = page && !page->context.empty() ? page->context : page_guid;
   const std::string guid = Create(scope, "Request", std::move(initializer), std::move(object));
   Remember("request", page_guid, key, guid);
+  std::vector<std::string>& requests = page_records_[page_guid].requests;
+  requests.push_back(guid);
+  if (requests.size() > kMaxPageRequests)
+    requests.erase(requests.begin());
   return guid;
 }
 
@@ -1055,6 +1072,11 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string* name = params.FindString("name");
     navigated.Set("name", name ? *name : "");
     if (!params.FindBool("sameDocument").value_or(false)) {
+      if (!params.FindString("parentFrame")) {
+        PageRecords& records = page_records_[page_guid];
+        records.console_mark = records.console.size();
+        records.errors_mark = records.errors.size();
+      }
       navigated.Set("newDocument", base::DictValue());
       for (const char* state : {"domcontentloaded", "load", "networkidle"}) {
         base::DictValue remove;
@@ -1099,9 +1121,31 @@ void Connection::PageEvent(const std::string& page_guid,
     if (!location.FindInt("lineNumber"))
       location.Set("lineNumber", 0);
     console.Set("location", std::move(location));
-    console.Set("page", Ref(page_guid));
     console.Set("timestamp", base::Time::Now().InMillisecondsFSinceUnixEpoch());
+    PageRecords& records = page_records_[page_guid];
+    records.console.push_back(console.Clone());
+    if (records.console.size() > kMaxPageRecords) {
+      records.console.erase(records.console.begin());
+      if (records.console_mark > 0)
+        --records.console_mark;
+    }
+    console.Set("page", Ref(page_guid));
     Event(context, "console", std::move(console));
+  } else if (event == "Page.pageError") {
+    base::DictValue serialized;
+    if (const base::DictValue* error = params.FindDict("error"))
+      serialized.Set("error", error->Clone());
+    PageRecords& records = page_records_[page_guid];
+    records.errors.push_back(serialized.Clone());
+    if (records.errors.size() > kMaxPageRecords) {
+      records.errors.erase(records.errors.begin());
+      if (records.errors_mark > 0)
+        --records.errors_mark;
+    }
+    base::DictValue message;
+    message.Set("error", std::move(serialized));
+    message.Set("page", Ref(page_guid));
+    Event(context, "pageError", std::move(message));
   } else if (event == "BrowserContext.dialog") {
     base::DictValue initializer;
     initializer.Set("page", Ref(page_guid));
@@ -1582,12 +1626,15 @@ void Connection::Command(int id,
     if (method == "fetch") {
       params.Set("context", object->id);
       PrepareFetch(params, object->data);
+      const std::string* given_method = params.FindString("method");
+      std::string request_method = given_method ? *given_method : "GET";
       const bool fail_on_status =
           params.FindBool("failOnStatusCode")
               .value_or(object->data.FindBool("failOnStatusCode").value_or(false));
       Native(id, nullptr, "APIRequestContext.fetch", std::move(params),
              base::BindOnce(
-                 [](base::WeakPtr<Connection> self, int id, bool fail_on_status, base::Value result) {
+                 [](base::WeakPtr<Connection> self, int id, bool fail_on_status,
+                    std::string request_method, base::Value result) {
                    if (!self)
                      return;
                    base::DictValue* response =
@@ -1605,13 +1652,23 @@ void Connection::Command(int id,
                    const std::string uid = "fetch" + base::NumberToString(++self->next_fetch_);
                    if (const std::string* body = response->FindString("body"))
                      self->fetched_[uid] = *body;
+                   // fetch.ts's log of the exchange, shown by toBeOK().
+                   {
+                     const std::string* url = response->FindString("url");
+                     const std::string* text = response->FindString("statusText");
+                     base::ListValue log;
+                     log.Append("\xE2\x86\x92 " + request_method + " " + (url ? *url : std::string()));
+                     log.Append("\xE2\x86\x90 " + base::NumberToString(status) + " " +
+                                (text ? *text : std::string()));
+                     self->fetch_logs_[uid] = std::move(log);
+                   }
                    response->Remove("body");
                    response->Set("fetchUid", uid);
                    base::DictValue answer;
                    answer.Set("response", std::move(*response));
                    self->Reply(id, base::Value(std::move(answer)));
                  },
-                 weak_factory_.GetWeakPtr(), id, fail_on_status));
+                 weak_factory_.GetWeakPtr(), id, fail_on_status, std::move(request_method)));
     } else if (method == "fetchResponseBody") {
       const std::string* uid = params.FindString("fetchUid");
       base::DictValue answer;
@@ -1620,11 +1677,15 @@ void Connection::Command(int id,
       Reply(id, base::Value(std::move(answer)));
     } else if (method == "fetchLog") {
       base::DictValue answer;
-      answer.Set("log", base::ListValue());
+      const std::string* uid = params.FindString("fetchUid");
+      auto log = uid ? fetch_logs_.find(*uid) : fetch_logs_.end();
+      answer.Set("log", log != fetch_logs_.end() ? log->second.Clone() : base::ListValue());
       Reply(id, base::Value(std::move(answer)));
     } else if (method == "disposeAPIResponse") {
-      if (const std::string* uid = params.FindString("fetchUid"))
+      if (const std::string* uid = params.FindString("fetchUid")) {
         fetched_.erase(*uid);
+        fetch_logs_.erase(*uid);
+      }
       empty_reply();
     } else if (method == "storageState") {
       base::DictValue state;
@@ -1811,6 +1872,43 @@ void Connection::Command(int id,
       empty_reply();
       Dispose(guid);
     }
+    return;
+  }
+  if (type == "Page" && (method == "consoleMessages" || method == "pageErrors" ||
+                         method == "clearConsoleMessages" || method == "clearPageErrors" ||
+                         method == "requests")) {
+    PageRecords& records = page_records_[guid];
+    const std::string* filter = params.FindString("filter");
+    const bool all = filter && *filter == "all";
+    base::DictValue answer;
+    base::ListValue list;
+    if (method == "consoleMessages") {
+      for (size_t i = all ? 0 : records.console_mark; i < records.console.size(); ++i)
+        list.Append(records.console[i].Clone());
+      answer.Set("messages", std::move(list));
+    } else if (method == "pageErrors") {
+      for (size_t i = all ? 0 : records.errors_mark; i < records.errors.size(); ++i) {
+        if (const base::DictValue* error = records.errors[i].FindDict("error")) {
+          base::DictValue serialized;
+          serialized.Set("error", error->Clone());
+          list.Append(std::move(serialized));
+        }
+      }
+      answer.Set("errors", std::move(list));
+    } else if (method == "requests") {
+      for (const std::string& request : records.requests) {
+        if (Find(request))
+          list.Append(Ref(request));
+      }
+      answer.Set("requests", std::move(list));
+    } else if (method == "clearConsoleMessages") {
+      records.console.clear();
+      records.console_mark = 0;
+    } else {
+      records.errors.clear();
+      records.errors_mark = 0;
+    }
+    Reply(id, base::Value(std::move(answer)));
     return;
   }
   zebkit_view* view = ViewOf(*object);

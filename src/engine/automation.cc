@@ -2796,7 +2796,28 @@ class Automation : public content::WebContentsObserver,
       const std::u16string& message,
       int32_t line,
       const std::u16string& source,
-      const std::optional<std::u16string>&) override {
+      const std::optional<std::u16string>& stack) override {
+    // An uncaught exception is the page's error, not a console message, as
+    // Runtime.exceptionThrown is apart from Runtime.consoleAPICalled.
+    if (level == blink::mojom::ConsoleMessageLevel::kError &&
+        message.starts_with(u"Uncaught ")) {
+      const std::string text = base::UTF16ToUTF8(message.substr(9));
+      base::DictValue error;
+      const size_t colon = text.find(": ");
+      const bool named = colon != std::string::npos &&
+                         text.find(' ') == colon + 1 &&
+                         text.substr(0, colon).ends_with("Error");
+      error.Set("name", named ? text.substr(0, colon) : std::string("Error"));
+      error.Set("message", named ? text.substr(colon + 2) : text);
+      std::string trace = text;
+      if (stack && !stack->empty())
+        trace += "\n" + base::UTF16ToUTF8(*stack);
+      error.Set("stack", trace);
+      base::DictValue params;
+      params.Set("error", std::move(error));
+      Emit("Page.pageError", std::move(params));
+      return;
+    }
     const char* type = "log";
     switch (level) {
       case blink::mojom::ConsoleMessageLevel::kVerbose:
@@ -3952,6 +3973,22 @@ class Automation : public content::WebContentsObserver,
               call->Done(base::Value(std::move(answer)));
             },
             call, path));
+  }
+
+  // Page.requestGC, as crPage.ts.
+  void RequestGC(Call* call) {
+    call->view()->Send("HeapProfiler.collectGarbage", base::DictValue(),
+                       base::BindOnce(
+                           [](base::WeakPtr<Call> call, const base::DictValue*,
+                              const std::string& error) {
+                             if (!call)
+                               return;
+                             if (error.empty())
+                               call->Done();
+                             else
+                               call->Fail(error);
+                           },
+                           call->GetWeakPtr()));
   }
 
   void SetViewportSize(Call* call) {
@@ -5377,6 +5414,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"BrowserContext.clearCookies", &A::ClearCookies},
           {"APIRequestContext.fetch", &A::Fetch},
           {"Page.emulateMedia", &A::EmulateMedia},
+          {"Page.requestGC", &A::RequestGC},
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},
           {"Worker.evaluateExpression", &A::WorkerEvaluate},
