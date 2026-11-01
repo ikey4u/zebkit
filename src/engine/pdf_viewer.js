@@ -248,6 +248,7 @@
     }
     if (text !== lastFind) {
       lastFind = text;
+      findOrdinal = 0;
       native.find(text, false);
     } else {
       native.findNext(forward);
@@ -330,7 +331,12 @@
       post({type: 'getPasswordComplete', password: given || ''});
     },
     getSelectedTextReply(data) { scroller.dataset.selectedText = data.selectedText; },
-    zebkitFindCount(data) { findTotal = data.total; showFind(); },
+    zebkitFindCount(data) {
+      findTotal = data.total;
+      showFind();
+      // Blink selects the first match after starting a find; so does this.
+      if (data.final && findTotal && !findOrdinal) native.findNext(true);
+    },
     zebkitFindSelection(data) { findOrdinal = data.ordinal; showFind(); },
   };
   return (data) => {
