@@ -5,9 +5,9 @@
 #   zsdk-create.sh [windows|macos|all]      (default: all)
 #
 #   ZEBKIT_SDK_DIR    where they go: this script's directory when it is run as
-#                     <dir>/create.sh, otherwise ~/.cache/zebkit-sdk
+#                     <dir>/create.sh, otherwise the checkout's .cache/sdk
 #   ZEBKIT_ROOT       the zebkit checkout, which has Chromium's DEPS to pin from
-#                     (default: this script's checkout, or ~/zebkit)
+#                     (default: this script's checkout)
 #   ZSDK_LINK=1       also link them into that checkout's Chromium tree
 #
 # windows: everything is downloaded, by SHA-256; running this accepts Microsoft's
@@ -25,7 +25,7 @@ what="${1:-all}"
 case "$what" in windows|macos|all) ;; *) echo "usage: $(basename "$0") [windows|macos|all]" >&2; exit 2 ;; esac
 
 if [[ -z "${ZEBKIT_SDK_DIR:-}" ]]; then
-    if [[ "$(basename "$0")" == create.sh ]]; then ZEBKIT_SDK_DIR="$self"; else ZEBKIT_SDK_DIR="$HOME/.cache/zebkit-sdk"; fi
+    if [[ "$(basename "$0")" == create.sh ]]; then ZEBKIT_SDK_DIR="$self"; else ZEBKIT_SDK_DIR="$self/../.cache/sdk"; fi
 fi
 export ZEBKIT_SDK_DIR
 mkdir -p "$ZEBKIT_SDK_DIR"
@@ -41,7 +41,7 @@ if [[ "$(uname)" == Darwin ]]; then
 fi
 
 if [[ -z "${ZEBKIT_ROOT:-}" ]]; then
-    if [[ -f "$self/lib.sh" ]]; then ZEBKIT_ROOT="$(dirname "$self")"; else ZEBKIT_ROOT="$HOME/zebkit"; fi
+    if [[ -f "$self/lib.sh" ]]; then ZEBKIT_ROOT="$(dirname "$self")"; else ZEBKIT_ROOT="${self}"; fi
 fi
 [[ -f "$ZEBKIT_ROOT/scripts/lib.sh" ]] \
     || { echo "error: no zebkit checkout in $ZEBKIT_ROOT; set ZEBKIT_ROOT" >&2; exit 1; }
