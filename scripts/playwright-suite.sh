@@ -110,7 +110,7 @@ if [[ "$target" == zebkit ]]; then
         done
         (( up )) && break
         kill -0 "$engines" 2> /dev/null || die "the engines stopped: see $out"
-        read -r -t 0.2 < /dev/zero || true
+        sleep 0.2
     done
     (( up )) || die "the engines serve nothing: see $out/engine-0.log"
 else
