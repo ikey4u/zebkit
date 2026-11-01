@@ -59,3 +59,6 @@
 1059-content-shell-downloads-saved-without-a-prompt.patch
 1060-content-responsiveness-with-an-application-s-nsapplication.patch
 1061-gpu-hardware-compositing-on-apple-silicon-without-dawn.patch
+1062-content-when-a-widget-takes-input.patch
+1063-content-subresource-factories-of-a-frame-s-workers.patch
+1064-content-window-close-with-an-application-s-nsapplication.patch

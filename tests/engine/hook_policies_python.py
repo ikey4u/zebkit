@@ -456,7 +456,296 @@ def fetched(view, url, method=None):
     return box
 
 
+WS_SCRIPT = "new Promise(ok => { const s = window.s = new WebSocket(location.origin.replace('http', 'ws') + '/ws'); s.onmessage = e => { ok(e.data); s.close(); }; s.onerror = () => ok('failed'); })"
+SW_SCRIPT = "navigator.serviceWorker.register('/net-sw.js').then(r => new Promise(ok => { const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return ok(w); w.addEventListener('statechange', () => { if (w.state === 'activated') ok(w); }); })).then(w => new Promise(ok => { navigator.serviceWorker.onmessage = e => ok(e.data); w.postMessage('%s'); }))"
+SHARED_SCRIPT = "new Promise(ok => { const w = window.w = window.w || new SharedWorker('/net-shared.js'); w.port.onmessage = e => ok(e.data); w.port.postMessage('%s'); })"
+PAGE_READS = "fetch('%s').then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed')"
+TEXT_HEADERS = [{'name': 'Content-Type', 'value': 'text/plain'}, {'name': 'X-Added', 'value': 'by-host'}]
+
+
+def later(view, script):
+    box = []
+    view.evaluate(script, lambda value, error=None: box.append(value))
+    return box
+
+
+def network_ws(mode):
+    view, state = opened(BASE + '/page')
+    kept, events = [], []
+    view.on_network_event(guarded(events.append))
+    rules = {'net-ws-none': [], 'net-ws-filter': [{'url': '**/ws', 'resourceTypes': ['fetch']}],
+             'net-ws-continue': [{'url': '**/ws', 'resourceTypes': ['websocket']}]}.get(mode, [{'url': '**/ws'}])
+    view.set_network_filter(rules)
+    def asked(request):
+        kept.append(request)
+        metadata = request.metadata
+        if mode == 'net-ws-block':
+            assert metadata['resourceType'] == 'websocket' and metadata['url'].startswith('ws://') and metadata['stage'] == 'request', metadata
+            assert not request.respond('redirect', url='http://127.0.0.1/') and not request.respond('fulfill')
+            assert request.respond_stream() is None and not request.respond_file('/nothing')
+            assert not request.respond('continue', headers=[{'name': 'Origin', 'value': 'http://x'}])
+            assert request.respond('block')
+        elif mode == 'net-ws-continue':
+            assert request.respond('continue', headers=[{'name': 'X-Zebkit', 'value': 'yes'}])
+        elif mode == 'net-ws-close':
+            view.close()
+    if mode != 'net-ws-nofunc':
+        view.on_network(guarded(asked))
+    if mode == 'net-ws-timeout':
+        view.set_network_timeout(50)
+    box = later(view, WS_SCRIPT)
+    if mode == 'net-ws-close':
+        wait(lambda: state['closed'], 'closed')
+        stale(kept[0])
+        return
+    if mode == 'net-ws-abort':
+        wait(lambda: kept, 'asked')
+        ev(view, 's.close()')
+        wait(lambda: kept[0].info is None, 'the page closed it')
+        wait(lambda: box, 'the socket ended')
+        view.close()
+        return
+    if mode == 'net-ws-replace':
+        wait(lambda: kept, 'asked')
+        view.on_network(None)
+        stale(kept[0])
+        wait(lambda: any(e.get('reason') == 'handler-changed' for e in events), 'replaced told')
+    wait(lambda: box, 'the socket answered')
+    if mode == 'net-ws-block':
+        assert box == ['failed'] and len(kept) == 1, box
+    else:
+        assert box == ['hello'], box
+    if mode == 'net-ws-timeout':
+        wait(lambda: any(e.get('reason') == 'timeout' for e in events), 'timeout told')
+    if mode in ('net-ws-none', 'net-ws-nofunc', 'net-ws-filter'):
+        assert not kept, kept
+    view.close()
+
+
+def network_workers(mode):
+    view, state = opened(BASE + '/page')
+    kept = []
+    assert not view.set_network_filter_for_workers(True), 'no filter to decide'
+    view.set_network_filter([{'url': '**/ws'}] if mode == 'net-sw-ws' else [{'url': '**/worker-held'}])
+    def asked(request):
+        kept.append(request)
+        metadata = request.metadata
+        assert metadata['worker'] and metadata['frameId'] == '', metadata
+        expected = {'net-sw-ws': 'shared-or-service', 'net-sw-block': 'service', 'net-sw-running': 'service'}.get(mode, 'shared')
+        assert metadata['workerType'] == expected, metadata
+        assert request.respond('block')
+    view.on_network(guarded(asked))
+    if mode in ('net-sw-block', 'net-sw-ws', 'net-shared-block'):
+        assert view.set_network_filter_for_workers(True)
+    script = (SHARED_SCRIPT if mode.startswith('net-shared') else SW_SCRIPT) % ('socket' if mode == 'net-sw-ws' else 'fetch')
+    if mode in ('net-sw-running', 'net-shared-running'):
+        assert ev(view, script) == 'through'
+        assert not kept
+        assert view.set_network_filter_for_workers(True)
+    if mode in ('net-sw-none', 'net-shared-none'):
+        assert ev(view, script) == 'through' and not kept
+    else:
+        assert ev(view, script) == 'failed' and len(kept) == 1, kept
+    assert view.set_network_filter_for_workers(False)
+    view.close()
+
+
+def workers_latch(mode):
+    # A policy outlives the view that held it: refused until a view takes over or says off.
+    holder, holder_state = opened(BASE + '/page')
+    view, view_state = opened(BASE + '/page')
+    other, _ = opened()
+    both = (SW_SCRIPT % 'fetch', SHARED_SCRIPT % 'fetch')
+    assert holder.set_network_filter_for_workers(False), 'nothing to say off to'
+    holder.set_network_filter([])
+    assert holder.set_network_filter_for_workers(True)
+    for script in both:
+        assert ev(view, script) == 'through', script
+    view.set_network_filter([])
+    assert not view.set_network_filter_for_workers(False), "another view's, which is still there"
+    holder.close()
+    wait(lambda: holder_state['closed'], 'holder closed')
+    for script in both:
+        assert ev(view, script) == 'failed', script
+    assert view.set_network_filter_for_workers(True)
+    for script in both:
+        assert ev(view, script) == 'through', script
+    view.close()
+    wait(lambda: view_state['closed'], 'second holder closed')
+    assert other.set_network_filter_for_workers(False), 'off, with nobody holding it'
+    page, _ = opened(BASE + '/page')
+    for script in both:
+        assert ev(page, script) == 'through', script
+    page.close()
+    other.close()
+
+
+def network_body(mode):
+    view, state = opened(BASE + '/page')
+    events, chunks, ends, second = [], [], [], []
+    view.on_network_event(guarded(events.append))
+    for invalid in ([{'body': True}], [{'stage': 'response', 'mode': 'hold', 'body': True}]):
+        try:
+            view.set_network_filter(invalid)
+        except zebkit.Error:
+            pass
+        else:
+            raise AssertionError('invalid filter accepted: %r' % (invalid,))
+    view.set_network_filter([{'url': '**' + path, 'stage': 'response', 'body': True} for path in ('/download.bin', '/big', '/cut', '/slow-text')])
+    late = []
+    def told(request_id, data, end, truncated):
+        assert not ends
+        chunks.append((request_id, len(data)))
+        if data and mode == 'net-body':
+            assert data[0:1] == b'z'
+        if end:
+            ends.append(truncated)
+            if any(e.get('kind') in ('finished', 'failed') for e in events):
+                late.append(end)
+        if data and mode == 'net-body-close':
+            view.close()
+        if data and mode == 'net-body-replace':
+            view.on_network_body(guarded(lambda *args: second.append(args)))
+    if mode != 'net-body-none':
+        view.on_network_body(guarded(told))
+    size = lambda: sum(n for _, n in chunks)
+    if mode in ('net-body', 'net-body-none'):
+        assert ev(view, PAGE_READS % '/download.bin') == 65536
+        wait(lambda: any(e.get('kind') == 'finished' for e in events), 'finished')
+        response = next(e for e in events if e.get('kind') == 'response')
+        if mode == 'net-body':
+            assert size() == 65536 and ends == [False] and not late, (size(), ends)
+            assert chunks[0][0] == response['requestId'], (chunks[0], response)
+        else:
+            assert not chunks
+    elif mode == 'net-body-big':
+        assert ev(view, PAGE_READS % '/big') == 65 << 20
+        assert size() == 64 << 20 and ends == [True], (size(), ends)
+    elif mode == 'net-body-backpressure':
+        assert ev(view, "fetch('/big').then(r => { window.r = r; return 1; })") == 1
+        pump(1)
+        assert not ends, size()  # Blink's fetch reads ahead, so no bound can be seen from here.
+        assert ev(view, 'r.arrayBuffer().then(b => b.byteLength)') == 65 << 20
+        assert size() == 64 << 20 and ends == [True], (size(), ends)
+    elif mode == 'net-body-error':
+        assert ev(view, PAGE_READS % '/cut') == 'failed'
+        wait(lambda: any(e.get('kind') == 'failed' for e in events), 'failed told')
+        assert size() == 1000 and ends == [False] and not late, (size(), ends)
+    elif mode == 'net-body-abort':
+        box = later(view, "(window.a = new AbortController(), fetch('/slow-text', {signal: a.signal}).then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed'))")
+        wait(lambda: size() > 0, 'first chunk')
+        ev(view, 'a.abort()')
+        wait(lambda: box, 'aborted')
+        assert box == ['failed'], box
+        wait(lambda: any(e.get('kind') == 'failed' for e in events), 'failed told')
+        assert ends == [False] and not late, ends
+    elif mode == 'net-body-close':
+        later(view, PAGE_READS % '/slow-text')
+        wait(lambda: state['closed'], 'closed')
+        at = size()
+        pump(.2)
+        assert size() == at
+        return
+    elif mode == 'net-body-replace':
+        assert ev(view, PAGE_READS % '/big') == 65 << 20
+        assert not second and not ends, (len(second), ends)
+        assert ev(view, PAGE_READS % '/download.bin') == 65536
+        assert len(second) >= 2
+    view.close()
+
+
+def network_answers(mode):
+    view, state = opened(BASE + '/page')
+    kept, events, streams, blocked = [], [], [], []
+    view.on_network_event(guarded(events.append))
+    view.set_network_filter([{'url': '**/held'}])
+    def asked(request):
+        kept.append(request)
+        if mode in ('net-file', 'net-file-close'):
+            path = str(FILES / 'big.bin')
+            assert not request.respond_file('relative.bin') and not request.respond_file(path, status=302)
+            assert request.respond_file(path, status=201, headers=[{'name': 'Content-Type', 'value': 'application/x-zebkit'}, {'name': 'X-Added', 'value': 'by-host'}])
+            if mode == 'net-file-close':
+                view.close()
+        elif mode == 'net-file-missing':
+            assert request.respond_file(str(FILES / 'nothing.bin'))
+        else:
+            assert request.respond_stream(status=302) is None
+            stream = request.respond_stream(status=201, headers=TEXT_HEADERS)
+            assert stream and stream.is_open and request.info is None
+            streams.append(stream)
+            if mode == 'net-stream':
+                assert stream.write(b'ab') and stream.write(b'cd')
+                stream.end()
+                assert not stream.is_open and not stream.write(b'x')
+                stream.end()
+            elif mode == 'net-stream-fail':
+                assert stream.write(b'ab')
+                stream.end(failed=True)
+            elif mode == 'net-stream-full':
+                assert not stream.write(bytes((1 << 20) + 1))
+                left = [3 << 20]
+                def pour():
+                    while left[0] > 0:
+                        if not stream.write(b'f' * 262144):
+                            blocked.append(1)
+                            return
+                        left[0] -= 262144
+                    stream.end()
+                stream.on_writable(guarded(pour))
+                pour()
+            else:
+                view.close()
+    view.on_network(guarded(asked))
+    if mode == 'net-file':
+        assert ev(view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), r.headers.get('content-type'), (await r.arrayBuffer()).byteLength].join('|'))") == '201|by-host|application/x-zebkit|3145728'
+    elif mode == 'net-file-missing':
+        assert ev(view, PAGE_READS % '/held') == 'failed'
+        wait(lambda: any(e.get('kind') == 'failed' and 'FILE_NOT_FOUND' in e.get('error', '') for e in events), 'failed told')
+    elif mode in ('net-file-close', 'net-stream-close'):
+        later(view, PAGE_READS % '/held')
+        wait(lambda: state['closed'], 'closed')
+        if streams:
+            wait(lambda: not streams[0].write(b'x'), 'nobody reads')
+            assert not streams[0].is_open
+            streams[0].end()
+        return
+    elif mode == 'net-stream':
+        assert ev(view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))") == '201|by-host|abcd'
+    elif mode == 'net-stream-full':
+        assert ev(view, PAGE_READS % '/held') == 3 << 20
+        assert blocked
+    elif mode == 'net-stream-fail':
+        assert ev(view, PAGE_READS % '/held') == 'failed'
+        wait(lambda: any(e.get('kind') == 'failed' for e in events), 'failed told')
+    view.close()
+
+
+def network_redirect_modes(mode):
+    view, state = opened(BASE + '/page')
+    kept = []
+    view.set_network_filter([{'url': '**/held'}])
+    def asked(request):
+        kept.append(request)
+        assert request.respond('redirect', url=BASE + '/echo?redirected')
+    view.on_network(guarded(asked))
+    which = 'manual' if mode == 'net-redirect-manual' else 'error'
+    answer = ev(view, "fetch('/held', {redirect: '%s'}).then(r => r.type, () => 'failed')" % which)
+    assert answer == ('opaqueredirect' if which == 'manual' else 'failed') and len(kept) == 1, answer
+    view.close()
+
+
 def network(mode):
+    if mode.startswith('net-ws-'):
+        return network_ws(mode)
+    if mode.startswith(('net-sw-', 'net-shared-')):
+        return network_workers(mode)
+    if mode.startswith('net-body'):
+        return network_body(mode)
+    if mode.startswith(('net-file', 'net-stream')):
+        return network_answers(mode)
+    if mode in ('net-redirect-manual', 'net-redirect-error'):
+        return network_redirect_modes(mode)
     view, state = opened(BASE + '/page')
     kept, events = [], []
     view.on_network_event(guarded(events.append))
@@ -704,7 +993,7 @@ def main():
         assert zebkit.init(['hook-policies-python'] + sys.argv[1:]) == 0
         try:
             group = MODE.split('-')[0]
-            {'popup': popup, 'two': two_views, 'cancel': cancel_running, 'cdp': cdp_order, 'net': network, 'external': external, 'download': download, 'cert': certificate, 'world': world, 'file': chooser,
+            {'popup': popup, 'workers': workers_latch, 'two': two_views, 'cancel': cancel_running, 'cdp': cdp_order, 'net': network, 'external': external, 'download': download, 'cert': certificate, 'world': world, 'file': chooser,
              'media': media, 'keys': keys, 'menu': menu, 'fullscreen': fullscreen}[group](MODE)
             assert not errors, errors
             pump(.1)

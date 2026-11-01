@@ -198,7 +198,8 @@ cc app.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o app   # macO
 ./app --remote-debugging-port=9222     # with CDP for Puppeteer and Playwright
 ```
 
-In a container without unprivileged user namespaces, add `--no-sandbox`.
+Without unprivileged user namespaces the engine refuses to start and says why: install its
+helper, or in a container of its own add `--no-sandbox` (`docs/SANDBOX.md`).
 
 ### The page and the application
 

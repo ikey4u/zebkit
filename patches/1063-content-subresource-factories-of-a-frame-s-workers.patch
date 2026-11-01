@@ -1,0 +1,29 @@
+Content: make a frame's dedicated workers' subresource factories again too.
+
+UpdateSubresourceLoaderFactories() put the embedder's factory in front of the
+network's for a frame's documents only; a dedicated worker already running kept
+what it had, past a network filter set later. As DevTools does for its Fetch domain
+(render_frame_devtools_agent_host.cc).
+
+--- a/content/browser/zebkit_automation.cc
++++ b/content/browser/zebkit_automation.cc
+@@ -12,6 +12,7 @@
+ #include "content/browser/renderer_host/render_widget_host_impl.h"
+ #include "content/browser/renderer_host/render_widget_host_view_base.h"
+ #include "content/browser/web_contents/web_contents_impl.h"
++#include "content/browser/worker_host/dedicated_worker_hosts_for_document.h"
+ #include "services/device/public/mojom/geolocation_context.mojom.h"
+ #include "services/device/public/mojom/geoposition.mojom.h"
+ #include "third_party/blink/public/common/input/web_touch_event.h"
+@@ -76,7 +77,10 @@
+ }
+ 
+ void UpdateSubresourceLoaderFactories(RenderFrameHost* frame) {
+-  static_cast<RenderFrameHostImpl*>(frame)->UpdateSubresourceLoaderFactories();
++  auto* impl = static_cast<RenderFrameHostImpl*>(frame);
++  impl->UpdateSubresourceLoaderFactories();
++  DedicatedWorkerHostsForDocument::GetOrCreateForCurrentDocument(impl)
++      ->UpdateSubresourceLoaderFactories();
+ }
+ 
+ }  // namespace content

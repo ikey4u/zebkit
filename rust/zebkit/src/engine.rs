@@ -250,6 +250,23 @@ pub fn is_headless() -> bool {
     unsafe { sys::zebkit_is_headless() }
 }
 
+/// What zebkit decides for the whole engine, while it runs (`<zebkit/hooks.h>`):
+/// thirdPartyCookies, spareRenderer, dialogs, downloads, newWindows. All of it
+/// applies or none. On the engine's thread.
+pub fn set_engine_settings(json: &str) -> Result<(), Error> {
+    if json.contains('\0') {
+        return Err(Error::new("runtime settings contain NUL"));
+    }
+    let mut error = std::ptr::null_mut();
+    let ok = unsafe { sys::zebkit_set_engine_settings(crate::c_string(json).as_ptr(), &mut error) };
+    if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "runtime settings rejected") }) }
+}
+
+/// `{"explicit": ..., "effective": ...}`, as JSON; None off the engine's thread.
+pub fn engine_settings() -> Option<String> {
+    unsafe { crate::take_string(sys::zebkit_get_engine_settings()) }
+}
+
 /// zebkit's version, as in `"0.1.0"`.
 pub fn version() -> String {
     unsafe { string_from(sys::zebkit_version()) }.unwrap_or_default()

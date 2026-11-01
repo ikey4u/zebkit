@@ -55,6 +55,15 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+
+#include "sandbox/linux/services/credentials.h"
+#include "sandbox/policy/switches.h"
+#endif
 #include "components/embedder_support/switches.h"
 #include "net/http/http_util.h"
 #include "net/proxy_resolution/proxy_config.h"
@@ -79,6 +88,7 @@
 #include "net/grit/net_resources.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/websocket.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
@@ -297,6 +307,57 @@ void MainDelegate::ShutdownBrowser() {
   }
 }
 
+#if BUILDFLAG(IS_LINUX)
+// docs/SANDBOX.md. Chromium's choice (ZygoteHostImpl::Init): user namespaces, else
+// the helper "chrome-sandbox" beside FILE_EXE, which is beside the engine.
+bool CheckSandbox(const base::CommandLine& command) {
+  if (command.HasSwitch(sandbox::policy::switches::kNoSandbox)) {
+    fprintf(stderr, "zebkit: running pages without the sandbox (--no-sandbox)\n");
+    return true;
+  }
+  const bool root = geteuid() == 0;
+  const bool namespaces =
+      !root && !command.HasSwitch(sandbox::policy::switches::kDisableNamespaceSandbox) &&
+      sandbox::Credentials::CanCreateProcessInNewUserNS();
+  if (namespaces)
+    return true;
+  const base::FilePath helper = LibraryDirectory().AppendASCII("chrome-sandbox");
+  std::string state = "is not there";
+  struct stat info;
+  if (!root && !command.HasSwitch(sandbox::policy::switches::kDisableSetuidSandbox) &&
+      stat(helper.value().c_str(), &info) == 0) {
+    struct statvfs volume;
+    if (info.st_uid != 0 || !(info.st_mode & S_ISUID) || !(info.st_mode & S_IXOTH)) {
+      state = "is not installed (it must be owned by root, mode 4755)";
+    } else if (statvfs(helper.value().c_str(), &volume) == 0 && (volume.f_flag & ST_NOSUID)) {
+      state = "is on a file system mounted nosuid";
+    } else {
+      return true;
+    }
+  }
+  if (root) {
+    fprintf(stderr,
+            "zebkit: refusing to start as root with the sandbox, which Chromium does not "
+            "support. Run as another user, or pass --no-sandbox where the container itself "
+            "is the isolation.\n");
+    return false;
+  }
+  fprintf(stderr,
+          "zebkit: no sandbox for the page processes, and pages do not run without one "
+          "unless told to.\n"
+          "  This system does not allow unprivileged user namespaces, and the helper %s %s.\n"
+          "  Any one of:\n"
+          "  - allow them (on Ubuntu 23.10 and later: an AppArmor profile, or sysctl "
+          "kernel.apparmor_restrict_unprivileged_userns=0; elsewhere sysctl "
+          "kernel.unprivileged_userns_clone=1 or user.max_user_namespaces);\n"
+          "  - install the helper, as root: %s/zebkit-sandbox-install;\n"
+          "  - pass --no-sandbox where something else isolates the process, such as a "
+          "container of its own, and only for pages you trust that much.\n",
+          helper.value().c_str(), state.c_str(), LibraryDirectory().value().c_str());
+  return false;
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
 std::optional<int> MainDelegate::BasicStartupComplete() {
   // Chromium finds its data files beside the executable, which for an
   // application is not where the engine is. (On macOS, in the framework
@@ -321,6 +382,12 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
 #endif
   auto result = content::ShellMainDelegate::BasicStartupComplete();
   const auto& command = *base::CommandLine::ForCurrentProcess();
+#if BUILDFLAG(IS_LINUX)
+  // In the browser process: never without a sandbox unless told, and a refusal
+  // that says what to do, ahead of Chromium's fatal message.
+  if (!result && !command.HasSwitch("type") && !CheckSandbox(command))
+    return 1;
+#endif
   if (command.HasSwitch("disable-logging")) {
     logging::SetMinLogLevel(logging::LOGGING_FATAL);
   } else if (command.HasSwitch("log-level")) {
@@ -629,9 +696,9 @@ void BrowserClient::ConfigureNetworkContextParamsForShell(
   if (!context_params->cookie_manager_params)
     context_params->cookie_manager_params =
         network::mojom::CookieManagerParams::New();
+  // The switch is the default of zebkit_set_engine_settings's thirdPartyCookies.
   context_params->cookie_manager_params->block_third_party_cookies =
-      !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          "zebkit-allow-third-party-cookies");
+      BlocksThirdPartyCookies(context);
   // Accept-Language as Chrome sends it: each language with its weight
   // ("en-US,en;q=0.9"), not the list as it is.
   context_params->accept_language = net::HttpUtil::GenerateAcceptLanguageHeader(
@@ -677,8 +744,8 @@ bool BrowserClient::ShouldUseSpareRenderProcessHost(
     content::BrowserContext* browser_context,
     const GURL& site_url,
     std::optional<SpareProcessRefusedByEmbedderReason>& refused_reason) {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          "zebkit-spare-renderer")) {
+  // "spareRenderer" of zebkit_set_engine_settings; the switch is its default.
+  if (UsesSpareRenderer()) {
     refused_reason = std::nullopt;
     return true;
   }
@@ -796,18 +863,35 @@ void BrowserClient::WillCreateURLLoaderFactory(
   // Dedicated workers have their ancestor frame; shared and service workers
   // have no view. Ahead of automation's, as ahead of CDP's.
   if (type == URLLoaderFactoryType::kNavigation ||
-      type == URLLoaderFactoryType::kDocumentSubResource ||
-      type == URLLoaderFactoryType::kWorkerMainResource ||
-      type == URLLoaderFactoryType::kWorkerSubResource) {
-    InterceptNetworkHookFactory(frame,
-                                type == URLLoaderFactoryType::kWorkerMainResource ||
-                                    type == URLLoaderFactoryType::kWorkerSubResource,
-                                factory_builder);
+      type == URLLoaderFactoryType::kDocumentSubResource) {
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kFrame, factory_builder);
+  } else if (type == URLLoaderFactoryType::kWorkerMainResource ||
+             type == URLLoaderFactoryType::kWorkerSubResource) {
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kWorker, factory_builder);
+  } else if (type == URLLoaderFactoryType::kServiceWorkerScript ||
+             type == URLLoaderFactoryType::kServiceWorkerSubResource) {
+    InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kServiceWorker, factory_builder);
   }
   if (type == URLLoaderFactoryType::kNavigation ||
       type == URLLoaderFactoryType::kDocumentSubResource) {
     InterceptURLLoaderFactory(frame, factory_builder);
   }
+}
+
+bool BrowserClient::WillInterceptWebSocket(content::RenderFrameHost* frame) {
+  return WillInterceptNetworkHookWebSocket(frame);
+}
+
+void BrowserClient::CreateWebSocket(
+    content::RenderFrameHost* frame,
+    WebSocketFactory factory,
+    const GURL& url,
+    const net::SiteForCookies& site_for_cookies,
+    const std::optional<std::string>& user_agent,
+    mojo::PendingRemote<network::mojom::WebSocketHandshakeClient> handshake_client,
+    WebSocketOptions options) {
+  CreateNetworkHookWebSocket(frame, std::move(factory), url, user_agent, std::move(handshake_client),
+                             std::move(options.header_client));
 }
 
 void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
@@ -941,6 +1025,7 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InstallNavigationHooks();
   InstallPageHooks();
   InstallDownloadHooks();
+  StartRuntimeSettings();
   InstallClientCertificateHooks();
   InstallNetworkHooks();
   AllowSchemes();
@@ -967,6 +1052,7 @@ void BrowserMainParts::PostMainMessageLoopRun() {
   StopCertificateHooks();
   StopHttpAuthHooks();
   StopPageHooks();
+  StopRuntimeSettings();
   StopDownloadHooks();
   StopClientCertificateHooks();
   StopNetworkHooks();
@@ -1044,6 +1130,8 @@ bool zebkit_view_set_popup_policy(zebkit_view* view, zebkit_popup_policy policy)
 zebkit_popup_policy zebkit_view_get_popup_policy(zebkit_view* view) {
   if (view && view->popup_policy_)
     return *view->popup_policy_;
+  if (auto engine = zebkit::EnginePopupPolicy())
+    return *engine;
   return base::CommandLine::ForCurrentProcess()->HasSwitch(embedder_support::kDisablePopupBlocking)
       ? ZEBKIT_POPUP_POLICY_ALLOW : ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE;
 }

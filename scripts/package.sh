@@ -104,6 +104,10 @@ done
 
 copy_data "$package"
 copy_headers
+# The optional sandbox helper (docs/SANDBOX.md): not set-user-ID until installed,
+# which only root can do and a package cannot.
+cp "$build_dir/chrome_sandbox" "$package/chrome-sandbox"
+cp "$ZEBKIT_ROOT/scripts/zebkit-sandbox-install" "$package/zebkit-sandbox-install"
 
 is_elf() { [[ "$(od -An -tx1 -N4 "$1" | tr -d ' ')" == 7f454c46 ]]; }
 

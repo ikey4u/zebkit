@@ -33,6 +33,8 @@ pub struct Bounds {
     /// Hosts of the OAuth providers configured by the operator: resolved for
     /// the device flow; pages and net_fetch are still held to `origins`.
     pub oauth_hosts: Vec<String>,
+    /// Keys settings_set may change: none unless the operator names them.
+    pub settings: BTreeSet<String>,
 }
 
 impl Bounds {

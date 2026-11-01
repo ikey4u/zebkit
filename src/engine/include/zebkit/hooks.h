@@ -17,6 +17,38 @@ extern "C" {
 ZEBKIT_API bool zebkit_view_set_settings(zebkit_view *view, const char *settings_json, char **error);
 ZEBKIT_API char *zebkit_view_get_settings(zebkit_view *view);
 
+/* What zebkit decides itself, changed while it runs: batches of JSON, merged by key.
+ * null removes a value, {} does nothing; an unknown key, a bad value or a wrong type
+ * is an error, and nothing of the batch changes. Each has today's default until set.
+ * The values:
+ *   "thirdPartyCookies": "block" | "allow". --zebkit-allow-third-party-cookies is the
+ *     default. The engine's goes to all contexts, now and later, over what a view
+ *     asked; a view's goes to its context, all the views in it. For requests from when
+ *     the network has it (asynchronously); a document keeps the cookies it has read.
+ *   "dialogs": "default" | "hold" | "accept" | "dismiss", <zebkit/page.h>'s policies.
+ *     zebkit_view_set_dialog_policy sets the same value of the view.
+ *   "downloads": "save" | "deny". With no function (zebkit_view_on_download): saved
+ *     or cancelled. A function still decides.
+ *   "newWindows": "block-without-gesture" | "allow" | "block", zebkit_popup_policy.
+ *     zebkit_view_set_popup_policy sets the same value of the view.
+ *   "spareRenderer": true | false. The engine's alone; --zebkit-spare-renderer is the
+ *     default. True makes a renderer ready when a page has finished loading, which
+ *     the next navigation to another site takes; a frame committing before then drops
+ *     it. False takes it away, within a load when the engine started with the switch.
+ *     Content's own keeping of one is fixed at startup: only the switch gives that.
+ * A view's value goes before the engine's, which goes before the default; a popup
+ * starts with its opener's newWindows and downloads.
+ * Getters: {"explicit": what was set, "effective": what holds}, JSON the caller frees;
+ * the view's "downloads" is also "ask" when a function decides, "deny" for a popup
+ * whose opener has closed, and the engine's has "spareRendererRunning". NULL outside
+ * the running engine's thread or for a closed view. A page never has these.
+ * Engine thread only; they are separate from the web preferences above.
+ */
+ZEBKIT_API bool zebkit_set_engine_settings(const char *settings_json, char **error);
+ZEBKIT_API char *zebkit_get_engine_settings(void);
+ZEBKIT_API bool zebkit_view_set_runtime_settings(zebkit_view *view, const char *settings_json, char **error);
+ZEBKIT_API char *zebkit_view_get_runtime_settings(zebkit_view *view);
+
 typedef enum zebkit_permission_state {
     ZEBKIT_PERMISSION_INVALID = -1,
     ZEBKIT_PERMISSION_PROMPT = 0,
@@ -375,20 +407,41 @@ typedef void (*zebkit_fullscreen_func)(zebkit_view*, const char *json, void *dat
 ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view*, zebkit_fullscreen_func, void *data);
 
 /* Network requests and responses of a view's frames and of their dedicated workers:
- * a loader factory in front of the network's. Nothing costs anything until a filter
- * is set. A filter is a JSON array of rules, replacing the last, of at most 256:
+ * a loader factory in front of the network's, and their WebSockets' handshakes.
+ * Nothing costs anything until a filter is set, but one mojo hop per request of a
+ * shared or service worker. A filter is a JSON array of rules, replacing the last, of
+ * at most 256:
  * {url: Playwright's glob (default every URL), mode: "hold" (default) or "observe",
  * stage: "request" (default) or "response", resourceTypes: ["document", "stylesheet",
- * "image", "media", "font", "script", "manifest", "fetch"], frames: "all", "main" or
- * "sub"}. Invalid input changes nothing. Frames there are from then on; a worker
- * running already, service workers, shared workers and WebSockets are not covered.
- * Requests answered from a service worker never reach this. CDP's Fetch and Network
- * stay behind it.
+ * "image", "media", "font", "script", "manifest", "fetch", "websocket"], frames: "all",
+ * "main" or "sub", body: true (zebkit_view_on_network_body; response stage)}. Invalid
+ * input changes nothing. Frames there are from then on; a dedicated worker running
+ * already is not covered. Requests answered from a service worker never reach this.
+ * CDP's Fetch and Network stay behind it.
+ * A WebSocket is its handshake, at the request stage: continue, with changed headers
+ * (Cookie and User-Agent too, what else the network would leave out is refused), or
+ * block; redirect and fulfill are refused. Its frames are not seen. A rule without
+ * resourceTypes matches it, with a ws: or wss: URL. A dedicated worker's is told as
+ * its frame's, with worker false.
  */
 ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_json, char **error);
+/* This view's filter also decides for the shared and service workers of its profile,
+ * running ones too, their scripts, fetches and WebSockets (a shared worker's first
+ * script through its first client's frame included). False without a filter set: []
+ * is one. A later call of another view takes over. While a policy is set and its view
+ * has gone, those requests fail with ERR_BLOCKED_BY_CLIENT, unasked, until another view
+ * takes over or any view says off: closing a view does not end a policy, only off does,
+ * which another view's still there refuses. Workers' metadata has frameId "", mainFrame
+ * false, worker true, workerType "shared" or "service" ("dedicated" for those of a
+ * frame). Their WebSockets say "shared-or-service": content gives them no frame and no
+ * profile, so that they go to the one profile with a policy whichever they are from,
+ * and with two such profiles they fail. Their requests answered from a service
+ * worker's own cache never reach this, nor do background fetches.
+ */
+ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on);
 /* What a hold rule holds is asked: stage, requestId (the same across redirects), url,
  * method, headers as the page gave them (the network adds Cookie, Origin, Referer and
- * more), resourceType, frameId, mainFrame, worker, navigation, initiator, hasBody,
+ * more), resourceType, frameId, mainFrame, worker, workerType, navigation, initiator, hasBody,
  * bodySize, body (base64, up to 64 KiB), bodyComplete; for the response, status,
  * statusText, responseHeaders, mimeType; timeoutMs, deadlineUnixMs. Each redirect's
  * destination is a request again; a redirect response is told, not held.
@@ -406,23 +459,71 @@ ZEBKIT_API void zebkit_view_on_network(zebkit_view*, zebkit_network_func, void *
  *   the network refuses a page are refused here. A response's change does not undo
  *   a cookie already stored, nor CORS, which the network has checked.
  * {action: "block", error: Playwright's name, default "blockedbyclient"}
- * {action: "redirect", url}: http or https; not for redirect: "manual" or "error".
+ * {action: "redirect", url}: http or https. As with CDP's Fetch, a fetch's redirect:
+ *   "manual" sees it as an opaque redirect and "error" fails, on the page's side.
  * {action: "fulfill", status, headers}, with @body of at most 64 MiB. As CDP's
  *   Fetch.fulfillRequest, CORS is not applied and Set-Cookie is not stored here.
  * Invalid replies return false with the reason and leave the request pending.
- * The original response's body cannot be read or changed in place.
+ * The original response's body cannot be changed in place; it can be read as it
+ * passes (zebkit_view_on_network_body).
  */
 ZEBKIT_API bool zebkit_network_respond(zebkit_network_request*, const char *reply_json, const void *body,
                                        size_t body_size, char **error);
+/* Fulfills from a file: a reply of {status, headers}, and an absolute path, which is
+ * the application's decision and never a page's. Read off the engine's thread, through
+ * the pipe as the page reads, of any size; Range is not applied. Content-Type is
+ * sniffed when absent and the page wants that. A file that cannot be read fails the
+ * request with ERR_FILE_NOT_FOUND afterwards: this has answered by then, and
+ * zebkit_view_on_network_event tells failed without a rule asking.
+ */
+ZEBKIT_API bool zebkit_network_respond_file(zebkit_network_request*, const char *reply_json, const char *path,
+                                            char **error);
+/* Fulfills with what the application writes, the response going at once: {status,
+ * headers}; give a Content-Type, since no bytes are there to sniff. NULL with the
+ * reason when invalid, and the request stays pending. No deadline applies from here: a
+ * stream that is not ended leaves the page waiting. Engine thread only.
+ */
+typedef struct zebkit_network_stream zebkit_network_stream;
+ZEBKIT_API zebkit_network_stream *zebkit_network_respond_stream(zebkit_network_request*, const char *reply_json,
+                                                                char **error);
+/* Takes all the bytes or none: false when they do not fit in what waits, at most 1 MiB
+ * (a larger write never fits; write parts), or when the page has gone or stopped
+ * reading. */
+ZEBKIT_API bool zebkit_network_stream_write(zebkit_network_stream*, const void *bytes, size_t size);
+/* Called once after a write that returned false, when that write fits, or when
+ * nothing will (zebkit_network_stream_is_open says which). */
+typedef void (*zebkit_network_stream_writable_func)(zebkit_network_stream*, void *data);
+ZEBKIT_API void zebkit_network_stream_on_writable(zebkit_network_stream*, zebkit_network_stream_writable_func,
+                                                  void *data);
+ZEBKIT_API bool zebkit_network_stream_is_open(zebkit_network_stream*);
+/* Ends the response after what waits, or as failed at once. Frees the stream, whose
+ * pointer then does nothing; to be called also when the page has gone. */
+ZEBKIT_API void zebkit_network_stream_end(zebkit_network_stream*, bool failed);
 /* Default 30000 ms; accepted range 1..300000. */
 ZEBKIT_API bool zebkit_view_set_network_timeout(zebkit_view*, uint32_t milliseconds);
 ZEBKIT_API char *zebkit_network_request_info(zebkit_network_request*);
 /* What an observe rule matches, holding nothing: kind request, response, redirect,
  * finished or failed (with error), and the fields above; dropped counts reports over
- * 4096 waiting. Outcomes of held requests too: state, reason. Bodies are not read.
+ * 4096 waiting. Outcomes of held requests too: state, reason. A WebSocket is told
+ * request only. Bodies are not read.
  */
 typedef void (*zebkit_network_event_func)(zebkit_view*, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_network_event(zebkit_view*, zebkit_network_event_func, void *data);
+/* The body of a response a rule with body: true matches, told as it passes to the page
+ * and never kept: @bytes for this call only, at most 64 KiB at a time, with @request_id
+ * the requestId of its events; such a rule tells them as an observe rule at the
+ * response stage does, and holds nothing. The next chunk is read when the page has
+ * taken this one, so that a page that does not read waits as it would without this.
+ * Each response ends with one call of end true: truncated true once 64 MiB have been
+ * told, after which the page's stream goes on untold; truncated false at the end of the
+ * body, or when the network failed or the page went, which the following failed event
+ * (with error) tells from finished. Not told to a function set after the response
+ * started, nor after this function is replaced or the view has closed. Without a
+ * function, nothing passes through here. NULL removes it.
+ */
+typedef void (*zebkit_network_body_func)(zebkit_view*, const char *request_id, const void *bytes, size_t size,
+                                         bool end, bool truncated, void *data);
+ZEBKIT_API void zebkit_view_on_network_body(zebkit_view*, zebkit_network_body_func, void *data);
 
 #ifdef __cplusplus
 }

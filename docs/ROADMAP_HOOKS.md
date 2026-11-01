@@ -57,7 +57,7 @@ service worker's fetch, are for the engine (`zebkit_on_*`).
 | Permissions | `PermissionControllerDelegate::RequestPermissionsFromCurrentDocument`, `GetPermissionStatus` (`ShellPermissionManager`, `patches/1023`) | request waits; status on the spot | denied, but a screen wake lock | asked; status set |
 | Popups and new windows | `ContentBrowserClient::CanCreateWindow` (with `user_gesture`), `WebContentsDelegate::IsWebContentsCreationOverridden`, `AddNewContents` | on the spot | blocked without a click, as Chrome blocks them; `zebkit_view_on_new_window` takes the URL of one that opens, `zebkit_view_on_window_open` the window as a view with its opener (`patches/1027`) | set, then told |
 | Navigation and redirects | `ContentBrowserClient::CreateThrottlesForNavigation` (`NavigationThrottleRegistry`): a `NavigationThrottle`'s `WillStartRequest`, `WillRedirectRequest`, `WillProcessResponse` | waits (`DEFER`, then `Resume` or `CancelDeferredNavigation`) | allowed | asked |
-| Network requests and responses | `ContentBrowserClient::WillCreateURLLoaderFactory` (a factory in front of the network's, as Chrome's webRequest has), `CreateWebSocket` | waits | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_view_on_network_event`: nothing held or told without a filter; WebSockets not covered | asked; told |
+| Network requests and responses | `ContentBrowserClient::WillCreateURLLoaderFactory` (a factory in front of the network's, as Chrome's webRequest has), `CreateWebSocket` | waits | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_view_on_network_event`, `zebkit_view_on_network_body`: nothing held or told without a filter; WebSocket handshakes and, by `zebkit_view_set_network_filter_for_workers`, shared and service workers covered | asked; told |
 | User agent and client hints | `ContentBrowserClient::GetUserAgent`, `GetUserAgentMetadata`; per view `WebContents::SetUserAgentOverride` | on the spot | Chrome's for 155, `--headless` too; `zebkit_view_set_user_agent` sets the string | set |
 | Downloads | `DownloadManagerDelegate::DetermineDownloadTarget`, `InterceptDownloadIfApplicable`; `WebContentsDelegate::CanDownload` | waits | `zebkit_view_on_download`, `zebkit_view_on_download_progress`; without a function saved in `Downloads` in the profile's directory | asked; told |
 | JavaScript dialogs, beforeunload | `JavaScriptDialogManager::RunJavaScriptDialog`, `RunBeforeUnloadDialog` | waits | done: `zebkit_view_on_dialog`, policy per view (`<zebkit/page.h>`) | asked |
@@ -174,20 +174,41 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   precedence are still separate work.
 - **Partial: network requests and responses.** `network_hooks.cc`: a factory in
   front of the network's for a view's frames and their dedicated workers, installed
-  once a view has a filter (`zebkit_view_set_network_filter`), and for frames there
-  already through `UpdateSubresourceLoaderFactories`. Rules choose by URL glob,
-  resource type, frame and stage (request or response), and either hold or observe.
-  Held requests are blocked, redirected, answered with bytes or continued with
-  changed headers; held responses get changed headers, or are blocked or replaced.
-  Unanswered or with the function replaced, they go on. Observing holds nothing and
-  reads no body. CDP's Fetch sits behind the hook; a test has it see the hook's
-  header. Not done: WebSockets (`CreateWebSocket`); shared and service workers, which
-  have no view; a dedicated worker running before the filter was set; reading or
-  streaming a response's body, and answering from a file or a stream; the `Cookie`
-  and other headers the network adds are not seen or changed; `redirect: "manual"`
-  or `"error"` fetches fail when the application redirects them. As CDP's
-  `Fetch.fulfillRequest`, an answered request skips CORS and does not store
-  `Set-Cookie`, and a response's changed headers come after the network's CORS check.
+  once a view has a filter (`zebkit_view_set_network_filter`), and for frames and their running
+  dedicated workers there already through `UpdateSubresourceLoaderFactories` (`patches/1063`).
+  Rules choose by URL glob, resource type, frame and stage (request or response), and either hold
+  or observe. Held requests are blocked, redirected, answered with bytes, a file or a stream, or
+  continued with changed headers; held responses get changed headers, or are blocked or replaced.
+  Unanswered or with the function replaced, they go on; with no policy left, refused. Observing
+  holds nothing. CDP's Fetch sits behind the hook; a test has it see the hook's header.
+  Added 2026-10-31 (`hook_policies.py`, every mode in C, Rust, Python and JavaScript):
+  - **WebSockets** (`CreateWebSocket`): the handshake is a request of type `websocket`; a rule
+    without types holds it too. Continue, with headers the network would not drop, or block;
+    redirect and fulfil are refused. Frames are not filtered. A dedicated worker's socket looks like
+    its frame's. A socket of a service or shared worker has no profile from content: it goes to the
+    one profile with a policy, and with two it is refused.
+  - **Shared and service workers:** `zebkit_view_set_network_filter_for_workers`. That view's filter
+    decides for its profile's workers, including their scripts and those already running. Once on,
+    when that view goes, the profile's worker requests are refused until another takes over or
+    `off` is said. Their factories are always proxied, so without a policy each such request
+    pays one more mojo hop.
+  - **Response bodies:** a rule with `"body": true`, `zebkit_view_on_network_body`: chunks of up to
+    64 KiB as they pass to the page, the next read only when the last is written, so never held
+    whole; told up to 64 MiB a response, then `truncated` once while the page's stream goes on. One
+    `end` per response, before its finished or failed event.
+  - **Answers from a file or a stream:** `zebkit_network_respond_file`, read off the engine's
+    thread, no range; `zebkit_network_respond_stream`, with a 1 MiB buffer, write false when full or
+    gone (`zebkit_network_stream_is_open`), `zebkit_network_stream_on_writable`, no sniffing.
+  - **`redirect: "manual"` and `"error"`** fetches now work when the application redirects them,
+    as DevTools' does.
+  Not done: **the headers the network adds** (`Cookie`, `Set-Cookie`), which `header_client` and
+  `kURLLoadOptionUseHeaderClient` admit with no patch, about 250 lines with a new mandatory CORS
+  preflight client and two more held stages each hop: left for its own change. Early hints,
+  prefetch and background fetch factories do not pass the hook, so a 103's preload gets past a rule.
+  Handshake outcomes of WebSockets are not told. A service worker's socket in a two-profile engine
+  is refused rather than decided. As CDP's `Fetch.fulfillRequest`, an answered request skips CORS
+  and does not store `Set-Cookie`, and a response's changed headers come after the network's CORS check.
+  No backpressure bound on bodies can be observed from a page's fetch: Blink's reads ahead itself.
 - **Implemented foundation: user agent and client hints, per view.**
   `zebkit_view_set_user_agent_override` sets the string, optional language,
   platform and `userAgentMetadata` together using Chromium's validated CDP
@@ -256,7 +277,7 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
     cross-site iframe media queries, runtime changes and reset. C/host JS pass,
     Rust passes 61 integration checks, and the complete engine suite passes.
     macOS framework/package and C hooks ARM64 cross-link pass; runtime remains.
-  Engine-wide settings and unifying more policy hooks remain open.
+  Engine-wide settings: `zebkit_set_engine_settings`, `zebkit_view_set_runtime_settings` (2026-10-31, `docs/API.md`).
 - **Implemented: file choosers, camera and microphone, keys, context menu,
   fullscreen** (`patches/1058`, `page_hooks.cc`), as `<zebkit/hooks.h>` says. Asked
   ones end when their document goes. Permissions Policy still refuses a frame before
@@ -270,10 +291,6 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   is not asked, and a default of none holds even after a function is set. The operating
   system's certificate stores (`CreateClientCertStore`) are not offered on any
   platform.
-
-Known open: on a heavily loaded machine, input sent by a separate CDP client
-just as a page becomes ready is occasionally lost (a few runs in hundreds); the
-cause is not found. `tests/engine/hook_policies.py` retries those two modes once.
 
 ## In the bindings
 

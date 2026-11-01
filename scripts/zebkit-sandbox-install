@@ -1,0 +1,37 @@
+#!/bin/sh
+# Installs the set-user-ID helper of zebkit's sandbox, for a system without
+# unprivileged user namespaces (docs/SANDBOX.md). Run as root, from the package.
+# A package cannot do this by itself: unpacked by a user, nothing in it is root's.
+set -eu
+here="$(cd "$(dirname "$0")" && pwd -P)"
+helper="$here/chrome-sandbox"
+[ "$(id -u)" = 0 ] || { echo "zebkit-sandbox-install: run as root" >&2; exit 1; }
+[ -f "$helper" ] && [ ! -L "$helper" ] || { echo "zebkit-sandbox-install: no $helper" >&2; exit 1; }
+# Anyone who can change the directory could replace what root is about to bless.
+dir="$here"
+while [ "$dir" != / ]; do
+    owner="$(stat -c %u "$dir")"
+    mode="$(stat -c %a "$dir")"
+    case "$mode" in
+        # Sticky, as /tmp: nobody can replace what is another's.
+        1???) writable=0 ;;
+        *[2367]?|*[2367]) writable=1 ;;
+        *) writable=0 ;;
+    esac
+    if [ "$writable" = 1 ]; then
+        echo "zebkit-sandbox-install: $dir can be written by others (mode $mode): move the package" >&2
+        exit 1
+    fi
+    if [ "$owner" != 0 ] && [ "$owner" != "$(stat -c %u "$here")" ]; then
+        echo "zebkit-sandbox-install: $dir belongs to another user" >&2
+        exit 1
+    fi
+    dir="$(dirname "$dir")"
+done
+chown root:root "$helper"
+chmod 4755 "$helper"
+if command -v findmnt >/dev/null && findmnt -no OPTIONS --target "$helper" | grep -qw nosuid; then
+    echo "zebkit-sandbox-install: $here is on a file system mounted nosuid: the helper will not work there" >&2
+    exit 1
+fi
+echo "zebkit-sandbox-install: installed $helper (root, 4755)"

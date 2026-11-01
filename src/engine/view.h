@@ -221,6 +221,8 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_navigation_result_data_ = nullptr;
   base::DictValue settings_;
   std::optional<zebkit_popup_policy> popup_policy_;
+  // "downloads" of the runtime settings: true denies when no function decides.
+  std::optional<bool> deny_downloads_;
   base::DictValue window_open_info_;
   zebkit_window_open_event_func on_window_open_event_ = nullptr;
   void* on_window_open_event_data_ = nullptr;
@@ -254,6 +256,9 @@ struct zebkit_view : public content::WebContentsObserver,
   uint32_t network_timeout_ms_ = 30000;
   size_t network_events_pending_ = 0;
   uint64_t network_events_dropped_ = 0;
+  zebkit_network_body_func on_network_body_ = nullptr;
+  void* on_network_body_data_ = nullptr;
+  uint64_t network_body_generation_ = 0;
   zebkit_external_protocol_func on_external_protocol_ = nullptr;
   void* on_external_protocol_data_ = nullptr;
   uint64_t external_protocol_generation_ = 0;

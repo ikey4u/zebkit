@@ -1,7 +1,5 @@
-//! The table of tools. A group is a module with a `tools()` function: the
-//! runtime settings of docs/ROADMAP.md are one more group, `settings`, added
-//! here, with `--tools` and the checks of arguments working for it as they do for
-//! the others.
+//! The table of tools. A group is a module with a `tools()` function, with `--tools`
+//! and the checks of arguments working for it as they do for the others.
 
 use crate::bounds::Bounds;
 use serde_json::{json, Value};
@@ -12,6 +10,7 @@ pub mod files;
 pub mod media;
 pub mod pages;
 pub mod pdf;
+pub mod settings;
 pub mod ui;
 
 pub struct Output {
@@ -49,6 +48,7 @@ pub fn all() -> &'static [Tool] {
         tools.extend(media::tools());
         tools.extend(ui::tools());
         tools.extend(auth::tools());
+        tools.extend(settings::tools());
         for tool in &tools {
             if let Err(why) = crate::schema::check_schema(&tool.schema) {
                 panic!("{}: {why}", tool.name);

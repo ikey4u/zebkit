@@ -33,6 +33,7 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -211,6 +212,19 @@ class Fetch : public network::SimpleURLLoaderStreamConsumer {
         network::SimpleURLLoader::Create(std::move(request), kAnnotation);
     fetch->loader_->SetOnResponseStartedCallback(
         base::BindOnce(&Fetch::ResponseStarted, base::Unretained(fetch)));
+    // What the application gave for one origin is not for another's, as the
+    // fetch standard does for Authorization. The stack's own cookies are kept
+    // to their own origins by the stack.
+    fetch->loader_->SetOnRedirectCallback(base::BindRepeating(
+        [](const GURL& from, const net::RedirectInfo& info,
+           const network::mojom::URLResponseHead&,
+           std::vector<std::string>* removed) {
+          if (!url::Origin::Create(from).IsSameOriginWith(info.new_url)) {
+            removed->push_back("Authorization");
+            removed->push_back("Proxy-Authorization");
+            removed->push_back("Cookie");
+          }
+        }));
     if (!body.empty() || !content_type.empty())
       fetch->loader_->AttachStringForUpload(std::move(body), content_type);
     fetch->loader_->SetAllowHttpErrorResults(true);

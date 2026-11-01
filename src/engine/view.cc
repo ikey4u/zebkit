@@ -55,6 +55,7 @@
 #include "zebkit/engine/navigation_hooks.h"
 #include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/popup_metadata.h"
+#include "zebkit/engine/settings.h"
 #include "zebkit/engine/pdf_script.h"
 
 namespace {
@@ -931,8 +932,10 @@ void zebkit_view::RenderFrameDeleted(content::RenderFrameHost* frame) {
 
 void zebkit_view::DidFinishLoad(content::RenderFrameHost* frame,
                                 const GURL& url) {
-  if (frame->IsInPrimaryMainFrame())
+  if (frame->IsInPrimaryMainFrame()) {
+    zebkit::SpareAfterLoad(web_contents()->GetBrowserContext());
     Load(ZEBKIT_LOAD_FINISHED, url);
+  }
 }
 
 void zebkit_view::DidFailLoad(content::RenderFrameHost* frame,
@@ -1016,6 +1019,7 @@ void HandlePopup(content::WebContents* opener,
   made->policy_opener_ = view->GetWeakPtr();
   made->inherits_policy_ = true;
   made->popup_policy_ = view->popup_policy_;
+  made->deny_downloads_ = view->deny_downloads_;
   made->navigation_fail_closed_ = view->navigation_fail_closed_;
   made->permission_timeout_ms_ = view->permission_timeout_ms_;
   made->navigation_timeout_ms_ = view->navigation_timeout_ms_;

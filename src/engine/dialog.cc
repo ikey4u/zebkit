@@ -21,6 +21,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -40,6 +41,7 @@
 #include "content/shell/browser/shell_javascript_dialog_manager.h"
 #include "url/gurl.h"
 #include "zebkit/engine/page_internal.h"
+#include "zebkit/engine/settings.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -85,17 +87,22 @@ class DialogState : public content::WebContentsObserver,
     content::JavaScriptDialogManager::DialogClosedCallback callback;
   };
 
-  zebkit_dialog_policy policy = ZEBKIT_DIALOG_POLICY_DEFAULT;
+  // Unset: the engine's (zebkit_set_engine_settings), else the default.
+  std::optional<zebkit_dialog_policy> policy;
   zebkit_dialog_func on_dialog = nullptr;
   void* on_dialog_data = nullptr;
   zebkit_dialog_closed_func on_closed = nullptr;
   void* on_closed_data = nullptr;
   bool close_requested = false;
 
+  zebkit_dialog_policy Policy() const {
+    return policy.value_or(EngineDialogPolicy().value_or(ZEBKIT_DIALOG_POLICY_DEFAULT));
+  }
+
   // What becomes of a new dialog: held, or answered now (true or false).
   enum class Decision { kHold, kAccept, kDismiss, kShell };
   Decision Decide() {
-    switch (policy) {
+    switch (Policy()) {
       case ZEBKIT_DIALOG_POLICY_HOLD:
         return Decision::kHold;
       case ZEBKIT_DIALOG_POLICY_ACCEPT:
@@ -389,8 +396,19 @@ void ReportPrintDialog(content::WebContents* contents,
     state->ReportClosed(id, decision == DialogState::Decision::kAccept, "");
 }
 
+std::optional<zebkit_dialog_policy> ExplicitDialogPolicy(zebkit_view* view) {
+  DialogState* state = StateOf(view);
+  return state ? state->policy : std::nullopt;
+}
+
+void ClearDialogPolicy(zebkit_view* view) {
+  if (DialogState* state = StateOf(view))
+    state->policy.reset();
+}
+
 }  // namespace zebkit
 
+using zebkit::EngineDialogPolicy;
 using zebkit::StateOf;
 
 extern "C" {
@@ -425,7 +443,7 @@ void zebkit_view_set_dialog_policy(zebkit_view* view,
 
 zebkit_dialog_policy zebkit_view_get_dialog_policy(zebkit_view* view) {
   zebkit::DialogState* state = StateOf(view);
-  return state ? state->policy : ZEBKIT_DIALOG_POLICY_DEFAULT;
+  return state ? state->Policy() : EngineDialogPolicy().value_or(ZEBKIT_DIALOG_POLICY_DEFAULT);
 }
 
 bool zebkit_view_dialog_respond(zebkit_view* view,

@@ -178,6 +178,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     resize(width, height) { native.viewResize(this.#id, width, height); }
     setSettings(settings) { return native.viewSettings(this.#id, JSON.stringify(settings)); }
     get settings() { return JSON.parse(native.viewGetSettings(this.#id)); }
+    setRuntimeSettings(settings) { return native.viewRuntimeSettings(this.#id, JSON.stringify(settings)); }
+    get runtimeSettings() { return JSON.parse(native.viewGetRuntimeSettings(this.#id)); }
     setPermission(permission, state, origin = null) {
       return native.viewPermission(this.#id, 'set', origin, permission, state);
     }
@@ -207,14 +209,36 @@ constexpr char kBootstrap[] = R"js((function (native) {
     }
     // Hooks of <zebkit/hooks.h>: an asked hook's function gets a request with
     // metadata, info and respond(...); a told hook's function gets the event.
-    #asked(kind, fn, responder) {
+    #asked(kind, fn, responder, more = () => ({})) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError(`${kind} handler must be a function or null`);
       return native.viewHook(this.#id, kind, fn === null ? null : metadata => {
         const id = metadata.id;
         fn(Object.freeze({metadata: Object.freeze(metadata),
           get info() { return native.hookRequest(kind, 'info', id); },
-          respond(...args) { return responder(id, ...args); }
+          respond(...args) { return responder(id, ...args); },
+          ...more(id)
         }));
+      });
+    }
+    #writables = null;
+    #networkStream(handle) {
+      const view = this;
+      return Object.freeze({
+        write(bytes) { return native.networkStream('write', handle, bytes); },
+        onWritable(fn) {
+          if (typeof fn !== 'function') throw new TypeError('a writable handler must be a function');
+          if (!view.#writables) {
+            view.#writables = new Map();
+            native.viewHook(view.#id, 'network-stream-writable', id => { const call = view.#writables.get(id); if (call) call(); });
+          }
+          view.#writables.set(handle, fn);
+          return native.viewHookCall(view.#id, 'network-stream-writable', handle);
+        },
+        get isOpen() { return native.networkStream('open', handle); },
+        end(failed = false) {
+          if (view.#writables) view.#writables.delete(handle);
+          return native.networkStream('end', handle, !!failed);
+        }
       });
     }
     #told(kind, fn) {
@@ -222,7 +246,20 @@ constexpr char kBootstrap[] = R"js((function (native) {
       return native.viewHook(this.#id, kind, fn);
     }
     setNetworkFilter(rules) { return native.viewHookCall(this.#id, 'network-filter', JSON.stringify(rules)); }
-    onNetwork(fn) { return this.#asked('network', fn, (id, reply, body = null) => native.hookRequest('network', 'respond', id, JSON.stringify(reply), body)); }
+    setNetworkFilterForWorkers(on) { return native.viewHookCall(this.#id, 'network-filter-workers', !!on); }
+    onNetwork(fn) {
+      return this.#asked('network', fn, (id, reply, body = null) => native.hookRequest('network', 'respond', id, JSON.stringify(reply), body), id => ({
+        respondFile: (path, reply = {}) => native.hookRequest('network', 'respond-file', id, JSON.stringify(reply), String(path)),
+        respondStream: (reply = {}) => {
+          const handle = native.hookRequest('network', 'respond-stream', id, JSON.stringify(reply));
+          return handle === null ? null : this.#networkStream(handle);
+        }
+      }));
+    }
+    onNetworkBody(fn) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('network-body observer must be a function or null');
+      return native.viewHook(this.#id, 'network-body', fn);
+    }
     onNetworkEvent(fn) { return this.#told('network-event', fn); }
     setNetworkTimeout(ms) { return native.viewHookTimeout(this.#id, 'network', ms); }
     onExternalProtocol(fn) { return this.#told('external-protocol', fn); }
@@ -296,6 +333,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     args: Object.freeze([...native.args]),
     quit: () => native.quit(),
     View,
+    setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
+    get engineSettings() { return JSON.parse(native.engineSettings()); },
     fetch: (url, options) => call('fetch', 'fetch', [String(url), options || {}]),
     fs: api('fs', ['readFile', 'readText', 'writeFile', 'readDir', 'stat', 'mkdir', 'remove']),
     compress: (format, bytes, level) => call('compress', 'compress', [format, bytes, level ?? -1]),
@@ -556,6 +595,8 @@ struct zebkit_script {
   static void SetTimer(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ClearTimer(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void Quit(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void SetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void GetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info);
   int WrapView(zebkit_view* view);
   static void SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -571,9 +612,10 @@ struct zebkit_script {
   static void ViewHookTimeout(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void NetworkStreamCall(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
-  enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kWindowOpenInfo };
+  enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kRuntimeSettings, kGetRuntimeSettings, kWindowOpenInfo };
   template <Action action>
   static void ViewAction(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -668,6 +710,7 @@ zebkit_script::~zebkit_script() {
     if (view) zebkit_view_on_certificate(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_http_auth(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_network(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_network_body(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_download(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_client_certificate(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_file_chooser(view.get(), nullptr, nullptr);
@@ -726,6 +769,7 @@ void zebkit_script::Install() {
   SetMethod(native, "viewHookTimeout", &ViewHookTimeout);
   SetMethod(native, "viewHookCall", &ViewHookCall);
   SetMethod(native, "hookRequest", &HookRequest);
+  SetMethod(native, "networkStream", &NetworkStreamCall);
   SetMethod(native, "navigationRequest", &NavigationRequest);
   SetMethod(native, "viewEvaluate", &ViewEvaluate);
   SetMethod(native, "viewUserAgentOverride", &ViewUserAgentOverride);
@@ -744,6 +788,10 @@ void zebkit_script::Install() {
   SetMethod(native, "viewPopupPolicy", &ViewAction<Action::kPopupPolicy>);
   SetMethod(native, "viewSettings", &ViewAction<Action::kSettings>);
   SetMethod(native, "viewGetSettings", &ViewAction<Action::kGetSettings>);
+  SetMethod(native, "viewRuntimeSettings", &ViewAction<Action::kRuntimeSettings>);
+  SetMethod(native, "viewGetRuntimeSettings", &ViewAction<Action::kGetRuntimeSettings>);
+  SetMethod(native, "setEngineSettings", &SetEngineSettings);
+  SetMethod(native, "engineSettings", &GetEngineSettings);
   SetMethod(native, "viewClose", &ViewAction<Action::kClose>);
   SetMethod(native, "viewUrl", &ViewAction<Action::kUrl>);
   SetMethod(native, "viewTitle", &ViewAction<Action::kTitle>);
@@ -968,6 +1016,22 @@ void zebkit_script::ClearTimer(const v8::FunctionCallbackInfo<v8::Value>& info) 
 void zebkit_script::Quit(const v8::FunctionCallbackInfo<v8::Value>& info) {
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce([] { zebkit_quit(); }));
+}
+
+void zebkit_script::SetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  char* error = nullptr;
+  const bool ok = zebkit_set_engine_settings(Utf8(isolate, info[0]).c_str(), &error);
+  if (!ok) isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "runtime settings rejected")));
+  zebkit_free(error);
+  info.GetReturnValue().Set(ok);
+}
+
+void zebkit_script::GetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  char* json = zebkit_get_engine_settings();
+  info.GetReturnValue().Set(String8(isolate, json ? json : "{}"));
+  zebkit_free(json);
 }
 
 // ---- Views ----
@@ -1445,6 +1509,34 @@ void zebkit_script::ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& 
   auto* entry = self->FindView(info);
   if (!entry) { PermissionTypeError(isolate, "the view is closed"); return; }
   const auto kind = Utf8(isolate, info[1]);
+  if (kind == "network-body") {
+    zebkit_view_on_network_body(entry->view, nullptr, nullptr);
+    entry->handlers.erase(kind);
+    if (info[2]->IsFunction()) {
+      entry->handlers[kind].Reset(isolate, info[2].As<v8::Function>());
+      zebkit_view_on_network_body(entry->view, [](zebkit_view*, const char* id, const void* bytes, size_t size,
+                                                  bool end, bool truncated, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        auto* isolate = hook->script->isolate();
+        v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, size);
+        if (size) memcpy(buffer->Data(), bytes, size);
+        hook->script->ViewEvent(hook->id, "network-body",
+                                {String8(isolate, id), buffer, v8::Boolean::New(isolate, end),
+                                 v8::Boolean::New(isolate, truncated)});
+      }, entry->hook);
+    }
+    info.GetReturnValue().Set(true);
+    return;
+  }
+  // What a stream's onWritable calls; the stream is told by its number.
+  if (kind == "network-stream-writable") {
+    entry->handlers.erase(kind);
+    if (info[2]->IsFunction()) entry->handlers[kind].Reset(isolate, info[2].As<v8::Function>());
+    info.GetReturnValue().Set(true);
+    return;
+  }
   ZEBKIT_ASKED_HOOK("network", zebkit_view_on_network, zebkit_network_request)
   ZEBKIT_TOLD_HOOK("network-event", zebkit_view_on_network_event)
   ZEBKIT_TOLD_HOOK("external-protocol", zebkit_view_on_external_protocol)
@@ -1494,6 +1586,22 @@ void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info
                                       info[4]->IsTrue(), &error);
   } else if (kind == "network-filter") {
     ok = zebkit_view_set_network_filter(entry->view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (kind == "network-filter-workers") {
+    info.GetReturnValue().Set(zebkit_view_set_network_filter_for_workers(entry->view, info[2]->IsTrue()));
+    return;
+  } else if (kind == "network-stream-writable") {
+    uint64_t handle = 0;
+    if (!base::StringToUint64(Utf8(isolate, info[2]), &handle) || !handle) {
+      PermissionTypeError(isolate, "invalid stream");
+      return;
+    }
+    zebkit_network_stream_on_writable(reinterpret_cast<zebkit_network_stream*>(static_cast<uintptr_t>(handle)),
+                                      [](zebkit_network_stream* stream, void* data) {
+      const std::string json = "\"" + base::NumberToString(reinterpret_cast<uintptr_t>(stream)) + "\"";
+      DeliverHook(data, "network-stream-writable", json.c_str());
+    }, entry->hook);
+    info.GetReturnValue().Set(true);
+    return;
   } else if (kind == "reserved-keys") {
     ok = zebkit_view_set_reserved_keys(entry->view, Utf8(isolate, info[2]).c_str(), &error);
   } else if (kind == "fullscreen-policy") {
@@ -1507,6 +1615,34 @@ void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info
     return;
   }
   info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::NetworkStreamCall(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* isolate = info.GetIsolate();
+  const auto action = Utf8(isolate, info[0]);
+  uint64_t handle = 0;
+  if (!base::StringToUint64(Utf8(isolate, info[1]), &handle) || !handle) {
+    PermissionTypeError(isolate, "invalid stream");
+    return;
+  }
+  auto* stream = reinterpret_cast<zebkit_network_stream*>(static_cast<uintptr_t>(handle));
+  if (action == "write") {
+    // Bytes are a Uint8Array or a string, taken as its UTF-8.
+    std::string bytes;
+    if (info[2]->IsArrayBufferView()) {
+      auto view = info[2].As<v8::ArrayBufferView>();
+      bytes.resize(view->ByteLength());
+      view->CopyContents(bytes.data(), bytes.size());
+    } else if (info[2]->IsString()) {
+      bytes = Utf8(isolate, info[2]);
+    }
+    info.GetReturnValue().Set(zebkit_network_stream_write(stream, bytes.data(), bytes.size()));
+  } else if (action == "open") {
+    info.GetReturnValue().Set(zebkit_network_stream_is_open(stream));
+  } else if (action == "end") {
+    zebkit_network_stream_end(stream, info[2]->IsTrue());
+    info.GetReturnValue().Set(true);
+  }
 }
 
 void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -1537,6 +1673,21 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     *out = Utf8(isolate, info[index]);
     return out->find('\0') == std::string::npos;
   };
+  if (kind == "network" && action == "respond-file") {
+    info.GetReturnValue().Set(zebkit_network_respond_file(static_cast<zebkit_network_request*>(request),
+                                                          Utf8(isolate, info[3]).c_str(), Utf8(isolate, info[4]).c_str(),
+                                                          nullptr));
+    return;
+  }
+  if (kind == "network" && action == "respond-stream") {
+    zebkit_network_stream* stream =
+        zebkit_network_respond_stream(static_cast<zebkit_network_request*>(request), Utf8(isolate, info[3]).c_str(), nullptr);
+    if (stream)
+      info.GetReturnValue().Set(String8(isolate, base::NumberToString(reinterpret_cast<uintptr_t>(stream)).c_str()));
+    else
+      info.GetReturnValue().SetNull();
+    return;
+  }
   std::string first, second;
   bool ok = false;
   if (kind == "network") {
@@ -1701,6 +1852,20 @@ void zebkit_script::ViewAction(
     }
     case Action::kGetSettings: {
       char* json = zebkit_view_get_settings(view);
+      info.GetReturnValue().Set(String8(isolate, json ? json : "{}"));
+      zebkit_free(json);
+      break;
+    }
+    case Action::kRuntimeSettings: {
+      char* error = nullptr;
+      const bool ok = zebkit_view_set_runtime_settings(view, Utf8(isolate, info[1]).c_str(), &error);
+      if (!ok) isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "runtime settings rejected")));
+      zebkit_free(error);
+      info.GetReturnValue().Set(ok);
+      break;
+    }
+    case Action::kGetRuntimeSettings: {
+      char* json = zebkit_view_get_runtime_settings(view);
       info.GetReturnValue().Set(String8(isolate, json ? json : "{}"));
       zebkit_free(json);
       break;

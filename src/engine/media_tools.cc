@@ -179,7 +179,16 @@ struct Options {
   bool overwrite = false, no_audio = false, no_video = false;
   int rate = 0, channels = 0, width = 0, height = 0, frames = 0;
   bool pixel_format = false;
+  // -ss and -t, in microseconds; a negative duration is none.
+  int64_t start = 0, duration = -1;
 };
+// Seconds as ffmpeg's plain form, without its [HH:]MM:SS.
+bool Seconds(const std::string& s, int64_t& microseconds) {
+  if (s.empty() || s.find_first_not_of("0123456789.") != std::string::npos) return false;
+  errno = 0; char* end; double seconds = strtod(s.c_str(), &end);
+  if (errno || *end || !(seconds >= 0) || seconds > 1e9) return false;
+  microseconds = static_cast<int64_t>(seconds * 1000000); return true;
+}
 bool Parse(int argc, const char* const* argv, Options& o, Job& job) {
   if (!Arguments(argc, argv, job)) return false;
   bool end = false;
@@ -192,11 +201,13 @@ bool Parse(int argc, const char* const* argv, Options& o, Job& job) {
     if (!end && a == "-vn") { o.no_video = true; continue; }
     if (!end && a[0] == '-') {
       if (a != "-i" && a != "-map" && a != "-c" && a != "-codec" && a != "-c:a" && a != "-c:v" &&
-          a != "-f" && a != "-ar" && a != "-ac" && a != "-s" && a != "-frames:v" && a != "-pix_fmt")
+          a != "-f" && a != "-ar" && a != "-ac" && a != "-s" && a != "-frames:v" && a != "-pix_fmt" && a != "-ss" && a != "-t")
         return job.Fail("unsupported option: " + a);
       if (++i == argc) return job.Fail("missing value for " + a);
       std::string v = argv[i];
       if (a == "-i") { if (!o.source.empty()) return job.Fail("only one input is supported"); o.source = v; }
+      else if (a == "-ss") { if (!Seconds(v, o.start)) return job.Fail("-ss must be seconds"); }
+      else if (a == "-t") { if (!Seconds(v, o.duration) || !o.duration) return job.Fail("-t must be seconds above 0"); }
       else if (a == "-c" || a == "-codec" || a == "-c:a" || a == "-c:v") {
         if (!o.codec.empty()) return job.Fail("choose one output mode/codec");
         if ((a == "-c:a" && v != "pcm_s16le") || (a == "-c:v" && v != "rawvideo"))
@@ -254,6 +265,14 @@ bool Remux(Job& job, Options& o) {
   if (!job.Check(avio_open(&job.output->pb, ("file:" + job.temporary).c_str(), AVIO_FLAG_WRITE), "open muxer output") ||
       !job.Check(avformat_write_header(job.output, nullptr), "write container header")) return false;
   int r;
+  // -ss and -t, as `ffmpeg -ss -t -c copy`: from the key frame at or before the
+  // start, each stream's times from there, packets from the end on left out.
+  const bool cut = o.start > 0 || o.duration >= 0;
+  const int64_t end = o.duration >= 0 ? o.start + o.duration : INT64_MAX;
+  std::vector<int64_t> first(job.input->nb_streams, AV_NOPTS_VALUE);
+  int64_t written = 0;
+  bool reached = false;
+  if (o.start > 0 && !job.Check(av_seek_frame(job.input, -1, av_rescale_q(o.start, AVRational{1, 1000000}, AV_TIME_BASE_Q), AVSEEK_FLAG_BACKWARD), "seek in the input")) return false;
   while ((r = av_read_frame(job.input, job.packet)) >= 0) {
     int i = job.packet->stream_index;
     ++job.packets;
@@ -262,7 +281,23 @@ bool Remux(Job& job, Options& o) {
     AVStream* in = job.input->streams[i];
     int64_t time = job.packet->pts == AV_NOPTS_VALUE ? INT64_MIN : av_rescale_q(job.packet->pts, in->time_base, AVRational{1, 1000000});
     if (!job.Progress(time)) return false;
+    if (mapping[i] >= 0 && cut) {
+      const int64_t when = job.packet->pts != AV_NOPTS_VALUE ? job.packet->pts : job.packet->dts;
+      // Another stream may still have packets before the end.
+      if (when != AV_NOPTS_VALUE && av_rescale_q(when, in->time_base, AVRational{1, 1000000}) >= end) { av_packet_unref(job.packet); continue; }
+      if (first[i] == AV_NOPTS_VALUE) {
+        if (!(job.packet->flags & AV_PKT_FLAG_KEY) && in->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) { av_packet_unref(job.packet); continue; }
+        first[i] = job.packet->dts != AV_NOPTS_VALUE ? job.packet->dts : when;
+      }
+      // A start past the end still seeks back to the last key frame.
+      if (when != AV_NOPTS_VALUE && av_rescale_q(when + job.packet->duration, in->time_base, AVRational{1, 1000000}) > o.start) reached = true;
+      if (first[i] != AV_NOPTS_VALUE) {
+        if (job.packet->pts != AV_NOPTS_VALUE) job.packet->pts -= first[i];
+        if (job.packet->dts != AV_NOPTS_VALUE) job.packet->dts -= first[i];
+      }
+    }
     if (mapping[i] >= 0) {
+      ++written;
       AVStream* out = job.output->streams[mapping[i]];
       av_packet_rescale_ts(job.packet, in->time_base, out->time_base);
       job.packet->stream_index = out->index; job.packet->pos = -1;
@@ -271,6 +306,7 @@ bool Remux(Job& job, Options& o) {
     av_packet_unref(job.packet);
   }
   if (r != AVERROR_EOF) return job.Check(r, "read packet");
+  if (cut && (!written || !reached)) return job.Fail("nothing in the input lies between those times");
   if (!job.Check(av_write_trailer(job.output), "write container trailer")) return false;
   return job.Check(avio_closep(&job.output->pb), "close container");
 }
@@ -328,6 +364,12 @@ bool Decode(Job& job, const Options& o) {
       if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return true;
       if (!job.Check(r, "decode frame")) return false;
       AVFrame* f = job.frame;
+      // What decoding needed from the key frame on, before the start or after
+      // the end, is not output.
+      if (o.start > 0 || o.duration >= 0) {
+        const int64_t when = f->best_effort_timestamp == AV_NOPTS_VALUE ? INT64_MIN : av_rescale_q(f->best_effort_timestamp, job.input->streams[stream]->time_base, AVRational{1, 1000000});
+        if (when != INT64_MIN && (when < o.start || (o.duration >= 0 && when >= o.start + o.duration))) { av_frame_unref(f); continue; }
+      }
       if (audio) {
         if (!job.resampler) {
           AVChannelLayout layout{}; av_channel_layout_default(&layout, channels);
@@ -358,6 +400,7 @@ bool Decode(Job& job, const Options& o) {
     }
   };
   int r = AVERROR_EOF;
+  if (o.start > 0 && !job.Check(av_seek_frame(job.input, -1, av_rescale_q(o.start, AVRational{1, 1000000}, AV_TIME_BASE_Q), AVSEEK_FLAG_BACKWARD), "seek in the input")) return false;
   while ((r = av_read_frame(job.input, job.packet)) >= 0) {
     ++job.packets;
     AVStream* current = job.input->streams[job.packet->stream_index];

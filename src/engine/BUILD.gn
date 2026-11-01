@@ -304,6 +304,7 @@ _sources = [
   "permissions.h",
   "permission_types.cc",
   "permission_types.h",
+  "runtime_settings.cc",
   "settings.cc",
   "settings.h",
   "scheme.cc",
@@ -384,6 +385,13 @@ _deps = [
   "//v8",
   "//device/fido",
 ]
+if (is_linux) {
+  # The refusal to start without a sandbox (engine.cc).
+  _deps += [
+    "//sandbox/linux:sandbox_services",
+    "//sandbox/policy",
+  ]
+}
 if (!is_mac) {
   _sources += [ "webauthn_views.cc" ]
   _deps += [ "//components/qr_code_generator:qr_code_generator" ]
@@ -478,6 +486,9 @@ if (!is_mac) {
     deps = [
       ":zebkit",
       ":zebkit-helper",
+      # The optional set-user-ID helper (docs/SANDBOX.md), for machines without
+      # unprivileged user namespaces.
+      "//sandbox/linux:chrome_sandbox",
     ]
   }
 } else {

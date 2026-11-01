@@ -22,6 +22,7 @@
 #include "url/gurl.h"
 #include "zebkit/engine/hook_requests.h"
 #include "zebkit/engine/page_hooks.h"
+#include "zebkit/engine/settings.h"
 
 namespace zebkit {
 namespace {
@@ -207,7 +208,7 @@ bool TakeDownload(download::DownloadItem* item, download::DownloadTargetCallback
   zebkit_view* view = contents ? ViewOf(contents) : nullptr;
   if (!view) {
     // Its view closed before it was asked: not past a policy that was set.
-    if (!Watcher::Get().used())
+    if (!Watcher::Get().used() && !EngineDeniesDownloads())
       return false;
     Cancel(callback);
     return true;
@@ -216,8 +217,13 @@ bool TakeDownload(download::DownloadItem* item, download::DownloadTargetCallback
     Cancel(callback);
     return true;
   }
-  if (!Requests::HasDecider(view))
-    return false;
+  if (!Requests::HasDecider(view)) {
+    // "downloads": "deny" of the runtime settings, with no function to ask.
+    if (!view->deny_downloads_.value_or(EngineDeniesDownloads()))
+      return false;
+    Cancel(callback);
+    return true;
+  }
   Watcher::Get().Track(item, view);
   const std::string name =
       net::GenerateFileName(item->GetURL(), item->GetContentDisposition(), std::string(),
@@ -255,6 +261,19 @@ void StopDownloadHooks() {
   Watcher::Get().Stop();
 }
 void CancelDownloadRequests(zebkit_view* view) { Requests::Get().CancelAll(view, "cancelled"); }
+void SetDownloadPolicy(zebkit_view* view, std::optional<bool> deny) {
+  view->deny_downloads_ = deny;
+  // A download whose view has closed by the time it is decided is not let past it.
+  if (deny.value_or(false))
+    Watcher::Get().WatchProfileOf(view);
+}
+const char* EffectiveDownloads(zebkit_view* view) {
+  if (Requests::OrphanedPopup(view))
+    return "deny";
+  if (Requests::HasDecider(view))
+    return "ask";
+  return view->deny_downloads_.value_or(EngineDeniesDownloads()) ? "deny" : "save";
+}
 
 }  // namespace zebkit
 

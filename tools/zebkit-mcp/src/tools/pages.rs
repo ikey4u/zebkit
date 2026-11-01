@@ -26,7 +26,6 @@ const MAX_UPLOADS: u64 = 256 * 1024 * 1024;
 /// What is kept of a string of a page's in the logs: a page chooses their size, up
 /// to 2 MiB for each URL, thousands of times.
 const MAX_LOGGED: usize = 8192;
-const NEXT_FRAMES: &str = "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(1))))";
 const MARKDOWN: &str = include_str!("page_markdown.js");
 
 struct Entry {
@@ -82,7 +81,7 @@ fn with_entry(id: &str, function: impl FnOnce(&mut Entry)) {
     });
 }
 
-fn page_of(args: &Value) -> Result<Page, String> {
+pub(super) fn page_of(args: &Value) -> Result<Page, String> {
     let id = text(args, "page");
     STATE.with(|state| {
         state.borrow().pages.get(id).map(|entry| entry.page.clone()).ok_or_else(|| format!("no page {id}; page_list has those open"))
@@ -273,7 +272,8 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
                     request["failure"] = data["failureText"].clone();
                 }
             }),
-            "BrowserContext.dialog" | "Page.dialog" => with_entry(&name, |entry| push(&mut entry.dialogs, data.clone())),
+            // One a policy answered (settings_set) is not waiting for page_dialog.
+            "BrowserContext.dialog" | "Page.dialog" if data["held"] != json!(false) => with_entry(&name, |entry| push(&mut entry.dialogs, data.clone())),
             _ => {}
         }
     });
@@ -471,14 +471,8 @@ fn page_open(bounds: &'static Bounds, args: Value, done: Done) {
                     dialogs: VecDeque::new(),
                 });
             });
-            // Not Page.setViewportSize: on an off-screen view that lasts only until its
-            // next frame (docs/MCP.md).
             if let Some((width, height)) = size {
-                if page.view().is_offscreen() {
-                    page.view().set_size(width as u32, height as u32, 0.0);
-                } else {
-                    page.view().resize(width as u32, height as u32);
-                }
+                page.command("Page.setViewportSize", &json!({"viewportSize": {"width": width, "height": height}}).to_string(), |_| {});
             }
             let answer = json!({"page": id, "profile": name});
             match url {
@@ -643,26 +637,6 @@ fn page_read(_: &'static Bounds, args: Value, done: Done) {
     });
 }
 
-/// `then`, once the page has drawn two frames, or at the latest in half a second (a
-/// dialog is open, or the page has replaced requestAnimationFrame). Input sent right
-/// after a load can be lost, whole, with no error (docs/MCP.md): this is the wait.
-fn after_frames(page: &Page, then: impl FnOnce() + 'static) {
-    let once = Rc::new(RefCell::new(Some(then)));
-    let other = once.clone();
-    page.command("Frame.evaluateExpression", &json!({"expression": NEXT_FRAMES}).to_string(), move |_| {
-        let then = other.borrow_mut().take();
-        if let Some(then) = then {
-            then();
-        }
-    });
-    zebkit::after(std::time::Duration::from_millis(500), move || {
-        let then = once.borrow_mut().take();
-        if let Some(then) = then {
-            then();
-        }
-    });
-}
-
 /// Actions on an element, which wait until it can be acted on.
 fn action(args: Value, method: &'static str, mut params: Value, done: Done) {
     let page = match page_of(&args) {
@@ -676,19 +650,11 @@ fn action(args: Value, method: &'static str, mut params: Value, done: Done) {
     params["selector"] = json!(selector);
     params["strict"] = json!(true);
     params["timeout"] = json!(timeout_of(&args));
-    let next = page.clone();
     let id = text(&args, "page").to_string();
-    let run = move || {
-        let target = next.clone();
-        command(&next, &id, method, params, move |result| {
-            done(result.and_then(|_| ok(json!({"done": true, "url": target.view().url().unwrap_or_default()}))))
-        });
-    };
-    if method == "Frame.fill" || method == "Frame.setInputFiles" || method == "Frame.selectOption" {
-        run(); // These do not go through input events.
-    } else {
-        after_frames(&page, run);
-    }
+    let target = page.clone();
+    command(&page, &id, method, params, move |result| {
+        done(result.and_then(|_| ok(json!({"done": true, "url": target.view().url().unwrap_or_default()}))))
+    });
 }
 
 fn page_click(_: &'static Bounds, args: Value, done: Done) {
@@ -718,10 +684,8 @@ fn page_press(_: &'static Bounds, args: Value, done: Done) {
         Ok(page) => page,
         Err(why) => return done(Err(why)),
     };
-    let (next, id) = (page.clone(), text(&args, "page").to_string());
-    after_frames(&page, move || {
-        command(&next, &id, "Page.keyboardPress", json!({"key": args["key"]}), move |result| done(result.and_then(|_| ok(json!({"done": true})))));
-    });
+    let id = text(&args, "page").to_string();
+    command(&page, &id, "Page.keyboardPress", json!({"key": args["key"]}), move |result| done(result.and_then(|_| ok(json!({"done": true})))));
 }
 
 fn page_select(_: &'static Bounds, args: Value, done: Done) {
@@ -754,10 +718,7 @@ fn page_scroll(_: &'static Bounds, args: Value, done: Done) {
         command(&page, &id, "Frame.evalOnSelector", params, move |result| done(result.and_then(|_| ok(json!({"done": true})))));
     } else {
         let params = json!({"deltaX": args["deltaX"].as_f64().unwrap_or(0.0), "deltaY": args["deltaY"].as_f64().unwrap_or(0.0)});
-        let next = page.clone();
-        after_frames(&page, move || {
-            command(&next, &id, "Page.mouseWheel", params, move |result| done(result.and_then(|_| ok(json!({"done": true})))));
-        });
+        command(&page, &id, "Page.mouseWheel", params, move |result| done(result.and_then(|_| ok(json!({"done": true})))));
     }
 }
 

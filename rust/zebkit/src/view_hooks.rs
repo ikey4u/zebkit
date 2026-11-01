@@ -41,6 +41,7 @@ impl<T: ?Sized> Default for Hook<T> {
 }
 type Asked<T> = Hook<dyn FnMut(T)>;
 type Told = Hook<dyn FnMut(&str)>;
+type NetworkBody = Hook<dyn FnMut(&str, &[u8], bool, bool)>;
 
 macro_rules! slots {
     ($($asked:ident: $request:ty),*; $($told:ident),*) => {
@@ -48,11 +49,13 @@ macro_rules! slots {
         pub(crate) struct Slots {
             $($asked: Asked<$request>,)*
             $($told: Told,)*
+            network_body: NetworkBody,
         }
         impl Slots {
             pub(crate) fn clear(&self) {
                 $(self.$asked.function.borrow_mut().take();)*
                 $(self.$told.function.borrow_mut().take();)*
+                self.network_body.function.borrow_mut().take();
             }
         }
     };
@@ -147,6 +150,64 @@ impl NetworkRequest {
         let reply = cstring(reply_json)?;
         Ok(unsafe { sys::zebkit_network_respond(self.raw, reply.as_ptr(), body.as_ptr().cast(), body.len(), std::ptr::null_mut()) })
     }
+    /// Fulfills from an absolute path; `reply_json` is `{status, headers}`.
+    pub fn respond_file(&self, reply_json: &str, path: &str) -> Result<bool, Error> {
+        let (reply, path) = (cstring(reply_json)?, cstring(path)?);
+        Ok(unsafe { sys::zebkit_network_respond_file(self.raw, reply.as_ptr(), path.as_ptr(), std::ptr::null_mut()) })
+    }
+    /// Fulfills with what the stream is given; None when stale or invalid.
+    pub fn respond_stream(&self, reply_json: &str) -> Result<Option<NetworkStream>, Error> {
+        let reply = cstring(reply_json)?;
+        let raw = unsafe { sys::zebkit_network_respond_stream(self.raw, reply.as_ptr(), std::ptr::null_mut()) };
+        Ok((!raw.is_null()).then(|| NetworkStream {
+            raw: Cell::new(raw),
+            writable: Box::new(RefCell::new(None)),
+            _thread: std::marker::PhantomData,
+        }))
+    }
+}
+
+/// An answer written as it goes. Dropped without `end`, it ends as failed: a body
+/// cut short does not look whole to the page.
+pub struct NetworkStream {
+    raw: Cell<*mut sys::zebkit_network_stream>,
+    // Boxed: the engine has its address.
+    writable: Box<RefCell<Option<Box<dyn FnMut()>>>>,
+    _thread: std::marker::PhantomData<Rc<()>>,
+}
+impl NetworkStream {
+    /// All the bytes or none: false when they do not fit (at most 1 MiB waits) or nobody reads.
+    pub fn write(&self, bytes: &[u8]) -> bool {
+        let raw = self.raw.get();
+        !raw.is_null() && unsafe { sys::zebkit_network_stream_write(raw, bytes.as_ptr().cast(), bytes.len()) }
+    }
+    /// Once after a write that returned false: it fits, or `is_open` is false.
+    pub fn on_writable<F: FnMut() + 'static>(&self, function: F) {
+        unsafe extern "C" fn trampoline(_: *mut sys::zebkit_network_stream, data: *mut c_void) {
+            let slot = &*data.cast_const().cast::<RefCell<Option<Box<dyn FnMut()>>>>();
+            let Some(mut function) = slot.borrow_mut().take() else { return };
+            function();
+            let mut current = slot.borrow_mut();
+            if current.is_none() { *current = Some(function); }
+        }
+        let raw = self.raw.get();
+        if raw.is_null() { return; }
+        *self.writable.borrow_mut() = Some(Box::new(function));
+        let data = (&*self.writable as *const RefCell<Option<Box<dyn FnMut()>>>).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_network_stream_on_writable(raw, Some(trampoline), data) };
+    }
+    pub fn is_open(&self) -> bool {
+        let raw = self.raw.get();
+        !raw.is_null() && unsafe { sys::zebkit_network_stream_is_open(raw) }
+    }
+    /// Ends the response after what waits, or as failed at once.
+    pub fn end(&self, failed: bool) {
+        let raw = self.raw.replace(std::ptr::null_mut());
+        if !raw.is_null() { unsafe { sys::zebkit_network_stream_end(raw, failed) }; }
+    }
+}
+impl Drop for NetworkStream {
+    fn drop(&mut self) { self.end(true); }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +300,39 @@ told!(on_context_menu, clear_context_menu_handler, context_menu, sys::zebkit_vie
 told!(on_fullscreen, clear_fullscreen_handler, fullscreen, sys::zebkit_view_on_fullscreen);
 
 impl View {
+    /// `function(request id, bytes, end, truncated)` for what a rule with `body: true` matches.
+    pub fn on_network_body<F: FnMut(&str, &[u8], bool, bool) + 'static>(&self, function: F) {
+        unsafe extern "C" fn trampoline(_: *mut sys::zebkit_view, id: *const c_char, bytes: *const c_void, size: usize, end: bool, truncated: bool, data: *mut c_void) {
+            let pointer = data.cast_const().cast::<Inner>();
+            Rc::increment_strong_count(pointer);
+            let inner = Rc::from_raw(pointer);
+            let hook = &inner.hooks.network_body;
+            let generation = hook.generation.get();
+            let Some(mut function) = hook.function.borrow_mut().take() else { return };
+            let chunk = if size == 0 { &[][..] } else { std::slice::from_raw_parts(bytes.cast::<u8>(), size) };
+            function(&text(id), chunk, end, truncated);
+            if hook.generation.get() == generation && !inner.raw.get().is_null() {
+                *hook.function.borrow_mut() = Some(function);
+            }
+        }
+        let Some(raw) = self.raw() else { return };
+        let hook = &self.inner.hooks.network_body;
+        hook.generation.set(hook.generation.get().wrapping_add(1));
+        *hook.function.borrow_mut() = Some(Box::new(function));
+        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_view_on_network_body(raw, Some(trampoline), data) };
+    }
+    pub fn clear_network_body_handler(&self) {
+        let Some(raw) = self.raw() else { return };
+        let hook = &self.inner.hooks.network_body;
+        hook.generation.set(hook.generation.get().wrapping_add(1));
+        hook.function.borrow_mut().take();
+        unsafe { sys::zebkit_view_on_network_body(raw, None, std::ptr::null_mut()) };
+    }
+    /// This view's filter also decides for its profile's shared and service workers.
+    pub fn set_network_filter_for_workers(&self, on: bool) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_network_filter_for_workers(raw, on) })
+    }
     /// A JSON array of rules, as `<zebkit/hooks.h>` says.
     pub fn set_network_filter(&self, rules_json: &str) -> Result<bool, Error> {
         let rules = cstring(rules_json)?;

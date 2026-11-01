@@ -2,6 +2,8 @@
 links, downloads, client certificates, isolated worlds, file choosers and media."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import base64
+import hashlib
 import json
 import ssl
 import subprocess
@@ -26,6 +28,25 @@ addEventListener('keydown', e => keys.push(e.code));
 addEventListener('contextmenu', e => { window.menu = 1; });
 onload = () => requestAnimationFrame(() => requestAnimationFrame(() => { document.title = 'ready'; }));
 </script>'''
+# Asked by a message, answered in one: a fetch that the network hook may stop, or a socket.
+WORKER_TASK = b'''
+const task = (what, reply) => {
+  if (what === 'socket') {
+    const s = new WebSocket(self.location.origin.replace('http', 'ws') + '/ws');
+    s.onmessage = e => { reply(e.data); s.close(); };
+    s.onerror = () => reply('failed');
+  } else fetch('/worker-held').then(r => r.text()).then(reply, () => reply('failed'));
+};
+'''
+SERVICE_WORKER = WORKER_TASK + b'''
+self.addEventListener('install', () => skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(clients.claim()));
+self.addEventListener('message', e => task(e.data, m => e.source.postMessage(m)));
+'''
+SHARED_WORKER = WORKER_TASK + b'''
+onconnect = e => { const port = e.ports[0]; port.onmessage = m => task(m.data, a => port.postMessage(a)); };
+'''
+BIG = 65 << 20  # Past what a body is told up to.
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,6 +63,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try: self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError): pass
+
+    def socket(self, fixture):
+        fixture.echoed.append(dict(self.headers.items()))
+        accept = base64.b64encode(hashlib.sha1(self.headers['Sec-WebSocket-Key'].encode()
+                                               + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+        self.close_connection = True
+        try:
+            self.wfile.write(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                             b'Sec-WebSocket-Accept: ' + accept + b'\r\n\r\n\x81\x05hello')
+            self.wfile.flush()
+            while self.rfile.read(1): pass
+        except OSError: pass
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get('Content-Length', '0')))
@@ -70,6 +103,38 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b's' * 65536)
                     time.sleep(.05)
             except (BrokenPipeError, ConnectionResetError): pass
+        elif path == '/ws': self.socket(fixture)
+        elif path == '/big':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-zebkit')
+            self.send_header('Content-Length', str(BIG))
+            self.end_headers()
+            try:
+                for _ in range(BIG >> 16):
+                    self.wfile.write(b'b' * 65536)
+            except (BrokenPipeError, ConnectionResetError): pass
+        elif path == '/slow-text':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(1 << 24))
+            self.end_headers()
+            try:
+                for _ in range(256):
+                    self.wfile.write(b's' * 65536)
+                    self.wfile.flush()
+                    time.sleep(.05)
+            except (BrokenPipeError, ConnectionResetError): pass
+        elif path == '/cut':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', '100000')
+            self.end_headers()
+            self.wfile.write(b'c' * 1000)
+            self.wfile.flush()
+            self.close_connection = True
+        elif path == '/worker-held': self.reply(b'through', 'text/plain')
+        elif path == '/net-sw.js': self.reply(SERVICE_WORKER, 'text/javascript')
+        elif path == '/net-shared.js': self.reply(SHARED_WORKER, 'text/javascript')
         elif path == '/echo':
             fixture.echoed.append(dict(self.headers.items()))
             self.reply(json.dumps({k.lower(): v for k, v in self.headers.items()}).encode(), 'application/json')
@@ -118,6 +183,7 @@ class HookFixture:
         (self.files / 'folder' / 'sub').mkdir(parents=True)
         (self.files / 'one.txt').write_text('first file')
         (self.files / 'two.txt').write_text('second file')
+        (self.files / 'big.bin').write_bytes(b'f' * (3 << 20))
         (self.files / 'folder' / 'a.txt').write_text('a')
         (self.files / 'folder' / 'sub' / 'b.txt').write_text('b')
 

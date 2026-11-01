@@ -548,6 +548,21 @@ impl View {
         self.raw().and_then(|raw| unsafe { take_string(sys::zebkit_view_get_settings(raw)) })
     }
 
+    /// What zebkit decides for this view, while it runs (`<zebkit/hooks.h>`):
+    /// thirdPartyCookies, dialogs, downloads, newWindows. All of it applies or none.
+    pub fn set_runtime_settings(&self, json: &str) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        if json.contains('\0') { return Err(Error::new("runtime settings contain NUL")); }
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_view_set_runtime_settings(raw, c_string(json).as_ptr(), &mut error) };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "runtime settings rejected") }) }
+    }
+
+    /// `{"explicit": ..., "effective": ...}`, as JSON.
+    pub fn runtime_settings(&self) -> Option<String> {
+        self.raw().and_then(|raw| unsafe { take_string(sys::zebkit_view_get_runtime_settings(raw)) })
+    }
+
     /// Set a view rule. None uses the current origin; Some("*") sets a default.
     pub fn set_permission(&self, permission: &str, state: PermissionState, origin: Option<&str>) -> Result<(), Error> {
         let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;

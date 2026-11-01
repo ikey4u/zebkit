@@ -96,8 +96,10 @@
 # - tools/zebkit-run with --remote-debugging-port=0: CDP as Chrome serves
 #   it, read back over HTTP the way a client finds it.
 #
-# Without a window (--headless) and without the sandbox, which build
-# machines and containers often cannot give the engine.
+# Without a window (--headless) and, as each program's --no-sandbox says, without
+# the sandbox, which build machines and containers often cannot give the engine
+# (docs/SANDBOX.md); tests/engine/sandbox_startup.py checks what happens without
+# the switch. The engine says so on standard error each time.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -189,6 +191,7 @@ build_against_package "$package" "$bin/hooks" "$tests/hooks.c"
 build_against_package "$package" "$bin/certificate" "$tests/certificate.c"
 build_against_package "$package" "$bin/http_auth" "$tests/http_auth.c"
 build_against_package "$package" "$bin/hook-policies" "$tests/hook_policies.c"
+build_against_package "$package" "$bin/runtime-settings" "$tests/runtime_settings.c"
 build_against_package "$package" "$bin/offscreen-scale" "$tests/offscreen_scale.c"
 build_against_package "$package" "$bin/bridge" "$tests/bridge.c"
 if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
@@ -209,6 +212,7 @@ build_against_package "$package" "$bin/popup" "$tests/popup.c"
 build_against_package "$package" "$bin/cookie-host" "$tests/cookie_host.c"
 build_against_package "$package" "$bin/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 build_against_package "$package" "$bin/automation" "$tests/automation.c"
+build_against_package "$package" "$bin/automation-reentry" "$tests/automation_reentry.c"
 build_against_package "$package" "$bin/media" "$tests/media.c"
 build_against_package "$package" "$bin/media-probe" "$tests/media_probe.c"
 build_against_package "$package" "$bin/mode" "$tests/mode.c"
@@ -317,9 +321,10 @@ if [[ -n "$build_only" ]]; then
         fi
         mkdir -p "$bin/rust"
         (cd "$ZEBKIT_ROOT/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
-            cargo build -q -p zebkit --example hook_policies "${rust_options[@]}") \
+            cargo build -q -p zebkit --example hook_policies --example runtime_settings "${rust_options[@]}") \
             || die "the Rust hook program did not build"
         cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/hook_policies" "$bin/rust/hook_policies"
+        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/runtime_settings" "$bin/rust/runtime_settings"
     else
         log "hook-rust: not built (no cargo or no ${rust_target:-host} target)"
     fi
@@ -471,6 +476,13 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
 finished page "the page test"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" run automation "$bin/automation" "${engine_switches[@]}"
 finished automation "the automation test"
+run automation-reentry "$bin/automation-reentry" --no-sandbox --headless --user-data-dir="$work/profile-reentry"
+finished automation-reentry "the reentry test"
+run automation-input env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+    python3 "$tests/automation_input.py" --no-sandbox --headless --user-data-dir="$work/profile-input"
+finished automation-input "the input test"
+run automation-input-held env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+    python3 "$tests/automation_input.py" --zebkit-test-no-input-wait --no-sandbox --headless --user-data-dir="$work/profile-input-held"
 run user-agent-atomic python3 "$tests/user_agent_atomic.py" "$bin/tools/zebkit-run" "${engine_switches[@]}"
 run user-agent-clients env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/user_agent_clients.py"
@@ -528,7 +540,7 @@ if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null && "$engine_test_node_re
             grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-server.log" || { echo "FAIL the MCP server's test did not finish"; failed=1; }
             run mcp-conformance "${pw_node[@]}" "$tests/mcp_conformance.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
             run mcp-agent-run "${pw_node[@]}" "$tests/mcp_agent_run.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
-            grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-agent-run.log" || { echo "FAIL the scripted MCP run did not finish"; failed=1; }
+            ! selected mcp-agent-run || grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-agent-run.log" || { echo "FAIL the scripted MCP run did not finish"; failed=1; }
         else
             log "mcp-server: skipped (the MCP client could not be installed)"
         fi
@@ -602,7 +614,14 @@ ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILE
 finished media-history "the media history test"
 run cdp-browser python3 -I "$tests/cdp_browser.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
+# What CDP changes at runtime, by what the page and a server saw (docs/ROADMAP.md).
+run cdp-overrides python3 -I "$tests/cdp_overrides.py" "$bin/tools/zebkit-run" \
+    --no-sandbox --headless --user-data-dir="$work/profile-cdp-overrides"
+finished cdp-overrides "the CDP overrides test"
 
+if [[ "$ZEBKIT_HOST" == linux ]]; then
+    run sandbox-startup python3 -I "$tests/sandbox_startup.py" "$bin/tools/zebkit-run"
+fi
 run cookie-host python3 -I "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file python3 -I "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file-options python3 -I "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
@@ -639,13 +658,25 @@ for hook_group in "${hook_groups[@]}"; do
 done
 run hook-python-popup env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
     python3 "$tests/hook_policies.py" "python:popup" python3 "$tests/hook_policies_python.py"
+# What zebkit decides, changed while it runs, in every language (tests/engine/runtime_settings.py).
+run runtime-settings-c python3 "$tests/runtime_settings.py" c "$bin/runtime-settings" @switches@
+finished runtime-settings-c "the C runtime settings test"
+run runtime-settings-python env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+    python3 "$tests/runtime_settings.py" python python3 "$tests/runtime_settings_python.py" @switches@
+finished runtime-settings-python "the Python runtime settings test"
+run runtime-settings-javascript python3 "$tests/runtime_settings.py" javascript \
+    "$bin/tools/zebkit-js" @switches@ "$tests/script/runtime_settings.mjs"
+finished runtime-settings-javascript "the JavaScript runtime settings test"
 rust_hook_program=
+rust_settings_program=
 if [[ -n "$prebuilt" ]]; then
     [[ -x "$bin/rust/hook_policies" ]] && rust_hook_program="$bin/rust/hook_policies"
+    [[ -x "$bin/rust/runtime_settings" ]] && rust_settings_program="$bin/rust/runtime_settings"
 elif command -v cargo > /dev/null; then
     log "building the Rust hook program"
-    if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies); then
+    if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies --example runtime_settings); then
         rust_hook_program="$ZEBKIT_ROOT/rust/target/debug/examples/hook_policies"
+        rust_settings_program="$ZEBKIT_ROOT/rust/target/debug/examples/runtime_settings"
     else
         echo "FAIL the Rust hook program did not build"; failed=1
     fi
@@ -657,6 +688,10 @@ if [[ -n "$rust_hook_program" ]]; then
     done
 else
     log "hook-rust: skipped (no program)"
+fi
+if [[ -n "$rust_settings_program" ]]; then
+    run runtime-settings-rust env LD_LIBRARY_PATH="$package" python3 "$tests/runtime_settings.py" rust "$rust_settings_program" @switches@
+    finished runtime-settings-rust "the Rust runtime settings test"
 fi
 
 run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"

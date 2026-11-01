@@ -461,14 +461,18 @@ static void fullscreen(void) {
 
 /* ---- network */
 static zebkit_network_request *net_request;
-static int net_timeout, net_replaced, net_request_told, net_response_told, net_finished_told;
+static int net_timeout, net_replaced, net_request_told, net_response_told, net_finished_told, net_failed_told;
+static int body_ends, body_truncated, body_second, body_end_late;
+static long long body_bytes;
+static char net_response_json[65536], body_id[64];
 static void net_event(zebkit_view *v, const char *json, void *d) {
     (void)v; (void)d;
     if (strstr(json, "\"reason\":\"timeout\"")) net_timeout = 1;
     if (strstr(json, "\"reason\":\"handler-changed\"")) net_replaced = 1;
     if (strstr(json, "\"kind\":\"request\"")) net_request_told = 1;
-    if (strstr(json, "\"kind\":\"response\"")) net_response_told = 1;
-    if (strstr(json, "\"kind\":\"finished\"")) net_finished_told = 1;
+    if (strstr(json, "\"kind\":\"response\"")) { net_response_told = 1; snprintf(net_response_json, sizeof net_response_json, "%s", json); }
+    if (strstr(json, "\"kind\":\"finished\"")) { net_finished_told = 1; if (!body_ends) body_end_late = 1; }
+    if (strstr(json, "\"kind\":\"failed\"")) { net_failed_told = 1; if (!body_ends) body_end_late = 1; }
 }
 #define REPLY(json) zebkit_network_respond(request, json, NULL, 0, NULL)
 static void net_asked(zebkit_view *v, zebkit_network_request *request, const char *json, void *d) {
@@ -516,9 +520,262 @@ static void net_asked(zebkit_view *v, zebkit_network_request *request, const cha
     } else if (IS("net-post")) {
         CHECK(strstr(json, "\"method\":\"POST\"") && strstr(json, "\"bodySize\":6") && strstr(json, "\"body\":\"cG9zdGVk\""));
         CHECK(REPLY("{\"action\":\"continue\"}"));
+    } else if (IS("net-redirect-manual") || IS("net-redirect-error")) {
+        char reply[4096];
+        snprintf(reply, sizeof reply, "{\"action\":\"redirect\",\"url\":\"%s/echo?redirected\"}", BASE);
+        CHECK(REPLY(reply));
     }
 }
+
+/* ---- network: WebSockets, workers, bodies, files, streams */
+#define WS_SCRIPT "new Promise(ok => { const s = window.s = new WebSocket(location.origin.replace('http', 'ws') + '/ws'); s.onmessage = e => { ok(e.data); s.close(); }; s.onerror = () => ok('failed'); })"
+#define SW_SCRIPT(what) "navigator.serviceWorker.register('/net-sw.js').then(r => new Promise(ok => { const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return ok(w); w.addEventListener('statechange', () => { if (w.state === 'activated') ok(w); }); })).then(w => new Promise(ok => { navigator.serviceWorker.onmessage = e => ok(e.data); w.postMessage('" what "'); }))"
+#define SHARED_SCRIPT(what) "new Promise(ok => { const w = window.w = window.w || new SharedWorker('/net-shared.js'); w.port.onmessage = e => ok(e.data); w.port.postMessage('" what "'); })"
+#define PAGE_READS(url) "fetch('" url "').then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed')"
+#define TEXT_HEADER "{\"name\":\"Content-Type\",\"value\":\"text/plain\"}"
+static zebkit_network_stream *net_stream;
+static long stream_left;
+static int stream_blocked;
+static char stream_block[262144];
+static void stream_pump(zebkit_network_stream *stream, void *d) {
+    (void)d;
+    while (stream_left > 0) {
+        if (!zebkit_network_stream_write(stream, stream_block, sizeof stream_block)) { stream_blocked = 1; return; }
+        stream_left -= (long)sizeof stream_block;
+    }
+    zebkit_network_stream_end(stream, false);
+    CHECK(!zebkit_network_stream_write(stream, "x", 1));
+}
+static void more_asked(zebkit_view *v, zebkit_network_request *request, const char *json, void *d) {
+    (void)d;
+    net_request = request;
+    ++asked;
+    if (IS("net-ws-block")) {
+        CHECK(strstr(json, "\"resourceType\":\"websocket\"") && strstr(json, "\"url\":\"ws://") && strstr(json, "\"stage\":\"request\""));
+        CHECK(!REPLY("{\"action\":\"redirect\",\"url\":\"http://127.0.0.1/\"}") && !REPLY("{\"action\":\"fulfill\"}"));
+        CHECK(!zebkit_network_respond_stream(request, "{}", NULL) && !zebkit_network_respond_file(request, "{}", "/nothing", NULL));
+        CHECK(!REPLY("{\"action\":\"continue\",\"headers\":[{\"name\":\"Origin\",\"value\":\"http://x\"}]}"));
+        CHECK(REPLY("{\"action\":\"block\"}"));
+    } else if (IS("net-ws-continue")) {
+        CHECK(REPLY("{\"action\":\"continue\",\"headers\":[{\"name\":\"X-Zebkit\",\"value\":\"yes\"}]}"));
+    } else if (IS("net-ws-close")) {
+        zebkit_view_close(v);
+    } else if (IS("net-sw-block") || IS("net-sw-running")) {
+        CHECK(strstr(json, "\"worker\":true") && strstr(json, "\"workerType\":\"service\"") && strstr(json, "\"frameId\":\"\""));
+        CHECK(REPLY("{\"action\":\"block\"}"));
+    } else if (IS("net-sw-ws")) {
+        CHECK(strstr(json, "\"workerType\":\"shared-or-service\"") && strstr(json, "\"resourceType\":\"websocket\""));
+        CHECK(REPLY("{\"action\":\"block\"}"));
+    } else if (IS("net-shared-block") || IS("net-shared-running")) {
+        CHECK(strstr(json, "\"worker\":true") && strstr(json, "\"workerType\":\"shared\""));
+        CHECK(REPLY("{\"action\":\"block\"}"));
+    } else if (IS("net-file") || IS("net-file-close")) {
+        char path[4096], *error = NULL;
+        snprintf(path, sizeof path, "%s/big.bin", FILES);
+        CHECK(!zebkit_network_respond_file(request, "{}", "relative.bin", &error) && error);
+        zebkit_free(error);
+        CHECK(!zebkit_network_respond_file(request, "{\"status\":302}", path, NULL));
+        CHECK(zebkit_network_respond_file(request, "{\"status\":201,\"headers\":[{\"name\":\"Content-Type\",\"value\":\"application/x-zebkit\"},{\"name\":\"X-Added\",\"value\":\"by-host\"}]}", path, NULL));
+        if (IS("net-file-close")) zebkit_view_close(v);
+    } else if (IS("net-file-missing")) {
+        char path[4096];
+        snprintf(path, sizeof path, "%s/nothing.bin", FILES);
+        CHECK(zebkit_network_respond_file(request, "{}", path, NULL));
+    } else if (IS("net-stream") || IS("net-stream-full") || IS("net-stream-fail") || IS("net-stream-close")) {
+        CHECK(!zebkit_network_respond_stream(request, "{\"status\":302}", NULL));
+        net_stream = zebkit_network_respond_stream(request, "{\"status\":201,\"headers\":[" TEXT_HEADER ",{\"name\":\"X-Added\",\"value\":\"by-host\"}]}", NULL);
+        CHECK(net_stream && zebkit_network_stream_is_open(net_stream) && !zebkit_network_request_info(request));
+        if (IS("net-stream")) {
+            CHECK(zebkit_network_stream_write(net_stream, "ab", 2) && zebkit_network_stream_write(net_stream, "cd", 2));
+            zebkit_network_stream_end(net_stream, false);
+            CHECK(!zebkit_network_stream_is_open(net_stream));
+            zebkit_network_stream_end(net_stream, false);
+        } else if (IS("net-stream-fail")) {
+            CHECK(zebkit_network_stream_write(net_stream, "ab", 2));
+            zebkit_network_stream_end(net_stream, true);
+        } else if (IS("net-stream-full")) {
+            static char too_much[(1 << 20) + 1];
+            CHECK(!zebkit_network_stream_write(net_stream, too_much, sizeof too_much));
+            stream_left = 3 << 20;
+            memset(stream_block, 'f', sizeof stream_block);
+            zebkit_network_stream_on_writable(net_stream, stream_pump, NULL);
+            stream_pump(net_stream, NULL);
+        } else {
+            zebkit_view_close(v);
+        }
+    }
+}
+static void more_answer(const char *script, const char *expected) {
+    char *answer = ev(script);
+    if (strcmp(answer, expected)) FAIL("%s: %s", script, answer);
+    free(answer);
+}
+static void network_ws(void) {
+    open_page();
+    const char *rules = IS("net-ws-none") ? "[]"
+        : IS("net-ws-filter") ? "[{\"url\":\"**/ws\",\"resourceTypes\":[\"fetch\"]}]"
+        : IS("net-ws-continue") ? "[{\"url\":\"**/ws\",\"resourceTypes\":[\"websocket\"]}]"
+        : "[{\"url\":\"**/ws\"}]";
+    CHECK(zebkit_view_set_network_filter(view, rules, NULL));
+    zebkit_view_on_network_event(view, net_event, NULL);
+    if (!IS("net-ws-nofunc")) zebkit_view_on_network(view, more_asked, NULL);
+    if (IS("net-ws-timeout")) CHECK(zebkit_view_set_network_timeout(view, 50));
+    if (IS("net-ws-block")) { more_answer(WS_SCRIPT, "\"failed\""); CHECK(asked == 1); zebkit_view_close(view); return; }
+    ev_later(WS_SCRIPT);
+    if (IS("net-ws-close")) { WAIT(closed); CHECK(!zebkit_network_request_info(net_request)); return; }
+    if (IS("net-ws-abort")) {
+        WAIT(asked);
+        free(ev("s.close()"));
+        WAIT(!zebkit_network_request_info(net_request));
+        WAIT(pending_eval.done);
+        zebkit_view_close(view);
+        return;
+    }
+    if (IS("net-ws-replace")) {
+        WAIT(asked);
+        zebkit_view_on_network(view, NULL, NULL);
+        CHECK(!zebkit_network_request_info(net_request));
+        WAIT(net_replaced);
+    }
+    WAIT(pending_eval.done);
+    CHECK(pending_eval.json && !strcmp(pending_eval.json, "\"hello\""));
+    if (IS("net-ws-timeout")) WAIT(net_timeout);
+    if (IS("net-ws-none") || IS("net-ws-nofunc") || IS("net-ws-filter")) CHECK(!asked);
+    zebkit_view_close(view);
+}
+static void network_workers(void) {
+    open_page();
+    int shared = !strncmp(MODE, "net-shared", 10);
+    const char *rules = IS("net-sw-ws") ? "[{\"url\":\"**/ws\"}]" : "[{\"url\":\"**/worker-held\"}]";
+    CHECK(!zebkit_view_set_network_filter_for_workers(view, true));
+    CHECK(zebkit_view_set_network_filter(view, rules, NULL));
+    zebkit_view_on_network(view, more_asked, NULL);
+    if (IS("net-sw-block") || IS("net-sw-ws") || IS("net-shared-block")) CHECK(zebkit_view_set_network_filter_for_workers(view, true));
+    if (IS("net-sw-ws")) { more_answer(SW_SCRIPT("socket"), "\"failed\""); CHECK(asked == 1); zebkit_view_close(view); return; }
+    const char *script = shared ? SHARED_SCRIPT("fetch") : SW_SCRIPT("fetch");
+    if (IS("net-sw-running") || IS("net-shared-running")) {
+        /* It runs before there is a policy; then the same worker is asked about. */
+        more_answer(script, "\"through\"");
+        CHECK(!asked);
+        CHECK(zebkit_view_set_network_filter_for_workers(view, true));
+    }
+    if (IS("net-sw-none") || IS("net-shared-none")) { more_answer(script, "\"through\""); CHECK(!asked); }
+    else { more_answer(script, "\"failed\""); CHECK(asked == 1); }
+    CHECK(zebkit_view_set_network_filter_for_workers(view, false));
+    zebkit_view_close(view);
+}
+static void body_second_told(zebkit_view *v, const char *id, const void *bytes, size_t size, bool end, bool truncated, void *d) {
+    (void)v; (void)id; (void)bytes; (void)size; (void)end; (void)truncated; (void)d;
+    ++body_second;
+}
+static void body_told(zebkit_view *v, const char *id, const void *bytes, size_t size, bool end, bool truncated, void *d) {
+    (void)d;
+    CHECK(!body_ends);
+    snprintf(body_id, sizeof body_id, "\"requestId\":\"%s\"", id);
+    if (size && IS("net-body")) CHECK(((const char *)bytes)[0] == 'z');
+    body_bytes += (long long)size;
+    if (end) { ++body_ends; body_truncated += truncated; }
+    if (size && IS("net-body-close")) zebkit_view_close(v);
+    if (size && IS("net-body-replace")) zebkit_view_on_network_body(v, body_second_told, NULL);
+}
+static void network_body(void) {
+    open_page();
+    char *error = NULL;
+    CHECK(!zebkit_view_set_network_filter(view, "[{\"body\":true}]", &error) && error);
+    zebkit_free(error);
+    CHECK(!zebkit_view_set_network_filter(view, "[{\"stage\":\"response\",\"mode\":\"hold\",\"body\":true}]", NULL));
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/download.bin\",\"stage\":\"response\",\"body\":true},{\"url\":\"**/big\",\"stage\":\"response\",\"body\":true},{\"url\":\"**/cut\",\"stage\":\"response\",\"body\":true},{\"url\":\"**/slow-text\",\"stage\":\"response\",\"body\":true}]", NULL));
+    zebkit_view_on_network_event(view, net_event, NULL);
+    if (!IS("net-body-none")) zebkit_view_on_network_body(view, body_told, NULL);
+    if (IS("net-body") || IS("net-body-none")) {
+        more_answer(PAGE_READS("/download.bin"), "65536");
+        WAIT(net_finished_told);
+        if (IS("net-body")) {
+            CHECK(body_bytes == 65536 && body_ends == 1 && !body_truncated && !body_end_late);
+            CHECK(strstr(net_response_json, body_id));
+        } else CHECK(!body_ends && net_response_told);
+    } else if (IS("net-body-big")) {
+        more_answer(PAGE_READS("/big"), "68157440");
+        CHECK(body_bytes == 67108864 && body_ends == 1 && body_truncated == 1);
+    } else if (IS("net-body-backpressure")) {
+        more_answer("fetch('/big').then(r => { window.r = r; return 1; })", "1");
+        /* Blink's fetch reads ahead itself, so no bound can be seen from here. */
+        pump_for(1000);
+        CHECK(!body_ends);
+        more_answer("r.arrayBuffer().then(b => b.byteLength)", "68157440");
+        CHECK(body_bytes == 67108864 && body_truncated == 1);
+    } else if (IS("net-body-error")) {
+        more_answer(PAGE_READS("/cut"), "\"failed\"");
+        WAIT(net_failed_told);
+        CHECK(body_ends == 1 && !body_truncated && !body_end_late && body_bytes == 1000);
+    } else if (IS("net-body-abort")) {
+        ev_later("(window.a = new AbortController(), fetch('/slow-text', {signal: a.signal}).then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed'))");
+        WAIT(body_bytes > 0);
+        free(ev("a.abort()"));
+        WAIT(pending_eval.done);
+        CHECK(!strcmp(pending_eval.json, "\"failed\""));
+        WAIT(net_failed_told);
+        CHECK(body_ends == 1 && !body_truncated && !body_end_late);
+    } else if (IS("net-body-close")) {
+        ev_later(PAGE_READS("/slow-text"));
+        WAIT(closed);
+        long long at = body_bytes;
+        pump_for(200);
+        CHECK(body_bytes == at);
+        return;
+    } else if (IS("net-body-replace")) {
+        more_answer(PAGE_READS("/big"), "68157440");
+        CHECK(!body_second && !body_ends);
+        more_answer(PAGE_READS("/download.bin"), "65536");
+        CHECK(body_second >= 2);
+    }
+    zebkit_view_close(view);
+}
+static void network_answers(void) {
+    open_page();
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/held\"}]", NULL));
+    zebkit_view_on_network_event(view, net_event, NULL);
+    zebkit_view_on_network(view, more_asked, NULL);
+    if (IS("net-file")) {
+        more_answer("fetch('/held').then(async r => [r.status, r.headers.get('x-added'), r.headers.get('content-type'), (await r.arrayBuffer()).byteLength].join('|'))", "\"201|by-host|application/x-zebkit|3145728\"");
+    } else if (IS("net-file-missing")) {
+        more_answer(PAGE_READS("/held"), "\"failed\"");
+        WAIT(net_failed_told);
+    } else if (IS("net-file-close") || IS("net-stream-close")) {
+        ev_later(PAGE_READS("/held"));
+        WAIT(closed);
+        if (net_stream) {
+            WAIT(!zebkit_network_stream_write(net_stream, "x", 1));
+            CHECK(!zebkit_network_stream_is_open(net_stream));
+            zebkit_network_stream_end(net_stream, false);
+        }
+        return;
+    } else if (IS("net-stream")) {
+        more_answer("fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))", "\"201|by-host|abcd\"");
+    } else if (IS("net-stream-full")) {
+        more_answer(PAGE_READS("/held"), "3145728");
+        CHECK(stream_blocked && stream_left <= 0);
+    } else if (IS("net-stream-fail")) {
+        more_answer(PAGE_READS("/held"), "\"failed\"");
+        WAIT(net_failed_told);
+    }
+    zebkit_view_close(view);
+}
+static void network_redirect_modes(void) {
+    open_page();
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/held\"}]", NULL));
+    zebkit_view_on_network(view, net_asked, NULL);
+    if (IS("net-redirect-manual")) more_answer("fetch('/held', {redirect: 'manual'}).then(r => r.type, () => 'failed')", "\"opaqueredirect\"");
+    else more_answer("fetch('/held', {redirect: 'error'}).then(r => r.type, () => 'failed')", "\"failed\"");
+    CHECK(asked == 1);
+    zebkit_view_close(view);
+}
 static void network(void) {
+    if (!strncmp(MODE, "net-ws-", 7)) { network_ws(); return; }
+    if (!strncmp(MODE, "net-sw-", 7) || !strncmp(MODE, "net-shared-", 11)) { network_workers(); return; }
+    if (!strncmp(MODE, "net-body", 8)) { network_body(); return; }
+    if (!strncmp(MODE, "net-file", 8) || !strncmp(MODE, "net-stream", 10)) { network_answers(); return; }
+    if (IS("net-redirect-manual") || IS("net-redirect-error")) { network_redirect_modes(); return; }
     open_page();
     const char *rules = "[{\"url\":\"**/held\"}]";
     if (IS("net-response") || IS("net-response-block")) rules = "[{\"url\":\"**/echo\",\"stage\":\"response\"}]";

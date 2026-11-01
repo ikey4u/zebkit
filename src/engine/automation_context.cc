@@ -22,15 +22,18 @@
 #include "net/cookies/cookie_options.h"
 #include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-shared.h"
 #include "third_party/blink/public/mojom/css/preferred_contrast.mojom-shared.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace zebkit {
 
@@ -276,6 +279,120 @@ void ContextClearCookies(content::BrowserContext* profile,
       filter->host_name.value_or(""), wanted_path, std::move(done)));
 }
 
+// Playwright's APIRequestContext.fetch: redirects as its client follows them
+// (maxRedirects, 0 for the redirect itself as the answer; over it an error), the
+// credentials a caller gave left behind at another origin, and a bound on the
+// body, streamed rather than held twice.
+class ContextFetcher : public network::SimpleURLLoaderStreamConsumer {
+ public:
+  static constexpr int64_t kDefaultMaxBody = 256 * 1024 * 1024;
+
+  ContextFetcher(ContextDone done, int max_redirects, int64_t max_body)
+      : done_(std::move(done)),
+        max_redirects_(max_redirects),
+        max_body_(max_body) {}
+
+  void Start(std::unique_ptr<network::SimpleURLLoader> loader,
+             network::mojom::URLLoaderFactory* factory) {
+    loader_ = std::move(loader);
+    loader_->SetOnRedirectCallback(base::BindRepeating(
+        &ContextFetcher::Redirected, base::Unretained(this)));
+    loader_->SetOnResponseStartedCallback(base::BindOnce(
+        &ContextFetcher::Started, base::Unretained(this)));
+    loader_->DownloadAsStream(factory, this);
+  }
+
+ private:
+  void Redirected(const GURL& from,
+                  const net::RedirectInfo& info,
+                  const network::mojom::URLResponseHead& head,
+                  std::vector<std::string>* removed) {
+    // The loader may be deleted in this callback, which Answer() does: nothing
+    // is sent to the redirect's target.
+    if (max_redirects_ == 0) {
+      head_ = head.headers;
+      url_ = from.spec();
+      Answer();
+      return;
+    }
+    if (++redirects_ > max_redirects_) {
+      error_ = "Max redirect count exceeded";
+      Answer();
+      return;
+    }
+    if (!url::Origin::Create(from).IsSameOriginWith(info.new_url)) {
+      removed->push_back("Authorization");
+      removed->push_back("Proxy-Authorization");
+      removed->push_back("Cookie");
+    }
+  }
+
+  void Started(const GURL& url, const network::mojom::URLResponseHead& head) {
+    url_ = url.spec();
+    head_ = head.headers;
+  }
+
+  void OnDataReceived(std::string_view chunk, base::OnceClosure resume) override {
+    if (static_cast<int64_t>(body_.size() + chunk.size()) > max_body_) {
+      error_ = "Response body is larger than the limit of " +
+               base::NumberToString(max_body_) + " bytes";
+      Answer();
+      return;
+    }
+    body_.append(chunk);
+    std::move(resume).Run();
+  }
+
+  void OnComplete(bool success) override {
+    if (!success || !head_)
+      error_ = net::ErrorToString(loader_->NetError());
+    Answer();
+  }
+
+  void OnRetry(base::OnceClosure start_retry) override {
+    body_.clear();
+    std::move(start_retry).Run();
+  }
+
+  // Deletes this.
+  void Answer() {
+    ContextDone done = std::move(done_);
+    if (!error_.empty()) {
+      std::string error = std::move(error_);
+      delete this;
+      Fail(std::move(done), error);
+      return;
+    }
+    base::DictValue response;
+    response.Set("url", url_);
+    response.Set("status", head_->response_code());
+    response.Set("statusText", head_->GetStatusText());
+    base::ListValue headers;
+    size_t iterator = 0;
+    std::string name, value;
+    while (head_->EnumerateHeaderLines(&iterator, &name, &value)) {
+      base::DictValue header;
+      header.Set("name", name);
+      header.Set("value", value);
+      headers.Append(std::move(header));
+    }
+    response.Set("headers", std::move(headers));
+    response.Set("body", base::Base64Encode(body_));
+    base::DictValue answer;
+    answer.Set("response", std::move(response));
+    delete this;
+    std::move(done).Run(base::Value(std::move(answer)), std::string());
+  }
+
+  ContextDone done_;
+  const int max_redirects_;
+  const int64_t max_body_;
+  int redirects_ = 0;
+  std::string url_, body_, error_;
+  scoped_refptr<net::HttpResponseHeaders> head_;
+  std::unique_ptr<network::SimpleURLLoader> loader_;
+};
+
 void ContextFetch(content::BrowserContext* profile,
                   const base::DictValue& params,
                   ContextDone done) {
@@ -300,8 +417,6 @@ void ContextFetch(content::BrowserContext* profile,
     }
   }
   const int max_redirects = params.FindInt("maxRedirects").value_or(20);
-  if (max_redirects == 0)
-    request->redirect_mode = network::mojom::RedirectMode::kManual;
   request->credentials_mode = network::mojom::CredentialsMode::kInclude;
   request->site_for_cookies = net::SiteForCookies::FromUrl(target);
   std::unique_ptr<network::SimpleURLLoader> loader =
@@ -327,39 +442,17 @@ void ContextFetch(content::BrowserContext* profile,
   const double timeout = params.FindDouble("timeout").value_or(30000);
   if (timeout > 0)
     loader->SetTimeoutDuration(base::Milliseconds(timeout));
-  network::SimpleURLLoader* raw = loader.get();
-  raw->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
-      profile->GetDefaultStoragePartition()
-          ->GetURLLoaderFactoryForBrowserProcess()
-          .get(),
-      base::BindOnce(
-          [](std::unique_ptr<network::SimpleURLLoader> loader, ContextDone done,
-             std::optional<std::string> body) {
-            const network::mojom::URLResponseHead* head = loader->ResponseInfo();
-            if (!head || !head->headers) {
-              Fail(std::move(done), net::ErrorToString(loader->NetError()));
-              return;
-            }
-            base::DictValue response;
-            response.Set("url", loader->GetFinalURL().spec());
-            response.Set("status", head->headers->response_code());
-            response.Set("statusText", head->headers->GetStatusText());
-            base::ListValue headers;
-            size_t iterator = 0;
-            std::string name, value;
-            while (head->headers->EnumerateHeaderLines(&iterator, &name, &value)) {
-              base::DictValue header;
-              header.Set("name", name);
-              header.Set("value", value);
-              headers.Append(std::move(header));
-            }
-            response.Set("headers", std::move(headers));
-            response.Set("body", base::Base64Encode(body.value_or("")));
-            base::DictValue answer;
-            answer.Set("response", std::move(response));
-            std::move(done).Run(base::Value(std::move(answer)), std::string());
-          },
-          std::move(loader), std::move(done)));
+  double limit = params.FindDouble("maxBodySize")
+                     .value_or(ContextFetcher::kDefaultMaxBody);
+  if (limit <= 0 || limit > ContextFetcher::kDefaultMaxBody)
+    limit = ContextFetcher::kDefaultMaxBody;
+  // Deletes itself when it answers.
+  auto* fetcher = new ContextFetcher(std::move(done), max_redirects,
+                                     static_cast<int64_t>(limit));
+  fetcher->Start(std::move(loader),
+                 profile->GetDefaultStoragePartition()
+                     ->GetURLLoaderFactoryForBrowserProcess()
+                     .get());
 }
 
 void ContextEmulateMedia(content::WebContents* contents,

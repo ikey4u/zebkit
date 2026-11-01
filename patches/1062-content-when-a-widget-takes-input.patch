@@ -1,0 +1,39 @@
+Content: tell the embedder when a widget takes input.
+
+A new top-level widget's input router stays inactive until its first frame
+is activated, or Chromium's new-content timeout passes; until then
+RenderInputRouter::FilterInputEvent answers every event kNoConsumerExists in
+the browser, and the page hears nothing. Chromium's own browser tests wait
+for this with SetReadyForInputCallbackForTesting(). zebkit's automation sends
+input as fast as a page can load, without DevTools' round trips, and has to
+wait on the same signal.
+
+--- a/content/public/browser/zebkit_automation.h
++++ b/content/public/browser/zebkit_automation.h
+@@ -33,6 +33,12 @@
+                                       const gfx::PointF& point,
+                                       WidgetAtPointCallback callback);
+ 
++// @done once @widget's input router takes input: at once if it does already,
++// else when its first frame after a navigation is activated. At most one per
++// widget; a later call replaces an earlier one. Not run if @widget goes.
++CONTENT_EXPORT void WhenReadyForInput(RenderWidgetHost* widget,
++                                      base::OnceClosure done);
++
+ // A touch event to @widget, as a touchscreen's.
+ CONTENT_EXPORT void ForwardTouchEvent(RenderWidgetHost* widget,
+                                       const blink::WebTouchEvent& event);
+--- a/content/browser/zebkit_automation.cc
++++ b/content/browser/zebkit_automation.cc
+@@ -44,6 +44,11 @@
+           std::move(callback)));
+ }
+ 
++void WhenReadyForInput(RenderWidgetHost* widget, base::OnceClosure done) {
++  RenderWidgetHostImpl::From(widget)->SetReadyForInputCallbackForTesting(
++      std::move(done));
++}
++
+ void ForwardTouchEvent(RenderWidgetHost* widget,
+                        const blink::WebTouchEvent& event) {
+   RenderWidgetHostImpl::From(widget)

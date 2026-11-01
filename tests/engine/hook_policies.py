@@ -26,10 +26,19 @@ MODES = {
              'file-pending-close', 'file-replace', 'media-allow', 'media-deny', 'media-timeout',
              'media-close', 'media-pending-close', 'media-replace', 'keys', 'menu', 'fullscreen-allow',
              'fullscreen-deny'],
-    'popup': ['popup-inherit', 'popup-orphan', 'popup-own', 'two-views', 'cancel-running', 'cdp-order'],
+    'popup': ['popup-inherit', 'popup-orphan', 'popup-own', 'two-views', 'cancel-running', 'cdp-order', 'workers-latch'],
     'network': ['net-none', 'net-block', 'net-headers', 'net-redirect', 'net-fulfill', 'net-navigation',
                 'net-response', 'net-response-block', 'net-observe', 'net-timeout', 'net-close',
-                'net-pending-close', 'net-replace', 'net-filter', 'net-server-redirect', 'net-worker', 'net-post'],
+                'net-pending-close', 'net-replace', 'net-filter', 'net-server-redirect', 'net-worker', 'net-post',
+                'net-redirect-manual', 'net-redirect-error',
+                'net-ws-none', 'net-ws-nofunc', 'net-ws-filter', 'net-ws-block', 'net-ws-continue', 'net-ws-timeout',
+                'net-ws-close', 'net-ws-abort', 'net-ws-replace',
+                'net-sw-none', 'net-sw-block', 'net-sw-running', 'net-sw-ws',
+                'net-shared-none', 'net-shared-block', 'net-shared-running',
+                'net-body', 'net-body-none', 'net-body-big', 'net-body-backpressure', 'net-body-error',
+                'net-body-close', 'net-body-abort', 'net-body-replace',
+                'net-file', 'net-file-missing', 'net-file-close',
+                'net-stream', 'net-stream-full', 'net-stream-fail', 'net-stream-close'],
 }
 
 
@@ -103,23 +112,18 @@ def cdp_fetch(url):
 
 
 def give_input(mode, url, child):
-    # An event sent just as a page is ready can be lost in the engine: this
-    # repeats until the program, which checks what arrived, has finished.
+    # Once: the page has drawn (its title is set after two frames), so it takes input.
     cdp = CDP(url)
     try:
-        for _ in range(40):
-            if child.poll() is not None:
-                return
-            if mode == 'keys':
-                for code, key, modifiers in (('KeyK', 'k', 2), ('KeyB', 'b', 0)):
-                    common = dict(code=code, key=key, modifiers=modifiers,
-                                  windowsVirtualKeyCode=ord(key.upper()), nativeVirtualKeyCode=ord(key.upper()))
-                    cdp.send('Input.dispatchKeyEvent', type='rawKeyDown', **common)
-                    cdp.send('Input.dispatchKeyEvent', type='keyUp', **common)
-            else:
-                for kind in ('mousePressed', 'mouseReleased'):
-                    cdp.send('Input.dispatchMouseEvent', type=kind, x=20, y=30, button='right', buttons=2, clickCount=1)
-            time.sleep(.3)
+        if mode == 'keys':
+            for code, key, modifiers in (('KeyK', 'k', 2), ('KeyB', 'b', 0)):
+                common = dict(code=code, key=key, modifiers=modifiers,
+                              windowsVirtualKeyCode=ord(key.upper()), nativeVirtualKeyCode=ord(key.upper()))
+                cdp.send('Input.dispatchKeyEvent', type='rawKeyDown', **common)
+                cdp.send('Input.dispatchKeyEvent', type='keyUp', **common)
+        else:
+            for kind in ('mousePressed', 'mouseReleased'):
+                cdp.send('Input.dispatchMouseEvent', type=kind, x=20, y=30, button='right', buttons=2, clickCount=1)
     except OSError:
         pass  # The program finished and closed the page.
 
@@ -143,6 +147,12 @@ def run(language, command, mode):
         child = subprocess.Popen(full, env=env, text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         errors, outputs = [], []
+        # One reader for each pipe: communicate() would read standard error too, and
+        # take the DevTools line from the thread that looks for it.
+        def drain_out():
+            outputs.append(child.stdout.read())
+        out_thread = threading.Thread(target=drain_out, daemon=True)
+        out_thread.start()
         url = threading.Event()
         found = {}
         def drain_err():
@@ -167,12 +177,15 @@ def run(language, command, mode):
         if mode in ('keys', 'menu', 'cdp-order'):
             threading.Thread(target=driver, daemon=True).start()
         try:
-            out, _ = child.communicate(timeout=60)
+            child.wait(timeout=60)
         except subprocess.TimeoutExpired:
             child.kill()
-            out, _ = child.communicate()
-            raise AssertionError(f'{language} {mode} hung:\n{out}\n{"".join(errors[-20:])}')
+            child.wait()
+            out_thread.join(5)
+            raise AssertionError(f'{language} {mode} hung:\n{"".join(outputs)}\n{"".join(errors[-20:])}')
+        out_thread.join(5)
         thread.join(2)
+        out = ''.join(outputs)
         problem = (child.returncode != 0 or f'ok {language} {mode}\n' not in out or driver_error)
         if problem:
             raise AssertionError(f'{language} {mode} exit {child.returncode} {driver_error}:\n{out}\n{"".join(errors[-20:])}')
@@ -187,6 +200,24 @@ def run(language, command, mode):
             assert '/held' not in fixture.received, fixture.received
         if mode == 'net-flood':
             assert not any('/held' in path for path in fixture.received), fixture.received
+        if mode.startswith(('net-file', 'net-stream')):
+            assert '/held' not in fixture.received, fixture.received
+        if mode in ('net-redirect-manual', 'net-redirect-error'):
+            assert '/held' not in fixture.received and '/echo' not in fixture.received, fixture.received
+        if mode in ('net-ws-block', 'net-ws-close', 'net-ws-abort', 'net-sw-ws'):
+            assert '/ws' not in fixture.received, fixture.received
+        if mode in ('net-ws-none', 'net-ws-nofunc', 'net-ws-filter', 'net-ws-continue', 'net-ws-timeout', 'net-ws-replace'):
+            assert '/ws' in fixture.received, fixture.received
+        if mode in ('net-ws-continue', 'net-headers'):
+            assert any(h.get('X-Zebkit') == 'yes' for h in fixture.echoed), fixture.echoed
+        # A refused worker's fetch reaches nobody; one that ran before the policy did, once.
+        if mode in ('net-sw-block', 'net-shared-block'):
+            assert '/worker-held' not in fixture.received, fixture.received
+        if mode in ('net-sw-none', 'net-shared-none', 'net-sw-running', 'net-shared-running'):
+            assert fixture.received.count('/worker-held') == 1, fixture.received
+        # Through, refused with its view gone, through after a takeover and after off: each worker.
+        if mode == 'workers-latch':
+            assert fixture.received.count('/worker-held') == 6, fixture.received
         if mode == 'net-headers':
             assert any(h.get('X-Zebkit') == 'yes' for h in fixture.echoed), fixture.echoed
         print(f'ok {language} {mode}', flush=True)
@@ -197,12 +228,4 @@ language, group = sys.argv[1].split(':')
 if group == 'network' and language == 'c':
     MODES[group].append('net-flood')
 for mode in (os.environ["ONLY"].split(",") if os.environ.get("ONLY") else MODES[group]):
-    try:
-        run(language, sys.argv[2:], mode)
-    except AssertionError as error:
-        # Input from a separate CDP client is occasionally lost on a loaded
-        # machine (docs/ROADMAP_HOOKS.md); it passes alone. Nothing else retries.
-        if mode not in ('keys', 'menu'):
-            raise
-        print(f'retrying {language} {mode}: {str(error)[:200]}', flush=True)
-        run(language, sys.argv[2:], mode)
+    run(language, sys.argv[2:], mode)

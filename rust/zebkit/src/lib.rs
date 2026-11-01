@@ -61,13 +61,13 @@ pub mod vendor;
 mod view;
 
 pub use engine::{
-    after, clear_wakeup, engine_version, init, init_with_settings, is_headless, post, post_after, pump, quit, run, run_with_args,
-    set_cookie_encryption_key, set_cookie_storage, set_wakeup, shutdown, version, CookieStorage,
+    after, clear_wakeup, engine_settings, engine_version, init, init_with_settings, is_headless, post, post_after, pump, quit, run, run_with_args,
+    set_cookie_encryption_key, set_cookie_storage, set_engine_settings, set_wakeup, shutdown, version, CookieStorage,
 };
 pub use script::Script;
 pub use media::{MediaCapture, MediaTap};
 mod view_hooks;
-pub use view_hooks::{ClientCertificateAction, ClientCertificateRequest, DownloadRequest, FileChooserRequest, FullscreenPolicy, MediaAccessRequest, NetworkRequest};
+pub use view_hooks::{ClientCertificateAction, ClientCertificateRequest, DownloadRequest, FileChooserRequest, FullscreenPolicy, MediaAccessRequest, NetworkRequest, NetworkStream};
 pub use view::{Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.

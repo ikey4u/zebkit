@@ -298,6 +298,27 @@ For example, `{"javaScript":false,"images":false,"defaultFontSize":20,
 Temporary CDP emulation is separate. The complete field list, limits, reset
 behavior and tests are in [the hooks contract](ROADMAP_HOOKS.md#each-hook).
 
+## Runtime settings of the engine and of a view
+
+`<zebkit/hooks.h>`: `zebkit_set_engine_settings(json, &error)`, `zebkit_get_engine_settings()`,
+`zebkit_view_set_runtime_settings(view, json, &error)`, `zebkit_view_get_runtime_settings(view)`;
+Rust `zebkit::set_engine_settings`, `View::set_runtime_settings`; Python `zebkit.set_engine_settings`,
+`view.set_runtime_settings`; JavaScript `zebkit.setEngineSettings`, `view.setRuntimeSettings`. On the
+engine's thread. JSON up to 64 KiB, merged by key; `null` removes one, an invalid batch changes nothing.
+The getters give `{"explicit": ..., "effective": ...}`.
+
+| Key | Values | Scope | Default |
+|---|---|---|---|
+| `thirdPartyCookies` | `block`, `allow` | engine, the view's context; the latest write wins | `block` |
+| `dialogs` | `default`, `hold`, `accept`, `dismiss` | engine, view | `default` |
+| `downloads` | `save`, `deny` | engine, view; a function set still decides | `save` |
+| `newWindows` | `block-without-gesture`, `allow`, `block` | engine, view | `block-without-gesture` |
+| `spareRenderer` | boolean | engine | `false` |
+
+A view's value goes before the engine's, except `thirdPartyCookies`. `--zebkit-allow-third-party-cookies`
+and `--zebkit-spare-renderer` stay the startup defaults. Cookies change asynchronously, and a document
+may keep those it has read.
+
 ## Runtime document permissions
 
 `<zebkit/hooks.h>` configures rules with `zebkit_view_set_permission`, queries
@@ -1241,7 +1262,7 @@ function, and once that opener closed, the popup is refused.
 | Keys | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | `set_reserved_keys`, `on_reserved_key` | same | `setReservedKeys`, `onReservedKey` | not asked |
 | Context menu | `zebkit_view_on_context_menu` | `on_context_menu` | `on_context_menu` | `onContextMenu` | told only |
 | Fullscreen | `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `setFullscreenPolicy`, `onFullscreen` | not asked |
-| Network | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
+| Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
 
 Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
 Limits are in `docs/ROADMAP_HOOKS.md`: the network hook does not cover WebSockets,

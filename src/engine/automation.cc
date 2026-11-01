@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -51,6 +53,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
@@ -131,6 +134,9 @@ constexpr char kClosed[] = "Target page, context or browser has been closed";
 constexpr char kNavigated[] =
     "Execution context was destroyed, most likely because of a navigation";
 constexpr char kDetached[] = "Element is not attached to the DOM";
+// Not Playwright's: it has no such case, as its round trips hide it.
+constexpr char kInputDropped[] =
+    "The browser dropped the input: the page's widget did not take input";
 constexpr char kDisposed[] = "JSHandle is disposed";
 // The binding Playwright's WebSocket mock reports through.
 constexpr char kWebSocketBinding[] = "__pwWebSocketBinding";
@@ -2017,6 +2023,42 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kFrameDetached);
       return;
     }
+    if (call->Flag("trial")) {
+      PointerSend(call, action, std::move(target), interceptor, widget,
+                  in_widget, in_root);
+      return;
+    }
+    TakeInputDropped();
+    Observe(widget);
+    WhenInputReady(base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+           PointerAction action, Target target, int interceptor, int process,
+           int routing, gfx::PointF in_widget, gfx::PointF in_root) {
+          if (!self || !call)
+            return;
+          content::RenderWidgetHost* widget =
+              content::RenderWidgetHost::FromID(process, routing);
+          if (!widget) {
+            call->Fail(kFrameDetached);
+            return;
+          }
+          self->PointerSend(call, action, std::move(target), interceptor,
+                            widget, in_widget, in_root);
+        },
+        weak_factory_.GetWeakPtr(), call, action, std::move(target),
+        interceptor, widget->GetProcess()->GetDeprecatedID(),
+        widget->GetRoutingID(), in_widget, in_root));
+  }
+
+  void PointerSend(base::WeakPtr<Call> call,
+                   PointerAction action,
+                   Target target,
+                   int interceptor,
+                   content::RenderWidgetHost* widget,
+                   gfx::PointF in_widget,
+                   gfx::PointF in_root) {
+    if (!call)
+      return;
     auto finish = base::BindOnce(&Automation::PointerDone,
                                  weak_factory_.GetWeakPtr(), call, action,
                                  target, interceptor);
@@ -2074,6 +2116,11 @@ class Automation : public content::WebContentsObserver,
                    int interceptor) {
     if (!call)
       return;
+    if (TakeInputDropped()) {
+      watching_.erase(call.get());
+      call->Fail(kInputDropped);
+      return;
+    }
     base::DictValue finish;
     finish.Set("interceptor", interceptor);
     if (action.checked)
@@ -2327,6 +2374,14 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kDetached);
       return;
     }
+    // As DevTools' DOM.setFileInputFiles: without it the renderer cannot read
+    // them, and leaving the page, whose state names them, gets it killed
+    // (RFH_CAN_ACCESS_FILES_OF_PAGE_STATE).
+    auto* security = content::ChildProcessSecurityPolicy::GetInstance();
+    for (const std::string& path : paths) {
+      security->GrantReadFile(frame->GetProcess()->GetID(),
+                              base::FilePath::FromUTF8Unsafe(path));
+    }
     const std::string kept = *id;
     Agent(frame)->SetInputFiles(
         handle->id, paths,
@@ -2355,32 +2410,41 @@ class Automation : public content::WebContentsObserver,
                   [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
                     if (!self || !call)
                       return;
-                    self->watched_navigations_.erase(call.get());
-                    self->watching_.insert(call.get());
-                    self->Press(call.get(), call->String("key"),
-                                static_cast<int>(call->Number("delay")),
-                                base::BindOnce(
-                                    [](base::WeakPtr<Automation> self,
-                                       base::WeakPtr<Call> call) {
-                                      if (!self || !call)
-                                        return;
-                                      self->watching_.erase(call.get());
-                                      self->AfterInput(call.get());
-                                    },
-                                    self, call));
+                    self->Gated<&Automation::FramePressKeys>(call.get());
                   },
                   weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+  }
+
+  void FramePressKeys(Call* call) {
+    watched_navigations_.erase(call);
+    watching_.insert(call);
+    Press(call, call->String("key"),
+          static_cast<int>(call->Number("delay")),
+          base::BindOnce(
+              [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+                if (!self || !call)
+                  return;
+                self->watching_.erase(call.get());
+                if (self->TakeInputDropped()) {
+                  call->Fail(kInputDropped);
+                  return;
+                }
+                self->AfterInput(call.get());
+              },
+              weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+  }
+
+  void FrameTypeKeys(Call* call) {
+    TypeText(call, CodePoints(call->String("text")), 0,
+             static_cast<int>(call->Number("delay")));
   }
 
   void FrameType(Call* call) {
     FocusThen(call, true,
               base::BindOnce(
                   [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
-                    if (self && call) {
-                      self->TypeText(call.get(),
-                                     CodePoints(call->String("text")), 0,
-                                     static_cast<int>(call->Number("delay")));
-                    }
+                    if (self && call)
+                      self->Gated<&Automation::FrameTypeKeys>(call.get());
                   },
                   weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
   }
@@ -2483,7 +2547,16 @@ class Automation : public content::WebContentsObserver,
     }
     navigation_waiters_.push_back({call->GetWeakPtr(), -1, wait_until,
                                    base::Value(), frame->GetFrameTreeNodeId()});
-    std::move(navigate).Run();
+    // As a task: a client's next command comes from inside the answer to its last,
+    // which may be inside the navigation that ended, or a renderer's exit, where
+    // content does not take a new navigation.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<Call> call, base::OnceClosure navigate) {
+                         if (call && !call->finished())
+                           std::move(navigate).Run();
+                       },
+                       call->GetWeakPtr(), std::move(navigate)));
   }
 
   // Frame.waitForLoadState: answered when the frame's document has reached
@@ -2551,7 +2624,11 @@ class Automation : public content::WebContentsObserver,
       else
         ++it;
     }
-    for (NavigationWaiter& waiter : navigation_waiters_) {
+    // An answer's callback may send the next command, which adds a waiter (a
+    // deque: this one stays where it is) and may come back here.
+    ++settling_;
+    for (size_t i = 0; i < navigation_waiters_.size(); ++i) {
+      NavigationWaiter& waiter = navigation_waiters_[i];
       if (waiter.navigation_id != id || !waiter.call)
         continue;
       if (!navigation->HasCommitted() || navigation->IsErrorPage()) {
@@ -2563,6 +2640,7 @@ class Automation : public content::WebContentsObserver,
       if (waiter.wait_until == "commit" || navigation->IsSameDocument())
         Answer(waiter);
     }
+    --settling_;
     Settle();
   }
 
@@ -2633,7 +2711,9 @@ class Automation : public content::WebContentsObserver,
 
   // Answers the navigations whose lifecycle state has come.
   void Settle() {
-    for (NavigationWaiter& waiter : navigation_waiters_) {
+    ++settling_;
+    for (size_t i = 0; i < navigation_waiters_.size(); ++i) {
+      NavigationWaiter& waiter = navigation_waiters_[i];
       if (!waiter.call || waiter.response.is_none())
         continue;
       auto found = lifecycles_.find(waiter.frame);
@@ -2647,6 +2727,9 @@ class Automation : public content::WebContentsObserver,
         Answer(waiter);
       }
     }
+    // Only the outermost: an inner one would move what the outer one is walking.
+    if (--settling_)
+      return;
     std::erase_if(navigation_waiters_, [](const NavigationWaiter& waiter) {
       return !waiter.call || waiter.call->finished();
     });
@@ -2672,7 +2755,11 @@ class Automation : public content::WebContentsObserver,
     Emit("Page.frameDetached", std::move(params));
   }
 
-  void PrimaryPageChanged(content::Page&) override { EmulateFocus(); }
+  void PrimaryPageChanged(content::Page&) override {
+    // The last move's widget may live on in the back-forward cache.
+    mouse_widget_ = nullptr;
+    EmulateFocus();
+  }
 
   void RenderFrameCreated(content::RenderFrameHost* frame) override {
     if (!media_type_.empty())
@@ -2844,21 +2931,33 @@ class Automation : public content::WebContentsObserver,
 
   // ---- Keyboard --------------------------------------------------------
 
+  // An input command, once the page's widget takes input.
+  template <void (Automation::*method)(Call*)>
+  void Gated(Call* call) {
+    TakeInputDropped();
+    WhenInputReady(base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+          if (self && call)
+            (self.get()->*method)(call.get());
+        },
+        weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+  }
+
   void KeyboardDown(Call* call) {
     std::optional<Type> sent = KeyDown(call, call->String("key"));
     if (sent)
-      WhenAcked(*sent, Done(call));
+      WhenAcked(*sent, InputDone(call));
   }
 
   void KeyboardUp(Call* call) {
     if (!KeyUp(call, call->String("key")))
       return;
-    WhenAcked(Type::kKeyUp, Done(call));
+    WhenAcked(Type::kKeyUp, InputDone(call));
   }
 
   void KeyboardPress(Call* call) {
     Press(call, call->String("key"), static_cast<int>(call->Number("delay")),
-          Done(call));
+          InputDone(call));
   }
 
   void KeyboardType(Call* call) {
@@ -2960,7 +3059,10 @@ class Automation : public content::WebContentsObserver,
     if (call->finished())
       return;
     if (index >= characters.size()) {
-      call->Done();
+      if (TakeInputDropped())
+        call->Fail(kInputDropped);
+      else
+        call->Done();
       return;
     }
     auto next = base::BindOnce(
@@ -3107,7 +3209,7 @@ class Automation : public content::WebContentsObserver,
                       self->MouseMoveIn(
                           widget, local, to,
                           std::max(1, static_cast<int>(call->Number("steps", 1))));
-                      self->WhenAcked(Type::kMouseMove, Done(call.get()));
+                      self->WhenAcked(Type::kMouseMove, self->InputDone(call.get()));
                     },
                     weak_factory_.GetWeakPtr(), call->GetWeakPtr(), to));
   }
@@ -3115,13 +3217,13 @@ class Automation : public content::WebContentsObserver,
   void MouseDownCommand(Call* call) {
     MouseDownIn(Widget(), ButtonOf(call->String("button")),
                 static_cast<int>(call->Number("clickCount", 1)));
-    WhenAcked(Type::kMouseDown, Done(call));
+    WhenAcked(Type::kMouseDown, InputDone(call));
   }
 
   void MouseUpCommand(Call* call) {
     MouseUpIn(Widget(), ButtonOf(call->String("button")),
               static_cast<int>(call->Number("clickCount", 1)));
-    WhenAcked(Type::kMouseUp, Done(call));
+    WhenAcked(Type::kMouseUp, InputDone(call));
   }
 
   void MouseClickCommand(Call* call) {
@@ -3139,7 +3241,7 @@ class Automation : public content::WebContentsObserver,
                           call.get(), widget, ButtonOf(call->String("button")),
                           static_cast<int>(call->Number("clickCount", 1)), 1,
                           static_cast<int>(call->Number("delay")),
-                          Done(call.get()));
+                          self->InputDone(call.get()));
                     },
                     weak_factory_.GetWeakPtr(), call->GetWeakPtr(), to));
   }
@@ -3362,6 +3464,70 @@ class Automation : public content::WebContentsObserver,
     return gfx::PointF(origin.x() + point.x(), origin.y() + point.y());
   }
 
+  // ---- Input held back after a navigation ------------------------------
+  //
+  // A new top-level widget's input router stays inactive until the widget's
+  // first frame is activated (or Chromium's new-content timeout passes): while
+  // paint holding shows the old page, RenderInputRouter::FilterInputEvent
+  // acknowledges every event at once with kNoConsumerExists, and the page never
+  // hears of it. A person cannot act on a page not yet shown; a command can, so
+  // commands wait for the same signal. Frames of other sites are never held.
+  void WhenInputReady(base::OnceClosure then) {
+    content::RenderWidgetHost* widget = MainWidget();
+    if (!widget || base::CommandLine::ForCurrentProcess()->HasSwitch(
+                       "zebkit-test-no-input-wait")) {
+      std::move(then).Run();
+      return;
+    }
+    Observe(widget);
+    InputWaiters& waiters = input_waiters_[widget];
+    waiters.closures.push_back(std::move(then));
+    if (waiters.closures.size() > 1)
+      return;
+    const int generation = ++input_wait_generation_;
+    waiters.generation = generation;
+    // A page that never draws (a view hidden for good): after the timeout an
+    // event may be dropped, which InputDone() and PointerDone() then report.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&Automation::InputReady, weak_factory_.GetWeakPtr(),
+                       widget, generation),
+        base::Seconds(5));
+    content::WhenReadyForInput(
+        widget, base::BindOnce(&Automation::InputReady,
+                               weak_factory_.GetWeakPtr(), widget, generation));
+  }
+
+  void InputReady(content::RenderWidgetHost* widget, int generation) {
+    auto it = input_waiters_.find(widget);
+    if (it == input_waiters_.end() || it->second.generation != generation)
+      return;
+    std::vector<base::OnceClosure> closures = std::move(it->second.closures);
+    input_waiters_.erase(it);
+    for (base::OnceClosure& closure : closures)
+      std::move(closure).Run();
+  }
+
+  // What was sent since the command began and never reached the renderer.
+  bool TakeInputDropped() {
+    return std::exchange(input_dropped_, false);
+  }
+
+  // @call done, or failed if the browser dropped what it sent: never a success
+  // for input the page did not get.
+  base::OnceClosure InputDone(Call* call) {
+    return base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+          if (!self || !call)
+            return;
+          if (self->TakeInputDropped())
+            call->Fail(kInputDropped);
+          else
+            call->Done();
+        },
+        weak_factory_.GetWeakPtr(), call->GetWeakPtr());
+  }
+
   // crInput.ts's RawMouseImpl, as CDP's Input.dispatchMouseEvent makes the
   // event: buttons held, modifiers, a pressure while pressed.
   void SendMouse(content::RenderWidgetHost* widget,
@@ -3412,10 +3578,18 @@ class Automation : public content::WebContentsObserver,
 
   // content::RenderWidgetHost::InputEventObserver
   void OnInputEventAck(const content::RenderWidgetHost&,
-                       blink::mojom::InputEventResultSource,
-                       blink::mojom::InputEventResultState,
+                       blink::mojom::InputEventResultSource source,
+                       blink::mojom::InputEventResultState state,
                        const blink::WebInputEvent& event) override {
     const Type type = event.GetType();
+    // Filtered in the browser, not by a page without a listener, which the
+    // renderer answers (wheel and touch say the same from there).
+    if (source == blink::mojom::InputEventResultSource::kBrowser &&
+        state == blink::mojom::InputEventResultState::kNoConsumerExists &&
+        (blink::WebInputEvent::IsMouseEventType(type) ||
+         blink::WebInputEvent::IsKeyboardEventType(type))) {
+      input_dropped_ = true;
+    }
     // A key down with text is acknowledged as the key down it is.
     if (type == Type::kChar)
       return;
@@ -3441,6 +3615,8 @@ class Automation : public content::WebContentsObserver,
     observed_.erase(widget);
     if (mouse_widget_.get() == widget)
       mouse_widget_ = nullptr;
+    if (auto it = input_waiters_.find(widget); it != input_waiters_.end())
+      InputReady(widget, it->second.generation);
     // What it would have acknowledged will not be: the page went.
     std::vector<Ack> acks = std::move(acks_);
     for (Ack& ack : acks)
@@ -3581,7 +3757,9 @@ class Automation : public content::WebContentsObserver,
       call->Fail("viewportSize: expected width and height");
       return;
     }
-    zebkit_view_resize(call->view(), width, height);
+    // The off-screen view's own size: a resize behind its back lasts only
+    // until its next frame.
+    zebkit_view_set_size(call->view(), width, height, 0);
     WaitForViewport(call->GetWeakPtr(), width, height);
   }
 
@@ -4596,7 +4774,8 @@ class Automation : public content::WebContentsObserver,
   // The frames' lifecycles since their last navigation.
   std::map<content::FrameTreeNodeId, Lifecycle> lifecycles_;
   std::map<content::FrameTreeNodeId, base::OneShotTimer> idle_timers_;
-  std::vector<NavigationWaiter> navigation_waiters_;
+  std::deque<NavigationWaiter> navigation_waiters_;
+  int settling_ = 0;
   // Calls whose input is being sent, and the navigation it started.
   std::set<Call*> watching_;
   std::map<Call*, int64_t> watched_navigations_;
@@ -4606,6 +4785,13 @@ class Automation : public content::WebContentsObserver,
   std::set<std::string> pressed_keys_;
   gfx::PointF mouse_;
   raw_ptr<content::RenderWidgetHost> mouse_widget_ = nullptr;
+  struct InputWaiters {
+    int generation = 0;
+    std::vector<base::OnceClosure> closures;
+  };
+  std::map<content::RenderWidgetHost*, InputWaiters> input_waiters_;
+  int input_wait_generation_ = 0;
+  bool input_dropped_ = false;
   gfx::PointF mouse_in_widget_;
   Button last_button_ = Button::kNoButton;
   std::set<Button> buttons_;
@@ -4953,17 +5139,17 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.goBack", &A::GoBack},
           {"Page.goForward", &A::GoForward},
           {"Page.frames", &A::Frames},
-          {"Page.keyboardDown", &A::KeyboardDown},
-          {"Page.keyboardUp", &A::KeyboardUp},
-          {"Page.keyboardPress", &A::KeyboardPress},
-          {"Page.keyboardType", &A::KeyboardType},
+          {"Page.keyboardDown", &A::Gated<&A::KeyboardDown>},
+          {"Page.keyboardUp", &A::Gated<&A::KeyboardUp>},
+          {"Page.keyboardPress", &A::Gated<&A::KeyboardPress>},
+          {"Page.keyboardType", &A::Gated<&A::KeyboardType>},
           {"Page.keyboardInsertText", &A::KeyboardInsertText},
-          {"Page.mouseMove", &A::MouseMoveCommand},
-          {"Page.mouseDown", &A::MouseDownCommand},
-          {"Page.mouseUp", &A::MouseUpCommand},
-          {"Page.mouseClick", &A::MouseClickCommand},
-          {"Page.mouseWheel", &A::MouseWheelCommand},
-          {"Page.touchscreenTap", &A::TouchscreenTap},
+          {"Page.mouseMove", &A::Gated<&A::MouseMoveCommand>},
+          {"Page.mouseDown", &A::Gated<&A::MouseDownCommand>},
+          {"Page.mouseUp", &A::Gated<&A::MouseUpCommand>},
+          {"Page.mouseClick", &A::Gated<&A::MouseClickCommand>},
+          {"Page.mouseWheel", &A::Gated<&A::MouseWheelCommand>},
+          {"Page.touchscreenTap", &A::Gated<&A::TouchscreenTap>},
           {"Page.screenshot", &A::Screenshot},
           {"Page.setViewportSize", &A::SetViewportSize},
           {"Page.addInitScript", &A::AddInitScript},

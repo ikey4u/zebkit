@@ -30,7 +30,7 @@ import pathlib
 import sys
 
 __all__ = [
-    "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless",
+    "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "NetworkStream", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless", "set_engine_settings", "engine_settings",
     "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
@@ -158,6 +158,10 @@ _view_on_console = _declare("zebkit_view_on_console", None, _V, _CONSOLE, _P)
 
 _view_set_settings = _declare("zebkit_view_set_settings", _B, _V, _S, ctypes.POINTER(_P))
 _view_get_settings = _declare("zebkit_view_get_settings", _P, _V)
+_set_engine_settings = _declare("zebkit_set_engine_settings", _B, _S, ctypes.POINTER(_P))
+_get_engine_settings = _declare("zebkit_get_engine_settings", _P)
+_view_set_runtime_settings = _declare("zebkit_view_set_runtime_settings", _B, _V, _S, ctypes.POINTER(_P))
+_view_get_runtime_settings = _declare("zebkit_view_get_runtime_settings", _P, _V)
 _PERMISSION = ctypes.CFUNCTYPE(None, _V, _P, _S, _P)
 _PERMISSION_RESULT = ctypes.CFUNCTYPE(None, _V, _S, _P)
 _view_set_permission = _declare("zebkit_view_set_permission", _B, _V, _S, _S, _I, _EP)
@@ -235,6 +239,16 @@ _view_on_network_event = _declare("zebkit_view_on_network_event", None, _V, _TOL
 _view_network_timeout = _declare("zebkit_view_set_network_timeout", _B, _V, ctypes.c_uint32)
 _network_info = _declare("zebkit_network_request_info", _P, _P)
 _network_respond = _declare("zebkit_network_respond", _B, _P, _S, ctypes.c_char_p, _Z, _P)
+_view_network_for_workers = _declare("zebkit_view_set_network_filter_for_workers", _B, _V, _B)
+_NETWORK_BODY = ctypes.CFUNCTYPE(None, _V, _S, _P, _Z, _B, _B, _P)
+_view_on_network_body = _declare("zebkit_view_on_network_body", None, _V, _NETWORK_BODY, _P)
+_network_respond_file = _declare("zebkit_network_respond_file", _B, _P, _S, _S, _P)
+_network_respond_stream = _declare("zebkit_network_respond_stream", _P, _P, _S, _P)
+_network_stream_write = _declare("zebkit_network_stream_write", _B, _P, ctypes.c_char_p, _Z)
+_STREAM_WRITABLE = ctypes.CFUNCTYPE(None, _P, _P)
+_network_stream_on_writable = _declare("zebkit_network_stream_on_writable", None, _P, _STREAM_WRITABLE, _P)
+_network_stream_is_open = _declare("zebkit_network_stream_is_open", _B, _P)
+_network_stream_end = _declare("zebkit_network_stream_end", None, _P, _B)
 
 
 class _Request:
@@ -304,6 +318,45 @@ class NetworkRequest(_Request):
         respond('redirect', url=...), respond('fulfill', body=bytes, status=200, headers=[...])."""
         reply = dict(fields, action=action)
         return bool(_network_respond(self._handle, json.dumps(reply).encode(), bytes(body), len(body), None))
+
+    def respond_file(self, path, **fields):
+        """Fulfill from an absolute path: respond_file(path, status=200, headers=[...])."""
+        return bool(_network_respond_file(self._handle, json.dumps(fields).encode(), os.fsencode(path), None))
+
+    def respond_stream(self, **fields):
+        """Fulfill with what is written: a NetworkStream, or None when invalid or stale."""
+        handle = _network_respond_stream(self._handle, json.dumps(fields).encode(), None)
+        return NetworkStream(handle) if handle else None
+
+
+class NetworkStream:
+    """An answer written as it goes, on the engine thread; end() frees it."""
+    def __init__(self, handle):
+        self._handle = handle
+        self._writable = None
+
+    def write(self, data):
+        """False when it does not fit (at most 1 MiB waits) or nobody reads any more."""
+        if self._handle is None:
+            return False
+        data = bytes(data)
+        return bool(_network_stream_write(self._handle, data, len(data)))
+
+    def on_writable(self, function):
+        """function() once after a write that returned false: it fits, or is_open is false."""
+        if self._handle is None:
+            return
+        self._writable = _STREAM_WRITABLE(_guard(lambda stream, data: function())) if function else _STREAM_WRITABLE()
+        _network_stream_on_writable(self._handle, self._writable, None)
+
+    @property
+    def is_open(self):
+        return self._handle is not None and bool(_network_stream_is_open(self._handle))
+
+    def end(self, failed=False):
+        if self._handle is not None:
+            handle, self._handle = self._handle, None
+            _network_stream_end(handle, bool(failed))
 
 
 class HttpAuthRequest:
@@ -537,6 +590,22 @@ def init(argv=None, *, settings=None):
     return code
 
 
+def set_engine_settings(settings):
+    """What zebkit decides for the whole engine (<zebkit/hooks.h>): thirdPartyCookies,
+    spareRenderer, dialogs, downloads, newWindows. All of it applies or none."""
+    source = settings if isinstance(settings, str) else json.dumps(settings)
+    if '\0' in source:
+        raise Error("runtime settings contain NUL")
+    error = ctypes.c_void_p()
+    if not _set_engine_settings(source.encode(), ctypes.byref(error)):
+        _raise(error, "runtime settings rejected")
+
+
+def engine_settings():
+    """{"explicit": ..., "effective": ...}."""
+    return json.loads(_string(_get_engine_settings()))
+
+
 def pump():
     """Process ready engine/native events without waiting; False if invalid."""
     return bool(_pump())
@@ -667,6 +736,21 @@ class View:
     def settings(self):
         """Explicit native preferences; temporary CDP emulation is separate."""
         return json.loads(_string(_view_get_settings(self._check())))
+
+    def set_runtime_settings(self, settings):
+        """What zebkit decides for this view (<zebkit/hooks.h>): thirdPartyCookies,
+        dialogs, downloads, newWindows. All of it applies or none."""
+        source = settings if isinstance(settings, str) else json.dumps(settings)
+        if '\0' in source:
+            raise Error("runtime settings contain NUL")
+        error = ctypes.c_void_p()
+        if not _view_set_runtime_settings(self._check(), source.encode(), ctypes.byref(error)):
+            _raise(error, "runtime settings rejected")
+
+    @property
+    def runtime_settings(self):
+        """{"explicit": ..., "effective": ...}."""
+        return json.loads(_string(_view_get_runtime_settings(self._check())))
 
     def set_permission(self, permission, state, origin=None):
         """Set a view rule; None uses the current origin, '*' a default rule."""
@@ -890,6 +974,23 @@ class View:
 
     def on_network_event(self, function):
         self._told('network-event', _view_on_network_event, function)
+
+    def set_network_filter_for_workers(self, on):
+        """This view's filter also decides for its profile's shared and service workers."""
+        return bool(_view_network_for_workers(self._check(), bool(on)))
+
+    def on_network_body(self, function):
+        """function(request_id, bytes, end, truncated) for what a rule with body: true matches."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("network-body observer must be callable or None")
+        previous = self._callbacks.get('network-body')
+        callback = _NETWORK_BODY(_guard(lambda h, request_id, data, size, end, truncated, d:
+                    function(request_id.decode(), ctypes.string_at(data, size) if size else b"",
+                             bool(end), bool(truncated)))) if function is not None else _NETWORK_BODY()
+        self._set('network-body', callback, _view_on_network_body)
+        if previous is not None:
+            post(lambda previous=previous: None)
 
     def set_network_timeout(self, milliseconds):
         self._deadline(_view_network_timeout, milliseconds)

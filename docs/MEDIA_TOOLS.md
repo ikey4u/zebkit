@@ -90,10 +90,13 @@ Processing:
 ```
 [-y | -n] -i INPUT [-map 0:INDEX]... [-vn] [-an]
 (-c copy | -c:a pcm_s16le | -c:v rawvideo) [-f FORMAT]
-[-ar RATE] [-ac CHANNELS] [-s WIDTHxHEIGHT] [-frames:v COUNT]
+[-ss SECONDS] [-t SECONDS] [-ar RATE] [-ac CHANNELS] [-s WIDTHxHEIGHT] [-frames:v COUNT]
 [-pix_fmt rgba] OUTPUT
 ```
 
+- `-ss` and `-t` are seconds. With `-c copy` the output begins at the key frame at or before the
+  start, its times from zero, as `ffmpeg -ss -t -c copy`; decoded, exactly those frames are written.
+  Nothing between those times fails.
 - Copy defaults to all audio/video streams. Explicit maps select stream indices;
   duplicate or missing indices fail. Streams retain source order. Container and
   stream tags, codec parameters, dispositions and timestamps are copied.

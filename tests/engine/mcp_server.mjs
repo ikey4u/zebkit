@@ -596,6 +596,17 @@ async function everyTool(label, c) {
   check(!forgot.isError, say('auth_forget'), forgot.text);
   await refused('net_fetch', { url: `${OAUTH}/api/echo`, auth: flow }, /no flow/, 'net_fetch with a forgotten flow');
 
+  // ---- Settings: read always; nothing changes that the operator did not name.
+  const pageSettings = await call('settings_get', { page });
+  check(pageSettings.structured.effective?.thirdPartyCookies === 'block' && pageSettings.structured.effective.newWindows === 'block' && pageSettings.structured.effective.downloads === 'ask' && pageSettings.structured.allowedKeys.length === 0, say('settings_get a page: as the bounds set it'), pageSettings.text);
+  const engineSettings = await call('settings_get', {});
+  check(engineSettings.structured.effective?.spareRenderer === false && engineSettings.structured.explicit && Object.keys(engineSettings.structured.explicit).length === 0, say('settings_get the engine'), engineSettings.text);
+  await refused('settings_get', { page: 'p999' }, /no page/, 'settings_get: a page not there');
+  await refused('settings_set', { page, settings: { dialogs: 'accept' } }, /--allow-settings/, 'settings_set: a key not allowed, for a page');
+  await refused('settings_set', { settings: { thirdPartyCookies: 'allow' } }, /--allow-settings/, 'settings_set: a key not allowed, for the engine');
+  const unchanged = await call('settings_get', { page });
+  check(JSON.stringify(unchanged.structured.explicit) === JSON.stringify(pageSettings.structured.explicit), say('settings_set refused: nothing changed'), unchanged.text);
+
   // ---- Closing
   await refused('page_close', { page: 'p999' }, /no page/, 'page_close: a page not there');
   const pageClosed = await call('page_close', { page });
@@ -826,6 +837,55 @@ async function defaults() {
     check(!hash.isError, 'no bounds given: data as arguments works', hash.text);
   });
 
+  // --allow-settings: a key allowed takes effect, the others do not, and no value
+  // gets past what the bounds refuse.
+  await withClient(['--allow-origin', SITE, '--allow-settings', 'dialogs,downloads,newWindows,viewport'], async c => {
+    const refused = async (args, pattern, what) => {
+      const answer = await c.call('settings_set', args);
+      check(answer.isError && pattern.test(answer.text), `--allow-settings: ${what}`, answer.text);
+    };
+    const opened = await c.call('page_open', { url: `${SITE}/page` });
+    const page = opened.structured.page;
+    const answered = script => c.call('page_evaluate', { page, script });
+    await refused({ page, settings: { thirdPartyCookies: 'allow' } }, /--allow-settings/, 'a key not named');
+    await refused({ page, settings: { dialogs: 'dismiss', thirdPartyCookies: 'allow' } }, /--allow-settings/, 'a batch with one key not named');
+    const untouched = await c.call('settings_get', { page });
+    check(untouched.structured.effective.dialogs === 'default' && untouched.structured.allowedKeys.includes('dialogs'), '--allow-settings: a refused batch changed nothing', untouched.text);
+    await refused({ page, settings: { newWindows: 'allow' } }, /only "block"/, 'newWindows allow stays refused');
+    await refused({ page, settings: { newWindows: 'block-without-gesture' } }, /only "block"/, 'newWindows without a gesture stays refused');
+    await refused({ page, settings: { newWindows: null } }, /only "block"/, 'newWindows reset stays refused');
+    await refused({ page, settings: { downloads: 'save' } }, /only "deny"/, 'downloads save stays refused');
+    await refused({ settings: { newWindows: 'allow' } }, /only "block"/, 'newWindows allow stays refused for the engine');
+    await refused({ settings: { downloads: 'save' } }, /only "deny"/, 'downloads save stays refused for the engine');
+    await refused({ page, settings: { dialogs: 'nonsense' } }, /invalid runtime setting/, "the engine's own check");
+    await refused({ settings: { viewport: { width: 500, height: 400 } } }, /of a page/, 'a viewport for no page');
+    await refused({ page, settings: { viewport: { width: 0, height: 400 } } }, /viewport/, 'a viewport of no size');
+
+    const set = await c.call('settings_set', { page, settings: { dialogs: 'dismiss', newWindows: 'block' } });
+    check(!set.isError && set.structured.explicit.dialogs === 'dismiss', '--allow-settings: an allowed key is set', set.text);
+    const confirmed = await answered("confirm('now?')");
+    check(confirmed.structured.value === false, '--allow-settings: it takes effect in the page', confirmed.text);
+    const listed = await c.call('page_list', {});
+    check(listed.structured.pages.find(item => item.page === page).openDialogs === 0, '--allow-settings: a dialog the policy answered is not left waiting', listed.text);
+    await c.call('settings_set', { page, settings: { dialogs: 'accept' } });
+    const accepted = await answered("confirm('now?')");
+    check(accepted.structured.value === true, '--allow-settings: changed again', accepted.text);
+    const resized = await c.call('settings_set', { page, settings: { dialogs: null, viewport: { width: 500, height: 400 } } });
+    const size = await answered('innerWidth + "x" + innerHeight');
+    check(!resized.isError && size.structured.value === '500x400', '--allow-settings: the viewport', size.text);
+    const engineWide = await c.call('settings_set', { settings: { downloads: 'deny', newWindows: 'block' } });
+    check(!engineWide.isError && engineWide.structured.effective.downloads === 'deny', '--allow-settings: narrowing the engine', engineWide.text);
+    await c.call('page_click', { page, selector: '#popup' });
+    await c.call('page_click', { page, selector: '#download' });
+    let log;
+    for (let i = 0; i < 100; i++) {
+      log = await c.call('page_network', { page });
+      if (['popup', 'download'].every(what => log.structured.refusedByBounds?.some(item => item.what === what))) break;
+      await sleep(50);
+    }
+    check(['popup', 'download'].every(what => log.structured.refusedByBounds?.some(item => item.what === what)), '--allow-settings: popups and downloads still go to the hooks', log.text);
+  });
+
   await withClient(['--tools', 'pdf,data_hash', '--deny-tools', 'pdf_close'], async c => {
     const { tools } = await c.client.listTools();
     const names = tools.map(tool => tool.name);
@@ -882,6 +942,7 @@ async function defaults() {
   startFails(['--allow-read', path.join(work, 'not-there')], /No such file/, 'a grant not there');
   startFails(['--allow-origin', 'ftp://example.com'], /not an http or https origin/, 'an origin of another scheme');
   startFails(['--tools', 'nothing'], /neither a tool nor a group/, 'a tool not there');
+  startFails(['--allow-settings', 'nothing'], /not a setting/, 'a setting not there');
   startFails(['--', '--remote-debugging-port=9222'], /refused/, 'CDP behind the bounds');
   startFails(['--', '--host-resolver-rules=x'], /refused/, 'its own resolver rules');
   startFails(['--', '--user-data-dir=/tmp/x'], /refused/, 'a profile through the engine');

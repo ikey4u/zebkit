@@ -108,11 +108,12 @@ in `examples/native-host` (Done table). What is left:
 - **A window's native handle** given to the application, so that it can parent
   the system's dialogs to it (file dialogs through the XDG portal need it). The
   other way, an application's handle as a view's parent, is done.
-- **The sandbox where there is none.** Chromium's Linux sandbox needs
-  unprivileged user namespaces or a set-user-ID helper, which containers
-  and build machines often lack; the engine then refuses to start without
-  `--no-sandbox`. Agents run in such places: zebkit needs a stated answer
-  (ship the helper, document `--no-sandbox` for containers, or both).
+- **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
+  Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root
+  runs `zebkit-sandbox-install`, and `--no-sandbox` is documented for containers and said
+  on standard error each time. Without any of them the engine refuses to start, saying
+  what to do, instead of Chromium's fatal message. Left: the helper has not been run from
+  this package, as the build machine has no root.
 - **Text layout at Chrome's speed.** A chapter of a book takes 4.4 ms of
   CPU to lay out in zebkit `slim` and 3.5 ms in Electron 44.9
   (`scripts/layout-bench.sh`, `docs/SIZE_AND_SPEED.md`). Taken apart on
@@ -196,30 +197,28 @@ in `examples/native-host` (Done table). What is left:
   programs, downloads (saved in the profile's `Downloads` without a function),
   isolated worlds, file choosers, camera and microphone, keys, context menu and
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
-  requests (no WebSockets, shared or service workers, response bodies or
-  answers from a file or stream) and client certificates (no system stores).
-  The hook sources and the patched content shell files compile for macOS (framework built on 2026-10-31); nothing has run there.
-- **Unexplained in the tests.** Neither is hidden, neither is understood yet:
-  input sent by a separate CDP client just as a page becomes ready is lost a few
-  runs in hundreds on a loaded machine (`docs/ROADMAP_HOOKS.md`;
-  `tests/engine/hook_policies.py` retries those two modes once); and an
-  off-screen view's frame now and then times out under load.
-- **TODO: every setting changeable at runtime, by the application and by
-  agents** (owner, 2026-10-24), per view and for the whole engine, in the C
-  API, the bindings, CDP where Chromium has a method and the MCP server:
-  - What Chromium's CDP already changes, checked to work in zebkit: user
-    agent and client hints (`Emulation.setUserAgentOverride` with
-    `userAgentMetadata`), language, time zone, geolocation, screen and
-    device metrics, permissions (`Browser.setPermission`), cookies,
-    extra headers, blocked URLs, offline and throttled networks.
-  - What zebkit decides and Chromium's CDP does not change: third-party
-    cookies (`Network.setCookieControls` only marks issues in Chromium
-    155), the spare renderer, JavaScript dialogs held or dismissed (being
-    built), downloads, new windows; each gets a runtime setting.
-  - Defaults chosen for privacy (third-party cookies blocked, location,
-    sensors, idle detection, NFC, MIDI, payment handlers and background
-    work denied) stay defaults: changing them is the application's or the
-    agent's explicit act.
+  requests (the headers the network adds are not seen; `docs/ROADMAP_HOOKS.md`) and client
+  certificates (no system stores).
+  The hook sources and the patched content shell files compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
+- **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).
+  A new top-level widget takes no input until its first frame: the browser's
+  `RenderInputRouter::FilterInputEvent` answers each event itself with
+  `kNoConsumerExists`, and the page never hears. Commands wait for that signal (`patches/1062`)
+  and a command whose input was dropped anyway fails. The two `tests/engine/hook_policies.py`
+  modes that failed had another cause, in the test: two readers on one pipe took the DevTools line
+  from each other, so no input was sent. Their retry and the MCP server's wait are gone.
+  Unexplained: in an earlier harness, a page stayed at `about:blank` for over ten seconds in 2 of
+  40 runs of those modes while the machine was loaded by a build; not seen in 80 runs after; and
+  an off-screen view's frame timing out under load was not investigated further.
+- **Every setting changeable at runtime: implemented** (2026-10-31). What Chromium's CDP
+  changes is checked in `tests/engine/cdp_overrides.py`, by what the page or the server saw.
+  What zebkit decides: `zebkit_set_engine_settings()` and `zebkit_view_set_runtime_settings()`,
+  in C, Rust, Python and host JavaScript, and the MCP group `settings` (`docs/API.md`,
+  `docs/MCP.md`): `thirdPartyCookies`, `spareRenderer`, `dialogs`, `downloads`, `newWindows`.
+  Defaults are today's; changing them is an explicit act. A spare renderer kept by
+  `spareRenderer` is made again at each load's end, not after each commit as
+  `--zebkit-spare-renderer` keeps it, since content fixes that choice at startup. On a Mac the
+  next navigation to another site dropped the spare rather than taking it, not understood.
 - **Chrome as sites see it, and nothing of a CDP client: done**
   (2026-10-24, measured against rebrowser-bot-detector's checks and
   Electron 44.9): `window.chrome` by Chrome's own code, popups blocked
@@ -270,13 +269,12 @@ in `examples/native-host` (Done table). What is left:
   One program, `tools/zebkit-mcp`,
   that gives an AI agent the engine's capabilities as MCP tools, over
   standard input and over HTTP, on Linux and macOS alike. CDP stays for
-  clients that speak it; MCP is what agents are given. 66 tools, the protocol's
+  clients that speak it; MCP is what agents are given. 68 tools, the protocol's
   current revision and the handshake ones; a program of its own in Rust, about
   1 MiB, outside the library. Still to do: an outside agent's real tasks
   (the run in `tests/engine/` is scripted, on a local site); running on macOS
   and Windows' standard input; the device flow against the real providers,
-  and refresh tokens; the runtime settings group below; engine fixes it works
-  around (`docs/MCP.md`, "What the engine does not do yet").
+  and refresh tokens. The engine fixes it needed were made on 2026-10-31 (`docs/MCP.md`).
   - **Pages:** open, navigate, wait for a load; read a page as text,
     Markdown or its accessibility tree, with references to its elements;
     click, type, select, scroll and upload by those references; run

@@ -368,6 +368,14 @@ From the browser to the page's widgets, as from the system:
 answers. Events are trusted and go through Blink's hit testing and default
 actions.
 
+A new top-level widget's input router takes nothing until its first frame is
+activated, or Chromium's new-content timeout passes: until then the browser answers
+each event itself with `kNoConsumerExists`, and the page hears nothing, as a
+person cannot act on a page not yet shown. A native command is fast enough to
+get there (one in five when navigating a view again and again); commands wait for the signal
+(`patches/1062`, what Chromium's own browser tests use), and answer with an error if
+input was dropped anyway. `tests/engine/automation_input.py` holds both.
+
 - **Keyboard**: Playwright's US layout (`usKeyboardLayout.ts`, generated into
   `playwright/us_keyboard_layout.h` with the names `buildLayoutClosure()`
   gives its keys), modifiers held across commands, key events made as CDP's
@@ -439,7 +447,7 @@ saves.
 | `Download` | saved into a directory of the engine's without asking (`acceptDownloads`); `Page.download`, `Artifact.pathAfterFinished`, `saveAs`, `failure`, `cancel`, `delete` |
 | `exposeBinding`, `exposeFunction` | 4.1; `BrowserContext.bindingCall`, `BindingCall.resolve`, `reject` |
 | cookies, `storageState` | the profile's cookie manager (`automation_context.cc`); the local storage of the origins the page shows |
-| `APIRequestContext.fetch` | `SimpleURLLoader` through the profile's network, its cookies |
+| `APIRequestContext.fetch` | `SimpleURLLoader` through the profile's network, its cookies. `maxRedirects`, 0 for the redirect itself as the answer; `Authorization`, `Proxy-Authorization` and `Cookie` a caller gave stay behind at another origin; `maxBodySize`, up to 256 MiB, zebkit's own |
 | `grantPermissions`, `clearPermissions` | `patches/1037` lets the embedder answer for a permission at an origin; granted ones granted, the others denied, as CDP's `Browser.grantPermissions` |
 | `clock` | Playwright's clock (`injected/src/clock.ts`, `playwright/clock_script.js`) installed and driven as `server/clock.ts` does |
 | `emulateMedia` | the page's preferences: color scheme, reduced motion, contrast, forced colors |

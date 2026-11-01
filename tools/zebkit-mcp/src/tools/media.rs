@@ -1,14 +1,11 @@
 //! Media, with the FFmpeg in the engine (`<zebkit/media_tools.h>`, docs/MEDIA_TOOLS.md):
 //! no external program, no shell, each argument literal. Its build has no
 //! encoders: conversions are to another container, to WAV or raw PCM, to raw RGBA.
-//! Cutting is media_cut.c, on the FFmpeg API, for it has no switch for it.
 
 use super::{text, ok, Outcome, Run, Tool};
 use crate::bounds::Bounds;
 use crate::schema::{array, boolean, integer, number, object, string, described, choice};
 use serde_json::{json, Value};
-use std::ffi::CString;
-use std::os::raw::{c_char, c_double, c_int};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zebkit::media_tools::{ffmpeg_with_progress, ffprobe, Completion};
@@ -17,10 +14,6 @@ use zebkit::media_tools::{ffmpeg_with_progress, ffprobe, Completion};
 /// can decode to a full disk, and asks for a lot of pixels cost nothing to ask.
 const MAX_OUTPUT: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_TIME: Duration = Duration::from_secs(240);
-
-extern "C" {
-    fn zebkit_mcp_media_cut(input: *const c_char, output: *const c_char, start: c_double, end: c_double, error: *mut c_char, error_size: c_int) -> c_int;
-}
 
 fn paths(bounds: &'static Bounds, args: &Value) -> Result<(PathBuf, PathBuf), String> {
     let input = bounds.read_path(text(args, "input"), false)?;
@@ -132,34 +125,14 @@ fn media_cut(bounds: &'static Bounds, args: &Value) -> Outcome {
     if end <= start {
         return Err("end must be after start".to_string());
     }
-    let c_input = CString::new(utf8(&input)?).map_err(|e| e.to_string())?;
-    // Beside the output, then renamed: as the other media tools publish.
-    let temporary = output.with_file_name(format!(".zebkit-mcp-{}{}", crate::bounds::hex(&zebkit::services::random_bytes(8)), output.extension().map_or(String::new(), |ext| format!(".{}", ext.to_string_lossy()))));
-    let c_output = CString::new(utf8(&temporary)?).map_err(|e| e.to_string())?;
-    // Private from the first byte: FFmpeg opens what is there, and keeps its mode.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary).map_err(|e| format!("{}: {}", output.display(), e.kind()))?;
+    let owned = vec![overwrite_flag(args).to_string(), "-i".to_string(), utf8(&input)?.to_string(),
+        "-ss".to_string(), format!("{start:.6}"), "-t".to_string(), format!("{:.6}", end - start),
+        "-c".to_string(), "copy".to_string(), "--".to_string(), utf8(&output)?.to_string()];
+    let mut answer = run(&owned, &output, 0)?;
+    if let Some(structured) = &mut answer.structured {
+        structured["note"] = json!("cut at the packets: it starts at the key frame before start");
     }
-    let mut error = vec![0u8; 512];
-    let code = unsafe { zebkit_mcp_media_cut(c_input.as_ptr(), c_output.as_ptr(), start, end, error.as_mut_ptr().cast(), error.len() as c_int) };
-    if code != 0 {
-        let _ = std::fs::remove_file(&temporary);
-        let end = error.iter().position(|byte| *byte == 0).unwrap_or(error.len());
-        return Err(String::from_utf8_lossy(&error[..end]).into_owned());
-    }
-    let published = if args["overwrite"].as_bool().unwrap_or(false) {
-        std::fs::rename(&temporary, &output)
-    } else {
-        std::fs::hard_link(&temporary, &output)
-    };
-    if !args["overwrite"].as_bool().unwrap_or(false) || published.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    published.map_err(|e| format!("{}: {}", output.display(), e.kind()))?;
-    let size = std::fs::metadata(&output).map(|meta| meta.len()).unwrap_or(0);
-    ok(json!({"output": output.display().to_string(), "bytes": size, "note": "cut at the packets: it starts at the key frame before start"}))
+    Ok(answer)
 }
 
 fn tool(name: &'static str, description: &'static str, schema: Value, read_only: bool, run: fn(&'static Bounds, &Value) -> Outcome) -> Tool {

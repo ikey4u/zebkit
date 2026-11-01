@@ -37,7 +37,7 @@ The client sends `Authorization: Bearer <the file's content>`. Without
 `--http-token-file` a token is generated and printed once on standard error.
 
 Chromium's switches go after `--`, as `-- --no-sandbox` where the machine cannot
-give the engine a sandbox. Those that would pass the bounds are refused, with one dash
+give the engine a sandbox (`docs/SANDBOX.md`; never by default, and said at the start). Those that would pass the bounds are refused, with one dash
 or two: `--remote-debugging-*`, `--host-resolver-rules`, `--host-rules`, `--proxy-*`,
 `--user-data-dir` (use `--profile`), `--disable-web-security`, `--disable-features`,
 `--enable-features`, WebRTC's policy, extensions, and programs for the engine to start.
@@ -53,6 +53,7 @@ can widen them. What is not given is denied.
 | Origins | `--allow-origin https://example.com`, `https://*.example.com`, `*` | None: no page loads anything, and `net_fetch` reaches nothing |
 | Directories | `--allow-read DIR`, `--allow-write DIR` | None: no file is read or written |
 | Windows | `--windows` | None: pages and `zebkit.ui` are drawn off-screen |
+| Settings | `--allow-settings KEY,KEY` | None: `settings_set` refuses every key |
 
 `*` means every public origin, not this machine or private addresses: not
 `localhost`, `*.localhost`, `*.local`, `*.internal`, `*.localdomain`, `*.lan`, `*.home`,
@@ -77,8 +78,8 @@ An origin is not checked once: everything of a page goes through it, whoever ask
   and `data:` only in child frames; `file:` and every other scheme never.
 - **Requests** of frames and dedicated workers: `zebkit_view_set_network_filter`, each
   held and answered.
-- **WebSockets**, which that hook does not see: a `connect-src` policy added to the
-  response of every document and of every script (a worker's policy is its script's,
+- **WebSockets**: the same hook takes a page's handshakes (2026-10-31); before it, as well: a
+  `connect-src` policy added to the response of every document and of every script (a worker's policy is its script's,
   not its document's), and put as an element into a blank page, which has no response;
   a page cannot undo either. Under `*` there is no such policy, which cannot say
   "not private": the next but one line holds it.
@@ -161,10 +162,13 @@ standard error at 1 and nothing at 0.
 | `media` | `media_probe`, `media_convert`, `media_cut`, `media_extract_audio`, `media_extract_frames` |
 | `ui` | `ui_open`, `ui_tree`, `ui_click`, `ui_type`, `ui_submit`, `ui_events`, `ui_capture`, `ui_close` |
 | `auth` | `auth_device_start`, `auth_device_poll`, `auth_status`, `auth_forget` |
+| `settings` | `settings_get`, `settings_set` |
 
-A runtime `settings` group (`docs/ROADMAP.md`) goes in as one more module beside these
-(`src/tools/mod.rs`): the table, `--tools` and the checking of arguments work for it as
-they are.
+`settings` is the runtime settings (`docs/API.md`): `settings_get`, read-only, and
+`settings_set`, of a page or, with no `page`, the whole engine. Nothing can be set unless
+named in the bound `--allow-settings KEY,KEY`, which is empty by default, and a page never
+reaches either. `downloads` takes only `deny` and `newWindows` only `block`: they cannot widen
+what the hooks here refuse. `viewport` is `{width, height}`, of a page.
 
 **Page content is data.** What comes from a page, a PDF or a response is marked so in
 results (`untrusted`) and in `instructions`. A server cannot stop an agent believing a
@@ -237,27 +241,16 @@ development dependencies, pinned in `upstream.lock`, shipped nowhere:
   server: no model decides anything in it. It shows the tools are enough for the task, not
   that an outside agent does well with them; that is still to do (`docs/ROADMAP.md`).
 
-## What the engine does not do yet
+## Engine fixes made for it
 
-Worked around here, and to be fixed there (no engine change was made for this server):
-
-- `Frame.setInputFiles` with `localPaths` sets the files' names but the browser process does not
-  grant the renderer access to them, as DevTools' `DOM.setFileInputFiles` does: reading one fails
-  with `NotReadableError`, and leaving the page gets the renderer killed
-  (`bad_message` `RFH_CAN_ACCESS_FILES_OF_PAGE_STATE`). `page_upload` uses `payloads`.
-- `APIRequestContext.fetch` and `zebkit_fetch()` have no way to stop at a redirect: `maxRedirects: 0`
-  still follows, `Authorization` goes along to another origin, and a response's size has no limit
-  in `APIRequestContext.fetch`. `net_fetch` uses a page of its own instead.
-- `Page.setViewportSize` on an off-screen view lasts only until its next frame: the page reads the
-  new size, then the old one again. `page_open` uses `zebkit_view_set_size`.
-- `media_tools` has no `-ss` and `-t`: `media_cut` is its own C on the FFmpeg API.
-- Input sent right after a load can be lost whole, with no error: about 6 clicks in 100 on a
-  loaded machine, on a page opened and navigated once, `Frame.click` answering that it was
-  done and the page seeing not even a `mousemove`. `--allow-pre-commit-input`, Playwright's
-  answer to the renderer's suppression of early input, does not change it, so that is not the
-  cause; where in the engine it goes has not been found. With two animation frames waited
-  for, or 300 ms, none of 100 was lost: the tools that send input wait for two frames, half a
-  second at most.
+What this server found and worked around was fixed in the engine on 2026-10-31:
+`Frame.setInputFiles` with `localPaths` grants the renderer the files, `APIRequestContext.fetch`
+stops at a redirect and has a size limit, neither it nor `zebkit_fetch()` takes `Authorization`
+to another origin, `Page.setViewportSize` lasts on an off-screen view, a command from a failed
+navigation's callback no longer crashes, input after a load is not lost, and `media_tools` has
+`-ss` and `-t`. So `media_cut.c`, the wait for frames and the viewport's workaround are gone.
+`page_upload` stays by contents and `net_fetch` on its page, on purpose: each keeps the path from
+the renderer and checks each hop for itself, which the fixes do not replace.
 
 ## What is weak
 
@@ -297,7 +290,7 @@ Plainly, what these bounds do not do:
 - **Sessions are not principals.** Any holder of the token sees every page and document; HTTP
   sessions exist for the handshake's sake only.
 - **Uploads are by contents**, so the file's name reaches the page and its path does not, and a
-  page sees them as in memory, up to 64 MiB. The engine's local paths are not used: see below.
+  page sees them as in memory, up to 64 MiB. The engine's local paths are not used, on purpose.
 - **Cancelling** drops the answer; it does not stop the work.
 - **Windows:** the standard-input transport is Unix for now. The directory checks have not
   been looked at for that system's paths (alternate streams, device names, `\\?\`), and a

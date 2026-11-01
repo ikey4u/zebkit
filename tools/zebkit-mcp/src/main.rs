@@ -127,7 +127,7 @@ Transports (standard input and output when neither is given):
 
 Bounds (everything is denied that is not given):
   --tools LIST                Groups or tools, by comma; default all but none widen the
-                              rest. Groups: pages pdf files media ui auth.
+                              rest. Groups: pages pdf files media ui auth settings.
   --deny-tools LIST           Tools or groups taken away from those.
   --allow-origin ORIGIN       A web origin pages and net_fetch may reach, for every
                               request: https://example.com, https://*.example.com, or *
@@ -137,6 +137,10 @@ Bounds (everything is denied that is not given):
   --allow-write DIRECTORY     Files may be read and written under it. Repeatable.
   --windows                   Pages and zebkit.ui have real windows. Default: none.
   --oauth-config FILE         Providers for the device flow (docs/MCP.md).
+  --allow-settings LIST       Keys settings_set may change, by comma: thirdPartyCookies
+                              dialogs downloads newWindows spareRenderer viewport. None:
+                              it refuses them all. downloads and newWindows can then
+                              only narrow; nothing here widens the bounds above.
 
 The engine:
   --profile DIRECTORY         Its data, kept. Default: a private temporary directory.
@@ -217,6 +221,14 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
             "--allow-write" => bounds.grant(&value(), true).unwrap_or_else(|why| fail(&why)),
             "--windows" => bounds.windows = true,
             "--oauth-config" => options.oauth_config = Some(value()),
+            "--allow-settings" => {
+                for key in value().split(',').map(str::trim).filter(|key| !key.is_empty()) {
+                    if !tools::settings::KEYS.contains(&key) {
+                        fail(&format!("--allow-settings {key}: not a setting; those are {}", tools::settings::KEYS.join(" ")));
+                    }
+                    bounds.settings.insert(key.to_string());
+                }
+            }
             "--profile" => options.profile = Some(value()),
             "--" => {
                 options.engine_switches.extend(iterator.by_ref().cloned());

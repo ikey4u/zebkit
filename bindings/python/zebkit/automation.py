@@ -1454,7 +1454,7 @@ class APIRequestContext:
     def __init__(self, page):
         self._page = page
 
-    async def fetch(self, url, method="GET", headers=None, data=None, timeout=None, max_redirects=None):
+    async def fetch(self, url, method="GET", headers=None, data=None, timeout=None, max_redirects=None, max_body_size=None):
         if isinstance(data, (dict, list)):
             data = json.dumps(data)
             headers = {"content-type": "application/json", **(headers or {})}
@@ -1464,7 +1464,7 @@ class APIRequestContext:
             "url": url, "method": method,
             "headers": [{"name": k, "value": v} for k, v in (headers or {}).items()],
             "postData": base64.b64encode(data).decode() if data is not None else None,
-            "timeout": _ms(timeout), "maxRedirects": max_redirects})
+            "timeout": _ms(timeout), "maxRedirects": max_redirects, "maxBodySize": max_body_size})
         return APIResponse(answer["response"])
 
     async def get(self, url, **options):

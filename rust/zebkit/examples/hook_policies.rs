@@ -377,7 +377,295 @@ fn fullscreen(run: &Run) {
     run.view.close();
 }
 
+const WS_SCRIPT: &str = "new Promise(ok => { const s = window.s = new WebSocket(location.origin.replace('http', 'ws') + '/ws'); s.onmessage = e => { ok(e.data); s.close(); }; s.onerror = () => ok('failed'); })";
+fn sw_script(what: &str) -> String {
+    format!("navigator.serviceWorker.register('/net-sw.js').then(r => new Promise(ok => {{ const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return ok(w); w.addEventListener('statechange', () => {{ if (w.state === 'activated') ok(w); }}); }})).then(w => new Promise(ok => {{ navigator.serviceWorker.onmessage = e => ok(e.data); w.postMessage('{what}'); }}))")
+}
+fn shared_script(what: &str) -> String {
+    format!("new Promise(ok => {{ const w = window.w = window.w || new SharedWorker('/net-shared.js'); w.port.onmessage = e => ok(e.data); w.port.postMessage('{what}'); }})")
+}
+fn page_reads(url: &str) -> String {
+    format!("fetch('{url}').then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed')")
+}
+fn told_event(events: &Log, kind: &str) -> bool { logged(events, &format!("\"kind\":\"{kind}\"")) }
+
+fn network_ws(run: &Run) {
+    run.open_page();
+    let rules = match run.mode.as_str() {
+        "net-ws-none" => "[]",
+        "net-ws-filter" => r#"[{"url":"**/ws","resourceTypes":["fetch"]}]"#,
+        "net-ws-continue" => r#"[{"url":"**/ws","resourceTypes":["websocket"]}]"#,
+        _ => r#"[{"url":"**/ws"}]"#,
+    };
+    assert!(run.view.set_network_filter(rules).unwrap());
+    let events = log();
+    let sink = events.clone();
+    run.view.on_network_event(move |json| sink.borrow_mut().push(json.to_string()));
+    let kept: Rc<RefCell<Option<zebkit::NetworkRequest>>> = Rc::new(RefCell::new(None));
+    let asked = Rc::new(Cell::new(0));
+    if !run.is("net-ws-nofunc") {
+        let (slot, count, mode, owner) = (kept.clone(), asked.clone(), run.mode.clone(), run.view.clone());
+        run.view.on_network(move |request: zebkit::NetworkRequest| {
+            count.set(count.get() + 1);
+            *slot.borrow_mut() = Some(request.clone());
+            let m = request.metadata().to_string();
+            let reply = |json: &str| request.respond(json, b"").unwrap();
+            match mode.as_str() {
+                "net-ws-block" => {
+                    assert!(m.contains("\"resourceType\":\"websocket\"") && m.contains("\"url\":\"ws://") && m.contains("\"stage\":\"request\""), "{m}");
+                    assert!(!reply(r#"{"action":"redirect","url":"http://127.0.0.1/"}"#) && !reply(r#"{"action":"fulfill"}"#));
+                    assert!(request.respond_stream("{}").unwrap().is_none() && !request.respond_file("{}", "/nothing").unwrap());
+                    assert!(!reply(r#"{"action":"continue","headers":[{"name":"Origin","value":"http://x"}]}"#));
+                    assert!(reply(r#"{"action":"block"}"#));
+                }
+                "net-ws-continue" => assert!(reply(r#"{"action":"continue","headers":[{"name":"X-Zebkit","value":"yes"}]}"#)),
+                "net-ws-close" => owner.close(),
+                _ => {}
+            }
+        });
+    }
+    if run.is("net-ws-timeout") { assert!(run.view.set_network_timeout(50)); }
+    let answer = later(&run.view, WS_SCRIPT);
+    if run.is("net-ws-close") { run.wait_closed(); assert!(kept.borrow().as_ref().unwrap().info().is_none()); return; }
+    if run.is("net-ws-abort") {
+        wait("asked", || kept.borrow().is_some());
+        ev(&run.view, "s.close()");
+        wait("closed by the page", || kept.borrow().as_ref().unwrap().info().is_none());
+        wait("ended", || answer.borrow().is_some());
+        run.view.close();
+        return;
+    }
+    if run.is("net-ws-replace") {
+        wait("asked", || kept.borrow().is_some());
+        run.view.clear_network_handler();
+        assert!(kept.borrow().as_ref().unwrap().info().is_none());
+        wait("replaced", || logged(&events, "\"reason\":\"handler-changed\""));
+    }
+    wait("answered", || answer.borrow().is_some());
+    let text = answer.borrow().clone().unwrap();
+    assert_eq!(text, if run.is("net-ws-block") { "\"failed\"" } else { "\"hello\"" });
+    if run.is("net-ws-timeout") { wait("timeout", || logged(&events, "\"reason\":\"timeout\"")); }
+    if run.is("net-ws-none") || run.is("net-ws-nofunc") || run.is("net-ws-filter") { assert_eq!(asked.get(), 0); }
+    run.view.close();
+}
+
+fn network_workers(run: &Run) {
+    run.open_page();
+    assert!(!run.view.set_network_filter_for_workers(true));
+    let rule = if run.is("net-sw-ws") { r#"[{"url":"**/ws"}]"# } else { r#"[{"url":"**/worker-held"}]"# };
+    assert!(run.view.set_network_filter(rule).unwrap());
+    let asked = Rc::new(Cell::new(0));
+    let (count, mode) = (asked.clone(), run.mode.clone());
+    run.view.on_network(move |request: zebkit::NetworkRequest| {
+        count.set(count.get() + 1);
+        let m = request.metadata().to_string();
+        let kind = match mode.as_str() { "net-sw-ws" => "shared-or-service", "net-sw-block" | "net-sw-running" => "service", _ => "shared" };
+        assert!(m.contains("\"worker\":true") && m.contains("\"frameId\":\"\"") && m.contains(&format!("\"workerType\":\"{kind}\"")), "{m}");
+        assert!(request.respond(r#"{"action":"block"}"#, b"").unwrap());
+    });
+    if run.is("net-sw-block") || run.is("net-sw-ws") || run.is("net-shared-block") { assert!(run.view.set_network_filter_for_workers(true)); }
+    let what = if run.is("net-sw-ws") { "socket" } else { "fetch" };
+    let script = if run.mode.starts_with("net-shared") { shared_script(what) } else { sw_script(what) };
+    if run.mode.ends_with("-running") {
+        assert_eq!(ev(&run.view, &script), "\"through\"");
+        assert_eq!(asked.get(), 0);
+        assert!(run.view.set_network_filter_for_workers(true));
+    }
+    let answer = ev(&run.view, &script);
+    if run.mode.ends_with("-none") {
+        assert!(answer == "\"through\"" && asked.get() == 0, "{answer}");
+    } else {
+        assert!(answer == "\"failed\"" && asked.get() == 1, "{answer}");
+    }
+    assert!(run.view.set_network_filter_for_workers(false));
+    run.view.close();
+}
+
+fn network_body(run: &Run) {
+    run.open_page();
+    assert!(!run.view.set_network_filter(r#"[{"body":true}]"#).unwrap());
+    assert!(!run.view.set_network_filter(r#"[{"stage":"response","mode":"hold","body":true}]"#).unwrap());
+    assert!(run.view.set_network_filter(r#"[{"url":"**/download.bin","stage":"response","body":true},{"url":"**/big","stage":"response","body":true},{"url":"**/cut","stage":"response","body":true},{"url":"**/slow-text","stage":"response","body":true}]"#).unwrap());
+    let events = log();
+    let sink = events.clone();
+    run.view.on_network_event(move |json| sink.borrow_mut().push(json.to_string()));
+    let (bytes, ends, truncated, late) = (Rc::new(Cell::new(0usize)), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let id = Rc::new(RefCell::new(String::new()));
+    let second = Rc::new(Cell::new(0));
+    if !run.is("net-body-none") {
+        let (b, e, t, l, slot, more, mode, owner, seen) = (bytes.clone(), ends.clone(), truncated.clone(), late.clone(), id.clone(), second.clone(), run.mode.clone(), run.view.clone(), events.clone());
+        run.view.on_network_body(move |request_id, data, end, cut| {
+            assert_eq!(e.get(), 0);
+            *slot.borrow_mut() = request_id.to_string();
+            if !data.is_empty() && mode == "net-body" { assert_eq!(data[0], b'z'); }
+            b.set(b.get() + data.len());
+            if end {
+                e.set(e.get() + 1);
+                if cut { t.set(t.get() + 1); }
+                if told_event(&seen, "finished") || told_event(&seen, "failed") { l.set(l.get() + 1); }
+            }
+            if !data.is_empty() && mode == "net-body-close" { owner.close(); }
+            if !data.is_empty() && mode == "net-body-replace" {
+                let more = more.clone();
+                owner.on_network_body(move |_, _, _, _| more.set(more.get() + 1));
+            }
+        });
+    }
+    match run.mode.as_str() {
+        "net-body" | "net-body-none" => {
+            assert_eq!(ev(&run.view, &page_reads("/download.bin")), "65536");
+            wait("finished", || told_event(&events, "finished"));
+            if run.is("net-body") {
+                assert!(bytes.get() == 65536 && ends.get() == 1 && truncated.get() == 0 && late.get() == 0);
+                assert!(logged(&events, &format!("\"requestId\":\"{}\"", id.borrow())));
+            } else {
+                assert_eq!(ends.get(), 0);
+            }
+        }
+        "net-body-big" => {
+            assert_eq!(ev(&run.view, &page_reads("/big")), "68157440");
+            assert!(bytes.get() == 67108864 && ends.get() == 1 && truncated.get() == 1, "{}", bytes.get());
+        }
+        "net-body-backpressure" => {
+            assert_eq!(ev(&run.view, "fetch('/big').then(r => { window.r = r; return 1; })"), "1");
+            pump_for(1000);
+            assert!(ends.get() == 0, "{}", bytes.get()); // Blink's fetch reads ahead, so no bound can be seen from here.
+            assert_eq!(ev(&run.view, "r.arrayBuffer().then(b => b.byteLength)"), "68157440");
+            assert!(bytes.get() == 67108864 && truncated.get() == 1, "{}", bytes.get());
+        }
+        "net-body-error" => {
+            assert_eq!(ev(&run.view, &page_reads("/cut")), "\"failed\"");
+            wait("failed", || told_event(&events, "failed"));
+            assert!(bytes.get() == 1000 && ends.get() == 1 && truncated.get() == 0 && late.get() == 0, "{}", bytes.get());
+        }
+        "net-body-abort" => {
+            let answer = later(&run.view, "(window.a = new AbortController(), fetch('/slow-text', {signal: a.signal}).then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed'))");
+            wait("first chunk", || bytes.get() > 0);
+            ev(&run.view, "a.abort()");
+            wait("aborted", || answer.borrow().is_some());
+            assert_eq!(answer.borrow().as_deref(), Some("\"failed\""));
+            wait("failed", || told_event(&events, "failed"));
+            assert!(ends.get() == 1 && truncated.get() == 0 && late.get() == 0);
+        }
+        "net-body-close" => {
+            let _answer = later(&run.view, &page_reads("/slow-text"));
+            run.wait_closed();
+            let at = bytes.get();
+            pump_for(200);
+            assert_eq!(bytes.get(), at);
+            return;
+        }
+        "net-body-replace" => {
+            assert_eq!(ev(&run.view, &page_reads("/big")), "68157440");
+            assert!(second.get() == 0 && ends.get() == 0);
+            assert_eq!(ev(&run.view, &page_reads("/download.bin")), "65536");
+            assert!(second.get() >= 2);
+        }
+        other => panic!("{other}"),
+    }
+    run.view.close();
+}
+
+fn network_answers(run: &Run) {
+    run.open_page();
+    assert!(run.view.set_network_filter(r#"[{"url":"**/held"}]"#).unwrap());
+    let events = log();
+    let sink = events.clone();
+    run.view.on_network_event(move |json| sink.borrow_mut().push(json.to_string()));
+    let kept: Rc<RefCell<Option<Rc<zebkit::NetworkStream>>>> = Rc::new(RefCell::new(None));
+    let blocked = Rc::new(Cell::new(false));
+    let (slot, jam, mode, owner, files) = (kept.clone(), blocked.clone(), run.mode.clone(), run.view.clone(), env("ZEBKIT_HOOK_FILES"));
+    run.view.on_network(move |request: zebkit::NetworkRequest| {
+        match mode.as_str() {
+            "net-file" | "net-file-close" => {
+                let path = format!("{files}/big.bin");
+                assert!(!request.respond_file("{}", "relative.bin").unwrap() && !request.respond_file(r#"{"status":302}"#, &path).unwrap());
+                assert!(request.respond_file(r#"{"status":201,"headers":[{"name":"Content-Type","value":"application/x-zebkit"},{"name":"X-Added","value":"by-host"}]}"#, &path).unwrap());
+                if mode == "net-file-close" { owner.close(); }
+            }
+            "net-file-missing" => assert!(request.respond_file("{}", &format!("{files}/nothing.bin")).unwrap()),
+            _ => {
+                assert!(request.respond_stream(r#"{"status":302}"#).unwrap().is_none());
+                let stream = Rc::new(request.respond_stream(r#"{"status":201,"headers":[{"name":"Content-Type","value":"text/plain"},{"name":"X-Added","value":"by-host"}]}"#).unwrap().unwrap());
+                assert!(stream.is_open() && request.info().is_none());
+                *slot.borrow_mut() = Some(stream.clone());
+                match mode.as_str() {
+                    "net-stream" => {
+                        assert!(stream.write(b"ab") && stream.write(b"cd"));
+                        stream.end(false);
+                        assert!(!stream.is_open() && !stream.write(b"x"));
+                        stream.end(false);
+                    }
+                    "net-stream-fail" => { assert!(stream.write(b"ab")); stream.end(true); }
+                    "net-stream-full" => {
+                        assert!(!stream.write(&vec![0u8; (1 << 20) + 1]));
+                        let left = Rc::new(Cell::new(3usize << 20));
+                        let block = vec![b'f'; 262144];
+                        let (writer, jam) = (Rc::downgrade(&stream), jam.clone());
+                        let pour = move || {
+                            let Some(stream) = writer.upgrade() else { return };
+                            while left.get() > 0 {
+                                if !stream.write(&block) { jam.set(true); return; }
+                                left.set(left.get() - block.len());
+                            }
+                            stream.end(false);
+                        };
+                        let first = pour.clone();
+                        stream.on_writable(pour);
+                        first();
+                    }
+                    _ => owner.close(),
+                }
+            }
+        }
+    });
+    match run.mode.as_str() {
+        "net-file" => assert_eq!(ev(&run.view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), r.headers.get('content-type'), (await r.arrayBuffer()).byteLength].join('|'))"), "\"201|by-host|application/x-zebkit|3145728\""),
+        "net-file-missing" | "net-stream-fail" => {
+            assert_eq!(ev(&run.view, &page_reads("/held")), "\"failed\"");
+            wait("failed", || told_event(&events, "failed"));
+        }
+        "net-file-close" | "net-stream-close" => {
+            let _answer = later(&run.view, &page_reads("/held"));
+            run.wait_closed();
+            if let Some(stream) = kept.borrow().as_ref() {
+                wait("nobody reads", || !stream.write(b"x"));
+                assert!(!stream.is_open());
+                stream.end(false);
+            }
+            return;
+        }
+        "net-stream" => assert_eq!(ev(&run.view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))"), "\"201|by-host|abcd\""),
+        "net-stream-full" => {
+            assert_eq!(ev(&run.view, &page_reads("/held")), "3145728");
+            assert!(blocked.get());
+        }
+        other => panic!("{other}"),
+    }
+    run.view.close();
+}
+
+fn network_redirect_modes(run: &Run) {
+    run.open_page();
+    assert!(run.view.set_network_filter(r#"[{"url":"**/held"}]"#).unwrap());
+    let asked = Rc::new(Cell::new(0));
+    let (count, base) = (asked.clone(), run.base.clone());
+    run.view.on_network(move |request: zebkit::NetworkRequest| {
+        count.set(count.get() + 1);
+        assert!(request.respond(&format!(r#"{{"action":"redirect","url":"{base}/echo?redirected"}}"#), b"").unwrap());
+    });
+    let (which, expected) = if run.is("net-redirect-manual") { ("manual", "\"opaqueredirect\"") } else { ("error", "\"failed\"") };
+    assert_eq!(ev(&run.view, &format!("fetch('/held', {{redirect: '{which}'}}).then(r => r.type, () => 'failed')")), expected);
+    assert_eq!(asked.get(), 1);
+    run.view.close();
+}
+
 fn network(run: &Run) {
+    if run.mode.starts_with("net-ws-") { return network_ws(run); }
+    if run.mode.starts_with("net-sw-") || run.mode.starts_with("net-shared-") { return network_workers(run); }
+    if run.mode.starts_with("net-body") { return network_body(run); }
+    if run.mode.starts_with("net-file") || run.mode.starts_with("net-stream") { return network_answers(run); }
+    if run.is("net-redirect-manual") || run.is("net-redirect-error") { return network_redirect_modes(run); }
     run.open_page();
     let rules = match run.mode.as_str() {
         "net-response" | "net-response-block" => r#"[{"url":"**/echo","stage":"response"}]"#,

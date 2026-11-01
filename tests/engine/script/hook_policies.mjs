@@ -296,7 +296,223 @@ async function fullscreen() {
   view.close();
 }
 
+const wsScript = `new Promise(ok => { const s = window.s = new WebSocket(location.origin.replace('http', 'ws') + '/ws'); s.onmessage = e => { ok(e.data); s.close(); }; s.onerror = () => ok('failed'); })`;
+const swScript = what => `navigator.serviceWorker.register('/net-sw.js').then(r => new Promise(ok => { const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return ok(w); w.addEventListener('statechange', () => { if (w.state === 'activated') ok(w); }); })).then(w => new Promise(ok => { navigator.serviceWorker.onmessage = e => ok(e.data); w.postMessage('${what}'); }))`;
+const sharedScript = what => `new Promise(ok => { const w = window.w = window.w || new SharedWorker('/net-shared.js'); w.port.onmessage = e => ok(e.data); w.port.postMessage('${what}'); })`;
+const pageReads = url => `fetch('${url}').then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed')`;
+const told = (events, kind) => events.some(e => e.kind === kind);
+const later = script => { const box = {done: false, value: null}; view.evaluate(script).then(value => { box.done = true; box.value = value; }, () => { box.done = true; }); return box; };
+
+async function networkWs() {
+  await openPage();
+  const events = [];
+  let kept = null, asked = 0;
+  view.onNetworkEvent(event => events.push(event));
+  view.setNetworkFilter({'net-ws-none': [], 'net-ws-filter': [{url: '**/ws', resourceTypes: ['fetch']}],
+                         'net-ws-continue': [{url: '**/ws', resourceTypes: ['websocket']}]}[mode] || [{url: '**/ws'}]);
+  if (mode !== 'net-ws-nofunc') view.onNetwork(request => {
+    kept = request; ++asked;
+    const m = request.metadata;
+    if (mode === 'net-ws-block') {
+      must(m.resourceType === 'websocket' && m.url.startsWith('ws://') && m.stage === 'request', 'metadata');
+      must(!request.respond({action: 'redirect', url: 'http://127.0.0.1/'}) && !request.respond({action: 'fulfill'}), 'refused');
+      must(request.respondStream() === null && !request.respondFile('/nothing'), 'no answers');
+      must(!request.respond({action: 'continue', headers: [{name: 'Origin', value: 'http://x'}]}), 'origin');
+      must(request.respond({action: 'block'}), 'block');
+    } else if (mode === 'net-ws-continue') must(request.respond({action: 'continue', headers: [{name: 'X-Zebkit', value: 'yes'}]}), 'continue');
+    else if (mode === 'net-ws-close') view.close();
+  });
+  if (mode === 'net-ws-timeout') view.setNetworkTimeout(50);
+  const box = later(wsScript);
+  if (mode === 'net-ws-close') { await until(() => closed, 'closed'); must(kept.info === null, 'stale'); return; }
+  if (mode === 'net-ws-abort') {
+    await until(() => kept, 'asked');
+    await view.evaluate('s.close()');
+    await until(() => kept.info === null, 'closed by the page');
+    await until(() => box.done, 'ended');
+    view.close();
+    return;
+  }
+  if (mode === 'net-ws-replace') {
+    await until(() => kept, 'asked');
+    view.onNetwork(null);
+    must(kept.info === null, 'stale');
+    await until(() => events.some(e => e.reason === 'handler-changed'), 'replaced');
+  }
+  await until(() => box.done, 'answered');
+  must(box.value === (mode === 'net-ws-block' ? 'failed' : 'hello'), box.value);
+  if (mode === 'net-ws-timeout') await until(() => events.some(e => e.reason === 'timeout'), 'timeout');
+  if (['net-ws-none', 'net-ws-nofunc', 'net-ws-filter'].includes(mode)) must(!asked, 'held');
+  view.close();
+}
+
+async function networkWorkers() {
+  await openPage();
+  let asked = 0;
+  must(!view.setNetworkFilterForWorkers(true), 'no filter');
+  view.setNetworkFilter([{url: mode === 'net-sw-ws' ? '**/ws' : '**/worker-held'}]);
+  view.onNetwork(request => {
+    ++asked;
+    const m = request.metadata;
+    const type = {'net-sw-ws': 'shared-or-service', 'net-sw-block': 'service', 'net-sw-running': 'service'}[mode] || 'shared';
+    must(m.worker && m.frameId === '' && m.workerType === type, JSON.stringify(m));
+    must(request.respond({action: 'block'}), 'block');
+  });
+  if (['net-sw-block', 'net-sw-ws', 'net-shared-block'].includes(mode)) must(view.setNetworkFilterForWorkers(true), 'set');
+  const script = (mode.startsWith('net-shared') ? sharedScript : swScript)(mode === 'net-sw-ws' ? 'socket' : 'fetch');
+  if (mode.endsWith('-running')) {
+    must(await view.evaluate(script) === 'through' && !asked, 'before');
+    must(view.setNetworkFilterForWorkers(true), 'set');
+  }
+  const answer = await view.evaluate(script);
+  if (mode.endsWith('-none')) must(answer === 'through' && !asked, answer);
+  else must(answer === 'failed' && asked === 1, answer);
+  must(view.setNetworkFilterForWorkers(false), 'off');
+  view.close();
+}
+
+async function networkBody() {
+  await openPage();
+  const events = [];
+  let bytes = 0, ends = 0, truncated = 0, late = 0, id = null, second = 0;
+  rejects(() => view.setNetworkFilter([{body: true}]), 'request stage');
+  rejects(() => view.setNetworkFilter([{stage: 'response', mode: 'hold', body: true}]), 'hold');
+  view.setNetworkFilter(['/download.bin', '/big', '/cut', '/slow-text'].map(path => ({url: '**' + path, stage: 'response', body: true})));
+  view.onNetworkEvent(event => events.push(event));
+  if (mode !== 'net-body-none') view.onNetworkBody((requestId, data, end, cut) => {
+    must(data instanceof ArrayBuffer && !ends, 'a chunk');
+    if (data.byteLength && mode === 'net-body') must(new Uint8Array(data)[0] === 0x7a, 'bytes');
+    id = requestId; bytes += data.byteLength;
+    if (end) { ++ends; if (cut) ++truncated; if (told(events, 'finished') || told(events, 'failed')) ++late; }
+    if (data.byteLength && mode === 'net-body-close') view.close();
+    if (data.byteLength && mode === 'net-body-replace') view.onNetworkBody(() => { ++second; });
+  });
+  if (mode === 'net-body' || mode === 'net-body-none') {
+    must(await view.evaluate(pageReads('/download.bin')) === 65536, 'page');
+    await until(() => told(events, 'finished'), 'finished');
+    if (mode === 'net-body') {
+      must(bytes === 65536 && ends === 1 && !truncated && !late, `${bytes} ${ends}`);
+      must(id === events.find(e => e.kind === 'response').requestId, 'id');
+    } else must(!ends, 'told');
+  } else if (mode === 'net-body-big') {
+    must(await view.evaluate(pageReads('/big')) === 65 << 20, 'page');
+    must(bytes === 64 << 20 && ends === 1 && truncated === 1, `${bytes} ${ends} ${truncated}`);
+  } else if (mode === 'net-body-backpressure') {
+    must(await view.evaluate(`fetch('/big').then(r => { window.r = r; return 1; })`) === 1, 'response');
+    await sleep(1000);
+    must(!ends, `${bytes}`); // Blink's fetch reads ahead itself, so no bound can be seen from here.
+    must(await view.evaluate('r.arrayBuffer().then(b => b.byteLength)') === 65 << 20, 'page');
+    must(bytes === 64 << 20 && truncated === 1, `${bytes}`);
+  } else if (mode === 'net-body-error') {
+    must(await view.evaluate(pageReads('/cut')) === 'failed', 'page');
+    await until(() => told(events, 'failed'), 'failed');
+    must(bytes === 1000 && ends === 1 && !truncated && !late, `${bytes} ${ends}`);
+  } else if (mode === 'net-body-abort') {
+    const box = later(`(window.a = new AbortController(), fetch('/slow-text', {signal: a.signal}).then(r => r.arrayBuffer()).then(b => b.byteLength, () => 'failed'))`);
+    await until(() => bytes > 0, 'first chunk');
+    await view.evaluate('a.abort()');
+    await until(() => box.done, 'aborted');
+    must(box.value === 'failed', box.value);
+    await until(() => told(events, 'failed'), 'failed');
+    must(ends === 1 && !truncated && !late, `${ends}`);
+  } else if (mode === 'net-body-close') {
+    later(pageReads('/slow-text'));
+    await until(() => closed, 'closed');
+    const at = bytes;
+    await sleep(200);
+    must(bytes === at, 'told after closing');
+    return;
+  } else if (mode === 'net-body-replace') {
+    must(await view.evaluate(pageReads('/big')) === 65 << 20, 'page');
+    must(!second && !ends, 'told to the wrong one');
+    must(await view.evaluate(pageReads('/download.bin')) === 65536, 'page');
+    must(second >= 2, 'the new one');
+  }
+  view.close();
+}
+
+async function networkAnswers() {
+  await openPage();
+  const events = [];
+  let stream = null, blocked = false;
+  const text = [{name: 'Content-Type', value: 'text/plain'}, {name: 'X-Added', value: 'by-host'}];
+  view.onNetworkEvent(event => events.push(event));
+  view.setNetworkFilter([{url: '**/held'}]);
+  view.onNetwork(request => {
+    if (mode === 'net-file' || mode === 'net-file-close') {
+      const path = files + '/big.bin';
+      must(!request.respondFile('relative.bin') && !request.respondFile(path, {status: 302}), 'invalid');
+      must(request.respondFile(path, {status: 201, headers: [{name: 'Content-Type', value: 'application/x-zebkit'}, {name: 'X-Added', value: 'by-host'}]}), 'file');
+      if (mode === 'net-file-close') view.close();
+    } else if (mode === 'net-file-missing') must(request.respondFile(files + '/nothing.bin'), 'answered');
+    else {
+      must(request.respondStream({status: 302}) === null, 'status');
+      stream = request.respondStream({status: 201, headers: text});
+      must(stream && stream.isOpen && request.info === null, 'stream');
+      if (mode === 'net-stream') {
+        must(stream.write('ab') && stream.write(new TextEncoder().encode('cd')), 'write');
+        stream.end();
+        must(!stream.isOpen && !stream.write('x'), 'ended');
+        stream.end();
+      } else if (mode === 'net-stream-fail') { must(stream.write('ab'), 'write'); stream.end(true); }
+      else if (mode === 'net-stream-full') {
+        must(!stream.write(new Uint8Array((1 << 20) + 1)), 'too much');
+        const block = new Uint8Array(262144).fill(0x66);
+        let left = 3 << 20;
+        const pour = () => {
+          while (left > 0) {
+            if (!stream.write(block)) { blocked = true; return; }
+            left -= block.length;
+          }
+          stream.end();
+        };
+        stream.onWritable(pour);
+        pour();
+      } else view.close();
+    }
+  });
+  if (mode === 'net-file') {
+    const answer = await view.evaluate(`fetch('/held').then(async r => [r.status, r.headers.get('x-added'), r.headers.get('content-type'), (await r.arrayBuffer()).byteLength].join('|'))`);
+    must(answer === '201|by-host|application/x-zebkit|3145728', answer);
+  } else if (mode === 'net-file-missing' || mode === 'net-stream-fail') {
+    must(await view.evaluate(pageReads('/held')) === 'failed', 'page');
+    await until(() => told(events, 'failed'), 'failed');
+  } else if (mode === 'net-file-close' || mode === 'net-stream-close') {
+    later(pageReads('/held'));
+    await until(() => closed, 'closed');
+    if (stream) {
+      await until(() => !stream.write('x'), 'nobody reads');
+      must(!stream.isOpen, 'open');
+      stream.end();
+    }
+    return;
+  } else if (mode === 'net-stream') {
+    const answer = await view.evaluate(`fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))`);
+    must(answer === '201|by-host|abcd', answer);
+  } else if (mode === 'net-stream-full') {
+    // Whether it was ever full depends on how fast the page reads: only the bytes are certain.
+    must(await view.evaluate(pageReads('/held')) === 3 << 20, 'page');
+  }
+  view.close();
+}
+
+async function networkRedirectModes() {
+  await openPage();
+  let asked = 0;
+  view.setNetworkFilter([{url: '**/held'}]);
+  view.onNetwork(request => { ++asked; must(request.respond({action: 'redirect', url: base + '/echo?redirected'}), 'redirect'); });
+  const which = mode === 'net-redirect-manual' ? 'manual' : 'error';
+  const answer = await view.evaluate(`fetch('/held', {redirect: '${which}'}).then(r => r.type, () => 'failed')`);
+  must(answer === (which === 'manual' ? 'opaqueredirect' : 'failed') && asked === 1, answer);
+  view.close();
+}
+
 async function network() {
+  if (mode.startsWith('net-ws-')) return networkWs();
+  if (mode.startsWith('net-sw-') || mode.startsWith('net-shared-')) return networkWorkers();
+  if (mode.startsWith('net-body')) return networkBody();
+  if (mode.startsWith('net-file') || mode.startsWith('net-stream')) return networkAnswers();
+  if (mode === 'net-redirect-manual' || mode === 'net-redirect-error') return networkRedirectModes();
   await openPage();
   const rules = {'net-response': [{url: '**/echo', stage: 'response'}], 'net-response-block': [{url: '**/echo', stage: 'response'}],
     'net-observe': [{url: '**/echo', mode: 'observe'}, {url: '**/echo', mode: 'observe', stage: 'response'}], 'net-none': [],

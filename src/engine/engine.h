@@ -188,6 +188,13 @@ class BrowserClient : public content::ShellContentBrowserClient {
       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
       bool is_for_network_service) override;
+  // A WebSocket's handshake through the view's network filter (network_hooks.cc).
+  bool WillInterceptWebSocket(content::RenderFrameHost* frame) override;
+  void CreateWebSocket(content::RenderFrameHost* frame, WebSocketFactory factory, const GURL& url,
+                       const net::SiteForCookies& site_for_cookies,
+                       const std::optional<std::string>& user_agent,
+                       mojo::PendingRemote<network::mojom::WebSocketHandshakeClient> handshake_client,
+                       WebSocketOptions options) override;
   void RegisterNonNetworkSubresourceURLLoaderFactories(
       int render_process_id,
       int render_frame_id,

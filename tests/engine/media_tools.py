@@ -122,6 +122,23 @@ def main():
         remux(source, copied, overwrite=True)
         print('ok strict options, overwrite safety, cancellation and temporary cleanup')
 
+        # -ss and -t: the copy from the key frame at or before the start, its times
+        # from zero; decoded audio exactly the part asked for.
+        whole = float(probe(source)['format']['duration'])
+        cut = root / 'cut.mp4'
+        ffmpeg(['-i', str(source), '-ss', '%.3f' % (whole / 3), '-t', '%.3f' % (whole / 3), '-c', 'copy', str(cut)])
+        duration = float(probe(cut)['format']['duration'])
+        assert 0 < duration < whole * 0.85, (duration, whole)
+        audio_whole, audio_part = root / 'all.wav', root / 'part.wav'
+        ffmpeg(['-i', str(source), '-c:a', 'pcm_s16le', str(audio_whole)])
+        ffmpeg(['-i', str(source), '-ss', '%.3f' % (whole / 2), '-t', '%.3f' % (whole / 4), '-c:a', 'pcm_s16le', str(audio_part)])
+        assert audio_part.stat().st_size < audio_whole.stat().st_size * 0.4, (audio_part.stat().st_size, audio_whole.stat().st_size)
+        for bad in (['-ss', 'x'], ['-t', '0'], ['-t', '-1'], ['-ss', '1e400']):
+            fails(lambda bad=bad: ffmpeg(['-i', str(source), *bad, '-c', 'copy', str(root / 'never.mp4')]))
+        fails(lambda: ffmpeg(['-i', str(source), '-ss', '%.3f' % (whole * 100), '-t', '1', '-c', 'copy', str(root / 'none.mp4')]))
+        assert not (root / 'none.mp4').exists()
+        print('ok -ss and -t')
+
         def parallel(i):
             out = root / f'parallel-{i}.wav'
             extract_audio(source, out, sample_rate=8000 + i * 8000)

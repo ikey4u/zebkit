@@ -1,0 +1,19 @@
+Content: a page's window.close() in an application's own NSApplication.
+
+An application that owns its process has its own NSApplication, which is no
+CrApplication. WebContentsViewMac asked it isHandlingSendEvent, which it does not
+answer: an uncaught exception, and the process aborted, whenever a page closed a
+window of its own. Such an application has no event tracking of Chromium's to wait for.
+
+--- a/content/browser/web_contents/web_contents_view_mac.mm
++++ b/content/browser/web_contents/web_contents_view_mac.mm
+@@ -516,7 +516,8 @@
+ // would fire when the event-tracking loop polls for events.  So we need to
+ // bounce the message via Cocoa, instead.
+ bool WebContentsViewMac::CloseTabAfterEventTrackingIfNeeded() {
+-  if (!base::message_pump_apple::IsHandlingSendEvent()) {
++  if (!base::message_pump_apple::UsingCrApp() ||
++      !base::message_pump_apple::IsHandlingSendEvent()) {
+     return false;
+   }
+ 
