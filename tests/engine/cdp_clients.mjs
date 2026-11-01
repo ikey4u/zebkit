@@ -1258,10 +1258,12 @@ async function runClient(client, executable, args, label) {
           browser = await withTimeout(connect(), 60000);
         const context = defaultContext ? (client === 'puppeteer' ? browser.defaultBrowserContext() : browser.contexts()[0])
           : client === 'puppeteer' ? await withTimeout(browser.createBrowserContext(), 20000) : await withTimeout(browser.newContext(), 20000);
+        const kept = defaultContext ? (await context.pages())[0] : null;
         const closeContext = async () => {
           if (!defaultContext)
             return context.close();
-          for (const open of await context.pages())
+          // zebkit-run stops with its last page: the one it opened stays.
+          for (const open of (await context.pages()).filter(open => open !== kept))
             await open.close();
           await context.clearCookies?.();
         };

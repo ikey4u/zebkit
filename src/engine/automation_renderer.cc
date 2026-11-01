@@ -704,22 +704,32 @@ class Agent : public content::RenderFrameObserver,
     std::move(callback).Run(true);
   }
 
+  static std::vector<int32_t> PathOf(blink::WebFrame* frame) {
+    std::vector<int32_t> path;
+    if (!frame)
+      return {-1};
+    while (blink::WebFrame* parent = frame->Parent()) {
+      int32_t index = 0;
+      for (blink::WebFrame* child = parent->FirstChild(); child && child != frame;
+           child = child->NextSibling()) {
+        ++index;
+      }
+      path.insert(path.begin(), index);
+      frame = parent;
+    }
+    return path;
+  }
+
   void ContentFrame(int32_t handle, ContentFrameCallback callback) override {
     blink::WebElement element = ElementOf(handle);
-    blink::WebFrame* child =
-        element.IsNull() ? nullptr : blink::WebFrame::FromFrameOwnerElement(element);
-    int32_t index = -1;
-    if (child) {
-      int32_t i = 0;
-      for (blink::WebFrame* frame = render_frame()->GetWebFrame()->FirstChild();
-           frame; frame = frame->NextSibling(), ++i) {
-        if (frame == child) {
-          index = i;
-          break;
-        }
-      }
-    }
-    std::move(callback).Run(index);
+    std::move(callback).Run(PathOf(
+        element.IsNull() ? nullptr : blink::WebFrame::FromFrameOwnerElement(element)));
+  }
+
+  void OwnerFrame(int32_t handle, OwnerFrameCallback callback) override {
+    blink::WebElement element = ElementOf(handle);
+    std::move(callback).Run(
+        PathOf(element.IsNull() ? nullptr : element.GetDocument().GetFrame()));
   }
 
   // Called by the promise's reactions.
@@ -1108,10 +1118,17 @@ class Agent : public content::RenderFrameObserver,
         v8::Local<v8::Value> value = list->Get(context, i).ToLocalChecked();
         const int32_t handle = next_handle_++;
         handles_[handle] = {call.world, v8::Global<v8::Value>(isolate, value)};
+        // What script cannot tell, as Runtime's description has it.
+        std::string preview =
+            Text(isolate, previews.As<v8::Array>()->Get(context, i).ToLocalChecked());
+        if (value->IsProxy()) {
+          preview = value.As<v8::Proxy>()->GetTarget()->IsArray() ? "Proxy(Array)"
+                                                                  : "Proxy(Object)";
+        }
         handles.push_back(AutomationHandle::New(
             handle,
             nodes.As<v8::Array>()->Get(context, i).ToLocalChecked()->IsTrue(),
-            Text(isolate, previews.As<v8::Array>()->Get(context, i).ToLocalChecked())));
+            preview));
       }
     }
     std::move(call.reply).Run(AutomationStatus::kOk, json, std::move(handles));

@@ -129,5 +129,9 @@ interface AutomationAgent {
 
   // The frame of the <iframe> or <frame> of handle @element: its index among this
   // frame's children, in the frame tree's order; -1 when it has none.
-  ContentFrame(int32 element) => (int32 index);
+  // The frame in the element, or its document's: the indexes among children
+  // from the main frame down ([-1] for none), which also holds when the
+  // element is another frame's, reached through a page's script.
+  ContentFrame(int32 element) => (array<int32> path);
+  OwnerFrame(int32 element) => (array<int32> path);
 };

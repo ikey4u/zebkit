@@ -182,7 +182,7 @@ static const command commands[] = {
      "{\"expression\": \"(b) => b.id + ':' + b.isConnected\", \"isFunction\": true, \"arg\": {\"handle\": \"@H\"}}", "{\"value\":\"go:true\"}"},
     {"evaluateExpressionHandle", "Frame.evaluateExpressionHandle",
      "{\"expression\": \"() => ({a: 1, b: [2, 3]})\", \"isFunction\": true}", "\"handle\":{\"handle\":\"h"},
-    {"JSHandle.getProperty", "JSHandle.getProperty", "{\"handle\": \"@H\", \"name\": \"b\"}", "\"preview\":\"Array(2)\""},
+    {"JSHandle.getProperty", "JSHandle.getProperty", "{\"handle\": \"@H\", \"name\": \"b\"}", "\"preview\":\"[2, 3]\""},
     {"JSHandle.jsonValue", "JSHandle.jsonValue", "{\"handle\": \"@H\"}", "{\"value\":[2,3]}"},
     {"JSHandle.dispose", "JSHandle.dispose", "{\"handle\": \"@H\"}", "{}"},
     {"a disposed handle", "JSHandle.jsonValue", "{\"handle\": \"@H\"}", "!JSHandle is disposed"},

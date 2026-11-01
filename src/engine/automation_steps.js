@@ -692,13 +692,73 @@ function preview(value) {
       return 'JSHandle@node';
     }
   }
+  return renderPreview(value);
+}
+
+// crExecutionContext.ts's renderPreview() over what Runtime's remote object
+// says of a value: its value, its description, its preview's properties.
+function describe(value) {
+  switch (typeof value) {
+    case 'string':
+    case 'boolean':
+    case 'undefined':
+      return String(value);
+    case 'number':
+      return Object.is(value, -0) ? '-0' : String(value);
+    case 'bigint':
+      return value + 'n';
+    case 'symbol':
+      return value.toString();
+    case 'function':
+      return Function.prototype.toString.call(value);
+  }
   if (value === null)
-    return 'JSHandle@null';
+    return 'null';
+  const tag = Object.prototype.toString.call(value).slice(8, -1);
   if (Array.isArray(value))
     return `Array(${value.length})`;
-  if (typeof value === 'object' || typeof value === 'function')
-    return `JSHandle@${typeof value === 'function' ? 'function' : value instanceof Promise ? 'promise' : 'object'}`;
-  return 'JSHandle@' + String(value);
+  if (value instanceof RegExp)
+    return String(value);
+  if (value instanceof Date)
+    return String(value);
+  if (value instanceof Error)
+    return String(value.stack || value);
+  if (value instanceof Map || value instanceof Set)
+    return `${tag}(${value.size})`;
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView))
+    return `${tag}(${value.length})`;
+  return value.constructor?.name || tag;
+}
+function renderPreview(value) {
+  if (value === null || (typeof value !== 'object'))
+    return describe(value);
+  if (Array.isArray(value)) {
+    // sparseArrayToString(): V8's preview has the first hundred.
+    const tokens = [];
+    let last = -1, seen = 0;
+    for (const key of Object.keys(value)) {
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0)
+        continue;
+      if (++seen > 100)
+        break;
+      const empty = index - last - 1;
+      if (empty === 1)
+        tokens[tokens.length] = 'empty';
+      else if (empty > 1)
+        tokens[tokens.length] = `empty x ${empty}`;
+      tokens[tokens.length] = describe(value[index]);
+      last = index;
+    }
+    return '[' + tokens.join(', ') + ']';
+  }
+  const description = describe(value);
+  if (description !== 'Object')
+    return description;
+  const tokens = [];
+  for (const key of Object.keys(value).slice(0, 5))
+    tokens[tokens.length] = `${key}: ${describe(value[key])}`;
+  return '{' + tokens.join(', ') + '}';
 }
 
 // The argument: Playwright's serialized value with {h: i} for handles, or

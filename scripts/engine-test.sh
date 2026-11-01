@@ -68,6 +68,10 @@
 #   input and HTTP, every tool and the bounds' escapes; the MCP project's
 #   conformance suite; a scripted task through its tools. Skipped without cargo,
 #   Node.js or the network for the first install.
+# - tests/engine/cdp_clients.mjs: puppeteer-core and playwright-core
+#   (connectOverCDP) against zebkit and against Chrome, in the same run, the
+#   differences in a table; those expected are named with their reasons in
+#   tests/engine/cdp_clients_expected.txt. Skipped without Node.js or Chrome.
 # - tests/engine/cdp_page.py: the same over CDP, as Puppeteer would:
 #   Page.javascriptDialogOpening and handleJavaScriptDialog, printToPDF
 #   (and its stream), Input.dispatchDragEvent and setInterceptDrags.
@@ -525,6 +529,32 @@ if [[ -d "$CACHE_DIR/playwright-tools/node_modules/playwright-core" ]] && "$engi
         "$bin/tools/zebkit-run" --no-sandbox --headless --user-data-dir="$work/profile-connect"
 else
     log "playwright-connect: skipped (no Node.js or playwright-core)"
+fi
+# Real CDP clients, Chrome's results as the reference (tests/engine/cdp_clients.mjs).
+cdp_clients="$CACHE_DIR/cdp-clients"
+cdp_chrome="${CHROME:-$(ls -d "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux64/chrome 2> /dev/null | sort -V | tail -n 1)}"
+if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == linux && -x "$cdp_chrome" ]]; then
+    if [[ "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/puppeteer-core/package.json" 2> /dev/null | head -n 1)" != "$PUPPETEER_CORE_VERSION" \
+        || "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/playwright-core/package.json" 2> /dev/null | head -n 1)" != "$PLAYWRIGHT_CORE_VERSION" ]]; then
+        pw_npm=(npm)
+        command -v mise > /dev/null && pw_npm=(mise exec node@24 -- npm)
+        log "installing puppeteer-core $PUPPETEER_CORE_VERSION and playwright-core $PLAYWRIGHT_CORE_VERSION"
+        mkdir -p "$cdp_clients"
+        (cd "$cdp_clients" && "${pw_npm[@]}" install --silent --no-audit --no-fund --no-save --ignore-scripts \
+            "puppeteer-core@$PUPPETEER_CORE_VERSION" "playwright-core@$PLAYWRIGHT_CORE_VERSION") || log "cdp-clients: the install failed"
+    fi
+    if [[ -d "$cdp_clients/node_modules/puppeteer-core" ]]; then
+        # Not run(): two browsers, one after the other, take longer than its limit.
+        log cdp-clients
+        if ! timeout -k 10 1800 "${pw_node[@]}" "$tests/cdp_clients.mjs" "$cdp_clients" "$tests/cdp_clients_expected.txt" \
+            --zebkit "$bin/tools/zebkit-run" --chrome "$cdp_chrome" --work "$work/cdp-clients" \
+            > "$work/cdp-clients.log" 2> "$work/cdp-clients.err"; then
+            failed=1
+        fi
+        cat "$work/cdp-clients.log"
+    fi
+else
+    selected cdp-clients && log "cdp-clients: skipped (no Node.js or no Chrome)"
 fi
 # On macOS the engine starts on the main thread only (<zebkit/zebkit.h>).
 late_load_owners=(main worker)

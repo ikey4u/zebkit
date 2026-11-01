@@ -1115,7 +1115,7 @@ class Automation : public content::WebContentsObserver,
                            weak_factory_.GetWeakPtr(), call, handle->frame,
                            kept, std::move(target), std::move(chunks), index,
                            std::move(done)),
-            -1));
+            std::vector<int32_t>{-1}));
   }
 
   void FrameEntered(base::WeakPtr<Call> call,
@@ -1125,20 +1125,20 @@ class Automation : public content::WebContentsObserver,
                     std::vector<std::string> chunks,
                     size_t index,
                     TargetDone done,
-                    int32_t child) {
+                    const std::vector<int32_t>& path) {
+    // As frameSelectors.ts says it.
+    const HandleRef* element = FindHandle(kept);
+    const std::string preview = element ? element->preview : std::string();
     Dispose(kept);
     if (!call)
       return;
-    content::RenderFrameHost* parent =
-        content::RenderFrameHost::FromID(parent_id);
-    std::vector<content::RenderFrameHost*> children =
-        parent ? Children(parent) : std::vector<content::RenderFrameHost*>();
-    if (child < 0 || static_cast<size_t>(child) >= children.size()) {
-      call->Fail("Selector \"" + chunks[index] +
-                 "\" resolved to an element that is not an <iframe>");
+    content::RenderFrameHost* child = FrameAtPath(path);
+    if (!child) {
+      call->Fail("Selector \"" + chunks[index] + "\" resolved to " + preview +
+                 ", <iframe> was expected");
       return;
     }
-    target.frame = Follow(children[child]);
+    target.frame = Follow(child);
     target.scope = 0;
     EnterFrames(call, std::move(target), std::move(chunks), index + 1,
                 std::move(done));
@@ -1763,25 +1763,9 @@ class Automation : public content::WebContentsObserver,
     Agent(frame)->ContentFrame(
         handle->id,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
-            base::BindOnce(
-                [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
-                   content::GlobalRenderFrameHostId parent_id, int32_t index) {
-                  if (!self || !call)
-                    return;
-                  content::RenderFrameHost* parent =
-                      content::RenderFrameHost::FromID(parent_id);
-                  std::vector<content::RenderFrameHost*> children =
-                      parent ? self->Children(parent)
-                             : std::vector<content::RenderFrameHost*>();
-                  base::DictValue answer;
-                  if (index >= 0 &&
-                      static_cast<size_t>(index) < children.size()) {
-                    answer.Set("frame", FrameId(children[index]));
-                  }
-                  call->Done(base::Value(std::move(answer)));
-                },
-                weak_factory_.GetWeakPtr(), call->GetWeakPtr(), handle->frame),
-            -1));
+            base::BindOnce(&Automation::FrameAnswer, weak_factory_.GetWeakPtr(),
+                           call->GetWeakPtr(), std::optional<std::string>()),
+            std::vector<int32_t>{-1}));
   }
 
   void OwnerFrame(Call* call) {
@@ -1792,8 +1776,41 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kDisposed);
       return;
     }
+    // A node that is no element (a document, a text) is its frame's.
+    Agent(frame)->OwnerFrame(
+        handle->id,
+        mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+            base::BindOnce(&Automation::FrameAnswer, weak_factory_.GetWeakPtr(),
+                           call->GetWeakPtr(), std::optional<std::string>(FrameId(frame))),
+            std::vector<int32_t>{-1}));
+  }
+
+  // The frame the renderer's ContentFrame or OwnerFrame named: indexes among
+  // children from the main frame down, [-1] for none.
+  content::RenderFrameHost* FrameAtPath(const std::vector<int32_t>& path) {
+    content::RenderFrameHost* found = MainFrame();
+    for (int32_t index : path) {
+      if (!found || index < 0)
+        return nullptr;
+      std::vector<content::RenderFrameHost*> children = Children(found);
+      found = static_cast<size_t>(index) < children.size() ? children[index]
+                                                           : nullptr;
+    }
+    return found;
+  }
+
+  // {frame} at @path from the main frame; @otherwise when there is none.
+  void FrameAnswer(base::WeakPtr<Call> call,
+                   std::optional<std::string> otherwise,
+                   const std::vector<int32_t>& path) {
+    if (!call)
+      return;
+    content::RenderFrameHost* found = FrameAtPath(path);
     base::DictValue answer;
-    answer.Set("frame", FrameId(frame));
+    if (found)
+      answer.Set("frame", FrameId(found));
+    else if (otherwise)
+      answer.Set("frame", *otherwise);
     call->Done(base::Value(std::move(answer)));
   }
 

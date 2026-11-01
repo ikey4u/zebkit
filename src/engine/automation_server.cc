@@ -26,7 +26,9 @@
 #include "base/json/json_writer.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
@@ -250,7 +252,9 @@ class Connection {
     // The client's contexts go with it, as the pages of Playwright's
     // launchServer() do when its client disconnects.
     for (const auto& [guid, object] : objects_) {
-      if (object.type == "BrowserContext" && !object.id.empty()) {
+      if ((object.type == "BrowserContext" ||
+           (object.type == "APIRequestContext" && object.data.FindBool("ownContext").value_or(false))) &&
+          !object.id.empty()) {
         base::DictValue params;
         params.Set("context", object.id);
         zebkit_automation_call(nullptr, "BrowserContext.close",
@@ -415,6 +419,8 @@ class Connection {
   std::string ResponseGuid(const std::string& page_guid, const std::string& request_guid,
                            const base::DictValue& response);
   void NewContext(int id, base::DictValue params);
+  void NewRequest(int id, const std::string& parent, base::DictValue params);
+  void PrepareFetch(base::DictValue& params, const base::DictValue& defaults);
   void NewPage(int id, const std::string& context_guid);
   std::string AdoptPage(const std::string& context_guid, const std::string& page_id,
                         const base::Value& frames);
@@ -673,6 +679,147 @@ std::string Connection::ResponseGuid(const std::string& page_guid,
 }
 
 // Browser.newContext: a native context with the client's options; the
+// APIRequestContext.fetch's parameters as the native command has them, what
+// fetch.ts does before it sends: the query, the body with its content type,
+// the headers and the request context's defaults.
+void Connection::PrepareFetch(base::DictValue& params, const base::DictValue& defaults) {
+  std::string url = params.FindString("url") ? *params.FindString("url") : std::string();
+  std::string separator = url.find('?') == std::string::npos ? "?" : "&";
+  if (const std::string* encoded = params.FindString("encodedParams")) {
+    url += separator + *encoded;
+    separator = "&";
+  } else if (const base::ListValue* query = params.FindList("params")) {
+    for (const base::Value& pair : *query) {
+      const std::string* name = pair.is_dict() ? pair.GetDict().FindString("name") : nullptr;
+      const std::string* value = pair.is_dict() ? pair.GetDict().FindString("value") : nullptr;
+      if (name && value) {
+        url += separator + base::EscapeQueryParamValue(*name, true) + "=" +
+               base::EscapeQueryParamValue(*value, true);
+        separator = "&";
+      }
+    }
+  }
+  params.Set("url", url);
+
+  base::ListValue headers;
+  if (const base::ListValue* given = defaults.FindList("extraHTTPHeaders"))
+    headers = given->Clone();
+  if (const std::string* agent = defaults.FindString("userAgent")) {
+    base::DictValue header;
+    header.Set("name", "User-Agent");
+    header.Set("value", *agent);
+    headers.Append(std::move(header));
+  }
+  if (const base::ListValue* given = params.FindList("headers")) {
+    for (const base::Value& header : *given)
+      headers.Append(header.Clone());
+  }
+  bool has_type = false;
+  for (const base::Value& header : headers) {
+    const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+    has_type = has_type || (name && base::EqualsCaseInsensitiveASCII(*name, "content-type"));
+  }
+  std::string content_type;
+  std::string body;
+  bool has_body = false;
+  if (const std::string* json = params.FindString("jsonData")) {
+    body = *json;
+    has_body = true;
+    content_type = "application/json";
+  } else if (const base::ListValue* form = params.FindList("formData")) {
+    for (const base::Value& pair : *form) {
+      const std::string* name = pair.is_dict() ? pair.GetDict().FindString("name") : nullptr;
+      const std::string* value = pair.is_dict() ? pair.GetDict().FindString("value") : nullptr;
+      if (name && value) {
+        body += (body.empty() ? "" : "&") + base::EscapeQueryParamValue(*name, true) + "=" +
+                base::EscapeQueryParamValue(*value, true);
+      }
+    }
+    has_body = true;
+    content_type = "application/x-www-form-urlencoded";
+  } else if (const base::ListValue* parts = params.FindList("multipartData")) {
+    const std::string boundary = "----zebkitFormBoundary" + base::NumberToString(++next_fetch_);
+    for (const base::Value& part : *parts) {
+      if (!part.is_dict())
+        continue;
+      const std::string* name = part.GetDict().FindString("name");
+      const std::string* value = part.GetDict().FindString("value");
+      const base::DictValue* file = part.GetDict().FindDict("file");
+      if (!name || (!value && !file))
+        continue;
+      body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + *name + "\"";
+      if (file) {
+        const std::string* file_name = file->FindString("name");
+        const std::string* mime = file->FindString("mimeType");
+        const std::string* buffer = file->FindString("buffer");
+        std::string bytes;
+        if (buffer && !base::Base64Decode(*buffer, &bytes))
+          bytes.clear();
+        body += "; filename=\"" + (file_name ? *file_name : std::string()) +
+                "\"\r\nContent-Type: " + (mime ? *mime : "application/octet-stream") +
+                "\r\n\r\n" + bytes + "\r\n";
+      } else {
+        body += "\r\n\r\n" + *value + "\r\n";
+      }
+    }
+    body += "--" + boundary + "--\r\n";
+    has_body = true;
+    content_type = "multipart/form-data; boundary=" + boundary;
+  }
+  if (has_body) {
+    // The native command takes base64.
+    params.Set("postData", base::Base64Encode(body));
+    if (!has_type) {
+      base::DictValue header;
+      header.Set("name", "Content-Type");
+      header.Set("value", content_type);
+      headers.Append(std::move(header));
+    }
+  }
+  params.Set("headers", std::move(headers));
+  if (!params.FindInt("maxRedirects")) {
+    if (std::optional<int> redirects = defaults.FindInt("maxRedirects"))
+      params.Set("maxRedirects", *redirects);
+  }
+}
+
+// Playwright.newRequest, playwright.request.newContext(): an APIRequestContext
+// with a profile of its own, in memory.
+void Connection::NewRequest(int id, const std::string& parent, base::DictValue params) {
+  base::DictValue options;
+  if (const base::Value* state = params.Find("storageState"))
+    options.Set("storageState", state->Clone());
+  Native(id, nullptr, "Browser.newContext", std::move(options),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, int id, std::string parent, base::DictValue params,
+                base::Value result) {
+               if (!self)
+                 return;
+               const std::string* context =
+                   result.is_dict() ? result.GetDict().FindString("context") : nullptr;
+               if (!context) {
+                 self->ReplyError(id, "zebkit: no context");
+                 return;
+               }
+               Object tracing_object;
+               tracing_object.id = *context;
+               const std::string tracing =
+                   self->Create(parent, "Tracing", base::DictValue(), std::move(tracing_object));
+               base::DictValue initializer;
+               initializer.Set("tracing", Ref(tracing));
+               Object object;
+               object.id = *context;
+               object.data = std::move(params);
+               object.data.Set("ownContext", true);
+               const std::string request =
+                   self->Create(parent, "APIRequestContext", std::move(initializer), std::move(object));
+               base::DictValue answer;
+               answer.Set("request", Ref(request));
+               self->Reply(id, base::Value(std::move(answer)));
+             },
+             weak_factory_.GetWeakPtr(), id, parent, std::move(params)));
+}
+
 // BrowserContext with its Tracing, APIRequestContext and Debugger.
 void Connection::NewContext(int id, base::DictValue params) {
   base::DictValue options = params.Clone();
@@ -1373,33 +1520,26 @@ void Connection::Command(int id,
   }
   if (type == "APIRequestContext") {
     if (method == "fetch") {
-      Object* context = Find(object->context);
-      params.Set("context", context ? context->id : std::string());
-      if (const base::ListValue* query = params.FindList("params")) {
-        std::string url = params.FindString("url") ? *params.FindString("url") : "";
-        std::string separator = url.find('?') == std::string::npos ? "?" : "&";
-        for (const base::Value& pair : *query) {
-          const std::string* name = pair.is_dict() ? pair.GetDict().FindString("name") : nullptr;
-          const std::string* value = pair.is_dict() ? pair.GetDict().FindString("value") : nullptr;
-          if (name && value) {
-            url += separator + *name + "=" + *value;
-            separator = "&";
-          }
-        }
-        params.Set("url", url);
-      }
-      if (const base::Value* json = params.Find("jsonData"); json && json->is_string()) {
-        params.Set("postData", json->GetString());
-      }
+      params.Set("context", object->id);
+      PrepareFetch(params, object->data);
+      const bool fail_on_status =
+          params.FindBool("failOnStatusCode")
+              .value_or(object->data.FindBool("failOnStatusCode").value_or(false));
       Native(id, nullptr, "APIRequestContext.fetch", std::move(params),
              base::BindOnce(
-                 [](base::WeakPtr<Connection> self, int id, base::Value result) {
+                 [](base::WeakPtr<Connection> self, int id, bool fail_on_status, base::Value result) {
                    if (!self)
                      return;
                    base::DictValue* response =
                        result.is_dict() ? result.GetDict().FindDict("response") : nullptr;
                    if (!response) {
                      self->ReplyError(id, "zebkit: no response");
+                     return;
+                   }
+                   const int status = response->FindInt("status").value_or(0);
+                   if (fail_on_status && (status < 200 || status >= 400)) {
+                     const std::string* text = response->FindString("statusText");
+                     self->ReplyError(id, base::NumberToString(status) + " " + (text ? *text : std::string()));
                      return;
                    }
                    const std::string uid = "fetch" + base::NumberToString(++self->next_fetch_);
@@ -1411,7 +1551,7 @@ void Connection::Command(int id,
                    answer.Set("response", std::move(*response));
                    self->Reply(id, base::Value(std::move(answer)));
                  },
-                 weak_factory_.GetWeakPtr(), id));
+                 weak_factory_.GetWeakPtr(), id, fail_on_status));
     } else if (method == "fetchResponseBody") {
       const std::string* uid = params.FindString("fetchUid");
       base::DictValue answer;
@@ -1427,14 +1567,25 @@ void Connection::Command(int id,
         fetched_.erase(*uid);
       empty_reply();
     } else if (method == "storageState") {
-      Object* context = Find(object->context);
       base::DictValue state;
-      state.Set("context", context ? context->id : std::string());
+      state.Set("context", object->id);
       Native(id, nullptr, "BrowserContext.storageState", std::move(state),
              std::move(reply_as_is));
+    } else if (method == "dispose" && object->data.FindBool("ownContext").value_or(false)) {
+      // playwright.request.newContext()'s: its profile goes with it.
+      base::DictValue close;
+      close.Set("context", object->id);
+      zebkit_automation_call(nullptr, "BrowserContext.close",
+                             Json(base::Value(std::move(close))).c_str(), nullptr, nullptr);
+      empty_reply();
+      Dispose(guid);
     } else {
       empty_reply();
     }
+    return;
+  }
+  if (type == "Playwright" && method == "newRequest") {
+    NewRequest(id, guid, std::move(params));
     return;
   }
   if (type == "Tracing") {
