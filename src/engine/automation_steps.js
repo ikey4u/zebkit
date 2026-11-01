@@ -464,6 +464,81 @@ steps.scrollIntoViewIfNeeded = arg => poll(arg.timeout, kActionWaits, async (say
   return { done: true };
 });
 
+// ElementHandle.screenshot's wait, screenshotter.ts's
+// _waitAndScrollIntoViewIfNeeded(progress, waitForVisible): visible, stable, in view.
+steps.scrollIntoViewForScreenshot = arg => poll(arg.timeout, kActionWaits, async (say, attempt) => {
+  const element = resolve(arg, say);
+  if (!element)
+    return undefined;
+  if (!(await checkStates(element, ['visible', 'stable'], say)))
+    return undefined;
+  scrollIntoView(element, attempt);
+  return { done: true };
+});
+
+// screenshotter.ts's inPagePrepareForScreenshots() and the masks, undone by
+// restoreScreenshot; and what the clip needs of the page.
+let screenshotUndo = [];
+steps.prepareScreenshot = arg => {
+  // What a screenshot that timed out left.
+  steps.restoreScreenshot();
+  const add = css => {
+    const style = document.createElement('style');
+    style.textContent = css;
+    (document.head || document.documentElement).append(style);
+    screenshotUndo.push(() => style.remove());
+  };
+  if (arg.caret !== 'initial')
+    add('*:not(#playwright-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa):not(#playwright-bbb) { caret-color: transparent !important; }');
+  if (arg.style)
+    add(arg.style);
+  if (arg.animations === 'disabled') {
+    for (const animation of document.getAnimations()) {
+      const timing = animation.effect?.getTiming();
+      if (timing && Number.isFinite(timing.iterations) && Number.isFinite(timing.duration)) {
+        const { playState, currentTime } = animation;
+        animation.finish();
+        screenshotUndo.push(() => {
+          animation.currentTime = currentTime;
+          if (playState === 'running')
+            animation.play();
+        });
+      } else {
+        animation.cancel();
+        screenshotUndo.push(() => animation.play());
+      }
+    }
+  }
+  for (const selector of arg.mask || []) {
+    for (const element of injected.querySelectorAll(injected.parseSelector(selector), document)) {
+      for (const rect of element.getClientRects()) {
+        const box = document.createElement('div');
+        box.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:${arg.maskColor || '#FF00FF'};z-index:2147483647;pointer-events:none`;
+        document.documentElement.append(box);
+        screenshotUndo.push(() => box.remove());
+      }
+    }
+  }
+  return {};
+};
+steps.restoreScreenshot = () => {
+  const undo = screenshotUndo;
+  screenshotUndo = [];
+  for (const step of undo.reverse())
+    step();
+  return {};
+};
+steps.screenshotMetrics = () => {
+  const root = document.documentElement, body = document.body;
+  return {
+    scrollX: scrollX, scrollY: scrollY,
+    viewportWidth: innerWidth, viewportHeight: innerHeight,
+    documentWidth: Math.max(root.scrollWidth, root.offsetWidth, root.clientWidth, body?.scrollWidth ?? 0, body?.offsetWidth ?? 0),
+    documentHeight: Math.max(root.scrollHeight, root.offsetHeight, root.clientHeight, body?.scrollHeight ?? 0, body?.offsetHeight ?? 0),
+    deviceScaleFactor: devicePixelRatio,
+  };
+};
+
 // ElementHandle.boundingBox: in the main frame's viewport, as
 // DOM.getBoxModel gives it (the browser adds the frames' offsets).
 steps.boundingBox = arg => {

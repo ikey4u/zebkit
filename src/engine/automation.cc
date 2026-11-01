@@ -3641,9 +3641,67 @@ class Automation : public content::WebContentsObserver,
   // Page.screenshot and ElementHandle.screenshot, from the view's surface:
   // the viewport, "clip" ({x, y, width, height} in CSS pixels), or the
   // element's box; PNG.
+  // Page.screenshot, ElementHandle.screenshot: as screenshotter.ts, what the
+  // surface alone gives when nothing else is asked (a plain picture of the
+  // view, the quickest), Page.captureScreenshot otherwise.
   void Screenshot(Call* call) {
+    const std::string type = call->String("type");
+    const bool plain = !call->OnHandle() && (type.empty() || type == "png") &&
+                       !call->Flag("fullPage") && !call->Flag("omitBackground") &&
+                       !call->Has("mask") && !call->Has("style") &&
+                       call->String("animations") != "disabled" &&
+                       call->String("scale") != "css" && !HasDeviceScale();
+    if (plain) {
+      std::optional<gfx::Rect> clip;
+      if (const base::DictValue* given = call->params().FindDict("clip")) {
+        clip = gfx::ToEnclosingRect(gfx::RectF(
+            given->FindDouble("x").value_or(0),
+            given->FindDouble("y").value_or(0),
+            given->FindDouble("width").value_or(0),
+            given->FindDouble("height").value_or(0)));
+      }
+      Capture(call, clip);
+      return;
+    }
+    ScreenshotStyled(call, base::BindOnce(&Automation::ScreenshotPrepared,
+                                          weak_factory_.GetWeakPtr(),
+                                          call->GetWeakPtr()));
+  }
+
+  bool HasDeviceScale() {
+    content::RenderWidgetHost* widget = MainWidget();
+    content::RenderWidgetHostView* view = widget ? widget->GetView() : nullptr;
+    return view && view->GetDeviceScaleFactor() != 1.0f;
+  }
+
+  void ScreenshotStyled(Call* call, base::OnceClosure next) {
+    base::DictValue arg;
+    for (const char* key : {"caret", "animations", "style", "maskColor"}) {
+      if (const std::string* value = call->params().FindString(key))
+        arg.Set(key, *value);
+    }
+    if (const base::ListValue* mask = call->params().FindList("mask")) {
+      base::ListValue selectors;
+      for (const base::Value& item : *mask) {
+        const std::string* selector =
+            item.is_dict() ? item.GetDict().FindString("selector") : nullptr;
+        if (selector)
+          selectors.Append(*selector);
+      }
+      arg.Set("mask", std::move(selectors));
+    }
+    RunStep(call, Follow(MainFrame()), AutomationWorld::kUtility,
+            "prepareScreenshot", std::move(arg), {},
+            base::BindOnce(
+                [](base::OnceClosure next, base::Value) { std::move(next).Run(); },
+                std::move(next)));
+  }
+
+  void ScreenshotPrepared(base::WeakPtr<Call> call) {
+    if (!call)
+      return;
     if (call->OnHandle()) {
-      StepOnTarget(call, "scrollIntoViewIfNeeded", {},
+      StepOnTarget(call.get(), "scrollIntoViewForScreenshot", {},
                    base::BindOnce(
                        [](base::WeakPtr<Automation> self, Call* call,
                           base::Value) {
@@ -3653,15 +3711,14 @@ class Automation : public content::WebContentsObserver,
                        weak_factory_.GetWeakPtr()));
       return;
     }
-    std::optional<gfx::Rect> clip;
+    std::optional<gfx::RectF> clip;
     if (const base::DictValue* given = call->params().FindDict("clip")) {
-      clip = gfx::ToEnclosingRect(gfx::RectF(
-          given->FindDouble("x").value_or(0),
-          given->FindDouble("y").value_or(0),
-          given->FindDouble("width").value_or(0),
-          given->FindDouble("height").value_or(0)));
+      clip = gfx::RectF(given->FindDouble("x").value_or(0),
+                        given->FindDouble("y").value_or(0),
+                        given->FindDouble("width").value_or(0),
+                        given->FindDouble("height").value_or(0));
     }
-    Capture(call, clip);
+    ScreenshotWithMetrics(call, clip);
   }
 
   void ScreenshotElement(base::WeakPtr<Call> call, Target target) {
@@ -3673,7 +3730,7 @@ class Automation : public content::WebContentsObserver,
               if (!self || !call)
                 return;
               if (!box.is_dict()) {
-                call->Fail("Element is not visible");
+                call->Fail("Node is either not visible or not an HTMLElement");
                 return;
               }
               const gfx::PointF origin(box.GetDict().FindDouble("x").value_or(0),
@@ -3688,13 +3745,143 @@ class Automation : public content::WebContentsObserver,
                          content::RenderWidgetHost*, gfx::PointF,
                          gfx::PointF root) {
                         if (self && call) {
-                          self->Capture(call.get(), gfx::ToEnclosingRect(
-                                                        gfx::RectF(root, size)));
+                          self->ScreenshotWithMetrics(call, gfx::RectF(root, size));
                         }
                       },
                       self, call, size));
             },
             weak_factory_.GetWeakPtr(), call, target.frame));
+  }
+
+  // The clip, in the viewport's coordinates, as Page.captureScreenshot's in
+  // the document's; the whole document for fullPage; none for the viewport.
+  void ScreenshotWithMetrics(base::WeakPtr<Call> call,
+                             std::optional<gfx::RectF> clip) {
+    if (!call)
+      return;
+    RunStep(call.get(), Follow(MainFrame()), AutomationWorld::kUtility,
+            "screenshotMetrics", {}, {},
+            base::BindOnce(&Automation::ScreenshotMeasured,
+                           weak_factory_.GetWeakPtr(), call, clip));
+  }
+
+  void ScreenshotMeasured(base::WeakPtr<Call> call,
+                          std::optional<gfx::RectF> clip,
+                          base::Value metrics) {
+    if (!call || !metrics.is_dict())
+      return;
+    const base::DictValue& m = metrics.GetDict();
+    const double scroll_x = m.FindDouble("scrollX").value_or(0);
+    const double scroll_y = m.FindDouble("scrollY").value_or(0);
+    const double viewport_width = m.FindDouble("viewportWidth").value_or(0);
+    const double viewport_height = m.FindDouble("viewportHeight").value_or(0);
+    const double scale_factor = m.FindDouble("deviceScaleFactor").value_or(1);
+    std::optional<gfx::RectF> document;
+    bool beyond = false;
+    if (call->Flag("fullPage")) {
+      document = gfx::RectF(0, 0, m.FindDouble("documentWidth").value_or(0),
+                            m.FindDouble("documentHeight").value_or(0));
+      if (clip) {
+        // A clip of a full page is in the document's coordinates.
+        document->Intersect(*clip);
+      }
+      beyond = true;
+    } else if (clip) {
+      const bool own_clip = !call->OnHandle();
+      if (own_clip) {
+        // A page's clip stays within the viewport.
+        gfx::RectF view(viewport_width, viewport_height);
+        clip->Intersect(view);
+      }
+      document = gfx::RectF(clip->x() + scroll_x, clip->y() + scroll_y,
+                            clip->width(), clip->height());
+      beyond = clip->width() > viewport_width || clip->height() > viewport_height;
+    }
+    if (document && document->IsEmpty()) {
+      RestoreScreenshot(call, std::string(),
+                        "Clipped area is either empty or outside the resulting image");
+      return;
+    }
+    const std::string type = call->String("type");
+    base::DictValue params;
+    params.Set("format", type.empty() ? "png" : type);
+    if (call->Has("quality"))
+      params.Set("quality", static_cast<int>(call->Number("quality")));
+    params.Set("captureBeyondViewport", beyond);
+    if (document) {
+      const gfx::Rect whole = gfx::ToEnclosingRect(*document);
+      base::DictValue region;
+      region.Set("x", whole.x());
+      region.Set("y", whole.y());
+      region.Set("width", whole.width());
+      region.Set("height", whole.height());
+      region.Set("scale", call->String("scale") == "css" ? 1 / scale_factor : 1.0);
+      params.Set("clip", std::move(region));
+    } else if (call->String("scale") == "css") {
+      base::DictValue region;
+      region.Set("x", scroll_x);
+      region.Set("y", scroll_y);
+      region.Set("width", viewport_width);
+      region.Set("height", viewport_height);
+      region.Set("scale", 1 / scale_factor);
+      params.Set("clip", std::move(region));
+    }
+    const bool transparent = call->Flag("omitBackground");
+    if (transparent) {
+      base::DictValue color;
+      color.Set("r", 0);
+      color.Set("g", 0);
+      color.Set("b", 0);
+      color.Set("a", 0);
+      base::DictValue background;
+      background.Set("color", std::move(color));
+      call->view()->Send("Emulation.setDefaultBackgroundColorOverride",
+                         std::move(background));
+    }
+    call->view()->Send(
+        "Page.captureScreenshot", std::move(params),
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+               bool transparent, const base::DictValue* result,
+               const std::string& error) {
+              if (!self || !call)
+                return;
+              if (transparent) {
+                call->view()->Send("Emulation.setDefaultBackgroundColorOverride",
+                                   base::DictValue());
+              }
+              const std::string* data = result ? result->FindString("data") : nullptr;
+              self->RestoreScreenshot(
+                  call, data ? *data : std::string(),
+                  data ? std::string()
+                       : (error.empty() ? std::string("zebkit: no picture") : error));
+            },
+            weak_factory_.GetWeakPtr(), call, transparent));
+  }
+
+  // The page as it was, then the answer: @base64 or @error.
+  void RestoreScreenshot(base::WeakPtr<Call> call, std::string base64, std::string error) {
+    if (!call)
+      return;
+    RunStep(call.get(), Follow(MainFrame()), AutomationWorld::kUtility,
+            "restoreScreenshot", {}, {},
+            base::BindOnce(
+                [](base::WeakPtr<Call> call, std::string base64, std::string error,
+                   base::Value) {
+                  if (!call)
+                    return;
+                  if (!error.empty()) {
+                    call->Fail(error);
+                    return;
+                  }
+                  std::string bytes;
+                  if (!base::Base64Decode(base64, &bytes)) {
+                    call->Fail("zebkit: the picture could not be decoded");
+                    return;
+                  }
+                  Deliver(call, std::vector<uint8_t>(bytes.begin(), bytes.end()));
+                },
+                call, std::move(base64), std::move(error)));
   }
 
   void Capture(Call* call, std::optional<gfx::Rect> clip) {
@@ -3733,20 +3920,25 @@ class Automation : public content::WebContentsObserver,
       call->Fail("zebkit: the picture could not be encoded");
       return;
     }
+    Deliver(call, std::move(*png));
+  }
+
+  // The picture to the client or to "path".
+  static void Deliver(base::WeakPtr<Call> call, std::vector<uint8_t> bytes) {
     const std::string path = call->String("path");
     if (path.empty()) {
       base::DictValue answer;
-      answer.Set("binary", base::Base64Encode(*png));
+      answer.Set("binary", base::Base64Encode(bytes));
       call->Done(base::Value(std::move(answer)));
       return;
     }
     base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE, {base::MayBlock()},
         base::BindOnce(
-            [](std::string path, std::vector<uint8_t> png) {
-              return base::WriteFile(base::FilePath::FromUTF8Unsafe(path), png);
+            [](std::string path, std::vector<uint8_t> bytes) {
+              return base::WriteFile(base::FilePath::FromUTF8Unsafe(path), bytes);
             },
-            path, std::move(*png)),
+            path, std::move(bytes)),
         base::BindOnce(
             [](base::WeakPtr<Call> call, std::string path, bool written) {
               if (!call)
