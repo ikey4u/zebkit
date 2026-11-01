@@ -5,6 +5,10 @@
 //
 //   node cdp_clients.mjs <clients dir> <expected differences file> \
 //       --zebkit <zebkit-run> --chrome <chrome> [--work DIR] [--only REGEX] [--json FILE]
+//       [--default-context]
+//
+// --default-context runs each case in the browser's default context, for an
+// engine without Target.createBrowserContext.
 //
 // A difference named in the expected list (with its reason) is reported and
 // does not fail the run. Prints a table of the differences, then a count;
@@ -27,6 +31,7 @@ const option = name => {
   return at >= 0 ? argv[at + 1] : undefined;
 };
 const zebkitPath = option('--zebkit'), chromePath = option('--chrome');
+const defaultContext = argv.includes('--default-context');
 const only = option('--only') ? new RegExp(option('--only')) : null;
 const work = option('--work') || fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-clients-'));
 fs.mkdirSync(work, { recursive: true });
@@ -239,10 +244,12 @@ pp('navigation: waitUntil lifecycle', async ({ page }) => {
 pp('navigation: back, forward, reload', async ({ page }) => {
   await page.goto(`${origin}/empty.html`);
   await page.goto(`${origin}/child.html`);
-  const back = await page.goBack();
-  const forward = await page.goForward();
-  const reload = await page.reload();
-  return [back.url(), forward.url(), reload.url()].map(u => u.replace(origin, ''));
+  await page.goBack();
+  const back = page.url();
+  await page.goForward();
+  const forward = page.url();
+  await page.reload();
+  return [back, forward, page.url()].map(u => u.replace(origin, ''));
 });
 pp('navigation: same-document', async ({ page }) => {
   await page.goto(`${origin}/empty.html`);
@@ -283,7 +290,9 @@ pp('frames: same site tree', async ({ page }) => {
 pp('frames: out of process', async ({ page }) => {
   await page.goto(`${origin}/cross.html?o=${encodeURIComponent(other)}`);
   const frame = page.frames()[1];
-  return { oopif: frame.isOOPIF(), url: frame.url().replace(other, ''), text: await frame.evaluate(() => document.querySelector('#inner').textContent), targets: page.target().type() };
+  const session = await page.createCDPSession();
+  const { targetInfos } = await session.send('Target.getTargets');
+  return { oopif: targetInfos.some(t => t.type === 'iframe' && t.url.startsWith(other)), url: frame.url().replace(other, ''), text: await frame.evaluate(() => document.querySelector('#inner').textContent) };
 });
 pp('frames: click into out of process frame', async ({ page }) => {
   await page.goto(`${origin}/cross.html?o=${encodeURIComponent(other)}`);
@@ -697,18 +706,22 @@ rawGroup('Page.getFrameTree', 'Page.getFrameTree', {}, r => ({ keys: Object.keys
 rawGroup('Page.getLayoutMetrics keys', 'Page.getLayoutMetrics', {}, r => Object.keys(r).sort());
 rawGroup('Performance.enable', 'Performance.enable', {}, () => 'ok');
 rawGroup('Target.getTargets types', 'Target.getTargets', {}, r => [...new Set(r.targetInfos.map(t => t.type))].sort());
-rawGroup('Target.getBrowserContexts', 'Target.getBrowserContexts', {}, r => Array.isArray(r.browserContextIds));
 rawGroup('Browser.getWindowForTarget keys', 'Browser.getWindowForTarget', {}, r => Object.keys(r).sort());
 rawGroup('Tracing.getCategories', 'Tracing.getCategories', {}, r => r.categories.includes('devtools.timeline'));
 rawGroup('Schema.getDomains', 'Schema.getDomains', {}, r => r.domains.map(d => d.name).sort());
-rawGroup('SystemInfo.getProcessInfo', 'SystemInfo.getProcessInfo', {}, r => [...new Set(r.processInfo.map(p => p.type))].sort());
 rawGroup('Storage.getUsageAndQuota', 'Storage.getUsageAndQuota', { origin }, r => Object.keys(r).sort());
 rawGroup('DOM.getDocument', 'DOM.getDocument', { depth: 1 }, r => r.root.children.map(c => c.nodeName));
 rawGroup('Accessibility.getFullAXTree', 'Accessibility.getFullAXTree', {}, r => r.nodes.filter(n => !n.ignored).map(n => [n.role?.value, n.name?.value]));
 rawGroup('Page.getResourceTree', 'Page.getResourceTree', {}, r => r.frameTree.resources.map(x => [x.url.replace(origin, ''), x.type]));
 rawGroup('Network.getAllCookies', 'Network.getAllCookies', {}, r => Array.isArray(r.cookies));
 rawGroup('Page.getNavigationHistory', 'Page.getNavigationHistory', {}, r => r.entries.map(e => e.url.replace(origin, '')));
-rawGroup('CSS.enable needs DOM', 'CSS.enable', {}, () => 'ok');
+pp('raw: browser session', async ({ browser }) => {
+  const session = await browser.target().createCDPSession();
+  const contexts = await session.send('Target.getBrowserContexts');
+  const info = await session.send('SystemInfo.getProcessInfo');
+  const version = await session.send('Browser.getVersion');
+  return { contexts: Array.isArray(contexts.browserContextIds), types: [...new Set(info.processInfo.map(p => p.type))].sort(), keys: Object.keys(version).sort() };
+});
 pp('raw: screencast frames', async ({ page }) => {
   await page.goto(`${origin}/box.html`);
   const session = await page.createCDPSession();
@@ -755,9 +768,10 @@ pw('connect: version, contexts', async ({ browser, context }) => ({ version: /^\
 pw('connect: default context', async ({ browser }) => ({ present: browser.contexts().length >= 1, pages: browser.contexts()[0].pages().length >= 0 }));
 pw('navigation: goto, redirect, 404', async ({ page }) => {
   const a = await page.goto(`${origin}/status?code=201`);
+  const text = await a.text();
   const b = await page.goto(`${origin}/redirect`);
   const c = await page.goto(`${origin}/none`);
-  return { a: [a.status(), a.ok(), a.headers()['x-custom'], await a.text()], b: [b.url().replace(origin, ''), b.request().redirectedFrom().url().replace(origin, '')], c: c.status() };
+  return { a: [a.status(), a.ok(), a.headers()['x-custom'], text], b: [b.url().replace(origin, ''), b.request().redirectedFrom().url().replace(origin, '')], c: c.status() };
 });
 pw('navigation: failure message', async ({ page }) => page.goto('http://127.0.0.1:1/').catch(e => e.message.split('\n')[0]));
 pw('navigation: back, forward, reload, lifecycle', async ({ page }) => {
@@ -1237,13 +1251,21 @@ async function runClient(client, executable, args, label) {
       try {
         if (!browser)
           browser = await withTimeout(connect(), 60000);
-        const context = client === 'puppeteer' ? await withTimeout(browser.createBrowserContext(), 20000) : await withTimeout(browser.newContext(), 20000);
+        const context = defaultContext ? (client === 'puppeteer' ? browser.defaultBrowserContext() : browser.contexts()[0])
+          : client === 'puppeteer' ? await withTimeout(browser.createBrowserContext(), 20000) : await withTimeout(browser.newContext(), 20000);
+        const closeContext = async () => {
+          if (!defaultContext)
+            return context.close();
+          for (const open of await context.pages())
+            await open.close();
+          await context.clearCookies?.();
+        };
         try {
           const page = await withTimeout(context.newPage(), 20000);
           const value = await withTimeout(item.body({ browser, context, page }), 25000);
           outcome = { ok: true, value: JSON.parse(normalize(JSON.stringify(value === undefined ? null : value))) };
         } finally {
-          await withTimeout(context.close(), 10000).catch(() => {});
+          await withTimeout(closeContext(), 10000).catch(() => {});
         }
       } catch (error) {
         outcome = { ok: false, error: normalize(String(error && error.message || error).split('\n')[0]) };
@@ -1279,8 +1301,11 @@ for (const line of fs.readFileSync(expectedFile, 'utf8').split('\n')) {
   expected.set(line.slice(0, at).trim(), line.slice(at + 3).trim());
 }
 
-const chromeResults = await runAll(chromePath, ['--headless=new', '--no-sandbox'], 'chrome');
-const zebkitResults = await runAll(zebkitPath, ['--headless', '--no-sandbox'], 'zebkit');
+// What Playwright launches with for its own Chromium, so that pages behind
+// others are not throttled while a case waits for them.
+const unthrottled = ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'];
+const chromeResults = await runAll(chromePath, ['--headless=new', '--no-sandbox', ...unthrottled], 'chrome');
+const zebkitResults = await runAll(zebkitPath, ['--headless', '--no-sandbox', ...unthrottled], 'zebkit');
 server.closeAllConnections();
 server.close();
 

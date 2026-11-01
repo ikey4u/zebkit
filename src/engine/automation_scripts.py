@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The script automation_renderer.cc runs in each world it automates, as a C++
-array: a function of isUtilityWorld whose value is the runner of
+array: a function of isUtilityWorld and isUnderTest whose value is the runner of
 automation_steps.js, over Playwright's injected script
 (playwright/injected_script.js) made with the InjectedScript's options. An
 array rather than a string literal, which MSVC limits to 64 KiB.
@@ -43,7 +43,7 @@ def main():
     with open(steps_path, encoding="utf-8") as f:
         steps = f.read()
     # The steps in a scope of their own: the bundle's names are not theirs.
-    source = ("((isUtilityWorld) => {\nconst module = {};\nconst options = %s;\n%s\n;\n"
+    source = ("((isUtilityWorld, isUnderTest) => {\nconst module = {};\nconst options = %s;\n%s\n;\n"
               "return (() => {\n%s\n})();\n})\n"
               % (json.dumps(OPTIONS), injected, steps))
     clock_source = ("(() => {\nconst module = {};\n%s\n;\nif (!globalThis.__pwClock)\n"

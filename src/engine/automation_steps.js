@@ -7,23 +7,72 @@
 // automation_scripts.py puts this after injected_script.js in a function of
 // `isUtilityWorld` whose value is the runner below; automation_renderer.cc
 // makes one in the page's world and one in zebkit's isolated world, keeps
-// it, and calls its methods. Each method answers [json, handles, previews]:
+// it, and calls its methods. Each method answers [json, handles, previews, nodes]:
 // json is {ok: true, value} or {ok: false, error}; an object the value
 // refers to as {"$h": i} is handles[i], which the agent keeps as a handle,
-// previews[i] what Playwright shows of it. An argument refers to the
+// previews[i] what Playwright shows of it, nodes[i] whether it is a node. An argument refers to the
 // agent's handles the same way.
 
-const injected = new (module.exports.InjectedScript())(globalThis, { ...options, isUtilityWorld });
+// Playwright's InjectedScript, made the first time a step needs it: an
+// evaluation in the page's world does not, and must work when the page has
+// broken what its constructor uses (Array.prototype.map, say).
+let injectedScript;
+const injectedNow = () => injectedScript ??= new (module.exports.InjectedScript())(globalThis, { ...options, isUtilityWorld, isUnderTest });
+const lazily = get => new Proxy({}, {
+  get(_, key) {
+    const target = get();
+    const value = target[key];
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
+const injected = lazily(injectedNow);
+// PWTEST_UNDER_TEST, as Playwright's server has isUnderTest(): window.builtins.
+if (isUnderTest)
+  injectedNow();
 const serializeAsCallArgument = module.exports.serializeAsCallArgument();
 const parseEvaluationResultValue = module.exports.parseEvaluationResultValue();
 const renderAriaSnapshotAsYaml = module.exports.renderAriaSnapshotAsYaml();
 const parseAriaSnapshotUnsafe = module.exports.parseAriaSnapshotUnsafe();
 // Playwright's module prelude keeps each export as a function that gives
 // it, a namespace's too.
-const yaml = Object.fromEntries(Object.entries(module.exports.yaml()).map(([name, get]) => [name, get()]));
-const builtins = injected.utils.builtins;
+let yamlNamespace;
+const yaml = lazily(() => yamlNamespace ??= Object.fromEntries(Object.entries(module.exports.yaml()).map(([name, get]) => [name, get()])));
+const builtins = lazily(() => injectedNow().utils.builtins);
 const interceptors = new Map();
 let nextInterceptor = 1;
+// Kept: a page may replace them or give prototypes a toJSON, and the runner's
+// answers are its own.
+const parseJson = JSON.parse;
+const stringifyJson = JSON.stringify;
+const arrayPrototype = Array.prototype;
+const objectPrototype = Object.prototype;
+// JSON of a plain tree (what serialize() and the steps give), past any toJSON
+// the page has put on a prototype.
+function treeToJson(value) {
+  if (arrayPrototype.toJSON === undefined && objectPrototype.toJSON === undefined && Date.prototype.toJSON === dateToJson)
+    return stringifyJson(value);
+  const write = v => {
+    if (v === null || v === undefined)
+      return 'null';
+    if (typeof v !== 'object')
+      return stringifyJson(v) ?? 'null';
+    if (v instanceof Date)
+      return stringifyJson(dateToJson.call(v));
+    let text = '';
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; ++i)
+        text += (i ? ',' : '') + write(v[i]);
+      return '[' + text + ']';
+    }
+    for (const key of Object.keys(v)) {
+      if (v[key] !== undefined && typeof v[key] !== 'function')
+        text += (text ? ',' : '') + stringifyJson(key) + ':' + write(v[key]);
+    }
+    return '{' + text + '}';
+  };
+  return write(value);
+}
+const dateToJson = Date.prototype.toJSON;
 
 // Waits between tries, as Playwright's retryWithProgressAndBackoff(), and
 // between action retries, as _retryAction().
@@ -448,6 +497,16 @@ steps.ariaSnapshot = arg => {
 // Playwright's FrameExpectResult has: matches, received, timedOut, log.
 steps.expect = async arg => {
   const options = { ...arg.options };
+  // The endpoint's: serialized, and its received value is to be serialized too.
+  const serialized = options.expectedValueSerialized;
+  delete options.expectedValueSerialized;
+  if (serialized)
+    options.expectedValue = parseEvaluationResultValue(options.expectedValue, []);
+  const answered = result => {
+    if (serialized && result.received && 'value' in result.received)
+      result.received = { ...result.received, value: serialize(result.received.value) };
+    return result;
+  };
   if (options.expression === 'to.match.aria' && options.expectedValue) {
     try {
       options.expectedValue = parseAriaSnapshotUnsafe(yaml, options.expectedValue);
@@ -489,7 +548,7 @@ steps.expect = async arg => {
   try {
     last = await once(say);
     if (last.matches !== options.isNot)
-      return { ...last, log };
+      return answered({ ...last, log });
   } catch (e) {
     if (e instanceof FatalError || /strict mode violation|selector/i.test(e.message))
       return { matches: options.isNot, errorMessage: e.message, log };
@@ -505,8 +564,8 @@ steps.expect = async arg => {
     return last.matches !== options.isNot ? last : undefined;
   });
   if (polled.timedOut)
-    return { matches: options.isNot, received: last?.received, timedOut: true, log };
-  return { ...polled.result, log };
+    return answered({ matches: options.isNot, received: last?.received, timedOut: true, log });
+  return answered({ ...polled.result, log });
 };
 
 // frames.ts's setContent(): the document written, then its load.
@@ -578,11 +637,38 @@ steps.childFrameBox = arg => {
 
 // ---- Evaluation, as javascript.ts and utilityScript.ts do it -------------
 
+// What crExecutionContext.ts's rewriteError() says when the protocol cannot
+// carry the value back. V8's inspector gives up beyond this nesting of objects
+// and arrays (measured on Chrome: {o: [{k, v}]} 98 levels, {a: []} 148).
+const kMaxSerializedDepth = 298;
+function checkDepth(tree) {
+  let level = [tree];
+  for (let depth = 0; level.length; ++depth) {
+    const next = [];
+    for (const item of level) {
+      if (item === null || typeof item !== 'object')
+        continue;
+      if (depth >= kMaxSerializedDepth)
+        throw new Error('Cannot serialize result: object reference chain is too long.');
+      for (const key of Object.keys(item))
+        next.push(item[key]);
+    }
+    level = next;
+  }
+}
+
 // A value as Playwright's protocol serializes it, or as JSON.
 function serialize(value, plain) {
-  if (!plain)
-    return serializeAsCallArgument(value, v => ({ fallThrough: v }));
-  return JSON.parse(JSON.stringify(value === undefined ? null : value, (key, v) => {
+  if (!plain) {
+    // What is not serializable (a function, a symbol) is undefined, as
+    // Runtime.callFunctionOn's returnByValue gives Playwright.
+    const result = serializeAsCallArgument(value, v => ({ fallThrough: v }));
+    if (result === undefined)
+      return { v: 'undefined' };
+    checkDepth(result);
+    return result;
+  }
+  return parseJson(stringifyJson(value === undefined ? null : value, (key, v) => {
     if (typeof v === 'bigint')
       return v.toString();
     if (typeof v === 'number' && !Number.isFinite(v))
@@ -593,10 +679,19 @@ function serialize(value, plain) {
   }) ?? 'null');
 }
 
-// What Playwright shows of a handle (JSHandle@object, Array(3), the node).
+// A node of any document: Node of this realm is not that of another frame's.
+const isNode = value => !!value && typeof value === 'object' && typeof value.nodeType === 'number' && typeof value.nodeName === 'string';
+
+// What Playwright shows of a handle (JSHandle@object, Array(3), the node, as
+// dom.ts's ElementHandle sets its preview).
 function preview(value) {
-  if (value instanceof Node)
-    return injected.previewNode(value);
+  if (isNode(value)) {
+    try {
+      return 'JSHandle@' + injected.previewNode(value);
+    } catch (e) {
+      return 'JSHandle@node';
+    }
+  }
   if (value === null)
     return 'JSHandle@null';
   if (Array.isArray(value))
@@ -627,25 +722,37 @@ function argument(arg, handles, plain) {
   return revive(arg);
 }
 
+// An evaluation's arguments, without Array.prototype.map, the page's to break.
+function parametersOf(args, handles, plain) {
+  const list = Array.isArray(args) ? args : [args];
+  const parameters = new Array(list.length);
+  for (let i = 0; i < list.length; ++i)
+    parameters[i] = argument(list[i], handles, plain);
+  return parameters;
+}
+
 // One answer of the runner, the handles it keeps collected by out().
 async function answer(body, evaluation) {
   const handles = [];
   const previews = [];
+  const nodes = [];
   const out = value => {
-    handles.push(value);
-    previews.push(preview(value));
-    return { $h: handles.length - 1 };
+    const index = handles.length;
+    handles[index] = value;
+    previews[index] = preview(value);
+    nodes[index] = isNode(value);
+    return { $h: index };
   };
   try {
     const value = await body(out);
-    return [JSON.stringify({ ok: true, value: value === undefined ? null : value }), handles, previews];
+    return [treeToJson({ ok: true, value: value === undefined ? null : value }), handles, previews, nodes];
   } catch (e) {
     // An evaluation's error is the page's, as Playwright shows it ("Error:
     // boom"); a step's is Playwright's own message.
     const message = !(e instanceof Error) ? (evaluation ? 'Error: ' : '') + String(e)
       : e instanceof FatalError || (!evaluation && e.name === 'Error') ? e.message
       : e.name + ': ' + e.message;
-    return [JSON.stringify({ ok: false, error: message, fatal: e instanceof FatalError || /strict mode violation/.test(message) }), handles, previews];
+    return [stringifyJson({ ok: false, error: message, fatal: e instanceof FatalError || /strict mode violation/.test(message) }), handles, previews, nodes];
   }
 }
 
@@ -656,7 +763,7 @@ return {
       const step = steps[name];
       if (!step)
         throw fatal(`zebkit: no step ${name}`);
-      const arg = argument(JSON.parse(argJson), handles, true);
+      const arg = argument(parseJson(argJson), handles, true);
       return step(arg, out);
     });
   },
@@ -666,8 +773,8 @@ return {
   // @compiled is its value. The result is a handle unless @returnByValue.
   evaluate(compiled, isFunction, argJson, handles, returnByValue, plain) {
     return answer(async out => {
-      const args = JSON.parse(argJson);
-      const parameters = (Array.isArray(args) ? args : [args]).map(arg => argument(arg, handles, plain));
+      const args = parseJson(argJson);
+      const parameters = parametersOf(args, handles, plain);
       let result = compiled;
       if (isFunction === true || (isFunction === undefined && typeof result === 'function'))
         result = await result(...parameters);
@@ -701,8 +808,8 @@ return {
   // as a handle.
   waitForFunction(compiled, isFunction, argJson, handles, polling, timeout, plain) {
     return answer(async out => {
-      const args = JSON.parse(argJson);
-      const parameters = (Array.isArray(args) ? args : [args]).map(arg => argument(arg, handles, plain));
+      const args = parseJson(argJson);
+      const parameters = parametersOf(args, handles, plain);
       const predicate = () => {
         if (isFunction === true || (isFunction === undefined && typeof compiled === 'function'))
           return compiled(...parameters);

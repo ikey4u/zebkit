@@ -1722,8 +1722,6 @@ class Automation : public content::WebContentsObserver,
       // A page's assertion (toHaveTitle, toHaveURL): of its root.
       FrameStep(call, "expect", std::move(arg),
                 base::BindOnce([](Call* call, base::Value value) {
-                  if (value.is_dict())
-                    value.GetDict().Remove("log");
                   call->Done(std::move(value));
                 }));
       return;
@@ -1731,8 +1729,6 @@ class Automation : public content::WebContentsObserver,
     call->Log("waiting for " + call->String("selector"));
     StepOnTarget(call, "expect", std::move(arg),
                  base::BindOnce([](Call* call, base::Value value) {
-                   if (value.is_dict())
-                     value.GetDict().Remove("log");
                    call->Done(std::move(value));
                  }));
   }

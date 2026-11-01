@@ -6,10 +6,12 @@
 // IME does. The browser's side is automation.cc.
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -18,6 +20,8 @@
 #include "base/json/json_reader.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
@@ -903,10 +907,14 @@ class Agent : public content::RenderFrameObserver,
                  << Text(isolate, try_catch.Exception());
       return v8::Local<v8::Object>();
     }
-    v8::Local<v8::Value> argv[] = {v8::Boolean::New(isolate, world_id != 0)};
+    // As Playwright's server, whose isUnderTest() reads the same variable:
+    // what Playwright's own tests ask of the page (window.builtins).
+    v8::Local<v8::Value> argv[] = {
+        v8::Boolean::New(isolate, world_id != 0),
+        v8::Boolean::New(isolate, std::getenv("PWTEST_UNDER_TEST") != nullptr)};
     v8::Local<v8::Value> runner;
     if (!made.As<v8::Function>()
-             ->Call(context, v8::Undefined(isolate), 1, argv)
+             ->Call(context, v8::Undefined(isolate), 2, argv)
              .ToLocal(&runner) ||
         !runner->IsObject()) {
       LOG(ERROR) << "zebkit: the injected script failed to start: "
@@ -941,6 +949,22 @@ class Agent : public content::RenderFrameObserver,
       return v8::Local<v8::Value>();
     }
     try_catch.Reset();
+    // A function's shorthand ({ sum(a) {} }.sum): javascript.ts's
+    // normalizeEvaluationString() tries it with "function " put before.
+    if (kind == AutomationExpression::kFunction) {
+      std::string_view text = base::TrimWhitespaceASCII(expression, base::TRIM_ALL);
+      const std::string shorthand =
+          base::StartsWith(text, "async ")
+              ? base::StrCat({"async function ", text.substr(6)})
+              : base::StrCat({"function ", text});
+      if (v8::Script::Compile(context,
+                              String(isolate, "(" + shorthand + "\n)"))
+              .ToLocal(&script) &&
+          script->Run(context).ToLocal(&value)) {
+        return value;
+      }
+      try_catch.Reset();
+    }
     if (v8::Script::Compile(context, String(isolate, expression))
             .ToLocal(&script) &&
         script->Run(context).ToLocal(&value)) {
@@ -1018,12 +1042,23 @@ class Agent : public content::RenderFrameObserver,
     }
     v8::TryCatch try_catch(isolate);
     v8::Local<v8::Value> result;
-    if (!render_frame()
-             ->GetWebFrame()
-             ->CallFunctionEvenIfScriptDisabled(
-                 function.As<v8::Function>(), runner,
-                 static_cast<int>(argv.size()), argv.data())
-             .ToLocal(&result)) {
+    // An evaluation may use eval() and new Function() whatever the page's
+    // Content Security Policy, as Runtime.evaluate's and callFunctionOn's
+    // allowUnsafeEvalBlockedByCSP, for the call's synchronous part.
+    const bool evaluation = std::string_view(method) == "evaluate" ||
+                            std::string_view(method) == "waitForFunction";
+    const bool code_generation = context->IsCodeGenerationFromStringsAllowed();
+    if (evaluation)
+      context->AllowCodeGenerationFromStrings(true);
+    const bool called = render_frame()
+                            ->GetWebFrame()
+                            ->CallFunctionEvenIfScriptDisabled(
+                                function.As<v8::Function>(), runner,
+                                static_cast<int>(argv.size()), argv.data())
+                            .ToLocal(&result);
+    if (evaluation)
+      context->AllowCodeGenerationFromStrings(code_generation);
+    if (!called) {
       std::move(reply).Run(AutomationStatus::kError,
                            try_catch.HasCaught()
                                ? Text(isolate, try_catch.Exception())
@@ -1066,14 +1101,16 @@ class Agent : public content::RenderFrameObserver,
     std::vector<AutomationHandlePtr> handles;
     v8::Local<v8::Value> values = parts->Get(context, 1).ToLocalChecked();
     v8::Local<v8::Value> previews = parts->Get(context, 2).ToLocalChecked();
-    if (values->IsArray() && previews->IsArray()) {
+    v8::Local<v8::Value> nodes = parts->Get(context, 3).ToLocalChecked();
+    if (values->IsArray() && previews->IsArray() && nodes->IsArray()) {
       v8::Local<v8::Array> list = values.As<v8::Array>();
       for (uint32_t i = 0; i < list->Length(); ++i) {
         v8::Local<v8::Value> value = list->Get(context, i).ToLocalChecked();
         const int32_t handle = next_handle_++;
         handles_[handle] = {call.world, v8::Global<v8::Value>(isolate, value)};
         handles.push_back(AutomationHandle::New(
-            handle, !blink::WebElement::FromV8Value(isolate, value).IsNull(),
+            handle,
+            nodes.As<v8::Array>()->Get(context, i).ToLocalChecked()->IsTrue(),
             Text(isolate, previews.As<v8::Array>()->Get(context, i).ToLocalChecked())));
       }
     }

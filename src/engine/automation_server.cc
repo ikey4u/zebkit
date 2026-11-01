@@ -306,6 +306,23 @@ class Connection {
     send_.Run(Json(base::Value(std::move(message))));
   }
 
+  // Frame.expect's failure, as Playwright's ExpectError reaches its client:
+  // the protocol's errorDetails, and the call's log.
+  void ReplyExpectFailed(int id, base::DictValue details, base::ListValue log) {
+    base::DictValue inner;
+    inner.Set("message", "Expect failed");
+    inner.Set("name", "Error");
+    inner.Set("stack", "");
+    base::DictValue outer;
+    outer.Set("error", std::move(inner));
+    base::DictValue message;
+    message.Set("id", TakeId(id));
+    message.Set("error", std::move(outer));
+    message.Set("errorDetails", std::move(details));
+    message.Set("log", std::move(log));
+    send_.Run(Json(base::Value(std::move(message))));
+  }
+
   void Event(const std::string& guid, const std::string& method, base::DictValue params) {
     base::DictValue message;
     message.Set("guid", guid);
@@ -1282,6 +1299,11 @@ void Connection::Command(int id,
                          base::DictValue params) {
   Object* object = Find(guid);
   if (!object) {
+    // A handle disposed twice is no error, as its dispatcher stays upstream.
+    if (method == "dispose") {
+      Reply(id, base::Value(base::DictValue()));
+      return;
+    }
     ReplyError(id, "Target page, context or browser has been closed");
     return;
   }
@@ -1686,7 +1708,8 @@ void Connection::Command(int id,
                             "jsonValue"});
   const bool evaluation = kEvaluations->contains(method);
   if (evaluation && !ToNativeArgs(params)) {
-    ReplyError(id, "JSHandle is disposed");
+    // In the words of the dispatchers' validator.
+    ReplyError(id, "arg.handles: no object with guid");
     return;
   }
   if (method == "setInputFiles") {
@@ -1725,10 +1748,16 @@ void Connection::Command(int id,
       params.Set("elements", std::move(handles));
     }
   }
+  bool is_not = false;
   if (method == "expect") {
+    is_not = params.FindBool("isNot").value_or(false);
+    // A serialized value, which the step makes the value it was (a Date, a
+    // URL, undefined), as frameDispatcher.ts's parseArgument().
     if (base::Value* expected = params.Find("expectedValue"); expected && expected->is_dict()) {
-      if (base::Value* value = expected->GetDict().Find("value"))
-        params.Set("expectedValue", Plain(*value));
+      if (base::Value* value = expected->GetDict().Find("value")) {
+        params.Set("expectedValue", ToPage(*value));
+        params.Set("expectedValueSerialized", true);
+      }
     }
   }
   const bool navigation = method == "goto" || method == "reload" ||
@@ -1738,7 +1767,7 @@ void Connection::Command(int id,
          base::BindOnce(
              [](base::WeakPtr<Connection> self, int id, std::string page_guid,
                 std::string frame_guid, std::string guid, std::string method,
-                bool navigation, bool disposes, base::Value result) {
+                bool navigation, bool disposes, bool is_not, base::Value result) {
                if (!self)
                  return;
                if (disposes) {
@@ -1762,13 +1791,31 @@ void Connection::Command(int id,
                    return;
                  }
                }
+               // frames.ts's expect(): nothing when it holds, else ExpectError.
                if (method == "expect" && result.is_dict()) {
-                 if (base::Value* received = result.GetDict().Find("received")) {
-                   base::Value value = received->is_dict() && received->GetDict().Find("value")
-                                           ? received->GetDict().Find("value")->Clone()
-                                           : received->Clone();
-                   result.GetDict().Set("received", Serialize(value));
+                 const base::DictValue& answer = result.GetDict();
+                 if (answer.FindBool("matches").value_or(false) != is_not) {
+                   self->Reply(id, base::Value(base::DictValue()));
+                   return;
                  }
+                 base::DictValue details;
+                 if (const base::Value* received = answer.Find("received")) {
+                   base::DictValue out;
+                   if (received->is_dict()) {
+                     if (const base::Value* value = received->GetDict().Find("value"))
+                       out.Set("value", ToProtocol(*value));
+                     if (const std::string* aria = received->GetDict().FindString("ariaSnapshot"))
+                       out.Set("ariaSnapshot", *aria);
+                   }
+                   details.Set("received", std::move(out));
+                 }
+                 if (answer.FindBool("timedOut").value_or(false))
+                   details.Set("timedOut", true);
+                 if (const std::string* error = answer.FindString("errorMessage"))
+                   details.Set("customErrorMessage", *error);
+                 const base::ListValue* log = answer.FindList("log");
+                 self->ReplyExpectFailed(id, std::move(details), log ? log->Clone() : base::ListValue());
+                 return;
                }
                if (method == "exposeBinding" || method == "addInitScript") {
                  self->ReplyDisposable(id, guid, std::move(result));
@@ -1793,7 +1840,7 @@ void Connection::Command(int id,
                self->Reply(id, self->Expose(page_guid, frame_guid, std::move(result)));
              },
              weak_factory_.GetWeakPtr(), id, page_guid, frame_guid, guid, method,
-             navigation, disposes));
+             navigation, disposes, is_not));
 }
 
 // ---- The socket -------------------------------------------------------------

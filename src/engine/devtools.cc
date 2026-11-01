@@ -6,8 +6,13 @@
 // - Zebkit.media*, a page's media list and captures (media_capture.cc);
 // - which clients are attached to each page, so that a page's dialogs wait
 //   for a CDP client that may answer them (dialog.cc), as in headless
-//   Chrome, rather than being dismissed.
+//   Chrome, rather than being dismissed;
+// - browser contexts: Target.createBrowserContext, disposeBrowserContext and
+//   getBrowserContexts, and Target.createTarget in one of them (which content
+//   leaves to the embedder, as headless Chrome's own target handler does),
+//   each a profile in memory (zebkit_context_new()).
 
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
@@ -28,11 +33,15 @@
 #include "content/public/browser/devtools_agent_host_client_channel.h"
 #include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/web_contents.h"
+#include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/browser/shell_devtools_manager_delegate.h"
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 #include "third_party/inspector_protocol/crdtp/span.h"
+#include "ui/gfx/geometry/size.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/page_internal.h"
@@ -126,11 +135,119 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
       PrintToPdfCommand(channel, dispatchable);
       return;
     }
+    if (dispatchable.ok() &&
+        crdtp::SpanEquals(crdtp::SpanFrom("Target.createTarget"),
+                          dispatchable.Method()) &&
+        CreateTargetInContext(channel, dispatchable)) {
+      return;
+    }
     content::ShellDevToolsManagerDelegate::HandleCommand(channel, message,
                                                          std::move(callback));
   }
 
+  std::vector<base::WeakPtr<content::BrowserContext>> GetBrowserContexts()
+      override {
+    std::vector<base::WeakPtr<content::BrowserContext>> contexts;
+    for (const auto& [profile, context] : contexts_)
+      contexts.push_back(profile->GetWeakPtr());
+    return contexts;
+  }
+
+  content::BrowserContext* GetBrowserContext(
+      const std::string& context_id) override {
+    for (const auto& [profile, context] : contexts_) {
+      if (profile->UniqueId() == context_id)
+        return profile;
+    }
+    return nullptr;
+  }
+
+  content::BrowserContext* CreateBrowserContext() override {
+    zebkit_context* context = zebkit_context_new();
+    content::BrowserContext* profile = ProfileOf(context);
+    contexts_[profile] = context;
+    return profile;
+  }
+
+  void DisposeBrowserContext(content::BrowserContext* profile,
+                             DisposeCallback callback) override {
+    auto found = contexts_.find(profile);
+    if (found == contexts_.end()) {
+      std::move(callback).Run(false, "Failed to find context");
+      return;
+    }
+    zebkit_context* context = found->second;
+    contexts_.erase(found);
+    // Its pages, Target.createTarget's and their popups: shells without a
+    // view, which zebkit_context_close() does not know of.
+    const std::vector<content::Shell*> windows = content::Shell::windows();
+    for (content::Shell* shell : windows) {
+      if (shell->web_contents() &&
+          shell->web_contents()->GetBrowserContext() == profile) {
+        shell->Close();
+      }
+    }
+    zebkit_context_close(context);
+    std::move(callback).Run(true, std::string());
+  }
+
  private:
+  // Target.createTarget with a browserContextId of ours; false for the rest,
+  // which content's handler serves.
+  bool CreateTargetInContext(content::DevToolsAgentHostClientChannel* channel,
+                             const crdtp::Dispatchable& dispatchable) {
+    std::string json;
+    if (dispatchable.Params().empty() ||
+        !crdtp::json::ConvertCBORToJSON(dispatchable.Params(), &json).ok()) {
+      return false;
+    }
+    std::optional<base::Value> params =
+        base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    if (!params || !params->is_dict())
+      return false;
+    const base::DictValue& dict = params->GetDict();
+    const std::string* context_id = dict.FindString("browserContextId");
+    if (!context_id || dict.FindBool("hidden").value_or(false))
+      return false;
+    content::BrowserContext* profile = GetBrowserContext(*context_id);
+    if (!profile) {
+      if (GetDefaultBrowserContext() &&
+          GetDefaultBrowserContext()->UniqueId() == *context_id) {
+        return false;
+      }
+      ReplyError(channel, dispatchable.CallId(), -32602,
+                 "Failed to find browser context with id " + *context_id);
+      return true;
+    }
+    const std::string* url_text = dict.FindString("url");
+    GURL url(url_text ? *url_text : std::string());
+    if (url.is_empty())
+      url = GURL(url::kAboutBlankURL);
+    const int width = dict.FindInt("width").value_or(0);
+    const int height = dict.FindInt("height").value_or(0);
+    content::Shell* shell = content::Shell::CreateNewWindow(
+        profile, url, nullptr,
+        width > 0 && height > 0 ? gfx::Size(width, height)
+                                : content::Shell::GetShellDefaultSize());
+    if (!shell) {
+      ReplyError(channel, dispatchable.CallId(), -32000, "Not supported");
+      return true;
+    }
+    scoped_refptr<content::DevToolsAgentHost> host =
+        dict.FindBool("forTab").value_or(false)
+            ? content::DevToolsAgentHost::GetOrCreateForTab(
+                  shell->web_contents())
+            : content::DevToolsAgentHost::GetOrCreateFor(
+                  shell->web_contents());
+    base::DictValue result;
+    result.Set("targetId", host->GetId());
+    base::DictValue answer;
+    answer.Set("id", dispatchable.CallId());
+    answer.Set("result", std::move(result));
+    Reply(channel, std::move(answer));
+    return true;
+  }
+
   void PrintToPdfCommand(content::DevToolsAgentHostClientChannel* channel,
                          const crdtp::Dispatchable& dispatchable) {
     const int id = dispatchable.CallId();
@@ -186,6 +303,8 @@ class DevToolsManagerDelegate : public content::ShellDevToolsManagerDelegate {
             weak_factory_.GetWeakPtr(), channel, std::move(keep), id, stream));
   }
 
+  // Target.createBrowserContext's, until disposed.
+  std::map<content::BrowserContext*, raw_ptr<zebkit_context>> contexts_;
   base::WeakPtrFactory<DevToolsManagerDelegate> weak_factory_{this};
 };
 
