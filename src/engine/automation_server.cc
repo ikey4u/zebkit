@@ -938,6 +938,10 @@ void Connection::NewContext(int id, base::DictValue params) {
                object.id = *context;
                if (const std::string* base_url = options.FindString("baseURL"))
                  object.data.Set("baseURL", *base_url);
+               if (const base::DictValue* viewport = options.FindDict("viewport"))
+                 object.data.Set("viewport", viewport->Clone());
+               if (options.FindBool("noDefaultViewport").value_or(false))
+                 object.data.Set("noDefaultViewport", true);
                initializer.Set("options", std::move(options));
                const std::string guid = self->Create(self->browser_, "BrowserContext",
                                                      std::move(initializer), std::move(object));
@@ -1021,10 +1025,19 @@ std::string Connection::AdoptPage(const std::string& context_guid,
   initializer.Set("mainFrame", Ref(main_frame));
   if (!opener.empty())
     initializer.Set("opener", Ref(opener));
-  base::DictValue viewport;
-  viewport.Set("width", 1280);
-  viewport.Set("height", 720);
-  initializer.Set("viewportSize", std::move(viewport));
+  // The context's, or Playwright's default; none with noDefaultViewport.
+  Object* context_object = Find(context_guid);
+  const base::DictValue* given_viewport =
+      context_object ? context_object->data.FindDict("viewport") : nullptr;
+  if (given_viewport) {
+    initializer.Set("viewportSize", given_viewport->Clone());
+  } else if (!context_object ||
+             !context_object->data.FindBool("noDefaultViewport").value_or(false)) {
+    base::DictValue viewport;
+    viewport.Set("width", 1280);
+    viewport.Set("height", 720);
+    initializer.Set("viewportSize", std::move(viewport));
+  }
   initializer.Set("isClosed", false);
   base::DictValue params;
   params.Set("type", "Page");
