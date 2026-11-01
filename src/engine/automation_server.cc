@@ -1229,7 +1229,7 @@ void Connection::PageEvent(const std::string& page_guid,
     const base::DictValue* location = params.FindDict("location");
     const std::string* location_url = location ? location->FindString("url") : nullptr;
     base::DictValue where;
-    where.Set("file", location_url ? *location_url : std::string());
+    where.Set("url", location_url ? *location_url : std::string());
     where.Set("line", location ? location->FindInt("lineNumber").value_or(0) : 0);
     where.Set("column", location ? location->FindInt("columnNumber").value_or(0) : 0);
     message.Set("location", std::move(where));
