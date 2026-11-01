@@ -226,7 +226,7 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
 
   void Find(std::string text, bool case_sensitive) {
     if (auto* plugin = Plugin()) {
-      plugin->StartFind(blink::WebString::FromUTF8(text), case_sensitive, 1);
+      plugin->StartFind(blink::WebString::FromUtf8(text), case_sensitive, 1);
     }
   }
   void FindNext(bool forward) {
@@ -264,13 +264,13 @@ bool RendererClient::OverrideCreatePlugin(content::RenderFrame* render_frame,
         render_frame, params, plugin);
   }
   blink::WebPluginParams viewer_params = params;
-  viewer_params.attribute_names.push_back(blink::WebString::FromASCII("src"));
+  viewer_params.attribute_names.push_back(blink::WebString::FromAscii("src"));
   viewer_params.attribute_values.push_back(params.url.GetString());
-  viewer_params.attribute_names.push_back(blink::WebString::FromASCII("full-frame"));
+  viewer_params.attribute_names.push_back(blink::WebString::FromAscii("full-frame"));
   viewer_params.attribute_values.push_back(blink::WebString());
   // rgb(40,40,40), the document's background in Chrome.
-  viewer_params.attribute_names.push_back(blink::WebString::FromASCII("background-color"));
-  viewer_params.attribute_values.push_back(blink::WebString::FromASCII("4280821800"));
+  viewer_params.attribute_names.push_back(blink::WebString::FromAscii("background-color"));
+  viewer_params.attribute_values.push_back(blink::WebString::FromAscii("4280821800"));
   // Only the document in the frame holds the plugin (patches/1065); nothing else
   // gets to ask for it. A <embed> elsewhere is a frame.
   if (!params.load_manually) {
