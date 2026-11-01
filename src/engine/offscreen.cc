@@ -1093,10 +1093,16 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
     size_ = size;
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
+#if BUILDFLAG(IS_WIN)
+  // The scale first: the window's new size is then laid out and drawn at it, in one
+  // step. In the other order a frame could keep what was not yet drawn for good.
+  ApplyScale();
+#endif
   UpdateDisplay();
   PlaceWindow();
 #if BUILDFLAG(IS_WIN)
-  ApplyScale();
+  if (auto* main = MainWidget())
+    main->SynchronizeVisualProperties();
 #endif
 #if BUILDFLAG(IS_MAC)
   content::NotifyEmbedderWidgetScreenInfoChanged(MainWidget());
