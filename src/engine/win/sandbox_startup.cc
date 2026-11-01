@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <intrin.h>
 #include <shellapi.h>
 
 #include "base/logging/rust_logger/lib.rs.h"
@@ -33,38 +34,61 @@
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "wintrust.lib")
 
-// base's JSON reader and its log can go through Rust, whose libraries this is
-// not linked with. Neither is used here: the engine in zebkit.dll has its own.
+// base's JSON reader and its log can go through Rust, whose libraries this is not
+// linked with. Their C++ names are here so that the objects link. Nothing in this
+// library calls them: the engine in zebkit.dll has its own base. Should one ever
+// be reached the process ends at once, rather than going on with a wrong answer;
+// tests/engine/win_sandbox_stubs.cc shows that it does, and the suite's sandboxed
+// tests (win-*-sandbox) that it does not happen in any kind of child.
+namespace {
+[[noreturn]] void StubReached(const char* name) {
+  HANDLE error = ::GetStdHandle(STD_ERROR_HANDLE);
+  if (error && error != INVALID_HANDLE_VALUE) {
+    DWORD written = 0;
+    ::WriteFile(error, name, static_cast<DWORD>(::strlen(name)), &written, nullptr);
+  }
+  __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+}
+}  // namespace
+
 namespace logging::internal {
-void init_rust_logging() noexcept {}
+void init_rust_logging() noexcept {
+  StubReached("zebkit_sandbox.lib: init_rust_logging reached\n");
+}
 }  // namespace logging::internal
 namespace serde_json_lenient {
 bool decode_json(::rust::Slice<const ::std::uint8_t>,
                  const JsonOptions&,
                  List&,
                  DecodeError&) noexcept {
-  return false;
+  StubReached("zebkit_sandbox.lib: decode_json reached\n");
 }
 }  // namespace serde_json_lenient
 
-// The C++ side of Rust's cxx that the JSON reader's object names; it never runs.
+// The C++ side of Rust's cxx that the JSON reader's object names.
 namespace rust {
 inline namespace cxxbridge1 {
-String::String() noexcept : repr{} {}
-String::~String() noexcept = default;
+String::String() noexcept : repr{} {
+  StubReached("zebkit_sandbox.lib: rust::String reached\n");
+}
+String::~String() noexcept {
+  StubReached("zebkit_sandbox.lib: ~rust::String reached\n");
+}
 String::operator std::string() const {
-  return std::string();
+  StubReached("zebkit_sandbox.lib: rust::String's string reached\n");
 }
 const char* Str::data() const noexcept {
-  return nullptr;
+  StubReached("zebkit_sandbox.lib: rust::Str::data reached\n");
 }
 std::size_t Str::size() const noexcept {
-  return 0;
+  StubReached("zebkit_sandbox.lib: rust::Str::size reached\n");
 }
 Str::operator std::string() const {
-  return std::string();
+  StubReached("zebkit_sandbox.lib: rust::Str's string reached\n");
 }
-void sliceInit(void*, const void*, std::size_t) noexcept {}
+void sliceInit(void*, const void*, std::size_t) noexcept {
+  StubReached("zebkit_sandbox.lib: rust::sliceInit reached\n");
+}
 }  // namespace cxxbridge1
 }  // namespace rust
 

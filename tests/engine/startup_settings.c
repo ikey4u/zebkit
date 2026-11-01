@@ -40,7 +40,16 @@ int main(int argc, char **argv) {
         check(code != 0 && error && *error, "invalid settings fail with an explanation without consuming startup");
         zebkit_free(error);
     }
+#ifdef _WIN32
+    char temporary[MAX_PATH + 32];
+    snprintf(temporary, sizeof(temporary), "%s\\zebkit-settings-XXXXXX", getenv("TEMP"));
+    /* These paths go in JSON. */
+    for (char *c = temporary; *c; ++c)
+        if (*c == '\\')
+            *c = '/';
+#else
     char temporary[] = "/tmp/zebkit-settings-XXXXXX";
+#endif
     const char *root = getenv("ZEBKIT_TEST_SETTINGS_DIR");
     if (!root)
         root = mkdtemp(temporary);

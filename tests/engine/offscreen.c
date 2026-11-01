@@ -82,6 +82,18 @@ static int64_t first_change_us; /* when the first frame after it came */
 static int read_pixels(const zebkit_frame *frame, uint8_t *out) {
     const size_t row = (size_t)frame->width * 4;
     if (frame->kind == ZEBKIT_FRAME_SHARED_MEMORY) {
+#ifdef _WIN32
+        /* Through the file mapping as another process would. */
+        void *view_of_file = MapViewOfFile((HANDLE)frame->handle, FILE_MAP_READ, 0, 0, frame->size);
+        if (!view_of_file) {
+            fds_ok = 0;
+            return 0;
+        }
+        for (int y = 0; y < frame->height; ++y)
+            memcpy(out + y * row, (const uint8_t *)view_of_file + frame->offset + y * frame->stride, row);
+        UnmapViewOfFile(view_of_file);
+        return 1;
+#endif
         /* Through the fd as another process would, not only the pointer. */
         void *mapped = mmap(NULL, frame->size, PROT_READ, MAP_SHARED, frame->fd, 0);
         const uint8_t *base = frame->pixels;
@@ -219,7 +231,7 @@ static void on_frame(zebkit_view *v, const zebkit_frame *frame, void *data) {
     p->width = frame->width, p->height = frame->height, p->scale = frame->scale;
     p->bounds = frame->bounds, p->sequence = frame->sequence, p->kind = frame->kind;
     p->damage = frame->damage_count ? frame->damage[0] : (zebkit_rect){0, 0, 0, 0};
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
     if (frame->kind == ZEBKIT_FRAME_SHARED_MEMORY && frame->fd < 0)
         fds_ok = 0;
 #endif

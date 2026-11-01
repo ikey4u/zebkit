@@ -204,6 +204,20 @@ build_against_package "$package" "$bin/hook-policies" "$tests/hook_policies.c"
 build_against_package "$package" "$bin/runtime-settings" "$tests/runtime_settings.c"
 build_against_package "$package" "$bin/offscreen-scale" "$tests/offscreen_scale.c"
 build_against_package "$package" "$bin/bridge" "$tests/bridge.c"
+if [[ "$ZEBKIT_TARGET" == windows ]]; then
+    # An application's own window and loop, and the sandbox with its executable
+    # as the child (docs/WINDOWS.md); frames through file mappings and textures.
+    build_against_package "$package" "$bin/win-smoke" "$tests/win_smoke.c"
+    build_against_package "$package" "$bin/win-host" "$tests/win_host.c"
+    build_against_package "$package" "$bin/win-offscreen" "$tests/win_offscreen.c"
+    build_against_package "$package" "$bin/win-smoke-sandbox" "$tests/win_smoke.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    build_against_package "$package" "$bin/win-host-sandbox" "$tests/win_host.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    build_against_package "$package" "$bin/win-native-parent" "$tests/win_native_parent.c"
+    build_against_package "$package" "$bin/win-native-parent-sandbox" "$tests/win_native_parent.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    # shellcheck disable=SC2046
+    target_cxx -std=c++20 -O1 -I"$package/include" "$tests/win_sandbox_stubs.cc" "$package/zebkit_sandbox.lib" \
+        $(engine_link_options "$package") -Wl,/STACK:0x800000 -o "$bin/win-sandbox-stubs"
+fi
 if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
     build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
     build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
@@ -229,10 +243,13 @@ build_against_package "$package" "$bin/mode" "$tests/mode.c"
 build_against_package "$package" "$webauthn_host" "$tests/webauthn_host.c"
 render_options=(-pthread)
 [[ "$ZEBKIT_TARGET" == macos ]] && render_options+=(-framework IOSurface)
+# The example of another process's frames: Unix sockets and mach ports, not on Windows.
+if [[ "$ZEBKIT_TARGET" != windows ]]; then
 build_against_package "$package" "$bin/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
 host_options=()
 [[ "$ZEBKIT_TARGET" == macos ]] && host_options=(-framework CoreVideo -framework IOSurface -framework CoreFoundation)
 target_cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$bin/offscreen-show"
+fi
 build_against_package "$package" "$bin/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 build_against_package "$package" "$bin/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
 if [[ "$ZEBKIT_TARGET" == macos ]]; then
@@ -271,6 +288,7 @@ run() {
     ) > "$work/$name.log" 2> "$work/$name.err"; then
         failed=1
         cat "$work/$name.log"
+        echo "FAIL $name: it did not exit 0"
         echo "it printed on stderr:"; tail -20 "$work/$name.err"
     else
         cat "$work/$name.log"
@@ -284,7 +302,12 @@ check_engine_library() {
         nm_tool=("$llvm_bin/llvm-nm"); otool_tool=("$llvm_bin/llvm-otool")
     fi
     log "what the engine exports"
-    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    if [[ "$ZEBKIT_TARGET" == windows ]]; then
+        # Chromium's own dllexports are there too: base's handle verifier and
+        # crash hooks, and SQLite's recovery extension.
+        exported="$("$llvm_bin/llvm-readobj" --coff-exports "$library" | awk '$1 == "Name:" { print $2 }' \
+            | grep -vxE 'CrashForExceptionInNonABICompliantCodeRange|GetHandleVerifier|IsSandboxedProcess|sqlite3_dbdata_init')"
+    elif [[ "$ZEBKIT_TARGET" == macos ]]; then
         # Mach-O puts an underscore before every C name.
         exported="$("${nm_tool[@]}" -gU "$library" | awk '{ print substr($3, 2) }')"
     else
@@ -298,7 +321,11 @@ check_engine_library() {
     fi
 
     log "what the engine loads"
-    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    if [[ "$ZEBKIT_TARGET" == windows ]]; then
+        # Not Microsoft's redistributable runtime: the C runtime is linked in.
+        stray="$("$llvm_bin/llvm-readobj" --coff-imports "$library" | awk '$1 == "Name:" && $2 ~ /\.[dD][lL][lL]$/ { print $2 }' \
+            | grep -iE '^(vcruntime|msvcp|ucrtbase|concrt|api-ms-win-crt|d3dcompiler)' || true)"
+    elif [[ "$ZEBKIT_TARGET" == macos ]]; then
         # The system's frameworks and libraries, and the framework itself.
         loads="$("${otool_tool[@]}" -L "$library" | tail -n +2 | awk '{ print $1 }')"
         stray="$(grep -v -e '^/System/Library/' -e '^/usr/lib/' -e '^@rpath/Zebkit.framework/' <<< "$loads" || true)"
@@ -325,12 +352,17 @@ if [[ -n "$build_only" ]]; then
     # The Rust hook program, if this machine's toolchain has the target.
     rust_target=
     [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]] && rust_target=aarch64-apple-darwin
+    [[ "$ZEBKIT_TARGET" == windows ]] && rust_target=x86_64-pc-windows-msvc
     if command -v cargo > /dev/null && { [[ -z "$rust_target" ]] || rustup target list --installed 2> /dev/null | grep -qx "$rust_target"; }; then
         log "building the Rust hook program"
         rust_options=()
         rust_env=(ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$work/rust-target")
         rust_flags="-C link-arg=-Wl,-rpath,$origin/../../out/blink/$profile/package"
-        if [[ -n "$rust_target" ]]; then
+        if [[ "$ZEBKIT_TARGET" == windows ]]; then
+            rust_options=(--target "$rust_target")
+            rust_env+=(CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$llvm_bin/lld-link")
+            rust_flags="-C link-arg=/winsysroot:$windows_sysroot"
+        elif [[ -n "$rust_target" ]]; then
             printf '#!/bin/sh\nexec "%s" --target=arm64-apple-macos13 -isysroot "%s" -fuse-ld=lld "$@" -Wno-unused-command-line-argument\n' \
                 "$llvm_bin/clang" "$macos_sdk" > "$work/rust-linker"
             chmod +x "$work/rust-linker"
@@ -341,8 +373,10 @@ if [[ -n "$build_only" ]]; then
         (cd "$ZEBKIT_ROOT/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
             cargo build -q -p zebkit --example hook_policies --example runtime_settings "${rust_options[@]}") \
             || die "the Rust hook program did not build"
-        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/hook_policies" "$bin/rust/hook_policies"
-        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/runtime_settings" "$bin/rust/runtime_settings"
+        rust_exe=
+        [[ "$ZEBKIT_TARGET" == windows ]] && rust_exe=.exe
+        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/hook_policies$rust_exe" "$bin/rust/hook_policies$rust_exe"
+        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/runtime_settings$rust_exe" "$bin/rust/runtime_settings$rust_exe"
     else
         log "hook-rust: not built (no cargo or no ${rust_target:-host} target)"
     fi
@@ -365,6 +399,25 @@ if [[ -z "$prebuilt" ]]; then
     check_engine_library
 else
     log "what the engine exports and loads: checked by --build-only"
+fi
+
+# On Windows a DLL is found on PATH; python3 there may be the Store's stub.
+if [[ "$ZEBKIT_HOST" == windows ]]; then
+    # A copy of python.exe under that name, with the real one's library and a
+    # pyvenv.cfg to find its standard library by: a script of that name is not a
+    # program on a shared folder.
+    mkdir -p "$work/path"
+    python_home="$(python -c 'import sys; print(sys.base_prefix)' | tr -d '\r')"
+    python_dll="$(python -c 'import sys; print("python%d%d" % sys.version_info[:2])' | tr -d '\r')"
+    python_home="$(cygpath -u "$python_home")"
+    cp "$python_home/python.exe" "$work/path/python3.exe"
+    cp "$python_home/$python_dll.dll" "$python_home/python3.dll" "$python_home/vcruntime140.dll" "$work/path/"
+    [[ -f "$python_home/vcruntime140_1.dll" ]] && cp "$python_home/vcruntime140_1.dll" "$work/path/"
+    echo "home = $(cygpath -w "$python_home")" > "$work/path/pyvenv.cfg"
+    # Temporary files stay in the test's directory.
+    mkdir -p "$work/tmp"
+    export TEMP="$(cygpath -w "$work/tmp")" TMP="$(cygpath -w "$work/tmp")" TMPDIR="$work/tmp"
+    export PATH="$work/path:$package:$PATH"
 fi
 
 # A person's Mac: their files stay theirs, and their Keychain is not asked.
@@ -464,6 +517,34 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         log "native-parent: skipped (it needs windows: ENGINE_TEST_WINDOWS=1)"
     fi
 fi
+if [[ "$ZEBKIT_HOST" == windows ]]; then
+    # A sandboxed child has the environment's PATH no more: zebkit.dll beside the
+    # executable, as an application has it.
+    cp "$bin/win-smoke-sandbox.exe" "$bin/win-host-sandbox.exe" "$bin/win-native-parent-sandbox.exe" "$package/"
+    run win-smoke "$bin/win-smoke" --no-sandbox --user-data-dir="$work/profile-win-smoke" "$work/win-smoke.png"
+    run win-smoke-sandbox "$package/win-smoke-sandbox" --user-data-dir="$work/profile-win-smoke-sandbox" "$work/win-smoke-sandbox.png"
+    run win-host "$bin/win-host" --no-sandbox --user-data-dir="$work/profile-win-host"
+    run win-host-sandbox "$package/win-host-sandbox" --user-data-dir="$work/profile-win-host-sandbox"
+    run win-offscreen "$bin/win-offscreen" --no-sandbox --headless --user-data-dir="$work/profile-win-offscreen"
+    if selected win-sandbox-stubs; then
+        log win-sandbox-stubs
+        stub_code=0
+        "$bin/win-sandbox-stubs" > "$work/win-sandbox-stubs.log" 2>&1 || stub_code=$?
+        # bash has the low byte of 0xC0000409.
+        if grep -q '^returned' "$work/win-sandbox-stubs.log" || (( stub_code != 9 )); then
+            echo "FAIL a stub in zebkit_sandbox.lib did not end the process: code $stub_code"; failed=1
+        else
+            echo "ok   a stub in zebkit_sandbox.lib ends the process"
+        fi
+    fi
+    # Takes the mouse and the keyboard: only when asked.
+    if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
+        run win-native-parent "$bin/win-native-parent" --no-sandbox --user-data-dir="$work/profile-win-native-parent"
+        finished win-native-parent "the attached view's test"
+        run win-native-parent-sandbox "$package/win-native-parent-sandbox" --user-data-dir="$work/profile-win-native-parent-sandbox"
+        finished win-native-parent-sandbox "the attached view's test, in the sandbox"
+    fi
+fi
 run hooks "$bin/hooks" --no-sandbox --headless --user-data-dir="$work/profile-hooks"
 run hooks-startup-policy "$bin/hooks" --no-sandbox --headless --disable-popup-blocking --user-data-dir="$work/profile-hooks-startup"
 run lifecycle-python env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
@@ -487,10 +568,12 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$p
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_SHOTS="${ENGINE_TEST_SHOTS:-}" \
     run offscreen "$offscreen_test" "${engine_switches[@]}"
 finished offscreen "the off-screen test"
+if [[ "$ZEBKIT_HOST" != windows ]]; then
 run offscreen-host "$bin/offscreen-show" --renderer="$bin/offscreen-render" \
     --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \
     --test -- --no-sandbox --user-data-dir="$work/profile-host"
 finished offscreen-host "the off-screen host"
+fi
 
 mkdir -p "$work/page-files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/page-files" \
@@ -712,7 +795,7 @@ run webauthn-no-activation python3 -I "$tests/webauthn.py" "$webauthn_host" \
 
 # Cookie encryption uses the real OS key store. Headless Linux builders
 # without a desktop keyring can opt into this integration test explicitly.
-if [[ "$ZEBKIT_HOST" == macos || "${ENGINE_TEST_PERSISTENT_COOKIES:-0}" == 1 ]]; then
+if [[ "$ZEBKIT_HOST" == macos || "$ZEBKIT_HOST" == windows || "${ENGINE_TEST_PERSISTENT_COOKIES:-0}" == 1 ]]; then
     run cookies python3 -I "$tests/cookies.py" "$bin/tools/zebkit-run" --no-sandbox --headless
 fi
 
@@ -720,6 +803,10 @@ mkdir -p "$work/scheme-files"
 ZEBKIT_TEST_FILES="$work/scheme-files" run scheme "$bin/scheme" "${engine_switches[@]}"
 
 mkdir -p "$work/script-files"
+# The headers the network adds, against the server, CDP and real Chrome (tests/engine/network_stages.py).
+run network-stages env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
+    python3 "$tests/network_stages.py" --no-sandbox --headless
+finished network-stages "the network stages test"
 # <zebkit/hooks.h> in every language, one engine per mode (tests/engine/hook_policies.py):
 # links to other programs, downloads, client certificates, isolated worlds, file
 # choosers, media, keys, context menus, fullscreen and the network.
@@ -745,8 +832,8 @@ finished runtime-settings-javascript "the JavaScript runtime settings test"
 rust_hook_program=
 rust_settings_program=
 if [[ -n "$prebuilt" ]]; then
-    [[ -x "$bin/rust/hook_policies" ]] && rust_hook_program="$bin/rust/hook_policies"
-    [[ -x "$bin/rust/runtime_settings" ]] && rust_settings_program="$bin/rust/runtime_settings"
+    [[ -x "$bin/rust/hook_policies" || -x "$bin/rust/hook_policies.exe" ]] && rust_hook_program="$bin/rust/hook_policies"
+    [[ -x "$bin/rust/runtime_settings" || -x "$bin/rust/runtime_settings.exe" ]] && rust_settings_program="$bin/rust/runtime_settings"
 elif command -v cargo > /dev/null; then
     log "building the Rust hook program"
     if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies --example runtime_settings); then

@@ -161,7 +161,12 @@ static void test_media(void) {
     check(made >= 0 && output, "ffmpeg: avformat_alloc_output_context2(mp4)", NULL);
     avformat_free_context(output);
     AVIOContext *io = NULL;
-    check(avio_open(&io, "/dev/null", AVIO_FLAG_WRITE) >= 0, "ffmpeg: the file protocol", NULL);
+#ifdef _WIN32
+    const char *null_device = "NUL";
+#else
+    const char *null_device = "/dev/null";
+#endif
+    check(avio_open(&io, null_device, AVIO_FLAG_WRITE) >= 0, "ffmpeg: the file protocol", NULL);
     avio_closep(&io);
     /* 48 kHz stereo to 16 kHz mono, as speech recognition wants it. */
     SwrContext *resampler = NULL;
@@ -283,7 +288,12 @@ static void test_freetype(const char *font_path) {
 // With no engine started: no thread pool for its compactions, the C locale, and
 // a name that is not ASCII.
 static void test_leveldb(void) {
+#ifdef _WIN32
+    char parent[MAX_PATH + 32];
+    snprintf(parent, sizeof(parent), "%s\\zebkit-leveldb-XXXXXX", getenv("TEMP"));
+#else
     char parent[] = "/tmp/zebkit-leveldb-XXXXXX";
+#endif
     check(mkdtemp(parent) != NULL, "leveldb: temporary directory", NULL);
     char path[128];
     snprintf(path, sizeof(path), "%s/\xE6\x95\xB0\xE6\x8D\xAE", parent);

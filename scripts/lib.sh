@@ -22,6 +22,7 @@ source "$ZEBKIT_ROOT/upstream.lock"
 # The system this runs on: linux or macos.
 case "$(uname -s)" in
     Darwin) ZEBKIT_HOST=macos ;;
+    MINGW*|MSYS*) ZEBKIT_HOST=windows ;;
     *) ZEBKIT_HOST=linux ;;
 esac
 export ZEBKIT_HOST
@@ -117,6 +118,7 @@ ZEBKIT_TARGET_RPATHS=""
 set_target_for_profile() {
     case "$1" in
         *macos*) ZEBKIT_TARGET=macos ;;
+        *windows*) ZEBKIT_TARGET=windows ;;
         *) ZEBKIT_TARGET=linux ;;
     esac
     if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
@@ -124,20 +126,48 @@ set_target_for_profile() {
         llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
         [[ -d "$macos_sdk" && -x "$llvm_bin/clang" ]] || die "no macOS SDK or clang; see scripts/macos-toolchain.sh"
     fi
+    if [[ "$ZEBKIT_TARGET" == windows && "$ZEBKIT_HOST" != windows ]]; then
+        llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
+        [[ -x "$llvm_bin/clang" ]] || die "no clang; run scripts/fetch-upstream.sh first"
+        windows_sysroot="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["path"])' "$SRC_DIR/build/win_toolchain.json")" \
+            || die "no Windows toolchain; see scripts/windows-toolchain.sh"
+    fi
 }
 
 # target_cc, target_cxx <options...>: the C and C++ compilers for the target. Across
 # systems, Chromium's clang, Apple's SDK and ld64.lld, which signs ad hoc for arm64.
 # That clang warns of what Xcode's and Linux's do not; -Werror is for what they share.
+# For Windows, MSVC's libraries and the static C runtime, as the sandbox needs,
+# and tests/engine/win_compat for the POSIX the tests use.
+windows_compiler() {
+    local tool="$1" args=() arg i
+    shift
+    # GCC's and macOS's spellings the tests' builds use, and -Werror: clang warns of
+    # what the POSIX headers do not.
+    for arg in "$@"; do
+        case "$arg" in -pthread|-ldl|-Werror) ;; *) args+=("$arg") ;; esac
+    done
+    # Programs have their extension, which the shell finds them without.
+    for (( i = 0; i + 1 < ${#args[@]}; i++ )); do
+        if [[ "${args[i]}" == -o && "${args[i+1]}" != *.exe ]]; then args[i+1]+=.exe; fi
+    done
+    "$llvm_bin/$tool" --target=x86_64-pc-windows-msvc -Xmicrosoft-windows-sys-root "$windows_sysroot" \
+        -fms-runtime-lib=static -fuse-ld=lld -I"$ZEBKIT_ROOT/tests/engine/win_compat" -include win_compat.h \
+        -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -Wno-unused-command-line-argument "${args[@]}"
+}
 target_cc() {
-    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+    if [[ "$ZEBKIT_TARGET" == windows ]]; then
+        windows_compiler clang "$@"
+    elif [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
         "$llvm_bin/clang" --target=arm64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld "$@" -Wno-unused-but-set-global
     else
         cc "$@"
     fi
 }
 target_cxx() {
-    if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
+    if [[ "$ZEBKIT_TARGET" == windows ]]; then
+        windows_compiler clang++ "$@"
+    elif [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
         "$llvm_bin/clang++" --target=arm64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld "$@" -Wno-unused-but-set-global
     else
         c++ "$@"
@@ -147,14 +177,22 @@ target_cxx() {
 # engine_library <package dir>: the file an application links, on the target:
 # libzebkit.so.1, or the framework's library on macOS.
 engine_library() {
-    if [[ "$ZEBKIT_TARGET" == macos ]]; then echo "$1/Zebkit.framework/Zebkit"; else echo "$1/libzebkit.so.1"; fi
+    case "$ZEBKIT_TARGET" in
+        macos) echo "$1/Zebkit.framework/Zebkit" ;;
+        windows) echo "$1/zebkit.dll" ;;
+        *) echo "$1/libzebkit.so.1" ;;
+    esac
 }
 
 # engine_link_options <package dir>: how a program links the engine. Its rpaths are
 # the package unless ZEBKIT_TARGET_RPATHS, for programs that move with it, says.
 engine_link_options() {
     local rpath rpaths="${ZEBKIT_TARGET_RPATHS:-$1}" options
-    if [[ "$ZEBKIT_TARGET" == macos ]]; then
+    if [[ "$ZEBKIT_TARGET" == windows ]]; then
+        # A DLL is found beside the program; no run paths.
+        echo "$1/zebkit.dll.lib"
+        return
+    elif [[ "$ZEBKIT_TARGET" == macos ]]; then
         options="-F$1 -framework Zebkit"
     else
         options="-L$1 -l:libzebkit.so.1"
