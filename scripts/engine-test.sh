@@ -682,7 +682,7 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
         pdf_document="$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)"
         # It is a debug build, and wheels by itself: the generated document is long enough.
         [[ "$pdf_host" == *winit* ]] && { self_driven=(--self); pdf_document=generated; }
-        run "native-host-pdf-$(basename "$pdf_host")" python3 -I "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
+        run "native-host-pdf-$(basename "$pdf_host")" env LD_LIBRARY_PATH="$CACHE_DIR/native-toolkits/usr/lib/x86_64-linux-gnu" python3 -I "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
             "$pdf_document" --no-sandbox --disable-gpu
     done
 elif [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
