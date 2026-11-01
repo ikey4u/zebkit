@@ -64,3 +64,4 @@
 1064-content-window-close-with-an-application-s-nsapplication.patch
 1065-windows-without-dawn.patch
 1066-pdf-in-pages.patch
+1067-windows-d3d-shared-images-link-without-dawn.patch

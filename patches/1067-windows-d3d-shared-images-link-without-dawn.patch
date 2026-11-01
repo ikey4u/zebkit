@@ -1,0 +1,171 @@
+Windows: D3D shared images link without Dawn.
+
+The slim profile has no Dawn (use_dawn, skia_use_dawn false), but
+d3d_image_backing.cc on Windows has Dawn paths throughout, which Chrome always
+links. They need a Dawn device, which never exists here. Rather than a change
+through 2,400 lines, the few symbols they would call are NOTREACHED, in a file
+of Windows' alone; only Graphite's representation is left out, since it would
+pull in the Dawn classes it derives from.
+
+--- a/gpu/command_buffer/service/shared_image/d3d_image_representation.cc
++++ b/gpu/command_buffer/service/shared_image/d3d_image_representation.cc
+@@ -478,6 +478,7 @@
+   return D3D11TextureAndArrayIndex(d3d11_texture_, /*array_index=*/0);
+ }
+ 
++#if BUILDFLAG(SKIA_USE_DAWN)
+ // D3DSkiaGraphiteDawnImageRepresentation
+ 
+ D3DSkiaGraphiteDawnImageRepresentation::
+@@ -522,4 +523,6 @@
+       GetDevice(), std::move(texture), std::move(backend_textures));
+ }
+ 
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
++
+ }  // namespace gpu
+--- a/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
++++ b/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+@@ -968,7 +968,7 @@
+     wgpu::BackendType backend_type,
+     std::vector<wgpu::TextureFormat> view_formats,
+     scoped_refptr<SharedContextState> context_state) {
+-#if BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
++#if BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES) && BUILDFLAG(SKIA_USE_DAWN)
+   if (backend_type == wgpu::BackendType::OpenGLES) {
+     std::unique_ptr<GLTextureImageRepresentationBase> gl_representation =
+         ProduceGLTexturePassthrough(manager, tracker);
+--- a/gpu/command_buffer/service/shared_image/d3d_image_representation.h
++++ b/gpu/command_buffer/service/shared_image/d3d_image_representation.h
+@@ -12,6 +12,7 @@
+ #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+ #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
+ #include "gpu/command_buffer/service/texture_manager.h"
++#include "skia/buildflags.h"
+ #include "ui/gl/buildflags.h"
+ 
+ namespace gpu {
+@@ -185,6 +186,7 @@
+   Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture_;
+ };
+ 
++#if BUILDFLAG(SKIA_USE_DAWN)
+ class D3DSkiaGraphiteDawnImageRepresentation
+     : public SkiaGraphiteDawnImageRepresentation {
+  public:
+@@ -200,6 +202,7 @@
+       wgpu::Texture texture,
+       std::vector<skgpu::graphite::BackendTexture> backend_textures) override;
+ };
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
+ 
+ }  // namespace gpu
+ #endif  // GPU_COMMAND_BUFFER_SERVICE_SHARED_IMAGE_D3D_IMAGE_REPRESENTATION_H_
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -628,6 +628,9 @@
+   }
+ 
+   if (is_win) {
++    if (!use_dawn && !skia_use_dawn) {
++      sources += [ "shared_image/d3d_without_dawn.cc" ]
++    }
+     sources += [
+       "dxgi_shared_handle_manager.cc",
+       "dxgi_shared_handle_manager.h",
+--- /dev/null
++++ b/gpu/command_buffer/service/shared_image/d3d_without_dawn.cc
+@@ -0,0 +1,93 @@
++// The slim profile on Windows has no Dawn (use_dawn and skia_use_dawn false).
++// D3DImageBacking keeps its Dawn paths compiled; nothing reaches them without
++// a Dawn device, so what they would call is not linked. The cache is made with
++// every backing and stays empty.
++
++#include <dawn/native/D3D11Backend.h>
++#include <dawn/native/D3D12Backend.h>
++#include <dawn/native/DawnNative.h>
++
++#include "base/notreached.h"
++#include "gpu/command_buffer/service/dawn_context_provider.h"
++#include "gpu/command_buffer/service/shared_image/dawn_shared_texture_cache.h"
++
++namespace gpu {
++
++DawnSharedTextureCache::DawnSharedTextureCache() = default;
++DawnSharedTextureCache::~DawnSharedTextureCache() = default;
++DawnSharedTextureCache::SharedTextureData::~SharedTextureData() = default;
++DawnSharedTextureCache::TextureMetadata::~TextureMetadata() = default;
++
++wgpu::SharedTextureMemory DawnSharedTextureCache::GetSharedTextureMemory(
++    const wgpu::Device&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::MaybeCacheSharedTextureMemory(
++    const wgpu::Device&,
++    const wgpu::SharedTextureMemory&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::EraseDawnSharedTextureCache(const wgpu::Device&) {
++  NOTREACHED();
++}
++wgpu::Texture DawnSharedTextureCache::GetCachedWGPUTexture(
++    const wgpu::Device&,
++    wgpu::TextureUsage,
++    wgpu::TextureUsage,
++    const std::vector<wgpu::TextureFormat>&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::MaybeCacheWGPUTexture(
++    const wgpu::Device&,
++    const wgpu::Texture&,
++    wgpu::TextureUsage,
++    wgpu::TextureUsage,
++    const std::vector<wgpu::TextureFormat>&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::RemoveWGPUTextureFromCache(const wgpu::Device&,
++                                                        const wgpu::Texture&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::DestroyWGPUTextureIfNotCached(
++    const wgpu::Device&,
++    const wgpu::Texture&) {
++  NOTREACHED();
++}
++void DawnSharedTextureCache::EraseDataIfDeviceLost() {
++  NOTREACHED();
++}
++
++wgpu::Device DawnContextProvider::GetDevice() const {
++  NOTREACHED();
++}
++
++}  // namespace gpu
++
++namespace dawn::native {
++
++bool IsTextureSubresourceInitialized(WGPUTexture,
++                                     uint32_t,
++                                     uint32_t,
++                                     uint32_t,
++                                     uint32_t,
++                                     WGPUTextureAspect) {
++  NOTREACHED();
++}
++
++namespace d3d11 {
++Microsoft::WRL::ComPtr<ID3D11Device> GetD3D11Device(WGPUDevice) {
++  NOTREACHED();
++}
++}  // namespace d3d11
++
++namespace d3d12 {
++Microsoft::WRL::ComPtr<ID3D12Device> GetD3D12Device(WGPUDevice) {
++  NOTREACHED();
++}
++Microsoft::WRL::ComPtr<ID3D11On12Device> GetOrCreateD3D11On12Device(WGPUDevice) {
++  NOTREACHED();
++}
++}  // namespace d3d12
++
++}  // namespace dawn::native
