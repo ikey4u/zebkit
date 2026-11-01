@@ -428,6 +428,11 @@ PY
     # Temporary files stay in the test's directory.
     mkdir -p "$work/tmp"
     export TEMP="$(cygpath -w "$work/tmp")" TMP="$(cygpath -w "$work/tmp")" TMPDIR="$work/tmp"
+    # A default profile too, of a test that names none; checked at the end.
+    real_local_app_data="$LOCALAPPDATA"
+    mkdir -p "$work/local"
+    export LOCALAPPDATA="$(cygpath -w "$work/local")"
+    zebkit_before="$( (ls -A "$real_local_app_data/zebkit" 2> /dev/null || true) | wc -l)"
     export PATH="$work/path:$package:$PATH"
 fi
 
@@ -924,5 +929,13 @@ else
 fi
 fi
 
+if [[ "$ZEBKIT_HOST" == windows ]]; then
+    # Nothing of the suite's in the person's own application data.
+    if [[ "$( (ls -A "$real_local_app_data/zebkit" 2> /dev/null || true) | wc -l)" != "$zebkit_before" || -e "$real_local_app_data/content_shell" ]]; then
+        echo "FAIL the suite wrote in %LOCALAPPDATA%"; failed=1
+    else
+        echo "ok   nothing written in %LOCALAPPDATA%"
+    fi
+fi
 (( failed )) && die "engine tests failed"
 log "engine tests passed"

@@ -203,11 +203,20 @@ class Page:
 
 def pdf_renderers(root_pid):
     """Process ids and resident kilobytes of the PDF renderers of this engine."""
-    out = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,command="], capture_output=True, text=True).stdout
     processes = {}
-    for line in out.splitlines():
-        pid, ppid, rss, command = line.split(None, 3)
-        processes[int(pid)] = (int(ppid), int(rss), command)
+    if os.name == "nt":
+        # CSV's fields are in name order: the node, the command line, then these.
+        out = subprocess.run(["wmic", "process", "get", "CommandLine,ParentProcessId,ProcessId,WorkingSetSize",
+                              "/format:csv"], capture_output=True, text=True, errors="replace").stdout
+        for row in out.splitlines():
+            fields = row.rsplit(",", 3)
+            if len(fields) == 4 and fields[1].isdigit() and fields[2].isdigit():
+                processes[int(fields[2])] = (int(fields[1]), int(fields[3] or 0) // 1024, fields[0])
+    else:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,rss=,command="], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            pid, ppid, rss, command = line.split(None, 3)
+            processes[int(pid)] = (int(ppid), int(rss), command)
 
     def descends(pid):
         while pid in processes and pid != root_pid:

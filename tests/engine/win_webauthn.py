@@ -51,6 +51,14 @@ def windows():
     return titles
 
 
+# Chromium offers the route only with webauthn.dll's API at version 1 or later
+# (device/fido/win/webauthn_api.cc). Below that nothing here can be tried.
+version = ctypes.WinDLL("webauthn").WebAuthNGetApiVersionNumber()
+print("webauthn.dll API version:", version, flush=True)
+if version < 1:
+    print("skip this machine's webauthn.dll offers no API; Windows' route cannot be tried here", flush=True)
+    sys.exit(0)
+
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 origin = f"http://localhost:{server.server_port}"

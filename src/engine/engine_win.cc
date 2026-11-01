@@ -73,6 +73,13 @@ base::FilePath HelperPath(const base::FilePath& library) {
 }
 
 std::string DefaultConfigDirectory() {
+  // As XDG_CONFIG_HOME on Linux: where a person, or a test, says it is.
+  std::wstring given(MAX_PATH, L'\0');
+  const DWORD length = ::GetEnvironmentVariableW(L"LOCALAPPDATA", given.data(), MAX_PATH);
+  if (length && length < MAX_PATH) {
+    given.resize(length);
+    return base::WideToUTF8(given);
+  }
   base::win::ScopedCoMem<wchar_t> path;
   if (FAILED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path)))
     return std::string();

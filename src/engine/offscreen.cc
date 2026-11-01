@@ -102,6 +102,11 @@
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/webauthn.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "base/task/single_thread_task_runner.h"
+#include "content/browser/renderer_host/render_widget_host_view_base.h"
+#endif
+
 #if BUILDFLAG(IS_LINUX)
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
@@ -413,7 +418,11 @@ class Offscreen : public content::WebContentsObserver,
   bool mouse_in_popup_ = false;
   // Configure backing displays; macOS overrides the widget snapshot separately.
   void UpdateDisplay();
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN)
+  // A view's scale on Windows (ApplyScale()).
+  void ApplyScale();
+#endif
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   float own_scale_ = 1;
 #endif
 #if BUILDFLAG(IS_LINUX)
@@ -893,12 +902,12 @@ void InstallHooks() {
 }
 
 // Legacy platforms without a per-view backend still share their display scale.
-#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_MAC)
+#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
 float g_scale = 1;
 #endif
 
 float Offscreen::scale() const {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   return own_scale_;
 #else
   return g_scale;
@@ -921,7 +930,7 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
   // page, rather than a menu of the system's.
   std::ignore = web_contents()->ForbidExternalPopupMenus().Release();
 #endif
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
 #else
@@ -936,6 +945,9 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
 #endif
   PlaceWindow();
   AttachMainWidget();
+#if BUILDFLAG(IS_WIN)
+  ApplyScale();
+#endif
 }
 
 Offscreen::~Offscreen() {
@@ -1023,9 +1035,10 @@ void Offscreen::UpdateDisplay() {
   // does not fit below its <select> in the view still opens below it.
   largest.Enlarge(1024, 1024);
   display::Display display = display::Screen::Get()->GetPrimaryDisplay();
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   // Preserve the native density of unrelated headless/window views. Owned
-  // widgets get their independent density through OnScreenInfos instead.
+  // widgets get their independent density through OnScreenInfos, on Windows
+  // through ApplyScale(), instead.
   const float backing_scale = display.device_scale_factor();
 #else
   const float backing_scale = g_scale;
@@ -1062,13 +1075,29 @@ void Offscreen::PlaceWindow() {
   }
 }
 
+#if BUILDFLAG(IS_WIN)
+// Windows' headless screen moves displays around when one is added, and a window
+// takes a display's scale only as it is resized. Chromium's own way to draw one
+// page at a scale of its own, what capturing at high DPI uses, needs no display:
+// the page's devicePixelRatio and its frames follow, other views are not touched,
+// and a popup takes its parent's.
+void Offscreen::ApplyScale() {
+  auto* view = static_cast<content::RenderWidgetHostViewBase*>(MainView());
+  if (view && view->GetScaleOverrideForCapture() != own_scale_)
+    view->SetScaleOverrideForCapture(own_scale_);
+}
+#endif
+
 void Offscreen::SetSize(const gfx::Size& size, float scale) {
   if (!size.IsEmpty())
     size_ = size;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
   PlaceWindow();
+#if BUILDFLAG(IS_WIN)
+  ApplyScale();
+#endif
 #if BUILDFLAG(IS_MAC)
   content::NotifyEmbedderWidgetScreenInfoChanged(MainWidget());
   if (popup_) content::NotifyEmbedderWidgetScreenInfoChanged(popup_);
@@ -1087,9 +1116,28 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
   }
 #endif
   main_.SetPixelSize(gfx::ScaleToCeiledSize(size_, this->scale()));
+#if BUILDFLAG(IS_WIN)
+  // The page's last frame at the new size can come before the capturer has it, and
+  // an idle page sends no other.
+  for (int ms : {150, 500, 1200}) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<Offscreen> self) {
+              if (self)
+                self->main_.RequestFrame();
+            },
+            weak_factory_.GetWeakPtr()),
+        base::Milliseconds(ms));
+  }
+#endif
 }
 
 void Offscreen::AttachMainWidget() {
+#if BUILDFLAG(IS_WIN)
+  // A new renderer's view, after a navigation, has the scale too.
+  ApplyScale();
+#endif
   content::RenderWidgetHost* widget = MainWidget();
   if (widget == main_widget_)
     return;
