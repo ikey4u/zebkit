@@ -62,6 +62,7 @@ camera and microphone capture, and the device APIs.
 | Application's loop | `zebkit_init()`, `zebkit_pump()`, `zebkit_set_wakeup()`, `zebkit_shutdown()`; `zebkit_main()` stays. Host state left alone (signals, locale, thread names, process title, crash handlers, environment); startup settings as validated JSON. C, Rust and Python tests on Linux; a concurrent monitor shows the host's signal handlers are never replaced | 2026-10-30 |
 | Application's windows, frames | `examples/native-host`: web frames and a PDF view drawn in GTK, Qt, AppKit and winit windows through off-screen views, with no window of the engine's. GTK, Qt and winit run with real input on Linux; AppKit draws both panes and shuts down cleanly on a Mac, its input not driven | 2026-10-30 |
 | Application's windows, handles | `zebkit_view_attach_native()`: the engine's window inside an X11 window of the host's, or on an `NSView` on macOS (`tests/engine/native_parent_mac.m`, 43 checks on a Mac). C, Rust, Python (`examples/native-host/x11.c`; JavaScript has no host handle). `tests/engine/native_parent.c` under Xvfb: the tree, the pixels, XTEST clicks and keys, focus, resizing, a `<select>`'s list, either side closed first. Refused on Wayland and under `--headless`, naming off-screen views | 2026-10-30 |
+| PDF in pages | A page that opens a PDF, or embeds one, shows it as Chrome's viewer does: Chromium's plugin in a dedicated sandboxed renderer, a small viewer of zebkit's, continuous scrolling drawing only visible pages; `navigator.pdfViewerEnabled`, `plugins` and the document as Chrome has them (`docs/API.md`, `tests/engine/pdf_in_page.py`, a 756-page document). Library +0.25% | 2026-11-01 |
 | Old Linux | glibc 2.17 and newer (CentOS 7): the one newer symbol, Rust's weak `getrandom`, answered inside the engine; `scripts/package.sh` refuses a package that needs more; the C tests pass on CentOS 7's glibc and libraries (`scripts/glibc-test.sh`) | 2026-10-26 |
 
 ## Next
@@ -124,9 +125,8 @@ in `examples/native-host` (Done table). What is left:
   `slim` (owner, 2026-10-27): a build that costs more in size than it
   gains in speed is not an improvement. Beyond that the gap is Chromium
   155's against Electron's Chromium 152, not the build's.
-- **CDP checked against Puppeteer and Playwright**, with Chrome's
-  results as the reference: the engine serves Chromium's own DevTools
-  endpoint, and a suite of client tests against it is still to be written.
+- **CDP checked against Puppeteer and Playwright: done** (2026-11-01). `tests/engine/cdp_clients.mjs`,
+  137 cases with real clients, Chrome's results recorded by the same run: `docs/AUTOMATION.md`, section 7.
 
 ### Off-screen views
 
@@ -267,8 +267,8 @@ in `examples/native-host` (Done table). What is left:
   unchanged with `chromium.connect()`. Held by `tests/engine/automation.c`,
   `automation_python.py`, `playwright_connect.mjs`,
   `scripts/automation-bench.sh`.
-  - **TODO**: Playwright's own test suite against the endpoint;
-    official-suite conformance beyond the client smoke tests.
+  - **Playwright's own test suite against the endpoint: running, not at parity** (2026-11-01;
+    `scripts/playwright-suite.sh`, counts and what is left in `docs/AUTOMATION.md`, section 7).
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
