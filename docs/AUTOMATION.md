@@ -631,21 +631,19 @@ CDP in between:
   `tests/page` and `tests/library` at tag v1.64.1 through `chromium.connect()`,
   an engine for each worker, or the same tests on Chrome (`--target chrome`).
   What a test expects to fail is named with its reason in
-  `tests/playwright-suite/expected-failures.txt`. On 2026-11-01, engine commit
-  b2c1ee2, 5262 tests, 15 s a test, no engine exit:
+  `tests/playwright-suite/expected-failures.txt`. On 2026-11-01, the batch's final engine,
+  5262 tests, 15 s a test, three workers, no engine exit:
 
   | | Passed | Failed | Skipped |
   |---|---|---|---|
-  | zebkit, total | 2888 | 1189 | 1185 |
-  | Chrome 156 (launched, the same day, one commit earlier), total | 4195 | 6 | 1061 |
+  | zebkit, total | 3012 | 1183 | 1067 |
+  | Chrome 156 (launched, the same day, a little earlier), total | 4195 | 6 | 1061 |
 
-  Of the 1189 failures, 599 are listed with a reason (what needs Playwright's
-  own server or a browser the test starts itself, options and commands not
-  implemented, known differences), 4 fail on Chrome too, and 590 are not
-  listed. Most of those trace to causes fixed after that commit and not yet in
-  these counts: a `pageError` event the client rejected, which ended its
-  connection, HAR as an archive, the clock's replay, screenshots' options.
-  The endpoint is not yet at parity with Playwright's server.
+  Of the 4189 tests that pass on Chrome, 3011 pass here. Of the 1183 failures, 716 are listed with a
+  reason (what needs Playwright's own server or a browser the test starts itself, options and commands
+  not implemented, known differences), 5 fail on Chrome too, and 467 are not explained yet: 215 tests
+  of all failures end in the test's timeout, others differ in a value; not triaged one by one. The
+  endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
   endpoint and over CDP on the same build, and Playwright on Chrome. It is a standard test: a native command
