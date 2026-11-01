@@ -481,7 +481,7 @@ def test_chrome(base, engine_sent):
     if not chrome:
         print('not run: no Chrome to compare with', flush=True)
         return
-    with tempfile.TemporaryDirectory(prefix='zebkit-stages-chrome-') as profile, socket.socket() as free:
+    with tempfile.TemporaryDirectory(prefix='zebkit-stages-chrome-', ignore_cleanup_errors=True) as profile, socket.socket() as free:
         free.bind(('127.0.0.1', 0))
         port = free.getsockname()[1]
         free.close()
