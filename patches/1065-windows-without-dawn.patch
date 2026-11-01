@@ -1,0 +1,75 @@
+Windows: the slim profile's build, without Dawn.
+
+Chrome always has Dawn on Windows; the slim profile has none (patches/0013 did
+the same for macOS). gpu_init.cc and the D3D backing factory named its context
+provider without the build flag the other platforms have. And WebNN's ONNX
+Runtime back end, which is Windows' alone, uses fp16 without depending on it,
+so its include path is not there unless another back end brings it.
+
+--- a/gpu/ipc/service/gpu_init.cc
++++ b/gpu/ipc/service/gpu_init.cc
+@@ -689,8 +689,11 @@
+       //   SwiftShader via --skia-graphite-dawn-backend=swiftshader.
+       if (features::IsSwiftShaderAllowed(command_line) ||
+           gpu_preferences_.use_webgpu_adapter ==
+-              WebGPUAdapterName::kSwiftShader ||
+-          DawnContextProvider::DefaultForceFallbackAdapter()) {
++              WebGPUAdapterName::kSwiftShader
++#if BUILDFLAG(SKIA_USE_DAWN)
++          || DawnContextProvider::DefaultForceFallbackAdapter()
++#endif
++      ) {
+         TRACE_EVENT("gpu,startup", "Load vk_swiftshader.dll");
+         base::LoadNativeLibrary(module_path.Append(L"vk_swiftshader.dll"),
+                                 nullptr);
+@@ -949,10 +952,10 @@
+     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device;
+     Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue;
+     gl::SolidColorPoolFactory solid_color_factory;
++#if BUILDFLAG(SKIA_USE_DAWN)
+     if (dawn_context_provider_) {
+       d3d11_device = dawn_context_provider_->GetD3D11Device();
+       d3d12_command_queue = dawn_context_provider_->GetD3D12CommandQueue();
+-#if BUILDFLAG(SKIA_USE_DAWN)
+       // When Skia is on Graphite-D3D12, use Dawn (the same `wgpu::Device`
+       // and `ID3D12CommandQueue` Skia is using) to fill solid-color
+       // overlays.
+@@ -961,8 +964,9 @@
+         solid_color_factory = CreateDawnTextureSolidColorPoolFactory(
+             dawn_context_provider_->GetDevice(), d3d12_command_queue);
+       }
++    } else
+ #endif  // BUILDFLAG(SKIA_USE_DAWN)
+-    } else {
++    {
+       d3d11_device = gl::QueryD3D11DeviceObjectFromANGLE();
+     }
+     if (!solid_color_factory) {
+--- a/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
++++ b/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
+@@ -460,6 +460,7 @@
+ bool D3DImageBackingFactory::IsSwapChainSupported(
+     const GpuPreferences& gpu_preferences,
+     DawnContextProvider* dawn_context_provider /*=nullptr*/) {
++#if BUILDFLAG(SKIA_USE_DAWN)
+   if (gpu_preferences.gr_context_type == GrContextType::kGraphiteDawn) {
+     // This is only supported if graphite and ANGLE share the same D3D11 device.
+     CHECK(dawn_context_provider);
+@@ -469,6 +470,7 @@
+       return false;
+     }
+   }
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
+ 
+   return gl::DirectCompositionSupported() &&
+          gl::DXGISwapChainTearingSupported();
+--- a/services/webnn/BUILD.gn
++++ b/services/webnn/BUILD.gn
+@@ -247,6 +247,7 @@
+     ]
+     deps += [
+       "//services/webnn/public/cpp:win",
++      "//third_party/fp16",
+       "//third_party/windows_app_sdk_headers",
+     ]
+ 

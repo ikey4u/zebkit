@@ -62,3 +62,4 @@
 1062-content-when-a-widget-takes-input.patch
 1063-content-subresource-factories-of-a-frame-s-workers.patch
 1064-content-window-close-with-an-application-s-nsapplication.patch
+1065-windows-without-dawn.patch
