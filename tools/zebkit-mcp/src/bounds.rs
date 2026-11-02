@@ -89,7 +89,10 @@ impl Bounds {
         }
         let name = given.file_name().ok_or_else(|| format!("{path}: no file name"))?;
         let parent = given.parent().ok_or_else(|| format!("{path}: no directory"))?;
-        let real_parent = fs::canonicalize(parent).map_err(|e| format!("{path}: its directory: {}", e.kind()))?;
+        let real_parent = fs::canonicalize(parent).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!("{path}: its directory does not exist; make it first with file_mkdir"),
+            kind => format!("{path}: its directory: {kind}"),
+        })?;
         if !inside(&real_parent, &self.write_roots) {
             return Err(format!("{path}: outside the directories granted for writing"));
         }

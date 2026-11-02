@@ -259,6 +259,9 @@ async function everyTool(label, c) {
   check(/^# Test page/.test(markdown.text) && /\*\*bold\*\*/.test(markdown.text) && /\[a link\]\(.*\/second\)/.test(markdown.text) && /- one/.test(markdown.text) && /\| K \| V \|/.test(markdown.text), say('page_read markdown'), markdown.text);
   const piece = await call('page_read', { page, format: 'text', maxChars: 5 });
   check(piece.structured.truncated && piece.structured.nextOffset === 5 && piece.structured.text.length === 5, say('page_read in pieces'));
+  const sought = await call('page_read', { page, format: 'text', find: 'THE END' });
+  check(sought.structured.count === 1 && /The end/.test(sought.structured.matches[0].text) && sought.structured.matches[0].offset > 0,
+    say('page_read find: where a text is, case aside'), sought.text);
   const element = await call('page_read', { page, format: 'text', ref: ref('heading "Test page"') });
   check(element.text === 'Test page', say('page_read an element by ref'), element.text);
 
@@ -281,6 +284,7 @@ async function everyTool(label, c) {
   const click = await call('page_click', { page, ref: ref('button "Send"') });
   const title = await call('page_evaluate', { page, script: 'document.title' });
   check(!click.isError && title.structured.value === 'sent Ada big true hello.txt', say('page_click submits what was filled'), title.text);
+  await refused('page_click', { page, ref: 'e99999' }, /not on the page any more/, 'page_click: a stale reference fails at once');
   const pressed = await call('page_press', { page, selector: '#n', key: 'End' });
   check(!pressed.isError, say('page_press on an element'), pressed.text);
   const pressedPage = await call('page_press', { page, key: 'Tab' });
@@ -348,6 +352,11 @@ async function everyTool(label, c) {
   check(gridded.image && gridded.structured.bytes !== picture.structured.bytes && overlayGone.structured.value === true,
     say('page_capture: a grid and the cursor when asked, gone after'), gridded.text);
   await call('page_close', { page: canvas });
+  // An action that starts a navigation answers with where it went.
+  const away = (await call('page_open', { url: `${SITE}/page` })).structured.page;
+  const went = await call('page_click', { page: away, selector: 'a[href="/second"]' });
+  check(!went.isError && went.structured.url.endsWith('/second'), say('page_click answers after the navigation it started'), went.text);
+  await call('page_close', { page: away });
   }
 
   const evaluated = await call('page_evaluate', { page, script: '(a) => a + 1', arg: 41 });
