@@ -743,10 +743,14 @@ for quality in 3G Slow-2G; do
 done
 run media-tools env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     ZEBKIT_MEDIA_PROBE="$bin/media-probe" python3 "$tests/media_tools.py"
+# WebRTC's mDNS binds UDP 5353, and on Windows that asks a person about the firewall
+# (docs/WINDOWS.md). This test only needs the two ends to find each other.
+media_tap_switches=()
+[[ "$ZEBKIT_HOST" == windows ]] && media_tap_switches=(--disable-features=WebRtcHideLocalIpsWithMdns)
 run media-tap env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     ZEBKIT_MEDIA_PROBE="$bin/media-probe" \
     python3 "$tests/media_tap.py" "http://127.0.0.1:$port" "${engine_switches[@]}" \
-    --autoplay-policy=no-user-gesture-required
+    --autoplay-policy=no-user-gesture-required "${media_tap_switches[@]}"
 
 for adaptive_mode in down up audio mkv clock; do
     run "media-resolution-$adaptive_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \

@@ -119,16 +119,22 @@ Pass, among others: `win_smoke`, `win_host` and `win_native_parent` (23 checks, 
 Python and Rust, downloads too; cookies across a restart with each key; WebAuthn with the virtual
 authenticator; Rust with the sandbox.
 
-A spare renderer kept by `spareRenderer` is not taken by a navigation to another site, here as on
-a Mac: it goes, and another process starts (16 runs of 16, with or without 3 s before the
-navigation). Not understood; `runtime-settings-python` does not ask it of either.
-
 Windows' WebAuthn route (webauthn.dll) has never been tried: the test machine's `WebAuthNGetApiVersionNumber()`
 is 0, so Chromium does not offer it; `win-webauthn` says so and skips.
 
 Copies to a shared folder are not always intact: two copies of `zebkit.dll` had one wrong
 bit each, and one build of the `services` program never arrived intact under any name. Five
 copies to NTFS, all verified, had none. Compare SHA-256 after every copy.
+
+## The firewall
+
+A page that makes an `RTCPeerConnection` makes the network service bind UDP 5353 for WebRTC's
+mDNS, the first time on that path, and Windows asks about the firewall: `zebkit-helper.exe`,
+and without an answer a blocking rule of its own. Nothing else in the suite does (its other
+sockets, WebRTC's on `0.0.0.0`, ask nothing). Chrome's code does the same; its installer adds
+an inbound rule for UDP 5353 (`firewall_manager_win.cc`), and an application's installer can
+do that for `zebkit-helper.exe` too. `--disable-features=WebRtcHideLocalIpsWithMdns` binds
+nothing, but then a page sees the machine's address in its candidates, not a `.local` name.
 
 ## The network service
 
@@ -146,5 +152,5 @@ under it. Not tried here. Chrome decides it in its own code, not by the default.
 - The example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
 
-`zebkit.dll` is 185.1 MiB, `zebkit_sandbox.lib` 29.4 MiB, the package 239.9 MiB; as `.tar.xz`
-without that library, which an application does not ship, 68.2 MiB (Linux's: 54.9 MiB, 160.9 MiB unpacked).
+`zebkit.dll` is 184.9 MiB, `zebkit_sandbox.lib` 29.4 MiB, the package 239.7 MiB; as `.tar.xz`
+without that library, which an application does not ship, 68.0 MiB (Linux's: 54.9 MiB, 160.9 MiB unpacked).
