@@ -212,8 +212,13 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
     function replaced each end the request with `ERR_BLOCKED_BY_CLIENT`, where the page's stages go on.
     A preflight is a request of its own there (`preflight`, type `preflight`), as in DevTools' Network;
     CDP's Fetch does not hold one. Only with such a rule does a request use the client.
-  Not done: a WebSocket's Cookie, whose handshake has its own client: it is seen at the request stage
-  only. A rule of these stages set after a request started does not reach that request, nor one
+  - **WebSockets at these stages** (2026-11-02): a rule of `sendHeaders`, `sent` or `headersReceived`
+    for type `websocket` gives the network's handshake a header client of the hooks', as extensions'
+    webRequest does (`network::WebSocket` asks it as a loader's): the Cookie the network adds is seen
+    and can be changed or the socket blocked at `sendHeaders`; the `101` and its headers are seen at
+    `headersReceived`. The network does not tell a handshake's `sent` headers, so that stage has none
+    for a socket. `network_stages.py` has a WebSocket server of its own for it.
+  Not done: a rule of these stages set after a request started does not reach that request, nor one
   answered by the HTTP cache at `sent`, which sends nothing. Early hints,
   prefetch and background fetch factories do not pass the hook, so a 103's preload gets past a rule.
   Handshake outcomes of WebSockets are not told. A service worker's socket in a two-profile engine
@@ -301,7 +306,24 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   remembers an answer for that host and port for the whole context, so a second view
   is not asked, and a default of none holds even after a function is set. The operating
   system's certificate stores (`CreateClientCertStore`) are not offered on any
-  platform.
+  platform. **Design and cost** (2026-11-02, not built): Chromium's own stores are in the
+  network library already built into the engine: `net::ClientCertStoreNSS` (Linux, the
+  user's NSS database, `~/.pki/nssdb`), `ClientCertStoreMac` (Keychain identities) and
+  `ClientCertStoreWin` (the user's `MY` store). `ContentBrowserClient::CreateClientCertStore`
+  returning the platform's makes `SelectClientCertificate` arrive with the store's identities
+  matching the server's authorities; the request's metadata would list each (subject, issuer,
+  validity, SHA-256 fingerprint, the store's name) and a new answer, `identity` with an index,
+  would call `ClientCertIdentity::AcquirePrivateKey` and continue with that key, which stays in
+  the store (NSS, Keychain or CNG signs; the engine never sees it). Off by default, by an engine
+  setting, so that nothing of the system's is offered to a page without the application asking.
+  Cost: about 300 lines in `client_certificate.cc` and `engine.cc`, the answer in the four
+  bindings, and tests per platform: on Linux an NSS database made in the test's HOME with
+  `certutil`/`pk12util`; on macOS a test keychain (the suite already answers Keychain calls from
+  files); on Windows a certificate imported into the test user's store. NSS may ask for a
+  database password (`PasswordDelegateFactory`): the first version would offer only identities
+  whose keys need none, and Keychain may show its own access prompt the first time, which a
+  headless host cannot answer: both said in `<zebkit/hooks.h>`. Two to three days with the macOS
+  and Windows test runs.
 
 ## In the bindings
 

@@ -280,6 +280,31 @@ navigation's callback no longer crashes, input after a load is not lost, and `me
 `page_upload` stays by contents and `net_fetch` on its page, on purpose: each keeps the path from
 the renderer and checks each hop for itself, which the fixes do not replace.
 
+## An outside agent on the open web
+
+On 2026-11-02 Claude Code, headless (`claude -p`), with this server as its only
+tools (`--strict-mcp-config`, built-in tools off, `--allowedTools mcp__zebkit`) and
+`--allow-origin '*'`, did five real tasks; no sign-in anywhere, nothing in the way
+of a site's protections attempted. Each run is a transcript kept outside the
+repository; what they showed:
+
+| Task | Outcome | What got in the way, and what was done |
+|---|---|---|
+| Fill and submit httpbin.org's order form | Done, 13 turns: every field echoed back | The accessibility tree names radios and check boxes by their labels, not the values they submit, and shows a time input as a text box: Playwright's snapshot, kept as it is |
+| Research three facts on rust-lang.org, nodejs.org and Wikipedia | Done, 16 turns, each with its URL | No way to find a passage on a long page but script (`page_evaluate` with `indexOf`): `page_read` now takes `find`. Wikipedia answered 429 once, shown as the status; a retry passed |
+| Read a 15-page arXiv PDF, four questions with quotes | Done, 8 turns: `net_fetch` into a file, `pdf_open`, `pdf_read` | Writing into a directory that did not exist said "entity not found": it now says to make it with `file_mkdir` |
+| Search Wikipedia with its own search box | Done, 11 turns | Typing re-rendered the box, so the reference went stale and the next press waited its whole 30 s: a reference no longer on the page now fails at once, saying to read the page again. A press that submitted answered with the page it left: actions now answer after the navigation they started has loaded. Run again after both: 10 turns instead of 11 and 42 s instead of 78; the stale reference failed at once, the press answered with the article's URL, and `find` found both facts in a 222,000-character tree |
+| Read a public Google Doc and scroll it | Done, 8 turns | The text is on a canvas: `page_capture` read it, `page_mouse`'s wheel scrolled it; `page_read` had only the menus. `page_wait` for `networkidle` never came (Docs keeps connections open), as Playwright's would not |
+
+**Google Docs, as seen from here** (a public, view-only document): the text is
+drawn on `<canvas>` tiles (three on the first screen); the keys go to a hidden
+`docs-texteventtarget-iframe` whose body is `contenteditable`, `role=presentation`,
+which takes the focus on a click into the page; the two other iframes are
+`aria-hidden`. Docs' own **screen reader support** (`Control+Alt+Z`, or the
+Accessibility menu) puts the document's text into the accessibility tree: after
+`page_keyboard` presses it, `page_read` has the body as well as the menus, which is
+the cheaper way to read a long document. Without it: `page_capture` and `page_mouse`.
+
 ## What is weak
 
 Plainly, what these bounds do not do:
