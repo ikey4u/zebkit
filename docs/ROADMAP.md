@@ -222,8 +222,9 @@ in `examples/native-host` (Done table). What is left:
   `docs/MCP.md`): `thirdPartyCookies`, `spareRenderer`, `dialogs`, `downloads`, `newWindows`.
   Defaults are today's; changing them is an explicit act. A spare renderer kept by
   `spareRenderer` is made again at each load's end, not after each commit as
-  `--zebkit-spare-renderer` keeps it, since content fixes that choice at startup. On a Mac the
-  next navigation to another site dropped the spare rather than taking it, not understood.
+  `--zebkit-spare-renderer` keeps it, since content fixes that choice at startup. A navigation that needs no
+  new process, as to a site a frame of that view has been on, drops the spare at its commit
+  (`PrepareForFutureRequests`), as content does while the spare's feature is off.
 - **Chrome as sites see it, and nothing of a CDP client: done**
   (2026-10-24, measured against rebrowser-bot-detector's checks and
   Electron 44.9): `window.chrome` by Chrome's own code, popups blocked

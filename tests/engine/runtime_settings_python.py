@@ -217,16 +217,13 @@ assert zebkit.engine_settings()['effective'] == {**zebkit.engine_settings()['eff
 wait(lambda: renderers() - before, 'a spare renderer started')
 spare = renderers() - before
 assert len(spare) == 1, spare
-# Another site in the same view: the spare is taken, and a new one follows. One not
-# taken would have been dropped when the frame committed.
-loaded = []
-view.on_load(lambda event, at: loaded.append(at) if event == zebkit.LOAD_FINISHED else None)
-view.load(OTHER + '/plain')
-wait(lambda: OTHER + '/plain' in loaded, 'the other site')
-# On macOS and Windows the spare was dropped here and another process started, not
-# understood (docs/ROADMAP.md, docs/WINDOWS.md).
-if sys.platform not in ('darwin', 'win32'):
-    assert spare <= renderers(), 'the spare was used, not dropped'
+# A view with no process yet takes it, and a new one follows. Not `view`: its frames have
+# been on OTHER, so its navigation there asks for no process, and the spare goes when
+# the frame commits (PrepareForFutureRequests). A process that was told to go can take a
+# moment, so look a moment later.
+fresh = opened(OTHER + '/plain')
+time.sleep(1)
+assert spare <= renderers(), 'the spare was used, not dropped'
 wait(lambda: zebkit.engine_settings()['effective']['spareRendererRunning'], 'another spare after the load')
 zebkit.set_engine_settings({'spareRenderer': False})
 assert not zebkit.engine_settings()['effective']['spareRendererRunning']
