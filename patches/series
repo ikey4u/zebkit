@@ -54,3 +54,4 @@
 1073-aura-platform-window-factory-for-the-embedder.patch
 1074-embedder-widget-screen-info-on-aura.patch
 1075-ml-size-inliner-only-where-cold.patch
+1076-max-speed-for-code-asking-chromium-s-optimize.patch

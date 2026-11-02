@@ -1,0 +1,36 @@
+Speed: zebkit_max_speed_patterns for Rust crates that ask for optimize.
+
+patches/1007 compiles the code zebkit_max_speed_patterns names at -O2
+(optimize_max) in place of default_optimization, through the wrappers of
+BUILDCONFIG.gn, which Rust crates do not go through. Some crates ask for
+//build/config/compiler:optimize themselves, which is opt-level s when
+optimize_for_size: among them those of Skia's PNG encoder (png, fdeflate,
+flate2, miniz_oxide), which Chrome builds at opt-level 3. cargo_crate()
+now gives a library crate a pattern names optimize_max (opt-level 3) in
+place of optimize.
+
+At opt-level s, encoding a 1280 by 800 screenshot took 68 ms, a frame
+more than Chrome for every Page.captureScreenshot and page.screenshot
+(profiles/slim.gn).
+
+--- a/build/rust/cargo_crate.gni
++++ b/build/rust/cargo_crate.gni
+@@ -209,6 +209,18 @@
+     assert(_crate_type == "rlib")
+     _target_type = "rust_static_library"
+     _configs = invoker.library_configs
++
++    # zebkit: a crate zebkit_max_speed_patterns names that asks for
++    # Chromium's optimize config (opt-level s when optimize_for_size) gets
++    # optimize_max (opt-level 3), as patches/1007 does for C++.
++    if (zebkit_max_speed_patterns != [] &&
++        filter_include([ get_label_info(":$target_name", "dir") + "/" ],
++                       zebkit_max_speed_patterns) != [] &&
++        filter_include(_configs, [ "//build/config/compiler:optimize" ]) !=
++        []) {
++      _configs -= [ "//build/config/compiler:optimize" ]
++      _configs += [ "//build/config/compiler:optimize_max" ]
++    }
+   }
+ 
+   if (defined(invoker.output_name)) {

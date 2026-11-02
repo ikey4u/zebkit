@@ -164,6 +164,16 @@ zebkit_max_speed_patterns = [
   "//third_party/blink/renderer/core/*",
   "//third_party/blink/renderer/platform/*",
   "//third_party/harfbuzz-ng/*",
+  # PNG encoding (Skia's encoder in Rust, and its deflate and checksums):
+  # at opt-level s a 1280 by 800 screenshot took 68 ms to encode, a frame
+  # more than Chrome for every page.screenshot and Page.captureScreenshot.
+  "//third_party/rust/png/*",
+  "//third_party/rust/fdeflate/*",
+  "//third_party/rust/flate2/*",
+  "//third_party/rust/miniz_oxide/*",
+  "//third_party/rust/crc32fast/*",
+  "//third_party/rust/adler2/*",
+  "//third_party/rust/simd_adler32/*",
 ]
 # The engine optimized across its files at link time, as Chrome's binary is.
 zebkit_lto_optimize = true
