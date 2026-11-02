@@ -509,7 +509,7 @@ steps.scrollIntoViewIfNeeded = arg => {
     actionTry(named, say, state, wait);
     const inner = line => say('  ' + line);
     inner('waiting for element to be stable');
-    if (!(await checkStates(element, ['visible', 'stable'], inner)))
+    if (!(await checkStates(element, ['stable'], inner)))
       return undefined;
     let target = element;
     if (!target.getClientRects().length) {

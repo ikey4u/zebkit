@@ -24,8 +24,7 @@ library/trace-viewer*.spec.ts | * | launches Playwright's trace viewer in a brow
 # Not implemented by the endpoint.
 library/browsercontext-proxy.spec.ts | * | newContext's proxy option is not implemented
 library/client-certificates.spec.ts | * | newContext's clientCertificates option is not implemented
-library/chromium/session.spec.ts | * | newCDPSession is not implemented over this protocol; CDP has its own endpoint
-library/chromium/chromium.spec.ts | error:newCDPSession | newCDPSession is not implemented over this protocol; CDP has its own endpoint
+library/chromium/session.spec.ts | error:startJSCoverage | Page.startJSCoverage is not implemented
 library/chromium/chromium.spec.ts | WebUI navigation | the error's text for a refused WebUI page differs: a content-layer engine has no WebUI
 library/chromium/tracing.spec.ts | * | Browser.startTracing is not implemented over this protocol
 library/chromium/css-coverage.spec.ts | * | Page.startCSSCoverage is not implemented
@@ -72,3 +71,7 @@ library/tracing.spec.ts | correct title|aria snapshots|action screenshots|group/
 library/browsercontext-service-worker-policy.spec.ts | * | serviceWorkers: "block" is not implemented
 library/chromium/disable-web-security.spec.ts | * | launch switches of a test's own browser
 library/browsercontext-viewport-mobile.spec.ts | * | isMobile's meta viewport handling (new since this package: Emulation.setDeviceMetricsOverride)
+
+# Known, not built yet (2026-11-02): each says what it would take.
+library/popup.spec.ts | in-process popup|should inherit offline|should inherit viewport size|should expose function from browser context|should not dispatch binding on a closed page | a popup opened in its opener's process is read by the opener in the same task, before its context's init scripts, bindings, viewport and offline state reach it: Playwright has Chromium pause the new target for its debugger (waitForDebuggerOnStart); the automation would need the renderer's agent to take them from its opener's
+page/page-event-request.spec.ts | main resource xhr should have type xhr | an XMLHttpRequest and a fetch() reach the network alike (fetch-like, no destination): only Blink knows which, so both are "fetch" here; DevTools learns it from the renderer

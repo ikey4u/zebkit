@@ -19,9 +19,15 @@
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/canonical_cookie.h"
+#include "components/services/storage/public/mojom/local_storage_control.mojom.h"
+#include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/dom_storage/storage_area.mojom.h"
 #include "net/cookies/cookie_partition_key.h"
 #include "net/base/url_util.h"
 #include "net/cookies/cookie_util.h"
@@ -710,6 +716,176 @@ void ContextEmulateMedia(content::WebContents* contents,
     prefs.in_forced_colors = *forced == "active";
   contents->SetWebPreferences(prefs);
   std::move(done).Run(base::Value(base::DictValue()), std::string());
+}
+
+// ---- Local storage ---------------------------------------------------------
+
+namespace {
+
+// Blink's local storage bytes (cached_storage_area.cc's
+// kLocalStorageDetectFormat): a first byte 0 for UTF-16, 1 for Latin-1.
+std::string FromStorageBytes(const std::vector<uint8_t>& bytes) {
+  if (bytes.empty())
+    return std::string();
+  if (bytes[0] == 1)
+    return base::UTF16ToUTF8(std::u16string(bytes.begin() + 1, bytes.end()));
+  std::u16string text;
+  for (size_t i = 1; i + 1 < bytes.size(); i += 2)
+    text.push_back(static_cast<char16_t>(bytes[i] | (bytes[i + 1] << 8)));
+  return base::UTF16ToUTF8(text);
+}
+
+std::vector<uint8_t> ToStorageBytes(const std::string& utf8) {
+  const std::u16string text = base::UTF8ToUTF16(utf8);
+  std::vector<uint8_t> bytes;
+  bytes.reserve(1 + text.size() * 2);
+  bytes.push_back(0);
+  for (char16_t c : text) {
+    bytes.push_back(static_cast<uint8_t>(c & 0xff));
+    bytes.push_back(static_cast<uint8_t>(c >> 8));
+  }
+  return bytes;
+}
+
+}  // namespace
+
+void ContextLocalStorage(content::BrowserContext* profile, ContextDone done) {
+  storage::mojom::LocalStorageControl* control =
+      profile->GetDefaultStoragePartition()->GetLocalStorageControl();
+  control->GetUsage(base::BindOnce(
+      [](base::WeakPtr<content::BrowserContext> profile, ContextDone done,
+         std::vector<storage::mojom::StorageUsageInfoPtr> usage) {
+        struct State {
+          std::map<std::string, base::Value> origins;
+          ContextDone done;
+          size_t left = 0;
+          std::vector<mojo::Remote<blink::mojom::StorageArea>> areas;
+        };
+        auto state = std::make_shared<State>();
+        state->done = std::move(done);
+        auto finish = [](std::shared_ptr<State> state) {
+          base::ListValue origins;
+          for (auto& [origin, value] : state->origins)
+            origins.Append(std::move(value));
+          base::DictValue answer;
+          answer.Set("origins", std::move(origins));
+          std::move(state->done).Run(base::Value(std::move(answer)), std::string());
+        };
+        if (!profile || usage.empty()) {
+          finish(state);
+          return;
+        }
+        storage::mojom::LocalStorageControl* control =
+            profile->GetDefaultStoragePartition()->GetLocalStorageControl();
+        state->left = usage.size();
+        for (const auto& info : usage) {
+          const blink::StorageKey key = info->storage_key;
+          // A third party's partitioned storage is not an origin of its own.
+          if (!key.IsFirstPartyContext()) {
+            if (--state->left == 0)
+              finish(state);
+            continue;
+          }
+          mojo::Remote<blink::mojom::StorageArea> area;
+          control->BindStorageArea(key, area.BindNewPipeAndPassReceiver());
+          blink::mojom::StorageArea* raw = area.get();
+          state->areas.push_back(std::move(area));
+          raw->GetAll(
+              mojo::NullRemote(),
+              mojo::WrapCallbackWithDefaultInvokeIfNotRun(base::BindOnce(
+                  [](std::shared_ptr<State> state, decltype(finish) finish, std::string origin,
+                     std::vector<blink::mojom::KeyValuePtr> data) {
+                    base::ListValue items;
+                    for (const auto& pair : data) {
+                      base::DictValue item;
+                      item.Set("name", FromStorageBytes(pair->key));
+                      item.Set("value", FromStorageBytes(pair->value));
+                      items.Append(std::move(item));
+                    }
+                    if (!items.empty()) {
+                      base::DictValue entry;
+                      entry.Set("origin", origin);
+                      entry.Set("localStorage", std::move(items));
+                      state->origins[origin] = base::Value(std::move(entry));
+                    }
+                    if (--state->left == 0)
+                      finish(state);
+                  },
+                  state, finish, key.origin().Serialize()),
+                  std::vector<blink::mojom::KeyValuePtr>()));
+        }
+      },
+      profile->GetWeakPtr(), std::move(done)));
+}
+
+void ContextSetLocalStorage(content::BrowserContext* profile,
+                            const base::ListValue& origins,
+                            ContextDone done,
+                            bool replace) {
+  storage::mojom::LocalStorageControl* control =
+      profile->GetDefaultStoragePartition()->GetLocalStorageControl();
+  if (replace) {
+    // setStorageState replaces: every origin's storage goes first.
+    control->GetUsage(base::BindOnce(
+        [](base::WeakPtr<content::BrowserContext> profile, base::ListValue origins,
+           ContextDone done, std::vector<storage::mojom::StorageUsageInfoPtr> usage) {
+          if (!profile) {
+            std::move(done).Run(base::Value(base::DictValue()), std::string());
+            return;
+          }
+          storage::mojom::LocalStorageControl* control =
+              profile->GetDefaultStoragePartition()->GetLocalStorageControl();
+          auto left = std::make_shared<size_t>(usage.size() + 1);
+          auto then = base::BindRepeating(
+              [](std::shared_ptr<size_t> left, base::WeakPtr<content::BrowserContext> profile,
+                 std::shared_ptr<base::ListValue> origins, std::shared_ptr<ContextDone> done) {
+                if (--*left || !profile)
+                  return;
+                ContextSetLocalStorage(profile.get(), *origins, std::move(*done), false);
+              },
+              left, profile, std::make_shared<base::ListValue>(std::move(origins)),
+              std::make_shared<ContextDone>(std::move(done)));
+          for (const auto& info : usage)
+            control->DeleteStorage(info->storage_key, base::BindOnce(then));
+          then.Run();
+        },
+        profile->GetWeakPtr(), origins.Clone(), std::move(done)));
+    return;
+  }
+  struct State {
+    ContextDone done;
+    size_t left = 1;
+    std::vector<mojo::Remote<blink::mojom::StorageArea>> areas;
+  };
+  auto state = std::make_shared<State>();
+  state->done = std::move(done);
+  auto one_done = base::BindRepeating(
+      [](std::shared_ptr<State> state) {
+        if (--state->left == 0)
+          std::move(state->done).Run(base::Value(base::DictValue()), std::string());
+      },
+      state);
+  for (const base::Value& entry : origins) {
+    const std::string* origin = entry.is_dict() ? entry.GetDict().FindString("origin") : nullptr;
+    const base::ListValue* items = entry.is_dict() ? entry.GetDict().FindList("localStorage") : nullptr;
+    const GURL url(origin ? *origin : std::string());
+    if (!items || !url.is_valid())
+      continue;
+    mojo::Remote<blink::mojom::StorageArea> area;
+    control->BindStorageArea(blink::StorageKey::CreateFirstParty(url::Origin::Create(url)),
+                             area.BindNewPipeAndPassReceiver());
+    for (const base::Value& item : *items) {
+      const std::string* name = item.is_dict() ? item.GetDict().FindString("name") : nullptr;
+      const std::string* value = item.is_dict() ? item.GetDict().FindString("value") : nullptr;
+      if (!name || !value)
+        continue;
+      ++state->left;
+      area->Put(ToStorageBytes(*name), ToStorageBytes(*value), std::nullopt, nullptr,
+                base::BindOnce([](base::RepeatingClosure done, bool) { done.Run(); }, one_done));
+    }
+    state->areas.push_back(std::move(area));
+  }
+  one_done.Run();
 }
 
 }  // namespace zebkit

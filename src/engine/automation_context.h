@@ -59,6 +59,16 @@ void ContextEmulateMedia(content::WebContents* contents,
                          const base::DictValue& params,
                          ContextDone done);
 
+// The local storage of every origin the profile has (storageState's origins:
+// [{origin, localStorage: [{name, value}]}], by origin), read from the storage
+// service as Playwright reads each origin's, pages or none.
+void ContextLocalStorage(content::BrowserContext* profile, ContextDone done);
+// setStorageState's origins written into the profile's local storage.
+void ContextSetLocalStorage(content::BrowserContext* profile,
+                            const base::ListValue& origins,
+                            ContextDone done,
+                            bool replace = false);
+
 }  // namespace zebkit
 
 #endif  // ZEBKIT_ENGINE_AUTOMATION_CONTEXT_H_

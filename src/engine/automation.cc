@@ -3064,6 +3064,11 @@ class Automation : public content::WebContentsObserver,
           !base::StringToInt(std::string_view(*frame).substr(1), &value)) {
         return;
       }
+      // frames.ts's _isExcludedFromNetworkIdle(): a favicon, an EventSource.
+      const std::string* url = params.FindString("url");
+      const std::string* type = params.FindString("resourceType");
+      if ((url && url->ends_with("/favicon.ico")) || (type && *type == "eventsource"))
+        return;
       const content::FrameTreeNodeId node(value);
       request_frames_[*request] = node;
       if (params.FindBool("isNavigationRequest").value_or(false))
@@ -3206,6 +3211,11 @@ class Automation : public content::WebContentsObserver,
   }
 
   void RenderFrameCreated(content::RenderFrameHost* frame) override {
+    // A frame is idle 500 ms after it is made with nothing to load, as
+    // frames.ts starts its timer when a Frame is made (a javascript: or a
+    // broken URL's frame commits nothing).
+    if (inflight_[frame->GetFrameTreeNodeId()].empty())
+      StartIdleTimer(frame->GetFrameTreeNodeId());
     if (!media_type_.empty())
       Agent(frame)->SetMediaType(media_type_);
     if (!exposed_.empty())
@@ -5346,67 +5356,30 @@ class Automation : public content::WebContentsObserver,
       call->Fail(error);
       return;
     }
-    std::vector<content::RenderFrameHost*> frames;
-    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
-      if (frame->IsRenderFrameLive() &&
-          !frame->GetLastCommittedOrigin().opaque()) {
-        frames.push_back(frame);
-      }
-    });
-    struct State {
-      base::DictValue answer;
-      std::map<std::string, base::Value> origins;
-      size_t left;
-    };
-    auto state = std::make_shared<State>();
-    if (cookies.is_dict()) {
-      if (base::Value* list = cookies.GetDict().Find("cookies"))
-        state->answer.Set("cookies", std::move(*list));
-    }
-    state->left = frames.size();
-    auto finish = [](base::WeakPtr<Call> call, std::shared_ptr<State> state) {
-      if (!call)
-        return;
-      base::ListValue origins;
-      for (auto& [origin, value] : state->origins)
-        origins.Append(std::move(value));
-      state->answer.Set("origins", std::move(origins));
-      call->Done(base::Value(std::move(state->answer)));
-    };
-    if (frames.empty()) {
-      finish(call, state);
-      return;
-    }
-    for (content::RenderFrameHost* frame : frames) {
-      Agent(frame)->Evaluate(
-          AutomationWorld::kUtility,
-          "(() => ({ origin: location.origin, localStorage: Object.keys(localStorage)"
-          ".map(name => ({ name, value: localStorage.getItem(name) })) }))()",
-          AutomationExpression::kValue, "[]", {}, true, true,
-          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
-              base::BindOnce(
-                  [](base::WeakPtr<Call> call, std::shared_ptr<State> state,
-                     decltype(finish) finish, AutomationStatus status,
-                     const std::string& result,
-                     std::vector<AutomationHandlePtr>) {
-                    std::optional<base::Value> answer = Parse(result);
-                    base::Value* value =
-                        answer && answer->is_dict() ? answer->GetDict().Find("value")
-                                                    : nullptr;
-                    if (value && value->is_dict()) {
-                      const std::string* origin = value->GetDict().FindString("origin");
-                      const base::ListValue* items =
-                          value->GetDict().FindList("localStorage");
-                      if (origin && items && !items->empty())
-                        state->origins[*origin] = value->Clone();
-                    }
-                    if (--state->left == 0)
-                      finish(call, state);
-                  },
-                  call, state, finish),
-              AutomationStatus::kGone, std::string(),
-              std::vector<AutomationHandlePtr>()));
-    }
+    StorageWithCookies(web_contents()->GetBrowserContext(), call, std::move(cookies));
+  }
+
+  // The answer of storageState: the cookies, and every origin's local storage
+  // the profile has (ContextLocalStorage()), pages or none.
+  static void StorageWithCookies(content::BrowserContext* profile,
+                                 base::WeakPtr<Call> call,
+                                 base::Value cookies) {
+    ContextLocalStorage(
+        profile, base::BindOnce(
+                     [](base::WeakPtr<Call> call, base::Value cookies, base::Value storage,
+                        const std::string& error) {
+                       if (!call)
+                         return;
+                       base::DictValue answer;
+                       if (cookies.is_dict()) {
+                         if (base::Value* list = cookies.GetDict().Find("cookies"))
+                           answer.Set("cookies", std::move(*list));
+                       }
+                       base::Value* origins = storage.is_dict() ? storage.GetDict().Find("origins") : nullptr;
+                       answer.Set("origins", origins ? std::move(*origins) : base::Value(base::ListValue()));
+                       call->Done(base::Value(std::move(answer)));
+                     },
+                     call, std::move(cookies)));
   }
 
   // BrowserContext.setStorageState: its cookies set; the local storage of
@@ -5424,8 +5397,9 @@ class Automation : public content::WebContentsObserver,
     const base::ListValue* origins = state->FindList("origins");
     script += origins ? Json(base::Value(origins->Clone())) : "[]";
     script +=
-        "; for (const o of origins) if (o.origin === location.origin) for (const i "
-        "of o.localStorage || []) localStorage.setItem(i.name, i.value); })()";
+        "; try { localStorage.clear(); } catch {} for (const o of origins) if (o.origin === "
+        "location.origin) for (const i of o.localStorage || []) localStorage.setItem(i.name, "
+        "i.value); })()";
     ContextAddCookies(
         web_contents()->GetBrowserContext(), cookies,
         base::BindOnce(
@@ -5440,6 +5414,9 @@ class Automation : public content::WebContentsObserver,
               self->EvaluateInAllFrames(call.get(), script);
             },
             weak_factory_.GetWeakPtr(), call->GetWeakPtr(), script));
+    // And into the profile's storage, for origins no page shows now.
+    ContextSetLocalStorage(web_contents()->GetBrowserContext(),
+                           origins ? origins->Clone() : base::ListValue(), base::DoNothing(), true);
   }
   void AddCookies(Call* call) { InProfile(call, &ContextAddCookies); }
   void ClearCookies(Call* call) { InProfile(call, &ContextClearCookies); }
@@ -6103,6 +6080,34 @@ void NewContext(Call* call) {
       [](base::WeakPtr<Call> pending, content::BrowserContext* profile,
          base::DictValue options, base::DictValue answer) {
         if (!pending) return;
+        // The origins' local storage written first, before any page reads it.
+        if (const auto* origins = options.FindListByDottedPath("storageState.origins");
+            origins && !origins->empty()) {
+          base::ListValue given = origins->Clone();
+          options.RemoveByDottedPath("storageState.origins");
+          auto again = base::BindOnce(
+              [](base::WeakPtr<Call> pending, content::BrowserContext* profile,
+                 base::DictValue options, base::DictValue answer, base::Value, const std::string&) {
+                if (!pending) return;
+                const auto* cookies = options.FindListByDottedPath("storageState.cookies");
+                if (!cookies || cookies->empty()) {
+                  pending->Done(base::Value(std::move(answer)));
+                  return;
+                }
+                base::DictValue params;
+                params.Set("cookies", cookies->Clone());
+                ContextAddCookies(profile, params, base::BindOnce(
+                    [](base::WeakPtr<Call> call, base::DictValue answer,
+                       base::Value, const std::string& error) {
+                      if (!call) return;
+                      if (!error.empty()) call->Fail(error);
+                      else call->Done(base::Value(std::move(answer)));
+                    }, pending, std::move(answer)));
+              },
+              pending, profile, std::move(options), std::move(answer));
+          ContextSetLocalStorage(profile, given, std::move(again));
+          return;
+        }
         const auto* cookies = options.FindListByDottedPath("storageState.cookies");
         if (!cookies || cookies->empty()) {
           pending->Done(base::Value(std::move(answer)));
@@ -6345,19 +6350,13 @@ void ContextCommand(Call* call) {
     } else if (name == "storageState") {
       ContextCookies(profile, base::DictValue(),
                      base::BindOnce(
-                         [](base::WeakPtr<Call> call, base::Value cookies,
-                            const std::string& error) {
+                         [](content::BrowserContext* profile, base::WeakPtr<Call> call,
+                            base::Value cookies, const std::string& error) {
                            if (!call)
                              return;
-                           base::DictValue answer;
-                           if (cookies.is_dict()) {
-                             if (base::Value* list = cookies.GetDict().Find("cookies"))
-                               answer.Set("cookies", std::move(*list));
-                           }
-                           answer.Set("origins", base::ListValue());
-                           call->Done(base::Value(std::move(answer)));
+                           Automation::StorageWithCookies(profile, call, std::move(cookies));
                          },
-                         call->GetWeakPtr()));
+                         profile, call->GetWeakPtr()));
       return;
     } else {
       call->Fail("zebkit: " + call->method() + " needs a page of the context");

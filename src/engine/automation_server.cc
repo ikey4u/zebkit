@@ -498,8 +498,13 @@ class Connection {
   void ReplyExpectFailed(int id, base::DictValue details, base::ListValue raw) {
     std::vector<std::string> lines;
     for (const base::Value& line : raw) {
-      if (line.is_string())
-        lines.push_back(line.GetString());
+      if (!line.is_string())
+        continue;
+      // The step's lines come as the client shows them ("  - line").
+      std::string text = line.GetString();
+      if (text.starts_with("  - "))
+        text = text.substr(4);
+      lines.push_back(std::move(text));
     }
     // As dispatcher.ts sends it: compressed, each line as the client shows it.
     base::ListValue log;
@@ -1872,9 +1877,10 @@ void Connection::CDPSessionCommand(int id,
     return;
   }
   if (method == "detach") {
-    // crConnection.ts's detach(): the session goes, and its object with it.
-    Reply(id, base::Value(base::DictValue()));
+    // crConnection.ts's detach(): the session goes, and its object with it,
+    // its close told before the answer.
     CDPSessionClosed(guid);
+    Reply(id, base::Value(base::DictValue()));
     return;
   }
   Reply(id, base::Value(base::DictValue()));
@@ -1919,7 +1925,7 @@ void Connection::CDPSessionClosed(const std::string& guid) {
   std::map<int, std::pair<int, std::string>> calls = std::move(found->second.calls);
   cdp_sessions_.erase(found);
   for (const auto& [message, call] : calls)
-    ReplyError(call.first, "Protocol error (" + call.second + "): Internal server error, session closed.");
+    ReplyError(call.first, "Target page, context or browser has been closed");
   if (client) {
     client->Detach();
     // Not under its own call: this may come from its AgentHostClosed().

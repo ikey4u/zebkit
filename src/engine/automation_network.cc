@@ -85,6 +85,42 @@ const char* ResourceType(const network::ResourceRequest& request) {
       return "script";
     case RequestDestination::kManifest:
       return "manifest";
+    case RequestDestination::kEmpty: {
+      // XMLHttpRequest, fetch() and EventSource have no destination; an
+      // EventSource asks for its stream type, fetch() is fetch-like.
+      std::optional<std::string> accept = request.headers.GetHeader(net::HttpRequestHeaders::kAccept);
+      if (accept == "text/event-stream")
+        return "eventsource";
+      if (request.resource_type == 14)  // kPing
+        return "ping";
+      if (request.resource_type == 16)  // kCspReport
+        return "cspviolationreport";
+      // XMLHttpRequest and fetch() reach the network alike (both fetch-like,
+      // no destination): the network cannot tell them apart, DevTools learns
+      // it from Blink. Both are "fetch" here.
+      return request.is_fetch_like_api || request.keepalive ? "fetch" : "xhr";
+    }
+    default:
+      break;
+  }
+  // What Blink says the request is (blink.mojom.ResourceType), as DevTools'
+  // types: an XMLHttpRequest, a fetch(), an EventSource, a beacon, ...
+  switch (request.resource_type) {
+    case 13: {  // kXhr: XMLHttpRequest, fetch() and EventSource.
+      std::optional<std::string> accept = request.headers.GetHeader(net::HttpRequestHeaders::kAccept);
+      if (accept == "text/event-stream")
+        return "eventsource";
+      return request.is_fetch_like_api ? "fetch" : "xhr";
+    }
+    case 14:  // kPing
+      return "ping";
+    case 16:  // kCspReport
+      return "cspviolationreport";
+    case 11:  // kPrefetch
+      return "prefetch";
+    case 6:   // kSubResource
+    case 12:  // kFavicon
+      return "other";
     default:
       return "fetch";
   }
