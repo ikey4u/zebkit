@@ -42,8 +42,12 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/containers/fixed_flat_set.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
@@ -64,10 +68,14 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
+#include "device/bluetooth/dbus/dbus_bluez_manager_wrapper_linux.h"
 #include "sandbox/linux/services/credentials.h"
+#include "ui/linux/linux_ui.h"
+#include "ui/linux/linux_ui_factory.h"
 #include "sandbox/policy/switches.h"
 #endif
 #if BUILDFLAG(IS_WIN)
+#include "base/win/win_util.h"
 #include "sandbox/policy/switches.h"
 #endif
 #include "components/embedder_support/switches.h"
@@ -79,7 +87,26 @@
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info_with_user_agent.h"
+#include "components/crash/core/common/crash_key.h"
+#include "components/memory_system/initializer.h"
+#include "components/memory_system/parameters.h"
+#include "components/performance_manager/embedder/graph_features.h"
+#include "components/performance_manager/embedder/performance_manager_lifetime.h"
 #include "content/public/app/content_main.h"
+#include "content/public/app/initialize_mojo_core.h"
+#include "content/public/common/result_codes.h"
+#include "content/public/common/url_constants.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "net/base/features.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "content/public/common/content_features.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_switches.h"
+#include "url/url_constants.h"
+#include "zebkit/engine/profile.h"
+#include "zebkit/engine/window.h"
+#include "zebkit/engine/window_platform.h"
 #include "content/public/app/content_main_runner.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -87,9 +114,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
-#include "content/shell/browser/shell.h"
-#include "content/shell/browser/shell_platform_delegate.h"
-#include "content/shell/common/shell_switches.h"
 #include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -98,7 +122,6 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gfx/switches.h"
-#include "ui/views/widget/widget.h"
 #include "zebkit/engine/app.h"
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation_network.h"
@@ -191,7 +214,7 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
     args.push_back(std::string("--") + switches::kBrowserSubprocessPath + "=" +
                    PathToUTF8(HelperPath(library)));
   }
-  if (!HasSwitch(argc, argv, switches::kContentShellUserDataDir)) {
+  if (!HasSwitch(argc, argv, kUserDataDirSwitch)) {
     std::string config;
 #if BUILDFLAG(IS_MAC)
     if (const char* home = getenv("HOME"); home && *home)
@@ -211,7 +234,7 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
 #else
       const std::string program = base::FilePath(args[0]).BaseName().value();
 #endif
-      args.push_back(std::string("--") + switches::kContentShellUserDataDir +
+      args.push_back(std::string("--") + kUserDataDirSwitch +
                      "=" + config + "/zebkit/" + program);
     }
   }
@@ -251,25 +274,13 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
       !HasSwitch(argc, argv, "disable-logging")) {
     args.push_back(std::string("--") + switches::kEnableLogging + "=stderr");
   }
-  args.push_back(std::string("--") + switches::kContentShellHideToolbar);
-  // --window-size is the window's size, as in Chrome; the shell's own
-  // switch for it still decides.
-  {
-    std::string size = SwitchValue(argc, argv, "window-size");
-    const size_t comma = size.find(',');
-    if (comma != std::string::npos &&
-        !HasSwitch(argc, argv, switches::kContentShellHostWindowSize)) {
-      args.push_back(std::string("--") + switches::kContentShellHostWindowSize +
-                     "=" + size.substr(0, comma) + "x" + size.substr(comma + 1));
-    }
-  }
   // Features a browser wants and an application showing its pages does not,
   // as Electron leaves them out (its shell/browser/feature_list.cc): a spare
   // renderer kept warm for the next navigation, a process with its memory.
   // --zebkit-spare-renderer keeps it.
   //
   // And FedCM, which signs in with an identity provider through dialogs of
-  // the browser's own: the content shell has none and turns every request
+  // the browser's own: the engine has none and turns every request
   // down as dismissed, so a site's "Sign in with Google" fails, and is held
   // back for a while after. Without FedCM, sites sign in through a popup,
   // as in Firefox, which has no FedCM; zebkit opens it from the person's
@@ -300,6 +311,50 @@ scoped_refptr<base::RefCountedMemory> NetResourceProvider(int key) {
         IDR_DIR_HEADER_HTML);
   }
   return nullptr;
+}
+
+// To --log-file, or as --enable-logging says; EngineArguments() defaults to
+// standard error, not a file beside the executable.
+void InitLogging(const base::CommandLine& command_line) {
+  logging::LoggingSettings settings;
+  if (command_line.HasSwitch("disable-logging")) {
+    settings.logging_dest = logging::LOG_NONE;
+    logging::InitLogging(settings);
+    return;
+  }
+  const std::string dest = command_line.GetSwitchValueASCII(switches::kEnableLogging);
+  if (dest == "stderr") {
+    settings.logging_dest = logging::LOG_TO_STDERR;
+  } else if (dest == "system") {
+    settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  } else {
+    base::FilePath file = command_line.GetSwitchValuePath(switches::kLogFile);
+#if BUILDFLAG(IS_WIN)
+    // A child process may be given a handle in --log-file.
+    if (dest == "handle") {
+      uint32_t value = 0;
+      HANDLE duplicate = nullptr;
+      if (base::StringToUint(command_line.GetSwitchValueNative(switches::kLogFile), &value) &&
+          ::DuplicateHandle(GetCurrentProcess(), base::win::Uint32ToHandle(value),
+                            GetCurrentProcess(), &duplicate, 0, FALSE,
+                            DUPLICATE_SAME_ACCESS)) {
+        settings.log_file = duplicate;
+        settings.logging_dest = logging::LOG_TO_ALL;
+        file.clear();
+      }
+    }
+#endif
+    if (!file.empty()) {
+      settings.log_file_path = file.value();
+      settings.logging_dest = logging::LOG_TO_FILE;
+    } else if (settings.logging_dest == logging::LOG_DEFAULT) {
+      settings.logging_dest = logging::LOG_TO_STDERR;
+    }
+  }
+  settings.delete_old = logging::APPEND_TO_OLD_LOG_FILE;
+  logging::InitLogging(settings);
+  logging::SetLogItems(true /* Process ID */, true /* Thread ID */,
+                       true /* Timestamp */, false /* Tick count */);
 }
 
 int RunContent(int argc, char** argv, MainDelegate* delegate) {
@@ -421,8 +476,13 @@ std::optional<int> MainDelegate::BasicStartupComplete() {
         /*create=*/false);
   }
 #endif
-  auto result = content::ShellMainDelegate::BasicStartupComplete();
+  std::optional<int> result;
   const auto& command = *base::CommandLine::ForCurrentProcess();
+#if BUILDFLAG(IS_WIN)
+  base::win::EnableStrictHandleCheckingForCurrentProcess();
+#endif
+  InitLogging(command);
+  RegisterUserDataPath();
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   // In the browser process: never without a sandbox unless told, and a refusal
   // that says what to do, ahead of Chromium's fatal message.
@@ -443,14 +503,56 @@ bool MainDelegate::ShouldLoadV8Snapshot(const std::string& process_type) {
   // The browser process runs the application's own script
   // (zebkit_script_new()), so it needs V8 as a renderer does.
   return process_type.empty() ||
-         content::ShellMainDelegate::ShouldLoadV8Snapshot(process_type);
+         content::ContentMainDelegate::ShouldLoadV8Snapshot(process_type);
+}
+
+bool MainDelegate::ShouldCreateFeatureList(InvokedIn invoked_in) {
+  return std::holds_alternative<InvokedInChildProcess>(invoked_in);
+}
+
+bool MainDelegate::ShouldInitializeMojo(InvokedIn invoked_in) {
+  return ShouldCreateFeatureList(invoked_in);
+}
+
+void MainDelegate::PreSandboxStartup() {
+  crash_reporter::InitializeCrashKeys();
+#if BUILDFLAG(IS_MAC)
+  ui::ResourceBundle::InitSharedInstanceWithPakPath(ResourcePackPath());
+#else
+  base::FilePath pak_file;
+  CHECK(base::PathService::Get(base::DIR_ASSETS, &pak_file));
+  ui::ResourceBundle::InitSharedInstanceWithPakPath(
+      pak_file.Append(FILE_PATH_LITERAL("zebkit.pak")));
+#endif
 }
 
 std::optional<int> MainDelegate::PreBrowserMain() {
-  // The shell registers its own NSApplication subclass on macOS. An embedded
-  // engine uses the application's existing NSApplication and native pump.
-  return external_loop_ ? content::ContentMainDelegate::PreBrowserMain()
-                        : content::ShellMainDelegate::PreBrowserMain();
+  std::optional<int> exit_code = content::ContentMainDelegate::PreBrowserMain();
+#if BUILDFLAG(IS_MAC)
+  // An embedded engine uses the application's existing NSApplication and
+  // native pump.
+  if (!exit_code && !external_loop_)
+    RegisterApplication();
+#endif
+  return exit_code;
+}
+
+std::optional<int> MainDelegate::PostEarlyInitialization(InvokedIn invoked_in) {
+  if (!ShouldCreateFeatureList(invoked_in))
+    browser_client_->CreateFeatureListAndFieldTrials();
+  if (!ShouldInitializeMojo(invoked_in))
+    content::InitializeMojoCore();
+  // The sampler enforced, as the content shell: its users there were not
+  // clear, and the engine has run with it.
+  memory_system::Initializer()
+      .SetDispatcherParameters(memory_system::DispatcherParameters::
+                                   PoissonAllocationSamplerInclusion::kEnforce,
+                               memory_system::DispatcherParameters::
+                                   AllocationTraceRecorderInclusion::kIgnore,
+                               base::CommandLine::ForCurrentProcess()
+                                   ->GetSwitchValueASCII(switches::kProcessType))
+      .Initialize(memory_system_);
+  return std::nullopt;
 }
 
 content::ContentClient* MainDelegate::CreateContentClient() {
@@ -468,13 +570,38 @@ content::ContentRendererClient* MainDelegate::CreateContentRendererClient() {
   return renderer_client_.get();
 }
 
+std::u16string ContentClient::GetLocalizedString(int message_id) {
+  return l10n_util::GetStringUTF16(message_id);
+}
+
+std::string_view ContentClient::GetDataResource(
+    int resource_id,
+    ui::ResourceScaleFactor scale_factor) {
+  return ui::ResourceBundle::GetSharedInstance().GetRawDataResourceForScale(
+      resource_id, scale_factor);
+}
+
+scoped_refptr<base::RefCountedMemory> ContentClient::GetDataResourceBytes(int resource_id) {
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytes(resource_id);
+}
+
+std::string ContentClient::GetDataResourceString(int resource_id) {
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(resource_id);
+}
+
+gfx::Image& ContentClient::GetNativeImageNamed(int resource_id) {
+  return ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(resource_id);
+}
+
+blink::OriginTrialPolicy* ContentClient::GetOriginTrialPolicy() {
+  return &origin_trial_policy_;
+}
+
 void ContentClient::AddAdditionalSchemes(Schemes* schemes) {
-  content::ShellContentClient::AddAdditionalSchemes(schemes);
   AddSchemes(schemes);
 }
 
 void ContentClient::AddPlugins(std::vector<content::WebPluginInfo>* plugins) {
-  content::ShellContentClient::AddPlugins(plugins);
   // A switch to have PDFs as downloads, as the setting "Download PDFs" in
   // Chrome: then navigator.pdfViewerEnabled is false as well.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-pdf-viewer"))
@@ -490,7 +617,6 @@ void ContentClient::AddPlugins(std::vector<content::WebPluginInfo>* plugins) {
 }
 
 void RendererClient::RenderThreadStarted() {
-  content::ShellContentRendererClient::RenderThreadStarted();
   RegisterSchemesInRenderer();
 }
 
@@ -499,8 +625,7 @@ std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
     content::MainFunctionParams main_function_params) {
   MarkICUInitialized();
   if (!process_type.empty()) {
-    return content::ShellMainDelegate::RunProcess(
-        process_type, std::move(main_function_params));
+    return std::move(main_function_params);
   }
   base::CurrentProcess::GetInstance().SetProcessType(
       base::CurrentProcessType::PROCESS_BROWSER);
@@ -533,28 +658,42 @@ std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
 std::unique_ptr<content::BrowserMainParts> BrowserClient::CreateBrowserMainParts(
     bool is_integration_test) {
   auto parts = std::make_unique<BrowserMainParts>();
-  set_browser_main_parts(parts.get());
+  main_parts_ = parts.get();
   return parts;
 }
 
 bool BrowserClient::IsHandledURL(const GURL& url) {
-  return (url.is_valid() && IsApplicationScheme(url.scheme())) ||
-         content::ShellContentBrowserClient::IsHandledURL(url);
+  if (!url.is_valid())
+    return false;
+  static constexpr auto kSchemes = base::MakeFixedFlatSet<std::string_view>({
+      url::kHttpScheme,
+      url::kHttpsScheme,
+      url::kWsScheme,
+      url::kWssScheme,
+      url::kBlobScheme,
+      url::kFileSystemScheme,
+      content::kChromeUIScheme,
+      content::kChromeUIUntrustedScheme,
+      content::kChromeDevToolsScheme,
+      url::kDataScheme,
+      url::kFileScheme,
+  });
+  return IsApplicationScheme(url.scheme()) || kSchemes.contains(url.scheme());
 }
 
 std::unique_ptr<content::WebContentsViewDelegate>
 BrowserClient::GetWebContentsViewDelegate(content::WebContents* web_contents) {
-  return WrapViewDelegate(
-      web_contents,
-      content::ShellContentBrowserClient::GetWebContentsViewDelegate(
-          web_contents));
+  return WrapViewDelegate(web_contents, nullptr);
 }
 
 void BrowserClient::AppendExtraCommandLineSwitches(
     base::CommandLine* command_line,
     int child_process_id) {
-  content::ShellContentBrowserClient::AppendExtraCommandLineSwitches(
-      command_line, child_process_id);
+  if (command_line->GetSwitchValueASCII(switches::kProcessType) ==
+          switches::kRendererProcess &&
+      base::FeatureList::IsEnabled(features::kIsolatedWebApps)) {
+    command_line->AppendSwitch(switches::kEnableIsolatedWebAppsInRenderer);
+  }
   const auto& process = *base::CommandLine::ForCurrentProcess();
   for (const char* flag : {"enable-logging", "disable-logging", "log-file", "log-level"}) {
     if (process.HasSwitch(flag))
@@ -591,8 +730,7 @@ void ApplyLanguages(content::WebContents* contents) {
   contents->SyncRendererPrefs();
 }
 
-// The content shell's are "en-us,en", whatever the system's, and pages were
-// told "en-US" alone (navigator.languages). Chrome's, from the locale.
+// Chrome's, from the locale.
 std::string BrowserClient::GetAcceptLangs(content::BrowserContext* context) {
   return AcceptLanguages();
 }
@@ -618,17 +756,15 @@ std::string BrowserClient::GetUserAgent() {
 // (blocked_content::ShouldBlockPopup and ConsiderForPopupBlocking, whose
 // rule this is). --disable-popup-blocking lets every one open, as in Chrome.
 void BrowserClient::CreateThrottlesForNavigation(content::NavigationThrottleRegistry& registry) {
-  content::ShellContentBrowserClient::CreateThrottlesForNavigation(registry);
   AddNavigationPolicyThrottle(registry);
 }
 void BrowserClient::CreateThrottlesForCommitWithoutUrlLoader(content::NavigationThrottleRegistry& registry) {
-  content::ShellContentBrowserClient::CreateThrottlesForCommitWithoutUrlLoader(registry);
   AddNavigationPolicyThrottle(registry);
 }
 std::vector<std::unique_ptr<content::CommitDeferringCondition>>
 BrowserClient::CreateCommitDeferringConditionsForNavigation(
     content::NavigationHandle* handle, content::CommitDeferringCondition::NavigationType type) {
-  auto conditions = content::ShellContentBrowserClient::CreateCommitDeferringConditionsForNavigation(handle, type);
+  auto conditions = content::ContentBrowserClient::CreateCommitDeferringConditionsForNavigation(handle, type);
   auto policy = CreateNavigationActivationPolicy(handle,
       type == content::CommitDeferringCondition::NavigationType::kPrerenderedPageActivation);
   if (policy) conditions.push_back(std::move(policy));
@@ -638,7 +774,15 @@ BrowserClient::CreateCommitDeferringConditionsForNavigation(
 void BrowserClient::OverrideWebPreferences(content::WebContents* contents,
                                            content::SiteInstance& main_frame_site,
                                            blink::web_pref::WebPreferences* prefs) {
-  content::ShellContentBrowserClient::OverrideWebPreferences(contents, main_frame_site, prefs);
+  const auto& command = *base::CommandLine::ForCurrentProcess();
+  prefs->preferred_color_scheme = command.HasSwitch(switches::kForceDarkMode)
+                                      ? blink::mojom::PreferredColorScheme::kDark
+                                      : blink::mojom::PreferredColorScheme::kLight;
+  const bool high_contrast = command.HasSwitch(switches::kForceHighContrast);
+  prefs->in_forced_colors = high_contrast;
+  prefs->preferred_contrast = high_contrast
+                                  ? blink::mojom::PreferredContrast::kMore
+                                  : blink::mojom::PreferredContrast::kNoPreference;
   ApplyViewSettings(contents, prefs);
 }
 
@@ -675,7 +819,7 @@ bool BrowserClient::CanCreateWindow(
       (policy == ZEBKIT_POPUP_POLICY_BLOCK ||
        (policy == ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE && !user_gesture));
   const bool allowed = !blocked_by_policy &&
-      content::ShellContentBrowserClient::CanCreateWindow(
+      content::ContentBrowserClient::CanCreateWindow(
           opener, opener_url, opener_top_level_frame_url, source_origin,
           container_type, target_url, referrer, frame_name, disposition, features,
           user_gesture, opener_suppressed, no_javascript_access);
@@ -713,8 +857,8 @@ bool BrowserClient::CanCreateWindow(
 }
 
 // The product CDP names in /json/version and Browser.getVersion, as
-// Chrome names it ("Chrome/155.0.8059.84"): the content shell names none,
-// and tools read it to know what they drive.
+// Chrome names it ("Chrome/155.0.8059.84"): tools read it to know what they
+// drive.
 std::string BrowserClient::GetProduct() {
   return std::string(version_info::GetProductNameAndVersionForUserAgent());
 }
@@ -727,14 +871,21 @@ BrowserClient::GetWebAuthenticationRequestDelegate(content::RenderFrameHost* fra
   return CreateWebAuthnRequestDelegate(frame);
 }
 
+// The network settings of the engine's own (below).
+void ConfigureNetworkDefaults(content::BrowserContext* context,
+                              network::mojom::NetworkContextParams* context_params);
+
 void BrowserClient::ConfigureNetworkContextParams(
     content::BrowserContext* context,
     bool in_memory,
     const base::FilePath& relative_partition_path,
     network::mojom::NetworkContextParams* params,
     cert_verifier::mojom::CertVerifierCreationParams* cert_params) {
-  content::ShellContentBrowserClient::ConfigureNetworkContextParams(
-      context, in_memory, relative_partition_path, params, cert_params);
+  params->user_agent = GetUserAgent();
+  params->enable_zstd = true;
+  params->device_bound_sessions_enabled =
+      base::FeatureList::IsEnabled(net::features::kDeviceBoundSessions);
+  ConfigureNetworkDefaults(context, params);
   ConfigurePersistentCookies(context, in_memory, relative_partition_path, params);
 }
 
@@ -743,13 +894,8 @@ void BrowserClient::ConfigureNetworkContextParams(
 // with site isolation a process, for each network that would sync one
 // (53 such frames on one news site, 2 without). The application allows them
 // with --zebkit-allow-third-party-cookies.
-void BrowserClient::ConfigureNetworkContextParamsForShell(
-    content::BrowserContext* context,
-    network::mojom::NetworkContextParams* context_params,
-    cert_verifier::mojom::CertVerifierCreationParams*
-        cert_verifier_creation_params) {
-  content::ShellContentBrowserClient::ConfigureNetworkContextParamsForShell(
-      context, context_params, cert_verifier_creation_params);
+void ConfigureNetworkDefaults(content::BrowserContext* context,
+                              network::mojom::NetworkContextParams* context_params) {
   if (!context_params->cookie_manager_params)
     context_params->cookie_manager_params =
         network::mojom::CookieManagerParams::New();
@@ -816,8 +962,8 @@ BrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
     content::FrameTreeNodeId frame_tree_node_id) {
   if (IsApplicationScheme(scheme))
     return CreateSchemeLoaderFactory(scheme);
-  return content::ShellContentBrowserClient::
-      CreateNonNetworkNavigationURLLoaderFactory(scheme, frame_tree_node_id);
+  return content::ContentBrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
+      scheme, frame_tree_node_id);
 }
 
 void BrowserClient::AllowCertificateError(content::WebContents* contents, int error,
@@ -874,7 +1020,7 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
           is_request_for_primary_main_frame_navigation, is_request_for_navigation,
           first_auth_attempt, auth_required_callback)) return delegate;
   if (browser_context) {
-    // Only taken when automation answers; otherwise the shell's own.
+    // Only taken when automation answers.
     auto callback = std::make_shared<
         content::LoginDelegate::LoginAuthRequiredCallback>(
         std::move(auth_required_callback));
@@ -893,11 +1039,7 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
       return delegate;
     auth_required_callback = std::move(*callback);
   }
-  return content::ShellContentBrowserClient::CreateLoginDelegate(
-      auth_info, web_contents, browser_context, request_id,
-      is_request_for_primary_main_frame_navigation, is_request_for_navigation,
-      url, std::move(response_headers), first_auth_attempt, guest_page_holder,
-      std::move(auth_required_callback));
+  return nullptr;
 }
 
 void BrowserClient::WillCreateURLLoaderFactory(
@@ -956,10 +1098,6 @@ void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
     int render_frame_id,
     const std::optional<url::Origin>& request_initiator_origin,
     NonNetworkURLLoaderFactoryMap* factories) {
-  content::ShellContentBrowserClient::
-      RegisterNonNetworkSubresourceURLLoaderFactories(
-          render_process_id, render_frame_id, request_initiator_origin,
-          factories);
   AddSchemeLoaderFactories(factories);
   // zebkit.* calls: from frames, which these factories are for.
   factories->emplace(kCallScheme, CreateCallLoaderFactory(render_process_id,
@@ -971,46 +1109,14 @@ void BrowserClient::RegisterNonNetworkWorkerMainResourceURLLoaderFactories(
     const std::optional<url::Origin>& request_initiator,
     network::mojom::RequestDestination request_destination,
     NonNetworkURLLoaderFactoryMap* factories) {
-  content::ShellContentBrowserClient::
-      RegisterNonNetworkWorkerMainResourceURLLoaderFactories(
-          browser_context, request_initiator, request_destination, factories);
   AddSchemeLoaderFactories(factories);
 }
 
 namespace {
 
-// The content shell's windows, but the loop does not end when the last one
-// closes: when an application is done is the application's to say
-// (zebkit_quit()), or its script's (zebkit_script_on_idle()).
-// The window's title: the application's, when it gave one.
-std::u16string WindowTitle(content::Shell* shell, const std::u16string& page) {
-  zebkit_view* view = ViewOf(shell->web_contents());
-  return view && view->window_title_ ? base::UTF8ToUTF16(*view->window_title_)
-                                     : page;
-}
-
-class PlatformDelegate : public content::ShellPlatformDelegate {
- public:
-  void DidCloseLastWindow() override {}
-  void DidCreateOrAttachWebContents(content::Shell* shell,
-                                    content::WebContents* contents) override {
-    content::ShellPlatformDelegate::DidCreateOrAttachWebContents(shell,
-                                                                 contents);
-    ApplyLanguages(contents);
-  }
-  void SetTitle(content::Shell* shell, const std::u16string& title) override {
-    content::ShellPlatformDelegate::SetTitle(shell, WindowTitle(shell, title));
-  }
-  // Dialogs held for the application or a CDP client (dialog.cc).
-  std::unique_ptr<content::JavaScriptDialogManager>
-  CreateJavaScriptDialogManager(content::Shell* shell) override {
-    return CreateDialogManager(shell);
-  }
-};
-
 // A key the page did not take: the application menu's, where windows have
 // no menu bar (app.h).
-bool HandleKey(content::Shell* shell,
+bool HandleKey(Window* window,
                const input::NativeWebKeyboardEvent& event) {
   const std::string id = MenuItemForKey(event);
   if (id.empty())
@@ -1019,51 +1125,50 @@ bool HandleKey(content::Shell* shell,
   return true;
 }
 
-// The shell's platform delegate, for the windows' titles.
-content::ShellPlatformDelegate* g_platform = nullptr;
-
 }  // namespace
 
-void UpdateWindowTitle(content::Shell* shell) {
-  if (g_platform && shell->web_contents())
-    g_platform->SetTitle(shell, shell->web_contents()->GetTitle());
+void FocusWindow(Window* window) {
+  PlatformFor(window->kind())->BringToFront(window);
 }
 
-void FocusWindow(content::Shell* shell) {
-#if BUILDFLAG(IS_MAC)
-  FocusNativeWindow(shell->window());
-#else
-  if (views::Widget* widget =
-          views::Widget::GetWidgetForNativeWindow(shell->window())) {
-    widget->Activate();
-  }
-#endif
-  if (shell->web_contents())
-    shell->web_contents()->Focus();
-}
-
-void SetWindowSizeLimits(content::Shell* shell,
+void SetWindowSizeLimits(Window* window,
                          const gfx::Size& minimum,
                          bool resizable) {
-#if BUILDFLAG(IS_MAC)
-  SetNativeWindowSizeLimits(shell->window(), minimum, resizable);
-#else
-  if (g_platform)
-    g_platform->SetWindowSizeLimits(shell, minimum, resizable);
+  PlatformFor(window->kind())->SetSizeLimits(window, minimum, resizable);
+}
+
+BrowserMainParts::BrowserMainParts() = default;
+BrowserMainParts::~BrowserMainParts() = default;
+
+void BrowserMainParts::PostCreateMainMessageLoop() {
+#if BUILDFLAG(IS_LINUX)
+  bluez::DBusBluezManagerWrapperLinux::Initialize();
 #endif
 }
 
-std::unique_ptr<content::ShellPlatformDelegate>
-BrowserMainParts::CreateShellPlatformDelegate() {
-  std::unique_ptr<content::ShellPlatformDelegate> platform;
-#if BUILDFLAG(IS_MAC)
-  if (zebkit_is_headless())
-    platform = CreateHeadlessPlatformDelegate();
+void BrowserMainParts::ToolkitInitialized() {
+#if BUILDFLAG(IS_LINUX)
+  ui::LinuxUi::SetInstance(ui::GetDefaultLinuxUi());
 #endif
-  if (!platform)
-    platform = std::make_unique<PlatformDelegate>();
-  g_platform = platform.get();
-  return platform;
+}
+
+int BrowserMainParts::PostCreateThreads() {
+  performance_manager_lifetime_ =
+      std::make_unique<performance_manager::PerformanceManagerLifetime>(
+          performance_manager::GraphFeatures::WithMinimal(), base::DoNothing());
+  return content::RESULT_CODE_NORMAL_EXIT;
+}
+
+void BrowserMainParts::WillRunMainMessageLoop(
+    std::unique_ptr<base::RunLoop>& run_loop) {
+  Window::SetMainMessageLoopQuitClosure(run_loop->QuitClosure());
+}
+
+void BrowserMainParts::PostDestroyThreads() {
+#if BUILDFLAG(IS_LINUX)
+  device::BluetoothAdapterFactory::Shutdown();
+  bluez::DBusBluezManagerWrapperLinux::Shutdown();
+#endif
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -1074,7 +1179,11 @@ void BrowserMainParts::PreCreateMainMessageLoop() {
 #endif
 
 int BrowserMainParts::PreMainMessageLoopRun() {
-  InitializeBrowserContexts();
+  browser_context_ = std::make_unique<Profile>(false);
+  off_the_record_browser_context_ = std::make_unique<Profile>(true);
+  // Persistent origin trials are needed before the first request.
+  browser_context_->GetOriginTrialsControllerDelegate();
+  off_the_record_browser_context_->GetOriginTrialsControllerDelegate();
   InstallClientHints();
   InstallPermissionHooks();
   InstallCertificateHooks();
@@ -1086,16 +1195,16 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InstallClientCertificateHooks();
   InstallNetworkHooks();
   AllowSchemes();
-  content::Shell::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
-  content::Shell::SetPopupHandler(base::BindRepeating(&HandlePopup));
+  Window::SetNewWindowHandler(base::BindRepeating(&HandleNewWindow));
+  Window::SetPopupHandler(base::BindRepeating(&HandlePopup));
   // Playwright's dialogs and file choosers, and file choosers without a
   // display cancelled (automation.cc).
   InstallAutomationHooks();
-  content::Shell::SetKeyboardEventHandler(base::BindRepeating(&HandleKey));
+  Window::SetKeyboardEventHandler(base::BindRepeating(&HandleKey));
 #if BUILDFLAG(IS_MAC)
   SetUpViews();
 #endif
-  content::Shell::Initialize(CreateShellPlatformDelegate());
+  InitializePlatforms();
   net::NetModule::SetResourceProvider(&NetResourceProvider);
   StartCdpFromCommandLine();
   return 0;
@@ -1114,12 +1223,18 @@ void BrowserMainParts::PostMainMessageLoopRun() {
   StopClientCertificateHooks();
   StopNetworkHooks();
   CloseAllViews();
-  content::Shell::Shutdown();
-  content::ShellBrowserMainParts::PostMainMessageLoopRun();
+  Window::Shutdown();
+  DCHECK(Window::windows().empty());
+  browser_context_.reset();
+  off_the_record_browser_context_.reset();
+#if BUILDFLAG(IS_LINUX)
+  ui::LinuxUi::SetInstance(nullptr);
+#endif
+  performance_manager_lifetime_.reset();
 }
 
 content::BrowserContext* GetBrowserContext() {
-  return content::ShellContentBrowserClient::Get()->browser_context();
+  return BrowserClient::Get()->browser_context();
 }
 
 content::BrowserContext* ProfileOf(zebkit_context* context) {
@@ -1380,7 +1495,7 @@ void zebkit_quit(void) {
                                                  // Embedded, the application ends
                                                  // the engine: zebkit_shutdown().
                                                  if (!g_embedded)
-                                                   content::Shell::Shutdown();
+                                                   zebkit::Window::Shutdown();
                                                }));
 }
 

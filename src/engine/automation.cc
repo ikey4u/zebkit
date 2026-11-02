@@ -78,9 +78,9 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
-#include "content/shell/browser/shell.h"
-#include "content/shell/browser/shell_download_manager_delegate.h"
-#include "content/shell/browser/shell_permission_manager.h"
+#include "zebkit/engine/window.h"
+#include "zebkit/engine/download_manager.h"
+#include "zebkit/engine/permission_manager.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "url/origin.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
@@ -689,7 +689,7 @@ class Automation : public content::WebContentsObserver,
   // frame takes to make.
   void FastFrames(bool fast) {
 #if defined(USE_AURA)
-    if (!zebkit_is_headless())
+    if (!HasNoDisplay(web_contents()))
       return;
     aura::Window* window = web_contents()->GetNativeView();
     aura::WindowTreeHost* host = window ? window->GetHost() : nullptr;
@@ -5315,9 +5315,9 @@ class Downloads : public content::DownloadManager::Observer,
       return;
     if (!directory_.IsValid() && !directory_.CreateUniqueTempDir())
       return;
-    if (auto* delegate = static_cast<content::ShellDownloadManagerDelegate*>(
+    if (auto* delegate = static_cast<EngineDownloadManagerDelegate*>(
             context->GetDownloadManagerDelegate())) {
-      delegate->SetDownloadBehaviorForTesting(directory_.GetPath());
+      delegate->SetDownloadDirectory(directory_.GetPath());
     }
     manager->AddObserver(this);
     managers_.insert(manager);
@@ -6188,7 +6188,7 @@ void InstallAutomationHooks() {
   installed = true;
   static base::NoDestructor<AutomationDialogs> dialogs;
   SetDialogObserver(dialogs.get());
-  content::Shell::SetFileChooserHandler(base::BindRepeating(
+  Window::SetFileChooserHandler(base::BindRepeating(
       [](content::RenderFrameHost* frame,
          scoped_refptr<content::FileSelectListener> listener,
          const blink::mojom::FileChooserParams& params) {
@@ -6202,7 +6202,7 @@ void InstallAutomationHooks() {
           return true;
         // As headless Chrome: no system dialog without a display; the
         // chooser is cancelled.
-        if (zebkit_is_headless()) {
+        if (HasNoDisplay(contents)) {
           listener->FileSelectionCanceled();
           return true;
         }

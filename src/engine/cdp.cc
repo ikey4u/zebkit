@@ -28,7 +28,6 @@
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_socket_factory.h"
 #include "content/public/common/content_switches.h"
-#include "content/shell/common/shell_switches.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
@@ -199,7 +198,7 @@ void StartCdpFromCommandLine() {
       // The server prints "DevTools listening on ws://...", as Chrome's
       // does, for clients that read it from stderr.
       if (!CdpListen(command_line.GetSwitchValueASCII(
-                         switches::kRemoteDebuggingAddress),
+                         "remote-debugging-address"),
                      port, &error)) {
         LOG(ERROR) << "CDP: " << error;
       }

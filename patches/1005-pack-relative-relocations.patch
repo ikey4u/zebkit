@@ -63,29 +63,6 @@ same work as before, from a smaller table.
      if not partitioned_library:
          # Strip the linked shared object file (if desired).
          # When use_mold=true, the linker creates both stripped and symbols
---- a/content/shell/BUILD.gn
-+++ b/content/shell/BUILD.gn
-@@ -18,6 +18,7 @@ import("//third_party/inspector_protocol/inspector_protocol.gni")
- import("//tools/grit/grit_rule.gni")
- import("//tools/grit/repack.gni")
- import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
-+import("//zebkit/relr/relr.gni")
- if (is_android) {
-   import("//build/config/android/config.gni")
- } else if (is_mac) {
-@@ -810,6 +811,10 @@ if (is_android) {
-     if ((is_linux || is_chromeos) && !is_component_build) {
-       configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
-     }
-+
-+    if (zebkit_pack_relocations) {
-+      deps += [ "//zebkit/relr" ]
-+    }
-   }
- 
-   if (is_fuchsia) {
-
-new file mode 100644
 --- /dev/null
 +++ b/zebkit/relr/BUILD.gn
 @@ -0,0 +1,37 @@

@@ -54,7 +54,7 @@ skia_use_dawn = false
 
 # On-device machine learning: WebNN's TFLite and LiteRT back ends. (Speech
 # recognition and translation are services of Chrome's own browser layer,
-# which the content shell does not link; their switches only trip Chrome's
+# which the engine does not link; their switches only trip Chrome's
 # tests.)
 webnn_use_tflite = false
 webnn_use_litert = false
@@ -87,16 +87,6 @@ use_vaapi = false
 media_use_openh264 = false
 # Screen capture through the desktop portal and PipeWire.
 rtc_use_pipewire = false
-
-# The harness Chromium's web tests run in, which the content shell links
-# (patches/1006-content-shell-without-web-tests.patch).
-content_shell_web_tests = false
-
-# Chromium's test support, which the shell links for the browser tests that
-# run in it, and with it a benchmark library, the on-device model service,
-# TFLite and the SPIR-V tools
-# (patches/1009-content-shell-without-test-support.patch).
-content_shell_test_support = false
 
 # Locals initialized to zero by the compiler: hardening against reads of
 # uninitialized memory, as Chrome's official builds do on Linux but not on

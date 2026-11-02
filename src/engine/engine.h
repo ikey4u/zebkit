@@ -1,5 +1,4 @@
-// The engine inside libzebkit: Chromium's content layer started as a
-// library, on the content shell's browser classes for now.
+// The engine inside libzebkit: Chromium's content layer started as a library.
 
 #ifndef ZEBKIT_ENGINE_ENGINE_H_
 #define ZEBKIT_ENGINE_ENGINE_H_
@@ -9,17 +8,21 @@
 #include <variant>
 
 #include "base/files/file_path.h"
+#include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "build/build_config.h"
+#include "components/memory_system/memory_system.h"
+#include "content/public/app/content_main_delegate.h"
 #include "content/public/browser/browser_main_parts.h"
-#include "content/shell/app/shell_main_delegate.h"
-#include "content/shell/browser/shell_browser_context.h"
-#include "content/shell/browser/shell_browser_main_parts.h"
-#include "content/shell/browser/shell_content_browser_client.h"
-#include "content/shell/common/shell_content_client.h"
-#include "content/shell/renderer/shell_content_renderer_client.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
+#include "content/public/renderer/content_renderer_client.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
+#include "zebkit/engine/origin_trial_policy.h"
 #include "zebkit/engine/path_utf8.h"
+#include "zebkit/engine/profile.h"
+#include "zebkit/engine/window.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace base {
@@ -32,27 +35,39 @@ class BrowserMainRunner;
 class BrowserContext;
 class RenderFrame;
 class WebContents;
-class Shell;
+}
+
+namespace performance_manager {
+class PerformanceManagerLifetime;
 }
 
 // A context (<zebkit/zebkit.h>): a profile in memory, of its own.
 struct zebkit_context {
-  std::unique_ptr<content::ShellBrowserContext> profile;
+  std::unique_ptr<zebkit::Profile> profile;
 };
 
 namespace zebkit {
 
+class BrowserMainParts;
+class ContentClient;
+class BrowserClient;
+class RendererClient;
+
 // The delegate of every zebkit process. In the browser process it starts
 // the browser with BrowserMainRunner, as Android WebView does, so that the
 // application's ready callback runs between initialization and the loop.
-class MainDelegate : public content::ShellMainDelegate {
+class MainDelegate : public content::ContentMainDelegate {
  public:
   MainDelegate(zebkit_task_func ready, void* data, bool external_loop = false);
   ~MainDelegate() override;
   void ShutdownBrowser();
 
   std::optional<int> BasicStartupComplete() override;
+  bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
+  bool ShouldInitializeMojo(InvokedIn invoked_in) override;
+  void PreSandboxStartup() override;
   std::optional<int> PreBrowserMain() override;
+  std::optional<int> PostEarlyInitialization(InvokedIn invoked_in) override;
   bool ShouldLoadV8Snapshot(const std::string& process_type) override;
   content::ContentClient* CreateContentClient() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
@@ -66,17 +81,28 @@ class MainDelegate : public content::ShellMainDelegate {
   void* data_;
   bool external_loop_;
   std::unique_ptr<content::BrowserMainRunner> browser_runner_;
-  std::unique_ptr<content::ShellContentClient> content_client_;
-  std::unique_ptr<content::ShellContentBrowserClient> browser_client_;
-  std::unique_ptr<content::ShellContentRendererClient> renderer_client_;
+  std::unique_ptr<ContentClient> content_client_;
+  std::unique_ptr<BrowserClient> browser_client_;
+  std::unique_ptr<RendererClient> renderer_client_;
+  memory_system::MemorySystem memory_system_;
 };
 
-// The content shell's, with the application's URL schemes (scheme.cc).
-class ContentClient : public content::ShellContentClient {
+// The application's URL schemes (scheme.cc) and the engine's resources.
+class ContentClient : public content::ContentClient {
  public:
+  std::u16string GetLocalizedString(int message_id) override;
+  std::string_view GetDataResource(int resource_id,
+                                   ui::ResourceScaleFactor scale_factor) override;
+  scoped_refptr<base::RefCountedMemory> GetDataResourceBytes(int resource_id) override;
+  std::string GetDataResourceString(int resource_id) override;
+  gfx::Image& GetNativeImageNamed(int resource_id) override;
+  blink::OriginTrialPolicy* GetOriginTrialPolicy() override;
   void AddAdditionalSchemes(Schemes* schemes) override;
   // Chrome's PDF viewer, as a plugin of Chromium's own (pdf_viewer_renderer.cc).
   void AddPlugins(std::vector<content::WebPluginInfo>* plugins) override;
+
+ private:
+  OriginTrialPolicyImpl origin_trial_policy_;
 };
 
 // The client hints delegate of the browser contexts (client_hints.cc).
@@ -100,10 +126,29 @@ void InstallChromeObject(content::RenderFrame* render_frame);
 // The frame's media elements for captures (media_capture_renderer.cc).
 void InstallMediaCaptureAgent(content::RenderFrame* render_frame);
 
-class RendererClient : public content::ShellContentRendererClient {
+class RendererClient : public content::ContentRendererClient {
  public:
-  RendererClient() : content::ShellContentRendererClient(false) {}
   void RenderThreadStarted() override;
+  void SetUpWebAssemblyTrapHandler() override;
+  void PrepareErrorPage(content::RenderFrame* render_frame,
+                        const blink::WebURLError& error,
+                        const std::string& http_method,
+                        content::mojom::AlternativeErrorPageOverrideInfoPtr
+                            alternative_error_page_info,
+                        std::string* error_html) override;
+  void PrepareErrorPageForHttpStatusError(
+      content::RenderFrame* render_frame,
+      const blink::WebURLError& error,
+      const std::string& http_method,
+      int http_status,
+      content::mojom::AlternativeErrorPageOverrideInfoPtr
+          alternative_error_page_info,
+      std::string* error_html) override;
+  std::unique_ptr<blink::URLLoaderThrottleProvider>
+  CreateURLLoaderThrottleProvider(
+      blink::URLLoaderThrottleProviderType provider_type) override;
+  std::unique_ptr<blink::WebPrescientNetworking> CreatePrescientNetworking(
+      content::RenderFrame* render_frame) override;
   // Printing in the page (print.cc).
   void RenderFrameCreated(content::RenderFrame* render_frame) override;
   // PDF in pages (pdf_viewer_renderer.cc).
@@ -119,8 +164,56 @@ class RendererClient : public content::ShellContentRendererClient {
       v8::Local<v8::Context> context) override;
 };
 
-class BrowserClient : public content::ShellContentBrowserClient {
+class BrowserClient : public content::ContentBrowserClient {
  public:
+  // The one of the process; its contexts are on its main parts.
+  static BrowserClient* Get();
+  BrowserClient();
+  ~BrowserClient() override;
+  Profile* browser_context();
+  Profile* off_the_record_browser_context();
+
+  void CreateFeatureListAndFieldTrials();
+  std::vector<std::unique_ptr<blink::URLLoaderThrottle>> CreateURLLoaderThrottles(
+      const network::ResourceRequest& request,
+      content::BrowserContext* browser_context,
+      const base::RepeatingCallback<content::WebContents*()>& wc_getter,
+      content::NavigationUIData* navigation_ui_data,
+      content::FrameTreeNodeId frame_tree_node_id,
+      std::optional<int64_t> navigation_id) override;
+  bool HasCustomSchemeHandler(content::BrowserContext* browser_context,
+                              const std::string& scheme) override;
+  bool AreIsolatedWebAppsEnabled(content::BrowserContext* browser_context) override;
+  bool ShouldUrlUseApplicationIsolationLevel(content::BrowserContext* browser_context,
+                                             const GURL& url) override;
+  device::GeolocationSystemPermissionManager*
+  GetGeolocationSystemPermissionManager() override;
+  std::string GetDefaultDownloadName() override;
+  content::GeneratedCodeCacheSettings GetGeneratedCodeCacheSettings(
+      content::BrowserContext* context) override;
+  content::SpeechRecognitionManagerDelegate*
+  CreateSpeechRecognitionManagerDelegate() override;
+  void ExposeInterfacesToRenderer(
+      service_manager::BinderRegistry* registry,
+      blink::AssociatedInterfaceRegistry* associated_registry,
+      content::RenderProcessHost* render_process_host) override;
+  void ExposeInterfacesToChild(
+      mojo::BinderMapWithContext<content::BrowserChildProcessHost*>* map) override;
+  void RegisterBrowserInterfaceBindersForFrame(
+      content::RenderFrameHost* render_frame_host,
+      mojo::BinderMapWithContext<content::RenderFrameHost*>* map) override;
+  void OpenURL(content::SiteInstance* site_instance,
+               const content::OpenURLParams& params,
+               base::OnceCallback<void(content::WebContents*)> callback) override;
+  base::DictValue GetNetLogConstants() override;
+  base::FilePath GetSandboxedStorageServiceDataDirectory() override;
+  base::FilePath GetFirstPartySetsDirectory() override;
+  std::optional<base::FilePath> GetLocalTracesDirectory() override;
+  blink::UserAgentMetadata GetUserAgentMetadata() override;
+  void OnNetworkServiceCreated(network::mojom::NetworkService* network_service) override;
+  std::vector<base::FilePath> GetNetworkContextsParentDirectory() override;
+  bool HasErrorPage(int http_status_code) override;
+  void OnWebContentsCreated(content::WebContents* web_contents) override;
   content::WebAuthenticationDelegate* GetWebAuthenticationDelegate() override;
   std::unique_ptr<content::AuthenticatorRequestClientDelegate>
   GetWebAuthenticationRequestDelegate(content::RenderFrameHost* frame) override;
@@ -168,7 +261,7 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const std::string& scheme,
       content::FrameTreeNodeId frame_tree_node_id) override;
   // HTTP authentication, answered with automation's credentials
-  // (automation.cc), else the shell's.
+  // (automation.cc).
   std::unique_ptr<content::LoginDelegate> CreateLoginDelegate(
       const net::AuthChallengeInfo& auth_info,
       content::WebContents* web_contents,
@@ -224,11 +317,6 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const base::FilePath& relative_partition_path,
       network::mojom::NetworkContextParams* params,
       cert_verifier::mojom::CertVerifierCreationParams* cert_params) override;
-  void ConfigureNetworkContextParamsForShell(
-      content::BrowserContext* context,
-      network::mojom::NetworkContextParams* context_params,
-      cert_verifier::mojom::CertVerifierCreationParams*
-          cert_verifier_creation_params) override;
   std::string GetProduct() override;
   std::string GetUserAgent() override;
   std::string GetAcceptLangs(content::BrowserContext* context) override;
@@ -257,23 +345,39 @@ class BrowserClient : public content::ShellContentBrowserClient {
       const GURL& site_url,
       std::optional<SpareProcessRefusedByEmbedderReason>& refused_reason)
       override;
+
+ private:
+  raw_ptr<BrowserMainParts> main_parts_ = nullptr;
 };
 
-// The content shell's, without its first window and without a DevTools
-// port nobody asked for.
-class BrowserMainParts : public content::ShellBrowserMainParts {
+// The browser's start and end around its loop.
+class BrowserMainParts : public content::BrowserMainParts {
  public:
-  int PreMainMessageLoopRun() override;
-  void PostMainMessageLoopRun() override;
+  BrowserMainParts();
+  ~BrowserMainParts() override;
 
+  // content::BrowserMainParts
+  void PostCreateMainMessageLoop() override;
+  void ToolkitInitialized() override;
+  int PostCreateThreads() override;
+  int PreMainMessageLoopRun() override;
+  void WillRunMainMessageLoop(std::unique_ptr<base::RunLoop>& run_loop) override;
+  void PostMainMessageLoopRun() override;
+  void PostDestroyThreads() override;
 #if BUILDFLAG(IS_MAC)
   void PreCreateMainMessageLoop() override;
 #endif
 
- protected:
-  void InitializeMessageLoopContext() override {}
-  std::unique_ptr<content::ShellPlatformDelegate> CreateShellPlatformDelegate()
-      override;
+  Profile* browser_context() { return browser_context_.get(); }
+  Profile* off_the_record_browser_context() {
+    return off_the_record_browser_context_.get();
+  }
+
+ private:
+  std::unique_ptr<Profile> browser_context_;
+  std::unique_ptr<Profile> off_the_record_browser_context_;
+  std::unique_ptr<performance_manager::PerformanceManagerLifetime>
+      performance_manager_lifetime_;
 };
 
 // The directory libzebkit is in, which has the engine's data files.
@@ -301,12 +405,11 @@ void SetUpBundle(const base::FilePath& library);
 bool EnterHelperSandbox(int argc, char** argv);
 void SetUpApplication(bool headless);
 void SetUpViews();
-void FocusNativeWindow(gfx::NativeWindow window);
-// The smallest content size the window may have, and whether it resizes.
-void SetNativeWindowSizeLimits(gfx::NativeWindow window,
-                               const gfx::Size& minimum,
-                               bool resizable);
-std::unique_ptr<content::ShellPlatformDelegate> CreateHeadlessPlatformDelegate();
+// The NSApplication that Chromium's event handling expects, when the engine
+// owns the loop.
+void RegisterApplication();
+// The resource pack in the framework.
+base::FilePath ResourcePackPath();
 #endif
 
 // The browser context views are created in.
@@ -318,7 +421,7 @@ content::BrowserContext* ProfileOf(zebkit_context* context);
 void ConfigureContext(content::BrowserContext* profile);
 // A closed context's profile, deleted when nothing uses it (view.cc), and what the
 // engine keeps of it: automation's, the cookie setting's, the worker policy's.
-void DestroyProfileWhenUnused(content::ShellBrowserContext* profile, int tries);
+void DestroyProfileWhenUnused(Profile* profile, int tries);
 void ForgetAutomationContext(content::BrowserContext* profile);
 void ForgetContextCookies(content::BrowserContext* profile);
 void ForgetWorkerPolicy(content::BrowserContext* profile);
@@ -332,12 +435,20 @@ void CdpStop();
 // Starts CDP if the command line asks for it, as Chrome's switches do.
 void StartCdpFromCommandLine();
 
-// The window of a view: its title again, from the application's or the
-// page's; brought to the front.
-void UpdateWindowTitle(content::Shell* shell);
-void FocusWindow(content::Shell* shell);
+// zebkit_view_new_in(), of a kind (window.h).
+zebkit_view* NewView(zebkit_context* context,
+                     const char* url,
+                     int width,
+                     int height,
+                     Window::Kind kind);
+// Nobody sees the page's window: an off-screen view, or all under --headless.
+// What a window would show is then answered without one.
+bool HasNoDisplay(content::WebContents* contents);
+
+// The window of a view brought to the front.
+void FocusWindow(Window* window);
 // zebkit_view_set_size_limits().
-void SetWindowSizeLimits(content::Shell* shell,
+void SetWindowSizeLimits(Window* window,
                          const gfx::Size& minimum,
                          bool resizable);
 
@@ -362,8 +473,8 @@ bool DetachViewNative(zebkit_view* view);
 // The view is closing, and its window with it.
 void ForgetAttachedNative(zebkit_view* view);
 
-// Closes the views the application holds, before the shell closes its
-// windows (view.cc).
+// Closes the views the application holds, before the rest of the windows
+// close (view.cc).
 void CloseAllViews();
 
 }  // namespace zebkit

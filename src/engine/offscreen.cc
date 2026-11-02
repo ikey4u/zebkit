@@ -12,10 +12,13 @@
 // capturer works on damage: a page that does not change draws nothing and
 // sends nothing.
 //
-// The view is a content shell window like any other, without a display
-// (--headless): Linux's headless Ozone platform, or on macOS a view in no
-// window. Linux gives each root a separate headless display. macOS supplies
-// a per-widget screen snapshot before compositor and renderer synchronization.
+// The view is a Window (window.h) with no window of the system's, whether or
+// not the process has others: under --headless Linux's headless Ozone platform,
+// with a display of its own for each root; with a display, a root with a stub
+// platform window, and macOS a view in no window. Its scale is its own: the
+// headless display's, Chromium's capture scale on Windows and on Linux with a
+// display, and on macOS a per-widget screen snapshot before compositor and
+// renderer synchronization.
 //
 // Input goes to the page's widgets as the window's events would
 // (RenderWidgetHost::Forward*), an input method's composition through the
@@ -72,7 +75,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/shell/browser/shell.h"
+#include "zebkit/engine/window.h"
 #include "media/base/video_frame_metadata.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -102,7 +105,7 @@
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/webauthn.h"
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 #include "base/task/single_thread_task_runner.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #endif
@@ -418,8 +421,8 @@ class Offscreen : public content::WebContentsObserver,
   bool mouse_in_popup_ = false;
   // Configure backing displays; macOS overrides the widget snapshot separately.
   void UpdateDisplay();
-#if BUILDFLAG(IS_WIN)
-  // A view's scale on Windows (ApplyScale()).
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+  // A view's scale without a display of its own (ApplyScale()).
   void ApplyScale();
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -945,7 +948,7 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
 #endif
   PlaceWindow();
   AttachMainWidget();
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   ApplyScale();
 #endif
 }
@@ -996,6 +999,9 @@ gfx::Size Offscreen::PixelSize(content::RenderWidgetHostView* view) const {
 }
 
 void Offscreen::UpdateDisplay() {
+  // A process with a display has its own screen, which no view changes.
+  if (!zebkit_is_headless())
+    return;
 #if BUILDFLAG(IS_LINUX)
   auto* manager = display::HeadlessScreenManager::Get();
   gfx::Size screen_size = size_;
@@ -1053,7 +1059,7 @@ void Offscreen::UpdateDisplay() {
 void Offscreen::PlaceWindow() {
   // The page the view's size, whatever the window's frame takes; the
   // display gives it its scale.
-  if (content::Shell* shell = view_->shell()) {
+  if (Window* window = view_->window()) {
 #if BUILDFLAG(IS_LINUX)
     auto pin = [&] {
       auto* native = web_contents() ? web_contents()->GetNativeView() : nullptr;
@@ -1068,23 +1074,36 @@ void Offscreen::PlaceWindow() {
     };
     pin();
 #endif
-    shell->ResizeWebContentForTests(size_);
+    window->ResizeContents(size_);
 #if BUILDFLAG(IS_LINUX)
     pin();
 #endif
   }
 }
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 // Windows' headless screen moves displays around when one is added, and a window
-// takes a display's scale only as it is resized. Chromium's own way to draw one
-// page at a scale of its own, what capturing at high DPI uses, needs no display:
-// the page's devicePixelRatio and its frames follow, other views are not touched,
-// and a popup takes its parent's.
+// takes a display's scale only as it is resized; on Linux with a display the
+// screen is the system's. Chromium's own way to draw one page at a scale of its
+// own, what capturing at high DPI uses, needs no display: the page's
+// devicePixelRatio and its frames follow, other views are not touched, and a
+// popup takes its parent's. It multiplies the screen's scale.
 void Offscreen::ApplyScale() {
   auto* view = static_cast<content::RenderWidgetHostViewBase*>(MainView());
-  if (view && view->GetScaleOverrideForCapture() != own_scale_)
-    view->SetScaleOverrideForCapture(own_scale_);
+  if (!view)
+    return;
+#if BUILDFLAG(IS_LINUX)
+  if (zebkit_is_headless())
+    return;
+  const float screen_scale = display::Screen::Get()
+                                 ->GetDisplayNearestView(view->GetNativeView())
+                                 .device_scale_factor();
+  const float override_scale = own_scale_ / (screen_scale > 0 ? screen_scale : 1);
+#else
+  const float override_scale = own_scale_;
+#endif
+  if (view->GetScaleOverrideForCapture() != override_scale)
+    view->SetScaleOverrideForCapture(override_scale);
 }
 #endif
 
@@ -1093,14 +1112,20 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
     size_ = size;
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   // The scale first: the window's new size is then laid out and drawn at it, in one
   // step. In the other order a frame could keep what was not yet drawn for good.
   ApplyScale();
 #endif
   UpdateDisplay();
   PlaceWindow();
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
+  if (zebkit_is_headless()) {
+    main_.SetPixelSize(gfx::ScaleToCeiledSize(size_, this->scale()));
+    return;
+  }
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   if (auto* main = MainWidget())
     main->SynchronizeVisualProperties();
 #endif
@@ -1122,7 +1147,7 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
   }
 #endif
   main_.SetPixelSize(gfx::ScaleToCeiledSize(size_, this->scale()));
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   // The page's last frame at the new size can come before the capturer has it, and
   // an idle page sends no other.
   for (int ms : {150, 500, 1200}) {
@@ -1140,7 +1165,7 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
 }
 
 void Offscreen::AttachMainWidget() {
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   // A new renderer's view, after a navigation, has the scale too.
   ApplyScale();
 #endif
@@ -1776,14 +1801,16 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
                                           int height,
                                           float scale) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+#if BUILDFLAG(IS_WIN)
   if (!zebkit_is_headless()) {
     LOG(ERROR) << "zebkit: off-screen views are for a process without "
-                  "windows (--headless)";
+                  "windows on Windows (--headless)";
     return nullptr;
   }
+#endif
   const gfx::Size size(width > 0 ? width : 800, height > 0 ? height : 600);
-  zebkit_view* view =
-      zebkit_view_new_in(context, url, size.width(), size.height());
+  zebkit_view* view = zebkit::NewView(context, url, size.width(), size.height(),
+                                      zebkit::Window::Kind::kOffscreen);
   if (!view)
     return nullptr;
   // Deleted with the page (Offscreen::WebContentsDestroyed).

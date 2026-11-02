@@ -1,0 +1,16 @@
+Aura: the platform window of a root, the embedder's to choose.
+
+An embedder's off-screen view has a root with no window of the system's in a
+process whose Ozone platform has windows. The factory delegate Aura has for tests
+is the one place to choose that, so it is allowed outside tests.
+
+--- a/ui/aura/window_tree_host_platform.cc
++++ b/ui/aura/window_tree_host_platform.cc
+@@ -250,7 +250,6 @@
+ // static
+ void WindowTreeHostPlatform::SetPlatformWindowFactoryDelegateForTesting(
+     PlatformWindowFactoryDelegateForTesting* delegate) {
+-  CHECK_IS_TEST();
+   g_platform_window_factory_delegate_for_testing = delegate;
+ }
+ 

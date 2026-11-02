@@ -18,7 +18,7 @@
 #include "base/task/thread_pool.h"
 #include "components/os_crypt/async/browser/key_provider.h"
 #include "components/os_crypt/async/common/algorithm.mojom.h"
-#include "content/shell/common/shell_switches.h"
+#include "zebkit/engine/profile.h"
 #include "zebkit/engine/cookies.h"
 #include "zebkit/engine/path_utf8.h"
 
@@ -86,7 +86,7 @@ class CookieKeyProvider : public os_crypt_async::KeyProvider {
     const base::CommandLine& command = *base::CommandLine::ForCurrentProcess();
     base::FilePath directory = command.GetSwitchValuePath("user-data-dir");
     if (directory.empty())
-      directory = command.GetSwitchValuePath(switches::kContentShellUserDataDir);
+      directory = command.GetSwitchValuePath(kUserDataDirSwitch);
     directory = base::MakeAbsoluteFilePath(directory.empty() ? base::FilePath(FILE_PATH_LITERAL(".")) : directory);
     base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},

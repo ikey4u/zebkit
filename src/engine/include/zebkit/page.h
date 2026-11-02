@@ -47,7 +47,7 @@ typedef enum {
     /* To zebkit_view_on_dialog()'s function when there is one, held until
      * it is answered. Otherwise held for a CDP client attached to the page
      * (Page.javascriptDialogOpening, Page.handleJavaScriptDialog), as
-     * headless Chrome holds them. Otherwise what the content shell does: on
+     * headless Chrome holds them. Otherwise what the engine does by itself: on
      * macOS a window's dialog is the system's alert, elsewhere and without
      * a window it is dismissed at once (alert returns, confirm is false,
      * prompt null) and beforeunload leaves. The default. */

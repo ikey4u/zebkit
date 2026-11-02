@@ -15,7 +15,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "content/public/browser/web_contents.h"
-#include "content/shell/browser/shell.h"
+#include "zebkit/engine/window.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -59,9 +59,9 @@ std::map<const zebkit_view*, Attached>& AttachedViews() {
 }
 
 views::Widget* WidgetOf(zebkit_view* view) {
-  content::Shell* shell = view ? view->shell() : nullptr;
-  return shell ? views::Widget::GetWidgetForNativeWindow(shell->window())
-               : nullptr;
+  Window* window = view ? view->window() : nullptr;
+  return window ? views::Widget::GetWidgetForNativeWindow(window->native_window())
+                : nullptr;
 }
 
 // The WebView in @view's tree that shows @contents.

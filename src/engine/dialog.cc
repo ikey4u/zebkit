@@ -1,7 +1,7 @@
 // JavaScript dialogs (<zebkit/page.h>): alert(), confirm(), prompt(), a
 // beforeunload handler's "leave this page?", held open and reported to the
 // application, or to a CDP client, as each view's policy says, instead of
-// the content shell's dismissal.
+// the system's dialog, or their dismissal.
 //
 // Content asks the window's JavaScriptDialogManager for each dialog, after
 // telling every DevTools session with the Page domain enabled
@@ -37,8 +37,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "content/shell/browser/shell.h"
-#include "content/shell/browser/shell_javascript_dialog_manager.h"
+#include "zebkit/engine/engine.h"
+#include "zebkit/engine/js_dialog_manager.h"
+#include "zebkit/engine/window.h"
 #include "url/gurl.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/settings.h"
@@ -100,7 +101,7 @@ class DialogState : public content::WebContentsObserver,
   }
 
   // What becomes of a new dialog: held, or answered now (true or false).
-  enum class Decision { kHold, kAccept, kDismiss, kShell };
+  enum class Decision { kHold, kAccept, kDismiss, kNative };
   Decision Decide() {
     switch (Policy()) {
       case ZEBKIT_DIALOG_POLICY_HOLD:
@@ -115,7 +116,7 @@ class DialogState : public content::WebContentsObserver,
              g_dialog_observer->HoldsDialogs(web_contents()))) {
           return Decision::kHold;
         }
-        return Decision::kShell;
+        return Decision::kNative;
     }
   }
 
@@ -255,7 +256,7 @@ DialogState* StateOf(zebkit_view* view) {
   return view ? StateOf(view->web_contents()) : nullptr;
 }
 
-// A shell window's manager: the policy's, and the shell's own when the
+// A window's manager: the policy's, and the system's own when the
 // policy leaves the dialog to it (the system's alert on macOS, nothing on
 // Linux and without a window).
 class DialogManager : public content::JavaScriptDialogManager {
@@ -271,12 +272,12 @@ class DialogManager : public content::JavaScriptDialogManager {
                            bool* did_suppress_message) override {
     DialogState* state = StateOf(contents);
     DialogState::Decision decision = state->Decide();
-    if (decision == DialogState::Decision::kShell) {
-      if (zebkit_is_headless()) {
+    if (decision == DialogState::Decision::kNative) {
+      if (HasNoDisplay(contents)) {
         *did_suppress_message = true;
         return;
       }
-      shell_.RunJavaScriptDialog(contents, frame, type, message,
+      native_.RunJavaScriptDialog(contents, frame, type, message,
                                  default_prompt, std::move(callback),
                                  did_suppress_message);
       return;
@@ -301,12 +302,12 @@ class DialogManager : public content::JavaScriptDialogManager {
                              DialogClosedCallback callback) override {
     DialogState* state = StateOf(contents);
     DialogState::Decision decision = state->Decide();
-    if (decision == DialogState::Decision::kShell) {
-      if (zebkit_is_headless()) {
+    if (decision == DialogState::Decision::kNative) {
+      if (HasNoDisplay(contents)) {
         std::move(callback).Run(true, std::u16string());
         return;
       }
-      shell_.RunBeforeUnloadDialog(contents, frame, is_reload,
+      native_.RunBeforeUnloadDialog(contents, frame, is_reload,
                                    std::move(callback));
       return;
     }
@@ -325,13 +326,13 @@ class DialogManager : public content::JavaScriptDialogManager {
         state && state->AnsweredElsewhere(accept, prompt_override)) {
       return true;
     }
-    return shell_.HandleJavaScriptDialog(contents, accept, prompt_override);
+    return native_.HandleJavaScriptDialog(contents, accept, prompt_override);
   }
 
   void CancelDialogs(content::WebContents* contents, bool reset_state) override {
     if (DialogState* state = DialogState::FromWebContents(contents))
       state->CancelAll();
-    shell_.CancelDialogs(contents, reset_state);
+    native_.CancelDialogs(contents, reset_state);
   }
 
  private:
@@ -360,13 +361,13 @@ class DialogManager : public content::JavaScriptDialogManager {
     }
   }
 
-  content::ShellJavaScriptDialogManager shell_;
+  JavaScriptDialogManagerImpl native_;
 };
 
 }  // namespace
 
 std::unique_ptr<content::JavaScriptDialogManager> CreateDialogManager(
-    content::Shell* shell) {
+    Window* window) {
   return std::make_unique<DialogManager>();
 }
 
@@ -380,8 +381,8 @@ void ReportPrintDialog(content::WebContents* contents,
   if (!state)
     return;
   DialogState::Decision decision = state->Decide();
-  // Nobody to tell: print() does nothing, as in the content shell.
-  if (decision == DialogState::Decision::kShell ||
+  // Nobody to tell: print() does nothing.
+  if (decision == DialogState::Decision::kNative ||
       (decision == DialogState::Decision::kHold && !state->on_dialog)) {
     return;
   }

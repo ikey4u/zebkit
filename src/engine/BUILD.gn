@@ -9,6 +9,7 @@ import("//build/config/features.gni")
 import("//build/config/ozone.gni")
 import("//build/config/sysroot.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
+import("//tools/grit/repack.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
 import("//v8/gni/v8.gni")
 import("//zebkit/relr/relr.gni")
@@ -109,7 +110,6 @@ if (is_mac) {
 }
 
 action("vendor_sources") {
-  testonly = true
   script = "vendor/gen_vendor.py"
   inputs = [ "vendor/gen_vendor.py" ]
   deps = _vendored_libraries
@@ -144,7 +144,6 @@ action("vendor_sources") {
 }
 
 source_set("vendor") {
-  testonly = true
   # On Windows no code: the linker's export of one name for another.
   sources = filter_include(get_target_outputs(":vendor_sources"),
                            [
@@ -251,6 +250,61 @@ action("pdf_viewer_script") {
   ]
 }
 
+# The engine's resources: everything Chromium's content layer may ask for, cut
+# down at packaging (scripts/trim-pak.py).
+repack("pak") {
+  sources = [
+    "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
+    "$root_gen_dir/components/ukm_resources.pak",
+    "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
+    "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
+    "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
+    "$root_gen_dir/content/content_resources.pak",
+    "$root_gen_dir/content/gpu_resources.pak",
+    "$root_gen_dir/content/histograms_resources.pak",
+    "$root_gen_dir/content/process_resources.pak",
+    "$root_gen_dir/content/quota_internals_resources.pak",
+    "$root_gen_dir/content/service_worker_resources.pak",
+    "$root_gen_dir/content/traces_internals_resources.pak",
+    "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
+    "$root_gen_dir/net/net_resources.pak",
+    "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
+    "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
+    "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
+    "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
+    "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
+    "$root_gen_dir/third_party/blink/public/strings/permission_element_strings_en-US.pak",
+    "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
+    "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
+    "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
+    "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
+    "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
+    "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
+    "$root_gen_dir/ui/webui/resources/webui_resources.pak",
+  ]
+  deps = [
+    "//base/tracing/protos:chrome_track_event_resources",
+    "//components/ukm/debug:resources",
+    "//content:content_resources",
+    "//content/browser/resources",
+    "//content/browser/resources/media:resources",
+    "//content/browser/tracing:resources",
+    "//content/browser/webrtc/resources",
+    "//mojo/public/js:resources",
+    "//net:net_resources",
+    "//third_party/blink/public:devtools_inspector_resources",
+    "//third_party/blink/public:resources",
+    "//third_party/blink/public:scaled_resources_100_percent",
+    "//third_party/blink/public/strings",
+    "//third_party/blink/public/strings:permission_element_generated_strings",
+    "//third_party/blink/public/strings:permission_element_strings",
+    "//ui/resources",
+    "//ui/strings",
+    "//ui/webui/resources",
+  ]
+  output = "$root_out_dir/zebkit.pak"
+}
+
 _sources = [
   "pdf_viewer_renderer.cc",
   "app.cc",
@@ -283,7 +337,36 @@ _sources = [
   "devtools.cc",
   "dialog.cc",
   "drag.cc",
+  "accept_language_delegate.cc",
+  "accept_language_delegate.h",
+  "background_sync_controller.cc",
+  "background_sync_controller.h",
+  "client_defaults.cc",
+  "content_index_provider.cc",
+  "content_index_provider.h",
+  "content_names.h",
+  "download_manager.cc",
+  "download_manager.h",
   "engine.cc",
+  "file_select.cc",
+  "file_select.h",
+  "js_dialog_manager.cc",
+  "js_dialog_manager.h",
+  "origin_trial_policy.cc",
+  "origin_trial_policy.h",
+  "permission_manager.cc",
+  "permission_manager.h",
+  "profile.cc",
+  "profile.h",
+  "protocol_handler_delegate.cc",
+  "protocol_handler_delegate.h",
+  "protocol_handlers.cc",
+  "protocol_handlers.h",
+  "speech_delegate.cc",
+  "speech_delegate.h",
+  "window.cc",
+  "window.h",
+  "window_platform.h",
   "host_loop.cc",
   "host_loop.h",
   "startup_settings.cc",
@@ -394,9 +477,29 @@ _deps = [
   "//content/public/browser",
   "//content/public/common",
   "//content/public/renderer",
-  "//content/shell:content_shell_app",
-  "//content/shell:content_shell_lib",
-  "//content/shell:pak",
+  ":pak",
+  "//components/crash/core/common:crash_key",
+  "//components/custom_handlers",
+  "//components/embedder_support",
+  "//components/embedder_support:user_agent",
+  "//components/input",
+  "//components/keyed_service/content",
+  "//components/memory_system",
+  "//components/network_hints/browser",
+  "//components/network_hints/renderer",
+  "//components/network_session_configurator/common",
+  "//components/origin_trials:browser",
+  "//components/origin_trials:common",
+  "//components/performance_manager",
+  "//components/url_formatter",
+  "//content/public/child",
+  "//content/public/gpu",
+  "//content/public/utility",
+  "//device/bluetooth",
+  "//services/network:network_service",
+  "//ui/color:color_headers",
+  "//ui/resources",
+  "//ui/shell_dialogs",
   "//gin",
   "//net",
   "//net:net_resources",
@@ -417,9 +520,22 @@ _deps = [
   "//v8",
   "//device/fido",
 ]
+if (use_aura) {
+  _deps += [
+    "//ui/aura",
+    "//ui/platform_window",
+    "//ui/platform_window/stub",
+    "//ui/wm",
+  ]
+}
+if (is_mac) {
+  # The system's location permission (client_defaults.cc).
+  _deps += [ "//services/device/public/cpp/geolocation" ]
+}
 if (is_linux) {
   # The refusal to start without a sandbox (engine.cc).
   _deps += [
+    "//ui/linux:linux_ui_factory",
     "//sandbox/linux:sandbox_services",
     "//sandbox/policy",
   ]
@@ -463,6 +579,7 @@ if (ozone_platform_x11) {
   _deps += [
     "//ui/gfx/x",
     "//ui/platform_window",
+  "//ui/platform_window/stub",
   ]
 }
 _deps += _vendored_libraries
@@ -475,13 +592,15 @@ declare_args() {
 }
 
 if (is_win) {
-  _sources += [ "attach.cc" ]
+  _sources += [
+    "attach.cc",
+    "window_views.cc",
+  ]
 
   # zebkit.dll and its import library zebkit.dll.lib. What it exports is what
   # the headers mark ZEBKIT_API, and the libraries' functions under zebkit's
   # names (vendor/gen_vendor.py).
   shared_library("zebkit") {
-    testonly = true
     output_name = "zebkit"
     sources = _sources
     configs += [ ":implementation" ]
@@ -493,11 +612,10 @@ if (is_win) {
     configs += [ "//build/config/win:delayloads" ]
     public_configs = [ ":public" ]
     deps = _deps
-    data_deps = [ "//content/shell:pak" ]
+    data_deps = [ ":pak" ]
   }
 
   executable("zebkit-helper") {
-    testonly = true
     sources = [ "helper.c" ]
     deps = [
       ":zebkit",
@@ -549,7 +667,6 @@ if (is_win) {
   }
 
   group("engine") {
-    testonly = true
     deps = [
       ":zebkit",
       ":zebkit-helper",
@@ -559,12 +676,10 @@ if (is_win) {
   _sources += [
     "attach.cc",
     "glibc_compat.cc",
+    "window_views.cc",
   ]
 
   shared_library("zebkit") {
-    # The content shell's browser classes, which are test-only in Chromium,
-    # until zebkit has its own.
-    testonly = true
 
     output_name = "zebkit"
     output_extension = "so.1"
@@ -579,7 +694,7 @@ if (is_win) {
     deps = _deps + [ "//ui/ozone" ]
 
     data_deps = [
-      "//content/shell:pak",
+      ":pak",
       "//tools/v8_context_snapshot",
     ]
 
@@ -599,14 +714,12 @@ if (is_win) {
   }
 
   executable("zebkit-helper") {
-    testonly = true
     sources = [ "helper.c" ]
     deps = [ ":zebkit" ]
     configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
   }
 
   group("engine") {
-    testonly = true
     deps = [
       ":zebkit",
       ":zebkit-helper",
@@ -628,14 +741,13 @@ if (is_win) {
   _helper_name = "Zebkit Helper"
 
   bundle_data("zebkit_resources") {
-    testonly = true
     sources = [
-      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/zebkit.pak",
       "$root_out_dir/icudtl.dat",
       "//ui/gl/resources/angle-metal/gpu_shader_cache.bin",
     ]
     public_deps = [
-      "//content/shell:pak",
+      ":pak",
       "//third_party/icu:icudata",
     ]
     if (v8_use_external_startup_data) {
@@ -677,7 +789,6 @@ if (is_win) {
   not_needed([ "_library_deps" ])
   if (_libraries != []) {
     bundle_data("zebkit_libraries") {
-      testonly = true
       sources = _libraries
       public_deps = _library_deps
       outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
@@ -685,14 +796,12 @@ if (is_win) {
   }
 
   bundle_data("zebkit_helpers") {
-    testonly = true
     sources = [ "$root_out_dir/$_helper_name.app" ]
     public_deps = [ ":zebkit_helper" ]
     outputs = [ "{{bundle_contents_dir}}/Helpers/{{source_file_part}}" ]
   }
 
   mac_framework_bundle("zebkit") {
-    testonly = true
     output_name = _framework_name
     framework_version = "A"
     framework_contents = [
@@ -703,7 +812,12 @@ if (is_win) {
     info_plist = "mac/framework-Info.plist"
 
     sources = _sources + [
+      "application_mac.h",
+      "application_mac.mm",
       "engine_mac.mm",
+      "js_dialog.h",
+      "js_dialog_mac.mm",
+      "window_mac.mm",
       "offscreen_mac.h",
       "offscreen_mac.mm",
     ]
@@ -738,7 +852,6 @@ if (is_win) {
   # --browser-subprocess-path, so the variants a signed Chrome has for its
   # entitlements (Renderer, GPU) are not looked for.
   mac_app_bundle("zebkit_helper") {
-    testonly = true
     output_name = _helper_name
     info_plist = "mac/helper-Info.plist"
     sources = [ "helper.c" ]
@@ -750,7 +863,6 @@ if (is_win) {
   }
 
   group("engine") {
-    testonly = true
     deps = [ ":zebkit" ]
   }
 }

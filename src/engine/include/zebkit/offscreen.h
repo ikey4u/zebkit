@@ -29,10 +29,12 @@
  * is to be shown, and the input the application sends over that place
  * goes to it.
  *
- * Off-screen views are for a process without windows: one started with
- * --headless, or on Linux without a display, such as an application's
- * helper process that renders pages for it (examples/offscreen-host).
- * Elsewhere zebkit_view_new_offscreen() returns NULL.
+ * On Linux and macOS they live beside views with a window in one process, or in
+ * a process without windows: one started with --headless, or on Linux without
+ * a display, such as an application's helper process that renders pages for it
+ * (examples/offscreen-host). No window of the system's is made for them, nor for
+ * what their pages open. On Windows they are for a process started with
+ * --headless, and zebkit_view_new_offscreen() returns NULL elsewhere.
  *
  * Threads, strings and ownership are <zebkit/zebkit.h>'s: everything is
  * for the engine's thread, and so are the callbacks, except
@@ -55,10 +57,9 @@ extern "C" {
  * @height CSS pixels at @scale device pixels per CSS pixel (0 for 1); its
  * frames are @width * @scale by @height * @scale pixels. Frames start
  * with zebkit_view_on_frame(). Otherwise it is a view as
- * zebkit_view_new() makes one, closed the same way. NULL when the process
- * has windows (see above). Linux views have independent scale and display
- * geometry, including fractional scales. The macOS per-widget scale path
- * is implemented but still requires runtime validation.
+ * zebkit_view_new() makes one, closed the same way. NULL where the process
+ * has windows on Windows (see above). Each view's scale is its own, fractional
+ * scales too, whatever the others' and the screen's.
  */
 ZEBKIT_API zebkit_view *zebkit_view_new_offscreen(const char *url, int width, int height, float scale);
 /* zebkit_view_new_offscreen() in @context (<zebkit/zebkit.h>). */

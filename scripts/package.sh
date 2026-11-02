@@ -41,8 +41,8 @@ copy_data() {
     local components="$build_dir/gen/components/components_resources.pak"
     local more=()
     [[ -f "$components" ]] && more=("$components" "$components.info")
-    python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/content_shell.pak" \
-        "$build_dir/content_shell.pak.info" "$1/content_shell.pak" ${more[@]+"${more[@]}"} >&2
+    python3 -I "$ZEBKIT_ROOT/scripts/trim-pak.py" "$build_dir/zebkit.pak" \
+        "$build_dir/zebkit.pak.info" "$1/zebkit.pak" ${more[@]+"${more[@]}"} >&2
     "$ZEBKIT_ROOT/scripts/build-icu-data.sh"
     cp "$OUT_DIR/icu/icudtl.dat" "$1/icudtl.dat"
 }
@@ -112,7 +112,7 @@ fi
 files=(
     libzebkit.so.1             # the engine
     zebkit-helper              # its renderer, GPU and utility processes
-    content_shell.pak          # resources: Blink's user-agent style sheets, strings, images
+    zebkit.pak          # resources: Blink's user-agent style sheets, strings, images
     icudtl.dat                 # ICU's data
     snapshot_blob.bin          # V8's startup snapshot
     v8_context_snapshot.bin    # the same with Blink's bindings

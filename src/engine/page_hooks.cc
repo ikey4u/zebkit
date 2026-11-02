@@ -30,7 +30,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/weak_document_ptr.h"
-#include "content/shell/browser/shell.h"
+#include "zebkit/engine/window.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
@@ -204,7 +204,7 @@ void GrantMedia(content::WeakDocumentPtr document, content::MediaStreamRequest r
     return;
   }
   // The application's device, else what the page asked for, else the first.
-  // Never another than was asked for, as the shell's own path.
+  // Never another than was asked for, as the window's own path (window.cc).
   auto choose = [](const blink::MediaStreamDevices& devices,
                    const std::vector<std::string>& requested,
                    const std::optional<std::string>& chosen) -> std::optional<blink::MediaStreamDevice> {
@@ -270,7 +270,7 @@ std::optional<std::string> CanonicalKey(const std::string& combo) {
   return out + parts.back();
 }
 
-class Hooks : public content::Shell::EmbedderHooks {
+class Hooks : public Window::EmbedderHooks {
  public:
   bool KeyBeforePage(content::WebContents* contents,
                      const input::NativeWebKeyboardEvent& event) override {
@@ -361,7 +361,7 @@ class Hooks : public content::Shell::EmbedderHooks {
     auto* frame = content::RenderFrameHost::FromID(request.render_process_id, request.render_frame_id);
     const bool audio = request.audio_type == Stream::DEVICE_AUDIO_CAPTURE;
     const bool video = request.video_type == Stream::DEVICE_VIDEO_CAPTURE;
-    // Screen and tab capture need a chooser: the shell's path refuses them.
+    // Screen and tab capture need a chooser: the window's path refuses them.
     if ((!audio && request.audio_type != Stream::NO_SERVICE) ||
         (!video && request.video_type != Stream::NO_SERVICE) || (!audio && !video)) {
       return false;
@@ -371,7 +371,7 @@ class Hooks : public content::Shell::EmbedderHooks {
         frame->GetLastCommittedOrigin() != request.url_origin) {
       return refuse();
     }
-    // What the permission controller enforces on the shell's path.
+    // What the permission controller enforces on the window's path.
     using Feature = network::mojom::PermissionsPolicyFeature;
     if ((audio && !frame->IsFeatureEnabled(Feature::kMicrophone)) ||
         (video && !frame->IsFeatureEnabled(Feature::kCamera))) {
@@ -405,12 +405,12 @@ class Hooks : public content::Shell::EmbedderHooks {
 
 void InstallPageHooks() {
   static base::NoDestructor<Hooks> hooks;
-  content::Shell::SetEmbedderHooks(hooks.get());
+  Window::SetEmbedderHooks(hooks.get());
   FileRequests::Get().Start();
   MediaRequests::Get().Start();
 }
 void StopPageHooks() {
-  content::Shell::SetEmbedderHooks(nullptr);
+  Window::SetEmbedderHooks(nullptr);
   FileRequests::Get().Stop();
   MediaRequests::Get().Stop();
   FileDocuments().clear();

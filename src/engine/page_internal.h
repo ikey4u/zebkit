@@ -16,16 +16,17 @@
 namespace content {
 class DevToolsAgentHost;
 class RenderFrameHost;
-class Shell;
 class WebContents;
 }  // namespace content
 
 namespace zebkit {
 
-// The dialog manager of a shell window: the view's policy, the
+class Window;
+
+// The dialog manager of a window: the view's policy, the
 // application's answers, CDP's (dialog.cc).
 std::unique_ptr<content::JavaScriptDialogManager> CreateDialogManager(
-    content::Shell* shell);
+    Window* window);
 
 // window.print() in a page of @contents: a dialog of type print, reported
 // (dialog.cc).

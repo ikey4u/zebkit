@@ -341,7 +341,7 @@ ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_requ
 ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view*, const char *world, const char *source,
                                              bool main_frame_only, char **error);
 
-/* File choosers of a view. Without a function, the content shell's: its dialog, or
+/* File choosers of a view. Without a function, the engine's: the system's dialog, or
  * cancelled without a display. Ahead of automation's file chooser events; CDP's
  * interception stays ahead of this hook. Metadata: mode (open, open-multiple,
  * upload-folder, save), title, defaultFileName, acceptTypes, capture, frameId,

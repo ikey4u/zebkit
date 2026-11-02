@@ -68,23 +68,3 @@ A PDF is always in a PDF renderer, with no data of any origin, as Chrome's.
    } else {
      if (!location->IsUnknown() &&
          frame_->GetChromeClient()
---- a/content/shell/browser/shell_browser_context.cc
-+++ b/content/shell/browser/shell_browser_context.cc
-@@ -41,6 +41,9 @@
- ShellBrowserContext::ShellBrowserContext(bool off_the_record,
-                                          bool delay_services_creation)
-     : off_the_record_(off_the_record) {
-+  // As Chrome's Profile: a context closed before may have had this address, which
-+  // the dependency manager remembers as dead.
-+  BrowserContextDependencyManager::GetInstance()->MarkBrowserContextLive(this);
-   InitWhileIOAllowed();
- #if BUILDFLAG(IS_WIN)
-   base::SetExtraNoExecuteAllowedPath(SHELL_DIR_USER_DATA);
-@@ -80,6 +83,7 @@
- 
- void ShellBrowserContext::FinishInitWhileIOAllowed() {
-   key_ = std::make_unique<SimpleFactoryKey>(path_, off_the_record_);
-+  SimpleDependencyManager::GetInstance()->MarkContextLive(key_.get());
-   SimpleKeyMap::GetInstance()->Associate(this, key_.get());
- }
- 

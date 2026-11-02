@@ -216,13 +216,10 @@ void PrintToPdf(content::WebContents* contents,
 
 void RendererClient::DidInitializeWorkerContextOnWorkerThread(
     v8::Local<v8::Context> context) {
-  content::ShellContentRendererClient::DidInitializeWorkerContextOnWorkerThread(
-      context);
   AutomationWorkerStarted(context);
 }
 
 void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
-  content::ShellContentRendererClient::RenderFrameCreated(render_frame);
   // Deletes itself with the frame.
   new printing::PrintRenderFrameHelper(render_frame,
                                        std::make_unique<PrintDelegate>());
@@ -234,9 +231,6 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
     content::RenderFrameHost& render_frame_host,
     blink::AssociatedInterfaceRegistry& associated_registry) {
-  content::ShellContentBrowserClient::
-      RegisterAssociatedInterfaceBindersForRenderFrameHost(render_frame_host,
-                                                           associated_registry);
   associated_registry.AddInterface<printing::mojom::PrintManagerHost>(
       base::BindRepeating(
           [](content::RenderFrameHost* frame,

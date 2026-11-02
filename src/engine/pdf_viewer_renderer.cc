@@ -272,8 +272,7 @@ bool RendererClient::OverrideCreatePlugin(content::RenderFrame* render_frame,
                                           const blink::WebPluginParams& params,
                                           blink::WebPlugin** plugin) {
   if (params.mime_type != "application/pdf" && params.mime_type != "text/pdf") {
-    return content::ShellContentRendererClient::OverrideCreatePlugin(
-        render_frame, params, plugin);
+    return false;
   }
   blink::WebPluginParams viewer_params = params;
   viewer_params.attribute_names.push_back(blink::WebString::FromAscii("src"));

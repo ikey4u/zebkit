@@ -1,0 +1,20 @@
+Viz: a root compositor without a window, in software as in headless mode.
+
+An embedder's off-screen view in a process that also has windows has a root
+with no window of the system's (no accelerated widget), whose page's frames are
+captured from its own frame sink. With GPU compositing such a root already draws
+into an off-screen surface (SkiaOutputDeviceOffscreen, for a null surface
+handle); in software it asked Ozone for a canvas on window 0, which on X11 is no
+window. Draw it in memory there too, as all of them are under --headless.
+
+--- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
++++ b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+@@ -141,7 +141,7 @@
+ OutputSurfaceProviderImpl::CreateSoftwareOutputDeviceForPlatform(
+     gpu::SurfaceHandle surface_handle,
+     mojom::DisplayClient* display_client) {
+-  if (headless_)
++  if (headless_ || surface_handle == gpu::kNullSurfaceHandle)
+     return std::make_unique<SoftwareOutputDevice>();
+ 
+ #if BUILDFLAG(IS_WIN)

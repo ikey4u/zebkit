@@ -1,41 +1,26 @@
 # Patches on top of Chromium (upstream.lock), applied in this order by
 # scripts/fetch-upstream.sh with patch -p1 from src/.
 1005-pack-relative-relocations.patch
-1006-content-shell-without-web-tests.patch
 1007-min-size-for-chosen-targets.patch
 1008-ml-size-inliner-for-linux.patch
-1009-content-shell-without-test-support.patch
 1010-utility-without-on-device-model.patch
 1011-v8-optimized-for-size.patch
 1012-zebkit-engine-in-the-build.patch
 1013-libraries-visible-to-zebkit.patch
 1014-pdf-document-information.patch
 1015-pdf-more-annotations.patch
-1016-content-shell-new-windows-to-the-embedder.patch
 1017-ffmpeg-zebkit-configuration.patch
 0013-mac-iosurface-without-dawn.patch
-0014-mac-shell-geolocation-without-test-support.patch
-1018-content-shell-keys-to-the-embedder.patch
-1019-content-shell-window-size-limits.patch
 1020-pdf-nested-signature-fields.patch
 1021-content-embedder-widget-hooks.patch
-1022-content-shell-chromium-user-agent.patch
-1023-content-shell-deny-permissions-by-default.patch
 1024-content-embedder-drag-hook.patch
-1025-content-shell-beforeunload-keeps-the-page.patch
 1026-v8-inspector-runs-no-page-code-for-errors.patch
-1027-content-shell-popups-to-the-embedder.patch
-1028-content-shell-undecided-permissions-ask.patch
 1029-libvpx-build-configuration.patch
-1030-content-shell-resolution-only-with-web-tests.patch
 1031-v8-inspector-stack-microtasks-scope.patch
 1031-media-demuxer-tap.patch
 1032-blink-media-capture-for-the-embedder.patch
 1033-webauthn-embedder-conditional-capability.patch
-1034-content-shell-file-chooser.patch
-1035-content-shell-file-choosers-to-the-embedder.patch
 1036-blink-input-files-from-paths-for-the-embedder.patch
-1037-content-shell-permissions-from-the-embedder.patch
 1040-tls-initial-exec-for-the-library.patch
 1038-content-automation-for-the-embedder.patch
 1039-blink-media-type-for-the-embedder.patch
@@ -46,7 +31,6 @@
 1045-late-load-tls-initializers.patch
 1046-embedder-permission-policy.patch
 1047-native-media-tap.patch
-1049-content-shell-window-open-metadata.patch
 1050-devtools-user-agent-override-atomic.patch
 1051-net-recheck-reused-certificate-errors.patch
 1052-devtools-identify-root-channel-client.patch
@@ -54,9 +38,6 @@
 1054-leveldb-for-the-embedder.patch
 1055-permission-reset-keeps-view-rules.patch
 1056-viz-no-reconnect-without-gpu-host.patch
-1057-content-shell-download-target-to-the-embedder.patch
-1058-content-shell-page-decisions-to-the-embedder.patch
-1059-content-shell-downloads-saved-without-a-prompt.patch
 1060-content-responsiveness-with-an-application-s-nsapplication.patch
 1061-gpu-hardware-compositing-on-apple-silicon-without-dawn.patch
 1062-content-when-a-widget-takes-input.patch
@@ -69,3 +50,5 @@
 1069-network-header-client-told-the-headers-as-sent.patch
 1070-devtools-interceptor-includes-raw-headers.patch
 1071-pdf-always-in-a-pdf-renderer.patch
+1072-viz-a-root-without-a-window.patch
+1073-aura-platform-window-factory-for-the-embedder.patch

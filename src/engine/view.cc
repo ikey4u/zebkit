@@ -1,4 +1,4 @@
-// zebkit_view: a content shell window and the page in it, and the page's
+// zebkit_view: a window and the page in it, and the page's
 // way to the application (zebkit.* in its script).
 
 #ifdef UNSAFE_BUFFERS_BUILD
@@ -45,8 +45,8 @@
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/shell/browser/shell.h"
-#include "content/shell/browser/shell_browser_context.h"
+#include "zebkit/engine/profile.h"
+#include "zebkit/engine/window.h"
 #include "net/http/http_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -175,8 +175,8 @@ constexpr char kBridgeScript[] = R"js((() => {
 
 }  // namespace
 
-zebkit_view::zebkit_view(content::Shell* shell)
-    : content::WebContentsObserver(shell->web_contents()) {
+zebkit_view::zebkit_view(zebkit::Window* window)
+    : content::WebContentsObserver(window->web_contents()) {
   Views().insert(this);
 }
 
@@ -200,13 +200,13 @@ std::set<zebkit_view*>& zebkit_view::Views() {
   return *views;
 }
 
-content::Shell* zebkit_view::shell() {
-  return web_contents() ? content::Shell::FromWebContents(web_contents())
+zebkit::Window* zebkit_view::window() {
+  return web_contents() ? zebkit::Window::FromWebContents(web_contents())
                         : nullptr;
 }
 
 void zebkit_view::Close() {
-  if (content::Shell* s = shell())
+  if (zebkit::Window* s = window())
     s->Close();
 }
 
@@ -660,7 +660,7 @@ void zebkit_view::LoadUrl(const GURL& url) {
   // A caller can choose a replacement navigation inside a setup completion.
   // Once it can start immediately, it supersedes any older deferred URL.
   deferred_load_.reset();
-  if (content::Shell* s = shell())
+  if (zebkit::Window* s = window())
     s->LoadURL(url);
 }
 
@@ -1010,7 +1010,7 @@ void CloseAllViews() {
 }
 
 void HandlePopup(content::WebContents* opener,
-                 content::Shell* popup,
+                 Window* popup,
                  const GURL& url,
                  WindowOpenDisposition disposition,
                  const blink::mojom::WindowFeatures& features,
@@ -1090,7 +1090,6 @@ class ViewDelegate : public content::WebContentsViewDelegate {
                    weak_factory_.GetWeakPtr(), drop_data, std::move(callback)));
   }
 
-  // The rest is the content shell's.
   gfx::NativeWindow GetNativeWindow() override {
     return inner_ ? inner_->GetNativeWindow() : gfx::NativeWindow();
   }
@@ -1154,10 +1153,10 @@ std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
 // pages and their processes have, which is after they are closed, as content wants
 // it until then. @tries, at 100 ms: a process that does not go keeps the profile
 // (never deleted under it), and a task the engine's end drops loses only memory.
-void DestroyProfileWhenUnused(content::ShellBrowserContext* profile, int tries) {
+void DestroyProfileWhenUnused(Profile* profile, int tries) {
   bool used = false;
-  for (content::Shell* shell : content::Shell::windows()) {
-    if (shell->web_contents() && shell->web_contents()->GetBrowserContext() == profile)
+  for (Window* window : Window::windows()) {
+    if (window->web_contents() && window->web_contents()->GetBrowserContext() == profile)
       used = true;
   }
   if (!used) {
@@ -1191,7 +1190,7 @@ zebkit_context* zebkit_context_new(void) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   auto* context = new zebkit_context;
   context->profile =
-      std::make_unique<content::ShellBrowserContext>(/*off_the_record=*/true);
+      std::make_unique<zebkit::Profile>(/*off_the_record=*/true);
   zebkit::ConfigureContext(context->profile.get());
   return context;
 }
@@ -1221,23 +1220,46 @@ zebkit_view* zebkit_view_new_in(zebkit_context* context,
                                 const char* url,
                                 int width,
                                 int height) {
+  return zebkit::NewView(context, url, width, height, zebkit::Window::Kind::kNative);
+}
+
+}  // extern "C"
+
+namespace zebkit {
+
+zebkit_view* NewView(zebkit_context* context,
+                     const char* url,
+                     int width,
+                     int height,
+                     Window::Kind kind) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (context && !context->profile)
     return nullptr;
   const bool sized = width > 0 && height > 0;
-  content::Shell* shell = content::Shell::CreateNewWindow(
+  zebkit::Window* window = zebkit::Window::Create(
       zebkit::ProfileOf(context), GURL(), nullptr,
-      gfx::Size(sized ? width : 0, sized ? height : 0));
-  if (!shell)
+      gfx::Size(sized ? width : 0, sized ? height : 0), kind);
+  if (!window)
     return nullptr;
-  zebkit_view* view = new zebkit_view(shell);
+  zebkit_view* view = new zebkit_view(window);
   // Without a URL, about:blank: it gives the view a renderer, which the
   // scripts for new documents are registered with, but its loading is not
   // the application's to hear of (a new WebContents has no navigation).
   view->quiet_blank_ = !(url && *url);
-  shell->LoadURL(GURL(url && *url ? url : "about:blank"));
+  window->LoadURL(GURL(url && *url ? url : "about:blank"));
   return view;
 }
+
+bool HasNoDisplay(content::WebContents* contents) {
+  if (zebkit_is_headless())
+    return true;
+  zebkit_view* view = ViewOf(contents);
+  return view && view->offscreen_view_;
+}
+
+}  // namespace zebkit
+
+extern "C" {
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
   view->LoadUrl(GURL(url ? url : "about:blank"));
@@ -1299,29 +1321,29 @@ void zebkit_view_set_title(zebkit_view* view, const char* title) {
     view->window_title_ = title;
   else
     view->window_title_.reset();
-  if (content::Shell* shell = view->shell())
-    zebkit::UpdateWindowTitle(shell);
+  if (zebkit::Window* window = view->window())
+    window->UpdateTitle();
 }
 
 void zebkit_view_set_size_limits(zebkit_view* view,
                                  int min_width,
                                  int min_height,
                                  bool resizable) {
-  if (content::Shell* shell = view->shell()) {
+  if (zebkit::Window* window = view->window()) {
     zebkit::SetWindowSizeLimits(
-        shell, gfx::Size(std::max(min_width, 0), std::max(min_height, 0)),
+        window, gfx::Size(std::max(min_width, 0), std::max(min_height, 0)),
         resizable);
   }
 }
 
 void zebkit_view_focus(zebkit_view* view) {
-  content::Shell* shell = view->shell();
-  if (!shell)
+  zebkit::Window* window = view->window();
+  if (!window)
     return;
   if (!zebkit::FocusAttachedNative(view))
-    zebkit::FocusWindow(shell);
-  else if (shell->web_contents())
-    shell->web_contents()->Focus();
+    zebkit::FocusWindow(window);
+  else if (window->web_contents())
+    window->web_contents()->Focus();
 }
 
 void zebkit_view_on_new_window(zebkit_view* view,
@@ -1453,8 +1475,8 @@ void zebkit_view_go_forward(zebkit_view* view) {
 void zebkit_view_resize(zebkit_view* view, int width, int height) {
   if (zebkit::SetAttachedNativeSize(view, gfx::Size(width, height)))
     return;
-  if (content::Shell* shell = view->shell())
-    shell->ResizeWebContentForTests(gfx::Size(width, height));
+  if (zebkit::Window* window = view->window())
+    window->ResizeContents(gfx::Size(width, height));
 }
 
 void zebkit_view_close(zebkit_view* view) {

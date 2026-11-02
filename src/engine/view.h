@@ -29,7 +29,6 @@
 
 namespace content {
 class RenderFrameHost;
-class Shell;
 class WebContents;
 }  // namespace content
 
@@ -38,6 +37,8 @@ class Origin;
 }
 
 namespace zebkit {
+
+class Window;
 
 struct NetworkRules;
 
@@ -86,12 +87,12 @@ void ClosePdfsOf(const zebkit_view* view);
 zebkit_view* ViewOf(content::WebContents* contents);
 
 // A new window a page asks for: to its view's application when it said so
-// (content::Shell::SetNewWindowHandler()).
+// (Window::SetNewWindowHandler()).
 bool HandleNewWindow(content::WebContents* opener, const GURL& url);
-// The window the shell made for it, to the application as a view
-// (content::Shell::SetPopupHandler()).
+// The window made for it, to the application as a view
+// (Window::SetPopupHandler()).
 void HandlePopup(content::WebContents* opener,
-                 content::Shell* popup,
+                 Window* popup,
                  const GURL& url,
                  WindowOpenDisposition disposition,
                  const blink::mojom::WindowFeatures& features,
@@ -99,7 +100,7 @@ void HandlePopup(content::WebContents* opener,
 // A popup of an off-screen view off the screen too (offscreen.cc).
 void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup);
 
-// The content shell's view delegate, with the drop told to the application.
+// The view delegate: the drop told to the application.
 std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
     content::WebContents* contents,
     std::unique_ptr<content::WebContentsViewDelegate> inner);
@@ -115,12 +116,12 @@ struct zebkit_view : public content::WebContentsObserver,
   using Reply = base::OnceCallback<void(const base::DictValue* result,
                                         const std::string& error)>;
 
-  explicit zebkit_view(content::Shell* shell);
+  explicit zebkit_view(zebkit::Window* window);
   ~zebkit_view() override;
 
   static std::set<zebkit_view*>& Views();
 
-  content::Shell* shell();
+  zebkit::Window* window();
   void Close();
 
   // A DevTools command to the page; @reply gets its result or an error.

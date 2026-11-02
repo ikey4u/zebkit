@@ -23,7 +23,8 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_paths.h"
-#include "content/shell/browser/shell.h"
+#include "zebkit/engine/application_mac.h"
+#include "zebkit/engine/window.h"
 #include "sandbox/mac/seatbelt_exec.h"
 #include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
 #include "services/device/public/cpp/geolocation/system_geolocation_source_apple.h"
@@ -241,82 +242,6 @@ class ViewsDelegate : public views::ViewsDelegate {
   }
 };
 
-// Windows without a window: each view's page is laid out and drawn at the
-// size it is given, as Chromium's headless mode does on macOS.
-class HeadlessPlatformDelegate : public content::ShellPlatformDelegate {
- public:
-  void CreatePlatformWindow(content::Shell* shell,
-                            const gfx::Size& initial_size) override {
-    sizes_[shell] = initial_size;
-  }
-  gfx::NativeWindow GetNativeWindow(content::Shell* shell) override {
-    return gfx::NativeWindow();
-  }
-  void CleanUp(content::Shell* shell) override { sizes_.erase(shell); }
-  void DidCloseLastWindow() override {}
-  void DidCreateOrAttachWebContents(content::Shell* shell,
-                                    content::WebContents* contents) override {
-    content::ShellPlatformDelegate::DidCreateOrAttachWebContents(shell,
-                                                                 contents);
-    ApplyLanguages(contents);
-  }
-  void SetContents(content::Shell* shell) override {
-    NSView* view = shell->web_contents()->GetNativeView().GetNativeNSView();
-    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    Resize(shell);
-    shell->web_contents()->WasShown();
-  }
-  void ResizeWebContent(content::Shell* shell,
-                        const gfx::Size& content_size) override {
-    sizes_[shell] = content_size;
-    Resize(shell);
-  }
-  void MainFrameCreated(content::Shell* shell,
-                        content::RenderFrameHost* main_frame) override {
-    Resize(shell);
-  }
-  void EnableUIControl(content::Shell* shell,
-                       UIControl control,
-                       bool is_enabled) override {}
-  void SetAddressBarURL(content::Shell* shell, const GURL& url) override {}
-  void SetIsLoading(content::Shell* shell, bool loading) override {}
-  std::unique_ptr<content::JavaScriptDialogManager>
-  CreateJavaScriptDialogManager(content::Shell* shell) override {
-    return CreateDialogManager(shell);
-  }
-  void SetTitle(content::Shell* shell, const std::u16string& title) override {}
-  bool DestroyShell(content::Shell* shell) override { return false; }
-  void ActivateContents(content::Shell* shell,
-                        content::WebContents* contents) override {
-    contents->Focus();
-  }
-  void DidNavigatePrimaryMainFramePostCommit(
-      content::Shell* shell,
-      content::WebContents* contents) override {}
-  bool HandleKeyboardEvent(
-      content::Shell* shell,
-      content::WebContents* source,
-      const input::NativeWebKeyboardEvent& event) override {
-    return false;
-  }
-
- private:
-  void Resize(content::Shell* shell) {
-    content::WebContents* contents = shell->web_contents();
-    if (!contents)
-      return;
-    const gfx::Size size = sizes_[shell];
-    NSView* view = contents->GetNativeView().GetNativeNSView();
-    view.frame = NSMakeRect(0, 0, size.width(), size.height());
-    if (content::RenderWidgetHostView* host =
-            contents->GetRenderWidgetHostView()) {
-      host->SetWindowFrameInScreen(gfx::Rect(size));
-    }
-  }
-
-  base::flat_map<content::Shell*, gfx::Size> sizes_;
-};
-
 }  // namespace
 
 void SetUpApplication(bool headless) {
@@ -400,27 +325,6 @@ void SetUpMenuBar() {
   app.mainMenu = main;
 }
 
-void FocusNativeWindow(gfx::NativeWindow window) {
-  NSWindow* ns_window = window.GetNativeNSWindow();
-  if (!ns_window)
-    return;
-  [ns_window makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
-}
-
-void SetNativeWindowSizeLimits(gfx::NativeWindow window,
-                               const gfx::Size& minimum,
-                               bool resizable) {
-  NSWindow* ns_window = window.GetNativeNSWindow();
-  if (!ns_window)
-    return;
-  ns_window.contentMinSize = NSMakeSize(minimum.width(), minimum.height());
-  if (resizable)
-    ns_window.styleMask |= NSWindowStyleMaskResizable;
-  else
-    ns_window.styleMask &= ~NSWindowStyleMaskResizable;
-}
-
 namespace {
 
 struct Attached {
@@ -448,9 +352,9 @@ NSRect Frame(NSView* container, const gfx::Rect& bounds) {
 }  // namespace
 
 bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds) {
-  if (!view || !parent || view == parent || !view->shell() || !parent->shell())
+  if (!view || !parent || view == parent || !view->window() || !parent->window())
     return false;
-  NSWindow* parent_window = parent->shell()->window().GetNativeNSWindow();
+  NSWindow* parent_window = parent->window()->native_window().GetNativeNSWindow();
   if (!parent_window) {
     // Without windows (--headless) there is nothing to be inside; the view
     // takes the size it is given, as it does inside a window.
@@ -458,7 +362,7 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
       return false;
     DetachView(view);
     AttachedViews()[view] = {parent->GetWeakPtr(), nil, false};
-    view->shell()->ResizeWebContentForTests(bounds.size());
+    view->window()->ResizeContents(bounds.size());
     return true;
   }
   DetachView(view);
@@ -479,7 +383,7 @@ void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
   if (it == AttachedViews().end() || !it->second.parent)
     return;
   if (!it->second.view) {
-    view->shell()->ResizeWebContentForTests(bounds.size());
+    view->window()->ResizeContents(bounds.size());
     return;
   }
   if (it->second.view.superview)
@@ -506,7 +410,7 @@ bool AttachViewNative(zebkit_view* view,
     *error = "the view's own page cannot be its parent";
     return false;
   }
-  NSWindow* own_window = view->shell()->window().GetNativeNSWindow();
+  NSWindow* own_window = view->window()->native_window().GetNativeNSWindow();
   DetachView(view);
   page.autoresizingMask = NSViewNotSizable;
   [container addSubview:page positioned:NSWindowAbove relativeTo:nil];
@@ -570,7 +474,7 @@ bool DetachViewNative(zebkit_view* view) {
   [page removeFromSuperview];
   AttachedViews().erase(it);
   page.hidden = NO;
-  NSWindow* own_window = view->shell()->window().GetNativeNSWindow();
+  NSWindow* own_window = view->window()->native_window().GetNativeNSWindow();
   if (own_window) {
     [own_window.contentView addSubview:page];
     page.frame = own_window.contentView.bounds;
@@ -598,16 +502,23 @@ void DetachView(zebkit_view* view) {
   AttachedViews().erase(it);
 }
 
+void RegisterApplication() {
+  // Before anything has made another NSApplication.
+  [ZebkitApplication sharedApplication];
+  CHECK([NSApp isKindOfClass:[ZebkitApplication class]]);
+}
+
+base::FilePath ResourcePackPath() {
+  NSString* path = [base::apple::FrameworkBundle() pathForResource:@"zebkit"
+                                                            ofType:@"pak"];
+  return base::FilePath(path.fileSystemRepresentation);
+}
+
 void SetUpViews() {
   if (!views::ViewsDelegate::GetInstance())
     static base::NoDestructor<ViewsDelegate> delegate;
   if (!views::LayoutProvider::Get())
     static base::NoDestructor<views::LayoutProvider> layout;
-}
-
-std::unique_ptr<content::ShellPlatformDelegate>
-CreateHeadlessPlatformDelegate() {
-  return std::make_unique<HeadlessPlatformDelegate>();
 }
 
 }  // namespace zebkit

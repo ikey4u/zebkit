@@ -27,7 +27,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
-#include "content/shell/browser/shell_permission_manager.h"
+#include "zebkit/engine/permission_manager.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -37,7 +37,7 @@ using Type = blink::PermissionType;
 using Status = blink::mojom::PermissionStatus;
 constexpr size_t kMaxRules = 4096, kMaxRequests = 4096;
 struct Group {
-  content::ShellPermissionManager::RequestReply reply;
+  PermissionManager::RequestReply reply;
   std::vector<content::PermissionResult> results;
   size_t remaining = 0;
 };
@@ -240,7 +240,7 @@ std::optional<Status> DocumentStatus(content::RenderFrameHost* frame, Type, cons
   return decider->on_permission_ ? std::make_optional(Status::ASK) : std::nullopt;
 }
 bool Request(content::RenderFrameHost* frame, const content::PermissionRequestDescription& description,
-             content::ShellPermissionManager::RequestReply* reply) {
+             PermissionManager::RequestReply* reply) {
   auto* view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
   if (!Store().active || !view) return false;
   auto* decider = view->Decider(&zebkit_view::on_permission_);
@@ -291,12 +291,12 @@ void InstallPermissionHooks() {
          const std::optional<url::Origin>&, std::optional<Type>, bool committed) {
         if (committed) Scan(context, {}, false); else Expire(context);
       }));
-  content::ShellPermissionManager::SetDocumentPermissionHooks(base::BindRepeating(&DocumentStatus), base::BindRepeating(&Request));
+  PermissionManager::SetDocumentPermissionHooks(base::BindRepeating(&DocumentStatus), base::BindRepeating(&Request));
 }
 void StopPermissionHooks() {
   Store().active = false;
   while (!Store().pending.empty()) Finish(Store().pending.begin()->first, Status::DENIED, false, "cancelled");
-  content::ShellPermissionManager::SetDocumentPermissionHooks({}, {});
+  PermissionManager::SetDocumentPermissionHooks({}, {});
   content::SetEmbedderPermissionHooks({}, {});
 }
 void CancelPermissionRequests(zebkit_view* view, const char* reason) {

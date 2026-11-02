@@ -4,8 +4,8 @@ ContentMainParams opts out of browser-owned changes to locale, signal
 handlers, environment, title, application defaults and CRT state. Native
 browser entry points retain their existing behavior. The embedded engine
 requires explicit session-bus addresses in its own D-Bus connections, so
-it avoids autolaunch without mutating the host environment. The content
-shell honors --disable-logging without creating content_shell.log and
+it avoids autolaunch without mutating the host environment. The
+engine honors --disable-logging without creating a log file and
 appends to an explicitly selected log instead of deleting it.
 
 --- a/content/public/app/content_main.h
@@ -146,37 +146,6 @@ appends to an explicitly selected log instead of deleting it.
        // Route stdio to parent console (if any) or create one, do not create a
        // console in children if handles are being passed.
        bool create_console = command_line->GetSwitchValueASCII(
---- a/content/shell/app/shell_main_delegate.cc
-+++ b/content/shell/app/shell_main_delegate.cc
-@@ -130,6 +130,12 @@
- #endif
- 
- void InitLogging(const base::CommandLine& command_line) {
-+  if (command_line.HasSwitch("disable-logging")) {
-+    logging::LoggingSettings settings;
-+    settings.logging_dest = logging::LOG_NONE;
-+    logging::InitLogging(settings);
-+    return;
-+  }
-   LoggingDest dest = LoggingDest::kFile;
- 
-   const std::string logging_dest =
-@@ -192,12 +198,14 @@
-     settings.logging_dest = logging::LOG_TO_STDERR;
-   } else if (dest == LoggingDest::kSystem) {
-     settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
-+  } else if (dest == LoggingDest::kFile) {
-+    settings.logging_dest = logging::LOG_TO_FILE;
-   } else {
-     // Includes both handle or provided filename on Windows.
-     settings.logging_dest = logging::LOG_TO_ALL;
-   }
- 
--  settings.delete_old = logging::DELETE_OLD_LOG_FILE;
-+  settings.delete_old = logging::APPEND_TO_OLD_LOG_FILE;
-   logging::InitLogging(settings);
-   logging::SetLogItems(true /* Process ID */, true /* Thread ID */,
-                        true /* Timestamp */, false /* Tick count */);
 --- a/dbus/bus.h
 +++ b/dbus/bus.h
 @@ -228,6 +228,11 @@

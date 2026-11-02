@@ -3,7 +3,7 @@
 
     scripts/trim-pak.py <in.pak> <in.pak.info> <out.pak> [<more.pak> <more.pak.info>]...
 
-The content shell's pack also holds the DevTools front end, about:tracing,
+The engine's pack also holds the DevTools front end, about:tracing,
 the browser's internal pages (chrome://media-internals and the like) and the
 WebUI toolkit they are made of: 6.4 of its 6.9 MiB. An engine driven over
 CDP shows none of them. What is kept is listed below by the .grd file the
@@ -11,7 +11,7 @@ resources come from (the .pak.info file the build writes beside the pack
 names it), and by name for single resources of a source that otherwise goes.
 Entries are copied as stored, compressed or not. More packs after the
 output give only what KEEP_NAMES names of theirs: the template of printed
-pages' headers and footers is in components' pack, which the content shell
+pages' headers and footers is in components' pack, which the engine
 does not repack, and is all of it the engine uses.
 """
 
@@ -37,8 +37,7 @@ KEEP_SOURCES = {
     "app_locale_settings.grd",
     "net_resources.grd",                 # network error pages
     "content_resources.grd",
-    "shell_resources.grd",
-    "views_resources.grd",               # the shell's own window
+    "views_resources.grd",               # the windows' controls
 }
 KEEP_NAMES = {
     "COMPRESSED_PROTOCOL_JSON",          # the protocol definition served at /json/protocol

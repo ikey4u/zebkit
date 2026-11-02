@@ -1,7 +1,7 @@
 // window.chrome in pages, as Chrome's renderer makes it: chrome.loadTimes()
 // and chrome.csi(), the timing of the page's load, by Chrome's own code
 // (chrome/renderer/loadtimes_bindings.cc, built here as it is). Sites read
-// window.chrome to know that they run in Chrome; the content shell has none.
+// window.chrome to know that they run in Chrome; content has none.
 // The legacy chrome.app queries report that no hosted app is installed;
 // these queries need no extension runtime. The contract is in
 // chrome/common/extensions/api/app.json and

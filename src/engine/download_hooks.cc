@@ -17,7 +17,7 @@
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
-#include "content/shell/browser/shell_download_manager_delegate.h"
+#include "zebkit/engine/download_manager.h"
 #include "net/base/filename_util.h"
 #include "url/gurl.h"
 #include "zebkit/engine/hook_requests.h"
@@ -253,10 +253,10 @@ bool TakeDownload(download::DownloadItem* item, download::DownloadTargetCallback
 
 void InstallDownloadHooks() {
   Requests::Get().Start();
-  content::ShellDownloadManagerDelegate::SetTargetHandler(base::BindRepeating(&TakeDownload));
+  EngineDownloadManagerDelegate::SetTargetHandler(base::BindRepeating(&TakeDownload));
 }
 void StopDownloadHooks() {
-  content::ShellDownloadManagerDelegate::SetTargetHandler({});
+  EngineDownloadManagerDelegate::SetTargetHandler({});
   Requests::Get().Stop();
   Watcher::Get().Stop();
 }
