@@ -557,13 +557,15 @@ static void s_check_rate(void) {
 }
 
 /* 11. Resized, and at another scale. */
-/* A resized surface may arrive before the renderer has repainted at the
+/* The page is wider and taller than 320x240, so Windows' classic scrollbars take
+ * the last 15 pixels of each side: its background is looked for inside them.
+ * A resized surface may arrive before the renderer has repainted at the
  * new scale. Wait for the finished page, rather than asserting on that
  * intermediate frame (the same race occurs with the previous engine). */
 static int resized(void) {
     return last[0].width == 640 && last[0].height == 480 && last[0].scale == 2 &&
            pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 &&
-           pixel_at(0, 300, 230) == 0x102030;
+           pixel_at(0, 290, 210) == 0x102030;
 }
 static void s_resize(void) {
     zebkit_view_set_size(view, 320, 240, 2);
@@ -571,9 +573,9 @@ static void s_resize(void) {
 }
 static void s_check_resize(void) {
     check(last[0].scale == 2, "at the new scale", "%g", last[0].scale);
-    check(pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 && pixel_at(0, 300, 230) == 0x102030,
+    check(pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 && pixel_at(0, 290, 210) == 0x102030,
           "the page laid out again, drawn at twice the pixels", "%06x %06x", pixel_at(0, 40, 35),
-          pixel_at(0, 300, 230));
+          pixel_at(0, 290, 210));
     /* A new scale reaches the page as two changes, the display's scale and
      * then the window's size, and a busy machine runs the page's script
      * between them: the page sees the size it was given within a moment of

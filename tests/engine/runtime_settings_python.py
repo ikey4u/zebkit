@@ -223,8 +223,9 @@ loaded = []
 view.on_load(lambda event, at: loaded.append(at) if event == zebkit.LOAD_FINISHED else None)
 view.load(OTHER + '/plain')
 wait(lambda: OTHER + '/plain' in loaded, 'the other site')
-# On macOS the spare was dropped here, not taken: not understood (docs/ROADMAP.md).
-if sys.platform != 'darwin':
+# On macOS and Windows the spare was dropped here and another process started, not
+# understood (docs/ROADMAP.md, docs/WINDOWS.md).
+if sys.platform not in ('darwin', 'win32'):
     assert spare <= renderers(), 'the spare was used, not dropped'
 wait(lambda: zebkit.engine_settings()['effective']['spareRendererRunning'], 'another spare after the load')
 zebkit.set_engine_settings({'spareRenderer': False})

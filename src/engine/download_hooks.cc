@@ -55,8 +55,10 @@ std::string Redacted(const GURL& url) {
 void Answer(download::DownloadTargetCallback callback, Traits::Decision decision) {
   download::DownloadTargetInfo target;
   if (decision.save) {
-    target.target_path = decision.path;
-    target.intermediate_path = decision.path.AddExtension(FILE_PATH_LITERAL(".crdownload"));
+    // Windows' move of a download (SHFileOperation) takes no forward slashes.
+    const base::FilePath path = decision.path.NormalizePathSeparators();
+    target.target_path = path;
+    target.intermediate_path = path.AddExtension(FILE_PATH_LITERAL(".crdownload"));
   } else {
     target.interrupt_reason = download::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
   }

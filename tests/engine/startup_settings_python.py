@@ -84,7 +84,7 @@ try:
         assert zebkit.shutdown()
         assert list(profile.rglob("Cookies.host")), "file cookie storage must be selected"
         if mode == "file":
-            assert log.read_text().startswith("host-log-sentinel\n"), "logging must append, never truncate the host's file"
+            assert log.read_text(encoding="utf-8", errors="replace").startswith("host-log-sentinel"), "logging must append, never truncate the host's file"
         else:
             assert not log.exists()
         after = {path: (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None

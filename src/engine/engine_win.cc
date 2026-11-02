@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <knownfolders.h>
+#include <shellapi.h>
 #include <shlobj.h>
 
 #include <string>
@@ -76,6 +77,34 @@ std::string DefaultConfigDirectory() {
   if (FAILED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path)))
     return std::string();
   return base::WideToUTF8(path.get());
+}
+
+void WindowsArgumentsAsUTF8(int argc,
+                            char** argv,
+                            std::vector<std::string>* store,
+                            std::vector<char*>* pointers) {
+  int count = 0;
+  wchar_t** wide = ::CommandLineToArgvW(::GetCommandLineW(), &count);
+  store->reserve(argc);
+  for (int i = 0; i < argc; ++i) {
+    if (!argv[i]) {
+      pointers->push_back(nullptr);
+      continue;
+    }
+    std::string argument(argv[i]);
+    // main()'s argv is the process's own, lossily in the code page: a name of another
+    // script comes out as question marks. The argument Windows holds, when it is that.
+    if (wide && i < count && argument == base::SysWideToNativeMB(wide[i])) {
+      argument = base::WideToUTF8(wide[i]);
+    } else if (!base::IsStringUTF8(argument)) {
+      argument = base::WideToUTF8(ArgumentToWide(argument));
+    }
+    store->push_back(std::move(argument));
+    pointers->push_back(store->back().data());
+  }
+  pointers->push_back(nullptr);
+  if (wide)
+    ::LocalFree(wide);
 }
 
 void SetUpWindowsMainParams(int argc, char** argv, content::ContentMainParams* params) {

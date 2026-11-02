@@ -389,6 +389,11 @@ base::FilePath HelperPath(const base::FilePath& library);
 #if BUILDFLAG(IS_WIN)
 // engine_win.cc: the user's per-machine application data directory, in UTF-8.
 std::string DefaultConfigDirectory();
+// An application's argv in UTF-8, whatever its code page lost of them.
+void WindowsArgumentsAsUTF8(int argc,
+                            char** argv,
+                            std::vector<std::string>* store,
+                            std::vector<char*>* pointers);
 // Whether the executable called zebkit_win_startup(), with its sandbox.
 bool HasExecutableSandbox();
 // Windows' ContentMain takes no arguments and reads the process's command

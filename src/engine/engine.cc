@@ -46,6 +46,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/rtl.h"
 #include "base/logging.h"
 #include "base/logging/logging_settings.h"
 #include "base/json/json_writer.h"
@@ -617,6 +618,12 @@ void ContentClient::AddPlugins(std::vector<content::WebPluginInfo>* plugins) {
 }
 
 void RendererClient::RenderThreadStarted() {
+#if BUILDFLAG(IS_WIN)
+  // ICU found the system's locale, base's copy of it still says en-US until told
+  // (Chrome tells it in l10n_util): a cleared Emulation.setLocaleOverride goes to
+  // that copy (LocaleController).
+  base::i18n::SetICUDefaultLocale(base::i18n::GetConfiguredLocale());
+#endif
   RegisterSchemesInRenderer();
 }
 
@@ -696,6 +703,14 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   }
   const auto& process = *base::CommandLine::ForCurrentProcess();
   for (const char* flag : {"enable-logging", "disable-logging", "log-file", "log-level"}) {
+#if BUILDFLAG(IS_WIN)
+    // Chromium gives a child the open log by handle and refuses to start one
+    // that has been given these (child_process_launcher_helper_win.cc).
+    if (logging::IsLoggingToFileEnabled() &&
+        (!strcmp(flag, "enable-logging") || !strcmp(flag, "log-file"))) {
+      continue;
+    }
+#endif
     if (process.HasSwitch(flag))
       command_line->AppendSwitchNative(flag, process.GetSwitchValueNative(flag));
   }
@@ -1333,6 +1348,14 @@ void zebkit_free(void* pointer) {
 int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
   if (g_engine_started || argc < 0 || (argc && !argv))
     return 1;
+#if BUILDFLAG(IS_WIN)
+  std::vector<std::string> utf8_store;
+  std::vector<char*> utf8_argv;
+  if (argc > 0) {
+    zebkit::WindowsArgumentsAsUTF8(argc, argv, &utf8_store, &utf8_argv);
+    argv = utf8_argv.data();
+  }
+#endif
   g_engine_started = true;
 #if BUILDFLAG(IS_MAC)
   zebkit::SetUpBundle(zebkit::LibraryDirectory());
@@ -1367,6 +1390,14 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
   };
   if (g_engine_started || argc < 0 || (argc && !argv))
     return fail("Engine startup was already attempted, or argv is invalid");
+#if BUILDFLAG(IS_WIN)
+  std::vector<std::string> utf8_store;
+  std::vector<char*> utf8_argv;
+  if (argc > 0) {
+    zebkit::WindowsArgumentsAsUTF8(argc, argv, &utf8_store, &utf8_argv);
+    argv = utf8_argv.data();
+  }
+#endif
   std::vector<std::string> input;
   std::vector<std::string> positional;
   for (int i = 0; i < argc; ++i) {

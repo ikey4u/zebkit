@@ -61,7 +61,7 @@ def run(binary, switches, profile, url, write=False, logout=False, environment=N
             deadline = time.monotonic() + 30
             while True:
                 if process.poll() is not None:
-                    raise RuntimeError(f'engine exited: {process.returncode}')
+                    raise RuntimeError(f'engine exited: {process.returncode}: ' + pathlib.Path(log.name).read_text()[-800:])
                 try:
                     with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/version', timeout=1) as response:
                         endpoint = json.load(response)['webSocketDebuggerUrl']

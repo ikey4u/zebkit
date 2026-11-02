@@ -55,13 +55,15 @@ def main():
             raw = root / 'raw-key'; raw.write_bytes(secrets.token_bytes(32))
             env = {**os.environ, 'ZEBKIT_TEST_COOKIE_KEY_FILE': str(raw)}
             run(binary, sys.argv[2:], legacy, base + '/set', write=True, environment=env)
-            folder = legacy / 'Secrets'; folder.mkdir(mode=0o700)
+            # Python's mode 0o700 on Windows lists SYSTEM and Administrators too: not private.
+            folder = legacy / 'Secrets'; folder.mkdir(**({} if os.name == 'nt' else {'mode': 0o700}))
             legacy_key = folder / 'cookie.key'
             legacy_key.write_bytes(b'Zebkit Cookie Key v1\n' + raw.read_bytes()); legacy_key.chmod(0o600)
             if os.name == 'nt':
                 # chmod does not make it private there: only the owner in the list.
                 user = os.environ['USERNAME']
-                for path in (folder, legacy_key):
+                for path in (legacy_key, folder):
+                    subprocess.run(['icacls', str(path), '/setowner', user], check=True, stdout=subprocess.DEVNULL)
                     subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', f'{user}:F'],
                                    check=True, stdout=subprocess.DEVNULL)
             restored = run(binary, switches, legacy, base + '/check')

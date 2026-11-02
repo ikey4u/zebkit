@@ -94,7 +94,10 @@ bool EngineDownloadManagerDelegate::DetermineDownloadTarget(
 #if BUILDFLAG(IS_CHROMEOS)
                                  .Append(FILE_PATH_LITERAL("MyFiles"))
 #endif
-                                 .Append(FILE_PATH_LITERAL("Downloads"));
+                                 .Append(FILE_PATH_LITERAL("Downloads"))
+                                 // Windows' move of a download (SHFileOperation)
+                                 // takes no forward slashes, as a profile may have.
+                                 .NormalizePathSeparators();
   }
 
   if (!download->GetForcedFilePath().empty()) {
