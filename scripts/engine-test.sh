@@ -935,7 +935,7 @@ else
         echo "FAIL /json/list has no page"; failed=1
     fi
     # What cdp-clients expects to differ from a newer Chrome hides this one.
-    if curl -fsS --compressed "http://127.0.0.1:$port/json/protocol" | grep -q '"domains"'; then
+    if curl -fsS --compressed "http://127.0.0.1:$port/json/protocol" | grep '"domains"' > /dev/null; then
         echo "ok   /json/protocol"
     else
         echo "FAIL /json/protocol"; failed=1

@@ -66,6 +66,10 @@ def main():
                     subprocess.run(['icacls', str(path), '/setowner', user], check=True, stdout=subprocess.DEVNULL)
                     subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', f'{user}:F'],
                                    check=True, stdout=subprocess.DEVNULL)
+                    # Python's temporary directories list SYSTEM and Administrators (SIDs: their
+                    # names are in the system's language), and these stay.
+                    subprocess.run(['icacls', str(path), '/remove:g', '*S-1-5-18', '*S-1-5-32-544'],
+                                   check=True, stdout=subprocess.DEVNULL)
             restored = run(binary, switches, legacy, base + '/check')
             assert restored['sent_auth'] and restored['cookies'] == ['zebkit_probe_auth', 'zebkit_probe_js']
             print('ok former host key format and host-encrypted login survive backend move without rotation')
