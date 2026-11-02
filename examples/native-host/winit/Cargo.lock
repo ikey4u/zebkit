@@ -1937,18 +1937,18 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "zebkit"
-version = "0.0.1-alpha.12"
+version = "0.1.0"
 dependencies = [
  "zebkit-rs",
 ]
 
 [[package]]
 name = "zebkit-build"
-version = "0.0.1-alpha.12"
+version = "0.1.0"
 
 [[package]]
 name = "zebkit-rs"
-version = "0.0.1-alpha.12"
+version = "0.1.0"
 
 [[package]]
 name = "zebkit-winit-host"

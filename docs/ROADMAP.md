@@ -382,7 +382,7 @@ in `examples/native-host` (Done table). What is left:
 
 ### Releases
 
-- The latest engine, 0.0.1-alpha.12 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups, media capture, persistent cookies, glibc 2.17, passkeys, Playwright's API natively and its own endpoint), is published for Linux and macOS;
+- The latest engine, 0.1.0 (with off-screen views, dialogs, printing to PDF, drag and drop, sign-in popups, media capture, persistent cookies, glibc 2.17, passkeys, Playwright's API natively and its own endpoint, Windows with its sandbox; `docs/releases/0.1.0.md`), is published for Linux, macOS and Windows;
   the Rust crates download a release only from a repository anyone can
   read, so the repository has to be public for them.
 

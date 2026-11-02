@@ -7,10 +7,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! zebkit = "0.0.1-alpha.12"
+//! zebkit = "0.1.0"
 //!
 //! [build-dependencies]
-//! zebkit-build = "0.0.1-alpha.12"
+//! zebkit-build = "0.1.0"
 //! ```
 //!
 //! ```no_run
