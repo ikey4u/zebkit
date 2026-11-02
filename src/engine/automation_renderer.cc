@@ -631,7 +631,11 @@ class Agent : public content::RenderFrameObserver,
     }
     const url::Origin origin = url::Origin::Create(GURL(url));
     const url::Origin mine = render_frame()->GetWebFrame()->GetSecurityOrigin();
-    if (origin != mine)
+    // A document of an opaque origin (about:blank, a sandbox) makes workers
+    // of blob:null or data: URLs, whose origins are opaque ones of their
+    // own: its main frame tells of them.
+    const bool opaque = origin.opaque() && mine.opaque() && render_frame()->IsMainFrame();
+    if (origin != mine && !opaque)
       return;
     reported_workers_.insert(worker);
     Host()->WorkerStarted(worker, url);

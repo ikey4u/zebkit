@@ -28,7 +28,9 @@
 #include "base/no_destructor.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
@@ -36,6 +38,10 @@
 #include "base/values.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/log/net_log_source.h"
@@ -45,6 +51,9 @@
 #include "net/socket/tcp_server_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
+#include "zebkit/engine/automation_context.h"
+#include "zebkit/engine/automation_network.h"
+#include "zebkit/engine/automation_trace.h"
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/include/zebkit/automation.h"
 #include "zebkit/engine/include/zebkit/hooks.h"
@@ -194,6 +203,14 @@ base::Value ToProtocol(const base::Value& value) {
   if (!value.is_dict())
     return value.Clone();
   const base::DictValue& dict = value.GetDict();
+  // An ArrayBuffer is an object without keys once Playwright's server has
+  // parsed it: its protocol has no form of its own for one.
+  if (dict.Find("ab")) {
+    base::DictValue empty;
+    empty.Set("o", base::ListValue());
+    empty.Set("id", 0);
+    return base::Value(std::move(empty));
+  }
   base::DictValue result = dict.Clone();
   if (const base::ListValue* a = dict.FindList("a")) {
     base::ListValue items;
@@ -282,6 +299,90 @@ base::Value Plain(const base::Value& value) {
   return value.Clone();
 }
 
+// The Playwright release whose protocol this endpoint speaks, which a HAR it
+// makes names as its creator (tests/playwright-suite runs that release's tests).
+constexpr char kPlaywrightVersion[] = "1.64.1";
+
+// The id of @view's main frame, as automation's events name frames.
+std::string FrameIdOfMain(zebkit_view* view) {
+  content::WebContents* contents = view ? view->web_contents() : nullptr;
+  return contents ? "f" + base::NumberToString(
+                              contents->GetPrimaryMainFrame()->GetFrameTreeNodeId().value())
+                  : std::string();
+}
+
+// ---- CDP sessions ----------------------------------------------------------
+
+// A CDPSession object's DevTools session (Browser.newBrowserCDPSession,
+// BrowserContext.newCDPSession): Chromium's own DevTools in this process, the
+// browser's target or a page's or a frame's, as Playwright's server attaches
+// to them over its pipe. Trusted, as the pipe Playwright launches Chrome with.
+class CdpClient : public content::DevToolsAgentHostClient {
+ public:
+  // Each message the target sends: an answer (with "id") or an event.
+  using MessageFunc = base::RepeatingCallback<void(base::DictValue)>;
+  using ClosedFunc = base::OnceClosure;
+
+  CdpClient(scoped_refptr<content::DevToolsAgentHost> host,
+            MessageFunc on_message,
+            ClosedFunc on_closed)
+      : host_(std::move(host)),
+        on_message_(std::move(on_message)),
+        on_closed_(std::move(on_closed)) {}
+  ~CdpClient() override {
+    if (host_)
+      host_->DetachClient(this);
+  }
+
+  bool Attach() { return host_ && host_->AttachClient(this); }
+
+  // The id of the next message: its answer may come inside Send().
+  int NextId() { return next_id_ + 1; }
+
+  // Sends @method with @params; the answer comes to on_message with the id
+  // returned.
+  int Send(const std::string& method, base::DictValue params) {
+    base::DictValue message;
+    const int id = ++next_id_;
+    message.Set("id", id);
+    message.Set("method", method);
+    message.Set("params", std::move(params));
+    const std::string json = Json(base::Value(std::move(message)));
+    if (host_)
+      host_->DispatchProtocolMessage(this, base::as_byte_span(json));
+    return id;
+  }
+
+  void Detach() {
+    if (scoped_refptr<content::DevToolsAgentHost> host = std::move(host_))
+      host->DetachClient(this);
+  }
+
+  // content::DevToolsAgentHostClient
+  void DispatchProtocolMessage(content::DevToolsAgentHost*,
+                               base::span<const uint8_t> message) override {
+    std::optional<base::Value> value =
+        Parse(std::string(base::as_string_view(message)));
+    if (value && value->is_dict())
+      on_message_.Run(std::move(value->GetDict()));
+  }
+  void AgentHostClosed(content::DevToolsAgentHost*) override {
+    host_ = nullptr;
+    if (on_closed_)
+      std::move(on_closed_).Run();
+  }
+  bool IsTrusted() override { return true; }
+  bool MayReadLocalFiles() override { return true; }
+  bool MayWriteLocalFiles() override { return true; }
+  bool AllowUnsafeOperations() override { return true; }
+
+ private:
+  scoped_refptr<content::DevToolsAgentHost> host_;
+  MessageFunc on_message_;
+  ClosedFunc on_closed_;
+  int next_id_ = 0;
+};
+
 // ---- One client ----------------------------------------------------------
 
 class Endpoint;
@@ -297,6 +398,14 @@ class Connection {
     for (const auto& [view, guid] : pages_) {
       zebkit_automation_on_event(view, nullptr, nullptr);
       zebkit_view_on_window_open(view, nullptr, nullptr);
+    }
+    // Popups not yet reported, which may be gone.
+    for (const std::string& page : prepared_) {
+      zebkit_view* view = zebkit_automation_page(page.c_str());
+      if (view && !pages_.contains(view)) {
+        zebkit_view_on_window_open(view, nullptr, nullptr);
+        zebkit_automation_on_event(view, nullptr, nullptr);
+      }
     }
     // The client's contexts go with it, as the pages of Playwright's
     // launchServer() do when its client disconnects.
@@ -339,6 +448,10 @@ class Connection {
   // An answer; none (base::Value()) for a method that answers nothing, as
   // Playwright's void methods do.
   void Reply(int id, base::Value result) {
+    // An aborted call's: answered already.
+    if (!ids_.contains(id))
+      return;
+    aborted_.erase(id);
     base::DictValue message;
     message.Set("id", TakeId(id));
     // The protocol's optional fields are absent, never null: the client's
@@ -349,22 +462,49 @@ class Connection {
     send_.Run(Json(base::Value(std::move(message))));
   }
 
-  void ReplyError(int id, const std::string& error) {
+  void ReplyError(int id, const std::string& error, const std::string& name = std::string()) {
+    if (!ids_.contains(id))
+      return;
+    // An aborted call: an AbortError, whatever its native answer says.
+    const bool aborted = aborted_.erase(id) > 0;
     base::DictValue inner;
-    inner.Set("message", error);
-    inner.Set("name", error.rfind("Timeout ", 0) == 0 ? "TimeoutError" : "Error");
+    std::string text = error;
+    base::ListValue log;
+    if (const size_t at = error.find("\nCall log:"); at != std::string::npos && aborted) {
+      // The log apart, as dispatcher.ts sends it.
+      text = error.substr(0, at);
+      for (const std::string& line : base::SplitString(error.substr(at + 11), "\n",
+                                                       base::KEEP_WHITESPACE,
+                                                       base::SPLIT_WANT_NONEMPTY)) {
+        log.Append(line);
+      }
+    }
+    inner.Set("message", text);
+    inner.Set("name", aborted || name == "AbortError" ? "AbortError"
+                      : error.rfind("Timeout ", 0) == 0 ? "TimeoutError" : "Error");
     inner.Set("stack", "");
     base::DictValue outer;
     outer.Set("error", std::move(inner));
     base::DictValue message;
     message.Set("id", TakeId(id));
+    if (!log.empty())
+      message.Set("log", std::move(log));
     message.Set("error", std::move(outer));
     send_.Run(Json(base::Value(std::move(message))));
   }
 
   // Frame.expect's failure, as Playwright's ExpectError reaches its client:
   // the protocol's errorDetails, and the call's log.
-  void ReplyExpectFailed(int id, base::DictValue details, base::ListValue log) {
+  void ReplyExpectFailed(int id, base::DictValue details, base::ListValue raw) {
+    std::vector<std::string> lines;
+    for (const base::Value& line : raw) {
+      if (line.is_string())
+        lines.push_back(line.GetString());
+    }
+    // As dispatcher.ts sends it: compressed, each line as the client shows it.
+    base::ListValue log;
+    for (const std::string& line : CompressCallLog(lines))
+      log.Append(line);
     base::DictValue inner;
     inner.Set("message", "Expect failed");
     inner.Set("name", "Error");
@@ -478,12 +618,34 @@ class Connection {
                         const base::Value& frames,
                         const std::string& opener = std::string());
   static void OnWindowOpen(zebkit_view* opener, zebkit_view* opened, const char* url, void* data);
+  void PreparePage(zebkit_view* view, const std::string& context_guid);
+  void ReportPopup(zebkit_view* view);
+  // Popups not reported yet, and the events they had meanwhile.
+  struct Popup {
+    std::string context;
+    std::string opener;
+    std::string page;
+    bool reporting = false;
+    std::string frames;
+    std::vector<std::pair<std::string, base::DictValue>> held;
+  };
+  std::map<zebkit_view*, Popup> popups_;
+  // Pages whose PreparePage() has run, by their page id (a view's address
+  // may be another's later).
+  std::set<std::string> prepared_;
   void PageEvent(const std::string& page_guid, const std::string& event,
                  base::DictValue params);
   void Tracing(int id, const std::string& guid, const std::string& method,
                base::DictValue params);
   void CreateTempFiles(int id, base::DictValue params);
   bool ToNativeArgs(base::DictValue& params);
+  // CDPSession: a session of @host's, created in @parent's scope.
+  void NewCDPSession(int id, const std::string& parent,
+                     scoped_refptr<content::DevToolsAgentHost> host);
+  void CDPSessionCommand(int id, const std::string& guid, const std::string& method,
+                         base::DictValue params);
+  void CDPSessionMessage(const std::string& guid, base::DictValue message);
+  void CDPSessionClosed(const std::string& guid);
 
   static void OnEvent(zebkit_view* view, const char* event, const char* json,
                       void* data);
@@ -494,6 +656,26 @@ class Connection {
   std::map<zebkit_view*, std::string> pages_;
   std::map<std::string, std::string> fetched_;
   std::map<std::string, base::ListValue> fetch_logs_;
+  // CDPSession objects' sessions, and their commands in flight: the session's
+  // message id to the client's call and the method.
+  struct CdpSession {
+    std::unique_ptr<CdpClient> client;
+    std::map<int, std::pair<int, std::string>> calls;
+  };
+  std::map<std::string, CdpSession> cdp_sessions_;
+  // HAR recordings (Tracing.harStart), as harRecorder.ts makes them in
+  // Playwright's server: of a context's pages or of one page, and of its API
+  // requests; by harId.
+  struct Har {
+    std::string context;
+    std::string page;
+    std::unique_ptr<HarRecorder> recorder;
+  };
+  std::map<std::string, Har> hars_;
+  void HarEvent(const std::string& page_guid, const std::string& event,
+                const base::DictValue& params);
+  void HarExport(int id, const std::string& har_id, const std::string& mode,
+                 const std::string& parent);
   // page.consoleMessages(), pageErrors(), requests(): what the page has had,
   // as page.ts keeps it, and where the last main frame's navigation left them.
   struct PageRecords {
@@ -516,6 +698,8 @@ class Connection {
   int next_guid_ = 0;
   int next_id_ = 0;
   std::map<int, base::Value> ids_;
+  // Calls an AbortSignal ended, until their native answer comes.
+  std::set<int> aborted_;
   int next_fetch_ = 0;
   base::WeakPtrFactory<Connection> weak_factory_{this};
 };
@@ -544,7 +728,32 @@ void Connection::Received(const std::string& text) {
     Initialize(id);
     return;
   }
+  // An AbortSignal's: the call it names fails at once with an AbortError, as
+  // dispatcher.ts aborts its progress; its own answer later is dropped.
+  if (*method == "__abort__") {
+    --next_id_;
+    ids_.erase(id);
+    const base::Value* call_id = params ? params->Find("id") : nullptr;
+    const std::string* reason = params ? params->FindString("reason") : nullptr;
+    for (auto it = ids_.begin(); call_id && it != ids_.end(); ++it) {
+      if (it->second != *call_id)
+        continue;
+      const int aborted = it->first;
+      aborted_.insert(aborted);
+      base::DictValue abort;
+      abort.Set("abortId", "a" + base::NumberToString(aborted));
+      abort.Set("reason", reason ? *reason : std::string());
+      zebkit_automation_call(nullptr, "Automation.abort", Json(base::Value(std::move(abort))).c_str(),
+                             nullptr, nullptr);
+      // The native call answered it if it was one; else it is answered here.
+      if (ids_.contains(aborted))
+        ReplyError(aborted, reason ? *reason : "The operation was aborted", "AbortError");
+      break;
+    }
+    return;
+  }
   base::DictValue command_params = params ? std::move(*params) : base::DictValue();
+  command_params.Set("abortId", "a" + base::NumberToString(id));
   // Since 1.60 or so the client's timeout travels in the call's metadata, not
   // in its parameters (channelOwner.ts); the native commands take "timeout".
   if (const base::DictValue* metadata = dict.FindDict("metadata")) {
@@ -1037,6 +1246,32 @@ void Connection::NewPage(int id, const std::string& context_guid) {
 // navigator.webdriver, as Chromium under Playwright's --enable-automation: a
 // page a Playwright client drives says so. A host's own views do not, and this
 // is what opens a DevTools session on the page.
+// What a page of the context has from its start, before the client knows it
+// (a popup is reported once its first document commits): its popups, and a
+// trace or a HAR the context started, which record its first requests.
+void Connection::PreparePage(zebkit_view* view, const std::string& context_guid) {
+  char* page_id = zebkit_automation_page_id(view);
+  const std::string page = page_id ? page_id : "";
+  zebkit_free(page_id);
+  if (page.empty() || !prepared_.insert(page).second)
+    return;
+  // Playwright launches Chromium with --disable-popup-blocking; its popups
+  // are pages of the context, with their opener.
+  zebkit_view_set_popup_policy(view, ZEBKIT_POPUP_POLICY_ALLOW);
+  zebkit_view_on_window_open(view, &Connection::OnWindowOpen, this);
+  if (Object* context = Find(context_guid)) {
+    for (const char* key : {"tracingStart", "tracingChunk"}) {
+      const base::DictValue* started = context->data.FindDict(key);
+      if (!started)
+        continue;
+      const std::string method = std::string(key) == "tracingStart" ? "Tracing.tracingStart"
+                                                                    : "Tracing.tracingStartChunk";
+      zebkit_automation_call(view, method.c_str(), Json(base::Value(started->Clone())).c_str(),
+                             nullptr, nullptr);
+    }
+  }
+}
+
 static void MarkAutomated(zebkit_view* view) {
   if (!view)
     return;
@@ -1104,22 +1339,10 @@ std::string Connection::AdoptPage(const std::string& context_guid,
   }
   pages_[view] = reserved;
   zebkit_automation_on_event(view, &Connection::OnEvent, this);
-  // Playwright launches Chromium with --disable-popup-blocking; its popups
-  // are pages of the context, with their opener.
-  zebkit_view_set_popup_policy(view, ZEBKIT_POPUP_POLICY_ALLOW);
-  zebkit_view_on_window_open(view, &Connection::OnWindowOpen, this);
-  // A trace or a HAR the context started before it had this page.
-  if (Object* context = Find(context_guid)) {
-    for (const char* key : {"tracingStart", "tracingChunk", "har"}) {
-      const base::DictValue* started = context->data.FindDict(key);
-      if (!started)
-        continue;
-      const std::string method = std::string(key) == "tracingStart"   ? "Tracing.tracingStart"
-                                 : std::string(key) == "tracingChunk" ? "Tracing.tracingStartChunk"
-                                                                      : "Tracing.harStart";
-      zebkit_automation_call(view, method.c_str(), Json(base::Value(started->Clone())).c_str(),
-                             nullptr, nullptr);
-    }
+  PreparePage(view, context_guid);
+  for (auto& [har_id, har] : hars_) {
+    if (har.context == context_guid && har.page.empty())
+      har.recorder->AddPage(reserved);
   }
   base::DictValue page_event;
   page_event.Set("page", Ref(reserved));
@@ -1141,28 +1364,86 @@ void Connection::OnWindowOpen(zebkit_view* opener,
     return;
   // As soon as the popup is there, before its first document runs.
   MarkAutomated(opened);
+  // Anew: a view's address may be one closed before it was reported.
+  Popup& popup = self->popups_[opened] = Popup();
+  popup.context = page->context;
+  popup.opener = found->second;
+  popup.page = id;
+  zebkit_free(id);
+  // crPage.ts reports a page that is to load a document once it has
+  // committed it: its url is the document's.
+  const std::string target = url ? url : "";
+  const bool wait = !target.empty() && target != "about:blank";
+  // Its context's settings at once (the first command gives them), what the
+  // context records, and its events, held until it is reported.
+  self->PreparePage(opened, page->context);
+  zebkit_automation_on_event(opened, &Connection::OnEvent, self);
   struct Pending {
     base::WeakPtr<Connection> connection;
-    std::string context;
-    std::string opener;
-    std::string page;
+    bool wait;
   };
-  auto* pending = new Pending{self->weak_factory_.GetWeakPtr(), page->context,
-                              found->second, id};
-  zebkit_free(id);
   zebkit_automation_call(
       opened, "Page.frames", "{}",
-      [](zebkit_view*, const char* json, const char*, void* data) {
+      [](zebkit_view* view, const char* json, const char*, void* data) {
         std::unique_ptr<Pending> pending(static_cast<Pending*>(data));
         if (!pending->connection || !json)
           return;
-        std::optional<base::Value> frames = Parse(json);
-        if (frames) {
-          pending->connection->AdoptPage(pending->context, pending->page, *frames,
-                                         pending->opener);
+        // What it is reported with if it is gone by then.
+        if (auto popup = pending->connection->popups_.find(view);
+            popup != pending->connection->popups_.end()) {
+          popup->second.frames = json;
+        }
+        if (!pending->wait) {
+          pending->connection->ReportPopup(view);
+          return;
+        }
+        zebkit_automation_call(
+            view, "Page.waitForInitialNavigation", "{}",
+            [](zebkit_view* view, const char* json, const char*, void* data) {
+              auto connection = std::unique_ptr<base::WeakPtr<Connection>>(
+                  static_cast<base::WeakPtr<Connection>*>(data));
+              if (*connection && json)
+                (*connection)->ReportPopup(view);
+            },
+            new base::WeakPtr<Connection>(pending->connection));
+      },
+      new Pending{self->weak_factory_.GetWeakPtr(), wait});
+}
+
+// A popup reported to the client: its Page, then the events it had meanwhile.
+void Connection::ReportPopup(zebkit_view* view) {
+  if (!popups_.contains(view) || popups_[view].reporting)
+    return;
+  popups_[view].reporting = true;
+  zebkit_automation_call(
+      view, "Page.frames", "{}",
+      [](zebkit_view* view, const char* json, const char*, void* data) {
+        auto connection = std::unique_ptr<base::WeakPtr<Connection>>(
+            static_cast<base::WeakPtr<Connection>*>(data));
+        Connection* self = connection->get();
+        if (!self)
+          return;
+        auto found = self->popups_.find(view);
+        if (found == self->popups_.end())
+          return;
+        Popup popup = std::move(found->second);
+        self->popups_.erase(found);
+        // Closed meanwhile: as it was, then its close, as Playwright reports a
+        // popup closed at once.
+        std::optional<base::Value> frames = Parse(json ? json : popup.frames);
+        if (!frames || !frames->is_dict())
+          return;
+        // A page the browser opened (a modified click) has no opener.
+        const bool has_opener = frames->GetDict().FindBool("hasOpener").value_or(true);
+        const std::string guid = self->AdoptPage(popup.context, popup.page, *frames,
+                                                 has_opener ? popup.opener : std::string());
+        for (auto& [event, params] : popup.held) {
+          if (!self->Find(guid))
+            break;
+          self->PageEvent(guid, event, std::move(params));
         }
       },
-      pending);
+      new base::WeakPtr<Connection>(weak_factory_.GetWeakPtr()));
 }
 
 void Connection::OnEvent(zebkit_view* view,
@@ -1171,8 +1452,25 @@ void Connection::OnEvent(zebkit_view* view,
                          void* data) {
   auto* self = static_cast<Connection*>(data);
   auto found = self->pages_.find(view);
-  if (found == self->pages_.end())
+  if (found == self->pages_.end()) {
+    // A popup not reported yet: what it has is kept for when it is; what
+    // waits for the client (a route, a dialog, a binding's call, ...)
+    // reports it at once, as Playwright's dispatchers deliver those of a page
+    // not reported yet.
+    auto popup = self->popups_.find(view);
+    if (popup == self->popups_.end())
+      return;
+    const std::string name = event ? event : "";
+    std::optional<base::Value> params = Parse(json ? json : "{}");
+    popup->second.held.emplace_back(
+        name, params && params->is_dict() ? std::move(params->GetDict()) : base::DictValue());
+    static const base::NoDestructor<std::set<std::string>> kWaiting(std::set<std::string>{
+        "BrowserContext.route", "BrowserContext.dialog", "BrowserContext.bindingCall",
+        "Page.fileChooser", "Page.download", "Page.webSocketRoute", "Page.close", "Page.crash"});
+    if (kWaiting->contains(name))
+      self->ReportPopup(view);
     return;
+  }
   std::optional<base::Value> params = Parse(json ? json : "{}");
   self->PageEvent(found->second, event ? event : "",
                   params && params->is_dict() ? std::move(params->GetDict())
@@ -1186,6 +1484,8 @@ void Connection::PageEvent(const std::string& page_guid,
   Object* page = Find(page_guid);
   if (!page)
     return;
+  if (!hars_.empty())
+    HarEvent(page_guid, event, params);
   const std::string context = page->context;
   auto frame_of = [&](const char* key) {
     const std::string* id = params.FindString(key);
@@ -1529,6 +1829,206 @@ void Connection::PageEvent(const std::string& page_guid,
 
 // BrowserContext.createTempFiles: a directory of the engine's for a remote
 // client's files, and a WritableStream for each (and for the directory).
+void Connection::NewCDPSession(int id,
+                               const std::string& parent,
+                               scoped_refptr<content::DevToolsAgentHost> host) {
+  if (!host) {
+    ReplyError(id, "Target page, context or browser has been closed");
+    return;
+  }
+  const std::string guid = Create(parent, "CDPSession", base::DictValue());
+  CdpSession& session = cdp_sessions_[guid];
+  session.client = std::make_unique<CdpClient>(
+      std::move(host),
+      base::BindRepeating(&Connection::CDPSessionMessage, weak_factory_.GetWeakPtr(), guid),
+      base::BindOnce(&Connection::CDPSessionClosed, weak_factory_.GetWeakPtr(), guid));
+  if (!session.client->Attach()) {
+    cdp_sessions_.erase(guid);
+    Dispose(guid);
+    ReplyError(id, "Target page, context or browser has been closed");
+    return;
+  }
+  base::DictValue answer;
+  answer.Set("session", Ref(guid));
+  Reply(id, base::Value(std::move(answer)));
+}
+
+void Connection::CDPSessionCommand(int id,
+                                   const std::string& guid,
+                                   const std::string& method,
+                                   base::DictValue params) {
+  auto found = cdp_sessions_.find(guid);
+  if (found == cdp_sessions_.end()) {
+    ReplyError(id, "Target page, context or browser has been closed");
+    return;
+  }
+  if (method == "send") {
+    const std::string* cdp_method = params.FindString("method");
+    base::DictValue* cdp_params = params.FindDict("params");
+    const std::string name = cdp_method ? *cdp_method : std::string();
+    // Before it is sent: the browser's own domains answer at once.
+    found->second.calls[found->second.client->NextId()] = {id, name};
+    found->second.client->Send(name, cdp_params ? std::move(*cdp_params) : base::DictValue());
+    return;
+  }
+  if (method == "detach") {
+    // crConnection.ts's detach(): the session goes, and its object with it.
+    Reply(id, base::Value(base::DictValue()));
+    CDPSessionClosed(guid);
+    return;
+  }
+  Reply(id, base::Value(base::DictValue()));
+}
+
+void Connection::CDPSessionMessage(const std::string& guid, base::DictValue message) {
+  auto found = cdp_sessions_.find(guid);
+  if (found == cdp_sessions_.end())
+    return;
+  if (std::optional<int> message_id = message.FindInt("id")) {
+    auto call = found->second.calls.find(*message_id);
+    if (call == found->second.calls.end())
+      return;
+    const auto [id, method] = call->second;
+    found->second.calls.erase(call);
+    if (const base::DictValue* error = message.FindDict("error")) {
+      const std::string* text = error->FindString("message");
+      ReplyError(id, "Protocol error (" + method + "): " + (text ? *text : std::string()));
+      return;
+    }
+    base::DictValue* result = message.FindDict("result");
+    base::DictValue answer;
+    answer.Set("result", result ? std::move(*result) : base::DictValue());
+    Reply(id, base::Value(std::move(answer)));
+    return;
+  }
+  const std::string* method = message.FindString("method");
+  if (!method)
+    return;
+  base::DictValue event;
+  event.Set("method", *method);
+  if (base::DictValue* params = message.FindDict("params"))
+    event.Set("params", std::move(*params));
+  Event(guid, "event", std::move(event));
+}
+
+void Connection::CDPSessionClosed(const std::string& guid) {
+  auto found = cdp_sessions_.find(guid);
+  if (found == cdp_sessions_.end())
+    return;
+  std::unique_ptr<CdpClient> client = std::move(found->second.client);
+  std::map<int, std::pair<int, std::string>> calls = std::move(found->second.calls);
+  cdp_sessions_.erase(found);
+  for (const auto& [message, call] : calls)
+    ReplyError(call.first, "Protocol error (" + call.second + "): Internal server error, session closed.");
+  if (client) {
+    client->Detach();
+    // Not under its own call: this may come from its AgentHostClosed().
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, std::move(client));
+  }
+  Event(guid, "close", base::DictValue());
+  Dispose(guid);
+}
+
+void Connection::HarEvent(const std::string& page_guid,
+                          const std::string& event,
+                          const base::DictValue& params) {
+  Object* page = Find(page_guid);
+  if (!page)
+    return;
+  const bool network = event == "Page.request" || event == "Page.response" ||
+                       event == "Page.requestContinued" || event == "Page.requestFinished" ||
+                       event == "Page.requestFailed";
+  const bool lifecycle = event == "Frame.loadstate";
+  if (!network && !lifecycle)
+    return;
+  zebkit_view* view = zebkit_automation_page(page->id.c_str());
+  for (auto& [har_id, har] : hars_) {
+    if (har.context != page->context || (!har.page.empty() && har.page != page_guid))
+      continue;
+    if (lifecycle) {
+      // The main frame's: the page's title and timings.
+      const std::string* frame = params.FindString("frame");
+      const std::string* state = params.FindString("state");
+      const std::string main = view ? FrameIdOfMain(view) : std::string();
+      if (frame && state && *frame == main) {
+        har.recorder->PageLoadState(
+            page_guid, *state,
+            view && view->web_contents() ? base::UTF16ToUTF8(view->web_contents()->GetTitle())
+                                         : std::string());
+      }
+      continue;
+    }
+    const std::string* frame = params.FindString("frame");
+    const std::string frame_guid = frame ? Known("frame", page_guid, *frame) : std::string();
+    har.recorder->Record(event, params, page_guid, frame_guid);
+    // Its content, kept as it ends, as harTracer.ts's barrier on the body.
+    const std::string* request = params.FindString("request");
+    if (event == "Page.requestFinished" && request && har.recorder->WantsBody(*request) &&
+        view && view->web_contents()) {
+      if (Network* page_network = Network::For(view->web_contents())) {
+        page_network->WhenBody(
+            *request, base::BindOnce(
+                          [](base::WeakPtr<Connection> self, std::string har_id,
+                             std::string request, std::optional<std::string> body) {
+                            if (!self)
+                              return;
+                            auto found = self->hars_.find(har_id);
+                            if (found != self->hars_.end())
+                              found->second.recorder->SetBody(request, std::move(body));
+                          },
+                          weak_factory_.GetWeakPtr(), har_id, *request));
+      }
+    }
+  }
+}
+
+void Connection::HarExport(int id,
+                           const std::string& har_id,
+                           const std::string& mode,
+                           const std::string& parent) {
+  auto found = hars_.find(har_id);
+  if (found == hars_.end()) {
+    ReplyError(id, "No HAR recording " + har_id);
+    return;
+  }
+  std::unique_ptr<HarRecorder> recorder = std::move(found->second.recorder);
+  hars_.erase(found);
+  HarRecorder* raw = recorder.get();
+  const bool archive = mode != "entries";
+  raw->Export(
+      base::FilePath(), HarRecorder::BodyFunc(), std::string(version_info::GetVersionNumber()),
+      kPlaywrightVersion, archive,
+      base::BindOnce(
+          [](base::WeakPtr<Connection> self, int id, std::string parent, bool archive,
+             std::unique_ptr<HarRecorder>, const base::FilePath& path, const std::string& error) {
+            if (!self)
+              return;
+            if (!error.empty()) {
+              self->ReplyError(id, error);
+              return;
+            }
+            base::DictValue answer;
+            if (archive) {
+              base::DictValue initializer;
+              initializer.Set("absolutePath", path.AsUTF8Unsafe());
+              Object artifact;
+              artifact.id = path.AsUTF8Unsafe();
+              artifact.data.Set("path", path.AsUTF8Unsafe());
+              answer.Set("artifact", Ref(self->Create(parent, "Artifact", std::move(initializer),
+                                                      std::move(artifact))));
+            } else {
+              base::ListValue entries;
+              base::DictValue entry;
+              entry.Set("name", "har.har");
+              entry.Set("value", path.AsUTF8Unsafe());
+              entries.Append(std::move(entry));
+              answer.Set("entries", std::move(entries));
+            }
+            self->Reply(id, base::Value(std::move(answer)));
+          },
+          weak_factory_.GetWeakPtr(), id, parent, archive, std::move(recorder)));
+}
+
 void Connection::CreateTempFiles(int id, base::DictValue params) {
   const std::string* root_name = params.FindString("rootDirName");
   const std::string root = root_name ? *root_name : std::string();
@@ -1620,9 +2120,27 @@ void Connection::Tracing(int id,
     context->data.Remove("tracingStart");
     context->data.Remove("tracingChunk");
   } else if (method == "harStart") {
-    // The id is the client's from here on, whichever page records.
-    params.Set("harId", "har@c" + base::NumberToString(++next_guid_));
-    context->data.Set("har", params.Clone());
+    const std::string har_id = "har@" + base::NumberToString(++next_guid_);
+    const base::DictValue* options = params.FindDict("options");
+    Har& har = hars_[har_id];
+    har.context = tracing->context;
+    if (const std::string* page = params.FindStringByDottedPath("page.guid"))
+      har.page = *page;
+    har.recorder = std::make_unique<HarRecorder>(options ? options->Clone() : base::DictValue());
+    for (const auto& [page_view, page] : pages_) {
+      Object* object = Find(page);
+      if (object && object->context == har.context && (har.page.empty() || har.page == page))
+        har.recorder->AddPage(page);
+    }
+    base::DictValue answer;
+    answer.Set("harId", har_id);
+    Reply(id, base::Value(std::move(answer)));
+    return;
+  } else if (method == "harExport") {
+    const std::string* har_id = params.FindString("harId");
+    const std::string* mode = params.FindString("mode");
+    HarExport(id, har_id ? *har_id : std::string(), mode ? *mode : "archive", tracing->context);
+    return;
   }
   zebkit_view* view = nullptr;
   std::string page_guid;
@@ -1751,6 +2269,8 @@ void Connection::Command(int id,
         }
       }
       empty_reply();
+    } else if (method == "newBrowserCDPSession") {
+      NewCDPSession(id, guid, content::DevToolsAgentHost::CreateForBrowser(nullptr, {}));
     } else if (method == "defaultUserAgentForTest") {
       base::DictValue answer;
       answer.Set("userAgent", "");
@@ -1779,6 +2299,44 @@ void Connection::Command(int id,
                  weak_factory_.GetWeakPtr(), id, guid));
       return;
     }
+    if (method == "newCDPSession") {
+      // crBrowser.ts's newCDPSession(): the page's target, or the frame's when
+      // it is one of its own (a frame of another site); else the error it gives.
+      const std::string* page_ref = params.FindStringByDottedPath("page.guid");
+      const std::string* frame_ref = params.FindStringByDottedPath("frame.guid");
+      Object* target = Find(page_ref ? *page_ref : frame_ref ? *frame_ref : std::string());
+      zebkit_view* view = target ? ViewOf(*target) : nullptr;
+      content::WebContents* contents = view ? view->web_contents() : nullptr;
+      if (!contents) {
+        ReplyError(id, page_ref || frame_ref ? "Target page, context or browser has been closed"
+                                             : "page: expected Page or Frame");
+        return;
+      }
+      if (target->type == "Page") {
+        NewCDPSession(id, guid, content::DevToolsAgentHost::GetOrCreateFor(contents));
+        return;
+      }
+      int node = 0;
+      content::RenderFrameHost* frame =
+          target->id.size() > 1 && base::StringToInt(std::string_view(target->id).substr(1), &node)
+              ? contents->UnsafeFindFrameByFrameTreeNodeId(content::FrameTreeNodeId(node))
+              : nullptr;
+      if (frame && !frame->GetParent()) {
+        NewCDPSession(id, guid, content::DevToolsAgentHost::GetOrCreateFor(contents));
+        return;
+      }
+      if (!frame || !frame->IsCrossProcessSubframe()) {
+        ReplyError(id, "This frame does not have a separate CDP session, it is a part of the "
+                       "parent frame's session");
+        return;
+      }
+      // A frame's own target is named by its DevTools token, and made when
+      // DevTools looks at every target.
+      content::DevToolsAgentHost::GetOrCreateAll();
+      NewCDPSession(id, guid, content::DevToolsAgentHost::GetForId(
+                                  frame->GetDevToolsFrameToken().ToString()));
+      return;
+    }
     params.Set("context", object->id);
     if (method == "createTempFiles") {
       CreateTempFiles(id, std::move(params));
@@ -1801,10 +2359,18 @@ void Connection::Command(int id,
       const bool fail_on_status =
           params.FindBool("failOnStatusCode")
               .value_or(object->data.FindBool("failOnStatusCode").value_or(false));
+      // For a HAR of its context's (harTracer.ts's _onAPIRequest).
+      const std::string har_context = object->context.empty() ? guid : object->context;
+      base::DictValue har_request;
+      for (const char* key : {"url", "method", "headers", "postData"}) {
+        if (const base::Value* value = params.Find(key))
+          har_request.Set(key, value->Clone());
+      }
       Native(id, nullptr, "APIRequestContext.fetch", std::move(params),
              base::BindOnce(
                  [](base::WeakPtr<Connection> self, int id, bool fail_on_status,
-                    std::string request_method, base::Value result) {
+                    std::string request_method, std::string har_context,
+                    base::DictValue har_request, base::Value result) {
                    if (!self)
                      return;
                    base::DictValue* response =
@@ -1812,6 +2378,10 @@ void Connection::Command(int id,
                    if (!response) {
                      self->ReplyError(id, "zebkit: no response");
                      return;
+                   }
+                   for (auto& [har_id, har] : self->hars_) {
+                     if (har.context == har_context)
+                       har.recorder->RecordFetch(har_request, *response);
                    }
                    const int status = response->FindInt("status").value_or(0);
                    if (fail_on_status && (status < 200 || status >= 400)) {
@@ -1838,7 +2408,8 @@ void Connection::Command(int id,
                    answer.Set("response", std::move(*response));
                    self->Reply(id, base::Value(std::move(answer)));
                  },
-                 weak_factory_.GetWeakPtr(), id, fail_on_status, std::move(request_method)));
+                 weak_factory_.GetWeakPtr(), id, fail_on_status, std::move(request_method),
+                 har_context, std::move(har_request)));
     } else if (method == "fetchResponseBody") {
       const std::string* uid = params.FindString("fetchUid");
       base::DictValue answer;
@@ -1873,6 +2444,10 @@ void Connection::Command(int id,
     } else {
       empty_reply();
     }
+    return;
+  }
+  if (type == "CDPSession") {
+    CDPSessionCommand(id, guid, method, std::move(params));
     return;
   }
   if (type == "Playwright" && method == "newRequest") {
@@ -2108,6 +2683,14 @@ void Connection::Command(int id,
       params.Set("body", *body);
     if (method == "fulfill" && !params.FindBool("isBase64"))
       params.Set("isBase64", true);
+    // route.fulfill({response}) of route.fetch()'s: the client names the
+    // fetched response, whose body the endpoint kept (network.ts).
+    if (const std::string* uid = params.FindString("fetchResponseUid");
+        method == "fulfill" && uid && !params.FindString("body")) {
+      auto fetched = fetched_.find(*uid);
+      params.Set("body", fetched != fetched_.end() ? fetched->second : std::string());
+      params.Set("isBase64", true);
+    }
   } else if (type == "Dialog") {
     params.Set("dialog", object->id);
   } else if (type == "BindingCall") {
@@ -2165,6 +2748,16 @@ void Connection::Command(int id,
     } else if (method == "httpVersion") {
       const std::string* version = object->data.FindString("httpVersion");
       answer.Set("value", version ? "HTTP/" + *version : "HTTP/1.1");
+    } else if (method == "serverAddr") {
+      if (const std::string* address = object->data.FindString("serverAddr")) {
+        base::DictValue value;
+        value.Set("ipAddress", *address);
+        value.Set("port", object->data.FindInt("serverPort").value_or(0));
+        answer.Set("value", std::move(value));
+      }
+    } else if (method == "securityDetails") {
+      if (const base::DictValue* security = object->data.FindDict("securityDetails"))
+        answer.Set("value", security->Clone());
     } else if (method == "sizes") {
       base::DictValue sizes;
       for (const char* key : {"requestBodySize", "requestHeadersSize", "responseBodySize",

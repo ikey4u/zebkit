@@ -9,6 +9,7 @@
 #include "url/gurl.h"
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "base/values.h"
@@ -19,6 +20,10 @@ class WebContents;
 }  // namespace content
 
 namespace zebkit {
+
+// callLog.ts's compressCallLog(): the lines of a call's log, a block repeated
+// in a row once with its count, each as Playwright's client shows it ("  - ").
+std::vector<std::string> CompressCallLog(const std::vector<std::string>& log);
 
 // httpCredentials of a command: the protocol's list, or one as the C API takes it.
 base::ListValue HttpCredentialsOf(const base::DictValue& params);

@@ -18,7 +18,14 @@
 #include "base/json/json_writer.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/escape.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/no_destructor.h"
+#include "net/base/url_util.h"
+#include "third_party/re2/src/re2/re2.h"
+#include "url/gurl.h"
+#include "zebkit/engine/automation_network.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
@@ -74,27 +81,203 @@ base::ListValue Headers(const base::DictValue& from) {
 
 // ---- HAR ----------------------------------------------------------------
 
+namespace {
+
+std::string HeaderValue(const base::ListValue* headers, std::string_view name) {
+  if (!headers)
+    return std::string();
+  for (const base::Value& header : *headers) {
+    const std::string* key = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+    const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+    if (key && value && base::EqualsCaseInsensitiveASCII(*key, name))
+      return *value;
+  }
+  return std::string();
+}
+
+// isomorphic/mimeType.ts's isTextualMimeType().
+bool IsTextualMimeType(const std::string& mime) {
+  static const base::NoDestructor<RE2> textual(
+      R"(^(text\/.*?|application\/(json|(x-)?javascript|xml.*?|ecmascript|graphql|x-www-form-urlencoded)|image\/svg(\+xml)?|application\/.*?(\+json|\+xml))(;\s*charset=.*)?$)");
+  return RE2::FullMatch(mime, *textual);
+}
+
+// The extension the mime package gives the contents' files.
+std::string Extension(const std::string& mime) {
+  const std::string type = base::ToLowerASCII(mime.substr(0, mime.find(';')));
+  static const std::pair<const char*, const char*> kKnown[] = {
+      {"text/html", "html"},         {"text/css", "css"},
+      {"text/javascript", "js"},     {"application/javascript", "js"},
+      {"application/json", "json"},  {"text/plain", "txt"},
+      {"image/png", "png"},          {"image/jpeg", "jpeg"},
+      {"image/gif", "gif"},          {"image/svg+xml", "svg"},
+      {"image/webp", "webp"},        {"image/x-icon", "ico"},
+      {"font/woff", "woff"},         {"font/woff2", "woff2"},
+      {"application/xml", "xml"},    {"text/xml", "xml"},
+      {"application/pdf", "pdf"},    {"application/octet-stream", "bin"},
+      {"application/x-www-form-urlencoded", "dat"}, {"multipart/form-data", "dat"},
+  };
+  for (const auto& [name, extension] : kKnown) {
+    if (type == name)
+      return extension;
+  }
+  return "dat";
+}
+
+double Roundish(double value) {
+  return static_cast<double>(static_cast<int64_t>(value * 1000)) / 1000;
+}
+
+std::optional<std::string> IsoOf(const std::string& text) {
+  base::Time time;
+  if (!base::Time::FromString(text.c_str(), &time))
+    return std::nullopt;
+  return Iso8601(time);
+}
+
+// harTracer.ts's parseCookie().
+base::DictValue ParseCookie(const std::string& text) {
+  base::DictValue cookie;
+  cookie.Set("name", "");
+  cookie.Set("value", "");
+  bool first = true;
+  for (const std::string& pair : base::SplitStringUsingSubstr(text, ";", base::KEEP_WHITESPACE,
+                                                              base::SPLIT_WANT_ALL)) {
+    std::string part(base::TrimWhitespaceASCII(pair, base::TRIM_LEADING));
+    const size_t equals = part.find('=');
+    const std::string name(base::TrimWhitespaceASCII(
+        equals == std::string::npos ? part : part.substr(0, equals), base::TRIM_ALL));
+    const std::string value(base::TrimWhitespaceASCII(
+        equals == std::string::npos ? std::string() : part.substr(equals + 1), base::TRIM_ALL));
+    if (first) {
+      first = false;
+      cookie.Set("name", name);
+      cookie.Set("value", value);
+      continue;
+    }
+    const std::string key = base::ToLowerASCII(name);
+    if (key == "domain") {
+      cookie.Set("domain", value);
+    } else if (key == "expires") {
+      if (std::optional<std::string> iso = IsoOf(value))
+        cookie.Set("expires", *iso);
+    } else if (key == "httponly") {
+      cookie.Set("httpOnly", true);
+    } else if (key == "max-age") {
+      int seconds = 0;
+      if (base::StringToInt(value, &seconds))
+        cookie.Set("expires", Iso8601(base::Time::Now() + base::Seconds(seconds)));
+    } else if (key == "path") {
+      cookie.Set("path", value);
+    } else if (key == "samesite") {
+      cookie.Set("sameSite", value);
+    } else if (key == "secure") {
+      cookie.Set("secure", true);
+    }
+  }
+  return cookie;
+}
+
+std::string HttpVersion(const base::DictValue& response) {
+  const std::string* version = response.FindString("httpVersion");
+  return "HTTP/" + (version ? *version : std::string("1.1"));
+}
+
+std::string Unescape(const std::string& text) {
+  return base::UnescapeURLComponent(
+      text, base::UnescapeRule::SPACES | base::UnescapeRule::PATH_SEPARATORS |
+                base::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
+                base::UnescapeRule::REPLACE_PLUS_WITH_SPACE);
+}
+
+base::ListValue QueryString(const GURL& url) {
+  base::ListValue query;
+  for (net::QueryIterator it(url); !it.IsAtEnd(); it.Advance()) {
+    base::DictValue pair;
+    pair.Set("name", Unescape(std::string(it.GetKey())));
+    pair.Set("value", it.GetUnescapedValue());
+    query.Append(std::move(pair));
+  }
+  return query;
+}
+
+}  // namespace
+
 HarRecorder::HarRecorder(const base::DictValue& options) {
-  const std::string* content = options.FindString("content");
-  // "attach" keeps the bodies with the entries too: a client reads either.
-  embed_ = !content || *content != "omit";
+  if (const std::string* content = options.FindString("content"))
+    content_ = *content;
+  const std::string* mode = options.FindString("mode");
+  minimal_ = mode && *mode == "minimal";
+  if (const std::string* glob = options.FindString("urlGlob"))
+    url_glob_ = NetworkGlobToRegex(*glob);
+  if (const std::string* regex = options.FindString("urlRegexSource")) {
+    const std::string* flags = options.FindString("urlRegexFlags");
+    url_regex_ = (flags && flags->find('i') != std::string::npos ? "(?i)" : "") + *regex;
+  }
 }
 
 HarRecorder::~HarRecorder() = default;
 HarRecorder::HarRecorder(HarRecorder&&) = default;
 HarRecorder& HarRecorder::operator=(HarRecorder&&) = default;
 
+bool HarRecorder::Includes(const std::string& url) const {
+  if (!url_glob_.empty() && !RE2::PartialMatch(url, RE2(url_glob_)))
+    return false;
+  if (!url_regex_.empty() && !RE2::PartialMatch(url, RE2(url_regex_)))
+    return false;
+  return true;
+}
+
+void HarRecorder::AddPage(const std::string& page_ref) {
+  if (minimal_ || page_ref.empty())
+    return;
+  for (const Page& page : pages_) {
+    if (page.ref == page_ref)
+      return;
+  }
+  pages_.push_back({page_ref, base::Time::Now()});
+}
+
+void HarRecorder::PageLoadState(const std::string& page_ref,
+                                const std::string& state,
+                                const std::string& title) {
+  for (Page& page : pages_) {
+    if (page.ref != page_ref)
+      continue;
+    page.title = title;
+    const double since = (base::Time::Now() - page.started).InMillisecondsF();
+    if (state == "domcontentloaded")
+      page.on_content_load = since;
+    else if (state == "load")
+      page.on_load = since;
+  }
+}
+
 void HarRecorder::Record(const std::string& event,
-                         const base::DictValue& params) {
+                         const base::DictValue& params,
+                         const std::string& page_ref,
+                         const std::string& frame_ref) {
   const std::string* id = params.FindString("request");
   if (!id)
     return;
   if (event == "Page.request") {
+    const std::string* url = params.FindString("url");
+    if (!url || !Includes(*url))
+      return;
+    AddPage(page_ref);
     Entry& entry = entries_[*id];
     entry.started = base::Time::Now();
     entry.start = base::TimeTicks::Now();
+    entry.page_ref = page_ref;
+    const std::string* frame = params.FindString("frame");
+    entry.frame_ref = !frame_ref.empty() ? frame_ref : frame ? *frame : std::string();
     entry.request = params.Clone();
     order_.push_back(*id);
+    if (const std::string* from = params.FindString("redirectedFrom")) {
+      auto previous = entries_.find(*from);
+      if (previous != entries_.end())
+        previous->second.redirect_url = *url;
+    }
     return;
   }
   auto found = entries_.find(*id);
@@ -102,78 +285,263 @@ void HarRecorder::Record(const std::string& event,
     return;
   Entry& entry = found->second;
   if (event == "Page.response") {
-    entry.responded = base::TimeTicks::Now();
     entry.response = params.Clone();
+  } else if (event == "Page.requestContinued") {
+    entry.overrides = params.Clone();
   } else if (event == "Page.requestFinished" || event == "Page.requestFailed") {
     entry.ended = base::TimeTicks::Now();
-    entry.finished = true;
+    entry.finished_params = params.Clone();
     if (const std::string* failure = params.FindString("failureText"))
       entry.failure = *failure;
   }
+}
+
+void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictValue& response) {
+  const std::string* url = request.FindString("url");
+  if (!url || !Includes(*url))
+    return;
+  const std::string id = "fetch" + base::NumberToString(++next_fetch_);
+  Entry& entry = entries_[id];
+  entry.fetch = true;
+  entry.started = base::Time::Now();
+  entry.start = entry.ended = base::TimeTicks::Now();
+  entry.request = request.Clone();
+  entry.response = response.Clone();
+  entry.response.Remove("body");
+  entry.finished_params.Set("request", id);
+  if (const std::string* body = response.FindString("body")) {
+    std::string bytes;
+    if (base::Base64Decode(*body, &bytes)) {
+      entry.has_body = true;
+      entry.body = std::move(bytes);
+    }
+  }
+  order_.push_back(id);
+}
+
+void HarRecorder::SetBody(const std::string& request, std::optional<std::string> body) {
+  auto found = entries_.find(request);
+  if (found == entries_.end())
+    return;
+  found->second.has_body = true;
+  found->second.body = std::move(body);
+}
+
+bool HarRecorder::WantsBody(const std::string& request) const {
+  return entries_.contains(request);
+}
+
+base::DictValue HarRecorder::EntryValue(const std::string& id,
+                                        const Entry& entry,
+                                        const BodyFunc& body_func,
+                                        std::map<std::string, std::string>* files) const {
+  const base::DictValue& given = entry.overrides ? *entry.overrides : entry.request;
+  const std::string* url_text = given.FindString("url");
+  if (!url_text)
+    url_text = entry.request.FindString("url");
+  const std::string url = url_text ? *url_text : std::string();
+  const std::string* method = given.FindString("method");
+  if (!method)
+    method = entry.request.FindString("method");
+  const base::ListValue* request_headers = given.FindList("headers");
+  if (!request_headers)
+    request_headers = entry.request.FindList("headers");
+  const bool responded = !entry.response.empty();
+  const std::string http_version = responded ? HttpVersion(entry.response) : "HTTP/1.1";
+  const base::DictValue* sizes = entry.finished_params.FindDict("sizes");
+
+  // What a client's file of the contents is called, and the file.
+  auto blob = [&](const std::string& bytes, const std::string& mime) {
+    const std::string name = base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(bytes)))) +
+                             "." + Extension(mime);
+    if (files)
+      (*files)[name] = bytes;
+    return name;
+  };
+
+  base::DictValue request;
+  request.Set("method", method ? *method : "GET");
+  request.Set("url", url);
+  request.Set("httpVersion", http_version);
+  base::ListValue request_cookies;
+  if (!minimal_ && request_headers) {
+    for (const base::Value& header : *request_headers) {
+      const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+      if (!name || !value || !base::EqualsCaseInsensitiveASCII(*name, "cookie"))
+        continue;
+      for (const std::string& part : base::SplitString(*value, ";", base::KEEP_WHITESPACE,
+                                                        base::SPLIT_WANT_ALL)) {
+        request_cookies.Append(ParseCookie(part));
+      }
+    }
+  }
+  request.Set("cookies", std::move(request_cookies));
+  request.Set("headers", request_headers ? request_headers->Clone() : base::ListValue());
+  request.Set("queryString", QueryString(GURL(url)));
+  request.Set("headersSize", !minimal_ && sizes ? sizes->FindDouble("requestHeadersSize").value_or(-1) : -1);
+  std::string post_data;
+  const std::string* post = given.FindString("postData");
+  if (!post)
+    post = entry.request.FindString("postData");
+  const bool has_post = post && base::Base64Decode(*post, &post_data);
+  request.Set("bodySize", minimal_ ? -1 : static_cast<double>(has_post ? post_data.size() : 0));
+  if (has_post) {
+    // harTracer.ts's _postDataForBuffer().
+    std::string mime = HeaderValue(request_headers, "content-type");
+    if (mime.empty())
+      mime = "application/octet-stream";
+    base::DictValue data;
+    data.Set("mimeType", mime);
+    data.Set("text", content_ == "embed" && mime != "application/octet-stream" ? post_data : "");
+    if (content_ == "attach")
+      data.Set("_file", blob(post_data, mime));
+    base::ListValue params;
+    if (mime == "application/x-www-form-urlencoded") {
+      for (net::QueryIterator it(GURL("http://x/?" + post_data)); !it.IsAtEnd(); it.Advance()) {
+        base::DictValue pair;
+        pair.Set("name", Unescape(std::string(it.GetKey())));
+        pair.Set("value", it.GetUnescapedValue());
+        params.Append(std::move(pair));
+      }
+    }
+    data.Set("params", std::move(params));
+    request.Set("postData", std::move(data));
+  }
+
+  base::DictValue response;
+  response.Set("status", responded ? entry.response.FindInt("status").value_or(-1) : -1);
+  const std::string* status_text = entry.response.FindString("statusText");
+  response.Set("statusText", status_text ? *status_text : "");
+  response.Set("httpVersion", http_version);
+  const base::ListValue* response_headers = entry.response.FindList("headers");
+  base::ListValue response_cookies;
+  if (!minimal_ && response_headers) {
+    for (const base::Value& header : *response_headers) {
+      const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+      if (!name || !value || !base::EqualsCaseInsensitiveASCII(*name, "set-cookie"))
+        continue;
+      // Some report several cookies in one header, a line each.
+      for (const std::string& line : base::SplitString(*value, "\n", base::TRIM_WHITESPACE,
+                                                        base::SPLIT_WANT_NONEMPTY)) {
+        response_cookies.Append(ParseCookie(line));
+      }
+    }
+  }
+  response.Set("cookies", std::move(response_cookies));
+  response.Set("headers", response_headers ? response_headers->Clone() : base::ListValue());
+  base::DictValue content;
+  std::string mime = HeaderValue(response_headers, "content-type");
+  if (mime.empty())
+    mime = "x-unknown";
+  content.Set("size", -1);
+  content.Set("mimeType", mime);
+  std::optional<std::string> bytes;
+  if (entry.has_body)
+    bytes = entry.body;
+  else if (responded && body_func && !entry.fetch)
+    bytes = body_func.Run(id);
+  const double encoded = sizes ? sizes->FindDouble("responseBodySize").value_or(-1) : -1;
+  if (bytes && responded) {
+    if (!minimal_) {
+      content.Set("size", static_cast<double>(bytes->size()));
+      if (encoded >= 0)
+        content.Set("compression", std::max(0.0, static_cast<double>(bytes->size()) - encoded));
+    }
+    const std::string* type = entry.request.FindString("resourceType");
+    if (content_ == "embed") {
+      if (IsTextualMimeType(mime) && !(type && *type == "font")) {
+        content.Set("text", *bytes);
+      } else {
+        content.Set("text", base::Base64Encode(*bytes));
+        content.Set("encoding", "base64");
+      }
+    } else if (content_ == "attach") {
+      content.Set("_file", blob(*bytes, mime));
+    }
+  }
+  response.Set("content", std::move(content));
+  response.Set("headersSize", !minimal_ && sizes ? sizes->FindDouble("responseHeadersSize").value_or(-1) : -1);
+  response.Set("bodySize", minimal_ ? -1
+                           : entry.fetch && bytes ? static_cast<double>(bytes->size())
+                                                  : encoded);
+  response.Set("redirectURL", entry.redirect_url.empty()
+                                  ? (entry.fetch ? HeaderValue(response_headers, "location") : "")
+                                  : entry.redirect_url);
+  if (!minimal_) {
+    const double headers_size = sizes ? sizes->FindDouble("responseHeadersSize").value_or(-1) : -1;
+    response.Set("_transferSize", headers_size >= 0 && encoded >= 0 ? headers_size + encoded : -1);
+  }
+  if (!entry.failure.empty())
+    response.Set("_failureText", entry.failure);
+
+  base::DictValue har;
+  if (!minimal_ && !entry.page_ref.empty())
+    har.Set("pageref", entry.page_ref);
+  base::Time started = entry.started;
+  const base::DictValue* timing = entry.response.FindDict("timing");
+  if (timing) {
+    if (std::optional<double> start = timing->FindDouble("startTime"); start && *start > 0)
+      started = base::Time::FromMillisecondsSinceUnixEpoch(*start);
+  }
+  har.Set("startedDateTime", Iso8601(started));
+  base::DictValue timings;
+  double time = -1;
+  if (minimal_ || !timing) {
+    timings.Set("send", -1);
+    timings.Set("wait", -1);
+    timings.Set("receive", -1);
+    if (!minimal_ && !entry.ended.is_null())
+      time = (entry.ended - entry.start).InMillisecondsF();
+  } else {
+    auto at = [&](const char* key) { return timing->FindDouble(key).value_or(-1); };
+    const double dns = at("domainLookupEnd") != -1 ? Roundish(at("domainLookupEnd") - at("domainLookupStart")) : -1;
+    const double connect = at("connectEnd") != -1 ? Roundish(at("connectEnd") - at("connectStart")) : -1;
+    const double ssl = at("connectEnd") != -1 ? Roundish(at("connectEnd") - at("secureConnectionStart")) : -1;
+    const double wait = at("responseStart") != -1 ? Roundish(at("responseStart") - at("requestStart")) : -1;
+    const double end = entry.finished_params.FindDouble("responseEndTiming").value_or(-1);
+    const double receive = !entry.ended.is_null() && entry.failure.empty() && end != -1
+                               ? Roundish(end - at("responseStart"))
+                               : -1;
+    timings.Set("dns", dns);
+    timings.Set("connect", connect);
+    timings.Set("ssl", ssl);
+    timings.Set("send", 0);
+    timings.Set("wait", wait);
+    timings.Set("receive", receive);
+    time = 0;
+    for (double part : {dns, connect, ssl, wait, receive}) {
+      if (part > 0)
+        time += part;
+    }
+  }
+  har.Set("time", time);
+  har.Set("request", std::move(request));
+  har.Set("response", std::move(response));
+  har.Set("cache", base::DictValue());
+  har.Set("timings", std::move(timings));
+  if (!minimal_) {
+    if (const std::string* address = entry.response.FindString("serverAddr"))
+      har.Set("serverIPAddress", *address);
+    if (std::optional<int> port = entry.response.FindInt("serverPort"))
+      har.Set("_serverPort", *port);
+    if (const base::DictValue* security = entry.response.FindDict("securityDetails"))
+      har.Set("_securityDetails", security->Clone());
+  }
+  if (!entry.frame_ref.empty())
+    har.Set("_frameref", entry.frame_ref);
+  if (const std::string* type = entry.request.FindString("resourceType"))
+    har.Set("_resourceType", *type);
+  return har;
 }
 
 base::ListValue HarRecorder::Entries(const BodyFunc& body) const {
   base::ListValue entries;
   for (const std::string& id : order_) {
     auto found = entries_.find(id);
-    if (found == entries_.end() || !found->second.finished)
-      continue;
-    const Entry& entry = found->second;
-    const std::string* url = entry.request.FindString("url");
-    const std::string* method = entry.request.FindString("method");
-    base::DictValue request;
-    request.Set("method", method ? *method : "GET");
-    request.Set("url", url ? *url : "");
-    request.Set("httpVersion", "HTTP/1.1");
-    request.Set("cookies", base::ListValue());
-    request.Set("headers", Headers(entry.request));
-    request.Set("queryString", base::ListValue());
-    request.Set("headersSize", -1);
-    request.Set("bodySize", -1);
-    base::DictValue response;
-    response.Set("status", entry.response.FindInt("status").value_or(0));
-    const std::string* status_text = entry.response.FindString("statusText");
-    response.Set("statusText", status_text ? *status_text : "");
-    response.Set("httpVersion", "HTTP/1.1");
-    response.Set("cookies", base::ListValue());
-    response.Set("headers", Headers(entry.response));
-    base::DictValue content;
-    const std::string* mime = entry.response.FindString("mimeType");
-    content.Set("mimeType", mime ? *mime : "x-unknown");
-    std::optional<std::string> bytes = body ? body.Run(id) : std::nullopt;
-    content.Set("size", bytes ? static_cast<int>(bytes->size()) : -1);
-    if (bytes && embed_) {
-      content.Set("text", base::Base64Encode(*bytes));
-      content.Set("encoding", "base64");
-    }
-    response.Set("content", std::move(content));
-    response.Set("redirectURL", "");
-    response.Set("headersSize", -1);
-    response.Set("bodySize", bytes ? static_cast<int>(bytes->size()) : -1);
-    if (!entry.failure.empty())
-      response.Set("_failureText", entry.failure);
-    const double wait = entry.responded.is_null()
-                            ? -1
-                            : (entry.responded - entry.start).InMillisecondsF();
-    const double receive =
-        entry.responded.is_null() ? -1
-                                  : (entry.ended - entry.responded).InMillisecondsF();
-    base::DictValue timings;
-    timings.Set("send", 0);
-    timings.Set("wait", wait);
-    timings.Set("receive", receive);
-    base::DictValue har;
-    har.Set("startedDateTime", Iso8601(entry.started));
-    har.Set("time", (entry.ended - entry.start).InMillisecondsF());
-    har.Set("request", std::move(request));
-    har.Set("response", std::move(response));
-    har.Set("cache", base::DictValue());
-    har.Set("timings", std::move(timings));
-    if (const std::string* address = entry.response.FindString("serverAddr"))
-      har.Set("serverIPAddress", *address);
-    if (const std::string* frame = entry.request.FindString("frame"))
-      har.Set("_frameref", *frame);
-    entries.Append(std::move(har));
+    if (found != entries_.end())
+      entries.Append(EntryValue(id, found->second, body, nullptr));
   }
   return entries;
 }
@@ -181,12 +549,13 @@ base::ListValue HarRecorder::Entries(const BodyFunc& body) const {
 void HarRecorder::Export(base::FilePath path,
                          const BodyFunc& body,
                          const std::string& browser_version,
+                         const std::string& creator_version,
                          bool archive,
                          WrittenCallback done) const {
   base::DictValue creator;
   // As Playwright's har tracer, whose format and readers this follows.
   creator.Set("name", "Playwright");
-  creator.Set("version", zebkit_version());
+  creator.Set("version", creator_version);
   base::DictValue browser;
   browser.Set("name", "chromium");
   browser.Set("version", browser_version);
@@ -194,8 +563,29 @@ void HarRecorder::Export(base::FilePath path,
   log.Set("version", "1.2");
   log.Set("creator", std::move(creator));
   log.Set("browser", std::move(browser));
-  log.Set("pages", base::ListValue());
-  log.Set("entries", Entries(body));
+  if (!pages_.empty()) {
+    base::ListValue pages;
+    for (const Page& page : pages_) {
+      base::DictValue entry;
+      entry.Set("startedDateTime", Iso8601(page.started));
+      entry.Set("id", page.ref);
+      entry.Set("title", page.title);
+      base::DictValue timings;
+      timings.Set("onContentLoad", page.on_content_load);
+      timings.Set("onLoad", page.on_load);
+      entry.Set("pageTimings", std::move(timings));
+      pages.Append(std::move(entry));
+    }
+    log.Set("pages", std::move(pages));
+  }
+  std::map<std::string, std::string> files;
+  base::ListValue entries;
+  for (const std::string& id : order_) {
+    auto found = entries_.find(id);
+    if (found != entries_.end())
+      entries.Append(EntryValue(id, found->second, body, &files));
+  }
+  log.Set("entries", std::move(entries));
   base::DictValue har;
   har.Set("log", std::move(log));
   path = OutputPath(path, archive ? ".zip" : ".har");
@@ -203,15 +593,28 @@ void HarRecorder::Export(base::FilePath path,
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(
-          [](base::FilePath path, bool archive, std::string text) {
-            if (!archive)
+          [](base::FilePath path, bool archive, std::string text,
+             std::map<std::string, std::string> files) {
+            if (!archive) {
+              // The attached contents beside the HAR, as harRecorder.ts writes them.
+              for (const auto& [name, bytes] : files) {
+                if (!base::WriteFile(path.DirName().AppendASCII(name), bytes))
+                  return false;
+              }
               return base::WriteFile(path, text);
+            }
             base::ScopedTempDir directory;
-            return directory.CreateUniqueTempDir() &&
-                   base::WriteFile(directory.GetPath().AppendASCII("har.har"), text) &&
-                   zip::Zip(directory.GetPath(), path, /*include_hidden_files=*/true);
+            if (!directory.CreateUniqueTempDir() ||
+                !base::WriteFile(directory.GetPath().AppendASCII("har.har"), text)) {
+              return false;
+            }
+            for (const auto& [name, bytes] : files) {
+              if (!base::WriteFile(directory.GetPath().AppendASCII(name), bytes))
+                return false;
+            }
+            return zip::Zip(directory.GetPath(), path, /*include_hidden_files=*/true);
           },
-          path, archive, std::move(text)),
+          path, archive, std::move(text), std::move(files)),
       base::BindOnce(&Reply, std::move(done), path));
 }
 

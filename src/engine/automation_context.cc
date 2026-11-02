@@ -22,6 +22,9 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_partition_key.h"
+#include "net/base/url_util.h"
+#include "net/cookies/cookie_util.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_inclusion_status.h"
 #include "net/cookies/cookie_options.h"
@@ -65,44 +68,56 @@ network::mojom::CookieManager* CookieManager(content::BrowserContext* profile) {
       ->GetCookieManagerForBrowserProcess();
 }
 
+// CDP's BuildCookie() has no sameSite for an unspecified one, which
+// crBrowser.ts's doGetCookies() makes "Lax".
 const char* SameSiteName(net::CookieSameSite same_site) {
   switch (same_site) {
     case net::CookieSameSite::STRICT_MODE:
       return "Strict";
-    case net::CookieSameSite::LAX_MODE:
-      return "Lax";
-    default:
+    case net::CookieSameSite::NO_RESTRICTION:
       return "None";
+    default:
+      return "Lax";
   }
 }
 
-// A cookie as Playwright's protocol has it (structs.yml's NetworkCookie).
+// A cookie as Playwright's protocol has it (structs.yml's NetworkCookie), from
+// what Storage.getCookies gives crBrowser.ts.
 base::DictValue CookieValue(const net::CanonicalCookie& cookie) {
   base::DictValue value;
   value.Set("name", cookie.Name());
   value.Set("value", cookie.Value());
   value.Set("domain", cookie.Domain());
   value.Set("path", cookie.Path());
-  value.Set("expires", cookie.IsPersistent()
-                           ? cookie.ExpiryDate().InSecondsFSinceUnixEpoch()
-                           : -1.0);
+  value.Set("expires", cookie.ExpiryDate().is_null()
+                           ? -1.0
+                           : cookie.ExpiryDate().InSecondsFSinceUnixEpoch());
   value.Set("httpOnly", cookie.IsHttpOnly());
   value.Set("secure", cookie.SecureAttribute());
   value.Set("sameSite", SameSiteName(cookie.SameSite()));
+  if (const std::optional<net::CookiePartitionKey>& key = cookie.PartitionKey();
+      key && key->IsSerializeable()) {
+    base::expected<net::CookiePartitionKey::SerializedCookiePartitionKey, std::string>
+        serialized = net::CookiePartitionKey::Serialize(key);
+    if (serialized.has_value()) {
+      value.Set("partitionKey", serialized->TopLevelSite());
+      value.Set("_crHasCrossSiteAncestor", serialized->has_cross_site_ancestor());
+    }
+  }
   return value;
 }
 
-// Whether @cookie would go with a request to @url, as Playwright filters
-// BrowserContext.cookies.
+// network.ts's filterCookies(): whether @cookie is one of @url's.
 bool CookieForUrl(const net::CanonicalCookie& cookie, const GURL& url) {
-  if (!cookie.IsDomainMatch(url.host()))
+  std::string domain = cookie.Domain();
+  if (!domain.starts_with("."))
+    domain = "." + domain;
+  if (!("." + std::string(url.host())).ends_with(domain))
     return false;
-  if (!cookie.IsOnPath(url.path()))
+  if (!url.path().starts_with(cookie.Path()))
     return false;
-  if (cookie.SecureAttribute() && !url.SchemeIsCryptographic() &&
-      url.host() != "localhost") {
+  if (!url.SchemeIs("https") && !net::IsLocalhost(url) && cookie.SecureAttribute())
     return false;
-  }
   return true;
 }
 
@@ -148,6 +163,8 @@ void ContextAddCookies(content::BrowserContext* profile,
     Fail(std::move(done), "cookies: expected an array");
     return;
   }
+  // Rollover to a 5-digit year (network.ts's kMaxCookieExpiresDateInSeconds).
+  constexpr double kMaxExpires = 253402300799;
   std::vector<std::unique_ptr<net::CanonicalCookie>> made;
   std::vector<GURL> sources;
   for (const base::Value& entry : *cookies) {
@@ -156,57 +173,109 @@ void ContextAddCookies(content::BrowserContext* profile,
       return;
     }
     const base::DictValue& cookie = entry.GetDict();
-    const std::string* name = cookie.FindString("name");
+    const std::string* name_given = cookie.FindString("name");
     const std::string* value = cookie.FindString("value");
-    if (!name || !value) {
+    if (!name_given || !value) {
       Fail(std::move(done), "Cookie should have a name and a value");
       return;
     }
-    std::string domain, path = "/";
-    GURL url;
-    if (const std::string* given = cookie.FindString("url")) {
-      url = GURL(*given);
-      if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
-        Fail(std::move(done), "Invalid URL " + *given);
-        return;
-      }
-    } else if (const std::string* given_domain = cookie.FindString("domain")) {
-      domain = *given_domain;
-      if (const std::string* given_path = cookie.FindString("path"))
-        path = *given_path;
-      const bool secure = cookie.FindBool("secure").value_or(false);
-      const std::string host =
-          domain.starts_with(".") ? domain.substr(1) : domain;
-      url = GURL(std::string(secure ? "https://" : "http://") + host + path);
-    } else {
+    const std::string name = *name_given;
+    // network.ts's rewriteCookies().
+    const std::string* url_given = cookie.FindString("url");
+    const std::string* domain_given = cookie.FindString("domain");
+    const std::string* path_given = cookie.FindString("path");
+    if (!url_given && !(domain_given && path_given)) {
       Fail(std::move(done), "Cookie should have a url or a domain/path pair");
       return;
     }
-    const double expires = cookie.FindDouble("expires").value_or(-1);
-    std::string same_site = "Lax";
-    if (const std::string* given = cookie.FindString("sameSite"))
-      same_site = *given;
-    const net::CookieSameSite site =
-        same_site == "Strict" ? net::CookieSameSite::STRICT_MODE
-        : same_site == "None" ? net::CookieSameSite::NO_RESTRICTION
-                              : net::CookieSameSite::LAX_MODE;
-    const base::Time now = base::Time::Now();
-    net::CookieInclusionStatus status;
-    std::unique_ptr<net::CanonicalCookie> canonical =
-        net::CanonicalCookie::CreateSanitizedCookie(
-            url, *name, *value, domain.empty() ? std::string() : domain,
-            cookie.FindString("url") ? std::string(url.path()) : path, now,
-            expires > 0 ? base::Time::FromSecondsSinceUnixEpoch(expires)
-                        : base::Time(),
-            now, cookie.FindBool("secure").value_or(url.SchemeIsCryptographic()),
-            cookie.FindBool("httpOnly").value_or(false), site,
-            net::COOKIE_PRIORITY_DEFAULT, std::nullopt, &status);
-    if (!canonical) {
-      Fail(std::move(done), "Invalid cookie fields: " + *name);
+    if (url_given && domain_given) {
+      Fail(std::move(done), "Cookie should have either url or domain");
       return;
     }
+    if (url_given && path_given) {
+      Fail(std::move(done), "Cookie should have either url or path");
+      return;
+    }
+    const double expires = cookie.FindDouble("expires").value_or(-1);
+    if ((expires < 0 && expires != -1) || expires > kMaxExpires) {
+      Fail(std::move(done),
+           "Cookie should have a valid expires, only -1 or a positive number for the unix "
+           "timestamp in seconds is allowed");
+      return;
+    }
+    std::string domain = domain_given ? *domain_given : std::string();
+    std::string path = path_given ? *path_given : std::string();
+    bool secure = cookie.FindBool("secure").value_or(false);
+    GURL source;
+    if (url_given) {
+      if (*url_given == "about:blank") {
+        Fail(std::move(done), "Blank page can not have cookie \"" + name + "\"");
+        return;
+      }
+      if (url_given->starts_with("data:")) {
+        Fail(std::move(done), "Data URL page can not have cookie \"" + name + "\"");
+        return;
+      }
+      source = GURL(*url_given);
+      if (!source.is_valid()) {
+        Fail(std::move(done), "Invalid URL " + *url_given);
+        return;
+      }
+      domain = std::string(source.host());
+      const std::string url_path(source.path());
+      path = url_path.substr(0, url_path.rfind('/') + 1);
+      secure = source.SchemeIs("https");
+      // CDP's Network.setCookies: http and https only.
+      if (!source.SchemeIsHTTPOrHTTPS()) {
+        Fail(std::move(done), "Protocol error (Network.setCookies): URL must have scheme http or https");
+        return;
+      }
+    }
+    // content's MakeCookieFromProtocolValues().
+    std::string normalized_domain = domain;
+    std::string url_host = domain;
+    if (!normalized_domain.empty()) {
+      if (normalized_domain[0] == '.')
+        url_host.erase(0, 1);
+      else
+        normalized_domain.clear();
+    }
+    const GURL url(std::string(secure ? "https://" : "http://") + url_host);
+    base::Time expiration;
+    if (expires >= 0) {
+      expiration = expires ? base::Time::FromSecondsSinceUnixEpoch(expires)
+                           : base::Time::UnixEpoch();
+    }
+    net::CookieSameSite site = net::CookieSameSite::UNSPECIFIED;
+    if (const std::string* same_site = cookie.FindString("sameSite")) {
+      site = *same_site == "Strict" ? net::CookieSameSite::STRICT_MODE
+             : *same_site == "None" ? net::CookieSameSite::NO_RESTRICTION
+             : *same_site == "Lax"  ? net::CookieSameSite::LAX_MODE
+                                    : net::CookieSameSite::UNSPECIFIED;
+    }
+    std::optional<net::CookiePartitionKey> partition;
+    if (const std::string* top_level = cookie.FindString("partitionKey");
+        top_level && !top_level->empty()) {
+      base::expected<net::CookiePartitionKey, std::string> key =
+          net::CookiePartitionKey::FromUntrustedInput(
+              *top_level, cookie.FindBool("_crHasCrossSiteAncestor").value_or(true));
+      if (!key.has_value()) {
+        Fail(std::move(done), "Protocol error (Network.setCookies): Deserializing cookie partition key failed");
+        return;
+      }
+      partition = key.value();
+    }
+    std::unique_ptr<net::CanonicalCookie> canonical =
+        net::CanonicalCookie::CreateSanitizedCookie(
+            url, name, *value, normalized_domain, path, base::Time(), expiration,
+            base::Time(), secure, cookie.FindBool("httpOnly").value_or(false), site,
+            net::COOKIE_PRIORITY_MEDIUM, partition, /*status=*/nullptr);
+    if (!canonical) {
+      Fail(std::move(done), "Protocol error (Network.setCookies): Sanitizing cookie failed");
+      return;
+    }
+    sources.push_back(net::cookie_util::SimulatedCookieSource(*canonical, "https"));
     made.push_back(std::move(canonical));
-    sources.push_back(url);
   }
   // Set one after the other, then answered.
   struct Pending {
@@ -226,7 +295,10 @@ void ContextAddCookies(content::BrowserContext* profile,
     return;
   }
   network::mojom::CookieManager* manager = CookieManager(profile);
-  net::CookieOptions options = net::CookieOptions::MakeAllInclusive();
+  // As CDP's: a SameSite cookie may be set, an HttpOnly one too.
+  net::CookieOptions options;
+  options.set_same_site_cookie_context(net::CookieOptions::SameSiteCookieContext::MakeInclusive());
+  options.set_include_httponly();
   for (size_t i = 0; i < pending->cookies.size(); ++i) {
     manager->SetCanonicalCookie(
         *pending->cookies[i], pending->sources[i], options,

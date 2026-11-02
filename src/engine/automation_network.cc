@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <set>
 #include <vector>
 
 #include "base/base64.h"
@@ -38,6 +39,10 @@
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "net/url_request/redirect_info.h"
+#include "net/cert/x509_certificate.h"
+#include "net/ssl/ssl_cipher_suite_names.h"
+#include "net/ssl/ssl_connection_status_flags.h"
+#include "net/ssl/ssl_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
@@ -48,6 +53,7 @@
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/re2/src/re2/re2.h"
+#include "url/url_constants.h"
 
 namespace zebkit {
 
@@ -312,11 +318,19 @@ class Loader : public network::mojom::URLLoader,
 
   void Start();
 
+  const GURL& url() const { return request_.url; }
+
   void Continue(const base::DictValue& overrides) {
+    const bool overridden = overrides.Find("url") || overrides.Find("method") ||
+                            overrides.Find("headers") || overrides.Find("postData");
     if (const std::string* url = overrides.FindString("url")) {
       GURL changed(*url);
-      if (changed.is_valid())
+      if (changed.is_valid() && changed != request_.url) {
+        // A navigation's response is looked for by the URL it was asked for.
+        if (original_url_.empty())
+          original_url_ = request_.url.spec();
         request_.url = changed;
+      }
     }
     if (const std::string* method = overrides.FindString("method"))
       request_.method = *method;
@@ -336,6 +350,8 @@ class Loader : public network::mojom::URLLoader,
       request_.request_body = network::ResourceRequestBody::CreateFromCopyOfBytes(
           base::as_byte_span(bytes));
     }
+    if (overridden)
+      ContinuedWith();
     if (!target_) {
       Complete(net::ERR_FAILED);
       return;
@@ -395,6 +411,9 @@ class Loader : public network::mojom::URLLoader,
                           written);
     }
     producer.reset();
+    // Response.body of a fulfilled request is what was given, as Playwright
+    // keeps it (network.ts's Route.fulfill).
+    KeepFulfilled(body);
     Responded(*head);
     client_->OnReceiveResponse(std::move(head), std::move(consumer),
                                std::nullopt);
@@ -406,6 +425,10 @@ class Loader : public network::mojom::URLLoader,
   }
 
   void Abort(int error) { Complete(error); }
+  void KeepFulfilled(std::string body);
+  // Page.requestContinued: what route.continue() changed, for a HAR's
+  // recordRequestOverrides.
+  void ContinuedWith();
 
   // network::mojom::URLLoader
   void FollowRedirect(network::HttpRequestHeadersUpdateParams params,
@@ -445,7 +468,8 @@ class Loader : public network::mojom::URLLoader,
   base::DictValue RequestValue() {
     base::DictValue value;
     value.Set("request", id_);
-    value.Set("url", request_.url.spec());
+    // Without its fragment, as network.ts's stripFragmentFromUrl().
+    value.Set("url", request_.url.GetWithoutRef().spec());
     value.Set("method", request_.method);
     value.Set("headers", RequestHeaders(request_.headers));
     value.Set("resourceType", ResourceType(request_));
@@ -475,8 +499,9 @@ class Loader : public network::mojom::URLLoader,
     OnCompleteInternal(network::URLLoaderCompletionStatus(error));
   }
 
-  // The page's end went: the request is cancelled.
-  void Gone() { delete this; }
+  // The page's end went: the request is cancelled, which Playwright reports
+  // as failed (net::ERR_ABORTED).
+  void Gone();
   void NetworkGone() {
     if (!completed_)
       Complete(net::ERR_ABORTED);
@@ -484,6 +509,8 @@ class Loader : public network::mojom::URLLoader,
 
   base::WeakPtr<NetworkImpl> network_;
   std::string id_;
+  // The URL asked for, when route.continue() changed it.
+  std::string original_url_;
   std::string frame_;
   bool navigation_;
   int32_t request_id_;
@@ -657,6 +684,29 @@ class NetworkImpl : public Network,
     }
   }
 
+  void BodyStarted(const std::string& request) { bodies_coming_.insert(request); }
+  void BodyEnded(const std::string& request, std::optional<std::string> body) {
+    bodies_coming_.erase(request);
+    if (body)
+      KeepBody(request, *body);
+    auto waiters = body_waiters_.extract(request);
+    if (waiters.empty())
+      return;
+    for (BodyFunc& done : waiters.mapped())
+      std::move(done).Run(body);
+  }
+  void WhenBody(const std::string& request, BodyFunc done) override {
+    if (std::optional<std::string> body = Body(request)) {
+      std::move(done).Run(std::move(body));
+      return;
+    }
+    if (!bodies_coming_.contains(request)) {
+      std::move(done).Run(std::nullopt);
+      return;
+    }
+    body_waiters_[request].push_back(std::move(done));
+  }
+
   std::optional<std::string> Body(const std::string& request) override {
     auto found = bodies_.find(request);
     if (found == bodies_.end())
@@ -677,26 +727,36 @@ class NetworkImpl : public Network,
 
   bool Continue(const std::string& route,
                 const base::DictValue& overrides) override {
-    base::WeakPtr<Loader> loader = Take(route);
+    bool gone = false;
+    base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
-      return false;
+      return gone;
     loader->Continue(overrides);
     return true;
   }
 
   bool Fulfill(const std::string& route,
                const base::DictValue& response) override {
-    base::WeakPtr<Loader> loader = Take(route);
+    bool gone = false;
+    base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
-      return false;
+      return gone;
     loader->Fulfill(response);
     return true;
   }
 
+  std::optional<std::string> RouteUrl(const std::string& route) override {
+    auto found = routes_.find(route);
+    if (found == routes_.end() || !found->second)
+      return std::nullopt;
+    return found->second->url().spec();
+  }
+
   bool Abort(const std::string& route, const std::string& error) override {
-    base::WeakPtr<Loader> loader = Take(route);
+    bool gone = false;
+    base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
-      return false;
+      return gone;
     loader->Abort(NetError(error));
     return true;
   }
@@ -707,12 +767,16 @@ class NetworkImpl : public Network,
   friend class content::WebContentsUserData<NetworkImpl>;
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 
-  base::WeakPtr<Loader> Take(const std::string& route) {
+  // The held request of @route; @gone when it was held and its page has
+  // cancelled it since (the route is handled without error, as Playwright's).
+  base::WeakPtr<Loader> Take(const std::string& route, bool* gone) {
     auto found = routes_.find(route);
+    *gone = false;
     if (found == routes_.end())
       return nullptr;
     base::WeakPtr<Loader> loader = found->second;
     routes_.erase(found);
+    *gone = !loader;
     return loader;
   }
 
@@ -724,6 +788,9 @@ class NetworkImpl : public Network,
   int next_id_ = 0;
   bool offline_ = false;
   std::map<std::string, std::string> bodies_;
+  // Bodies on their way, and Response.body calls waiting for them.
+  std::set<std::string> bodies_coming_;
+  std::map<std::string, std::vector<BodyFunc>> body_waiters_;
   std::deque<std::string> navigation_order_;
   std::map<std::string, base::DictValue> navigation_responses_;
   std::deque<std::string> order_;
@@ -733,6 +800,10 @@ class NetworkImpl : public Network,
 WEB_CONTENTS_USER_DATA_KEY_IMPL(NetworkImpl);
 
 void Loader::Start() {
+  // A data: URL is no request, as Playwright reports none for it
+  // (crNetworkManager.ts).
+  if (request_.url.SchemeIs(url::kDataScheme))
+    network_ = nullptr;
   if (!network_) {
     Continue({});
     return;
@@ -759,6 +830,29 @@ void Loader::Start() {
   network_->Emit("BrowserContext.route", std::move(params));
 }
 
+void Loader::Gone() {
+  if (!completed_ && network_) {
+    completed_ = true;
+    base::DictValue params;
+    params.Set("request", id_);
+    params.Set("failureText", net::ErrorToString(net::ERR_ABORTED));
+    network_->Emit("Page.requestFailed", std::move(params));
+  }
+  delete this;
+}
+
+void Loader::ContinuedWith() {
+  if (!network_)
+    return;
+  base::DictValue params = RequestValue();
+  network_->Emit("Page.requestContinued", std::move(params));
+}
+
+void Loader::KeepFulfilled(std::string body) {
+  if (network_)
+    network_->KeepBody(id_, std::move(body));
+}
+
 void Loader::OnReceiveResponse(network::mojom::URLResponseHeadPtr head,
                                mojo::ScopedDataPipeConsumerHandle body,
                                std::optional<mojo_base::BigBuffer> metadata) {
@@ -768,12 +862,15 @@ void Loader::OnReceiveResponse(network::mojom::URLResponseHeadPtr head,
   if (body && network_ &&
       mojo::CreateDataPipe(nullptr, producer, consumer) == MOJO_RESULT_OK) {
     // Deletes itself when the body has passed.
+    network_->BodyStarted(id_);
     new BodyTee(std::move(body), std::move(producer),
                 base::BindOnce(
                     [](base::WeakPtr<NetworkImpl> network, std::string id,
                        std::string kept, bool complete) {
-                      if (network && complete)
-                        network->KeepBody(id, std::move(kept));
+                      if (network) {
+                        network->BodyEnded(id, complete ? std::make_optional(std::move(kept))
+                                                        : std::nullopt);
+                      }
                     },
                     network_, id_));
     body = std::move(consumer);
@@ -787,7 +884,7 @@ void Loader::Responded(const network::mojom::URLResponseHead& head) {
     return;
   base::DictValue response;
   response.Set("request", id_);
-  response.Set("url", request_.url.spec());
+  response.Set("url", request_.url.GetWithoutRef().spec());
   response.Set("status", head.headers ? head.headers->response_code() : 200);
   response.Set("statusText", head.headers ? head.headers->GetStatusText() : "");
   response.Set("headers", ResponseHeaders(head.headers.get()));
@@ -822,8 +919,26 @@ void Loader::Responded(const network::mojom::URLResponseHead& head) {
   if (!head.remote_endpoint.address().empty()) {
     response.Set("serverAddr", head.remote_endpoint.ToStringWithoutPort());
   }
-  if (navigation_)
+  if (head.remote_endpoint.port())
+    response.Set("serverPort", head.remote_endpoint.port());
+  if (head.ssl_info && head.ssl_info->cert) {
+    // Response.securityDetails, as CDP's securityDetails gives Playwright.
+    const net::SSLInfo& ssl = *head.ssl_info;
+    base::DictValue security;
+    const char* version = nullptr;
+    net::SSLVersionToString(&version, net::SSLConnectionStatusToVersion(ssl.connection_status));
+    security.Set("protocol", version ? version : "");
+    security.Set("subjectName", ssl.cert->subject().common_name);
+    security.Set("issuer", ssl.cert->issuer().common_name);
+    security.Set("validFrom", ssl.cert->valid_start().InSecondsFSinceUnixEpoch());
+    security.Set("validTo", ssl.cert->valid_expiry().InSecondsFSinceUnixEpoch());
+    response.Set("securityDetails", std::move(security));
+  }
+  if (navigation_) {
     network_->KeepNavigationResponse(request_.url.spec(), response);
+    if (!original_url_.empty())
+      network_->KeepNavigationResponse(original_url_, response);
+  }
   network_->Emit("Page.response", std::move(response));
 }
 
@@ -902,6 +1017,8 @@ void ProxyFactory::CreateLoaderAndStart(
   const bool navigation =
       request.mode == network::mojom::RequestMode::kNavigate;
   // Deletes itself when the page's end goes.
+  // The certificate with the response, for Response.securityDetails.
+  options |= network::mojom::kURLLoadOptionSendSSLInfoWithResponse;
   auto* proxied = new Loader(network_, id, frame_, navigation, std::move(loader),
                              request_id, options, request, std::move(client),
                              annotation, target_.get());

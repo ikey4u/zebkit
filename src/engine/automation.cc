@@ -50,6 +50,7 @@
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
@@ -120,6 +121,42 @@
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
+
+// callLog.ts's compressCallLog(): a block of lines repeated in a row once,
+// with its count ("3 × waiting for ..."), each line as "  - line".
+std::vector<std::string> CompressCallLog(const std::vector<std::string>& log) {
+  std::vector<std::string> lines;
+  const size_t n = log.size();
+  for (size_t i = 0; i < n;) {
+    size_t best_count = 1, best_length = 1;
+    for (size_t p = 1; p <= n - i; ++p) {
+      size_t k = 1;
+      while (i + p * (k + 1) <= n &&
+             std::equal(log.begin() + i, log.begin() + i + p, log.begin() + i + p * k)) {
+        ++k;
+      }
+      if (k > 1 && k * p > best_count * best_length) {
+        best_count = k;
+        best_length = p;
+      }
+    }
+    const std::string count = base::NumberToString(best_count) + " \xC3\x97 ";
+    for (size_t j = 0; j < best_length; ++j) {
+      const std::string& line = log[i + j];
+      const size_t text = line.find_first_not_of(' ');
+      const std::string indent = "  " + line.substr(0, text == std::string::npos ? line.size() : text);
+      const std::string trimmed = text == std::string::npos ? std::string() : line.substr(text);
+      if (best_count > 1 && j == 0)
+        lines.push_back(indent + count + trimmed);
+      else if (best_count > 1)
+        lines.push_back(indent + std::string(count.size() - 3, ' ') + "- " + trimmed);
+      else
+        lines.push_back(indent + "- " + trimmed);
+    }
+    i += best_length * best_count;
+  }
+  return lines;
+}
 
 namespace {
 
@@ -256,6 +293,15 @@ int ButtonBit(Button button) {
 
 // ---- A command ----------------------------------------------------------
 
+class Call;
+// Calls given an "abortId", which Automation.abort ends (the endpoint's
+// __abort__, Playwright's AbortSignal).
+// A command's own calls may carry its parameters, and so its id: all go.
+std::multimap<std::string, Call*>& AbortableCalls() {
+  static base::NoDestructor<std::multimap<std::string, Call*>> calls;
+  return *calls;
+}
+
 // One command, from zebkit_automation_call() to its answer.
 class Call {
  public:
@@ -275,6 +321,10 @@ class Call {
       deadline_ = base::TimeTicks::Now() + base::Milliseconds(timeout_ms_);
       timer_.Start(FROM_HERE, base::Milliseconds(timeout_ms_),
                    base::BindOnce(&Call::TimedOut, base::Unretained(this)));
+    }
+    if (const std::string* abort = params_.FindString("abortId")) {
+      abort_id_ = *abort;
+      AbortableCalls().emplace(abort_id_, this);
     }
   }
 
@@ -315,8 +365,9 @@ class Call {
     return timeout_ms_ > 0 && base::TimeTicks::Now() >= deadline_;
   }
 
+  // Lines repeat as Playwright's do; the error compresses them.
   void Log(const std::string& line) {
-    if (log_.empty() || log_.back() != line)
+    if (log_.size() < kMaxLogLines)
       log_.push_back(line);
   }
   void Log(const base::ListValue* lines) {
@@ -355,8 +406,8 @@ class Call {
     std::string text = message;
     if (!log_.empty()) {
       text += "\nCall log:";
-      for (const std::string& line : log_)
-        text += "\n  - " + line;
+      for (const std::string& line : CompressCallLog(log_))
+        text += "\n" + line;
     }
     if (func_)
       func_(view_, nullptr, text.c_str(), data_);
@@ -382,6 +433,16 @@ class Call {
 
  private:
   void Release() {
+    if (!abort_id_.empty()) {
+      auto [first, last] = AbortableCalls().equal_range(abort_id_);
+      for (auto it = first; it != last; ++it) {
+        if (it->second == this) {
+          AbortableCalls().erase(it);
+          break;
+        }
+      }
+      abort_id_.clear();
+    }
     if (on_release_)
       std::move(on_release_).Run();
     // After the callers on the stack have returned.
@@ -394,15 +455,35 @@ class Call {
   base::DictValue params_;
   zebkit_automation_func func_;
   raw_ptr<void> data_;
+  // A call that waits for long logs a line every half second at most.
+  static constexpr size_t kMaxLogLines = 2000;
   int timeout_ms_ = kDefaultTimeoutMs;
   base::TimeTicks deadline_;
   base::OneShotTimer timer_;
   std::vector<std::string> log_;
   bool finished_ = false;
   std::string error_;
+  std::string abort_id_;
   base::OnceClosure on_release_;
   base::WeakPtrFactory<Call> weak_factory_{this};
 };
+
+// Automation.abort {abortId, reason}: the call fails with progress.ts's
+// "The operation was aborted" in its log.
+void AbortCall(Call* call) {
+  std::vector<base::WeakPtr<Call>> aborted;
+  auto [first, last] = AbortableCalls().equal_range(call->String("abortId"));
+  for (auto it = first; it != last; ++it)
+    aborted.push_back(it->second->GetWeakPtr());
+  const std::string reason = call->String("reason");
+  for (const base::WeakPtr<Call>& each : aborted) {
+    if (!each)
+      continue;
+    each->Log("operation was aborted" + (reason.empty() ? std::string() : ": " + reason));
+    each->Fail(reason.empty() ? "The operation was aborted" : reason);
+  }
+  call->Done();
+}
 
 // What a step answered: its value, with the handles it refers to as
 // {"handle": id, "preview": ...}.
@@ -517,9 +598,11 @@ class Automation : public content::WebContentsObserver,
   // requests through the network's proxy from now on (as DevTools' Fetch
   // domain, patches/1038).
   void Started() {
-    MainFrame()->ForEachRenderFrameHost([](content::RenderFrameHost* frame) {
+    MainFrame()->ForEachRenderFrameHost([this](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
         content::UpdateSubresourceLoaderFactories(frame);
+      // What it loaded before is not seen: idle from now on unless it asks.
+      StartIdleTimer(frame->GetFrameTreeNodeId());
     });
     ApplyContext();
   }
@@ -529,10 +612,9 @@ class Automation : public content::WebContentsObserver,
     ContextState& state = ContextStates()[web_contents()->GetBrowserContext()];
     if (state.geolocation)
       content::SetGeolocationOverride(web_contents(), state.geolocation);
-    if (Network* network = Network::For(web_contents())) {
+    if (Network* network = Network::For(web_contents()))
       network->SetOffline(state.offline);
-      network->SetExtraHeaders(state.extra_headers);
-    }
+    ApplyExtraHeaders();
     const base::DictValue& options = state.options;
     if (const std::string* agent = options.FindString("userAgent"))
       zebkit_view_set_user_agent(view_, agent->c_str());
@@ -675,11 +757,44 @@ class Automation : public content::WebContentsObserver,
   void ContextExtraHeaders(Call* call) {
     const base::ListValue* headers = call->params().FindList("headers");
     Context().extra_headers = headers ? headers->Clone() : base::ListValue();
-    for (Automation* page : InProfile(web_contents()->GetBrowserContext())) {
-      if (Network* network = Network::For(page->web_contents()))
-        network->SetExtraHeaders(Context().extra_headers);
-    }
+    for (Automation* page : InProfile(web_contents()->GetBrowserContext()))
+      page->ApplyExtraHeaders();
     call->Done();
+  }
+
+  // The context's extra headers and the page's, the page's winning by name
+  // (network.ts's mergeHeaders()).
+  void ApplyExtraHeaders() {
+    Network* network = Network::For(web_contents());
+    if (!network)
+      return;
+    base::ListValue merged;
+    auto overridden = [this](const std::string& name) {
+      for (const base::Value& header : page_extra_headers_) {
+        const std::string* other = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+        if (other && base::EqualsCaseInsensitiveASCII(*other, name))
+          return true;
+      }
+      return false;
+    };
+    for (const base::Value& header : Context().extra_headers) {
+      const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      if (name && !overridden(*name))
+        merged.Append(header.Clone());
+    }
+    for (const base::Value& header : page_extra_headers_)
+      merged.Append(header.Clone());
+    network->SetExtraHeaders(merged);
+  }
+
+  // The page's own extra header @name, if it has one.
+  const std::string* PageExtraHeader(const std::string& name) const {
+    for (const base::Value& header : page_extra_headers_) {
+      const std::string* other = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      if (other && base::EqualsCaseInsensitiveASCII(*other, name))
+        return header.GetDict().FindString("value");
+    }
+    return nullptr;
   }
 
   // Frames on demand (docs/AUTOMATION.md 4.6): while a command runs on a
@@ -753,6 +868,7 @@ class Automation : public content::WebContentsObserver,
   }
 
   void Emit(const std::string& event, base::DictValue params) {
+    TrackRequests(event, params);
     if (tracing_)
       tracing_->Event(event, params);
     for (auto& [id, har] : hars_)
@@ -1835,7 +1951,24 @@ class Automation : public content::WebContentsObserver,
     });
     base::DictValue answer;
     answer.Set("frames", std::move(frames));
+    // A page opened by another (window.open, a link's target), which
+    // Playwright's popup event names; not one the browser opened for a
+    // modified click, which has none (CDP's openerId).
+    answer.Set("hasOpener", web_contents()->HasLiveOriginalOpenerChain());
     call->Done(base::Value(std::move(answer)));
+  }
+
+  // Page.waitForInitialNavigation: answers once the page's main frame has
+  // committed a document other than its initial empty one, as crPage.ts
+  // reports a new page only then; {failed: true} when the navigation ended
+  // without one (a download, a 204).
+  void WaitForInitialNavigation(Call* call) {
+    content::NavigationEntry* entry = web_contents()->GetController().GetLastCommittedEntry();
+    if (entry && !entry->IsInitialEntry()) {
+      call->Done();
+      return;
+    }
+    initial_navigation_waiters_.push_back(call->GetWeakPtr());
   }
 
   // ElementHandle.contentFrame and ownerFrame.
@@ -2053,6 +2186,7 @@ class Automation : public content::WebContentsObserver,
       return;
     base::DictValue arg;
     arg.Set("action", action.action);
+    arg.Set("name", action.name);
     arg.Set("waitForEnabled", action.wait_for_enabled);
     arg.Set("force", call->Flag("force"));
     arg.Set("trial", call->Flag("trial"));
@@ -2066,7 +2200,7 @@ class Automation : public content::WebContentsObserver,
       arg.Set("scroll", "none");
     if (action.checked)
       arg.Set("checked", *action.checked);
-    if (!call->Flag("force") && !call->OnHandle())
+    if (!call->Flag("force") && !call->OnHandle() && !call->attempt)
       call->Log("waiting for " + LocatorText(target.selector));
     TargetStep(call.get(), target, "pointerPrepare", std::move(arg),
                base::BindOnce(&Automation::PointerPrepared,
@@ -2604,15 +2738,56 @@ class Automation : public content::WebContentsObserver,
   };
 
   void Goto(Call* call) {
-    const GURL url(call->String("url"));
+    // helper.ts's completeUserURL().
+    std::string spec = call->String("url");
+    if (spec.starts_with("localhost") || spec.starts_with("127.0.0.1"))
+      spec = "http://" + spec;
+    const GURL url(spec);
     content::RenderFrameHost* frame = FrameOf(call);
     if (!frame) {
       call->Fail(kFrameDetached);
       return;
     }
+    // frames.ts's gotoImpl(): the referer, given or the page's extra header.
+    std::optional<std::string> referer;
+    if (const std::string* header = PageExtraHeader("referer"))
+      referer = *header;
+    if (call->Has("referer")) {
+      const std::string given = call->String("referer");
+      if (referer && *referer != given) {
+        std::string wait_until = call->String("waitUntil");
+        call->Log("navigating to \"" + call->String("url") + "\", waiting until \"" +
+                  (wait_until.empty() ? std::string("load") : wait_until) + "\"");
+        call->Fail("\"referer\" is already specified as extra HTTP header");
+        return;
+      }
+      referer = given;
+    }
     if (!url.is_valid()) {
       call->Fail(
           "Protocol error (Page.navigate): Cannot navigate to invalid URL");
+      return;
+    }
+    if (referer) {
+      // As Page.navigate's referrer with crPage.ts's referrerPolicy
+      // "unsafeUrl": sent as given, whatever the page's policy.
+      StartNavigation(call, frame,
+                      base::BindOnce(
+                          [](content::WebContents* contents, content::FrameTreeNodeId node,
+                             bool main, GURL url, GURL referer) {
+                            content::NavigationController::LoadURLParams params(url);
+                            if (!main)
+                              params.frame_tree_node_id = node;
+                            params.referrer = content::Referrer(
+                                referer, network::mojom::ReferrerPolicy::kAlways);
+                            params.transition_type =
+                                main ? ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                                                 ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)
+                                     : ui::PAGE_TRANSITION_LINK;
+                            contents->GetController().LoadURLWithParams(params);
+                          },
+                          web_contents(), frame->GetFrameTreeNodeId(), frame == MainFrame(),
+                          url, GURL(*referer)));
       return;
     }
     if (frame == MainFrame()) {
@@ -2737,11 +2912,45 @@ class Automation : public content::WebContentsObserver,
   }
 
   void DidFinishNavigation(content::NavigationHandle* navigation) override {
+    if (navigation->IsInPrimaryMainFrame() && !initial_navigation_waiters_.empty() &&
+        !navigation->IsSameDocument()) {
+      content::NavigationEntry* entry = web_contents()->GetController().GetLastCommittedEntry();
+      const bool committed = navigation->HasCommitted() && entry && !entry->IsInitialEntry();
+      if (committed || !navigation->HasCommitted()) {
+        std::vector<base::WeakPtr<Call>> waiters = std::move(initial_navigation_waiters_);
+        for (const base::WeakPtr<Call>& waiter : waiters) {
+          if (!waiter)
+            continue;
+          base::DictValue answer;
+          if (!committed)
+            answer.Set("failed", true);
+          waiter->Done(base::Value(std::move(answer)));
+        }
+      }
+    }
     const int64_t id = navigation->GetNavigationId();
     const content::FrameTreeNodeId node = navigation->GetFrameTreeNodeId();
+    if (navigation->IsInPrimaryMainFrame() && navigation->HasCommitted() &&
+        !navigation->IsSameDocument() && !workers_.empty()) {
+      // page.ts's _clearWorkers(): the page's workers end with its document.
+      std::vector<std::string> ended;
+      for (const auto& [worker, info] : workers_)
+        ended.push_back(worker);
+      workers_.clear();
+      for (const std::string& worker : ended) {
+        base::DictValue params;
+        params.Set("worker", worker);
+        Emit("Worker.close", std::move(params));
+      }
+    }
     if (navigation->HasCommitted() && !navigation->IsSameDocument()) {
-      // A new document: its lifecycle starts again.
-      lifecycles_[node] = Lifecycle();
+      // A new document: its lifecycle starts again. One restored from the
+      // back-forward cache has loaded long ago: no load event comes again.
+      Lifecycle fresh;
+      if (navigation->IsServedFromBackForwardCache())
+        fresh.dom_content_loaded = fresh.loaded = fresh.network_idle = true;
+      lifecycles_[node] = fresh;
+      ClearRequests(node);
     }
     if (navigation->HasCommitted() && navigation->GetRenderFrameHost()) {
       base::DictValue params = FrameValue(navigation->GetRenderFrameHost());
@@ -2837,22 +3046,107 @@ class Automation : public content::WebContentsObserver,
       lifecycle.loaded = true;
       LoadState(frame, "load");
     }
-    // networkidle: 500 ms with no new navigation after the load, as
-    // Playwright's 500 ms without requests (the network's own events come
-    // with the network hook, docs/AUTOMATION.md).
-    idle_timers_[frame->GetFrameTreeNodeId()].Start(
-        FROM_HERE, base::Milliseconds(500),
-        base::BindOnce(&Automation::NetworkIdle, base::Unretained(this),
-                       frame->GetFrameTreeNodeId()));
   }
 
-  void NetworkIdle(content::FrameTreeNodeId node) {
-    auto found = lifecycles_.find(node);
-    if (found == lifecycles_.end() || !found->second.loaded)
+  // ---- networkidle, as frames.ts has it -------------------------------
+  // A frame is idle 500 ms after its last request in flight ended (or its
+  // document committed without one); "networkidle" when it and every frame
+  // under it are.
+
+  void TrackRequests(const std::string& event, const base::DictValue& params) {
+    const std::string* request = params.FindString("request");
+    if (!request)
       return;
-    found->second.network_idle = true;
-    if (content::RenderFrameHost* frame = FrameByNode(node))
+    if (event == "Page.request") {
+      const std::string* frame = params.FindString("frame");
+      int value = 0;
+      if (!frame || frame->size() < 2 ||
+          !base::StringToInt(std::string_view(*frame).substr(1), &value)) {
+        return;
+      }
+      const content::FrameTreeNodeId node(value);
+      request_frames_[*request] = node;
+      if (params.FindBool("isNavigationRequest").value_or(false))
+        navigation_requests_.insert(*request);
+      std::set<std::string>& inflight = inflight_[node];
+      inflight.insert(*request);
+      if (inflight.size() == 1)
+        StopIdleTimer(node);
+      return;
+    }
+    if (event != "Page.requestFinished" && event != "Page.requestFailed")
+      return;
+    auto found = request_frames_.find(*request);
+    if (found == request_frames_.end())
+      return;
+    const content::FrameTreeNodeId node = found->second;
+    request_frames_.erase(found);
+    navigation_requests_.erase(*request);
+    auto inflight = inflight_.find(node);
+    if (inflight == inflight_.end() || !inflight->second.erase(*request))
+      return;
+    if (inflight->second.empty())
+      StartIdleTimer(node);
+  }
+
+  void StartIdleTimer(content::FrameTreeNodeId node) {
+    auto lifecycle = lifecycles_.find(node);
+    if (lifecycle != lifecycles_.end() && lifecycle->second.network_idle)
+      return;
+    idle_timers_[node].Start(FROM_HERE, base::Milliseconds(500),
+                             base::BindOnce(
+                                 [](Automation* self, content::FrameTreeNodeId node) {
+                                   self->idle_self_.insert(node);
+                                   self->RecalculateNetworkIdle();
+                                 },
+                                 base::Unretained(this), node));
+  }
+
+  void StopIdleTimer(content::FrameTreeNodeId node) {
+    idle_timers_.erase(node);
+    idle_self_.erase(node);
+  }
+
+  // A new document in @node: only its own request stays in flight.
+  void ClearRequests(content::FrameTreeNodeId node) {
+    std::set<std::string>& inflight = inflight_[node];
+    std::erase_if(inflight, [this](const std::string& request) {
+      return !navigation_requests_.contains(request);
+    });
+    StopIdleTimer(node);
+    if (inflight.empty())
+      StartIdleTimer(node);
+  }
+
+  void RecalculateNetworkIdle() {
+    content::RenderFrameHost* main = MainFrame();
+    if (!main)
+      return;
+    // Children before their parent: the tree's frames in reverse order.
+    std::vector<content::RenderFrameHost*> frames;
+    main->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (frame->IsActive())
+        frames.push_back(frame);
+    });
+    std::map<content::RenderFrameHost*, bool> idle;
+    for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+      idle[*it] = idle_self_.contains((*it)->GetFrameTreeNodeId());
+    for (auto it = frames.rbegin(); it != frames.rend(); ++it) {
+      content::RenderFrameHost* frame = *it;
+      if (content::RenderFrameHost* parent = frame->GetParent(); parent && idle.contains(parent)) {
+        if (!idle[frame])
+          idle[parent] = false;
+      }
+    }
+    for (content::RenderFrameHost* frame : frames) {
+      if (!idle[frame])
+        continue;
+      Lifecycle& lifecycle = lifecycles_[frame->GetFrameTreeNodeId()];
+      if (lifecycle.network_idle)
+        continue;
+      lifecycle.network_idle = true;
       LoadState(frame, "networkidle");
+    }
   }
 
   // Answers the navigations whose lifecycle state has come.
@@ -2896,6 +3190,10 @@ class Automation : public content::WebContentsObserver,
   void FrameDeleted(content::FrameTreeNodeId node) override {
     lifecycles_.erase(node);
     idle_timers_.erase(node);
+    idle_self_.erase(node);
+    inflight_.erase(node);
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&Automation::RecalculateNetworkIdle, weak_factory_.GetWeakPtr()));
     base::DictValue params;
     params.Set("frame", "f" + base::NumberToString(node.value()));
     Emit("Page.frameDetached", std::move(params));
@@ -4336,12 +4634,21 @@ class Automation : public content::WebContentsObserver,
     if (!network)
       return;
     const base::ListValue* headers = call->params().FindList("headers");
-    network->SetExtraHeaders(headers ? headers->Clone() : base::ListValue());
+    page_extra_headers_ = headers ? headers->Clone() : base::ListValue();
+    ApplyExtraHeaders();
     call->Done();
   }
 
   void RouteContinue(Call* call) {
     Network* network = NetworkOf(call);
+    // network.ts's Route.continue().
+    if (network && call->Has("url")) {
+      const std::optional<std::string> old_url = network->RouteUrl(call->String("route"));
+      if (old_url && GURL(*old_url).scheme() != GURL(call->String("url")).scheme()) {
+        call->Fail("New URL must have same protocol as overridden URL");
+        return;
+      }
+    }
     if (network && !network->Continue(call->String("route"), call->params()))
       call->Fail("Route is already handled!");
     else if (network)
@@ -4369,14 +4676,21 @@ class Automation : public content::WebContentsObserver,
     Network* network = NetworkOf(call);
     if (!network)
       return;
-    std::optional<std::string> body = network->Body(call->String("request"));
-    if (!body) {
-      call->Fail("Response body is unavailable for redirect responses, or it has not arrived yet");
-      return;
-    }
-    base::DictValue answer;
-    answer.Set("binary", base::Base64Encode(*body));
-    call->Done(base::Value(std::move(answer)));
+    network->WhenBody(
+        call->String("request"),
+        base::BindOnce(
+            [](base::WeakPtr<Call> call, std::optional<std::string> body) {
+              if (!call)
+                return;
+              if (!body) {
+                call->Fail("Response body is unavailable for redirect responses, or it has not arrived yet");
+                return;
+              }
+              base::DictValue answer;
+              answer.Set("binary", base::Base64Encode(*body));
+              call->Done(base::Value(std::move(answer)));
+            },
+            call->GetWeakPtr()));
   }
 
   void SetOffline(Call* call) {
@@ -4801,7 +5115,7 @@ class Automation : public content::WebContentsObserver,
     std::unique_ptr<HarRecorder> har = std::move(found->second);
     hars_.erase(found);
     har->Export(base::FilePath::FromUTF8Unsafe(call->String("path")), Bodies(),
-                std::string(version_info::GetVersionNumber()),
+                std::string(version_info::GetVersionNumber()), zebkit_version(),
                 call->String("mode") == "archive",
                 base::BindOnce(&Automation::Written, call->GetWeakPtr()));
   }
@@ -5219,7 +5533,17 @@ class Automation : public content::WebContentsObserver,
   // The frames' lifecycles since their last navigation.
   std::map<content::FrameTreeNodeId, Lifecycle> lifecycles_;
   std::map<content::FrameTreeNodeId, base::OneShotTimer> idle_timers_;
+  // networkidle's: each frame's requests in flight, each request's frame, the
+  // documents' own requests, and the frames idle themselves.
+  std::map<content::FrameTreeNodeId, std::set<std::string>> inflight_;
+  std::map<std::string, content::FrameTreeNodeId> request_frames_;
+  std::set<std::string> navigation_requests_;
+  std::set<content::FrameTreeNodeId> idle_self_;
   std::deque<NavigationWaiter> navigation_waiters_;
+  // Page.setExtraHTTPHeaders's, merged with the context's.
+  base::ListValue page_extra_headers_;
+  // Page.waitForInitialNavigation's calls.
+  std::vector<base::WeakPtr<Call>> initial_navigation_waiters_;
   int settling_ = 0;
   // Calls whose input is being sent, and the navigation it started.
   std::set<Call*> watching_;
@@ -5584,6 +5908,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.goBack", &A::GoBack},
           {"Page.goForward", &A::GoForward},
           {"Page.frames", &A::Frames},
+          {"Page.waitForInitialNavigation", &A::WaitForInitialNavigation},
           {"Page.keyboardDown", &A::Gated<&A::KeyboardDown>},
           {"Page.keyboardUp", &A::Gated<&A::KeyboardUp>},
           {"Page.keyboardPress", &A::Gated<&A::KeyboardPress>},
@@ -6127,6 +6452,7 @@ const std::map<std::string, GlobalHandler>& GlobalHandlers() {
           {"BrowserContext.pages", &Pages},
           {"BrowserContext.close", &CloseContext},
           {"APIRequestContext.fetch", &ContextFetchCommand},
+          {"Automation.abort", &AbortCall},
       });
   return *handlers;
 }

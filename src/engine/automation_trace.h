@@ -8,6 +8,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,31 +30,53 @@ namespace zebkit {
 using WrittenCallback =
     base::OnceCallback<void(const base::FilePath& path, const std::string& error)>;
 
-// A HAR of a page's network, made from automation's network events
-// (Page.request, Page.response, Page.requestFinished, Page.requestFailed).
+// A HAR of a page's or a context's network, as Playwright's harTracer.ts
+// makes it, from automation's network events (Page.request, Page.response,
+// Page.requestContinued, Page.requestFinished, Page.requestFailed) and the
+// lifecycle of the pages it records.
 class HarRecorder {
  public:
   // Tracing.harStart's options: content ("embed", "omit", "attach"), mode
-  // ("full", "minimal"), urlGlob.
+  // ("full", "minimal"), urlGlob or urlRegexSource and urlRegexFlags.
   explicit HarRecorder(const base::DictValue& options);
   ~HarRecorder();
   HarRecorder(HarRecorder&&);
   HarRecorder& operator=(HarRecorder&&);
 
-  void Record(const std::string& event, const base::DictValue& params);
+  // A network event of the page @page_ref ("" for the recorder's own page),
+  // whose frame is @frame_ref when given (else the event's "frame").
+  void Record(const std::string& event,
+              const base::DictValue& params,
+              const std::string& page_ref = std::string(),
+              const std::string& frame_ref = std::string());
+  // A page to record (log.pages), and its lifecycle: "domcontentloaded" or
+  // "load", with its title then.
+  void AddPage(const std::string& page_ref);
+  void PageLoadState(const std::string& page_ref,
+                     const std::string& state,
+                     const std::string& title);
+  // An APIRequestContext.fetch exchange: its request ({url, method, headers,
+  // postData}) and its answer ({url, status, statusText, headers, body}).
+  void RecordFetch(const base::DictValue& request, const base::DictValue& response);
+  // A response's body, once it has come (or nullopt when it will not).
+  void SetBody(const std::string& request, std::optional<std::string> body);
+  // Whether @request is recorded and its body is wanted.
+  bool WantsBody(const std::string& request) const;
 
-  // The finished entries, as HAR's (for traces' trace.network too);
-  // @body gives a response's body by its request.
+  // The entries, as HAR's (for traces' trace.network too); @body gives a
+  // response's body by its request when SetBody() did not.
   using BodyFunc = base::RepeatingCallback<std::optional<std::string>(
       const std::string& request)>;
   base::ListValue Entries(const BodyFunc& body) const;
 
   // HAR 1.2 to @path (a temporary file when empty); with @archive a zip of
-  // it as har.har, which is what a remote client asks for (harExport's mode
-  // "archive") and unpacks itself.
+  // it as har.har with the attached contents beside it, which is what a remote
+  // client asks for (harExport's mode "archive") and unpacks itself.
+  // @creator_version is Playwright's that the HAR is made as.
   void Export(base::FilePath path,
               const BodyFunc& body,
               const std::string& browser_version,
+              const std::string& creator_version,
               bool archive,
               WrittenCallback done) const;
 
@@ -61,16 +84,40 @@ class HarRecorder {
   struct Entry {
     base::Time started;
     base::TimeTicks start;
-    base::TimeTicks responded;
     base::TimeTicks ended;
+    std::string page_ref;
+    std::string frame_ref;
     base::DictValue request;
     base::DictValue response;
+    base::DictValue finished_params;
+    std::optional<base::DictValue> overrides;
+    std::string redirect_url;
     std::string failure;
-    bool finished = false;
+    bool has_body = false;
+    std::optional<std::string> body;
+    bool fetch = false;
   };
-  bool embed_ = true;
+  struct Page {
+    std::string ref;
+    base::Time started;
+    std::string title;
+    double on_content_load = -1;
+    double on_load = -1;
+  };
+  bool Includes(const std::string& url) const;
+  base::DictValue EntryValue(const std::string& id,
+                             const Entry& entry,
+                             const BodyFunc& body,
+                             std::map<std::string, std::string>* files) const;
+
+  std::string content_ = "embed";
+  bool minimal_ = false;
+  std::string url_glob_;
+  std::string url_regex_;
   std::map<std::string, Entry> entries_;
   std::vector<std::string> order_;
+  std::vector<Page> pages_;
+  int next_fetch_ = 0;
 };
 
 // A Playwright trace of a page's commands (before and after each, its call

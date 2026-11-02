@@ -77,10 +77,16 @@ class Network {
   virtual bool Fulfill(const std::string& route,
                        const base::DictValue& response) = 0;
   virtual bool Abort(const std::string& route, const std::string& error) = 0;
+  // The URL of the request route @route holds, if it holds one.
+  virtual std::optional<std::string> RouteUrl(const std::string& route) = 0;
 
   // Response.body: the body of request @request's response, when it has
   // come (up to 10 MiB, of the last 200 responses); nullopt otherwise.
   virtual std::optional<std::string> Body(const std::string& request) = 0;
+  // The same once the body has come, when it is still coming: Playwright's
+  // response.body() waits for the response to finish.
+  using BodyFunc = base::OnceCallback<void(std::optional<std::string>)>;
+  virtual void WhenBody(const std::string& request, BodyFunc done) = 0;
 };
 
 }  // namespace zebkit

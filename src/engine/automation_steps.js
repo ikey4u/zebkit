@@ -93,9 +93,11 @@ async function poll(timeout, waits, attempt) {
     // As Playwright: a short timeout keeps small waits.
     waits = waits.filter((wait, i) => i === 0 || wait <= timeout / 5);
   }
+  // Every line, as Playwright's progress keeps them: the error compresses
+  // what repeats ("3 × waiting for ...").
   const log = [];
   const say = line => {
-    if (log[log.length - 1] !== line)
+    if (log.length < 1000)
       log.push(line);
   };
   for (let i = 0; ; ++i) {
@@ -104,7 +106,7 @@ async function poll(timeout, waits, attempt) {
       return { timedOut: true, log };
     if (wait)
       await sleep(wait);
-    const result = await attempt(say, i);
+    const result = await attempt(say, i, wait);
     if (result !== undefined)
       return { result, log };
   }
@@ -119,6 +121,37 @@ function query(arg, strict) {
   if (strict && elements.length > 1)
     throw injected.strictModeViolationError(parsed, elements);
   return elements;
+}
+
+// The element an action acts on, as frames.ts resolves it once and then
+// retries the action on it: "locator resolved to" when it is found anew.
+function resolveForAction(arg, say, state) {
+  const elements = query(arg, arg.strict);
+  const element = elements[0];
+  if (!element) {
+    state.element = undefined;
+    return undefined;
+  }
+  if (state.element !== element) {
+    state.element = element;
+    say(elements.length > 1
+      ? `locator resolved to ${elements.length} elements. Proceeding with the first one: ${injected.previewNode(element)}`
+      : `locator resolved to ${injected.previewNode(element)}`);
+  }
+  return element;
+}
+
+// dom.ts's _retryAction() lines: "attempting click action" the first time,
+// then "retrying click action" and the wait before it.
+function actionTry(arg, say, state, wait) {
+  const name = `${arg.name || arg.action || 'click'} action${arg.trial ? ' (trial run)' : ''}`;
+  if (!state.tries++ && !arg.attempt) {
+    say(`attempting ${name}`);
+    return;
+  }
+  say(`retrying ${name}`);
+  if (wait)
+    say(`  waiting ${wait}ms`);
 }
 
 // The element a command acts on, with the log line Playwright writes.
@@ -300,10 +333,14 @@ steps.waitForElementState = arg => poll(arg.timeout, kPollWaits, async say => {
 // states, scrolled into view, the point, the hit-target check and its
 // interceptor. Gives {point, interceptor}: the browser sends the input,
 // then pointerFinish says whether it reached the element.
-steps.pointerPrepare = arg => poll(arg.timeout, kActionWaits, async (say, attempt) => {
-  const element = resolve(arg, say);
+steps.pointerPrepare = arg => {
+  const state = { tries: 0 };
+  return poll(arg.timeout, kActionWaits, async (say, attempt, wait) => {
+  const element = arg.scope && !arg.selector ? resolve(arg, say) : resolveForAction(arg, say, state);
   if (!element)
     return undefined;
+  actionTry(arg, say, state, wait);
+  const inner = line => say('  ' + line);
   if (arg.checked !== undefined) {
     // _setChecked(): nothing to do when it is already so.
     const state = injected.elementState(element, 'checked');
@@ -315,19 +352,25 @@ steps.pointerPrepare = arg => poll(arg.timeout, kActionWaits, async (say, attemp
       throw fatal('Cannot uncheck radio button. Radio buttons can only be unchecked by selecting another radio button in the same group.');
   }
   if (!arg.force) {
-    const states = arg.waitForEnabled ? ['visible', 'enabled', 'stable', 'non-inert'] : ['visible', 'stable'];
-    say(`waiting for element to be ${arg.waitForEnabled ? 'visible, enabled and stable' : 'visible and stable'}`);
-    if (!(await checkStates(element, states, say)))
+    const states = arg.waitForEnabled ? ['visible', 'enabled', 'stable'] : ['visible', 'stable'];
+    const wanted = arg.waitForEnabled ? 'visible, enabled and stable' : 'visible and stable';
+    inner(`waiting for element to be ${wanted}`);
+    if (!(await checkStates(element, states, inner)))
       return undefined;
+    inner(`element is ${wanted}`);
+  } else {
+    inner('forcing action');
   }
-  if (arg.scroll !== 'none')
+  if (arg.scroll !== 'none') {
+    inner('scrolling into view if needed');
     scrollIntoView(element, attempt + (arg.attempt || 0));
+    inner('done scrolling');
+  }
   const point = arg.position ? offsetPoint(element, arg.position) : clickablePoint(element);
   if (typeof point === 'string') {
     if (arg.force)
       throw fatal(point === 'error:notvisible' ? 'Element is not visible' : 'Element is outside of the viewport');
-    say(messages[point]);
-    say(`retrying ${arg.action || 'click'} action`);
+    inner(messages[point]);
     return undefined;
   }
   const rounded = roundPoint(point);
@@ -337,13 +380,14 @@ steps.pointerPrepare = arg => poll(arg.timeout, kActionWaits, async (say, attemp
   if (interceptor === 'error:notconnected')
     return undefined;
   if (typeof interceptor === 'string') {
-    say(`${interceptor} intercepts pointer events`);
+    inner(`${interceptor} intercepts pointer events`);
     return undefined;
   }
   const id = nextInterceptor++;
   interceptors.set(id, interceptor);
   return { point: rounded, interceptor: id, offset: frameOffset() };
-});
+  });
+};
 
 steps.pointerFinish = arg => {
   const interceptor = interceptors.get(arg.interceptor);
@@ -363,7 +407,7 @@ steps.fill = arg => poll(arg.timeout, kActionWaits, async say => {
   const element = resolve(arg, say);
   if (!element)
     return undefined;
-  if (!arg.force && !(await checkStates(element, ['visible', 'enabled', 'editable', 'non-inert'], say)))
+  if (!arg.force && !(await checkStates(element, ['visible', 'enabled', 'editable'], say)))
     return undefined;
   const filled = injected.fill(element, arg.value);
   if (filled === 'error:notconnected')
@@ -452,19 +496,39 @@ steps.dispatchEvent = arg => poll(arg.timeout, kPollWaits, say => {
 });
 
 // dom.ts's scrollIntoViewIfNeeded(): stable, then scrolled.
-steps.scrollIntoViewIfNeeded = arg => poll(arg.timeout, kActionWaits, async (say, attempt) => {
-  const element = resolve(arg, say);
-  if (!element)
-    return undefined;
-  if (!(await checkStates(element, ['stable'], say)))
-    return undefined;
-  if (!element.getClientRects().length) {
-    say('element is not visible');
-    return undefined;
-  }
-  scrollIntoView(element, attempt);
-  return { done: true };
-});
+// _waitAndScrollIntoViewIfNeeded(): retried as an action named "scroll into
+// view"; an element of display: contents, which has no box, by its first
+// descendant that has one, as DOM.scrollIntoViewIfNeeded does.
+steps.scrollIntoViewIfNeeded = arg => {
+  const state = { tries: 0 };
+  const named = { ...arg, name: 'scroll into view', trial: false };
+  return poll(arg.timeout, kActionWaits, async (say, attempt, wait) => {
+    const element = resolveForAction(arg, say, state);
+    if (!element)
+      return undefined;
+    actionTry(named, say, state, wait);
+    const inner = line => say('  ' + line);
+    inner('waiting for element to be stable');
+    if (!(await checkStates(element, ['visible', 'stable'], inner)))
+      return undefined;
+    let target = element;
+    if (!target.getClientRects().length) {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.getClientRects().length) {
+          target = node;
+          break;
+        }
+      }
+    }
+    if (!target.getClientRects().length) {
+      inner('element is not visible');
+      return undefined;
+    }
+    scrollIntoView(target, attempt);
+    return { done: true };
+  });
+};
 
 // Page.webStorage*.
 steps.webStorage = arg => {
@@ -854,7 +918,11 @@ function serialize(value, plain) {
   if (!plain) {
     // What is not serializable (a function, a symbol) is undefined, as
     // Runtime.callFunctionOn's returnByValue gives Playwright.
-    const result = serializeAsCallArgument(value, v => ({ fallThrough: v }));
+    // A function inside the value, which the serializer leaves out ({k} with
+    // no v), is undefined too: Playwright's server parses the page's value and
+    // serializes it again for its client, whose validator takes no hole.
+    const result = serializeAsCallArgument(value, v =>
+      typeof v === 'function' && !String(v.name).startsWith('__pw_fn_') ? { v: 'undefined' } : { fallThrough: v });
     if (result === undefined)
       return { v: 'undefined' };
     checkDepth(result);
@@ -1000,8 +1068,10 @@ async function answer(body, evaluation) {
   } catch (e) {
     // An evaluation's error is the page's, as Playwright shows it ("Error:
     // boom"); a step's is Playwright's own message.
+    // The injected script's own errors ("Malformed value", "strict mode
+    // violation") reach Playwright's client as its evaluations' do: "Error: ...".
     const message = !(e instanceof Error) ? (evaluation ? 'Error: ' : '') + String(e)
-      : e instanceof FatalError || (!evaluation && e.name === 'Error') ? e.message
+      : e instanceof FatalError ? e.message
       : e.name + ': ' + e.message;
     return [stringifyJson({ ok: false, error: message, fatal: e instanceof FatalError || /strict mode violation/.test(message) }), handles, previews, nodes];
   }
