@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
   headless view's screen is that size too, or 1920 by 1080, not Ozone's
   1 by 1 pixel. `navigator.webdriver` is true with
   `--enable-automation`, `--remote-debugging-pipe` or
-  `--remote-debugging-port=0`, false otherwise. In zebkit's content shell,
+  `--remote-debugging-port=0`, false otherwise. In zebkit,
   `--headless` selects rendering without native windows; it is not
   forwarded to the renderer as an automation switch. Serving CDP through
   `zebkit_cdp_listen()` alone does not enable automation mode either.
@@ -142,7 +142,7 @@ int main(int argc, char **argv) {
   See [the source references and comparison](GOOGLE_SIGNIN.md).
 - **A site's "Sign in with ..." popup.** Sites sign in with Google and
   other providers through a popup, as in Firefox: FedCM, which Chrome
-  answers with dialogs of its own and the content shell turns down, is off
+  answers with dialogs of its own and the engine has none for, is off
   (`--zebkit-fedcm` keeps it). The popup opens from the person's click; an
   application that shows it itself takes it with
   `zebkit_view_on_window_open()`, a view still linked to the site
@@ -743,11 +743,13 @@ static void ready(void *data) {
 int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }  /* run with --headless */
 ```
 
-- **Where.** In a process without windows: `--headless`, or Linux without
-  a display; elsewhere `zebkit_view_new_offscreen()` returns NULL. It is
-  made for an application's helper process that draws pages for it
-  (`examples/offscreen-host`); views of a process with windows draw in
-  them.
+- **Where.** On Linux and macOS in any process, beside views with a window: no
+  window of the system's is made for an off-screen view or for what its page
+  opens, its scale is its own, and input reaches it from the application alone.
+  Also in a process without windows (`--headless`, or Linux without a display), as
+  an application's helper process that draws pages for it
+  (`examples/offscreen-host`). On Windows only there; elsewhere
+  `zebkit_view_new_offscreen()` returns NULL.
 - **Frames are shared surfaces, never encoded.** The engine captures the
   view's compositor frames with viz's `FrameSinkVideoCapturer`, as Chrome's
   tab capture and Electron's shared texture do: the GPU process copies a

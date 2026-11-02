@@ -20,8 +20,8 @@
 //! }));
 //! ```
 //!
-//! Off-screen views are for a process without windows: `--headless`, or
-//! Linux without a display. Frames come on the engine's thread; a [`Frame`]
+//! On Linux and macOS off-screen views live beside views with a window, or in a
+//! process without windows; on Windows they are for `--headless`. Frames come on the engine's thread; a [`Frame`]
 //! may go to any thread, and gives its buffer back when it is dropped.
 
 use crate::view::{call_slot, Slot};
@@ -350,9 +350,8 @@ fn int(value: u32) -> c_int {
 
 impl View {
     /// A view without a window, loading `url`, `width` by `height` CSS
-    /// pixels at `scale` device pixels per CSS pixel. `None` when the
-    /// process has windows: off-screen views are for one started with
-    /// `--headless` (or Linux without a display).
+    /// pixels at `scale` device pixels per CSS pixel. `None` on Windows
+    /// when the process was not started with `--headless`.
     pub fn new_offscreen(url: Option<&str>, width: u32, height: u32, scale: f32) -> Option<View> {
         crate::engine::require_engine_thread("View::new_offscreen()");
         let url = url.map(c_string);

@@ -99,7 +99,7 @@ target macOS; what only a Mac has is Apple's SDK.
 | `use_cups = true` | `//printing`'s macOS print context needs CUPS, the system's `libcups.2.dylib`, for printing to PDF |
 
 What upstream does not build, and patches make work: Chrome always has
-Dawn on macOS and the content shell's test support; the slim profile has
+Dawn on macOS; the slim profile has
 neither. `patches/0013` puts the IOSurface backing's WebGPU parts under
 `USE_DAWN`, as other platforms' backings are; `patches/0014` gives content
 the system's location permission manager (zebkit sets it, as Chrome does)

@@ -94,17 +94,20 @@ in `examples/native-host` (Done table). What is left:
     main thread, which the toolkit owns, and `zebkit_init()` is for that thread
     only on macOS (`<zebkit/zebkit.h>`). There the only way is to join the loop with `zebkit_pump()`.
   - **Windows: not known.** Nothing has been tried.
-- **Views with a window and off-screen views in one process.** See "Off-screen
-  views" below: off-screen needs `--headless`, an attached window needs no
-  `--headless`.
+- **Views with a window and off-screen views in one process: done on Linux and
+  macOS** (2026-11-01). See "Off-screen views" below. Windows: not yet.
 
 ### The engine
 
-- **zebkit's own embedder.** The engine still runs on the content shell's
-  browser classes for windows and the browser context, which Chromium
-  keeps for tests. Its own `ContentBrowserClient`, window and context,
-  started from the shell without its test hooks; Electron's
-  `native_window_views.cc` is the reference for the windows.
+- **zebkit's own embedder: done** (2026-11-01). The content shell is out of the
+  engine: `zebkit::Window` (`window.h`, `window_views.cc`, `window_mac.mm`) for the
+  windows, `zebkit::Profile` for the context, the content clients directly on
+  content's interfaces (`engine.cc`, `client_defaults.cc`), `zebkit.pak` of the
+  engine's own. 19 patches of `content/shell` are gone. What stays copied from it,
+  small and now the engine's: the permission and download delegates, the file
+  chooser, background sync and accept-language delegates, the protocol handler
+  registry's delegate. Left out: test services, DevTools front-end windows, the
+  "Inspect Element" menu, crash reporter setup, metrics and variations prefs.
 - **A window's native handle** given to the application, so that it can parent
   the system's dialogs to it (file dialogs through the XDG portal need it). The
   other way, an application's handle as a view's parent, is done.
@@ -129,13 +132,14 @@ in `examples/native-host` (Done table). What is left:
 
 ### Off-screen views
 
-- **Mixed: off-screen views in a process with windows.** They need
-  `--headless` now: a view is a content shell window, drawn by the headless
-  screen. Consequently an application cannot have an attached window
-  (`zebkit_view_attach_native()`) and off-screen views at once. A
-  `RenderWidgetHostView` of zebkit's own with its own compositor, as
-  CEF's and Electron's off-screen views have, would let one process have
-  both.
+- **Mixed: off-screen views in a process with windows: done on Linux and macOS**
+  (`tests/engine/mixed_views.c`). On Linux with a display a view's root has a stub
+  platform window and viz draws it in memory (patches/1072, 1073), so no X11 or
+  Wayland window exists for it, its `<select>` lists or what its page opens; its
+  scale is Chromium's capture scale, as on Windows. On macOS it is a view in no
+  window, per view rather than per process. Not done: Windows, which still needs
+  `--headless`; Wayland has not been run, nor GPU compositing of such a root on
+  Linux (no machine for either here); a window's own input on macOS in the test.
 - **Independent scale: Linux foundation implemented.** Separate headless
   displays and root hosts preserve each view's DPR, CSS layout and frame
   pixels, including fractional scales. Pixel/DIP space reservation prevents
@@ -198,7 +202,7 @@ in `examples/native-host` (Done table). What is left:
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
   requests (a WebSocket's Cookie is not seen, the headers the network adds otherwise are; `docs/ROADMAP_HOOKS.md`) and client
   certificates (no system stores).
-  The hook sources and the patched content shell files compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
+  The hook sources compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
 - **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).
   A new top-level widget takes no input until its first frame: the browser's
   `RenderInputRouter::FilterInputEvent` answers each event itself with

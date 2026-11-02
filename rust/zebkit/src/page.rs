@@ -66,7 +66,7 @@ impl DialogType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialogPolicy {
     /// To [`View::on_dialog`]'s function when there is one, held; else held
-    /// for a CDP client attached to the page; else the content shell's way
+    /// for a CDP client attached to the page; else the engine's way
     /// (dismissed at once, but for a macOS window's own alert).
     Default,
     /// Always held until answered.

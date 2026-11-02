@@ -37,11 +37,13 @@ application process                          child processes (zebkit-helper)
   returns after `zebkit_quit()`. Chromium's switches in `argv` work as for
   Chrome. The application's thread is the browser's UI thread: every
   callback runs there, and `zebkit_post_task()` reaches it from any thread.
-- **Windows.** Views are the content shell's windows for now (Aura and
-  Views on Linux, Cocoa on macOS): titles, sizes and limits, and views
-  attached inside another view's window, as a browser inside an
+- **Windows.** A view is a `zebkit::Window` (`src/engine/window.h`): Aura and
+  Views on Linux and Windows, Cocoa on macOS, with titles, sizes and limits, and
+  views attached inside another view's window, as a browser inside an
   application. Without a display, or with `--headless`, a view has no
-  window and its page still loads, runs and draws (`zebkit_view_capture`).
+  window and its page still loads, runs and draws (`zebkit_view_capture`). An
+  off-screen view has none in any process: on Linux and macOS, windows and
+  off-screen views live in one process (`tests/engine/mixed_views.c`).
 - **The allocator.** A library must not take over the application's
   `malloc`, so PartitionAlloc does not (`use_partition_alloc_as_malloc =
   false`); Blink and V8 keep their own heaps, with the thread-local model

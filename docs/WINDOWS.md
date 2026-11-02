@@ -21,7 +21,7 @@ scripts/package.sh slim-windows
 | `zebkit.dll.lib` | its import library, to link an application with |
 | `zebkit-helper.exe` | child processes of an application that runs with `--no-sandbox` |
 | `zebkit_sandbox.lib` | for the application's executable, below |
-| `content_shell.pak`, `icudtl.dat`, `snapshot_blob.bin` | resources, ICU's data, V8's snapshot |
+| `zebkit.pak`, `icudtl.dat`, `snapshot_blob.bin` | resources, ICU's data, V8's snapshot |
 | `libEGL.dll`, `libGLESv2.dll` | ANGLE |
 | `vk_swiftshader.dll`, `vk_swiftshader_icd.json`, `vulkan-1.dll` | drawing without a GPU |
 | `include/zebkit/` | the headers |
