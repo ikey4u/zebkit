@@ -47,7 +47,10 @@ tools="$CACHE_DIR/playwright-tools"
 if [[ ! -d "$tools/node_modules/playwright-core" ]]; then
     log "installing playwright-core $PLAYWRIGHT_CORE_VERSION"
     mkdir -p "$tools"
-    (cd "$tools" && "${node[@]/%node/npm}" install --silent --no-save "playwright-core@$PLAYWRIGHT_CORE_VERSION")
+    # The directory's other packages too: an install without --save removes what
+    # it is not given (scripts/playwright-sources.sh's esbuild and yaml).
+    (cd "$tools" && "${node[@]/%node/npm}" install --silent --no-save "playwright-core@$PLAYWRIGHT_CORE_VERSION" \
+        "esbuild@$PLAYWRIGHT_ESBUILD_VERSION" "yaml@$PLAYWRIGHT_YAML_VERSION")
 fi
 
 port=$(( 20000 + RANDOM % 20000 ))

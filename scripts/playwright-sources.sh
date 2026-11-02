@@ -32,8 +32,11 @@ tools="$CACHE_DIR/playwright-tools"
 if [[ ! -d "$tools/node_modules/esbuild" || ! -d "$tools/node_modules/yaml" ]]; then
     log "installing esbuild $PLAYWRIGHT_ESBUILD_VERSION and yaml $PLAYWRIGHT_YAML_VERSION"
     mkdir -p "$tools"
+    # With playwright-core, which the directory holds for the tests and the
+    # benchmark: an install without --save removes what it is not given.
     (cd "$tools" && "${node[@]/%node/npm}" install --silent --no-save \
-        "esbuild@$PLAYWRIGHT_ESBUILD_VERSION" "yaml@$PLAYWRIGHT_YAML_VERSION")
+        "esbuild@$PLAYWRIGHT_ESBUILD_VERSION" "yaml@$PLAYWRIGHT_YAML_VERSION" \
+        "playwright-core@$PLAYWRIGHT_CORE_VERSION")
 fi
 
 "${node[@]}" "$ZEBKIT_ROOT/scripts/playwright-sources.mjs" "$checkout" "$tools/node_modules/esbuild" "$PLAYWRIGHT_COMMIT"

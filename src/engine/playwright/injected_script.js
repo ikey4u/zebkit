@@ -1,5 +1,5 @@
 // Playwright's injected script, bundled by scripts/playwright-sources.mjs
-// from https://github.com/microsoft/playwright at a169686c61af856cd1434b4994ef9c3222ee1041.
+// from https://github.com/microsoft/playwright at cfe490d941f992655948eee8fd4fd94e1c4234bf.
 // Copyright (c) Microsoft Corporation. Licensed under the Apache License,
 // Version 2.0 (src/engine/playwright/LICENSE). Generated: do not edit.
 
@@ -593,9 +593,7 @@ function yamlStringNeedsQuotes(str) {
     return true;
   if (/^\[/.test(str))
     return true;
-  if (!isNaN(Number(str)) || ["y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"].includes(str.toLowerCase()))
-    return true;
-  if (/^[-+]?\.(inf|nan)$/i.test(str))
+  if (!isNaN(Number(str)) || ["y", "n", "yes", "no", "true", "false", "on", "off", "null"].includes(str.toLowerCase()))
     return true;
   return false;
 }
@@ -3111,9 +3109,6 @@ var globalOptions = {};
 function setGlobalOptions(options) {
   globalOptions = options;
 }
-function getGlobalOptions() {
-  return globalOptions;
-}
 function isInsideScope(scope, element) {
   while (element) {
     if (scope.contains(element))
@@ -3598,54 +3593,7 @@ function isElementHiddenForAria(element) {
   const isOptionInsideSelect = element.nodeName === "OPTION" && !!element.closest("select");
   if (!isOptionInsideSelect && !isSlot && !isElementStyleVisibilityVisible(element, style))
     return true;
-  return belongsToDisplayNoneOrAriaHiddenOrNonSlotted(element) || isElementInert(element);
-}
-function isElementInert(element) {
-  var _a;
-  if (getGlobalOptions().skipInertCheck)
-    return false;
-  let inert = cacheIsInert == null ? void 0 : cacheIsInert.get(element);
-  if (inert === void 0) {
-    if (element.hasAttribute("inert")) {
-      inert = true;
-    } else if (element === ((_a = topmostModalDialog(element.ownerDocument)) == null ? void 0 : _a.dialog)) {
-      inert = false;
-    } else {
-      const parent = parentElementOrShadowHost(element);
-      if (parent) {
-        inert = isElementInert(parent);
-      } else {
-        inert = element.isConnected && !!topmostModalDialog(element.ownerDocument);
-      }
-    }
-    cacheIsInert == null ? void 0 : cacheIsInert.set(element, inert);
-  }
-  return inert;
-}
-function containsTopmostModalDialog(element) {
-  var _a;
-  return !!((_a = topmostModalDialog(element.ownerDocument)) == null ? void 0 : _a.ancestors.has(element));
-}
-function topmostModalDialog(document) {
-  if (getGlobalOptions().skipInertCheck || getGlobalOptions().skipDialogCheck)
-    return;
-  let info = cacheModalDialog == null ? void 0 : cacheModalDialog.get(document);
-  if (info === void 0) {
-    info = null;
-    try {
-      const dialogs = document.querySelectorAll("dialog:modal");
-      if (dialogs.length) {
-        const dialog = dialogs[dialogs.length - 1];
-        const ancestors = /* @__PURE__ */ new Set();
-        for (let e = parentElementOrShadowHost(dialog); e; e = parentElementOrShadowHost(e))
-          ancestors.add(e);
-        info = { dialog, ancestors };
-      }
-    } catch {
-    }
-    cacheModalDialog == null ? void 0 : cacheModalDialog.set(document, info);
-  }
-  return info || void 0;
+  return belongsToDisplayNoneOrAriaHiddenOrNonSlotted(element);
 }
 function belongsToDisplayNoneOrAriaHiddenOrNonSlotted(element) {
   let hidden = cacheIsHidden == null ? void 0 : cacheIsHidden.get(element);
@@ -3666,16 +3614,6 @@ function belongsToDisplayNoneOrAriaHiddenOrNonSlotted(element) {
   }
   return hidden;
 }
-function isTextNodeNotRendered(text) {
-  const parent = text.parentElement;
-  if (!parent)
-    return false;
-  if (parent.shadowRoot && !text.assignedSlot)
-    return true;
-  if (elementSafeTagName(parent) === "DETAILS" && !parent.open)
-    return true;
-  return false;
-}
 function getIdRefs(element, ref) {
   if (!ref)
     return [];
@@ -3683,7 +3621,7 @@ function getIdRefs(element, ref) {
   if (!root)
     return [];
   try {
-    const ids = ref.split(/[ \t\n\f\r]+/).filter((id) => !!id);
+    const ids = ref.split(" ").filter((id) => !!id);
     const result = [];
     for (const id of ids) {
       const firstElement = root.querySelector("#" + CSS.escape(id));
@@ -3764,8 +3702,11 @@ function parseCSSContentPropertyAsString(element, content, isPseudo) {
   }
 }
 function getAriaLabelledByElements(element) {
-  const refs = element.ariaLabelledByElements;
-  return (refs == null ? void 0 : refs.length) ? [...refs] : null;
+  const ref = element.getAttribute("aria-labelledby");
+  if (ref === null)
+    return null;
+  const refs = getIdRefs(element, ref);
+  return refs.length ? refs : null;
 }
 function allowsNameFromContent(role, targetDescendant) {
   const alwaysAllowsNameFromContent = ["button", "cell", "checkbox", "columnheader", "gridcell", "heading", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "row", "rowheader", "switch", "tab", "tooltip", "treeitem"].includes(role);
@@ -3897,7 +3838,7 @@ function insideTargetElement(options) {
   return options.embeddedInTargetElement === "self" || options.embeddedInTargetElement === "descendant";
 }
 function getTextAlternativeInternal(element, options) {
-  var _a;
+  var _a, _b, _c, _d, _e;
   if (options.visitedElements.has(element))
     return emptyCompositeString();
   const childOptions = {
@@ -3905,7 +3846,8 @@ function getTextAlternativeInternal(element, options) {
     embeddedInTargetElement: options.embeddedInTargetElement === "self" ? "descendant" : options.embeddedInTargetElement
   };
   if (!options.includeHidden) {
-    if (isElementIgnoredForAria(element) || !isEmbeddedInHiddenReferenceTraversal(options) && isElementHiddenForAria(element)) {
+    const isEmbeddedInHiddenReferenceTraversal = !!((_a = options.embeddedInLabelledBy) == null ? void 0 : _a.hidden) || !!((_b = options.embeddedInDescribedBy) == null ? void 0 : _b.hidden) || !!((_c = options.embeddedInNativeTextAlternative) == null ? void 0 : _c.hidden) || !!((_d = options.embeddedInLabel) == null ? void 0 : _d.hidden);
+    if (isElementIgnoredForAria(element) || !isEmbeddedInHiddenReferenceTraversal && isElementHiddenForAria(element)) {
       options.visitedElements.add(element);
       return emptyCompositeString();
     }
@@ -4114,8 +4056,7 @@ function getTextAlternativeInternal(element, options) {
     if (maybeTrimmedAccessibleName) {
       if (options.outDerivedFromContent && insideTargetElement(options) && trimFlatString(accessibleName.text))
         options.outDerivedFromContent.value = true;
-      if (trimFlatString(accessibleName.text))
-        (_a = accessibleName.elements) == null ? void 0 : _a.add(element);
+      (_e = accessibleName.elements) == null ? void 0 : _e.add(element);
       return accessibleName;
     }
   }
@@ -4128,13 +4069,8 @@ function getTextAlternativeInternal(element, options) {
   options.visitedElements.add(element);
   return emptyCompositeString();
 }
-function isEmbeddedInHiddenReferenceTraversal(options) {
-  var _a, _b, _c, _d;
-  return !!((_a = options.embeddedInLabelledBy) == null ? void 0 : _a.hidden) || !!((_b = options.embeddedInDescribedBy) == null ? void 0 : _b.hidden) || !!((_c = options.embeddedInNativeTextAlternative) == null ? void 0 : _c.hidden) || !!((_d = options.embeddedInLabel) == null ? void 0 : _d.hidden);
-}
 function innerAccumulatedElementText(element, options) {
   const tokens = [];
-  const skipNotRenderedText = !options.includeHidden && !isEmbeddedInHiddenReferenceTraversal(options);
   const elements = options.collectElements ? /* @__PURE__ */ new Set() : void 0;
   const visit3 = (node, skipSlotted) => {
     var _a;
@@ -4150,8 +4086,6 @@ function innerAccumulatedElementText(element, options) {
         token = " " + token + " ";
       tokens.push(token);
     } else if (node.nodeType === 3) {
-      if (skipNotRenderedText && isTextNodeNotRendered(node))
-        return;
       tokens.push(node.textContent || "");
     }
   };
@@ -4313,8 +4247,6 @@ function getAccessibleNameFromAssociatedLabels(labels, options) {
   })).filter((accessibleName) => !!accessibleName.text), " ", options.collectElements);
 }
 function receivesPointerEvents(element) {
-  if (isElementInert(element))
-    return false;
   const cache = cachePointerEvents;
   let e = element;
   let result;
@@ -4351,8 +4283,6 @@ var cacheAccessibleDescription;
 var cacheAccessibleDescriptionHidden;
 var cacheAccessibleErrorMessage;
 var cacheIsHidden;
-var cacheIsInert;
-var cacheModalDialog;
 var cachePseudoContent;
 var cachePseudoContentBefore;
 var cachePseudoContentAfter;
@@ -4373,8 +4303,6 @@ function beginAriaCaches() {
   cacheAccessibleDescriptionHidden != null ? cacheAccessibleDescriptionHidden : cacheAccessibleDescriptionHidden = /* @__PURE__ */ new Map();
   cacheAccessibleErrorMessage != null ? cacheAccessibleErrorMessage : cacheAccessibleErrorMessage = /* @__PURE__ */ new Map();
   cacheIsHidden != null ? cacheIsHidden : cacheIsHidden = /* @__PURE__ */ new Map();
-  cacheIsInert != null ? cacheIsInert : cacheIsInert = /* @__PURE__ */ new Map();
-  cacheModalDialog != null ? cacheModalDialog : cacheModalDialog = /* @__PURE__ */ new Map();
   cachePseudoContent != null ? cachePseudoContent : cachePseudoContent = /* @__PURE__ */ new Map();
   cachePseudoContentBefore != null ? cachePseudoContentBefore : cachePseudoContentBefore = /* @__PURE__ */ new Map();
   cachePseudoContentAfter != null ? cachePseudoContentAfter : cachePseudoContentAfter = /* @__PURE__ */ new Map();
@@ -4390,8 +4318,6 @@ function endAriaCaches() {
     cacheAccessibleDescriptionHidden = void 0;
     cacheAccessibleErrorMessage = void 0;
     cacheIsHidden = void 0;
-    cacheIsInert = void 0;
-    cacheModalDialog = void 0;
     cachePseudoContent = void 0;
     cachePseudoContentBefore = void 0;
     cachePseudoContentAfter = void 0;
@@ -4469,8 +4395,6 @@ function generateAriaTree(rootElement, publicOptions) {
     if (node.nodeType === Node.TEXT_NODE && node.nodeValue) {
       if (!parentElementVisible)
         return;
-      if (isTextNodeNotRendered(node))
-        return;
       const text = node.nodeValue;
       if (ariaNode.role !== "textbox" && text)
         ariaNode.children.push(node.nodeValue || "");
@@ -4485,7 +4409,7 @@ function generateAriaTree(rootElement, publicOptions) {
       visible = isElementVisibleForAria || isElementVisible(element);
     if (options.visibility === "ariaAndVisible")
       visible = isElementVisibleForAria && isElementVisible(element);
-    if (options.visibility === "aria" && !visible && !containsTopmostModalDialog(element))
+    if (options.visibility === "aria" && !visible)
       return;
     const ariaChildren = [];
     if (element.hasAttribute("aria-owns")) {
@@ -7026,30 +6950,30 @@ var UtilityScript = class {
       if (typeof result === "function")
         result = result(...parameters);
     }
-    if (isThenable(result)) {
-      return (async () => {
-        const value = await result;
-        return returnByValue ? this._jsonValueNoThrow(value) : value;
-      })();
-    }
-    return returnByValue ? this._jsonValueNoThrow(result) : result;
+    return returnByValue ? this._promiseAwareJsonValueNoThrow(result) : result;
   }
   jsonValue(returnByValue, value) {
     if (value === void 0)
       return void 0;
     return serializeAsCallArgument(value, (value2) => ({ fallThrough: value2 }));
   }
-  _jsonValueNoThrow(value) {
-    try {
-      return this.jsonValue(true, value);
-    } catch (e) {
-      return void 0;
+  _promiseAwareJsonValueNoThrow(value) {
+    const safeJson = (value2) => {
+      try {
+        return this.jsonValue(true, value2);
+      } catch (e) {
+        return void 0;
+      }
+    };
+    if (value && typeof value === "object" && typeof value.then === "function") {
+      return (async () => {
+        const promiseValue = await value;
+        return safeJson(promiseValue);
+      })();
     }
+    return safeJson(value);
   }
 };
-function isThenable(value) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
 
 // packages/injected/src/injectedScript.ts
 var InjectedScript = class {
@@ -7175,11 +7099,7 @@ var InjectedScript = class {
     this._browserName = options.browserName;
     this._shouldPrependErrorPrefix = !!options.shouldPrependErrorPrefix;
     this._isUtilityWorld = !!options.isUtilityWorld;
-    setGlobalOptions({
-      browserNameForWorkarounds: options.browserName,
-      skipInertCheck: options.skipInertCheck,
-      skipDialogCheck: options.skipDialogCheck
-    });
+    setGlobalOptions({ browserNameForWorkarounds: options.browserName });
     this._setupGlobalListenersRemovalDetection();
     this._setupHitTargetInterceptors();
     if (this.isUnderTest)
@@ -7552,7 +7472,7 @@ var InjectedScript = class {
         element = element.closest("button, [role=button], [role=checkbox], [role=radio]") || element;
     }
     if (behavior === "follow-label") {
-      if (!element.matches("a, input, textarea, button, select, option, optgroup, [role=link], [role=button], [role=checkbox], [role=radio]") && !element.isContentEditable) {
+      if (!element.matches("a, input, textarea, button, select, [role=link], [role=button], [role=checkbox], [role=radio]") && !element.isContentEditable) {
         const enclosingLabel = element.closest("label");
         if (enclosingLabel && enclosingLabel.control)
           element = enclosingLabel.control;
@@ -7662,13 +7582,6 @@ var InjectedScript = class {
         received: disabled ? "disabled" : "enabled"
       };
     }
-    if (state === "non-inert") {
-      const inert = isElementInert(element);
-      return {
-        matches: !inert,
-        received: inert ? "inert" : "non-inert"
-      };
-    }
     if (state === "editable") {
       const disabled = getAriaDisabled(element);
       const readonly = getReadonly(element);
@@ -7766,10 +7679,14 @@ var InjectedScript = class {
         if (isNaN(Number(value)))
           throw this.createStacklessError("Cannot type text into input[type=number]");
       }
+      if (type === "color")
+        value = value.toLowerCase();
       if (kInputTypesToSetValue.has(type)) {
         value = value.trim();
         input.focus();
         input.value = value;
+        if (input.value !== value)
+          throw this.createStacklessError("Malformed value");
         element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         element.dispatchEvent(new Event("change", { bubbles: true }));
         return "done";
@@ -7782,7 +7699,6 @@ var InjectedScript = class {
     return "needsinput";
   }
   selectText(node) {
-    var _a;
     const element = this.retarget(node, "follow-label");
     if (!element)
       return "error:notconnected";
@@ -7799,10 +7715,7 @@ var InjectedScript = class {
       textarea.focus();
       return "done";
     }
-    let focusTarget = element;
-    while (focusTarget.isContentEditable && ((_a = focusTarget.parentElement) == null ? void 0 : _a.isContentEditable))
-      focusTarget = focusTarget.parentElement;
-    focusTarget.focus();
+    element.focus();
     const range = element.ownerDocument.createRange();
     range.selectNodeContents(element);
     const selection = element.ownerDocument.defaultView.getSelection();
@@ -8676,7 +8589,7 @@ function deepEquals(a, b) {
   return false;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/index.js
+// node_modules/yaml/browser/index.js
 var browser_exports = {};
 __export(browser_exports, {
   Alias: () => Alias,
@@ -8711,7 +8624,7 @@ __export(browser_exports, {
   visitAsync: () => visitAsync
 });
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/index.js
+// node_modules/yaml/browser/dist/index.js
 var dist_exports = {};
 __export(dist_exports, {
   Alias: () => Alias,
@@ -8745,7 +8658,7 @@ __export(dist_exports, {
   visitAsync: () => visitAsync
 });
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/identity.js
+// node_modules/yaml/browser/dist/nodes/identity.js
 var ALIAS = /* @__PURE__ */ Symbol.for("yaml.alias");
 var DOC = /* @__PURE__ */ Symbol.for("yaml.document");
 var MAP = /* @__PURE__ */ Symbol.for("yaml.map");
@@ -8781,7 +8694,7 @@ function isNode(node) {
 }
 var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/visit.js
+// node_modules/yaml/browser/dist/visit.js
 var BREAK = /* @__PURE__ */ Symbol("break visit");
 var SKIP = /* @__PURE__ */ Symbol("skip children");
 var REMOVE = /* @__PURE__ */ Symbol("remove node");
@@ -8932,7 +8845,7 @@ function replaceNode(key, path, node) {
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/doc/directives.js
+// node_modules/yaml/browser/dist/doc/directives.js
 var escapeChars = {
   "!": "%21",
   ",": "%2C",
@@ -9095,7 +9008,7 @@ var Directives = class _Directives {
 Directives.defaultYaml = { explicit: false, version: "1.2" };
 Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/doc/anchors.js
+// node_modules/yaml/browser/dist/doc/anchors.js
 function anchorIsValid(anchor) {
   if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
     const sa = JSON.stringify(anchor);
@@ -9154,7 +9067,7 @@ function createNodeAnchors(doc, prefix) {
   };
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/doc/applyReviver.js
+// node_modules/yaml/browser/dist/doc/applyReviver.js
 function applyReviver(reviver, obj, key, val) {
   if (val && typeof val === "object") {
     if (Array.isArray(val)) {
@@ -9198,7 +9111,7 @@ function applyReviver(reviver, obj, key, val) {
   return reviver.call(obj, key, val);
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/toJS.js
+// node_modules/yaml/browser/dist/nodes/toJS.js
 function toJS(value, arg, ctx) {
   if (Array.isArray(value))
     return value.map((v, i) => toJS(v, String(i), ctx));
@@ -9221,7 +9134,7 @@ function toJS(value, arg, ctx) {
   return value;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/Node.js
+// node_modules/yaml/browser/dist/nodes/Node.js
 var NodeBase = class {
   constructor(type) {
     Object.defineProperty(this, NODE_TYPE, { value: type });
@@ -9253,7 +9166,7 @@ var NodeBase = class {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/Alias.js
+// node_modules/yaml/browser/dist/nodes/Alias.js
 var Alias = class extends NodeBase {
   constructor(source) {
     super(ALIAS);
@@ -9358,7 +9271,7 @@ function getAliasCount(doc, node, anchors) {
   return 1;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/Scalar.js
+// node_modules/yaml/browser/dist/nodes/Scalar.js
 var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
 var Scalar = class extends NodeBase {
   constructor(value) {
@@ -9378,7 +9291,7 @@ Scalar.PLAIN = "PLAIN";
 Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
 Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/doc/createNode.js
+// node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
 function findTagObject(value, tagName, tags) {
   var _a;
@@ -9449,7 +9362,7 @@ function createNode(value, tagName, ctx) {
   return node;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/Collection.js
+// node_modules/yaml/browser/dist/nodes/Collection.js
 function collectionFromPath(schema4, path, value) {
   let v = value;
   for (let i = path.length - 1; i >= 0; --i) {
@@ -9581,7 +9494,7 @@ var Collection = class extends NodeBase {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyComment.js
+// node_modules/yaml/browser/dist/stringify/stringifyComment.js
 var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent2) {
   if (/^\n+$/.test(comment))
@@ -9590,7 +9503,7 @@ function indentComment(comment, indent2) {
 }
 var lineComment = (str, indent2, comment) => str.endsWith("\n") ? indentComment(comment, indent2) : comment.includes("\n") ? "\n" + indentComment(comment, indent2) : (str.endsWith(" ") ? "" : " ") + comment;
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/foldFlowLines.js
+// node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
@@ -9717,7 +9630,7 @@ function consumeMoreIndentedLines(text, i, indent2) {
   return end;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyString.js
+// node_modules/yaml/browser/dist/stringify/stringifyString.js
 var getFoldOptions = (ctx, isBlock2) => ({
   indentAtStart: isBlock2 ? ctx.indent.length : ctx.indentAtStart,
   lineWidth: ctx.options.lineWidth,
@@ -9995,7 +9908,7 @@ function stringifyString(item, ctx, onComment, onChompKeep) {
   return res;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringify.js
+// node_modules/yaml/browser/dist/stringify/stringify.js
 function createStringifyContext(doc, options) {
   const opt = Object.assign({
     blockQuote: true,
@@ -10114,7 +10027,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
 ${ctx.indent}${str}`;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyPair.js
+// node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
   var _a, _b;
   const { allNullValues, doc, indent: indent2, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
@@ -10238,14 +10151,14 @@ ${ctx.indent}`;
   return str;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/log.js
+// node_modules/yaml/browser/dist/log.js
 function warn(logLevel, warning) {
   if (logLevel === "debug" || logLevel === "warn") {
     console.warn(warning);
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/merge.js
 var MERGE_KEY = "<<";
 var merge = {
   identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
@@ -10295,7 +10208,7 @@ function resolveAliasValue(ctx, value) {
   return ctx && isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
+// node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
 function addPairToJSMap(ctx, map2, { key, value }) {
   if (isNode(key) && key.addToJSMap)
     key.addToJSMap(ctx, map2, value);
@@ -10348,7 +10261,7 @@ function stringifyKey(key, jsKey, ctx) {
   return JSON.stringify(jsKey);
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/Pair.js
+// node_modules/yaml/browser/dist/nodes/Pair.js
 function createPair(key, value, ctx) {
   const k = createNode(key, void 0, ctx);
   const v = createNode(value, void 0, ctx);
@@ -10377,7 +10290,7 @@ var Pair = class _Pair {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyCollection.js
+// node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   var _a;
   const flow = (_a = ctx.inFlow) != null ? _a : collection.flow;
@@ -10520,7 +10433,7 @@ function addCommentBefore({ indent: indent2, options: { commentString } }, lines
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/YAMLMap.js
+// node_modules/yaml/browser/dist/nodes/YAMLMap.js
 function findPair(items, key) {
   const k = isScalar(key) ? key.value : key;
   for (const it of items) {
@@ -10653,7 +10566,7 @@ var YAMLMap = class extends Collection {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/common/map.js
+// node_modules/yaml/browser/dist/schema/common/map.js
 var map = {
   collection: "map",
   default: true,
@@ -10667,7 +10580,7 @@ var map = {
   createNode: (schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx)
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/nodes/YAMLSeq.js
+// node_modules/yaml/browser/dist/nodes/YAMLSeq.js
 var YAMLSeq = class extends Collection {
   static get tagName() {
     return "tag:yaml.org,2002:seq";
@@ -10771,7 +10684,7 @@ function asItemIndex(key) {
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/common/seq.js
+// node_modules/yaml/browser/dist/schema/common/seq.js
 var seq = {
   collection: "seq",
   default: true,
@@ -10785,7 +10698,7 @@ var seq = {
   createNode: (schema4, obj, ctx) => YAMLSeq.from(schema4, obj, ctx)
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/common/string.js
+// node_modules/yaml/browser/dist/schema/common/string.js
 var string = {
   identify: (value) => typeof value === "string",
   default: true,
@@ -10797,7 +10710,7 @@ var string = {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/common/null.js
+// node_modules/yaml/browser/dist/schema/common/null.js
 var nullTag = {
   identify: (value) => value == null,
   createNode: () => new Scalar(null),
@@ -10808,7 +10721,7 @@ var nullTag = {
   stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/core/bool.js
+// node_modules/yaml/browser/dist/schema/core/bool.js
 var boolTag = {
   identify: (value) => typeof value === "boolean",
   default: true,
@@ -10825,7 +10738,7 @@ var boolTag = {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyNumber.js
+// node_modules/yaml/browser/dist/stringify/stringifyNumber.js
 function stringifyNumber({ format, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
@@ -10846,7 +10759,7 @@ function stringifyNumber({ format, minFractionDigits, tag, value }) {
   return n;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/core/float.js
+// node_modules/yaml/browser/dist/schema/core/float.js
 var floatNaN = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -10882,7 +10795,7 @@ var float = {
   stringify: stringifyNumber
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/core/int.js
+// node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
 var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
 function intStringify(node, radix, prefix) {
@@ -10918,7 +10831,7 @@ var intHex = {
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/core/schema.js
+// node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
   map,
   seq,
@@ -10933,7 +10846,7 @@ var schema = [
   float
 ];
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/json/schema.js
+// node_modules/yaml/browser/dist/schema/json/schema.js
 function intIdentify2(value) {
   return typeof value === "bigint" || Number.isInteger(value);
 }
@@ -10991,7 +10904,7 @@ var jsonError = {
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
   identify: (value) => value instanceof Uint8Array,
   // Buffer inherits from Uint8Array
@@ -11044,7 +10957,7 @@ var binary = {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/pairs.js
 function resolvePairs(seq2, onError) {
   var _a;
   if (isSeq(seq2)) {
@@ -11111,7 +11024,7 @@ var pairs = {
   createNode: createPairs
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/omap.js
 var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   constructor() {
     super();
@@ -11177,7 +11090,7 @@ var omap = {
   createNode: (schema4, iterable, ctx) => YAMLOMap.from(schema4, iterable, ctx)
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/bool.js
 function boolStringify({ value, source }, ctx) {
   const boolObj = value ? trueTag : falseTag;
   if (source && boolObj.test.test(source))
@@ -11201,7 +11114,7 @@ var falseTag = {
   stringify: boolStringify
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/float.js
 var floatNaN2 = {
   identify: (value) => typeof value === "number",
   default: true,
@@ -11240,7 +11153,7 @@ var float2 = {
   stringify: stringifyNumber
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
 function intResolve2(str, offset, radix, { intAsBigInt }) {
   const sign = str[0];
@@ -11309,7 +11222,7 @@ var intHex2 = {
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/set.js
 var YAMLSet = class _YAMLSet extends YAMLMap {
   constructor(schema4) {
     super(schema4);
@@ -11388,7 +11301,7 @@ var set = {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
 function parseSexagesimal(str, asBigInt) {
   const sign = str[0];
   const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
@@ -11470,7 +11383,7 @@ var timestamp = {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
+// node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
   map,
   seq,
@@ -11495,7 +11408,7 @@ var schema3 = [
   timestamp
 ];
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/tags.js
+// node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
   ["failsafe", [map, seq, string]],
@@ -11566,7 +11479,7 @@ function getTags(customTags, schemaName, addMergeTag) {
   }, []);
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/schema/Schema.js
+// node_modules/yaml/browser/dist/schema/Schema.js
 var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 var Schema = class _Schema {
   constructor({ compat, customTags, merge: merge2, resolveKnownTags, schema: schema4, sortMapEntries, toStringDefaults }) {
@@ -11587,7 +11500,7 @@ var Schema = class _Schema {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/stringify/stringifyDocument.js
+// node_modules/yaml/browser/dist/stringify/stringifyDocument.js
 function stringifyDocument(doc, options) {
   var _a;
   const lines = [];
@@ -11659,7 +11572,7 @@ function stringifyDocument(doc, options) {
   return lines.join("\n") + "\n";
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/doc/Document.js
+// node_modules/yaml/browser/dist/doc/Document.js
 var Document = class _Document {
   constructor(value, replacer, options) {
     this.commentBefore = null;
@@ -11951,7 +11864,7 @@ function assertCollection(contents) {
   throw new Error("Expected a YAML collection as document contents");
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/errors.js
+// node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
   constructor(name, pos, code, message) {
     super();
@@ -12007,7 +11920,7 @@ ${pointer}
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-props.js
+// node_modules/yaml/browser/dist/compose/resolve-props.js
 function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
@@ -12135,7 +12048,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   };
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/util-contains-newline.js
+// node_modules/yaml/browser/dist/compose/util-contains-newline.js
 function containsNewline(key) {
   if (!key)
     return null;
@@ -12171,7 +12084,7 @@ function containsNewline(key) {
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
+// node_modules/yaml/browser/dist/compose/util-flow-indent-check.js
 function flowIndentCheck(indent2, fc, onError) {
   if ((fc == null ? void 0 : fc.type) === "flow-collection") {
     const end = fc.end[0];
@@ -12182,7 +12095,7 @@ function flowIndentCheck(indent2, fc, onError) {
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/util-map-includes.js
+// node_modules/yaml/browser/dist/compose/util-map-includes.js
 function mapIncludes(ctx, items, search) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
@@ -12191,7 +12104,7 @@ function mapIncludes(ctx, items, search) {
   return items.some((pair) => isEqual(pair.key, search));
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-block-map.js
+// node_modules/yaml/browser/dist/compose/resolve-block-map.js
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   var _a, _b;
@@ -12288,7 +12201,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   return map2;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-block-seq.js
+// node_modules/yaml/browser/dist/compose/resolve-block-seq.js
 function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bs, onError, tag) {
   var _a;
   const NodeClass = (_a = tag == null ? void 0 : tag.nodeClass) != null ? _a : YAMLSeq;
@@ -12331,7 +12244,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
   return seq2;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-end.js
+// node_modules/yaml/browser/dist/compose/resolve-end.js
 function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
@@ -12368,7 +12281,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   return { comment, offset };
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
+// node_modules/yaml/browser/dist/compose/resolve-flow-collection.js
 var blockMsg = "Block collections are not allowed within flow collections";
 var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
 function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, fc, onError, tag) {
@@ -12549,7 +12462,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   return coll;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/compose-collection.js
+// node_modules/yaml/browser/dist/compose/compose-collection.js
 function resolveCollection(CN2, ctx, token, onError, tagName, tag) {
   const coll = token.type === "block-map" ? resolveBlockMap(CN2, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq(CN2, ctx, token, onError, tag) : resolveFlowCollection(CN2, ctx, token, onError, tag);
   const Coll = coll.constructor;
@@ -12602,7 +12515,7 @@ function composeCollection(CN2, ctx, token, props, onError) {
   return node;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
+// node_modules/yaml/browser/dist/compose/resolve-block-scalar.js
 function resolveBlockScalar(ctx, scalar, onError) {
   const start = scalar.offset;
   const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
@@ -12778,7 +12691,7 @@ function splitLines(source) {
   return lines;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
+// node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar, strict, onError) {
   const { offset, type, source, end } = scalar;
   let _type;
@@ -12991,7 +12904,7 @@ function parseCharCode(source, offset, length, onError) {
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/compose-scalar.js
+// node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
   const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
@@ -13070,7 +12983,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
   return tag;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
+// node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
 function emptyScalarPosition(offset, before, pos) {
   if (before) {
     pos != null ? pos : pos = before.length;
@@ -13094,7 +13007,7 @@ function emptyScalarPosition(offset, before, pos) {
   return offset;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/compose-node.js
+// node_modules/yaml/browser/dist/compose/compose-node.js
 var CN = { composeNode, composeEmptyNode };
 function composeNode(ctx, token, props, onError) {
   const atKey = ctx.atKey;
@@ -13187,7 +13100,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
   return alias;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/compose-doc.js
+// node_modules/yaml/browser/dist/compose/compose-doc.js
 function composeDoc(options, directives, { offset, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
@@ -13220,7 +13133,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   return doc;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/compose/composer.js
+// node_modules/yaml/browser/dist/compose/composer.js
 function getErrorPos(src) {
   if (typeof src === "number")
     return [src, src + 1];
@@ -13414,7 +13327,7 @@ ${end.comment}` : end.comment;
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/cst.js
+// node_modules/yaml/browser/dist/parse/cst.js
 var cst_exports = {};
 __export(cst_exports, {
   BOM: () => BOM,
@@ -13432,7 +13345,7 @@ __export(cst_exports, {
   visit: () => visit2
 });
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/cst-scalar.js
+// node_modules/yaml/browser/dist/parse/cst-scalar.js
 function resolveAsScalar(token, strict = true, onError) {
   if (token) {
     const _onError = (pos, code, message) => {
@@ -13606,7 +13519,7 @@ function setFlowScalarValue(token, source, type) {
   }
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/cst-stringify.js
+// node_modules/yaml/browser/dist/parse/cst-stringify.js
 var stringify2 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
 function stringifyToken(token) {
   switch (token.type) {
@@ -13661,7 +13574,7 @@ function stringifyItem({ start, key, sep, value }) {
   return res;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/cst-visit.js
+// node_modules/yaml/browser/dist/parse/cst-visit.js
 var BREAK2 = /* @__PURE__ */ Symbol("break visit");
 var SKIP2 = /* @__PURE__ */ Symbol("skip children");
 var REMOVE2 = /* @__PURE__ */ Symbol("remove item");
@@ -13717,7 +13630,7 @@ function _visit(path, item, visitor) {
   return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/cst.js
+// node_modules/yaml/browser/dist/parse/cst.js
 var BOM = "\uFEFF";
 var DOCUMENT = "";
 var FLOW_END = "";
@@ -13798,7 +13711,7 @@ function tokenType(source) {
   return null;
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/lexer.js
+// node_modules/yaml/browser/dist/parse/lexer.js
 function isEmpty(ch) {
   switch (ch) {
     case void 0:
@@ -14381,7 +14294,7 @@ var Lexer = class {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/line-counter.js
+// node_modules/yaml/browser/dist/parse/line-counter.js
 var LineCounter = class {
   constructor() {
     this.lineStarts = [];
@@ -14406,7 +14319,7 @@ var LineCounter = class {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/parse/parser.js
+// node_modules/yaml/browser/dist/parse/parser.js
 function includesToken(list, type) {
   for (let i = 0; i < list.length; ++i)
     if (list[i].type === type)
@@ -15273,7 +15186,7 @@ var Parser = class {
   }
 };
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/dist/public-api.js
+// node_modules/yaml/browser/dist/public-api.js
 function parseOptions(options) {
   const prettyErrors = options.prettyErrors !== false;
   const lineCounter = options.lineCounter || prettyErrors && new LineCounter() || null;
@@ -15355,5 +15268,5 @@ function stringify3(value, replacer, options) {
   return new Document(value, _replacer, options).toString(options);
 }
 
-// ../../.cache/playwright-tools/node_modules/yaml/browser/index.js
+// node_modules/yaml/browser/index.js
 var browser_default = dist_exports;

@@ -1,5 +1,5 @@
 // Playwright's WebSocket mock (injected/src/webSocketMock.ts), bundled by scripts/playwright-sources.mjs
-// from https://github.com/microsoft/playwright at a169686c61af856cd1434b4994ef9c3222ee1041.
+// from https://github.com/microsoft/playwright at cfe490d941f992655948eee8fd4fd94e1c4234bf.
 // Copyright (c) Microsoft Corporation. Licensed under the Apache License,
 // Version 2.0 (src/engine/playwright/LICENSE). Generated: do not edit.
 

@@ -22,7 +22,7 @@ ELECTRON_LINUX_X64_SHA256=616efc1ae4784af1a4f3f0e8774e73e7030e7bd1708da9d09bcf54
 # scripts/playwright-sources.sh bundles them from this commit into
 # src/engine/playwright/. esbuild is the version Playwright builds with.
 PLAYWRIGHT_URL=https://github.com/microsoft/playwright.git
-PLAYWRIGHT_COMMIT=a169686c61af856cd1434b4994ef9c3222ee1041
+PLAYWRIGHT_COMMIT=cfe490d941f992655948eee8fd4fd94e1c4234bf
 PLAYWRIGHT_ESBUILD_VERSION=0.28.1
 # playwright-core from npm, the latest stable release, for
 # scripts/automation-bench.sh's comparison over CDP.
