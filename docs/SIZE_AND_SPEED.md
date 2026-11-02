@@ -58,43 +58,83 @@ was 1.6 to 4.5).
 
 | | zebkit | Electron 45.2.1 | Less |
 |---|---:|---:|---|
-| Size as published, MiB (`.tar.xz`, `.zip`) | 160.8 (54.9, 73.1) | 273.4 (88.7, 117.6) | zebkit, 41% (38%, 38%) |
-| Size as an application ships it | 152.3 (53.5, 71.1) | 260.5 (87.1, 114.8) | zebkit, 42% (39%, 38%) |
-| Start, cold (files out of the cache), to first paint, ms | 4720 | 6337 | zebkit, 26% |
-| Start, warm, to first paint, ms | 120 | 232 | zebkit, 48% |
-| Start, warm, CPU until the first frame, s | 0.22 | 0.47 | zebkit, 53% |
-| Memory, a blank page, MB | 173 | 249 | zebkit, 31% |
-| Processes, a page | 7 | 6 | **Electron**: zebkit runs storage in a process of its own |
-| Text layout, ms a layout | 9.2 | 7.8 | **Electron, 15%** |
-| Text layout, renderer's CPU, ms a layout | 12.9 | 10.7 | **Electron, 18%** |
-| JavaScript and DOM, ms, all ten | 1300 | 1196 | Electron, 8%, within noise |
-| DOM (20,000 elements made and laid out), ms | 410 | 281 | **Electron, 31%** |
-| A call from the page to the host and back, 64 bytes, ms | 0.4 | 0.1 | **Electron** |
-| The same with 1 MiB, ms | 32.1 | 4.3 | **Electron, 7.5 times** |
-| Long document (200,000 words), to its first frame, ms | 210 | 158 | Electron, 25%, within noise |
-| Long document, longest task, ms | 228 | 173 | **Electron, 24%** |
-| Long document, scrolling frames p50 / p95 / max | 16.7 / 17.4 / 17.8 | 16.7 / 17.3 / 17.8 | level |
-| Long document, CPU of all processes, s / memory, MB | 3.7 / 253 | 4.3 / 333 | zebkit, 14% / 24% |
-| A 756-page PDF in each one's PDF viewer: CPU loading, s / memory, MB / renderers | 0.73 / 253 / 1 | 1.59 / 400 / 3 | zebkit, 54% / 37% |
-| Four local pages and the PDF: CPU loading, s / at rest, % of a core / memory, MB | 3.2 / 6.5 / 1118 | 4.9 / 5.6 / 1573 | zebkit / **Electron** / zebkit |
-| Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 18.4 / 173 / 4362 | 24.8 / 170 / 5044 | zebkit, 26% / level / zebkit, 14% |
+| Size as published, MiB (`.tar.xz`, `.zip`) | 170.1 (57.7, 77.5) | 273.4 (88.7, 117.6) | zebkit, 38% (35%, 34%) |
+| Size as an application ships it | 161.7 (56.4, 75.5) | 260.5 (87.1, 114.8) | zebkit, 38% (35%, 34%) |
+| Start, cold (files out of the cache), to first paint, ms | 4690 | 6285 | zebkit, 25% |
+| Start, warm, to first paint, ms | 119 | 232 | zebkit, 49% |
+| Start, warm, CPU until the first frame, s | 0.22 | 0.46 | zebkit, 53% |
+| Memory, a blank page, MB | 167 | 239 | zebkit, 30% |
+| Processes, a page | 7 | 6 | **Electron**: zebkit runs storage in a process of its own, as Chrome does (below) |
+| Text layout, ms a layout | 8.6 | 7.8 | **Electron, 9%** |
+| Text layout, renderer's CPU, ms a layout | 12.1 | 10.6 | **Electron, 12%** |
+| JavaScript and DOM, ms, all ten | 1278 | 1166 | Electron, 9%, within noise |
+| DOM (20,000 elements made and laid out), ms | 377 | 282 | **Electron, 25%** |
+| A call from the page to the host and back, 64 bytes / 64 KiB, ms | 0.1 / 0.4 | 0.1 / 0.4 | level |
+| The same with 1 MiB / 16 MiB, ms | 3.4 / 55.6 | 4.4 / 71.3 | zebkit, 23% / 22% |
+| Long document (200,000 words), to its first frame, ms | 196 | 159 | **Electron, 19%** |
+| Long document, longest task, ms | 209 | 176 | **Electron, 16%** |
+| Long document, scrolling frames p50 / p95 / max | 16.7 / 17.3 / 17.6 | 16.7 / 17.3 / 17.7 | level |
+| Long document, CPU of all processes, s / memory, MB | 3.45 / 248 | 4.27 / 322 | zebkit, 19% / 23% |
+| A 756-page PDF in each one's PDF viewer: CPU loading, s / memory, MB / renderers | 0.73 / 248 / 1 | 1.62 / 390 / 3 | zebkit, 55% / 36% |
+| Five local pages and the PDF: CPU loading, s / at rest, % of a core / memory, MB | 3.0 / 6.3 / 1092 | 4.9 / 5.4 / 1520 | zebkit / **Electron** / zebkit |
+| Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 21.2 / 144 / 4430 | 25.8 / 144 / 5021 | zebkit, 18% / level / zebkit, 12% |
 
-- **Wins**: size; startup, cold and warm; memory on every page and site
-  but one; CPU while loading on every page and site; the PDF viewer, which
-  in Electron is an extension with two renderers more.
-- **Losses**: text layout (the build, as below), the DOM workload (31%,
-  outside the noise, not yet taken apart), the long document's first
-  layout, one process more a page, and calls between the page and the host:
-  zebkit's `zebkit.app` goes as JSON text with copies on both sides, 4 to 8
-  times slower than Electron's IPC, and is the first thing to make faster.
-- **Within noise**: at rest, the animated page (5.9 against 5.0% of a
+- **Wins**: size; startup, cold and warm; memory on every page and site;
+  CPU while loading on every page and site; the PDF viewer, which in
+  Electron is an extension with two renderers more; calls between the page
+  and the host, level up to 64 KiB and about a fifth faster from 1 MiB.
+- **Losses**: the DOM workload (25%), text layout (9%, 12% in CPU), the
+  long document's first layout (16 to 19%), and one process more a page.
+  What is left of the first three is how the code is compiled, not what
+  the engine does: profiles of the same page show the same functions, with
+  Electron's inlined into fewer and larger ones, and no zebkit-specific
+  work (no observers, hooks or scripts on these pages, the same garbage
+  collection share, the same fonts and glyphs). The build changes that
+  close it all the way cost more size than they gain (below).
+- **Within noise**: at rest, the animated page (5.8 against 4.8% of a
   core) and the sites, where the advertising decides; JavaScript other than
-  the DOM and JSON; the long document's first frame.
-- **At rest on the sites** (`docs/reports/electron-compare.md`): of the
-  ten summed, zebkit costs less CPU on Wikipedia and Amazon, the same on
-  MDN, more on the other seven (The New York Times 67 against 57% of a
-  core, BBC News 19 against 16), every one within noise; memory less on 11
-  of 12, all but Stack Overflow, whose runs differed most.
+  the DOM.
+- **At rest on the sites** (`docs/reports/electron-compare.md`): the ten
+  summed cost the same (144% of a core each); zebkit less on 4, Amazon
+  (36 against 46%) the largest; memory less on all ten. Reddit and Stack
+  Overflow showed a different page in some run and are left out.
+
+What was done about the losses on 2026-11-02, each measured with the same
+harness before and after (the commits have the runs):
+
+- **Calls between the page and the host** (were 4 to 8 times slower):
+  `zebkit.*` no longer goes as a `fetch()` to `zebkit://call` with its JSON
+  parsed and written again twice; each frame's own Mojo channel carries
+  the JSON and the bytes, through shared memory past 64 KiB, and
+  `zebkit.app`'s JSON is checked and handed on unparsed, both ways
+  (`docs/ARCHITECTURE.md`). 64 B 0.4 to 0.1 ms, 64 KiB 1.8 to 0.4, 1 MiB
+  32.1 to 3.4, 16 MiB 540 to 56. The C API gained
+  `zebkit_call_resolve_json()` (JSON with its length), which the bench host
+  uses to answer with what it got, as Electron's handler does.
+- **The DOM and text layout**: the size-trained inliner now decides only
+  for code the PGO profile calls cold (`patches/1075`); LLVM's own inliner
+  does Blink's hot code. DOM 406 to 370 ms in the same-objects comparison
+  (style 19%, bindings 21% faster), text layout 4%, for 9.7 MB (+5.8% of
+  the package): the DOM gains more than the size costs. Tried and not
+  kept: `-inlinehint-threshold=360` at link (nothing); thread-locals as
+  initial-exec (`__tls_get_addr` is 0.7 to 3% of the DOM profiles, but the
+  switch rebuilds all of Blink and V8 and was measured at 0 to 1% for
+  layout before); `-O2` everywhere (`slim-speed`, +19% size, rejected
+  before). Electron's remaining lead on these is the rest of Chrome's
+  compiler settings, at the size they cost.
+- **`page.screenshot`** (native 30 to 41 ms since 2026-11-01): the move to
+  `Page.captureScreenshot` waits for a fresh frame, and the PNG encoder,
+  Skia's in Rust, was compiled at opt-level s: the encoding crossed a frame
+  boundary every time. Those crates now build at opt-level 3, as in Chrome
+  (`patches/1076`, +29 KB): native 31.5 ms, over CDP 66.7 to 50.2 (Chrome
+  33.6). Over CDP zebkit's headless capture still takes one frame more than
+  Chrome's, JPEG too.
+- **One process more a page**: the storage service runs in a process of
+  its own, as in Chrome (and content_shell), where Electron runs it in the
+  browser process. That process costs 3.9 MB PSS on a blank page (0.8 MB
+  of it private), about 2% of the 167 MB, and keeps what parses the pages'
+  stored data (IndexedDB, local storage, caches) in a sandbox. Kept, as
+  Chrome has it.
 
 What could not be made the same:
 

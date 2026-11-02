@@ -335,9 +335,18 @@ in `examples/native-host` (Done table). What is left:
   macOS, 2026-11-02** (`scripts/electron-compare.sh`, `docs/SIZE_AND_SPEED.md`,
   "Against Electron, measured the same way"): Electron 45.2.1, one harness,
   the same pages, two thin hosts, every process counted. zebkit wins size,
-  startup, memory and CPU while loading; it loses text layout, the DOM
-  workload and, by 4 to 22 times, calls between the page and its host.
-  - **TODO: calls between the page and the host** as fast as Electron's IPC.
+  startup, memory, CPU while loading and, since 2026-11-02, calls between
+  the page and its host (level to 64 KiB, a fifth faster from 1 MiB, over
+  each frame's Mojo channel); it loses the DOM workload (25%), text layout
+  (9%) and the long document's first layout (16 to 19%), which is how the
+  code is compiled, and runs one process more (storage, as Chrome).
+  - **Done 2026-11-02: calls between the page and the host** as fast as
+    Electron's IPC, and faster for large ones.
+  - **TODO: the DOM and layout gap**, what the size rule lets the build
+    close: initial-exec thread-locals measured on the DOM, Chrome's
+    compiler settings for more of Blink one directory at a time.
+  - **TODO: a headless capture one frame later than Chrome's** over CDP
+    (`Page.captureScreenshot`, JPEG too).
   - **TODO: what is left of the conditions below**: one real application
     on both hosts, an EPUB, the sandbox on (this machine allows neither
     engine's), cold start on macOS.
