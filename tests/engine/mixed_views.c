@@ -19,8 +19,9 @@
 #include <dlfcn.h>
 #endif
 
-static int failures;
+static int failures, passed;
 static void check(int ok, const char *label, const char *detail) {
+    passed += ok;
     printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", label, detail ? ": " : "", detail ? detail : "");
     fflush(stdout);
     if (!ok)
@@ -82,18 +83,36 @@ static void on_frame(zebkit_view *view, const zebkit_frame *frame, void *data) {
     }
     zebkit_frame_release(frame);
 }
+/* On macOS frames are in the screen's colour space, not exactly the page's sRGB. */
+static int same_colour(unsigned a, unsigned b) {
+#if defined(__APPLE__)
+    const int tolerance = 80;
+#else
+    const int tolerance = 0;
+#endif
+    for (int shift = 0; shift <= 16; shift += 8) {
+        const int d = (int)((a >> shift) & 255) - (int)((b >> shift) & 255);
+        if (d > tolerance || d < -tolerance)
+            return 0;
+    }
+    return 1;
+}
 static void wait_picture(struct picture *picture, int width, int height, unsigned center) {
     double end = now() + 15;
     while (now() < end) {
         if (picture->count && picture->width == width && picture->height == height &&
-            (picture->center == center || picture->center == 0xffffffffu))
+            same_colour(picture->center, center))
             return;
         step();
     }
 }
 static int shown(const struct picture *picture, int width, int height, unsigned center, float scale) {
-    return picture->width == width && picture->height == height && picture->scale == scale &&
-           (picture->center == center || picture->center == 0xffffffffu);
+    const int same = picture->width == width && picture->height == height && picture->scale == scale &&
+                     same_colour(picture->center, center);
+    if (!same)
+        printf("     %dx%d at %g, %06x; expected %dx%d at %g, %06x\n", picture->width, picture->height,
+               picture->scale, picture->center, width, height, scale, center);
+    return same;
 }
 
 struct result {
@@ -446,6 +465,6 @@ int main(int argc, char **argv) {
     XCloseDisplay(x_display);
 #endif
     check(zebkit_shutdown(), "the engine shuts down", NULL);
-    printf("%d failures\n", failures);
+    printf("%d of %d checks passed\n", passed, passed + failures);
     return failures ? 1 : 0;
 }
