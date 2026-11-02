@@ -103,6 +103,12 @@ use_on_device_model_service = false
 # engine sources compiled 21.6% smaller with it on x86-64
 # (patches/1008-ml-size-inliner-for-linux.patch).
 use_ml_inliner = true
+# Except where the code is hot in the PGO profile: there LLVM's own inliner
+# decides, as on high-end Android (patches/1075). Cold is below the top 90%
+# of the profile's counts. DOM 9% faster (style 19%, bindings 21%), text
+# layout 4%, for 9.7 MB (+5.7% of the package); the model everywhere else
+# keeps the rest as small as before.
+zebkit_ml_inliner_cold_cutoff = 900000
 
 # -Oz in place of -Os for code off the hot path: the browser process's
 # logic, networking, services, device access, the shell's window toolkit,

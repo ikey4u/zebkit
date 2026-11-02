@@ -1,0 +1,51 @@
+Speed: the ML size inliner only for cold code, LLVM's own for the rest.
+
+patches/1008 lets Linux and macOS inline with the model trained for size
+(use_ml_inliner). At link time it decides for the whole engine, the hot
+code of layout, style and the DOM bindings too, where it keeps small
+functions out of line: Blink compiled at -O2 still lost calls that Chrome
+inlines. High-end Android builds tell the advisor to use the model only
+where the caller is cold in the PGO profile (-ml-inliner-skip-policy=
+if-caller-not-cold); a GN argument, zebkit_ml_inliner_cold_cutoff, does
+the same here, and sets where cold begins (-profile-summary-cutoff-cold,
+in millionths of the profile's counts; 0 leaves the model everywhere).
+
+Measured on Linux slim, 2026-11-02, 900000 beside 0: libzebkit.so.1
+9.7 MB larger (+6.6%, +5.7% of the package); 20,000 rows built and laid
+out 9% faster (tests/bench/index.html's dom, 406 to 370 ms), style 19%,
+DOM bindings 21%; a chapter of text laid out 4% faster. 999999 gave the
+same for 13.9 MB, 990000 for 10.9 MB.
+
+--- a/build/config/compiler/compiler.gni
++++ b/build/config/compiler/compiler.gni
+@@ -234,6 +234,13 @@
+   # Currently the ML inliner is only supported on linux hosts
+   use_ml_inliner = host_os == "linux" && is_android
+ 
++  # zebkit: with use_ml_inliner, the size model decides only where the
++  # caller is cold in the PGO profile, LLVM's own inliner everywhere else.
++  # 0 leaves the model deciding everywhere. Otherwise, the share of the
++  # profile's counts, in millionths, that code above the cold line takes:
++  # LLVM's -profile-summary-cutoff-cold, 999999 by default.
++  zebkit_ml_inliner_cold_cutoff = 0
++
+   # Whether we should consider the profile we're using to be accurate. Accurate
+   # profiles have the benefit of (potentially substantial) binary size
+   # reductions, by instructing the compiler to optimize cold and uncovered
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -1229,6 +1229,14 @@
+         ]
+       } else {
+         ldflags += [ "-Wl,-mllvm,-ml-inliner-model-selector=arm32-size" ]
++        if (zebkit_ml_inliner_cold_cutoff > 0) {
++          # zebkit: as on high-end Android, the size model only where the
++          # caller is cold; and cold as zebkit_ml_inliner_cold_cutoff says.
++          ldflags += [
++            "-Wl,-mllvm,-ml-inliner-skip-policy=if-caller-not-cold",
++            "-Wl,-mllvm,-profile-summary-cutoff-cold=$zebkit_ml_inliner_cold_cutoff",
++          ]
++        }
+       }
+     }
+   }
