@@ -165,6 +165,9 @@ async function world() {
   view.close();
 }
 
+// What a call still waiting for its reply is told when the view closes (src/engine/view.cc).
+const closing = ['the page target was detached', 'the page was closed', 'the view was closed'];
+
 async function chooser() {
   await openPage();
   const one = files + '/one.txt', two = files + '/two.txt';
@@ -185,7 +188,10 @@ async function chooser() {
   });
   if (mode === 'file-timeout') view.setFileChooserTimeout(50);
   const element = {'file-multiple': 'm', 'file-folder': 'd'}[mode] || 'i';
-  await view.evaluate(`${element}.addEventListener('cancel', () => window.cancelled = 1); ${element}.click(); 1`);
+  // With file-close, the handler's close can come before the reply to this click, which then
+  // fails as the page goes, as CDP fails a detached target's commands.
+  await view.evaluate(`${element}.addEventListener('cancel', () => window.cancelled = 1); ${element}.click(); 1`)
+    .catch(error => { if (mode !== 'file-close' || !closing.includes(error.message)) throw error; });
   await until(() => kept, 'asked');
   const count = n => until(async () => await view.evaluate(`${element}.files.length`) === n, 'files');
   if (mode === 'file-open') { await count(1); must(await view.evaluate('i.files[0].text()') === 'first file', 'bytes'); }

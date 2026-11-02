@@ -296,7 +296,17 @@ def chooser(mode):
     if mode == 'file-timeout':
         view.set_file_chooser_timeout(50)
     element = {'file-multiple': 'm', 'file-folder': 'd'}.get(mode, 'i')
-    ev(view, f"{element}.addEventListener('cancel', () => window.cancelled = 1); {element}.click(); 1")
+    click = f"{element}.addEventListener('cancel', () => window.cancelled = 1); {element}.click(); 1"
+    if mode == 'file-close':
+        # The handler's close can come before the reply to the click, which then fails as the
+        # page goes, as CDP fails a detached target's commands.
+        box = []
+        view.evaluate(click, lambda value, error=None: box.append(error))
+        wait(lambda: box, 'evaluate: ' + click)
+        # What a call still waiting for its reply is told then (src/engine/view.cc).
+        assert box[0] in (None, 'the page target was detached', 'the page was closed', 'the view was closed'), box
+    else:
+        ev(view, click)
     wait(lambda: kept, 'asked')
     if mode == 'file-open':
         wait(lambda: ev(view, 'i.files.length') == 1, 'file given')

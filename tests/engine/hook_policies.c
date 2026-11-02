@@ -332,7 +332,20 @@ static void chooser(void) {
     const char *element = IS("file-multiple") ? "m" : IS("file-folder") ? "d" : "i";
     char script[256];
     snprintf(script, sizeof script, "%s.addEventListener('cancel', () => window.cancelled = 1); %s.click(); 1", element, element);
-    free(ev(script));
+    if (IS("file-close")) {
+        /* The handler's close can come before the reply to the click, which then fails as
+         * the page goes, as CDP fails a detached target's commands. */
+        ev_later(script);
+        WAIT(pending_eval.done);
+        /* What a call still waiting for its reply is told then (src/engine/view.cc). */
+        if (pending_eval.error && strcmp(pending_eval.error, "the page target was detached")
+            && strcmp(pending_eval.error, "the page was closed") && strcmp(pending_eval.error, "the view was closed"))
+            FAIL("evaluate %s: %s", script, pending_eval.error);
+        free(pending_eval.json);
+        free(pending_eval.error);
+    } else {
+        free(ev(script));
+    }
     WAIT(asked);
     int t = 0;
     if (IS("file-open")) {
