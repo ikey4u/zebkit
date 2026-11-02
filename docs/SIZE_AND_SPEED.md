@@ -160,7 +160,11 @@ On macOS (Apple silicon, a person's desktop, Electron 45.2.1 for arm64,
 first paint in 135 ms against 229, with 27% less CPU, and costs 5 to 18%
 less memory on the local pages; it lays text out 7% slower, runs the
 JavaScript and DOM page 15% slower (`slim-macos` is built without PGO), and
-its calls to the host are 7 to 22 times slower. On the Mac, Electron's
+its calls to the host were 7 to 22 times slower, before the call channel of
+2026-11-02. The Mac was not measured again after it: in the session open
+to this machine's tools that evening, zebkit's pages did not commit (the
+build from before the change crashed its GPU process there too) while
+Electron's ran; a run at the desktop is to do. On the Mac, Electron's
 window was not given the focus and zebkit's was. The Mac's runs used
 the package before the change to `goto` (`docs/AUTOMATION.md`), which
 changes none of these.
