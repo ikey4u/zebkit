@@ -127,7 +127,6 @@
 #include "zebkit/engine/app.h"
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation_network.h"
-#include "zebkit/engine/call.h"
 #include "zebkit/engine/cookies.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/scheme.h"
@@ -1120,9 +1119,6 @@ void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
     const std::optional<url::Origin>& request_initiator_origin,
     NonNetworkURLLoaderFactoryMap* factories) {
   AddSchemeLoaderFactories(factories);
-  // zebkit.* calls: from frames, which these factories are for.
-  factories->emplace(kCallScheme, CreateCallLoaderFactory(render_process_id,
-                                                          render_frame_id));
 }
 
 void BrowserClient::RegisterNonNetworkWorkerMainResourceURLLoaderFactories(

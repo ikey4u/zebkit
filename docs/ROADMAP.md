@@ -47,7 +47,7 @@ camera and microphone capture, and the device APIs.
 | Libraries | 17 C libraries inside the engine exported under `zebkit_vendor_*`, 7,489 functions in Linux `slim`, found in the build | 2026-10-20, FreeType and LevelDB 2026-10-29, 2026-10-30 |
 | Services | Compression, cryptography, URLs, images, ICU's data, HTTP through the network stack | 2026-10-20 |
 | Bindings | Rust (`zebkit`, `zebkit-rs`, `zebkit-build`), Python (`ctypes`) | 2026-10-20 |
-| Page API | `zebkit.*` in pages the application grants, per origin and capability; calls over `zebkit://call`, bytes as they are | 2026-10-20, 2026-10-21 |
+| Page API | `zebkit.*` in pages the application grants, per origin and capability; calls over each frame's Mojo channel, bytes as they are, large ones in shared memory | 2026-10-20, 2026-10-21, 2026-11-02 |
 | Script outside a page | `zebkit_script_*` and `zebkit-js`: an application in JavaScript on V8, without Node | 2026-10-20 |
 | Schemes | The application's own URL schemes, answered by it, files in ranges for media | 2026-10-20 |
 | Views | Windows with titles, sizes and limits, views attached in another's window, profiles, user agents, pop-ups and drops to the application, the application's menu, files opened by the system | 2026-10-20, 2026-10-21 |

@@ -219,6 +219,13 @@ mojom("automation_mojom") {
   sources = [ "automation.mojom" ]
 }
 
+# A page's calls to zebkit.* (call.cc, page_call_renderer.cc): to the
+# browser over the frame's channel.
+mojom("page_call_mojom") {
+  sources = [ "page_call.mojom" ]
+  public_deps = [ "//mojo/public/mojom/base" ]
+}
+
 # The script of the agent's isolated world: Playwright's injected script and
 # zebkit's steps over it, as an array.
 action("automation_scripts") {
@@ -328,6 +335,7 @@ _sources = [
   "bridge.cc",
   "call.cc",
   "call.h",
+  "page_call_renderer.cc",
   "cdp.cc",
   "chrome_object.cc",
   "client_hints.cc",
@@ -435,6 +443,7 @@ _sources = [
 
 _deps = [
   ":automation_mojom",
+  ":page_call_mojom",
   "//components/download/public/common:public",
   "//third_party/libyuv",
   "//third_party/leveldatabase",

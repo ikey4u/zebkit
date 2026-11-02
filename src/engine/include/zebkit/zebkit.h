@@ -492,6 +492,11 @@ ZEBKIT_API void zebkit_view_bind(zebkit_view *view, const char *name, zebkit_bin
 /* Resolves the page's promise with @json (NULL for undefined). */
 ZEBKIT_API void zebkit_call_resolve(zebkit_call *call, const char *json);
 
+/* The same with @length bytes of JSON at @json, which need not end in a NUL:
+ * a part of a larger string, the arguments' own for one, goes as it is,
+ * without a copy. */
+ZEBKIT_API void zebkit_call_resolve_json(zebkit_call *call, const char *json, size_t length);
+
 /* Rejects the page's promise with an Error of @message. */
 ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
 

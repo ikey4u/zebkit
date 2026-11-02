@@ -294,6 +294,7 @@ extern "C" {
     pub fn zebkit_view_grant(view: *mut zebkit_view, origin: *const c_char, allow: c_uint, files_root: *const c_char);
     pub fn zebkit_view_bind(view: *mut zebkit_view, name: *const c_char, func: Option<zebkit_bind_func>, data: *mut c_void);
     pub fn zebkit_call_resolve(call: *mut zebkit_call, json: *const c_char);
+    pub fn zebkit_call_resolve_json(call: *mut zebkit_call, json: *const c_char, length: usize);
     pub fn zebkit_call_reject(call: *mut zebkit_call, message: *const c_char);
 
     pub fn zebkit_script_new(argc: c_int, argv: *const *const c_char) -> *mut zebkit_script;

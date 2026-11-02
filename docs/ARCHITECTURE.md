@@ -64,18 +64,24 @@ application process                          child processes (zebkit-helper)
 
 A page the application grants it to gets a global `zebkit`. The object is
 made by a script the view's internal DevTools session adds before the
-page's own (`Page.addScriptToEvaluateOnNewDocument`). A call is a `POST`
-from the page to `zebkit://call`, a scheme of the engine's own that every
-frame's URL loader factory serves for that frame alone:
+page's own (`Page.addScriptToEvaluateOnNewDocument`). Each frame's renderer
+puts a native function in the page's world when its document's context is
+made (`page_call_renderer.cc`); the script takes it and deletes it before
+any of the page's script runs, and where there is no script the renderer
+deletes it. A call goes over the frame's own Mojo channel
+(`page_call.mojom`), so the browser knows the frame, and so the origin,
+from the channel:
 
 ```
-page script                renderer               browser process
-zebkit.pdf.render(...) --> fetch POST zebkit://call --> the frame's factory (call.cc)
-                           one frame of bytes:          knows the frame, so its origin
-                           u32 length, JSON, parts      checks the grant (view.cc)
-                                                        does the work (bridge.cc,
-                                                        pdf_bridge.cc) on the thread pool
-<-- Uint8Array, JSON <---- response body, Mojo data pipe <--
+page script                renderer                  browser process
+zebkit.app.save(...)  -->  JSON + bytes, as UTF-8 --> the frame's PageCallHost (call.cc)
+                           past 64 KiB in shared      knows the frame, so its origin
+                           memory, not in the         checks the grant (view.cc)
+                           message                    zebkit.app: the JSON checked, not
+                                                      parsed, handed to the application;
+                                                      the rest parsed and done (bridge.cc,
+                                                      pdf_bridge.cc) on the thread pool
+<-- value, Uint8Array <---- JSON + bytes <-------------
 ```
 
 - **The origin is the browser's**, from the factory of the frame that
@@ -170,7 +176,7 @@ browser target's WebSocket address (`zebkit_cdp_get_url()`).
 | `src/engine/dialog.cc`, `print.cc`, `drag.cc`, `devtools.cc`, `page_internal.h` | `<zebkit/page.h>`: JavaScript dialogs held for the application or a CDP client; printing to PDF as headless Chrome prints, and `Page.printToPDF`; drags from the page (from `patches/1024`'s hook) and into it; the DevTools manager delegate |
 | `src/engine/media_capture.cc`, `media_capture_renderer.cc`, `media_capture_writer.cc`, `media_capture.mojom` | `<zebkit/media.h>`: each frame's media elements and a tap on a player's demuxer (renderer, from `patches/1031`, `1032`), the packets kept and written into files by FFmpeg's muxers (browser) |
 | `src/engine/automation.cc`, `automation_renderer.cc`, `automation_steps.js`, `automation.mojom`, `automation_network.cc`, `automation_context.cc`, `automation_trace.cc`, `automation_server.cc`, `automation_scripts.py`, `playwright/` | `<zebkit/automation.h>`: Playwright's commands natively (`docs/AUTOMATION.md`): each frame's and worker's agent with Playwright's injected script in an isolated world, input to the widgets, routes in front of the network (WebSockets too), contexts as profiles of their own, traces, HAR and video, frames on demand, and Playwright's own protocol over a WebSocket for its clients (`zebkit_automation_listen`) |
-| `src/engine/call.cc`, `call.h` | `zebkit://call`: the page's calls and their answers as frames of bytes |
+| `src/engine/call.cc`, `call.h`, `page_call_renderer.cc`, `page_call.mojom` | The page's calls and their answers over each frame's channel: JSON and bytes, through shared memory when large; `zebkit.app`'s JSON checked and passed on without being parsed |
 | `src/engine/bridge.cc` | What `zebkit.*` calls do once the browser has checked them |
 | `src/engine/pdf.cc`, `pdf_internal.cc`, `pdf_bridge.cc`, `pdf_script.h` | `<zebkit/pdf.h>`, PDFium's classes, `zebkit.pdf` and its queue |
 | `src/engine/scheme.cc`, `scheme.h` | The application's URL schemes |

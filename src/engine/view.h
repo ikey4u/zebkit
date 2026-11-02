@@ -10,6 +10,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
@@ -45,6 +46,10 @@ struct NetworkRules;
 // How a call is answered: true with the result, or false with the message.
 // Bytes are binary values (base::Value::BlobStorage).
 using CallReply = base::OnceCallback<void(bool ok, base::Value value)>;
+// The same as text: when ok, JSON that IsPlainJson() passed and that has no
+// {"$bytes"}; otherwise the message. For a page's calls (call.cc), which
+// can then hand the application's answer on without parsing it.
+using TextReply = base::OnceCallback<void(bool ok, std::string_view text)>;
 
 // A call to zebkit.*: from a page's script, after the browser has decided
 // which origin made it and what that origin may use, or from the
@@ -58,12 +63,17 @@ struct PageCall {
   // The page's view, for zebkit.app; null for the application's script.
   zebkit_view* view = nullptr;
   CallReply reply;
+  // Set beside reply for a page's call; either answers it.
+  TextReply text_reply;
   std::string origin;
   unsigned allow = 0;
   base::FilePath files_root;
   std::string module;
   std::string method;
   base::ListValue args;
+  // zebkit.app's arguments as the page sent them, a JSON array that
+  // IsPlainJson() passed, in place of args.
+  std::optional<std::string> args_json;
 };
 
 // Answers a call (bridge.cc), now or later, on the UI thread.
@@ -384,6 +394,7 @@ struct zebkit_view : public content::WebContentsObserver,
 // zebkit_call_reject(); it survives its page, and then answers nobody.
 struct zebkit_call {
   zebkit::CallReply reply;
+  zebkit::TextReply text_reply;
 };
 
 #endif  // ZEBKIT_ENGINE_VIEW_H_

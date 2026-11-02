@@ -188,6 +188,9 @@ await check('pdf in a page granted it: bytes, not paths', () => new Promise((res
 
 await check("a page cannot remove the application's PDF hooks", () => new Promise((resolve, reject) => {
   const view = new zebkit.View(`${base}/bridge.html`, {width: 640, height: 480});
+  // What a page's own script could do if it got there first: keep the
+  // channel zebkit.* uses, and call over it with any arguments.
+  view.addWorldScript('globalThis.__raw = globalThis.__zebkit_call;', {mainFrameOnly: true});
   view.grant(base, ['pdf']);
   view.on('load', async (event) => {
     if (event !== 'finished') return;
@@ -195,17 +198,12 @@ await check("a page cannot remove the application's PDF hooks", () => new Promis
       const own = await zebkit.pdf.create();
       await own.insertPage(0, 100, 100);
       await own.use({kinds: {App_Kept: {prefix: 'App_'}}});
-      // As any page can, without what zebkit.pdf gives it: every id there can be.
+      // Every id there can be.
       const removed = await view.evaluate(`(async () => {
+        if (typeof __zebkit_call !== 'undefined') return -1;
         const call = async (method, args) => {
-          const json = new TextEncoder().encode(JSON.stringify({module: 'pdf', method, args}));
-          const body = new Uint8Array(4 + json.length);
-          new DataView(body.buffer).setUint32(0, json.length, true);
-          body.set(json, 4);
-          const reply = await fetch('zebkit://call', {method: 'POST', body, cache: 'no-store'});
-          const buffer = await reply.arrayBuffer();
-          const size = new DataView(buffer).getUint32(0, true);
-          return JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, size))).value;
+          const [ok, text] = await __raw('pdf', method, JSON.stringify(args), []);
+          return ok ? JSON.parse(text) : null;
         };
         const doc = await call('create', []);
         let removed = 0;

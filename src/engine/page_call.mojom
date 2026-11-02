@@ -1,0 +1,20 @@
+// A page's calls to zebkit.* (call.cc, page_call_renderer.cc): from the
+// frame's own channel to the browser, which knows the frame, and so the
+// origin, from the channel and not from anything the page says.
+
+module zebkit.mojom;
+
+import "mojo/public/mojom/base/big_buffer.mojom";
+
+interface PageCallHost {
+  // zebkit.<module_name>.<method_name>(...). @json is the arguments, a JSON
+  // array in UTF-8; bytes in it are {"$part": [offset, length]} into
+  // @parts. The answer is the same: when @ok, @answer is the result as
+  // JSON, its bytes in @answer_parts; when not, @answer is the message, as
+  // UTF-8 text. Buffers past 64 KiB go through shared memory, not copied
+  // into the message.
+  Call(string module_name, string method_name, mojo_base.mojom.BigBuffer json,
+       mojo_base.mojom.BigBuffer parts)
+      => (bool ok, mojo_base.mojom.BigBuffer answer,
+          mojo_base.mojom.BigBuffer answer_parts);
+};

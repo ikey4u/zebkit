@@ -57,6 +57,7 @@
 #include "zebkit/engine/permissions.h"
 #include "zebkit/engine/certificate_hooks.h"
 #include "zebkit/engine/navigation_hooks.h"
+#include "zebkit/engine/call.h"
 #include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/settings.h"
@@ -69,75 +70,74 @@ char* Copy(const std::string& text) {
 }
 
 // The page's side of zebkit.*, before any of the page's own script runs:
-// a call is a POST to zebkit://call, which the frame's own loader factory
-// answers (call.cc). Bytes go as they are, in the frame after the JSON.
+// a call goes to the browser through __zebkit_call, a native function each
+// frame's renderer puts in the page's world for this script alone to take
+// (page_call_renderer.cc, call.cc). The arguments go as JSON, their bytes
+// beside it as they are; zebkit.app's JSON goes to the application as the
+// page wrote it, and the application's answer comes back the same way.
 constexpr char kBridgeScript[] = R"js((() => {
   // zebkit.pdf's wrapper, put before this script (pdf_script.h).
   const makePdf = globalThis.__zebkit_pdf;
   delete globalThis.__zebkit_pdf;
-  if (typeof makePdf !== 'function' || globalThis.zebkit) return;
+  const native = globalThis.__zebkit_call;
+  delete globalThis.__zebkit_call;
+  if (typeof makePdf !== 'function' || typeof native !== 'function' ||
+      globalThis.zebkit) {
+    return;
+  }
   // The page's own script may change these later.
-  const post = globalThis.fetch.bind(globalThis);
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   const {isView} = ArrayBuffer;
   const {stringify, parse} = JSON;
-  const frame = (call) => {
-    const parts = [];
-    let size = 0;
-    const encode = (value) => {
-      if (value instanceof ArrayBuffer || isView(value)) {
-        const bytes = value instanceof ArrayBuffer ? new Uint8Array(value)
-            : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-        parts.push(bytes);
-        size += bytes.length;
-        return {$part: [size - bytes.length, bytes.length]};
-      }
-      if (Array.isArray(value)) return value.map(encode);
-      if (value && typeof value === 'object') {
-        const out = {};
-        for (const [k, v] of Object.entries(value)) out[k] = encode(v);
-        return out;
-      }
-      return value === undefined ? null : value;
-    };
-    const json = encoder.encode(stringify({...call, args: encode(call.args)}));
-    const body = new Uint8Array(4 + json.length + size);
-    new DataView(body.buffer).setUint32(0, json.length, true);
-    body.set(json, 4);
-    let at = 4 + json.length;
-    for (const part of parts) {
-      body.set(part, at);
-      at += part.length;
+  const {isArray} = Array;
+  const {entries, keys} = Object;
+  const encode = (value, parts, at) => {
+    if (value instanceof ArrayBuffer || isView(value)) {
+      const bytes = value instanceof ArrayBuffer ? new Uint8Array(value)
+          : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      parts.push(bytes);
+      at.size += bytes.length;
+      return {$part: [at.size - bytes.length, bytes.length]};
     }
-    return body;
+    if (isArray(value)) return value.map((v) => encode(v, parts, at));
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of entries(value)) out[k] = encode(v, parts, at);
+      return out;
+    }
+    return value === undefined ? null : value;
   };
-  const unframe = (buffer) => {
-    const length = new DataView(buffer).getUint32(0, true);
-    const start = 4 + length;
-    const decode = (value) => {
-      if (Array.isArray(value)) return value.map(decode);
-      if (value && typeof value === 'object') {
-        const part = value.$part;
-        if (Array.isArray(part) && Object.keys(value).length === 1)
-          return new Uint8Array(buffer, start + part[0], part[1]);
-        const out = {};
-        for (const [k, v] of Object.entries(value)) out[k] = decode(v);
-        return out;
+  const decode = (value, buffer) => {
+    if (isArray(value)) return value.map((v) => decode(v, buffer));
+    if (value && typeof value === 'object') {
+      const part = value.$part;
+      if (isArray(part) && keys(value).length === 1)
+        return new Uint8Array(buffer, part[0], part[1]);
+      const out = {};
+      for (const [k, v] of entries(value)) out[k] = decode(v, buffer);
+      return out;
+    }
+    return value;
+  };
+  const primitive = (args) => {
+    for (let i = 0; i < args.length; i++) {
+      const v = args[i];
+      if (v !== null && v !== undefined && typeof v !== 'string' &&
+          typeof v !== 'number' && typeof v !== 'boolean') {
+        return false;
       }
-      return value;
-    };
-    const answer = parse(decoder.decode(new Uint8Array(buffer, 4, length)));
-    return {ok: answer.ok, value: decode(answer.value)};
+    }
+    return true;
   };
   const send = async (module, method, args) => {
-    const response = await post('zebkit://call', {
-      method: 'POST', body: frame({module, method, args}), cache: 'no-store',
-    });
-    if (!response.ok) throw new Error('zebkit is not available in this frame');
-    const {ok, value} = unframe(await response.arrayBuffer());
-    if (!ok) throw new Error(value);
-    return value;
+    const parts = [];
+    // Strings, numbers and the like the renderer writes as JSON itself,
+    // with no copy of them made here.
+    const json = primitive(args) ? args : stringify(encode(args, parts, {size: 0}));
+    // [ok, the result's JSON or the message, its bytes]
+    const answer = await native(module, method, json, parts);
+    if (!answer[0]) throw new Error(answer[1]);
+    const value = parse(answer[1]);
+    return answer[2] ? decode(value, answer[2]) : value;
   };
   const api = (module, methods) => Object.freeze(Object.fromEntries(
       methods.map((m) => [m, (...args) => send(module, m, args)])));
@@ -747,11 +747,16 @@ void zebkit_view::CallApp(zebkit::PageCall call) {
     return;
   }
   // The application has the arguments as JSON: bytes as {"$bytes": base64}.
+  // The page's own JSON, when it had no bytes, as it is.
   const std::string args =
-      base::WriteJson(zebkit::ToPageValue(base::Value(std::move(call.args))))
-          .value_or("[]");
+      call.args_json
+          ? std::move(*call.args_json)
+          : base::WriteJson(
+                zebkit::ToPageValue(base::Value(std::move(call.args))))
+                .value_or("[]");
   auto* pending = new zebkit_call;
   pending->reply = std::move(call.reply);
+  pending->text_reply = std::move(call.text_reply);
   it->second.func(this, call.origin.c_str(), args.c_str(), pending,
                   it->second.data);
 }
@@ -1548,16 +1553,36 @@ void zebkit_view_bind(zebkit_view* view,
 }
 
 void zebkit_call_resolve(zebkit_call* call, const char* json) {
-  std::optional<base::Value> value;
-  if (json) {
-    value = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
-    if (!value) {
-      zebkit_call_reject(call, "the application answered with invalid JSON");
-      return;
-    }
+  if (!json) {
+    std::move(call->reply).Run(true, base::Value());
+    delete call;
+    return;
   }
-  std::move(call->reply).Run(
-      true, value ? zebkit::FromPageValue(std::move(*value)) : base::Value());
+  zebkit_call_resolve_json(call, json, strlen(json));
+}
+
+void zebkit_call_resolve_json(zebkit_call* call, const char* json,
+                              size_t length) {
+  if (!json) {
+    zebkit_call_resolve(call, nullptr);
+    return;
+  }
+  const std::string_view text(json, length);
+  // To a page as it is, when nothing in it is bytes.
+  bool bytes = false;
+  if (call->text_reply && zebkit::IsPlainJson(text, false, &bytes) &&
+      !bytes) {
+    std::move(call->text_reply).Run(true, text);
+    delete call;
+    return;
+  }
+  std::optional<base::Value> value =
+      base::JSONReader::Read(text, base::JSON_PARSE_RFC);
+  if (!value) {
+    zebkit_call_reject(call, "the application answered with invalid JSON");
+    return;
+  }
+  std::move(call->reply).Run(true, zebkit::FromPageValue(std::move(*value)));
   delete call;
 }
 

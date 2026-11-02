@@ -1968,7 +1968,8 @@ void SettleCall(const v8::FunctionCallbackInfo<v8::Value>& info, bool ok) {
         !v8::JSON::Stringify(context, info[0]).ToLocal(&json)) {
       zebkit_call_resolve(call, nullptr);
     } else {
-      zebkit_call_resolve(call, Utf8(isolate, json).c_str());
+      const std::string text = Utf8(isolate, json);
+      zebkit_call_resolve_json(call, text.data(), text.size());
     }
   } else {
     zebkit_call_reject(call, Describe(isolate, context, info[0]).c_str());

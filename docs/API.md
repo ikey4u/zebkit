@@ -223,7 +223,7 @@ reference:
 | `zebkit_view_on_drop` | Paths of files dropped on the view; `zebkit.pathForFile()` in the page |
 | `zebkit_view_evaluate`, `_add_script` | Script in the page; script in every document before the page's own (a preload) |
 | `zebkit_view_set_user_agent`, `zebkit_view_capture` | The User-Agent; the view as PNG, with or without a window |
-| `zebkit_view_grant`, `_bind`, `zebkit_call_resolve`, `zebkit_call_reject` | What a page may use of `zebkit.*`; the application's functions it may call |
+| `zebkit_view_grant`, `_bind`, `zebkit_call_resolve`, `_resolve_json`, `zebkit_call_reject` | What a page may use of `zebkit.*`; the application's functions it may call (`_resolve_json` takes JSON with its length, a part of a larger string as it is) |
 | `zebkit_script_new`, `_run_module`, `_evaluate`, `_on_idle`, `_destroy` | Script outside any page |
 | `zebkit_cdp_listen`, `_get_port`, `_get_url`, `_stop` | The DevTools endpoint |
 | `zebkit_scheme_register`, `_handle`, `zebkit_request_url`, `_method`, `_headers`, `_body`, `zebkit_request_respond`, `_respond_file` | URL schemes of the application's own |
@@ -620,13 +620,14 @@ How it works: the view's internal DevTools session adds a script that runs
 before the page's own (`Page.addScriptToEvaluateOnNewDocument`); the script
 makes the `zebkit` object (a load asked for right after the first grant
 waits until the browser has the script, so that the new document cannot
-miss it). A call is a `POST` to `zebkit://call`, a scheme of the engine's
-own that every frame's loader factory serves for that frame alone, so the
-browser knows the calling frame and its origin from the factory, not from
-the request. The call and its answer are each JSON followed by their bytes
-as they are, through Mojo's data pipes: no base64, and many calls under
-way at once. The renderer stays sandboxed; the work is done in the browser
-process, PDFs, files and compression on Chromium's thread pool.
+miss it). A call goes over the frame's own channel to the browser, through
+a native function the renderer gives that script alone (any other script
+of the page never sees it), so the browser knows the calling frame and its
+origin from the channel, not from the call. The call and its answer are
+each JSON with their bytes beside it as they are, through shared memory
+when they are large: no base64, and many calls under way at once. The
+renderer stays sandboxed; the work is done in the browser process, PDFs,
+files and compression on Chromium's thread pool.
 `zebkit.app` hands the application JSON, with bytes as `{"$bytes":
 base64}` both ways.
 

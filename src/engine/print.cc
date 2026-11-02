@@ -40,6 +40,8 @@
 #include "third_party/blink/public/web/web_element.h"
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation.mojom.h"
+#include "zebkit/engine/call.h"
+#include "zebkit/engine/page_call.mojom.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
@@ -226,6 +228,7 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
   InstallChromeObject(render_frame);
   InstallMediaCaptureAgent(render_frame);
   InstallAutomationAgent(render_frame);
+  InstallPageCallAgent(render_frame);
 }
 
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
@@ -245,6 +248,8 @@ void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
           &render_frame_host));
   associated_registry.AddInterface<mojom::AutomationHost>(
       base::BindRepeating(&BindAutomationHost, &render_frame_host));
+  associated_registry.AddInterface<mojom::PageCallHost>(
+      base::BindRepeating(&BindPageCallHost, &render_frame_host));
 }
 
 }  // namespace zebkit

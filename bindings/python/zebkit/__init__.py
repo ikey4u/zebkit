@@ -473,6 +473,7 @@ _view_evaluate = _declare("zebkit_view_evaluate", None, _V, _S, _RESULT, _P)
 _view_grant = _declare("zebkit_view_grant", None, _V, _S, _U, _S)
 _view_bind = _declare("zebkit_view_bind", None, _V, _S, _BIND, _P)
 _call_resolve = _declare("zebkit_call_resolve", None, _P, _S)
+_call_resolve_json = _declare("zebkit_call_resolve_json", None, _P, _S, ctypes.c_size_t)
 _call_reject = _declare("zebkit_call_reject", None, _P, _S)
 _cdp_listen = _declare("zebkit_cdp_listen", _U, _S, _U, _EP)
 _cdp_get_port = _declare("zebkit_cdp_get_port", _U)
@@ -1185,7 +1186,8 @@ class View:
         def called(handle, origin, args, call, data):
             try:
                 result = function(*json.loads(args.decode()), origin=origin.decode())
-                _call_resolve(call, json.dumps(result).encode())
+                answer = json.dumps(result).encode()
+                _call_resolve_json(call, answer, len(answer))
             except Exception as e:  # noqa: BLE001
                 _call_reject(call, str(e).encode())
         if function is None:

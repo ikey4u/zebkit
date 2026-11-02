@@ -117,6 +117,11 @@ def main():
                 assert not action(first), "old request cannot act on new UI"
                 evaluate("window.authAbort.abort(); true")
                 wait_state(second["request"], closed=True)
+                # The host may hear of the close before the page's promise
+                # settles: the two go to different processes.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and evaluate("window.authResult") == "pending":
+                    time.sleep(.05)
                 assert evaluate("window.authResult") == "AbortError"
                 print("ok AbortSignal closes host state and old request tokens remain invalid", flush=True)
 

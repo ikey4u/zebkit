@@ -904,7 +904,8 @@ impl Call {
     /// Resolves the page's promise with `json`, a JSON value.
     pub fn resolve(mut self, json: &str) {
         let raw = std::mem::replace(&mut self.raw, std::ptr::null_mut());
-        unsafe { sys::zebkit_call_resolve(raw, c_string(json).as_ptr()) }
+        // With its length: no copy of it to end it in a NUL.
+        unsafe { sys::zebkit_call_resolve_json(raw, json.as_ptr().cast(), json.len()) }
     }
 
     /// Resolves the page's promise with `undefined`.

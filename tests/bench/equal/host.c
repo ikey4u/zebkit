@@ -13,13 +13,11 @@ static void closed(zebkit_view *view, void *data) {
     zebkit_quit();
 }
 
-/* The arguments are a JSON array of one value, and the answer is that value. */
+/* The arguments are a JSON array of one value, and the answer is that value:
+ * the text between the brackets, as Electron's handler returns what it got. */
 static void echo(zebkit_view *view, const char *origin, const char *args_json, zebkit_call *call, void *data) {
     (void)view, (void)origin, (void)data;
-    char *value = strdup(args_json + 1);
-    value[strlen(value) - 1] = '\0';
-    zebkit_call_resolve(call, value);
-    free(value);
+    zebkit_call_resolve_json(call, args_json + 1, strlen(args_json) - 2);
 }
 
 static void ready(void *data) {
