@@ -2819,10 +2819,24 @@ class Automation : public content::WebContentsObserver,
     LoadState(frame, "domcontentloaded");
   }
 
-  void DidFinishLoad(content::RenderFrameHost* frame, const GURL&) override {
+  // The main frame's load: when its load event has run, as Chromium's
+  // lifecycle event "load", which Playwright waits for over CDP. Blink lays
+  // the page out after that and only then sends DidFinishLoad, on a page of
+  // some size several milliseconds later.
+  void DocumentOnLoadCompletedInPrimaryMainFrame() override {
+    content::RenderFrameHost* frame = web_contents()->GetPrimaryMainFrame();
     Lifecycle& lifecycle = lifecycles_[frame->GetFrameTreeNodeId()];
     lifecycle.dom_content_loaded = lifecycle.loaded = true;
     LoadState(frame, "load");
+  }
+
+  void DidFinishLoad(content::RenderFrameHost* frame, const GURL&) override {
+    Lifecycle& lifecycle = lifecycles_[frame->GetFrameTreeNodeId()];
+    lifecycle.dom_content_loaded = true;
+    if (!lifecycle.loaded) {
+      lifecycle.loaded = true;
+      LoadState(frame, "load");
+    }
     // networkidle: 500 ms with no new navigation after the load, as
     // Playwright's 500 ms without requests (the network's own events come
     // with the network hook, docs/AUTOMATION.md).

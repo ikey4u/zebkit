@@ -605,7 +605,7 @@ CDP in between:
 | `locator.click()` | 4.91 ms | 3.46 ms | 33.39 ms | 33.39 ms | 6.8x |
 | `getByRole().click()` | 3.19 ms | 3.46 ms | 33.32 ms | 33.35 ms | 10.4x |
 | `page.screenshot()` | 29.91 ms | 44.15 ms | 66.68 ms | 33.39 ms | 2.2x |
-| `page.goto()` (local) | 15.62 ms | 16.72 ms | 14.74 ms | 17.08 ms | 0.9x |
+| `page.goto()` (local), 2026-11-02 | 13.46 ms | 13.88 ms | 15.77 ms | 18.31 ms | 1.2x |
 
 - **A click no longer waits for the display**: frames on demand (4.6) make
   the frames Playwright's stability check and the input's delivery wait for
@@ -622,9 +622,17 @@ CDP in between:
   single-round-trip ones (evaluate, count). A screenshot through the
   endpoint costs a base64 PNG in JSON over the socket (44 ms against 30 ms
   natively).
-- **`goto` is the network's and the page's**: within noise of Playwright
-  over CDP (15.6 against 14.7 ms this run, 16.3 against 16.5 the run
-  before); `--check` compares it too, so it can flag noise there.
+- **`goto` answers at the load event, as Chromium's lifecycle does**: it
+  waited for `DidFinishLoad` until 2026-11-02, which Blink sends only after
+  it has laid the page out once more after the load event (`Document::
+  CheckCompleted`), 6 ms later on this page; Playwright over CDP takes
+  `load` from the lifecycle event fired at the load event itself. So
+  native was 6% slower (16.2 against 15.2 ms, 600 runs of each, taking
+  turns), and `--check`'s 20-run medians put the gap anywhere from 1% to
+  13%. The main frame's load is now `DocumentOnLoadCompleted`, sent at the
+  load event; a frame in a frame still loads at `DidFinishLoad`. 600 runs
+  after: 13.3 against 15.3 ms. A page with nothing to lay out was never
+  slower natively (5.4 against 8.3 ms).
 - **No second runtime** natively: Playwright's Node.js process alone reached
   175 MiB and used 1.1 s of CPU for ten runs of the table.
 
