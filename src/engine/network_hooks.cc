@@ -38,6 +38,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/zebkit_automation.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -1504,8 +1505,18 @@ class WebSocketHold {
     Requests::Get().Abandon(held_);
   }
 
+  // The profile and kind of worker whose socket it is, for the network's stages.
+  void SetOwner(content::BrowserContext* profile, Worker worker) {
+    profile_ = profile;
+    worker_ = worker;
+  }
+
   // May end it, and this with it.
   void Start(zebkit_view* view, bool refused, base::DictValue description, bool main_frame) {
+    if (view)
+      view_ = view->GetWeakPtr();
+    main_frame_ = main_frame;
+    description_ = description.Clone();
     if (refused) {
       Refuse(net::ERR_BLOCKED_BY_CLIENT);
       return;
@@ -1554,9 +1565,43 @@ class WebSocketHold {
     std::vector<network::mojom::HttpHeaderPtr> additional;
     for (const auto& header : headers_.GetHeaderVector())
       additional.push_back(network::mojom::HttpHeader::New(header.key, header.value));
+    mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client = std::move(header_client_);
+    // A rule of the network's stages for WebSockets: the network's own handshake
+    // asks this client, with its Cookie, as it asks a loader's (HeaderWatch), the
+    // way extensions' webRequest sees a socket's headers.
+    if (WantsNetworkStages()) {
+      mojo::PendingRemote<network::mojom::TrustedHeaderClient> watch;
+      mojo::MakeSelfOwnedReceiver(
+          std::make_unique<HeaderWatch>(
+              view_, profile_, worker_, kWebSocket, main_frame_,
+              base::BindRepeating(
+                  [](const base::DictValue* description, const char* stage) {
+                    base::DictValue value = description->Clone();
+                    value.Set("stage", stage);
+                    return value;
+                  },
+                  base::Owned(std::make_unique<base::DictValue>(description_.Clone())))),
+          watch.InitWithNewPipeAndPassReceiver());
+      header_client = std::move(watch);
+    }
     std::move(factory_).Run(url_, std::move(additional), client_.Unbind(), mojo::NullRemote(),
-                            std::move(header_client_));
+                            std::move(header_client));
     delete this;
+  }
+
+  bool WantsNetworkStages() {
+    bool refused = false;
+    zebkit_view* view = PolicyViewFor(view_, profile_, worker_, &refused);
+    zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
+    if (refused || !decider)
+      return false;
+    for (const char* stage : {kSendHeaders, kSent, kHeadersReceived}) {
+      for (bool hold : {false, true}) {
+        if (NetworkStageMatches(decider, stage, kWebSocket, url_, main_frame_, hold))
+          return true;
+      }
+    }
+    return false;
   }
 
   void Refuse(int error) {
@@ -1569,6 +1614,11 @@ class WebSocketHold {
   net::HttpRequestHeaders headers_;
   mojo::Remote<network::mojom::WebSocketHandshakeClient> client_;
   mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client_;
+  base::WeakPtr<zebkit_view> view_;
+  content::BrowserContext* profile_ = nullptr;
+  Worker worker_ = Worker::kNone;
+  bool main_frame_ = false;
+  base::DictValue description_;
   uintptr_t held_ = 0;
   base::WeakPtrFactory<WebSocketHold> weak_factory_{this};
 };
@@ -1721,8 +1771,13 @@ void CreateNetworkHookWebSocket(content::RenderFrameHost* frame,
   description.Set("hasBody", false);
   description.Set("bodySize", 0.0);
   description.Set("bodyComplete", true);
-  (new WebSocketHold(std::move(factory), url, std::move(headers), std::move(client), std::move(header_client)))
-      ->Start(view, refused, std::move(description), main_frame);
+  auto* hold = new WebSocketHold(std::move(factory), url, std::move(headers), std::move(client),
+                                 std::move(header_client));
+  hold->SetOwner(frame ? frame->GetBrowserContext() : view && view->web_contents()
+                                                          ? view->web_contents()->GetBrowserContext()
+                                                          : nullptr,
+                 frame ? Worker::kNone : Worker::kShared);
+  hold->Start(view, refused, std::move(description), main_frame);
 }
 
 }  // namespace zebkit

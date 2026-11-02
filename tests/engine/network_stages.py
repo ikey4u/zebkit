@@ -11,6 +11,7 @@ comparison is reported as not run.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -70,6 +71,18 @@ class Handler(BaseHTTPRequestHandler):
         with wire_lock:
             wire.append(('GET', self.path, {k.lower(): v for k, v in self.headers.items()}))
         path = self.path.split('?')[0]
+        if path == '/ws':
+            # A WebSocket's handshake, then nothing: what it sent is on the wire.
+            key = self.headers.get('Sec-WebSocket-Key', '')
+            accept = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
+            self.send_response(101)
+            self.send_header('Upgrade', 'websocket')
+            self.send_header('Connection', 'Upgrade')
+            self.send_header('Sec-WebSocket-Accept', accept.decode())
+            self.end_headers()
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if path == '/page':
             self.answer(body=b'<!doctype html><title>page</title>', kind='text/html',
                         extra=[('Set-Cookie', 'added=by-network; Path=/; HttpOnly')])
@@ -233,6 +246,42 @@ def test_changed(base):
     wait(lambda: on_wire('/page?nav'), 'the navigation')
     check(seen and 'added=by-network' in ''.join(named(seen[0]['headers'], 'Cookie')) and seen[0]['navigation'] and seen[0]['mainFrame'],
           'a navigation: its Cookie, held', seen and seen[0]['headers'])
+    view.close()
+
+
+def test_websocket(base):
+    """A WebSocket's handshake has its own client in the network: its Cookie is seen
+    and changed at sendHeaders, as a loader's is."""
+    view = opened(base + '/page')
+    events = told(view)
+    ws = base.replace('http:', 'ws:') + '/ws'
+    view.set_network_filter([{'url': '**/ws?seen', 'mode': 'observe', 'stage': 'sendHeaders'},
+                             {'url': '**/ws?seen', 'mode': 'observe', 'stage': 'headersReceived'}])
+    opened_socket = ("new Promise(f => { const s = new WebSocket(%s); "
+                     "s.onopen = () => f('open'); s.onerror = () => f('error'); })")
+    check(ev(view, opened_socket % json.dumps(ws + '?seen')) == 'open', 'a WebSocket with observers opens')
+    wait(lambda: {'sendHeaders', 'headersReceived'} <= {e.get('kind') for e in events}, 'its stages told')
+    stages = {e['kind']: e for e in events if e.get('kind') in ('sendHeaders', 'headersReceived')}
+    if len(stages) == 2:
+        check(stages['sendHeaders'].get('resourceType') == 'websocket', 'of type websocket', stages['sendHeaders'].get('resourceType'))
+        check('added=by-network' in ''.join(named(stages['sendHeaders']['headers'], 'Cookie')), 'sendHeaders: the socket\'s Cookie',
+              stages['sendHeaders']['headers'])
+        check(stages['headersReceived'].get('status') == 101, 'headersReceived: the handshake\'s 101',
+              stages['headersReceived'].get('status'))
+    view.set_network_filter([{'url': '**/ws?change', 'stage': 'sendHeaders'}])
+
+    def decide(request):
+        headers = [h for h in request.metadata['headers'] if h['name'].lower() != 'cookie']
+        request.respond('continue', headers=headers + [{'name': 'Cookie', 'value': 'socket=changed'}])
+    view.on_network(guarded(decide))
+    check(ev(view, opened_socket % json.dumps(ws + '?change')) == 'open', 'a held WebSocket goes on')
+    arrived = on_wire('/ws?change')
+    check(arrived and arrived[-1].get('cookie') == 'socket=changed', 'the wire has the Cookie answered',
+          arrived and arrived[-1].get('cookie'))
+    view.set_network_filter([{'url': '**/ws?block', 'stage': 'sendHeaders'}])
+    view.on_network(guarded(lambda request: request.respond('block')))
+    check(ev(view, opened_socket % json.dumps(ws + '?block')) == 'error' and not on_wire('/ws?block'),
+          'one blocked at sendHeaders never reaches the server')
     view.close()
 
 
@@ -544,6 +593,7 @@ def main():
         try:
             test_seen(base)
             test_changed(base)
+            test_websocket(base)
             test_redirect(base)
             test_closed(base)
             test_filters(base)
