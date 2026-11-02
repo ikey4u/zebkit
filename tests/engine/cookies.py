@@ -4,6 +4,7 @@ Usage: python3 cookies.py <engine-runner> [engine switches...]
 Requires an unlocked macOS Keychain or Linux desktop keyring. All profiles,
 cookies and HTTP traffic in this test belong to its localhost fixture.
 """
+import contextlib
 import http.server
 import json
 import os
@@ -127,7 +128,7 @@ def main():
             assert first['cookies'] == ['zebkit_probe_auth', 'zebkit_probe_js', 'zebkit_probe_session'], first
             database = pathlib.Path(profile) / 'Network/Cookies'
             assert database.is_file(), 'no persistent cookie database'
-            with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as db:
+            with contextlib.closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as db:
                 rows = db.execute("SELECT value, encrypted_value FROM cookies WHERE name LIKE 'zebkit_probe_%'").fetchall()
             assert len(rows) == 2 and all(value == '' and encrypted for value, encrypted in rows), rows
             assert b'owned' not in database.read_bytes(), 'cookie values must not be plaintext on disk'

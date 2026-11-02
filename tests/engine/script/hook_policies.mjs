@@ -73,7 +73,7 @@ async function download() {
   }
   await view.evaluate(`location.href = '/download.bin'; 1`);
   if (mode === 'download-default') {
-    await until(() => progress.some(e => e.done && e.state === 'complete' && e.path.endsWith('/Downloads/report.bin')), 'saved in the profile');
+    await until(() => progress.some(e => e.done && e.state === 'complete' && e.path.replace(/\\/g, '/').endsWith('/Downloads/report.bin')), 'saved in the profile');
     view.close();
     return;
   }

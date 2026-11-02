@@ -9,6 +9,8 @@
 #include "base/files/file_path.h"
 #include "build/build_config.h"
 #if BUILDFLAG(IS_WIN)
+#include "base/strings/string_util.h"
+#include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #endif
 
@@ -29,6 +31,15 @@ inline base::FilePath PathFromUTF8(const std::string& path) {
   return base::FilePath(path);
 #endif
 }
+
+#if BUILDFLAG(IS_WIN)
+// An argument from a host's main() is in the system's code page, from a host that
+// knows better in UTF-8, which is what the C API speaks everywhere.
+inline std::wstring ArgumentToWide(const std::string& text) {
+  return base::IsStringUTF8(text) ? base::UTF8ToWide(text)
+                                  : base::SysNativeMBToWide(text);
+}
+#endif
 
 }  // namespace zebkit
 

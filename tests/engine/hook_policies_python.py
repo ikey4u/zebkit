@@ -140,14 +140,14 @@ def download(mode):
         pump(.2)
         assert ev(view, 'location.pathname') == '/page'
         done = [e for e in progress if e.get('done')][-1]
-        assert done['state'] == 'complete' and done['path'].endswith('/Downloads/report.bin'), progress
+        assert done['state'] == 'complete' and done['path'].replace('\\', '/').endswith('/Downloads/report.bin'), progress
         assert os.path.getsize(done['path']) == 65536
         # A file already there is kept, as Chrome keeps it.
         progress.clear()
         ev(view, 'location.href = "/download.bin"; 1')
         wait(lambda: any(e.get('done') for e in progress), 'second default ended')
         again = [e for e in progress if e.get('done')][-1]
-        assert again['state'] == 'complete' and again['path'].endswith('/Downloads/report (1).bin'), progress
+        assert again['state'] == 'complete' and again['path'].replace('\\', '/').endswith('/Downloads/report (1).bin'), progress
         assert os.path.getsize(done['path']) == os.path.getsize(again['path']) == 65536
         view.close()
         return

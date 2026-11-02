@@ -26,6 +26,7 @@
 #include "services/network/public/cpp/transferable_directory.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "zebkit/engine/cookie_key_file.h"
+#include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 #if defined(ZEBKIT_COOKIES_USE_DBUS)
@@ -138,7 +139,7 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
 #if BUILDFLAG(IS_WIN)
   base::CommandLine::StringVector wide_args;
   for (const std::string& arg : args)
-    wide_args.push_back(base::UTF8ToWide(arg));
+    wide_args.push_back(ArgumentToWide(arg));
   base::CommandLine command(wide_args);
 #else
   base::CommandLine command(args);

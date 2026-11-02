@@ -147,7 +147,7 @@ static void download_progress(zebkit_view *v, const char *json, void *d) {
     (void)v; (void)d;
     if (strstr(json, "\"state\":\"complete\"")) {
         download_complete = 1;
-        if (strstr(json, "Downloads/report.bin")) download_in_profile = 1;
+        if (strstr(json, "Downloads/report.bin") || strstr(json, "Downloads\\\\report.bin")) download_in_profile = 1;
     }
     if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"done\":true")) download_cancelled = 1;
     if (strstr(json, "\"reason\":\"timeout\"")) download_timeout = 1;

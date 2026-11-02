@@ -29,14 +29,6 @@ namespace {
 // The executable's own sandbox (zebkit_win_startup()), or none.
 sandbox::SandboxInterfaceInfo* g_executable_sandbox = nullptr;
 
-// argv from the host's main() is in the system's code page, from a host that
-// knows better in UTF-8, which is what the C API speaks everywhere.
-std::wstring ArgumentToWide(const char* argument) {
-  const std::string text(argument);
-  return base::IsStringUTF8(text) ? base::UTF8ToWide(text)
-                                  : base::SysNativeMBToWide(text);
-}
-
 }  // namespace
 
 base::FilePath LibraryDirectory() {

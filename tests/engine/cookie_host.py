@@ -1,4 +1,5 @@
 """Host-provided cookie key: no keychain, encrypted restarts and original DB isolation."""
+import contextlib
 import http.server
 import os
 import pathlib
@@ -31,7 +32,7 @@ def main():
             base = f'http://127.0.0.1:{server.server_port}'
             first = run(binary, sys.argv[2:], profile, base + '/set', write=True, environment=env)
             assert len(first['cookies']) == 3, first
-            with sqlite3.connect(profile / 'Network/Cookies.host') as db:
+            with contextlib.closing(sqlite3.connect(profile / 'Network/Cookies.host')) as db:
                 rows = db.execute('SELECT value, encrypted_value FROM cookies').fetchall()
             assert len(rows) == 2 and all(value == '' and encrypted.startswith(b'zbh') for value, encrypted in rows)
             assert b'owned' not in (profile / 'Network/Cookies.host').read_bytes()

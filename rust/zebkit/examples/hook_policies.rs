@@ -119,7 +119,7 @@ fn download(run: &Run) {
     let size = || std::fs::metadata(&target).unwrap().len();
     let cancelled = || progress.borrow().iter().any(|e| e.contains("\"state\":\"cancelled\"") && e.contains("\"done\":true"));
     if run.is("download-default") {
-        wait("saved in the profile", || logged(&progress, "Downloads/report.bin") && logged(&progress, "\"state\":\"complete\""));
+        wait("saved in the profile", || (logged(&progress, "Downloads/report.bin") || logged(&progress, "Downloads\\\\report.bin")) && logged(&progress, "\"state\":\"complete\""));
         run.view.close();
         return;
     }

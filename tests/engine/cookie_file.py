@@ -1,8 +1,10 @@
 """The library's built-in backend; no host key generation/storage implementation."""
+import contextlib
 import http.server
 import os
 import pathlib
 import secrets
+import subprocess
 import sqlite3
 import sys
 import tempfile
@@ -35,7 +37,7 @@ def main():
                 assert keyfile.stat().st_mode & 0o777 == 0o600
                 assert keyfile.parent.stat().st_mode & 0o777 == 0o700
             assert len(first['cookies']) == 3
-            with sqlite3.connect(profile / 'Network/Cookies.host') as db:
+            with contextlib.closing(sqlite3.connect(profile / 'Network/Cookies.host')) as db:
                 rows = db.execute('SELECT value, encrypted_value FROM cookies').fetchall()
             assert len(rows) == 2 and all(value == '' and encrypted.startswith(b'zbh') for value, encrypted in rows)
             assert b'owned' not in (profile / 'Network/Cookies.host').read_bytes()
@@ -56,6 +58,12 @@ def main():
             folder = legacy / 'Secrets'; folder.mkdir(mode=0o700)
             legacy_key = folder / 'cookie.key'
             legacy_key.write_bytes(b'Zebkit Cookie Key v1\n' + raw.read_bytes()); legacy_key.chmod(0o600)
+            if os.name == 'nt':
+                # chmod does not make it private there: only the owner in the list.
+                user = os.environ['USERNAME']
+                for path in (folder, legacy_key):
+                    subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', f'{user}:F'],
+                                   check=True, stdout=subprocess.DEVNULL)
             restored = run(binary, switches, legacy, base + '/check')
             assert restored['sent_auth'] and restored['cookies'] == ['zebkit_probe_auth', 'zebkit_probe_js']
             print('ok former host key format and host-encrypted login survive backend move without rotation')
