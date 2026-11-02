@@ -2,11 +2,12 @@
 # Build the release of zebkit for this machine, make the archive of it that
 # the Rust crates download, and optionally publish that on GitHub.
 #
-#   scripts/release.sh              # dist/release, dist/release-macos, dist/zebkit-<version>-<target>.tar.xz and checksums
+#   scripts/release.sh              # dist/release, dist/release-macos, dist/release-windows, dist/zebkit-<version>-<target>.tar.xz and checksums
 #   scripts/release.sh --publish    # also create the GitHub release v<version> and upload them
 #
 # A release has one archive for each system, all built here on Linux: the
-# Linux engine, and the macOS one cross-built (docs/MACOS.md). The
+# Linux engine, and the macOS and Windows ones cross-built (docs/MACOS.md,
+# docs/WINDOWS.md). The
 # checksums all go into engines.txt, and --publish uploads every archive of
 # this version that engines.txt names. Run again later, it adds what the
 # release does not have yet.
@@ -46,6 +47,8 @@ esac
 command -v xz > /dev/null || die "xz is missing; \"mise run r\" brings it (mise.toml), or install it"
 [[ -d "$SDK_DIR/macos/xcode" ]] \
     || die "the macOS engine needs Apple's SDK laid out first: scripts/macos-toolchain.sh (docs/MACOS.md)"
+[[ -d "$SDK_DIR/windows" ]] \
+    || die "the Windows engine needs MSVC and the Windows SDK laid out first: scripts/windows-toolchain.sh (docs/WINDOWS.md)"
 
 engines="$ZEBKIT_ROOT/rust/zebkit-rs/engines.txt"
 
@@ -86,6 +89,19 @@ find "$macos" -mindepth 1 -delete
 cp -a "$OUT_DIR/slim-macos/package/." "$macos/"
 log "release build of zebkit for macOS arm64: $macos ($(du -sm "$macos" | cut -f1) MiB)"
 pack "$macos" aarch64-apple-darwin
+
+# Windows x64, cross-built here: dist/release-windows. zebkit_sandbox.lib is
+# in it, for the application's executable (docs/WINDOWS.md).
+"$ZEBKIT_ROOT/scripts/build.sh" slim-windows
+"$ZEBKIT_ROOT/scripts/build.sh" slim-windows-sandbox zebkit/engine:zebkit_sandbox
+"$ZEBKIT_ROOT/scripts/package.sh" slim-windows
+windows="$ZEBKIT_ROOT/dist/release-windows"
+[[ -e "$OUT_DIR/slim-windows/package/zebkit.dll" ]] || die "packaging left no zebkit.dll"
+mkdir -p "$windows"
+find "$windows" -mindepth 1 -delete
+cp -a "$OUT_DIR/slim-windows/package/." "$windows/"
+log "release build of zebkit for Windows x64: $windows ($(du -sm "$windows" | cut -f1) MiB)"
+pack "$windows" x86_64-pc-windows-msvc
 
 (( publish )) || exit 0
 command -v gh > /dev/null || die "publishing needs the GitHub CLI (gh); 'mise run r:github' provides it"
