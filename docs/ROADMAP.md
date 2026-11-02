@@ -322,7 +322,8 @@ in `examples/native-host` (Done table). What is left:
     open web, nor a client of the current revision: no SDK speaks it yet.
 ### Measurements
 
-- **Web pages against Electron 44.9: done for 14 pages, one left over.**
+- **Web pages against Electron 44.9: done for 14 pages, one left over**
+  (`scripts/web-bench.sh`; Electron 45.2.1 in `scripts/electron-compare.sh`).
   `slim` costs 16% less CPU and 16% less memory on a page, over 14 of the
   15 pages of `scripts/web-bench.sh --sites`, both engines in a 1280 by
   800 window (`docs/SIZE_AND_SPEED.md`); less memory on every page, less
@@ -330,7 +331,17 @@ in `examples/native-host` (Done table). What is left:
   - **TODO: Reddit** showed zebkit a reCAPTCHA in place of the page, and
     Electron a challenge it passed; until both are shown the page, it is
     out of the comparison.
-- **TODO: a fully equal comparison with Electron.** The comparison of
+- **A fully equal comparison with Electron: done for thin hosts, Linux and
+  macOS, 2026-11-02** (`scripts/electron-compare.sh`, `docs/SIZE_AND_SPEED.md`,
+  "Against Electron, measured the same way"): Electron 45.2.1, one harness,
+  the same pages, two thin hosts, every process counted. zebkit wins size,
+  startup, memory and CPU while loading; it loses text layout, the DOM
+  workload and, by 4 to 22 times, calls between the page and its host.
+  - **TODO: calls between the page and the host** as fast as Electron's IPC.
+  - **TODO: what is left of the conditions below**: one real application
+    on both hosts, an EPUB, the sandbox on (this machine allows neither
+    engine's), cold start on macOS.
+- **The conditions of that comparison.** The comparison of
   whole applications that was published (a document reader against its
   build on Electron 36) was withdrawn on 2026-10-23: an old Electron, and
   two builds of an application that differed in more than the runtime. To

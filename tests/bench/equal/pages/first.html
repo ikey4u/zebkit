@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>First paint</title>
+<!-- scripts/electron-compare.sh, startup: an application's first screen. The
+     harness keeps the clock; this page reports when its first paint was, on
+     the same clock, and when a frame after its load was produced. -->
+<style>
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #1f2937; }
+  header { background: #0f172a; color: #fff; padding: 12px 20px; }
+  main { padding: 20px; max-width: 720px; }
+</style>
+<header>Document</header>
+<main>
+  <h1>First paint</h1>
+  <p>An application's first screen: a bar, a heading and a little text, without a network or a framework.</p>
+</main>
+<script>
+  new PerformanceObserver(list => {
+    for (const entry of list.getEntries())
+      if (entry.name === 'first-contentful-paint')
+        fetch(`/mark?name=fcp&at=${performance.timeOrigin + entry.startTime}`);
+  }).observe({ type: 'paint', buffered: true });
+  addEventListener('load', () => {
+    fetch(`/mark?name=load&at=${performance.timeOrigin + performance.now()}`);
+    requestAnimationFrame(() => requestAnimationFrame(() =>
+      fetch(`/mark?name=frame&at=${performance.timeOrigin + performance.now()}`)));
+  });
+</script>
+</html>

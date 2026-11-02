@@ -1,0 +1,20 @@
+<!doctype html><meta charset=utf-8><title>probe</title><p>Probe: what the page sees of its engine.</p>
+<script>
+// Everything that has to be the same for a comparison to be equal, from inside the page.
+function renderer() {
+  const gl = document.createElement('canvas').getContext('webgl');
+  if (!gl) return 'no WebGL';
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : 'unknown';
+}
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  const out = {
+    ua: navigator.userAgent, brands: navigator.userAgentData && navigator.userAgentData.brands.map(b => b.brand + ' ' + b.version),
+    inner: [innerWidth, innerHeight], outer: [outerWidth, outerHeight], screen: [screen.width, screen.height], dpr: devicePixelRatio,
+    visibility: document.visibilityState, focus: document.hasFocus(), languages: navigator.languages,
+    cores: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory, webgl: renderer(),
+    font: getComputedStyle(document.body).fontFamily, pdfViewer: navigator.pdfViewerEnabled, thirdPartyCookies: 'not visible here',
+  };
+  fetch('/result?probe=' + encodeURIComponent(JSON.stringify(out)));
+}));
+</script>

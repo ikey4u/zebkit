@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Calls</title>
+<!-- scripts/electron-compare.sh: a page calling its host, the same source on
+     both. The host answers with what it was given: ipcMain.handle over a
+     preload in Electron, zebkit_view_bind in zebkit. Strings, as both take
+     them without a copy of their own in the page's script. -->
+<script>
+const echo = window.host ? window.host.echo : window.zebkit.app.echo;
+const quantile = (sorted, q) => sorted[Math.floor(sorted.length * q)];
+async function latency(size, count) {
+  const text = 'x'.repeat(size);
+  const times = [];
+  for (let i = 0; i < count + 20; i++) {
+    const start = performance.now();
+    if ((await echo(text)).length !== size) throw new Error('wrong answer');
+    if (i >= 20) times.push(performance.now() - start);
+  }
+  times.sort((a, b) => a - b);
+  return { median_ms: +quantile(times, 0.5).toFixed(3), p95_ms: +quantile(times, 0.95).toFixed(3) };
+}
+(async () => {
+  const out = {};
+  for (const [name, size, count] of [['64B', 64, 3000], ['64KiB', 65536, 300], ['1MiB', 1048576, 50], ['16MiB', 16777216, 10]])
+    out[name] = await latency(size, count);
+  await fetch('/result', { method: 'POST', body: JSON.stringify(out) });
+})().catch(error => fetch('/result', { method: 'POST', body: JSON.stringify({ error: String(error) }) }));
+</script>

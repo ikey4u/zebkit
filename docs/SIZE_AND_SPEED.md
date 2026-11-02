@@ -11,8 +11,8 @@ slimming Chromium disagrees with what was measured, the measurement wins.
 
 | | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| zebkit `slim`, 2026-10-27 | **158.7 MiB** | **54.3 MiB** | **72.3 MiB** |
-| Electron 44.9.0, trimmed (the baseline) | 255.7 MiB | 85.3 MiB | 112.6 MiB |
+| zebkit `slim`, 2026-11-02 | **160.8 MiB** | **54.9 MiB** | **73.1 MiB** |
+| Electron 45.2.1, trimmed (the baseline) | 260.5 MiB | 87.1 MiB | 114.8 MiB |
 | zebkit of Electron | 62% | 63% | 64% |
 
 Own embedder (2026-11-01): the content shell's code replaced by the engine's, in place
@@ -31,6 +31,99 @@ put speed first ("push the size limit to get the speed"): the size-built
 engine laid text out twice as slowly as Chrome's own build. What is checked
 now is speed against Chrome's build of the same version, and size against
 Electron.
+
+## Against Electron, measured the same way
+
+`scripts/electron-compare.sh`, 2026-11-02, zebkit `slim` (Chromium
+155.0.8059.84) against Electron 45.2.1 (Chromium 156.0.8078.75), the latest
+stable release on npm, on Linux x86-64 (a 12-core Ryzen with SMT). Every
+measure, the median of 5 runs (7 for startup and layout) with the lowest and
+highest run, is in `docs/reports/electron-compare.md`; a result is within
+noise when those ranges overlap. Losses are shown as wins are.
+
+What was held the same: one harness (`tests/bench/equal/compare.py`) that
+does not know which engine it runs; one page set, served by the harness;
+two thin hosts that do the same thing (`tests/bench/equal/host.c`,
+`tests/bench/equal/electron/main.js`): one window whose content is 1280 by
+800 on the same Xvfb display, focused, no menu, the same user agent, the
+page's calls to the host answered with what they sent; each runtime packaged
+as it ships (Electron's prebuilt release with the application in
+`resources/app`); the same switches (both `--no-sandbox`, see below); one
+clock, the harness's, with the page's marks on it; every process counted,
+those an engine disowns too (the harness is a subreaper): CPU as utime and
+stime from `/proc`, memory as PSS plus swapped PSS; the engines taking turns,
+each first in every other pair; each pair started on a quiet machine (load
+under 4.5, no build or suite; none had to be discarded, the load before runs
+was 1.6 to 4.5).
+
+| | zebkit | Electron 45.2.1 | Less |
+|---|---:|---:|---|
+| Size as published, MiB (`.tar.xz`, `.zip`) | 160.8 (54.9, 73.1) | 273.4 (88.7, 117.6) | zebkit, 41% (38%, 38%) |
+| Size as an application ships it | 152.3 (53.5, 71.1) | 260.5 (87.1, 114.8) | zebkit, 42% (39%, 38%) |
+| Start, cold (files out of the cache), to first paint, ms | 4720 | 6337 | zebkit, 26% |
+| Start, warm, to first paint, ms | 120 | 232 | zebkit, 48% |
+| Start, warm, CPU until the first frame, s | 0.22 | 0.47 | zebkit, 53% |
+| Memory, a blank page, MB | 173 | 249 | zebkit, 31% |
+| Processes, a page | 7 | 6 | **Electron**: zebkit runs storage in a process of its own |
+| Text layout, ms a layout | 9.2 | 7.8 | **Electron, 15%** |
+| Text layout, renderer's CPU, ms a layout | 12.9 | 10.7 | **Electron, 18%** |
+| JavaScript and DOM, ms, all ten | 1300 | 1196 | Electron, 8%, within noise |
+| DOM (20,000 elements made and laid out), ms | 410 | 281 | **Electron, 31%** |
+| A call from the page to the host and back, 64 bytes, ms | 0.4 | 0.1 | **Electron** |
+| The same with 1 MiB, ms | 32.1 | 4.3 | **Electron, 7.5 times** |
+| Long document (200,000 words), to its first frame, ms | 210 | 158 | Electron, 25%, within noise |
+| Long document, longest task, ms | 228 | 173 | **Electron, 24%** |
+| Long document, scrolling frames p50 / p95 / max | 16.7 / 17.4 / 17.8 | 16.7 / 17.3 / 17.8 | level |
+| Long document, CPU of all processes, s / memory, MB | 3.7 / 253 | 4.3 / 333 | zebkit, 14% / 24% |
+| A 756-page PDF in each one's PDF viewer: CPU loading, s / memory, MB / renderers | 0.73 / 253 / 1 | 1.59 / 400 / 3 | zebkit, 54% / 37% |
+| Four local pages and the PDF: CPU loading, s / at rest, % of a core / memory, MB | 3.2 / 6.5 / 1118 | 4.9 / 5.6 / 1573 | zebkit / **Electron** / zebkit |
+| Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 18.4 / 173 / 4362 | 24.8 / 170 / 5044 | zebkit, 26% / level / zebkit, 14% |
+
+- **Wins**: size; startup, cold and warm; memory on every page and site
+  but one; CPU while loading on every page and site; the PDF viewer, which
+  in Electron is an extension with two renderers more.
+- **Losses**: text layout (the build, as below), the DOM workload (31%,
+  outside the noise, not yet taken apart), the long document's first
+  layout, one process more a page, and calls between the page and the host:
+  zebkit's `zebkit.app` goes as JSON text with copies on both sides, 4 to 8
+  times slower than Electron's IPC, and is the first thing to make faster.
+- **Within noise**: at rest, the animated page (5.9 against 5.0% of a
+  core) and the sites, where the advertising decides; JavaScript other than
+  the DOM and JSON; the long document's first frame.
+- **At rest on the sites** (`docs/reports/electron-compare.md`): of the
+  ten summed, zebkit costs less CPU on Wikipedia and Amazon, the same on
+  MDN, more on the other seven (The New York Times 67 against 57% of a
+  core, BBC News 19 against 16), every one within noise; memory less on 11
+  of 12, all but Stack Overflow, whose runs differed most.
+
+What could not be made the same:
+
+- **Chromium versions**: Electron 45.2.1 has Chromium 156, zebkit 155. Both
+  send zebkit's user agent (Chrome 155); the client hints still say 156 for
+  Electron.
+- **The sandbox**: off in both. Each needs its set-user-ID helper installed
+  as root or unprivileged user namespaces, which this machine refuses; both
+  ship it on.
+- **Sites**: Reddit showed zebkit a "prove your humanity" page in every run
+  and Electron the page; Stack Overflow showed each a challenge in one run.
+  Both are left out of the sums, and listed.
+- **Defaults that differ** were left as each ships them, as an application
+  gets them: zebkit blocks third-party cookies and keeps no spare renderer;
+  Electron runs Node.js in its browser process.
+- **Not measured**: a real application on both (the roadmap's one
+  application, two hosts, beyond these thin hosts); an EPUB; cold start
+  on macOS.
+
+On macOS (Apple silicon, a person's desktop, Electron 45.2.1 for arm64,
+`docs/reports/electron-compare-macos.md`), with memory as the sum of
+`phys_footprint`, which leaves shared code out: zebkit starts warm to its
+first paint in 135 ms against 229, with 27% less CPU, and costs 5 to 18%
+less memory on the local pages; it lays text out 7% slower, runs the
+JavaScript and DOM page 15% slower (`slim-macos` is built without PGO), and
+its calls to the host are 7 to 22 times slower. On the Mac, Electron's
+window was not given the focus and zebkit's was. The Mac's runs used
+the package before the change to `goto` (`docs/AUTOMATION.md`), which
+changes none of these.
 
 ## PDF in pages: what it cost
 
@@ -53,12 +146,16 @@ does, runs it, and counts it as `scripts/measure.sh` counts zebkit.
 | 44.9.0 trimmed: one locale, no licence file | **255.7** | **85.3** | **112.6** |
 | 45.0.0-beta.5 as shipped | 273.9 | 88.9 | 117.8 |
 | 45.0.0-beta.5 trimmed | 261.0 | 87.3 | 115.0 |
+| 45.2.1 as shipped (2026-11-02, the latest stable) | 273.4 | 88.7 | 117.6 |
+| **45.2.1 trimmed: the baseline since 2026-11-02** | **260.5** | **87.1** | **114.8** |
 
 Of 44.9.0's 255.7 MiB, the `electron` binary (Chromium, Node.js and
 Electron) is 218.9, the resource packs with the DevTools front end 13.9,
 ICU's data for every language 10.4, SwiftShader and the Vulkan loader 6.8.
 The trimmed numbers are the baseline: what an Electron application can ship
-without building Electron.
+without building Electron. The baseline is the latest stable release on npm
+when it is measured (`upstream.lock`), 45.2.1 (Chromium 156.0.8078.75) since
+2026-11-02.
 
 ## What Electron is made of, and what zebkit takes
 

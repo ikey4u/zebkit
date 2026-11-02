@@ -43,14 +43,26 @@ const chapter = document.getElementById('chapter');
 chapter.innerHTML = html;
 chapter.getBoundingClientRect();
 
+// Served by scripts/electron-compare.sh: it reads the renderer's CPU time
+// at each mark, while this thread waits, and takes the result.
+const served = location.protocol === 'http:';
+const mark = name => {
+  if (!served) return;
+  const request = new XMLHttpRequest();
+  request.open('GET', '/mark?name=' + name, false);
+  request.send();
+};
 const times = [];
+mark('layout-begin');
 for (let i = 0; i < 60; i++) {
   chapter.style.width = (1200 + (i % 2)) + 'px';
   const start = performance.now();
   chapter.scrollWidth;
   times.push(performance.now() - start);
 }
+mark('layout-end');
 const kept = times.slice(10).sort((a, b) => a - b);
 document.title = `layout ${kept[Math.floor(kept.length / 2)].toFixed(2)} ms`;
+if (served) fetch('/result?layout_ms=' + kept[Math.floor(kept.length / 2)].toFixed(3));
 </script>
 </html>

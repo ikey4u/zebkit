@@ -14,8 +14,8 @@ DEPOT_TOOLS_COMMIT=889099791deff38466d471fa6590951c91a1d8ab
 
 # Electron, the size baseline (scripts/electron-baseline.sh): its prebuilt
 # runtime for Linux x86-64, at the stable release, checked by its SHA-256.
-ELECTRON_VERSION=44.9.0
-ELECTRON_LINUX_X64_SHA256=ecced7ecb55697f92ca870939c5988557faa8acd8c222c232cae5913d318c8b9
+ELECTRON_VERSION=45.2.1
+ELECTRON_LINUX_X64_SHA256=616efc1ae4784af1a4f3f0e8774e73e7030e7bd1708da9d09bcf543dfa499beb
 
 # Playwright, whose injected script (selectors, actionability, ARIA) and
 # US keyboard layout zebkit's automation runs (docs/AUTOMATION.md):

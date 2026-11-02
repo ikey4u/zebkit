@@ -10,9 +10,9 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# Electron 44.9.0 trimmed (docs/SIZE_AND_SPEED.md), the baseline;
+# Electron 45.2.1 trimmed (docs/SIZE_AND_SPEED.md), the baseline;
 # the 150 MiB limit gave way to speed on 2026-10-21.
-GOAL_BYTES=$(( 2557 * 1024 * 1024 / 10 ))
+GOAL_BYTES=$(( 2605 * 1024 * 1024 / 10 ))
 
 profile="${1:-}"
 require_profile "$profile"
