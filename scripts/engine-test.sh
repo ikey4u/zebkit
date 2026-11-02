@@ -220,10 +220,12 @@ if [[ "$ZEBKIT_TARGET" == windows ]]; then
 fi
 if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
     build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
+    build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -DMIXED_X11 -lX11 -ldl
     build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
 fi
 if [[ "$ZEBKIT_TARGET" == macos ]]; then
     build_against_package "$package" "$bin/native-parent-mac" "$tests/native_parent_mac.m" -- -fobjc-arc -framework Cocoa
+    build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -framework IOSurface
     target_cxx -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Wno-deprecated-declarations -I"$package/include" "$ZEBKIT_ROOT/examples/native-host/appkit.mm" \
         -framework Cocoa -framework IOSurface $(engine_link_options "$package") -o "$bin/native-host-appkit"
 fi
@@ -491,6 +493,8 @@ if [[ -x "$bin/native-parent" ]]; then
         if [[ -n "$xvfb_display" ]]; then
             run native-parent env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/native-parent" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent"
+            run mixed-views env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/mixed-views" \
+                --no-sandbox --user-data-dir="$work/profile-mixed-views"
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
@@ -517,6 +521,8 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]/profile/profile-gpu}"
     run native-parent-refused "$bin/native-parent-mac" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
     if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
+        run mixed-views "$bin/mixed-views" --no-sandbox --user-data-dir="$work/profile-mixed-views"
+        finished mixed-views "the mixed views' test"
         run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent"
         finished native-parent "the attached view's test"
         run gpu-status-window python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" --no-sandbox --user-data-dir="$work/profile-gpu-window"

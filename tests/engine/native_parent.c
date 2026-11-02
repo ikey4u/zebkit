@@ -482,14 +482,12 @@ static void refused_ready(void *data) {
     check(!zebkit_view_detach_native(plain), "nothing to detach", NULL);
     zebkit_view_close(plain);
     zebkit_view *offscreen = zebkit_view_new_offscreen("about:blank", 200, 100, 1.0f);
-    if (offscreen) {
-        refused = !zebkit_view_attach_native(offscreen, 1, 0, 0, 100, 100, &error);
-        check(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
-        zebkit_free(error);
+    check(offscreen != NULL, "an off-screen view", NULL);
+    refused = offscreen && !zebkit_view_attach_native(offscreen, 1, 0, 0, 100, 100, &error);
+    check(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
+    zebkit_free(error);
+    if (offscreen)
         zebkit_view_close(offscreen);
-    } else {
-        check(1, "(off-screen views need --headless)", NULL);
-    }
     zebkit_quit();
 }
 
