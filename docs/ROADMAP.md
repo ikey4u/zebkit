@@ -111,6 +111,7 @@ in `examples/native-host` (Done table). What is left:
 - **A window's native handle** given to the application, so that it can parent
   the system's dialogs to it (file dialogs through the XDG portal need it). The
   other way, an application's handle as a view's parent, is done.
+- **A real input method in X11 windows.** None: see `docs/ARCHITECTURE.md`.
 - **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
   Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root
   runs `zebkit-sandbox-install`, and `--no-sandbox` is documented for containers and said
@@ -136,8 +137,9 @@ in `examples/native-host` (Done table). What is left:
   (`tests/engine/mixed_views.c`). On Linux with a display a view's root has a stub
   platform window and viz draws it in memory (patches/1072, 1073), so no X11 or
   Wayland window exists for it, its `<select>` lists or what its page opens; its
-  scale is Chromium's capture scale, as on Windows. On macOS it is a view in no
-  window, per view rather than per process. Not done: Windows, which still needs
+  screen, with its scale and sRGB, is its own per widget (patches/1053, 1074). On
+  macOS it is a view in no window with the same screen, per view rather than per
+  process. Not done: Windows, which still needs
   `--headless`; Wayland has not been run, nor GPU compositing of such a root on
   Linux (no machine for either here); a window's own input on macOS in the test.
 - **Independent scale: Linux foundation implemented.** Separate headless

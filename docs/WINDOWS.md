@@ -71,6 +71,8 @@ empty there (`src/engine/win/sandbox_startup.cc`).
   (`SetScaleOverrideForCapture`), not a display as on Linux: displays on Windows' headless
   screen are laid out by Chromium itself, and a window takes a scale only when resized.
 
+- **JavaScript dialogs.** A window's `alert()`, `confirm()` and beforeunload with no
+  handler are a message box, and `prompt()` gives null. This has not been run yet.
 - **Frames.** `zebkit_frame.handle` is a file mapping's `HANDLE`, and `fd` is -1.
   `ZEBKIT_BUFFERS_GPU` asks for `ZEBKIT_FRAME_D3D11`, an NT handle to a shared texture.
   That path has never run: the test machine's display adapter has no D3D shared images,

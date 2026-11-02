@@ -407,6 +407,24 @@ gfx::NativeWindow Window::native_window() {
   return platform_->GetNativeWindow(this);
 }
 
+// static
+Window* Window::OpenFrom(WebContents* source,
+                         scoped_refptr<SiteInstance> site_instance,
+                         const GURL& url,
+                         WindowOpenDisposition disposition,
+                         bool user_gesture) {
+  Window* opener = FromWebContents(source);
+  // Nothing loaded yet: the view's policy is its own before the first request.
+  Window* window = Create(source->GetBrowserContext(), GURL(), site_instance,
+                          gfx::Size(), opener ? opener->kind() : Kind::kNative);
+  base::WeakPtr<WebContents> contents = window->web_contents()->GetWeakPtr();
+  if (const PopupHandler& handler = PopupHandlerForEmbedder(); handler) {
+    handler.Run(source, window, url, disposition, blink::mojom::WindowFeatures(),
+                user_gesture);
+  }
+  return contents ? window : nullptr;
+}
+
 WebContents* Window::OpenURLFromTab(
     WebContents* source,
     const OpenURLParams& params,
@@ -429,10 +447,12 @@ WebContents* Window::OpenURLFromTab(
           handler && handler.Run(source, params.url)) {
         return nullptr;
       }
-      Window* new_window = Window::Create(source->GetBrowserContext(), GURL(),
-                                          params.source_site_instance,
-                                          gfx::Size(), kind_);
-      target = new_window->web_contents();
+      Window* new_window = OpenFrom(source, params.source_site_instance, params.url,
+                                    params.disposition, params.user_gesture);
+      // The application may close it from its callback.
+      target = new_window ? new_window->web_contents() : nullptr;
+      if (!target)
+        return nullptr;
       break;
     }
 

@@ -495,6 +495,8 @@ if [[ -x "$bin/native-parent" ]]; then
                 --no-sandbox --user-data-dir="$work/profile-native-parent"
             run mixed-views env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/mixed-views" \
                 --no-sandbox --user-data-dir="$work/profile-mixed-views"
+            run mixed-views-scaled env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" MIXED_SCALED=2 "$bin/mixed-views" \
+                --force-device-scale-factor=2 --no-sandbox --user-data-dir="$work/profile-mixed-scaled"
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
@@ -609,7 +611,7 @@ finished automation-reentry "the reentry test"
 run automation-input env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/automation_input.py" --no-sandbox --headless --user-data-dir="$work/profile-input"
 finished automation-input "the input test"
-run automation-input-held env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
+run automation-input-held env ZEBKIT_TEST_NO_INPUT_WAIT=1 ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/automation_input.py" --zebkit-test-no-input-wait --no-sandbox --headless --user-data-dir="$work/profile-input-held"
 run user-agent-atomic python3 "$tests/user_agent_atomic.py" "$bin/tools/zebkit-run" "${engine_switches[@]}"
 run user-agent-clients env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
@@ -931,6 +933,12 @@ else
         echo "ok   /json/list has the page"
     else
         echo "FAIL /json/list has no page"; failed=1
+    fi
+    # What cdp-clients expects to differ from a newer Chrome hides this one.
+    if curl -fsS --compressed "http://127.0.0.1:$port/json/protocol" | grep -q '"domains"'; then
+        echo "ok   /json/protocol"
+    else
+        echo "FAIL /json/protocol"; failed=1
     fi
 fi
 fi

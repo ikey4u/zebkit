@@ -79,6 +79,7 @@
 #include "base/win/win_util.h"
 #include "sandbox/policy/switches.h"
 #endif
+#include "components/embedder_support/origin_trials/origin_trial_policy_impl.h"
 #include "components/embedder_support/switches.h"
 #include "net/http/http_util.h"
 #include "net/proxy_resolution/proxy_config.h"
@@ -595,7 +596,12 @@ gfx::Image& ContentClient::GetNativeImageNamed(int resource_id) {
 }
 
 blink::OriginTrialPolicy* ContentClient::GetOriginTrialPolicy() {
-  return &origin_trial_policy_;
+  // Chrome's key and rules: tokens are checked as Chrome checks them. Asked for
+  // from more than one thread, and not before the feature list exists.
+  base::AutoLock lock(origin_trial_policy_lock_);
+  if (!origin_trial_policy_)
+    origin_trial_policy_ = std::make_unique<embedder_support::OriginTrialPolicyImpl>();
+  return origin_trial_policy_.get();
 }
 
 void ContentClient::AddAdditionalSchemes(Schemes* schemes) {

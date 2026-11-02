@@ -16,6 +16,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_observer.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/aura/window_tree_host_platform.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -138,14 +139,27 @@ class ScopedNoSystemWindow
 
 // What opens from an off-screen view's root, a <select>'s list in its own root
 // as menus have, has no system window either.
-class NoSystemWindowParenting : public aura::client::WindowParentingClient {
+class NoSystemWindowParenting : public aura::client::WindowParentingClient,
+                                public aura::WindowObserver {
  public:
   explicit NoSystemWindowParenting(aura::Window* root)
       : root_(root), inner_(aura::client::GetWindowParentingClient(root)) {
     aura::client::SetWindowParentingClient(root_, this);
+    root_->AddObserver(this);
   }
   ~NoSystemWindowParenting() override {
-    aura::client::SetWindowParentingClient(root_, inner_);
+    if (root_) {
+      root_->RemoveObserver(this);
+      aura::client::SetWindowParentingClient(root_, inner_);
+    }
+  }
+
+  // aura::WindowObserver: the root goes with the widget, and the client it had
+  // before it.
+  void OnWindowDestroying(aura::Window* window) override {
+    root_->RemoveObserver(this);
+    root_ = nullptr;
+    inner_ = nullptr;
   }
 
   aura::Window* GetDefaultParent(aura::Window* window,
@@ -156,8 +170,8 @@ class NoSystemWindowParenting : public aura::client::WindowParentingClient {
   }
 
  private:
-  const raw_ptr<aura::Window> root_;
-  const raw_ptr<aura::client::WindowParentingClient> inner_;
+  raw_ptr<aura::Window> root_;
+  raw_ptr<aura::client::WindowParentingClient> inner_;
 };
 
 class NativePlatform : public WindowPlatform {
@@ -231,6 +245,8 @@ class NativePlatform : public WindowPlatform {
   }
 
   bool Destroy(Window* window) override {
+    // Before the widget frees the root, and the client under this one.
+    windows_[window].parenting.reset();
     windows_[window].widget->CloseNow();
     return true;
   }

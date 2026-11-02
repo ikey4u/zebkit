@@ -52,3 +52,4 @@
 1071-pdf-always-in-a-pdf-renderer.patch
 1072-viz-a-root-without-a-window.patch
 1073-aura-platform-window-factory-for-the-embedder.patch
+1074-embedder-widget-screen-info-on-aura.patch

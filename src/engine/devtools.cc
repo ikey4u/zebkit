@@ -116,8 +116,9 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
 <a href="/json/list">/json/list</a>.)";
   }
 
-  // What /json/list says of a front end, as Chrome.
-  bool HasBundledFrontendResources() override { return true; }
+  // The front end is not in the package: /json/list names the hosted one of this
+  // version, as Chrome's builds without it do.
+  bool HasBundledFrontendResources() override { return false; }
 
   void ClientAttached(content::DevToolsAgentHostClientChannel* channel) override {
     Channels().insert(channel);

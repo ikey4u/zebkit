@@ -403,6 +403,12 @@ def main():
         page.go(base + "/blank", settle=0)
         page.cdp.call("Browser.grantPermissions", {"permissions": ["clipboardReadWrite"], "origin": base})
         page.call("Page.bringToFront")
+        # navigator.clipboard is for a focused document; bringToFront() gets there
+        # after it answers.
+        for _ in range(100):
+            if page.evaluate("document.hasFocus()"):
+                break
+            time.sleep(.05)
         copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
         check("needle2" in (copied or ""), "Select All and Copy give the text of the pages", copied)
 

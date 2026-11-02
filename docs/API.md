@@ -743,6 +743,11 @@ static void ready(void *data) {
 int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }  /* run with --headless */
 ```
 
+- **Colours.** Frames are sRGB on every system, whatever the display's colour
+  space (an off-screen view's screen is sRGB; on a Mac the display's own would be
+  Display P3), and untagged, as the page's CSS colours are the bytes.
+- **Its screen.** `screen.*` and `devicePixelRatio` are the view's own: at its scale,
+  and larger than it. A change of the system's scale does not reach it.
 - **Where.** On Linux and macOS in any process, beside views with a window: no
   window of the system's is made for an off-screen view or for what its page
   opens, its scale is its own, and input reaches it from the application alone.
@@ -909,7 +914,7 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
 
   | Policy | A dialog is |
   |---|---|
-  | `ZEBKIT_DIALOG_POLICY_DEFAULT` | held for the application when it set a function; else held for a CDP client attached to the page, as headless Chrome holds it; else the content shell's: a macOS window's system alert, and elsewhere dismissed at once (confirm false, prompt null, beforeunload leaves), as before |
+  | `ZEBKIT_DIALOG_POLICY_DEFAULT` | held for the application when it set a function; else held for a CDP client attached to the page, as headless Chrome holds it; else what the view's window has: on macOS a system alert; on Windows a message box for alert, confirm and beforeunload, with prompt() null (not run yet on a Windows machine); on Linux and in every off-screen view or `--headless` process nothing, dismissed at once (confirm false, prompt null, beforeunload leaves) |
   | `ZEBKIT_DIALOG_POLICY_HOLD` | always held until answered |
   | `ZEBKIT_DIALOG_POLICY_ACCEPT` | answered OK at once (confirm true, prompt its default, beforeunload leaves), and reported |
   | `ZEBKIT_DIALOG_POLICY_DISMISS` | answered Cancel at once (confirm false, prompt null, beforeunload stays), and reported |
@@ -1301,3 +1306,10 @@ For application-level FFmpeg/ffprobe functions (probe, remux, PCM extraction and
 RGBA frame export), see [MEDIA_TOOLS.md](MEDIA_TOOLS.md). These synchronous
 C/Rust/Python functions use the built-in FFmpeg without an external executable
 or engine loop. The lower-level vendor API remains available.
+
+## Switches that are not an application's
+
+`--use-fake-device-for-media-stream` and `--use-fake-ui-for-media-stream` are
+Chromium's test switches: with them a page gets a fake camera and microphone with no
+permission asked. `--isolated-context-origins` gives the origins it lists Chromium's
+Isolated Context. An application should not pass on any of them from outside.

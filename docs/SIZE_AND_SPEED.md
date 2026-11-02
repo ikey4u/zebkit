@@ -15,6 +15,11 @@ slimming Chromium disagrees with what was measured, the measurement wins.
 | Electron 44.9.0, trimmed (the baseline) | 255.7 MiB | 85.3 MiB | 112.6 MiB |
 | zebkit of Electron | 62% | 63% | 64% |
 
+Own embedder (2026-11-01): the content shell's code replaced by the engine's, in place
+of its browser classes. Package 168,729,926 to 168,590,133 bytes, the library 146,930,312
+to 146,791,048: 0.08% less. Almost nothing, as what the shell linked was mostly needed;
+Chrome's origin trial policy in place of the shell's costs a page (4 KiB) of it.
+
 The engine library is 138.9 MiB of it; ICU's data 6.5 MiB, SwiftShader
 with its Vulkan loader 3.6 MiB, the headers an application builds against
 7.6 MiB, V8's snapshots, the resource pack and ANGLE the rest

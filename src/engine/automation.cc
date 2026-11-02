@@ -3686,8 +3686,9 @@ class Automation : public content::WebContentsObserver,
   // commands wait for the same signal. Frames of other sites are never held.
   void WhenInputReady(base::OnceClosure then) {
     content::RenderWidgetHost* widget = MainWidget();
-    if (!widget || base::CommandLine::ForCurrentProcess()->HasSwitch(
-                       "zebkit-test-no-input-wait")) {
+    // In the environment of the test that shows what the wait is for, not a switch
+    // of the engine's that an application could pass on.
+    if (!widget || getenv("ZEBKIT_TEST_NO_INPUT_WAIT")) {
       std::move(then).Run();
       return;
     }

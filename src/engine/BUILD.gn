@@ -256,6 +256,7 @@ repack("pak") {
   sources = [
     "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
     "$root_gen_dir/components/ukm_resources.pak",
+    "$root_gen_dir/content/browser/devtools/devtools_resources.pak",
     "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
     "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
     "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
@@ -280,12 +281,14 @@ repack("pak") {
     "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
     "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
     "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
+    "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak",
     "$root_gen_dir/ui/webui/resources/webui_resources.pak",
   ]
   deps = [
     "//base/tracing/protos:chrome_track_event_resources",
     "//components/ukm/debug:resources",
     "//content:content_resources",
+    "//content/browser/devtools:devtools_resources",
     "//content/browser/resources",
     "//content/browser/resources/media:resources",
     "//content/browser/tracing:resources",
@@ -300,6 +303,7 @@ repack("pak") {
     "//third_party/blink/public/strings:permission_element_strings",
     "//ui/resources",
     "//ui/strings",
+    "//ui/views/resources",
     "//ui/webui/resources",
   ]
   output = "$root_out_dir/zebkit.pak"
@@ -352,8 +356,6 @@ _sources = [
   "file_select.h",
   "js_dialog_manager.cc",
   "js_dialog_manager.h",
-  "origin_trial_policy.cc",
-  "origin_trial_policy.h",
   "permission_manager.cc",
   "permission_manager.h",
   "profile.cc",
@@ -482,6 +484,7 @@ _deps = [
   "//components/custom_handlers",
   "//components/embedder_support",
   "//components/embedder_support:user_agent",
+  "//components/embedder_support/origin_trials",
   "//components/input",
   "//components/keyed_service/content",
   "//components/memory_system",

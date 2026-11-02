@@ -229,12 +229,22 @@ class Window : public content::WebContentsDelegate,
                                    const gfx::Size& initial_size,
                                    Kind kind);
 
+  // A window for what a page of @source opens with no opener of its own: a view
+  // as every window a page opens is (Window::SetPopupHandler()).
+  static Window* OpenFrom(content::WebContents* source,
+                          scoped_refptr<content::SiteInstance> site_instance,
+                          const GURL& url,
+                          WindowOpenDisposition disposition,
+                          bool user_gesture);
+
   // Adjust the size when Blink sends 0 for width and/or height.
   // This happens when Blink requests a default-sized window.
   static gfx::Size AdjustWindowSize(const gfx::Size& initial_size);
 
   void ToggleFullscreenModeForTab(content::WebContents* web_contents,
                                   bool enter_fullscreen);
+  friend class BrowserClient;
+
   // WebContentsObserver
   void TitleWasSet(content::NavigationEntry* entry) override;
   void RenderFrameCreated(content::RenderFrameHost* frame_host) override;

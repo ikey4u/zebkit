@@ -16,9 +16,9 @@
 // not the process has others: under --headless Linux's headless Ozone platform,
 // with a display of its own for each root; with a display, a root with a stub
 // platform window, and macOS a view in no window. Its scale is its own: the
-// headless display's, Chromium's capture scale on Windows and on Linux with a
-// display, and on macOS a per-widget screen snapshot before compositor and
-// renderer synchronization.
+// headless display's, Chromium's capture scale on Windows, and on Linux with a
+// display and on macOS a per-widget screen (OnScreenInfos(), patches 1053, 1074)
+// before compositor and renderer synchronization.
 //
 // Input goes to the page's widgets as the window's events would
 // (RenderWidgetHost::Forward*), an input method's composition through the
@@ -107,7 +107,12 @@
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 #include "base/task/single_thread_task_runner.h"
+#endif
+#if BUILDFLAG(IS_WIN)
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
+#endif
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "ui/display/screen_infos.h"
 #endif
 
 #if BUILDFLAG(IS_LINUX)
@@ -122,7 +127,6 @@
 
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/mac/io_surface.h"
-#include "ui/display/screen_infos.h"
 
 #include "zebkit/engine/offscreen_mac.h"
 #elif !defined(_WIN32)
@@ -421,8 +425,8 @@ class Offscreen : public content::WebContentsObserver,
   bool mouse_in_popup_ = false;
   // Configure backing displays; macOS overrides the widget snapshot separately.
   void UpdateDisplay();
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-  // A view's scale without a display of its own (ApplyScale()).
+#if BUILDFLAG(IS_WIN)
+  // A view's scale on Windows (ApplyScale()).
   void ApplyScale();
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -874,9 +878,17 @@ void OnPopupShown(content::WebContents* contents,
                   content::RenderWidgetHost* popup,
                   const gfx::Rect& bounds);
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// The screen an off-screen view's widgets see, whatever screen the system has: of
+// the view's scale, larger than the view, and sRGB, so that frames are the same
+// bytes on every system (the display's own would be Display P3 on a Mac). Each time
+// the system's changes, so that a change of its scale reaches no view. Under
+// --headless on Linux each view has a display that is all of this.
 void OnScreenInfos(content::RenderWidgetHost* widget, display::ScreenInfos* infos) {
   if (!infos || infos->screen_infos.empty()) return;
+#if BUILDFLAG(IS_LINUX)
+  if (zebkit_is_headless()) return;
+#endif
   for (const auto& [view, offscreen] : Offscreen::All()) {
     if (!offscreen->Owns(widget)) continue;
     auto& current = infos->mutable_current();
@@ -885,6 +897,7 @@ void OnScreenInfos(content::RenderWidgetHost* widget, display::ScreenInfos* info
     screen_size.Enlarge(1024, 1024);
     current.rect.set_size(screen_size);
     current.available_rect = current.rect;
+    current.display_color_spaces = gfx::DisplayColorSpaces();
     return;
   }
 }
@@ -898,7 +911,7 @@ void InstallHooks() {
   content::EmbedderWidgetHooks hooks = content::GetEmbedderWidgetHooks();
   hooks.cursor_changed = &OnCursorChanged;
   hooks.popup_shown = &OnPopupShown;
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   hooks.screen_infos = &OnScreenInfos;
 #endif
   content::SetEmbedderWidgetHooks(hooks);
@@ -948,7 +961,7 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
 #endif
   PlaceWindow();
   AttachMainWidget();
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN)
   ApplyScale();
 #endif
 }
@@ -1081,29 +1094,16 @@ void Offscreen::PlaceWindow() {
   }
 }
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN)
 // Windows' headless screen moves displays around when one is added, and a window
-// takes a display's scale only as it is resized; on Linux with a display the
-// screen is the system's. Chromium's own way to draw one page at a scale of its
-// own, what capturing at high DPI uses, needs no display: the page's
-// devicePixelRatio and its frames follow, other views are not touched, and a
-// popup takes its parent's. It multiplies the screen's scale.
+// takes a display's scale only as it is resized. Chromium's own way to draw one
+// page at a scale of its own, what capturing at high DPI uses, needs no display:
+// the page's devicePixelRatio and its frames follow, other views are not touched,
+// and a popup takes its parent's.
 void Offscreen::ApplyScale() {
   auto* view = static_cast<content::RenderWidgetHostViewBase*>(MainView());
-  if (!view)
-    return;
-#if BUILDFLAG(IS_LINUX)
-  if (zebkit_is_headless())
-    return;
-  const float screen_scale = display::Screen::Get()
-                                 ->GetDisplayNearestView(view->GetNativeView())
-                                 .device_scale_factor();
-  const float override_scale = own_scale_ / (screen_scale > 0 ? screen_scale : 1);
-#else
-  const float override_scale = own_scale_;
-#endif
-  if (view->GetScaleOverrideForCapture() != override_scale)
-    view->SetScaleOverrideForCapture(override_scale);
+  if (view && view->GetScaleOverrideForCapture() != own_scale_)
+    view->SetScaleOverrideForCapture(own_scale_);
 }
 #endif
 
@@ -1112,7 +1112,7 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
     size_ = size;
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN)
   // The scale first: the window's new size is then laid out and drawn at it, in one
   // step. In the other order a frame could keep what was not yet drawn for good.
   ApplyScale();
@@ -1125,13 +1125,13 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
     return;
   }
 #endif
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  content::NotifyEmbedderWidgetScreenInfoChanged(MainWidget());
+  if (popup_) content::NotifyEmbedderWidgetScreenInfoChanged(popup_);
+#endif
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   if (auto* main = MainWidget())
     main->SynchronizeVisualProperties();
-#endif
-#if BUILDFLAG(IS_MAC)
-  content::NotifyEmbedderWidgetScreenInfoChanged(MainWidget());
-  if (popup_) content::NotifyEmbedderWidgetScreenInfoChanged(popup_);
 #endif
 #else
   // A new scale is every off-screen view's on this platform.
@@ -1165,7 +1165,7 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
 }
 
 void Offscreen::AttachMainWidget() {
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN)
   // A new renderer's view, after a navigation, has the scale too.
   ApplyScale();
 #endif
@@ -1178,8 +1178,18 @@ void Offscreen::AttachMainWidget() {
   if (!widget)
     return;
   widget->AddObserver(this);
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   content::NotifyEmbedderWidgetScreenInfoChanged(widget);
+#endif
+#if BUILDFLAG(IS_MAC)
+  // The screen's colour space reaches a widget's frames only with a change of its
+  // size in points: a scale alone, or the snapshot alone, leaves them in the
+  // display's (seen on an Apple M4; why was not found). At once it is no frame and
+  // no resize a new renderer can see.
+  if (Window* window = view_->window()) {
+    window->ResizeContents(gfx::Size(size_.width() + 1, size_.height()));
+    window->ResizeContents(size_);
+  }
 #endif
   main_.set_bounds(gfx::Rect(size_));
   if (main_.started())
@@ -1321,6 +1331,9 @@ void Offscreen::PopupShown(content::RenderWidgetHost* popup,
   popup_->AddObserver(this);
   popup_bounds_ = screen;
   popup_bounds_.Offset(-main->GetViewBounds().OffsetFromOrigin());
+#if BUILDFLAG(IS_LINUX)
+  content::NotifyEmbedderWidgetScreenInfoChanged(popup);
+#endif
 #if BUILDFLAG(IS_MAC)
   content::NotifyEmbedderWidgetScreenInfoChanged(popup);
   if (content::RenderWidgetHostView* view = popup->GetView())

@@ -44,6 +44,12 @@ application process                          child processes (zebkit-helper)
   window and its page still loads, runs and draws (`zebkit_view_capture`). An
   off-screen view has none in any process: on Linux and macOS, windows and
   off-screen views live in one process (`tests/engine/mixed_views.c`).
+- **Input methods in windows.** On X11 a window has no real input method (ibus,
+  fcitx): the build has no GTK and Ozone's X11 gives none, so Chromium falls back on
+  its fake context, as it always has here. On Wayland Ozone's own text input is now
+  used, where the content shell's test setup forced the fake; that path is new and
+  has not been run. Off-screen views compose through the application
+  (`zebkit_view_ime_set_composition`).
 - **The allocator.** A library must not take over the application's
   `malloc`, so PartitionAlloc does not (`use_partition_alloc_as_malloc =
   false`); Blink and V8 keep their own heaps, with the thread-local model

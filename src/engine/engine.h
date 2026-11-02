@@ -5,10 +5,12 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <variant>
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
+#include "base/synchronization/lock.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "components/memory_system/memory_system.h"
@@ -19,7 +21,6 @@
 #include "content/public/renderer/content_renderer_client.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
-#include "zebkit/engine/origin_trial_policy.h"
 #include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/profile.h"
 #include "zebkit/engine/window.h"
@@ -102,7 +103,8 @@ class ContentClient : public content::ContentClient {
   void AddPlugins(std::vector<content::WebPluginInfo>* plugins) override;
 
  private:
-  OriginTrialPolicyImpl origin_trial_policy_;
+  std::unique_ptr<blink::OriginTrialPolicy> origin_trial_policy_;
+  base::Lock origin_trial_policy_lock_;
 };
 
 // The client hints delegate of the browser contexts (client_hints.cc).

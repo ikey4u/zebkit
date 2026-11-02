@@ -1253,8 +1253,8 @@ zebkit_view* NewView(zebkit_context* context,
 bool HasNoDisplay(content::WebContents* contents) {
   if (zebkit_is_headless())
     return true;
-  zebkit_view* view = ViewOf(contents);
-  return view && view->offscreen_view_;
+  Window* window = Window::FromWebContents(contents);
+  return window && window->kind() == Window::Kind::kOffscreen;
 }
 
 }  // namespace zebkit

@@ -1,0 +1,27 @@
+Embedder: a widget's screen snapshot where the view is not macOS's too.
+
+An embedder's off-screen view in a process with windows has the screen of its own
+it has on macOS (patches/1053), whatever the system's: its scale, room around it,
+a colour space. After Ozone's per-window scale, so that it has the last word.
+
+--- a/content/browser/renderer_host/render_widget_host_view_base.cc
++++ b/content/browser/renderer_host/render_widget_host_view_base.cc
+@@ -40,6 +40,7 @@
+ #include "content/browser/renderer_host/visible_time_request_trigger.h"
+ #include "content/common/content_switches_internal.h"
+ #include "content/common/features.h"
++#include "content/public/browser/embedder_widget_hooks.h"
+ #include "content/public/browser/render_widget_host_view.h"
+ #include "content/public/common/page_visibility_state.h"
+ #include "third_party/blink/public/common/features.h"
+@@ -589,6 +590,10 @@
+   }
+ #endif  // BUILDFLAG(IS_OZONE)
+ 
++  if (auto hook = GetEmbedderWidgetHooks().screen_infos; hook && host()) {
++    hook(host(), &new_screen_infos);
++  }
++
+   if (screen_infos_ == new_screen_infos && !force_sync_visual_properties)
+     return;
+ 

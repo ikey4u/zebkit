@@ -31,7 +31,9 @@
 #include "components/performance_manager/embedder/performance_manager_registry.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/generated_code_cache_settings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_ui_data.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/site_instance.h"
@@ -61,6 +63,7 @@
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/protocol_handlers.h"
 #include "zebkit/engine/speech_delegate.h"
+#include "zebkit/engine/view.h"
 #include "zebkit/engine/window.h"
 
 #if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
@@ -253,9 +256,23 @@ void BrowserClient::RegisterBrowserInterfaceBindersForFrame(
 void BrowserClient::OpenURL(content::SiteInstance* site_instance,
                             const content::OpenURLParams& params,
                             base::OnceCallback<void(content::WebContents*)> callback) {
-  std::move(callback).Run(Window::Create(site_instance->GetBrowserContext(), params.url,
-                                         nullptr, gfx::Size())
-                              ->web_contents());
+  // A service worker's clients.openWindow(), which has no page behind it: a view
+  // of a page in its context, its policy and kind that page's; none with no page.
+  content::BrowserContext* context = site_instance->GetBrowserContext();
+  for (zebkit_view* view : zebkit_view::Views()) {
+    content::WebContents* source = view->web_contents();
+    if (!source || source->GetBrowserContext() != context)
+      continue;
+    Window* window = Window::OpenFrom(source, nullptr, params.url, params.disposition,
+                                      params.user_gesture);
+    content::WebContents* opened = window ? window->web_contents() : nullptr;
+    if (opened)
+      opened->GetController().LoadURLWithParams(
+          content::NavigationController::LoadURLParams(params));
+    std::move(callback).Run(opened);
+    return;
+  }
+  std::move(callback).Run(nullptr);
 }
 
 base::DictValue BrowserClient::GetNetLogConstants() {

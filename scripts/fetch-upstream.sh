@@ -71,6 +71,10 @@ link_engine() {
 
 apply_patch() {
     log "applying $1"
+    # All of it or nothing: edits of a patch that half applied are in no record,
+    # and every later run would fail on them.
+    patch -d "$SRC_DIR" -p1 --dry-run --force < "$PATCHES_DIR/$1" > /dev/null \
+        || die "$1 does not apply"
     patch -d "$SRC_DIR" -p1 --no-backup-if-mismatch < "$PATCHES_DIR/$1"
     awk '/^--- / { created = ($2 == "/dev/null"); next }
          /^\+\+\+ / { file = $2; sub(/^b\//, "", file); print (created ? "new " : "changed ") file }' \

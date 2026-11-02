@@ -83,16 +83,17 @@ static void on_frame(zebkit_view *view, const zebkit_frame *frame, void *data) {
     }
     zebkit_frame_release(frame);
 }
-/* On macOS frames are in the screen's colour space, not exactly the page's sRGB. */
+/* MIXED_WRONG_COLOUR (a run that must fail): the page's colours expected swapped. */
 static int same_colour(unsigned a, unsigned b) {
-#if defined(__APPLE__)
-    const int tolerance = 80;
-#else
-    const int tolerance = 0;
-#endif
+    static const char *wrong = (const char *)1;
+    if (wrong == (const char *)1)
+        wrong = getenv("MIXED_WRONG_COLOUR");
+    if (wrong)
+        b = (b & 0xff) << 16 | (b & 0xff00) | b >> 16;
+    /* sRGB everywhere, the same bytes: one step for rounding. */
     for (int shift = 0; shift <= 16; shift += 8) {
         const int d = (int)((a >> shift) & 255) - (int)((b >> shift) & 255);
-        if (d > tolerance || d < -tolerance)
+        if (d > 1 || d < -1)
             return 0;
     }
     return 1;
@@ -173,11 +174,13 @@ static void on_open(zebkit_view *opener, zebkit_view *view, const char *url, voi
 
 #define PAGE(color)                                                                              \
     "data:text/html,<!doctype html><style>body{margin:0;background:" color "}"                   \
+    "a{position:absolute;left:110px;top:4px}</style><style>"                                     \
     "select{position:absolute;left:10px;top:60px}</style>"                                       \
     "<script>window.clicked=0;window.keys='';"                                                   \
     "addEventListener('keydown',e=>{window.keys+=e.key})</script>"                               \
     "<button id=b style='position:absolute;left:20px;top:20px;width:60px;height:30px' "          \
     "onclick='++window.clicked'>click</button>"                                                  \
+    "<a id=l href='about:blank'>x</a>"                                                           \
     "<select id=s><option>one<option>two<option>three</select>"
 
 #define KEY_A(view, kind)                                       \
@@ -287,6 +290,32 @@ int main(int argc, char **argv) {
     if (zebkit_init(argc, argv))
         return 2;
     check(!zebkit_is_headless(), "the process has a display", NULL);
+    /* MIXED_SCALED: the screen's scale is not 1 (--force-device-scale-factor). */
+    if (getenv("MIXED_SCALED")) {
+        struct picture one = {0}, half = {0};
+        zebkit_view *plain = zebkit_view_new(PAGE("rgb(1,1,1)"), 200, 100);
+        zebkit_view *s1 = zebkit_view_new_offscreen(PAGE("rgb(200,10,20)"), 200, 100, 1);
+        zebkit_view *s2 = zebkit_view_new_offscreen(PAGE("rgb(20,200,10)"), 200, 100, 1.5f);
+        zebkit_view_on_frame(s1, on_frame, &one);
+        zebkit_view_on_frame(s2, on_frame, &half);
+        wait_loaded(plain);
+        wait_loaded(s1);
+        wait_loaded(s2);
+        wait_picture(&one, 200, 100, 0xc80a14);
+        wait_picture(&half, 300, 150, 0x14c80a);
+        expect(plain, "devicePixelRatio", getenv("MIXED_SCALED"), "the window has the screen's scale");
+        expect(s1, "[devicePixelRatio,innerWidth]", "[1,200]", "an off-screen view its own, 1");
+        expect(s2, "[devicePixelRatio,innerWidth]", "[1.5,200]", "another its own, 1.5");
+        check(shown(&one, 200, 100, 0xc80a14, 1), "frames at 1", NULL);
+        check(shown(&half, 300, 150, 0x14c80a, 1.5f), "frames at 1.5", NULL);
+        zebkit_view_close(plain);
+        zebkit_view_close(s1);
+        zebkit_view_close(s2);
+        steps(50);
+        check(zebkit_shutdown(), "the engine shuts down", NULL);
+        printf("%d of %d checks passed\n", passed, passed + failures);
+        return failures ? 1 : 0;
+    }
 #if defined(MIXED_X11)
     x_display = XOpenDisplay(NULL);
     check(x_display != NULL, "another connection to the display", NULL);
@@ -353,6 +382,14 @@ int main(int argc, char **argv) {
     check(pixel == 0x0a14c8, "the window still shows its page", detail);
 #endif
 
+    /* In a new document too, which may have a new renderer. */
+    zebkit_view_load_url(b, PAGE("rgb(90,60,30)"));
+    wait_picture(&second, 400, 200, 0x5a3c1e);
+    check(shown(&second, 400, 200, 0x5a3c1e, 2), "the second's frames after a navigation", NULL);
+    zebkit_view_load_url(b, PAGE("rgb(20,200,10)"));
+    wait_loaded(b);
+    wait_picture(&second, 400, 200, 0x14c80a);
+
     /* Input of each reaches it alone. */
     zebkit_view_set_focus(a, true);
     click_at(a, 40, 35);
@@ -400,6 +437,7 @@ int main(int argc, char **argv) {
     zebkit_view_set_size(a, 3000, 90, 1);
     wait_picture(&first, 3000, 90, 0x1e2832);
     check(shown(&first, 3000, 90, 0x1e2832, 1), "the first larger than any screen", NULL);
+    expect(a, "screen.width >= innerWidth && screen.height >= innerHeight", "true", "with a screen around it, as a window has");
     zebkit_view_set_size(a, 200, 100, 1);
     wait_picture(&first, 200, 100, 0x1e2832);
 
@@ -434,6 +472,69 @@ int main(int argc, char **argv) {
     if (opened)
         zebkit_view_close(opened);
     steps(30);
+
+    /* A click with a modifier opens without window.open: a view, off-screen, too. */
+    opened = NULL;
+    {
+#if defined(__APPLE__)
+        const unsigned modifier = ZEBKIT_MODIFIER_META;
+#else
+        const unsigned modifier = ZEBKIT_MODIFIER_CONTROL;
+#endif
+        zebkit_view_send_mouse(a, ZEBKIT_MOUSE_MOVE, 113, 12, ZEBKIT_BUTTON_NONE, 0, modifier);
+        zebkit_view_send_mouse(a, ZEBKIT_MOUSE_DOWN, 113, 12, ZEBKIT_BUTTON_LEFT, 1, modifier);
+        zebkit_view_send_mouse(a, ZEBKIT_MOUSE_UP, 113, 12, ZEBKIT_BUTTON_LEFT, 1, modifier);
+    }
+    end = now() + 10;
+    while (!opened && now() < end)
+        step();
+    check(opened && zebkit_view_is_offscreen(opened), "a link opened with a modifier is an off-screen view", NULL);
+#if defined(MIXED_X11)
+    check(all_windows() == windows_with_one, "and adds no window to the display", NULL);
+#endif
+    if (opened) {
+        expect(opened, "alert('nobody sees this'),1", "1", "with no dialog of the system's");
+        zebkit_view_close(opened);
+    }
+    steps(30);
+
+    /* The microphone behind speech recognition is asked for like any: refused here. */
+    expect_soon(b,
+                "(window.speech || (window.speech = new Promise(done => {"
+                "const r = new webkitSpeechRecognition(); r.onerror = e => done(e.error);"
+                "r.onstart = () => done('started'); r.start(); })), window.speechResult ||"
+                " (window.speech.then(v => window.speechResult = v), 'waiting'))",
+                "\"not-allowed\"", "speech recognition without the microphone's permission");
+
+    /* devtools:// is a handled scheme with nothing behind it, the front end not
+     * being in the package: an error page, and the page goes on. */
+    {
+        zebkit_view *tools = zebkit_view_new_offscreen("devtools://devtools/bundled/inspector.html", 200, 100, 1);
+        steps(200);
+        expect(tools, "1+1", "2", "devtools:// goes nowhere and harms nothing");
+        zebkit_view_close(tools);
+        steps(20);
+    }
+
+    /* Off-screen views go, again and again, with their roots. */
+    for (int i = 0; i < 20; ++i) {
+        struct picture brief = {0};
+        zebkit_view *gone = zebkit_view_new_offscreen(PAGE("rgb(9,9,9)"), 200, 100, 1 + i % 3);
+        zebkit_view_on_frame(gone, on_frame, &brief);
+        for (int j = 0; j < 40 && !brief.count; ++j)
+            steps(5);
+        /* With a popup open every other time, which has a root too. */
+        if (i % 2) {
+            zebkit_view_set_focus(gone, true);
+            click_at(gone, 30, 68);
+            for (int j = 0; j < 40 && !brief.popups; ++j)
+                steps(5);
+        }
+        zebkit_view_close(gone);
+        steps(5);
+    }
+    check(1, "off-screen views made and closed twenty times", NULL);
+    expect(b, "devicePixelRatio", "2", "the second as it was");
 
     /* Another window while they live; either end may be first. */
     zebkit_view *window2 = zebkit_view_new(PAGE("rgb(90,100,110)"), 200, 150);

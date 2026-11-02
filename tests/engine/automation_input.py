@@ -83,7 +83,7 @@ async def seen(page):
 
 
 async def without_the_wait():
-    # --zebkit-test-no-input-wait: what commands would do without it. Held input is
+    # ZEBKIT_TEST_NO_INPUT_WAIT: what commands would do without it. Held input is
     # dropped by the browser, and the command says so instead of succeeding.
     page = Page(width=800, height=600)
     await page.goto(f'{base}/')

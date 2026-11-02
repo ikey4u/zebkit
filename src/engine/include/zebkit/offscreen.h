@@ -100,7 +100,7 @@ typedef enum {
     ZEBKIT_LAYER_POPUP = 1,
 } zebkit_frame_layer;
 
-/* Pixel formats: 32 bits a pixel, alpha premultiplied, in memory order. */
+/* Pixel formats: 32 bits a pixel, alpha premultiplied, in memory order; sRGB. */
 typedef enum {
     ZEBKIT_FORMAT_BGRA8 = 1, /* DRM_FORMAT_ARGB8888, kCVPixelFormatType_32BGRA */
     ZEBKIT_FORMAT_RGBA8 = 2, /* DRM_FORMAT_ABGR8888 */

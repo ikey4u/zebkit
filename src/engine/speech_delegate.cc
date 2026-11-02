@@ -14,12 +14,11 @@ namespace zebkit {
 void SpeechDelegate::CheckRecognitionIsAllowed(
     int session_id,
     OnceCallback<void(bool ask_user, bool is_allowed)> callback) {
-  // In content_shell, we expect speech recognition to happen when requested.
-  // Therefore we simply authorize it by calling back with is_allowed=true. The
-  // first parameter, ask_user, is set to false because we don't want to prompt
-  // the user for permission with an infobar.
+  // The microphone's permission, as for getUserMedia: ask_user sends it through
+  // WebContentsDelegate::RequestMediaAccessPermission, the application's hooks.
   GetIOThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), false, true));
+      FROM_HERE, base::BindOnce(std::move(callback), /*ask_user=*/true,
+                                /*is_allowed=*/false));
 }
 
 SpeechRecognitionEventListener*
