@@ -16,6 +16,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import {
   check, finish, httpClient, loadSdk, makePdf, signedPdf, startHttp, stdioClient, stop, wrap,
@@ -33,6 +34,60 @@ const transcript = [];
 
 const hits = [];                 // What reached the server no page may reach.
 const provider = { polls: 0, requests: [], token: 'tok-' + crypto.randomBytes(16).toString('hex'), refresh: 'ref-' + crypto.randomBytes(16).toString('hex'), deviceCode: 'dev-' + crypto.randomBytes(16).toString('hex') };
+
+// A page drawn on a canvas, as Google Docs is: what is in it has no element.
+// A click draws a red square and focuses a hidden text sink, which takes the
+// keys (as Docs' text-event iframe does); a drag draws a blue line.
+const CANVAS = `<!doctype html><title>Canvas page</title><style>body{margin:0}</style>
+<div role=toolbar aria-label="Tools"><button id=bold>Bold</button></div>
+<canvas id=c width=600 height=400 style="display:block;width:600px;height:400px"></canvas>
+<textarea id=sink aria-label="Text sink" style="position:absolute;left:-1000px;top:0"></textarea>
+<script>
+const c = document.getElementById('c'), x = c.getContext('2d'), sink = document.getElementById('sink');
+x.fillStyle = '#fff'; x.fillRect(0, 0, 600, 400);
+window.state = { clicks: [], text: '', keys: [], wheel: 0, drag: null, dbl: 0 };
+let down = null;
+c.addEventListener('mousedown', e => { down = [e.offsetX, e.offsetY]; e.preventDefault(); sink.focus(); });
+c.addEventListener('mouseup', e => {
+  if (down && Math.hypot(e.offsetX - down[0], e.offsetY - down[1]) > 5) {
+    state.drag = [down, [e.offsetX, e.offsetY]];
+    x.strokeStyle = '#00f'; x.lineWidth = 4; x.beginPath(); x.moveTo(...down); x.lineTo(e.offsetX, e.offsetY); x.stroke();
+  }
+  down = null;
+});
+c.addEventListener('click', e => { state.clicks.push([e.offsetX, e.offsetY, e.shiftKey]); x.fillStyle = '#f00'; x.fillRect(e.offsetX - 5, e.offsetY - 5, 10, 10); });
+c.addEventListener('dblclick', () => state.dbl++);
+c.addEventListener('wheel', e => { state.wheel += e.deltaY; e.preventDefault(); }, { passive: false });
+sink.addEventListener('input', () => { state.text = sink.value; });
+sink.addEventListener('keydown', e => state.keys.push(e.key));
+</script>`;
+
+// RGBA at (x, y) of a PNG of 8-bit RGB or RGBA, filters undone.
+function pngPixel(png, x, y) {
+  let offset = 8, width = 0, height = 0, type = 0;
+  const data = [];
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset), name = png.toString('latin1', offset + 4, offset + 8);
+    const body = png.subarray(offset + 8, offset + 8 + length);
+    if (name === 'IHDR') { width = body.readUInt32BE(0); height = body.readUInt32BE(4); type = body[9]; }
+    if (name === 'IDAT') data.push(body);
+    offset += 12 + length;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(data)), channels = type === 6 ? 4 : 3, stride = width * channels;
+  const rows = [];
+  for (let r = 0, previous = Buffer.alloc(stride); r < height; ++r) {
+    const filter = raw[r * (stride + 1)], line = Buffer.from(raw.subarray(r * (stride + 1) + 1, (r + 1) * (stride + 1)));
+    for (let i = 0; i < stride; ++i) {
+      const a = i >= channels ? line[i - channels] : 0, b = previous[i], c = i >= channels ? previous[i - channels] : 0;
+      const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+      line[i] = (line[i] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][filter]) & 255;
+    }
+    rows.push(line);
+    previous = line;
+  }
+  const at = rows[y].subarray(x * channels, x * channels + channels);
+  return { width, height, rgba: [at[0], at[1], at[2], channels === 4 ? at[3] : 255] };
+}
 
 const PAGE = `<!doctype html><title>Form page</title>
 <h1>Test page</h1><p>Some <b>bold</b> text and <a href="/second">a link</a>.</p>
@@ -54,6 +109,7 @@ function requestHandler(request, response) {
   const send = (body, type = 'text/html') => { response.writeHead(200, { 'Content-Type': type }); response.end(body); };
   switch (url.pathname) {
     case '/page': return send(PAGE);
+    case '/canvas': return send(CANVAS);
     case '/second': return send('<!doctype html><title>Second</title><h1>Second page</h1>');
     case '/file.bin': response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment' }); return response.end('bytes');
     case '/wide': return send('é'.repeat(100), 'text/plain; charset=utf-8');
@@ -252,6 +308,47 @@ async function everyTool(label, c) {
   await refused('page_capture', { page, path: path.join(outsideDir, 'shot.png') }, /outside/, 'page_capture: a path outside');
   const onFile = await call('page_capture', { page, path: path.join(writeDir, `shot-${label}.png`) });
   check(fs.existsSync(path.join(writeDir, `shot-${label}.png`)), say('page_capture into a granted file'), onFile.text);
+
+  {
+  // A canvas page: no element to name, the mouse and keyboard at points, the
+  // picture at one pixel per CSS pixel.
+  const canvas = (await call('page_open', { url: `${SITE}/canvas`, width: 900, height: 700 })).structured.page;
+  const chrome = await call('page_read', { page: canvas });
+  check(/button "Bold"/.test(chrome.text), say('page_read: a canvas app\'s DOM chrome'), chrome.text);
+  const box = (await call('page_evaluate', { page: canvas, script: "(() => { const r = c.getBoundingClientRect(); return [r.left, r.top]; })()" })).structured.value;
+  const state = async () => (await call('page_evaluate', { page: canvas, script: 'state' })).structured.value;
+  const clicked = await call('page_mouse', { page: canvas, action: 'click', x: box[0] + 100, y: box[1] + 100 });
+  check(!clicked.isError && clicked.structured.mouse.x === box[0] + 100, say('page_mouse click at a point'), clicked.text);
+  const red = await call('page_evaluate', { page: canvas, script: 'Array.from(x.getImageData(100, 100, 1, 1).data)' });
+  check((await state()).clicks[0]?.join() === '100,100,false' && red.structured.value.join() === '255,0,0,255',
+    say('page_mouse: the canvas has the click where it was asked'), red.text);
+  await call('page_mouse', { page: canvas, action: 'click', x: box[0] + 200, y: box[1] + 100, modifiers: ['Shift'] });
+  check((await state()).clicks[1]?.[2] === true, say('page_mouse: modifiers held'));
+  await call('page_mouse', { page: canvas, action: 'click', x: box[0] + 300, y: box[1] + 100, count: 2 });
+  check((await state()).dbl === 1, say('page_mouse: a double click'));
+  await call('page_keyboard', { page: canvas, action: 'type', text: 'Hi' });
+  await call('page_keyboard', { page: canvas, action: 'insertText', text: ' there' });
+  await call('page_keyboard', { page: canvas, action: 'press', key: 'Backspace' });
+  const keyed = await state();
+  check(keyed.text === 'Hi ther' && keyed.keys.includes('Backspace'), say('page_keyboard: type, insertText and press on what has the focus'), JSON.stringify(keyed));
+  await call('page_mouse', { page: canvas, action: 'drag', x: box[0] + 50, y: box[1] + 200, toX: box[0] + 300, toY: box[1] + 200 });
+  check((await state()).drag?.flat().join() === '50,200,300,200', say('page_mouse: a drag'), JSON.stringify((await state()).drag));
+  await call('page_mouse', { page: canvas, action: 'wheel', x: box[0] + 100, y: box[1] + 100, deltaY: 120 });
+  await sleep(100);
+  check((await state()).wheel === 120, say('page_mouse: the wheel at a point'));
+  await refused('page_mouse', { page: canvas, action: 'click' }, /x and y/, 'page_mouse: a click needs a point');
+  const picture = await call('page_capture', { page: canvas });
+  const png = Buffer.from(picture.image.data, 'base64');
+  const pixel = pngPixel(png, Math.round(box[0] + 100), Math.round(box[1] + 100));
+  check(picture.structured.scale === 1 && picture.structured.viewport.width === 900 && pixel.width === 900 && pixel.height === 700,
+    say('page_capture: the viewport at one pixel per CSS pixel'), picture.text);
+  check(pixel.rgba[0] > 200 && pixel.rgba[1] < 60 && pixel.rgba[2] < 60, say('page_capture: the click is where page_mouse put it'), pixel.rgba.join());
+  const gridded = await call('page_capture', { page: canvas, grid: true, cursor: true });
+  const overlayGone = await call('page_evaluate', { page: canvas, script: "!document.getElementById('__zebkit_mcp_overlay__')" });
+  check(gridded.image && gridded.structured.bytes !== picture.structured.bytes && overlayGone.structured.value === true,
+    say('page_capture: a grid and the cursor when asked, gone after'), gridded.text);
+  await call('page_close', { page: canvas });
+  }
 
   const evaluated = await call('page_evaluate', { page, script: '(a) => a + 1', arg: 41 });
   check(evaluated.structured.value === 42, say('page_evaluate with an argument'), evaluated.text);

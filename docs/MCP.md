@@ -156,7 +156,7 @@ standard error at 1 and nothing at 0.
 
 | Group | Tools |
 |---|---|
-| `pages` | `page_open`, `page_navigate`, `page_history`, `page_wait`, `page_read` (`aria` with references, `text`, `markdown`, in pieces), `page_click`, `page_type`, `page_press`, `page_select`, `page_check`, `page_hover`, `page_scroll`, `page_upload`, `page_evaluate`, `page_capture`, `page_network`, `page_console`, `page_dialog`, `page_list`, `page_close` |
+| `pages` | `page_open`, `page_navigate`, `page_history`, `page_wait`, `page_read` (`aria` with references, `text`, `markdown`, in pieces), `page_click`, `page_type`, `page_press`, `page_select`, `page_check`, `page_hover`, `page_scroll`, `page_mouse`, `page_keyboard`, `page_upload`, `page_evaluate`, `page_capture`, `page_network`, `page_console`, `page_dialog`, `page_list`, `page_close` |
 | `pdf` | `pdf_open`, `pdf_close`, `pdf_info`, `pdf_read` (text, lines, characters), `pdf_search`, `pdf_render`, `pdf_outline`, `pdf_links`, `pdf_form_fields`, `pdf_form_set`, `pdf_annotations`, `pdf_annotate`, `pdf_redact`, `pdf_edit_pages`, `pdf_signatures`, `pdf_save`, `page_pdf` |
 | `files` | `file_read`, `file_write`, `file_list`, `file_stat`, `file_mkdir`, `net_fetch`, `data_compress`, `data_decompress`, `data_hash`, `image_decode`, `image_encode`, `url_parse` |
 | `media` | `media_probe`, `media_convert`, `media_cut`, `media_extract_audio`, `media_extract_frames` |
@@ -178,6 +178,34 @@ page; what it can do is that the bounds hold when the agent does.
 snapshot for AI, and the action tools take it as `ref`, or a Playwright `selector`.
 Frames are not expanded in the snapshot: reach into one with a selector
 (`iframe >> internal:control=enter-frame >> button`).
+
+**Pages drawn on a canvas** (Google Docs and Sheets, maps, editors, games) have
+nothing an element reference can name: their content is pixels. For them, as a
+computer-use agent works, there are coordinates:
+
+- `page_capture` of the viewport is at one pixel per CSS pixel of the viewport
+  (`scale: "css"`), and its result says `scale: 1`, the viewport's size and its
+  scroll: the picture's x and y are what `page_mouse` takes. `grid: true` lays
+  numbered lines every 100 pixels over it, `cursor: true` marks where `page_mouse`
+  left the mouse; both are off by default and taken out of the page after the
+  picture.
+- `page_mouse`: `move`, `click` (`button`, `count: 2` for a double click), `down`,
+  `up`, `drag` from `x,y` to `toX,toY` (moved in steps, as a hand drags), `wheel`
+  (`deltaX`, `deltaY`) at a point, with `modifiers` held meanwhile. These are the
+  automation's `Page.mouse*` commands: trusted events from the browser process,
+  through Blink's hit testing.
+- `page_keyboard`: to whatever has the focus, no element named: `type` key by key,
+  `insertText` at once as an input method commits, `press` a key or chord, `down`
+  and `up`; `modifiers` held around it. A canvas editor takes keys in an element
+  of its own it focuses on a click (Docs: a hidden, contenteditable iframe), so a
+  click into the canvas first, then the keyboard.
+- `page_read` still has such an app's menus, toolbars and dialogs, which are DOM;
+  its descriptions say that what is drawn needs `page_capture` and coordinates.
+
+`tests/engine/mcp_server.mjs` has a canvas page of its own: a click draws where it
+was asked (checked in the canvas's pixels, in the page's state and in the
+captured PNG at the same x and y), modifiers, a double click, a drag, the wheel,
+keys into a hidden sink the click focused, and the overlay gone after.
 
 **Windows.** A process has windows or has none: `--windows` decides, and `page_open`'s
 `window` refuses what the server was not started for. `ui_open` builds a window of
