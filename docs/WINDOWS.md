@@ -106,31 +106,29 @@ A sandboxed child has no PATH of the parent's: `zebkit.dll` has to be beside the
 
 ## State
 
-Windows 10 19045, 2 CPUs, VMware's display adapter, on a shared folder, 2026-11-01:
-142 groups of the suite, 18 with failures of their own (and `services`, whose program did not arrive intact: see below). 1,837 of the 1,843 checks in groups that print a
-total passed. Node.js's tests (Playwright, MCP, certificates over HTTP/2) did not run.
+Run the suite on NTFS. A shared folder has no ACLs, and there file key storage rightly refuses
+to start and copies can arrive with a wrong bit.
+
+Windows 10 19045 with a zh-CN system locale, 2 CPUs, VMware's display adapter, on NTFS,
+2026-11-02: 143 sections of the suite, none failing; 1,868 of the 1,868 checks in those that print a total passed. Node.js's tests (Playwright, MCP, certificates over
+HTTP/2) did not run.
 
 Pass, among others: `win_smoke`, `win_host` and `win_native_parent` (23 checks, real
 `SendInput`), with the sandbox and without; the control of `zebkit_sandbox.lib`'s stubs; `canvas`
 (57), `pdf` (99), `pdf-hooks` (286), `api` (28), `automation`, `vendor` (48); hooks in C, JavaScript,
-Python and Rust other than downloads; WebAuthn with the virtual authenticator; Rust with the sandbox.
+Python and Rust, downloads too; cookies across a restart with each key; WebAuthn with the virtual
+authenticator; Rust with the sandbox.
 
-Fail:
-
-| What | Why |
-|---|---|
-| `cookies`, `cookie-host` | cookies are written encrypted, and gone after a restart, with zebkit's DPAPI key and the host's key alike; so not DPAPI. Not known; the profile was on a shared folder |
-| `cookie-file*`, `startup-settings*` | file key storage refuses a directory without ACLs, which a shared folder has not: fail-closed. Not run on NTFS |
-| `hook-*-download` | a download ends `FILE_FAILED`. Not known; a shared folder too |
-| `offscreen` (2 of 31, about two runs in three) | after a change of scale part of the frame stays `fcfcfc` for good. Not understood |
-| `cdp-overrides` | clearing a locale override gives `en-US`, not the system's `zh-CN` it started with: `LocaleController` restores its own default. Not fixed |
+A spare renderer kept by `spareRenderer` is not taken by a navigation to another site, here as on
+a Mac: it goes, and another process starts (16 runs of 16, with or without 3 s before the
+navigation). Not understood; `runtime-settings-python` does not ask it of either.
 
 Windows' WebAuthn route (webauthn.dll) has never been tried: the test machine's `WebAuthNGetApiVersionNumber()`
 is 0, so Chromium does not offer it; `win-webauthn` says so and skips.
 
-Copies to the shared folder are not always intact: two copies of `zebkit.dll` had one wrong
-bit each, and one build of the `services` program never arrived intact under any name, and
-could then not be run. Compare SHA-256 after every copy.
+Copies to a shared folder are not always intact: two copies of `zebkit.dll` had one wrong
+bit each, and one build of the `services` program never arrived intact under any name. Five
+copies to NTFS, all verified, had none. Compare SHA-256 after every copy.
 
 ## The network service
 
@@ -144,7 +142,6 @@ under it. Not tried here. Chrome decides it in its own code, not by the default.
 
 ## Left
 
-- The failures above, on NTFS first.
 - `zebkit.ui` beyond its script's test; printing through the system's dialog.
 - The example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
