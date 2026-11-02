@@ -565,9 +565,37 @@ either:
   Upload streams without a known length report -1 for their body size.
 - **Protocol commands not implemented yet**, which fail with "no command" or
   are listed as expected failures: locator handlers, `Frame.drop`, custom
-  selector engines, JS and CSS coverage, `newCDPSession` (CDP has its own
-  endpoint), the context's `proxy` and `clientCertificates` options,
-  `page.frameLocator()` with no selector, WebMCP.
+  selector engines, JS and CSS coverage, the context's `proxy` and
+  `clientCertificates` options, `page.frameLocator()` with no selector,
+  `Route.redirectNavigationRequest`, service workers as `Worker`s, WebMCP.
+
+**`CDPSession`** (`Browser.newBrowserCDPSession`, `BrowserContext.newCDPSession`
+of a page, or of a frame of another site, which is a target of its own) is a
+session of Chromium's DevTools in the engine's process, the browser's target or
+the page's or frame's, attached as a trusted client as Playwright's pipe is:
+`send` answers with CDP's result or `Protocol error (method): message`, its
+events come as the session's `event`, and `detach` or the target's end closes it.
+
+**Popups** are reported as `crPage.ts` reports them: once their first document
+other than the initial empty one has committed (`Page.waitForInitialNavigation`),
+so `page.url()` is the document's; with an opener only when they have one (a
+page Chromium opened for a modified click has none). What they do meanwhile is
+kept and given after; a route, a dialog, a binding's call, a file chooser or a
+download reports the popup at once, since the client must answer it.
+
+**HAR** is recorded by the endpoint for a context, or a page, as
+`har/harTracer.ts` does in Playwright's server, from the network events of all
+its pages and its `APIRequestContext`'s fetches: pages with titles and timings,
+cookies, query strings, post data, redirects, sizes and timings, server address
+and port, TLS details, `route.continue()`'s overrides, contents embedded,
+omitted or attached (a zip with `har.har` beside the contents), URL filters,
+`minimal` mode. The native `Tracing.harStart` of a page uses the same recorder.
+
+**The engine's switches**: `zebkit-run --playwright-port` gives the engine the
+switches Playwright launches Chromium with (no back-forward cache, no popup
+blocker, no third-party storage partitioning, a desktop pointer and no
+scrollbars when headless); a host serving the endpoint for Playwright's clients
+should do the same.
 
 Native `Page.addInitScript`, `Page.exposeBinding` and their context versions
 return `{registration, kind}`. Pass the registration token to
@@ -656,19 +684,45 @@ CDP in between:
   an engine for each worker, or the same tests on Chrome (`--target chrome`).
   What a test expects to fail is named with its reason in
   `tests/playwright-suite/expected-failures.txt`, by the tests that have the cause; a timeout
-  or a crash is never explained by the list and is counted apart. On 2026-11-01, 5262 tests,
-  30 s a test, four workers, no engine exit:
+  or a crash is never explained by the list and is counted apart. 5262 tests, 30 s a test, four
+  workers:
 
-  | | Passed | Failed | Skipped |
-  |---|---|---|---|
-  | zebkit, total | 3029 | 1166 | 1067 |
-  | Chrome (launched, the same day), total | 4196 | 5 | 1061 |
+  | | Passed | Failed | Skipped | Listed | Timeout | Crash | Unexplained |
+  |---|---|---|---|---|---|---|---|
+  | zebkit, 2026-11-01 | 3028 | 1167 | 1067 | 580 | 197 | 8 | 587 |
+  | zebkit, 2026-11-02 | 3233 | 962 | 1067 | 574 | 121 | 9 | 388 |
+  | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
-  Of the 4190 tests that pass on Chrome, 3029 pass here. Of the 1166 failures, 580 are listed with a
-  reason, 5 fail on Chrome too, and 585 are not explained: 196 tests end in the test's timeout and 8
-  end with the client told the page or browser closed (no engine exited: `beforeunload` among them),
-  the others differ in a value. The endpoint is not at parity with Playwright's server, and this
-  counts how far.
+  What moved it (2026-11-02): the engine started with Playwright's launch switches by
+  `zebkit-run` (popups not blocked, no back-forward cache, no third-party partitioning, a desktop
+  pointer); the injected script of v1.64.1 instead of a later commit; `CDPSession`; popups reported
+  after their first commit; AbortSignal; Playwright's call logs; HAR recorded by the endpoint;
+  CDP's cookies; storage state from the profile; request-based `networkidle`; Response bodies of
+  fulfilled and in-flight responses; goto's referer. One engine aborted during the run (it was
+  restarted, as `engines.mjs` does, at the cost of its worker's test).
+
+  **Not at parity: what is left, by cause** (the unexplained 388 and the timeouts among them):
+  - Playwright's own tools in a browser of their own: the trace viewer's 21 tests and the
+    debugger's 6 end in their timeout here, since the browser they launch is hidden from the run;
+    they are the listed "launches a browser itself" cause, but a timeout is never explained.
+  - HAR (22): the network gives the page's loaders no `Set-Cookie` and no raw headers (DevTools
+    has them from its own observer), so cookies and raw sizes of responses are missing; redirects
+    of API requests, entries served from the cache, the file write that fails.
+  - Screenshots (20): pixel differences against Playwright's snapshots (caret, animations,
+    fonts, WebGL, JPEG backgrounds), WebP options, the screencast overlay commands.
+  - Service workers (19 in `chromium.spec.ts`, more in `page-event-request`): not reported as
+    `Worker`s, their requests not attributed.
+  - Workers (13): their requests are not attributed to the worker, so network events and
+    routes for worker scripts and their fetches differ.
+  - WebSockets (13 route, 9 events, 5 HAR): frames of a routed socket's pass-through and the
+    socket's own events.
+  - Routes (12): CORS answers of a fulfilled request (Access-Control-Allow-Origin added by
+    Playwright's server), `sec-fetch-*` and `Cookie` as the route sees them, URLPattern options.
+  - Storage state (10): IndexedDB and OPFS in it, lone surrogates.
+  - Third-party cookies (9), `dispatchEvent` of device and drag events (8), page errors'
+    names and source URLs (6), `exposeFunction` with handles and cycles (6), `beforeunload` (6),
+    `page.close()` interrupting calls (6), clock (5), selectors through frames (5).
+  The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
   endpoint and over CDP on the same build, and Playwright on Chrome. It is a standard test: a native command

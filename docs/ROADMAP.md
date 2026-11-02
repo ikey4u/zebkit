@@ -202,8 +202,9 @@ in `examples/native-host` (Done table). What is left:
   programs, downloads (saved in the profile's `Downloads` without a function),
   isolated worlds, file choosers, camera and microphone, keys, context menu and
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
-  requests (a WebSocket's Cookie is not seen, the headers the network adds otherwise are; `docs/ROADMAP_HOOKS.md`) and client
-  certificates (no system stores).
+  requests (the headers the network adds are seen, a WebSocket's Cookie too since 2026-11-02;
+  `docs/ROADMAP_HOOKS.md`) and client certificates (no system stores: designed and costed in
+  `docs/ROADMAP_HOOKS.md`, not built).
   The hook sources compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
 - **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).
   A new top-level widget takes no input until its first frame: the browser's
@@ -275,6 +276,11 @@ in `examples/native-host` (Done table). What is left:
   `scripts/automation-bench.sh`.
   - **Playwright's own test suite against the endpoint: running, not at parity** (2026-11-01;
     `scripts/playwright-suite.sh`, counts and what is left in `docs/AUTOMATION.md`, section 7).
+    2026-11-02: the engine gets Playwright's launch switches from `zebkit-run`, the injected
+    script is pinned to the release the endpoint speaks (v1.64.1), and the endpoint gained
+    CDP sessions, popups reported as `crPage.ts` reports them, AbortSignal, Playwright's call
+    logs, HAR recorded by the endpoint as `harTracer.ts` does, CDP's cookies, request-based
+    `networkidle`; counts before and after in section 7.
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
@@ -284,8 +290,13 @@ in `examples/native-host` (Done table). What is left:
   standard input and over HTTP, on Linux and macOS alike. CDP stays for
   clients that speak it; MCP is what agents are given. 68 tools, the protocol's
   current revision and the handshake ones; a program of its own in Rust, about
-  1 MiB, outside the library. Still to do: an outside agent's real tasks
-  (the run in `tests/engine/` is scripted, on a local site); running on macOS
+  1 MiB, outside the library. An outside agent (Claude Code, headless, this server its
+  only tools) did five real tasks on the open web on 2026-11-02 (a form, research on three
+  sites, a 15-page PDF, a site's own search, a public Google Doc): all done; what it hit was
+  fixed the same day (stale references failing at once, actions answering after their
+  navigation, `page_read`'s `find`, a clearer missing-directory error; `docs/MCP.md`). Pages
+  drawn on a canvas have coordinates (`page_mouse`, `page_keyboard`, a capture at one pixel per
+  CSS pixel). Still to do: running on macOS
   and Windows' standard input; the device flow against the real providers,
   and refresh tokens. The engine fixes it needed were made on 2026-10-31 (`docs/MCP.md`).
   - **Pages:** open, navigate, wait for a load; read a page as text,
@@ -318,8 +329,9 @@ in `examples/native-host` (Done table). What is left:
     over both transports with every tool and bounds' escapes
     (`mcp_server.mjs`), four scenarios of the project's conformance suite
     (`mcp_conformance.mjs`), and those tasks as a scripted run on a local site,
-    no model deciding (`mcp_agent_run.mjs`). Not yet an outside agent, nor the
-    open web, nor a client of the current revision: no SDK speaks it yet.
+    no model deciding (`mcp_agent_run.mjs`), and an outside agent's runs on the open web
+    (2026-11-02, by hand: they cost a model's tokens). Not yet a client of the current
+    revision: no SDK speaks it yet.
 ### Measurements
 
 - **Web pages against Electron 44.9: done for 14 pages, one left over**
