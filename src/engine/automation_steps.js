@@ -286,7 +286,7 @@ steps.queryAll = (arg, out) => query(arg, false).map(out);
 
 steps.isVisible = arg => {
   const element = query(arg, arg.strict)[0];
-  return element ? injected.elementState(element, 'visible', true).matches : false;
+  return element ? injected.elementState(element, 'visible', arg.frameVisible !== false).matches : false;
 };
 
 steps.read = arg => poll(arg.timeout, kPollWaits, say => {
@@ -301,7 +301,7 @@ steps.waitForSelector = (arg, out) => {
   const state = arg.state || 'visible';
   return poll(arg.timeout, kPollWaits, say => {
     const element = query(arg, arg.strict)[0];
-    const visible = element ? injected.elementState(element, 'visible', true).matches : false;
+    const visible = element ? injected.elementState(element, 'visible', arg.frameVisible !== false).matches : false;
     if (element)
       say(`locator resolved to ${visible ? 'visible' : 'hidden'} ${injected.previewNode(element)}`);
     const success = { attached: !!element, detached: !element, visible, hidden: !visible }[state];
@@ -319,7 +319,7 @@ steps.waitForElementState = arg => poll(arg.timeout, kPollWaits, async say => {
     return undefined;
   if (arg.state === 'stable')
     return (await checkStates(element, ['stable'], say)) ? { done: true } : undefined;
-  const state = injected.elementState(element, arg.state, true);
+  const state = injected.elementState(element, arg.state, arg.frameVisible !== false);
   if (state.received === 'error:notconnected')
     throw fatal('Element is not attached to the DOM');
   if (!state.matches) {
@@ -817,7 +817,7 @@ steps.expect = async arg => {
     say(isArray
       ? `  locator resolved to ${elements.length} element${elements.length === 1 ? '' : 's'}`
       : `  locator resolved to ${injected.previewNode(elements[0])}`);
-    const result = await injected.expect(elements[0], options, elements, true);
+    const result = await injected.expect(elements[0], options, elements, arg.frameVisible !== false);
     if (result.matches === options.isNot && !Array.isArray(result.received?.value))
       say(`  unexpected value "${options.expression === 'to.match.aria' ? result.received?.value?.raw : result.received?.value}"`);
     return result;
@@ -829,7 +829,7 @@ steps.expect = async arg => {
   };
   // dispatchers/frameDispatcher.ts: the call's title, first in its log.
   if (title !== undefined) {
-    const locator = arg.selector === undefined ? '' : ' ' + asLocator('javascript', arg.selector);
+    const locator = arg.selector === undefined ? '' : ' ' + asLocator('javascript', arg.displaySelector ?? arg.selector);
     log.push(`${title}${locator}${timeout ? ` with timeout ${timeout}ms` : ''}`);
     if (arg.selector !== undefined)
       log.push(`waiting for${locator}`);

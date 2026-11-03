@@ -35,7 +35,6 @@ library/webmcp*.spec.ts | * | Frame.webmcpTools and webmcpCallTool are not imple
 page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented
 page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented
 page/page-drop.spec.ts | * | Frame.drop is not implemented
-page/selectors-frame.spec.ts | \(handle\) | a selector through a frame from an element handle: ResolveTarget splits enter-frame only from a frame, not from a handle
 page/selectors-frame.spec.ts | survive | a frame detached while waited for fails with "Frame was detached"; frameSelectors.ts retries
 
 # Differ, each with its cause known; a file's entry says what its failures are.
@@ -50,11 +49,11 @@ page/page-network-sizes.spec.ts | * | header sizes follow the observed headers (
 page/page-aria-snapshot-ai.spec.ts | iframe|frameset|frame snapshots | snapshots do not stitch the frames' documents
 page/page-add-init-script-callback.spec.ts | global | exposeBinding's noGlobal is not honoured: an exposed function is a property of the window
 page/frame-hierarchy.spec.ts | frame\.name | a frame's name does not fall back to its element's id as DOM's Page.frameNavigated does
-page/locator-frame.spec.ts | should wait for frame to go|should not wait for frame|hidden iframe | an assertion through a frame locator waits for the frame instead of treating it as no element
+page/locator-frame.spec.ts | should wait for frame to go | an assertion through a frame locator whose <iframe> is replaced or removed stays on the frame it entered; frames.ts resolves the frames again at each poll
 page/locator-frame.spec.ts | survive frame reattach | a frame detached while waited for fails with "Frame was detached"; frameSelectors.ts retries
 page/locator-frame.spec.ts | should wait for frame$|throw on ambiguity | the call log and the strict error through a frame locator lack frameSelectors.ts's words
-page/locator-query.spec.ts | frameLocator|common frame | an assertion through a frame locator waits for the frame instead of treating it as no element
-page/expect-boolean.spec.ts | frameLocator | an assertion through a frame locator waits for the frame instead of treating it as no element
+page/locator-query.spec.ts | nested frameLocators|common frame prefix | a composite locator whose operands enter the same frame is not reduced to that frame as selectorParser.ts's common frame prefix does
+page/expect-boolean.spec.ts | with frameLocator 2 | an assertion through a frame locator whose <iframe> is replaced or removed stays on the frame it entered; frames.ts resolves the frames again at each poll
 page/interception.spec.ts | activity from worker|worker requests when enabled | a dedicated worker's fetch reaches the server past page.route (checked: the test reads the server's answer); patches/1063 gives workers' factories to the network hooks, routes are per frame
 page/page-click-scroll.spec.ts | scroll into view display:contents|scroll into view element in iframe | scrolling a display:contents element or into a frame differs from DOM.scrollIntoViewIfNeeded
 page/elementhandle-scroll-into-view.spec.ts | display:contents | scrolling a display:contents element differs from DOM.scrollIntoViewIfNeeded

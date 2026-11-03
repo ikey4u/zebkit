@@ -938,7 +938,14 @@ base::Value Connection::Expose(const std::string& page,
       Object object;
       object.id = *handle;
       object.page = page;
-      guid = Create(frame.empty() ? page : frame,
+      // Of its own frame (a handle found through frames), else the call's.
+      std::string parent = frame;
+      if (const std::string* own = dict.FindString("frame")) {
+        const std::string known = Known("frame", page, *own);
+        if (!known.empty())
+          parent = known;
+      }
+      guid = Create(parent.empty() ? page : parent,
                     element ? "ElementHandle" : "JSHandle", std::move(initializer),
                     std::move(object));
       Remember("handle", page, *handle, guid);

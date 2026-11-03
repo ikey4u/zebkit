@@ -516,6 +516,9 @@ struct Target {
   // frameLocator() found nothing yet: a step waits this long at most, after
   // which the frames are searched again (Call::any_frame_retry).
   int cap_ms = 0;
+  // Entered through an <iframe> that is hidden: its elements are too
+  // (frameSelectors.ts's frameVisible).
+  bool frame_visible = true;
   // The agent's handle of the element the selector is inside; 0 for none.
   int32_t scope = 0;
 };
@@ -1159,11 +1162,12 @@ class Automation : public content::WebContentsObserver,
   // preview, element}.
   base::Value Expose(base::Value value,
                      const std::vector<AutomationHandlePtr>& handles,
-                     const std::vector<std::string>& ids) {
+                     const std::vector<std::string>& ids,
+                     const std::string& frame_id = std::string()) {
     if (value.is_list()) {
       base::ListValue list;
       for (base::Value& item : value.GetList())
-        list.Append(Expose(std::move(item), handles, ids));
+        list.Append(Expose(std::move(item), handles, ids, frame_id));
       return base::Value(std::move(list));
     }
     if (!value.is_dict())
@@ -1177,13 +1181,16 @@ class Automation : public content::WebContentsObserver,
           handle.Set("preview", handles[*index]->preview);
           if (handles[*index]->is_element)
             handle.Set("element", true);
+          // The handle's own frame, which may not be the call's.
+          if (!frame_id.empty())
+            handle.Set("frame", frame_id);
           return base::Value(std::move(handle));
         }
       }
     }
     base::DictValue result;
     for (auto [key, item] : dict)
-      result.Set(key, Expose(std::move(item), handles, ids));
+      result.Set(key, Expose(std::move(item), handles, ids, frame_id));
     return base::Value(std::move(result));
   }
 
@@ -1195,7 +1202,7 @@ class Automation : public content::WebContentsObserver,
     std::vector<std::string> ids;
     for (const AutomationHandlePtr& handle : handles)
       ids.push_back(Keep(frame, *handle));
-    return Expose(std::move(value), handles, ids);
+    return Expose(std::move(value), handles, ids, FrameId(frame));
   }
 
   // The handles of a command's argument, {"handle": id}, as {"$h": i} for
@@ -1379,6 +1386,13 @@ class Automation : public content::WebContentsObserver,
     arg.Set("strict", target.strict);
     if (target.cap_ms)
       arg.Set("timeoutCap", target.cap_ms);
+    if (!target.frame_visible)
+      arg.Set("frameVisible", false);
+    // The call's own selector in its log, not the part left in this frame.
+    if (const std::string* own = call->params().FindString("selector");
+        own && *own != target.selector) {
+      arg.Set("displaySelector", *own);
+    }
     std::vector<int32_t> handles;
     if (target.scope) {
       base::DictValue scope;
@@ -1416,6 +1430,11 @@ class Automation : public content::WebContentsObserver,
       target.strict = inside && call->Flag("strict");
       if (inside && IsAnyFrame(selector)) {
         AnyFrameTarget(call, std::move(target), std::move(done));
+        return;
+      }
+      // Into frames from the element (selectors-frame.spec.ts's handles).
+      if (inside && selector.find(kEnterFrame) != std::string::npos) {
+        AnyFrameContinue(call, std::move(target), std::move(done));
         return;
       }
       std::move(done).Run(std::move(target));
@@ -1545,16 +1564,115 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kFrameDetached);
       return;
     }
+    if (!target.scope) {
+      AnyFrameProbeFrames(call, std::move(target), std::move(done), std::nullopt);
+      return;
+    }
+    // Within a scope: the frames of the <iframe>s inside it, and theirs
+    // (frameSelectors.ts's _anyFrameCandidates()).
+    Target owners = target;
+    owners.selector = "css=frame,iframe";
+    owners.strict = false;
+    TargetStep(call.get(), owners, "queryAll", {},
+               base::BindOnce(&Automation::AnyFrameOwners, weak_factory_.GetWeakPtr(), call,
+                              std::move(target), std::move(done)));
+  }
+
+  void AnyFrameOwners(base::WeakPtr<Call> call, Target target, TargetDone done, base::Value value) {
+    if (!call || call->finished())
+      return;
+    struct Owners {
+      base::WeakPtr<Call> call;
+      Target target;
+      TargetDone done;
+      std::vector<content::GlobalRenderFrameHostId> roots;
+      size_t left = 0;
+    };
+    auto owners = std::make_shared<Owners>();
+    owners->call = call;
+    owners->target = std::move(target);
+    owners->done = std::move(done);
+    std::vector<std::string> handles;
+    if (value.is_list()) {
+      for (const base::Value& item : value.GetList()) {
+        const std::string* id = item.is_dict() ? item.GetDict().FindString("handle") : nullptr;
+        if (id && FindHandle(*id))
+          handles.push_back(*id);
+      }
+    }
+    auto finish = [](base::WeakPtr<Automation> self, std::shared_ptr<Owners> owners) {
+      if (self && owners->call)
+        self->AnyFrameProbeFrames(owners->call, std::move(owners->target), std::move(owners->done),
+                                  std::move(owners->roots));
+    };
+    if (handles.empty()) {
+      finish(weak_factory_.GetWeakPtr(), owners);
+      return;
+    }
+    owners->left = handles.size();
+    for (const std::string& id : handles) {
+      const HandleRef* handle = FindHandle(id);
+      content::RenderFrameHost* frame = content::RenderFrameHost::FromID(handle->frame);
+      const int32_t element = handle->id;
+      if (!frame) {
+        Dispose(id);
+        if (--owners->left == 0)
+          finish(weak_factory_.GetWeakPtr(), owners);
+        continue;
+      }
+      Agent(frame)->ContentFrame(
+          element, mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+                       base::BindOnce(
+                           [](base::WeakPtr<Automation> self, std::shared_ptr<Owners> owners,
+                              std::string id, decltype(finish) finish,
+                              const std::vector<int32_t>& path) {
+                             if (!self)
+                               return;
+                             self->Dispose(id);
+                             if (content::RenderFrameHost* child = self->FrameAtPath(path))
+                               owners->roots.push_back(child->GetGlobalId());
+                             if (--owners->left == 0)
+                               finish(self, owners);
+                           },
+                           weak_factory_.GetWeakPtr(), owners, id, finish),
+                       std::vector<int32_t>{-1}));
+    }
+  }
+
+  // The frames asked: the starting frame and the subtree, or within a scope
+  // the starting frame and the subtrees of @roots.
+  void AnyFrameProbeFrames(base::WeakPtr<Call> call,
+                           Target target,
+                           TargetDone done,
+                           std::optional<std::vector<content::GlobalRenderFrameHostId>> roots) {
+    if (!call || call->finished())
+      return;
+    content::RenderFrameHost* start = Resolve(target.frame);
+    if (!start) {
+      call->Fail(kFrameDetached);
+      return;
+    }
     auto probe = std::make_shared<AnyFrameProbe>();
     probe->call = call;
     probe->done = std::move(done);
     const size_t enter = target.selector.find(kEnterFrame);
     const std::string first =
         enter == std::string::npos ? target.selector : target.selector.substr(0, enter);
-    start->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
-      if (frame->IsActive() && frame->IsRenderFrameLive())
-        probe->frames.push_back(frame->GetGlobalId());
-    });
+    probe->frames.push_back(start->GetGlobalId());
+    auto add_subtree = [&](content::RenderFrameHost* root) {
+      root->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+        if (frame != start && frame->IsActive() && frame->IsRenderFrameLive())
+          probe->frames.push_back(frame->GetGlobalId());
+      });
+    };
+    if (!roots) {
+      add_subtree(start);
+    } else {
+      for (const auto& id : *roots) {
+        if (content::RenderFrameHost* root = content::RenderFrameHost::FromID(id))
+          add_subtree(root);
+      }
+    }
     probe->counts.assign(probe->frames.size(), 0);
     probe->pending = probe->frames.size();
     const int32_t scope = target.scope;
@@ -1694,6 +1812,49 @@ class Automation : public content::WebContentsObserver,
     }
     Target frame_target = target;
     frame_target.selector = chunks[index];
+    // A query does not wait for the frame (frameSelectors.ts's noStall): no
+    // <iframe> is no element.
+    // An assertion, or a wait for none, treats no <iframe> as no element and
+    // looks again, as frames.ts's expect() polls.
+    const std::string name = call->Name();
+    const std::string state = call->String("state");
+    const bool expecting = name == "expect" ||
+                           (name == "waitForSelector" && (state == "hidden" || state == "detached"));
+    if (name == "querySelector" || name == "querySelectorAll" || name == "queryCount" ||
+        name == "evalOnSelector" || name == "evalOnSelectorAll" || expecting) {
+      TargetStep(call.get(), frame_target, "query", {},
+                 base::BindOnce(
+                     [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, Target target,
+                        std::vector<std::string> chunks, size_t index, TargetDone done,
+                        base::Value value) {
+                       if (!self || !call)
+                         return;
+                       if (!value.is_dict()) {
+                         target.selector = "css=:not(*)";
+                         if (call->Name() == "expect" && !call->Expired()) {
+                           target.cap_ms = 250;
+                           call->any_frame_retry = true;
+                         }
+                         std::move(done).Run(std::move(target));
+                         return;
+                       }
+                       // Through a frame that may go or change: looked for
+                       // again each while (frames.ts re-resolves each poll).
+                       if (call->Name() == "expect" && !call->Expired()) {
+                         target.cap_ms = 250;
+                         call->any_frame_retry = true;
+                       }
+                       base::DictValue element;
+                       element.Set("element", std::move(value));
+                       base::DictValue wrapped;
+                       wrapped.Set("result", std::move(element));
+                       self->FrameElementFound(call, std::move(target), std::move(chunks), index,
+                                               std::move(done), base::Value(std::move(wrapped)));
+                     },
+                     weak_factory_.GetWeakPtr(), call, std::move(target), std::move(chunks), index,
+                     std::move(done)));
+      return;
+    }
     call->Log("waiting for " + LocatorText(chunks[index]));
     base::DictValue arg;
     arg.Set("state", "attached");
@@ -1725,6 +1886,35 @@ class Automation : public content::WebContentsObserver,
       return;
     }
     const std::string kept = *id;
+    // Whether the <iframe> shows, for what is inside it.
+    Target owner;
+    owner.frame = Exact(parent);
+    owner.selector = ":scope";
+    owner.scope = handle->id;
+    owner.frame_visible = target.frame_visible;
+    TargetStep(call.get(), owner, "isVisible", {},
+               base::BindOnce(&Automation::FrameElementShown, weak_factory_.GetWeakPtr(), call,
+                              kept, std::move(target), std::move(chunks), index, std::move(done)));
+  }
+
+  void FrameElementShown(base::WeakPtr<Call> call,
+                         std::string kept,
+                         Target target,
+                         std::vector<std::string> chunks,
+                         size_t index,
+                         TargetDone done,
+                         base::Value visible) {
+    if (!call)
+      return;
+    const HandleRef* handle = FindHandle(kept);
+    content::RenderFrameHost* parent =
+        handle ? content::RenderFrameHost::FromID(handle->frame) : nullptr;
+    if (!parent) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    if (visible.is_bool() && !visible.GetBool())
+      target.frame_visible = false;
     Agent(parent)->ContentFrame(
         handle->id,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
@@ -2364,7 +2554,8 @@ class Automation : public content::WebContentsObserver,
                      const base::DictValue* dict = value.is_dict() ? &value.GetDict() : nullptr;
                      const bool is_not = call->Flag("isNot");
                      const bool passed = dict && dict->FindBool("matches").value_or(is_not) != is_not;
-                     if (dict && !passed && !dict->Find("errorMessage")) {
+                     const std::string* error = dict ? dict->FindString("errorMessage") : nullptr;
+                     if (dict && !passed && (!error || *error == "element(s) not found")) {
                        self->Expect(call);
                        return;
                      }
