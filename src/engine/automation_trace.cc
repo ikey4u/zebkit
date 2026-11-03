@@ -129,6 +129,19 @@ double Roundish(double value) {
 }
 
 std::optional<std::string> IsoOf(const std::string& text) {
+  // As JavaScript's new Date() reads it (harTracer.ts): a time zone written
+  // as letters is only one V8 knows; another makes no date.
+  static constexpr const char* kZones[] = {"GMT", "UTC", "UT", "Z", "EST", "EDT",
+                                           "CST", "CDT", "MST", "MDT", "PST", "PDT"};
+  for (const std::string& token : base::SplitString(text, " ", base::TRIM_WHITESPACE,
+                                                     base::SPLIT_WANT_NONEMPTY)) {
+    if (token.size() < 2 || !std::all_of(token.begin(), token.end(), base::IsAsciiUpper<char>))
+      continue;
+    if (std::find_if(std::begin(kZones), std::end(kZones),
+                     [&](const char* zone) { return token == zone; }) == std::end(kZones)) {
+      return std::nullopt;
+    }
+  }
   base::Time time;
   if (!base::Time::FromString(text.c_str(), &time))
     return std::nullopt;
@@ -225,6 +238,33 @@ HarRecorder::HarRecorder(const base::DictValue& options) {
   if (const std::string* prefix = options.FindString("resourcesPrefix"))
     resources_prefix_ = *prefix;
   omit_scripts_ = options.FindBool("omitScripts").value_or(false);
+  // harRecorder.ts: with harPath and resourcesDir, a content's _file is its
+  // path from the HAR's folder; the archive keeps it by its own name, which
+  // the client unpacks into resourcesDir.
+  const std::string* har_path = options.FindString("harPath");
+  const std::string* resources_dir = options.FindString("resourcesDir");
+  if (har_path && resources_dir) {
+    base::FilePath relative;
+    const base::FilePath from = base::FilePath::FromUTF8Unsafe(*har_path).DirName();
+    const base::FilePath to = base::FilePath::FromUTF8Unsafe(*resources_dir);
+    if (from == to) {
+      file_ref_prefix_.clear();
+    } else if (from.AppendRelativePath(to, &relative)) {
+      file_ref_prefix_ = relative.AsUTF8Unsafe() + "/";
+    } else {
+      // Not under the HAR's folder: from it, as path.relative() writes it.
+      std::vector<base::FilePath::StringType> up = from.GetComponents(), down = to.GetComponents();
+      size_t common = 0;
+      while (common < up.size() && common < down.size() && up[common] == down[common])
+        ++common;
+      std::string prefix;
+      for (size_t i = common; i < up.size(); ++i)
+        prefix += "../";
+      for (size_t i = common; i < down.size(); ++i)
+        prefix += base::FilePath(down[i]).AsUTF8Unsafe() + "/";
+      file_ref_prefix_ = prefix;
+    }
+  }
 }
 
 HarRecorder::~HarRecorder() = default;
@@ -299,6 +339,9 @@ void HarRecorder::Record(const std::string& event,
     entry.response = params.Clone();
   } else if (event == "Page.requestContinued") {
     entry.overrides = params.Clone();
+  } else if (event == "Page.requestResourceType") {
+    if (const std::string* type = params.FindString("resourceType"))
+      entry.request.Set("resourceType", *type);
   } else if (event == "Page.requestExtraInfo") {
     if (const base::ListValue* headers = params.FindList("headers"))
       entry.raw_request_headers = headers->Clone();
@@ -317,6 +360,46 @@ void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictVa
   const std::string* url = request.FindString("url");
   if (!url || !Includes(*url))
     return;
+  // harTracer.ts's _onAPIRequest: an entry for each exchange, a redirect's
+  // without a body, with the headers that went out.
+  const base::ListValue* hops = response.FindList("hops");
+  if (hops && !hops->empty()) {
+    const base::ListValue* sent = response.FindList("requestHeaders");
+    for (size_t i = 0; i < hops->size(); ++i) {
+      const base::DictValue& hop = (*hops)[i].GetDict();
+      const bool last = i + 1 == hops->size();
+      base::DictValue hop_request = request.Clone();
+      if (const std::string* hop_url = hop.FindString("url"))
+        hop_request.Set("url", *hop_url);
+      if (sent && !sent->empty())
+        hop_request.Set("headers", sent->Clone());
+      if (i > 0) {
+        // A redirect is followed with GET and no body (303, 302 of a POST).
+        const int status = (*hops)[i - 1].GetDict().FindInt("status").value_or(0);
+        const std::string* method = hop_request.FindString("method");
+        if ((status == 303 || ((status == 301 || status == 302) && method && *method == "POST"))) {
+          hop_request.Set("method", "GET");
+          hop_request.Remove("postData");
+        }
+      }
+      base::DictValue hop_response = hop.Clone();
+      if (last) {
+        if (const std::string* body = response.FindString("body"))
+          hop_response.Set("body", *body);
+      }
+      if (last) {
+        base::DictValue single = response.Clone();
+        single.Remove("hops");
+        hop_response.Merge(std::move(single));
+      }
+      RecordOneFetch(hop_request, hop_response, last);
+    }
+    return;
+  }
+  RecordOneFetch(request, response, true);
+}
+
+void HarRecorder::RecordOneFetch(const base::DictValue& request, const base::DictValue& response, bool with_body) {
   const std::string id = "fetch" + base::NumberToString(++next_fetch_);
   Entry& entry = entries_[id];
   entry.fetch = true;
@@ -326,7 +409,15 @@ void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictVa
   entry.response = response.Clone();
   entry.response.Remove("body");
   entry.finished_params.Set("request", id);
-  if (const std::string* body = response.FindString("body")) {
+  entry.response.Remove("requestHeaders");
+  // Its time: until its response's headers, as the network measured it.
+  if (std::optional<double> received = response.FindDoubleByDottedPath("timing.responseStart");
+      received && *received > 0) {
+    entry.ended = entry.start + base::Milliseconds(*received);
+  } else if (std::optional<double> duration = response.FindDouble("duration"); duration && *duration > 0) {
+    entry.ended = entry.start + base::Milliseconds(*duration);
+  }
+  if (const std::string* body = with_body ? response.FindString("body") : nullptr) {
     std::string bytes;
     if (base::Base64Decode(*body, &bytes)) {
       entry.has_body = true;
@@ -377,7 +468,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
                              "." + Extension(mime);
     if (files)
       (*files)[name] = bytes;
-    return name;
+    // Relative to the HAR file when the contents go elsewhere (resourcesDir).
+    return file_ref_prefix_ + name;
   };
 
   base::DictValue request;
@@ -385,8 +477,12 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   request.Set("url", url);
   request.Set("httpVersion", http_version);
   base::ListValue request_cookies;
-  if (!minimal_ && request_headers) {
-    for (const base::Value& header : *request_headers) {
+  // The page's own Cookie, not a route's override (harTracer.ts records the
+  // overrides apart).
+  const base::ListValue* cookie_headers =
+      entry.overrides ? entry.request.FindList("headers") : request_headers;
+  if (!minimal_ && cookie_headers) {
+    for (const base::Value& header : *cookie_headers) {
       const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
       const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
       if (!name || !value || !base::EqualsCaseInsensitiveASCII(*name, "cookie"))
@@ -543,8 +639,11 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
       har.Set("serverIPAddress", *address);
     if (std::optional<int> port = entry.response.FindInt("serverPort"))
       har.Set("_serverPort", *port);
+    // harTracer.ts: the response's security details, {} without TLS.
     if (const base::DictValue* security = entry.response.FindDict("securityDetails"))
       har.Set("_securityDetails", security->Clone());
+    else if (responded && !entry.fetch)
+      har.Set("_securityDetails", base::DictValue());
   }
   if (!entry.frame_ref.empty())
     har.Set("_frameref", entry.frame_ref);

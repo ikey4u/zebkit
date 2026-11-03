@@ -37,6 +37,13 @@
 #include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
+#include "net/ssl/ssl_cipher_suite_names.h"
+#include "net/ssl/ssl_connection_status_flags.h"
+#include "net/ssl/ssl_info.h"
+#include "net/cert/x509_certificate.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
@@ -386,9 +393,70 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
     return remote;
   }
 
+  // The headers the request went out with, for a HAR (fetch.ts's).
+  void SetSentHeaders(base::ListValue headers) { sent_headers_ = std::move(headers); }
+
+  // One exchange of the fetch, a redirect's or the last: what harTracer.ts's
+  // _onAPIRequest entries have (address, port, TLS, timings).
+  static base::DictValue HopOf(const GURL& url, const network::mojom::URLResponseHead& head) {
+    base::DictValue hop;
+    hop.Set("url", url.spec());
+    hop.Set("status", head.headers ? head.headers->response_code() : 0);
+    hop.Set("statusText", head.headers ? head.headers->GetStatusText() : std::string());
+    base::ListValue headers;
+    size_t iterator = 0;
+    std::string name, value;
+    while (head.headers && head.headers->EnumerateHeaderLines(&iterator, &name, &value)) {
+      base::DictValue header;
+      header.Set("name", name);
+      header.Set("value", value);
+      headers.Append(std::move(header));
+    }
+    hop.Set("headers", std::move(headers));
+    if (!head.remote_endpoint.address().empty())
+      hop.Set("serverAddr", head.remote_endpoint.ToStringWithoutPort());
+    if (head.remote_endpoint.port())
+      hop.Set("serverPort", head.remote_endpoint.port());
+    if (head.ssl_info && head.ssl_info->cert) {
+      // As Node's TLS socket names it, which fetch.ts reads: "TLSv1.3".
+      const net::SSLInfo& ssl = *head.ssl_info;
+      const char* version = nullptr;
+      net::SSLVersionToString(&version, net::SSLConnectionStatusToVersion(ssl.connection_status));
+      std::string protocol = version ? version : "";
+      if (protocol.starts_with("TLS "))
+        protocol = "TLSv" + protocol.substr(4);
+      base::DictValue security;
+      security.Set("protocol", protocol);
+      security.Set("subjectName", ssl.cert->subject().common_name);
+      security.Set("issuer", ssl.cert->issuer().common_name);
+      security.Set("validFrom", ssl.cert->valid_start().InSecondsFSinceUnixEpoch());
+      security.Set("validTo", ssl.cert->valid_expiry().InSecondsFSinceUnixEpoch());
+      hop.Set("securityDetails", std::move(security));
+    }
+    const auto& load = head.load_timing;
+    const base::TimeTicks start = load.request_start;
+    auto elapsed = [&](base::TimeTicks time) {
+      return time.is_null() || start.is_null() ? -1.0 : (time - start).InMillisecondsF();
+    };
+    base::DictValue timing;
+    timing.Set("startTime", load.request_start_time.is_null()
+                                ? base::Time::Now().InMillisecondsFSinceUnixEpoch()
+                                : load.request_start_time.InMillisecondsFSinceUnixEpoch());
+    timing.Set("domainLookupStart", elapsed(load.connect_timing.domain_lookup_start));
+    timing.Set("domainLookupEnd", elapsed(load.connect_timing.domain_lookup_end));
+    timing.Set("connectStart", elapsed(load.connect_timing.connect_start));
+    timing.Set("connectEnd", elapsed(load.connect_timing.connect_end));
+    timing.Set("secureConnectionStart", elapsed(load.connect_timing.ssl_start));
+    timing.Set("requestStart", elapsed(load.send_start));
+    timing.Set("responseStart", elapsed(load.receive_headers_start));
+    hop.Set("timing", std::move(timing));
+    return hop;
+  }
+
   void Start(std::unique_ptr<network::SimpleURLLoader> loader,
              network::mojom::URLLoaderFactory* factory) {
     loader_ = std::move(loader);
+    started_ = base::TimeTicks::Now();
     loader_->SetOnRedirectCallback(base::BindRepeating(
         &ContextFetcher::Redirected, base::Unretained(this)));
     loader_->SetOnResponseStartedCallback(base::BindOnce(
@@ -466,6 +534,7 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
                   const net::RedirectInfo& info,
                   const network::mojom::URLResponseHead& head,
                   std::vector<std::string>* removed) {
+    hops_.Append(HopOf(from, head));
     // The loader may be deleted in this callback, which Answer() does: nothing
     // is sent to the redirect's target.
     if (max_redirects_ == 0) {
@@ -489,6 +558,7 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
   void Started(const GURL& url, const network::mojom::URLResponseHead& head) {
     url_ = url.spec();
     head_ = head.headers;
+    last_hop_ = HopOf(url, head);
   }
 
   void OnDataReceived(std::string_view chunk, base::OnceClosure resume) override {
@@ -537,6 +607,13 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
     }
     response.Set("headers", std::move(headers));
     response.Set("body", base::Base64Encode(body_));
+    // For a HAR: every exchange, redirects first, and the headers sent.
+    base::ListValue hops = hops_.Clone();
+    if (last_hop_)
+      hops.Append(last_hop_->Clone());
+    response.Set("hops", std::move(hops));
+    response.Set("requestHeaders", sent_headers_.Clone());
+    response.Set("duration", (base::TimeTicks::Now() - started_).InMillisecondsF());
     base::DictValue answer;
     answer.Set("response", std::move(response));
     delete this;
@@ -549,6 +626,10 @@ class ContextFetcher : public network::SimpleURLLoaderStreamConsumer,
   int redirects_ = 0;
   std::string url_, body_, error_;
   scoped_refptr<net::HttpResponseHeaders> head_;
+  base::ListValue hops_;
+  std::optional<base::DictValue> last_hop_;
+  base::ListValue sent_headers_;
+  base::TimeTicks started_;
   bool ignore_certificate_errors_ = false;
   mojo::ReceiverSet<network::mojom::URLLoaderNetworkServiceObserver> observers_;
   std::unique_ptr<network::SimpleURLLoader> loader_;
@@ -667,6 +748,34 @@ void ContextFetch(content::BrowserContext* profile,
     request->trusted_params->url_loader_network_observer =
         fetcher->IgnoreCertificateErrors();
   }
+  // What goes out: the given headers, the network's User-Agent unless given, and
+  // the body's length.
+  {
+    base::ListValue sent;
+    for (const auto& header : request->headers.GetHeaderVector()) {
+      base::DictValue entry;
+      entry.Set("name", header.key);
+      entry.Set("value", header.value);
+      sent.Append(std::move(entry));
+    }
+    if (!request->headers.HasHeader("User-Agent")) {
+      base::DictValue agent;
+      agent.Set("name", "User-Agent");
+      agent.Set("value", content::GetContentClientForTesting()->browser()->GetUserAgent());
+      sent.Append(std::move(agent));
+    }
+    if (const std::string* post = params.FindString("postData");
+        post && !request->headers.HasHeader("Content-Length")) {
+      std::string bytes;
+      if (!base::Base64Decode(*post, &bytes))
+        bytes = *post;
+      base::DictValue length;
+      length.Set("name", "Content-Length");
+      length.Set("value", base::NumberToString(bytes.size()));
+      sent.Append(std::move(length));
+    }
+    fetcher->SetSentHeaders(std::move(sent));
+  }
   std::unique_ptr<network::SimpleURLLoader> loader =
       network::SimpleURLLoader::Create(std::move(request), kAnnotation);
   if (const std::string* post = params.FindString("postData")) {
@@ -687,6 +796,8 @@ void ContextFetch(content::BrowserContext* profile,
     loader->AttachStringForUpload(bytes, type);
   }
   loader->SetAllowHttpErrorResults(true);
+  // The TLS details, for a HAR's _securityDetails.
+  loader->SetURLLoaderFactoryOptions(network::mojom::kURLLoadOptionSendSSLInfoWithResponse);
   const double timeout = params.FindDouble("timeout").value_or(30000);
   if (timeout > 0)
     loader->SetTimeoutDuration(base::Milliseconds(timeout));

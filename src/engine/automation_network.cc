@@ -24,6 +24,13 @@
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "base/barrier_closure.h"
+#include "base/strings/string_split.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_options.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -479,7 +486,36 @@ class Loader : public network::mojom::URLLoader,
   }
 
   // A response of the client's: Route.fulfill.
+  // Route.fulfill's Set-Cookie go into the profile's cookies first, as the
+  // network stores those of what it fetches (Chromium's interception answers
+  // below the cookie store): a document reads them at once.
   void Fulfill(const base::DictValue& response) {
+    std::vector<std::string> cookies;
+    if (const base::ListValue* headers = response.FindList("headers")) {
+      for (const base::Value& header : *headers) {
+        const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+        const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+        if (name && value && base::EqualsCaseInsensitiveASCII(*name, "set-cookie")) {
+          for (const std::string& line : base::SplitString(*value, "\n", base::TRIM_WHITESPACE,
+                                                            base::SPLIT_WANT_NONEMPTY)) {
+            cookies.push_back(line);
+          }
+        }
+      }
+    }
+    if (cookies.empty() || !network_) {
+      FulfillNow(response);
+      return;
+    }
+    StoreCookies(std::move(cookies),
+                 base::BindOnce([](base::WeakPtr<Loader> loader, base::DictValue response) {
+                   if (loader)
+                     loader->FulfillNow(response);
+                 }, GetWeakPtr(), response.Clone()));
+  }
+  void StoreCookies(std::vector<std::string> lines, base::OnceClosure then);
+
+  void FulfillNow(const base::DictValue& response) {
     const int status = response.FindInt("status").value_or(200);
     std::string raw = "HTTP/1.1 " + base::NumberToString(status) + " " +
                       FulfillStatusText(status) + "\r\n";
@@ -905,6 +941,18 @@ class NetworkImpl : public Network,
 
   void DevToolsType(const std::string& devtools_id, const std::string& type) override {
     devtools_types_[devtools_id] = type;
+    // Told after the request started (DevTools is not always first): its type
+    // for those that record it (a HAR's _resourceType).
+    if (auto chain = devtools_chains_.find(devtools_id);
+        chain != devtools_chains_.end() && !chain->second.hops.empty()) {
+      const std::string lower = base::ToLowerASCII(type);
+      if (lower != "other" && lower != "document") {
+        base::DictValue params;
+        params.Set("request", chain->second.hops.back());
+        params.Set("resourceType", lower);
+        Emit("Page.requestResourceType", std::move(params));
+      }
+    }
     if (devtools_types_.size() > 2000)
       devtools_types_.erase(devtools_types_.begin());
   }
@@ -1065,6 +1113,30 @@ class NetworkImpl : public Network,
 };
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(NetworkImpl);
+
+void Loader::StoreCookies(std::vector<std::string> lines, base::OnceClosure then) {
+  content::WebContents* contents = network_ ? &network_->GetWebContents() : nullptr;
+  network::mojom::CookieManager* manager =
+      contents ? contents->GetBrowserContext()->GetDefaultStoragePartition()->GetCookieManagerForBrowserProcess()
+               : nullptr;
+  if (!manager) {
+    std::move(then).Run();
+    return;
+  }
+  auto done = base::BarrierClosure(lines.size(), std::move(then));
+  for (const std::string& line : lines) {
+    std::unique_ptr<net::CanonicalCookie> cookie = net::CanonicalCookie::Create(
+        request_.url, line, base::Time::Now(), std::nullopt, std::nullopt, net::CookieSourceType::kHTTP,
+        nullptr);
+    if (!cookie) {
+      done.Run();
+      continue;
+    }
+    manager->SetCanonicalCookie(*cookie, request_.url, net::CookieOptions::MakeAllInclusive(),
+                                base::BindOnce([](base::RepeatingClosure done, net::CookieAccessResult) { done.Run(); },
+                                               done));
+  }
+}
 
 void Loader::Start() {
   // A data: URL is no request, as Playwright reports none for it

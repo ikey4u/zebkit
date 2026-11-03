@@ -42,6 +42,8 @@
 #include "base/unguessable_token.h"
 #include "base/values.h"
 #include "components/version_info/version_info.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
@@ -2157,7 +2159,7 @@ void Connection::HarEvent(const std::string& page_guid,
   const bool network = event == "Page.request" || event == "Page.response" ||
                        event == "Page.requestContinued" || event == "Page.requestFinished" ||
                        event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
-                       event == "Page.responseExtraInfo";
+                       event == "Page.responseExtraInfo" || event == "Page.requestResourceType";
   const bool lifecycle = event == "Frame.loadstate";
   if (!network && !lifecycle)
     return;
@@ -2173,7 +2175,11 @@ void Connection::HarEvent(const std::string& page_guid,
       if (frame && state && *frame == main) {
         har.recorder->PageLoadState(
             page_guid, *state,
-            view && view->web_contents() ? base::UTF16ToUTF8(view->web_contents()->GetTitle())
+            // The document's title, "" without one (not the URL the tab shows).
+            view && view->web_contents() &&
+                    view->web_contents()->GetController().GetLastCommittedEntry()
+                ? base::UTF16ToUTF8(
+                      view->web_contents()->GetController().GetLastCommittedEntry()->GetTitle())
                                          : std::string());
       }
       continue;
@@ -3292,7 +3298,11 @@ void Connection::Command(int id,
                    const std::string context_guid = har_context.substr(0, tab);
                    const std::string own_guid = tab == std::string::npos ? std::string() : har_context.substr(tab + 1);
                    for (auto& [har_id, har] : self->hars_) {
-                     if (har.context == context_guid || (!own_guid.empty() && har.context == own_guid))
+                     // The APIRequestContext's own HAR (context.request.tracing),
+                     // not the context's: harTracer.ts leaves API requests out of a
+                     // page's or context's recordHar.
+                     if ((!own_guid.empty() && har.context == own_guid) ||
+                         (own_guid.empty() && har.context == context_guid))
                        har.recorder->RecordFetch(har_request, *response);
                    }
                    const int status = response->FindInt("status").value_or(0);

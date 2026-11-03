@@ -58,6 +58,7 @@ class HarRecorder {
   // An APIRequestContext.fetch exchange: its request ({url, method, headers,
   // postData}) and its answer ({url, status, statusText, headers, body}).
   void RecordFetch(const base::DictValue& request, const base::DictValue& response);
+  void RecordOneFetch(const base::DictValue& request, const base::DictValue& response, bool with_body);
   // A response's body, once it has come (or nullopt when it will not).
   void SetBody(const std::string& request, std::optional<std::string> body);
   // Whether @request is recorded and its body is wanted.
@@ -118,6 +119,7 @@ class HarRecorder {
   // Before an attached content's name: traces' "resources/".
   std::string resources_prefix_;
   bool omit_scripts_ = false;
+  std::string file_ref_prefix_;
   bool minimal_ = false;
   std::string url_glob_;
   std::string url_regex_;
