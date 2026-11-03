@@ -581,8 +581,9 @@ process's from `WebContentsObserver`), the text from the arguments' previews
 as handles: `Runtime.callFunctionOn` leaves them on the global object for a
 moment and the agent takes them from there. Messages, and the page errors
 after them, keep their order; an evaluation answers after the page's DevTools
-session has told what came before it, and a navigation after the messages
-already told, as CDP's events come before its answers. A dedicated worker's
+session has told what came before it (an action too: a click, a key, a tap),
+and a navigation after the messages already told, as CDP's events come before
+its answers. A dedicated worker's
 messages are its page's too, and its uncaught exception is the page's error.
 
 **`CDPSession`** (`Browser.newBrowserCDPSession`, `BrowserContext.newCDPSession`
@@ -807,7 +808,10 @@ CDP in between:
   `dispatchEvent`'s serialized `eventInit` (wheel, device and drag events, a DataTransfer's
   handle); `waitForFunction` through navigations, a string evaluated at each try, its page side
   stopped at the timeout; the context options `validateBrowserContextOptions()` refuses; the
-  `Origin` header a route sees; `browser.contexts()`; a context's routes beside its page's.
+  `Origin` and `Referer` headers a route sees; `browser.contexts()`; a context's routes beside
+  its page's; the screen as `Emulation.setDeviceMetricsOverride` gives it (`window.screen`,
+  device media queries, a mobile screen's orientation) and touch as
+  `Emulation.setTouchEmulationEnabled` gives it; `tap()` refused without `hasTouch`.
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

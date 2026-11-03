@@ -673,6 +673,13 @@ class Loader : public network::mojom::URLLoader,
       origin.Set("value", request_.request_initiator->Serialize());
       headers.Append(std::move(origin));
     }
+    // And the Referer it sends (the policy applied already, by Blink).
+    if (request_.referrer.is_valid() && !request_.headers.HasHeader("Referer")) {
+      base::DictValue referer;
+      referer.Set("name", "Referer");
+      referer.Set("value", request_.referrer.spec());
+      headers.Append(std::move(referer));
+    }
     value.Set("headers", std::move(headers));
     // The type DevTools has from Blink (XHR and fetch(), which the network
     // cannot tell apart), else the network's.

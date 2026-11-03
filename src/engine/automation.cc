@@ -480,8 +480,12 @@ class Call {
     // A navigation's: after the messages already told, which its load
     // follows.
     const std::string name = Name();
-    const bool evaluation =
-        name.find("valuate") != std::string::npos || name == "waitForFunction";
+    // An action's too: what its events' handlers logged comes first, as
+    // Input.dispatchMouseEvent answers after them.
+    static const base::NoDestructor<std::set<std::string>> kActions(std::set<std::string>{
+        "click", "dblclick", "tap", "check", "uncheck", "press", "dispatchEvent"});
+    const bool evaluation = name.find("valuate") != std::string::npos ||
+                            name == "waitForFunction" || kActions->contains(name);
     if (deferring_ || (!evaluation && name != "goto" && name != "reload" && name != "setContent"))
       return false;
     deferring_ = true;
@@ -1428,21 +1432,19 @@ class Automation : public content::WebContentsObserver,
       language.Set("acceptLanguage", *locale);
       view_->Send("Emulation.setUserAgentOverride", std::move(language));
     }
-    const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
-    const bool mobile = options.FindBool("isMobile").value_or(false);
-    const base::DictValue* screen = options.FindDict("screen");
-    // The view has the scale factor of its own (NewPage).
-    if (mobile || screen) {
+    // A context's of Browser.newContext (not the native API's own pages).
+    if (!options.empty() && !options.FindBool("noDefaultViewport").value_or(false)) {
+      const base::DictValue* screen = options.FindDict("screen");
       const int width = options.FindIntByDottedPath("viewport.width").value_or(1280);
       const int height = options.FindIntByDottedPath("viewport.height").value_or(720);
+      EmulateMetrics(width, height, screen ? screen->FindInt("width").value_or(width) : width,
+                     screen ? screen->FindInt("height").value_or(height) : height);
+    }
+    // crPage.ts: touch as a touchscreen's, (hover: none) and (pointer: coarse).
+    if (options.FindBool("hasTouch").value_or(false)) {
       base::DictValue params;
-      params.Set("width", width);
-      params.Set("height", height);
-      params.Set("deviceScaleFactor", scale.value_or(1));
-      params.Set("mobile", mobile);
-      params.Set("screenWidth", screen ? screen->FindInt("width").value_or(width) : width);
-      params.Set("screenHeight", screen ? screen->FindInt("height").value_or(height) : height);
-      view_->Send("Emulation.setDeviceMetricsOverride", std::move(params));
+      params.Set("enabled", true);
+      view_->Send("Emulation.setTouchEmulationEnabled", std::move(params));
     }
     // The context's commands, again for this page, once it has its
     // automation.
@@ -1458,6 +1460,43 @@ class Automation : public content::WebContentsObserver,
               },
               view_->GetWeakPtr(), method, Json(base::Value(params.Clone()))));
     }
+  }
+
+  // Whether the context's hasTouch has Chromium's touch emulation on.
+  bool TouchEmulated() {
+    return ContextStates()[web_contents()->GetBrowserContext()].options.FindBool("hasTouch").value_or(false);
+  }
+
+  // The context's hasTouch (frames.ts's tap(), input.ts's Touchscreen); a
+  // page of no context's (the native API's) has touch.
+  bool HasTouch() {
+    auto found = ContextStates().find(web_contents()->GetBrowserContext());
+    if (found == ContextStates().end() || found->second.options.empty())
+      return true;
+    return found->second.options.FindBool("hasTouch").value_or(false);
+  }
+
+  // crPage.ts's _updateViewport(): the viewport and the screen as the page
+  // sees them (window.screen, device-width), the view itself sized apart
+  // (NewPage, SetViewportSize), with the scale factor of its own unless the
+  // context gives one.
+  void EmulateMetrics(int width, int height, int screen_width, int screen_height) {
+    const base::DictValue& options = ContextStates()[web_contents()->GetBrowserContext()].options;
+    const bool mobile = options.FindBool("isMobile").value_or(false);
+    const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
+    base::DictValue params;
+    params.Set("width", width);
+    params.Set("height", height);
+    params.Set("deviceScaleFactor", scale.value_or(mobile ? 1 : 0));
+    params.Set("mobile", mobile);
+    params.Set("screenWidth", screen_width);
+    params.Set("screenHeight", screen_height);
+    base::DictValue orientation;
+    const bool landscape = screen_width > screen_height;
+    orientation.Set("angle", mobile && landscape ? 90 : 0);
+    orientation.Set("type", !mobile || landscape ? "landscapePrimary" : "portraitPrimary");
+    params.Set("screenOrientation", std::move(orientation));
+    view_->Send("Emulation.setDeviceMetricsOverride", std::move(params));
   }
 
   // Every page with automation of @profile.
@@ -3488,6 +3527,10 @@ class Automation : public content::WebContentsObserver,
     Pointer(call, action);
   }
   void Tap(Call* call) {
+    if (!HasTouch()) {
+      call->Fail("The page does not support tap. Use hasTouch context option to enable touch support.");
+      return;
+    }
     PointerAction action;
     action.action = "tap";
     action.name = "tap";
@@ -5182,6 +5225,10 @@ class Automation : public content::WebContentsObserver,
   }
 
   void TouchscreenTap(Call* call) {
+    if (!HasTouch()) {
+      call->Fail("hasTouch must be enabled on the browser context before using the touchscreen.");
+      return;
+    }
     const gfx::PointF at(call->Number("x"), call->Number("y"));
     AtPoint(at, base::BindOnce(
                     [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
@@ -5817,7 +5864,7 @@ class Automation : public content::WebContentsObserver,
         "Page.captureScreenshot", std::move(params),
         base::BindOnce(
             [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
-               base::WeakPtr<zebkit_view> view, bool transparent,
+               base::WeakPtr<zebkit_view> view, bool transparent, bool beyond,
                const base::DictValue* result, const std::string& error) {
               // Also when the call has timed out: the page keeps no override.
               if (transparent && view) {
@@ -5826,13 +5873,20 @@ class Automation : public content::WebContentsObserver,
               }
               if (!self || !call)
                 return;
+              // crPage.ts: capturing beyond the viewport resets Chromium's
+              // touch emulation, which goes back.
+              if (beyond && view && self->TouchEmulated()) {
+                base::DictValue touch;
+                touch.Set("enabled", true);
+                view->Send("Emulation.setTouchEmulationEnabled", std::move(touch));
+              }
               const std::string* data = result ? result->FindString("data") : nullptr;
               self->RestoreScreenshot(
                   call, data ? *data : std::string(),
                   data ? std::string()
                        : (error.empty() ? std::string("zebkit: no picture") : error));
             },
-            weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent));
+            weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent, !fits));
   }
 
   // The page as it was, then the answer: @base64 or @error.
@@ -5946,6 +6000,9 @@ class Automation : public content::WebContentsObserver,
     // until its next frame.
     zebkit_view_set_size(call->view(), width, height, 0);
     viewport_ = gfx::Size(width, height);
+    // page.ts's setViewportSize(): the screen the same size.
+    if (!ContextStates()[web_contents()->GetBrowserContext()].options.empty())
+      EmulateMetrics(width, height, width, height);
     WaitForViewport(call->GetWeakPtr(), width, height);
   }
 
