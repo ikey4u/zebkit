@@ -1303,7 +1303,7 @@ class Automation : public content::WebContentsObserver,
             handle.Set("element", true);
           // The handle's own frame, which may not be the call's.
           if (!frame_id.empty())
-            handle.Set("frame", frame_id);
+            handle.Set("handleFrame", frame_id);
           return base::Value(std::move(handle));
         }
       }
@@ -3861,6 +3861,11 @@ class Automation : public content::WebContentsObserver,
   void DidFinishLoad(content::RenderFrameHost* frame, const GURL&) override {
     Lifecycle& lifecycle = lifecycles_[frame->GetFrameTreeNodeId()];
     lifecycle.dom_content_loaded = true;
+    // The main frame's "load" is its load event's (above): a document whose
+    // loading window.stop() ended has none, and Chromium's lifecycle no
+    // "load" either, though the browser hears the loading finish.
+    if (frame == web_contents()->GetPrimaryMainFrame())
+      return;
     if (!lifecycle.loaded) {
       lifecycle.loaded = true;
       LoadState(frame, "load");

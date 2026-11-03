@@ -940,7 +940,7 @@ base::Value Connection::Expose(const std::string& page,
       object.page = page;
       // Of its own frame (a handle found through frames), else the call's.
       std::string parent = frame;
-      if (const std::string* own = dict.FindString("frame")) {
+      if (const std::string* own = dict.FindString("handleFrame")) {
         const std::string known = Known("frame", page, *own);
         if (!known.empty())
           parent = known;
