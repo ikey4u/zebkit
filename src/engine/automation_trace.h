@@ -117,6 +117,7 @@ class HarRecorder {
   std::string content_ = "embed";
   // Before an attached content's name: traces' "resources/".
   std::string resources_prefix_;
+  bool omit_scripts_ = false;
   bool minimal_ = false;
   std::string url_glob_;
   std::string url_regex_;

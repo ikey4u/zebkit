@@ -224,6 +224,7 @@ HarRecorder::HarRecorder(const base::DictValue& options) {
   }
   if (const std::string* prefix = options.FindString("resourcesPrefix"))
     resources_prefix_ = *prefix;
+  omit_scripts_ = options.FindBool("omitScripts").value_or(false);
 }
 
 HarRecorder::~HarRecorder() = default;
@@ -470,7 +471,10 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
         content.Set("text", base::Base64Encode(*bytes));
         content.Set("encoding", "base64");
       }
-    } else if (content_ == "attach") {
+    } else if (content_ == "attach" &&
+               !(omit_scripts_ && entry.request.FindString("resourceType") &&
+                 *entry.request.FindString("resourceType") == "script")) {
+      // A trace's omits scripts' (harTracer.ts's omitScripts).
       content.Set("_file", blob(*bytes, mime));
     }
   }

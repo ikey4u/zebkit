@@ -2298,8 +2298,14 @@ base::Value Connection::TraceValue(const base::Value& value) {
     }
   }
   base::DictValue result;
-  for (const auto [key, item] : dict)
+  for (const auto [key, item] : dict) {
+    // The protocol's binary fields, as tracing.ts writes Buffers.
+    if ((key == "binary" || key == "buffer") && item.is_string()) {
+      result.Set(key, "<Buffer>");
+      continue;
+    }
     result.Set(key, TraceValue(item));
+  }
   return base::Value(std::move(result));
 }
 
@@ -2566,6 +2572,10 @@ void Connection::TraceEvent(const std::string& page_guid,
   if (event == "Page.request" || event == "Page.response" || event == "Page.requestFinished" ||
       event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
       event == "Page.responseExtraInfo") {
+    // The network only with DOM snapshots (tracing.ts starts its HAR tracer
+    // for snapshotDom).
+    if (!trace.options.FindBool("snapshotDom").value_or(false))
+      return;
     const std::string* frame = params.FindString("frame");
     trace.network->Record(event, params, page_guid,
                           frame ? Known("frame", page_guid, *frame) : std::string());
@@ -2700,6 +2710,7 @@ void Connection::TraceCommand(int id,
       base::DictValue har;
       har.Set("content", "attach");
       har.Set("resourcesPrefix", "resources/");
+      har.Set("omitScripts", !trace.options.FindBool("live").value_or(false));
       trace.network = std::make_unique<HarRecorder>(har);
     }
     trace.lines.clear();
