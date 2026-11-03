@@ -55,3 +55,4 @@
 1074-embedder-widget-screen-info-on-aura.patch
 1075-ml-size-inliner-only-where-cold.patch
 1076-max-speed-for-code-asking-chromium-s-optimize.patch
+1077-content-embedder-input-through-the-router.patch

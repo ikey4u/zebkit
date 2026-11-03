@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- A frame of tests/engine/pages/frames-input.html, also its srcdoc and blob:
+     document: a button, a field, a <select>, a scrolled box, a place to drop
+     on and a line of text, at the same places in every frame, and what
+     happens to them posted to the top page as "name:what[:value]". -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: rgb(240, 240, 240); font: 14px sans-serif; overflow: hidden; }
+  #button { position: absolute; left: 5px; top: 5px; width: 120px; height: 24px; cursor: pointer; }
+  #field { position: absolute; left: 5px; top: 33px; width: 120px; height: 22px; box-sizing: border-box; }
+  #pick { position: absolute; left: 5px; top: 59px; width: 120px; height: 22px; }
+  #scroller { position: absolute; left: 5px; top: 85px; width: 120px; height: 50px; overflow: auto; }
+  #scroller div { height: 600px; background: linear-gradient(red, blue); }
+  #drop { position: absolute; left: 5px; top: 139px; width: 120px; height: 30px; background: rgb(200, 220, 255); }
+  #text { position: absolute; left: 5px; top: 173px; width: 150px; height: 20px; margin: 0; white-space: nowrap;
+          font: 14px monospace; line-height: 20px; }
+  #inner { position: absolute; left: 200px; top: 5px; width: 150px; height: 260px; border: 0; }
+</style>
+</head>
+<body>
+<button id="button">Button</button>
+<input id="field" autocomplete="off">
+<select id="pick"><option value="a">Apple</option><option value="b">Banana</option><option value="c">Cherry</option></select>
+<div id="scroller"><div></div></div>
+<div id="drop">drop here</div>
+<p id="text">select this line</p>
+<script>
+  const params = new URLSearchParams(location.search);
+  // srcdoc and blob: documents have no query: the frame's name then.
+  const name = params.get('name') || window.name;
+  const post = (what) => top.postMessage(`${name}:${what}`, params.get('top') || '*');
+  const button = document.getElementById('button');
+  const field = document.getElementById('field');
+  const scroller = document.getElementById('scroller');
+  const pick = document.getElementById('pick');
+  const drop = document.getElementById('drop');
+  button.addEventListener('mouseover', () => post('mouseover:button'));
+  button.addEventListener('click', () => post('click:button'));
+  button.addEventListener('contextmenu', (event) => { event.preventDefault(); post('contextmenu:button'); });
+  field.addEventListener('focus', () => post('focus:field'));
+  field.addEventListener('blur', () => post('blur:field'));
+  field.addEventListener('keydown', (event) => post(`keydown:${event.key}`));
+  field.addEventListener('input', () => post(`value:${field.value}`));
+  field.addEventListener('compositionupdate', (event) => post(`composing:${event.data}`));
+  scroller.addEventListener('scroll', () => post(`scroll:${Math.round(scroller.scrollTop)}`));
+  pick.addEventListener('focus', () => post('focus:pick'));
+  pick.addEventListener('change', () => post(`change:${pick.value}`));
+  drop.addEventListener('dragenter', (event) => { event.preventDefault(); post('dragenter:drop'); });
+  drop.addEventListener('dragover', (event) => event.preventDefault());
+  drop.addEventListener('drop', (event) => {
+    event.preventDefault();
+    post(`drop:${event.dataTransfer.getData('text/plain')}`);
+  });
+  document.addEventListener('selectionchange', () => {
+    const text = String(getSelection());
+    if (text) post(`selection:${text}`);
+  });
+  if (params.get('inner')) {
+    const inner = document.createElement('iframe');
+    inner.id = 'inner';
+    inner.src = params.get('inner');
+    document.body.appendChild(inner);
+  }
+  // Ready once laid out and drawn: hit testing has the frame then.
+  requestAnimationFrame(() => requestAnimationFrame(() => post('ready')));
+</script>
+</body>
+</html>

@@ -20,11 +20,15 @@
 // display and on macOS a per-widget screen (OnScreenInfos(), patches 1053, 1074)
 // before compositor and renderer synchronization.
 //
-// Input goes to the page's widgets as the window's events would
-// (RenderWidgetHost::Forward*), an input method's composition through the
-// view's DevTools session (Input.imeSetComposition, as Chrome's own
-// remote input does). The cursor and popup widgets come from the hooks
-// patches/1021 adds to content.
+// Input goes to the page's widgets as the window's events would: the mouse
+// and the wheel through the page's input event router, which finds the frame
+// under the mouse (a frame of another site or a sandboxed one has a widget of
+// its own, in another process), keys to the focused frame's widget
+// (patches/1077), a popup's straight to it. An input method's composition
+// goes through the view's DevTools session (Input.imeSetComposition, as
+// Chrome's own remote input does), which gives it to the focused frame. The
+// cursor and popup widgets come from the hooks patches/1021 adds to content,
+// the cursor the one of the frame under the mouse (patches/1077).
 
 #ifdef UNSAFE_BUFFERS_BUILD
 // The C API takes and returns C structures and arrays.
@@ -75,6 +79,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/zebkit_input.h"
 #include "zebkit/engine/window.h"
 #include "media/base/video_frame_metadata.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
@@ -1398,7 +1403,11 @@ bool Offscreen::InPopup(float x, float y, gfx::PointF* local) const {
 }
 
 content::RenderWidgetHost* Offscreen::KeyTarget() {
-  return popup_ ? popup_.get() : MainWidget();
+  if (popup_)
+    return popup_.get();
+  // The focused frame's widget: a frame of another process has its own.
+  content::RenderWidgetHost* main = MainWidget();
+  return main ? content::GetFocusedRenderWidgetHost(main) : nullptr;
 }
 
 void Offscreen::RenderFrameHostChanged(content::RenderFrameHost* old_host,
@@ -1536,7 +1545,10 @@ void Offscreen::SendMouse(zebkit_mouse_type type,
   const gfx::Point origin =
       view ? view->GetViewBounds().origin() : gfx::Point();
   event.SetPositionInScreen(origin.x() + local.x(), origin.y() + local.y());
-  target->ForwardMouseEvent(event);
+  if (target == popup_ || !view)
+    target->ForwardMouseEvent(event);
+  else
+    content::RouteMouseEvent(view, event);
 }
 
 void Offscreen::SendWheel(float x,
@@ -1595,19 +1607,26 @@ void Offscreen::SendWheel(float x,
   const gfx::Point origin =
       view ? view->GetViewBounds().origin() : gfx::Point();
   event.SetPositionInScreen(origin.x() + local.x(), origin.y() + local.y());
+  // The frame under the mouse takes it, and the rest of its gesture.
+  auto send = [&](const blink::WebMouseWheelEvent& wheel) {
+    if (target == popup_ || !view)
+      target->ForwardWheelEvent(wheel);
+    else
+      content::RouteMouseWheelEvent(view, wheel);
+  };
   if (phase == ZEBKIT_WHEEL_PHASE_NONE) {
     // A notch is a gesture of its own: began, then ended, as the platforms'
     // wheel events become in Chromium.
     event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
-    target->ForwardWheelEvent(event);
+    send(event);
     blink::WebMouseWheelEvent end = event;
     end.phase = blink::WebMouseWheelEvent::kPhaseEnded;
     end.delta_x = end.delta_y = 0;
     end.wheel_ticks_x = end.wheel_ticks_y = 0;
-    target->ForwardWheelEvent(end);
+    send(end);
     return;
   }
-  target->ForwardWheelEvent(event);
+  send(event);
 }
 
 void CopyText(const char* utf8, char16_t* out, size_t cap) {

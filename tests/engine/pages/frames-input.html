@@ -1,0 +1,121 @@
+<!doctype html>
+<!-- tests/engine/frames_input.c: input to frames, as a prototype viewer shows
+     its screens: each tests/engine/pages/frames-input-child.html in a frame,
+     scaled by a CSS transform, inside a box that scrolls. The frames: one of
+     the page's origin, one from srcdoc, one from a blob: URL, one sandboxed
+     without allow-same-origin (an opaque origin), one of another site holding
+     one of the page's site (a frame in a frame), and one of another site whose
+     pointer-events the page turns off and on again. What happens in each is
+     posted here, to window.log, as "name:what[:value]"; frames() says where
+     each is in the view. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>frames-input</title>
+<style>
+  html, body { margin: 0; background: rgb(16, 32, 48); font: 14px sans-serif; overflow: hidden; }
+  .box { position: absolute; width: 360px; height: 420px; overflow: auto; background: rgb(60, 70, 80); }
+  .box .space { height: 60px; }
+  .box .after { height: 600px; }
+  .box iframe { display: block; border: 0; width: 380px; height: 280px; transform-origin: 0 0; }
+</style>
+</head>
+<body>
+<script>
+  window.log = [];
+  window.ready = new Set();
+  window.has = (entry) => window.log.includes(entry);
+  // The last value a frame reported for @what ("name:what:value").
+  window.last = (name, what) => {
+    const prefix = `${name}:${what}:`;
+    for (let i = window.log.length - 1; i >= 0; --i)
+      if (window.log[i].startsWith(prefix)) return window.log[i].slice(prefix.length);
+    return null;
+  };
+  addEventListener('message', (event) => {
+    const entry = String(event.data);
+    if (entry.endsWith(':ready')) window.ready.add(entry.split(':')[0]);
+    window.log.push(entry);
+  });
+  // The page's own events.
+  for (const type of ['click', 'keydown', 'wheel', 'contextmenu', 'drop'])
+    addEventListener(type, () => window.log.push(`top:${type}`));
+  addEventListener('dragover', (event) => event.preventDefault());
+
+  // ?other=http://host:port names the other site.
+  const self = location.origin;
+  const other = new URLSearchParams(location.search).get('other') ||
+      `http://localhost:${location.port}`;
+  const childUrl = (origin, name, extra = '') =>
+      `${origin}/frames-input-child.html?name=${name}&top=${encodeURIComponent(self)}${extra}`;
+
+  // name, how its document comes, its scale.
+  const variants = [
+    ['same', 'src', 1],
+    ['srcdoc', 'srcdoc', 0.5],
+    ['blob', 'blob', 2],
+    ['sandbox', 'sandbox', 0.75],
+    ['cross', 'cross', 1],
+    ['toggled', 'toggled', 1.25],
+  ];
+  const frameOf = {};
+  const html = fetch('frames-input-child.html').then((response) => response.text());
+  variants.forEach(([name, kind, scale], i) => {
+    const box = document.createElement('div');
+    box.className = 'box';
+    box.style.left = `${10 + (i % 3) * 395}px`;
+    box.style.top = `${10 + Math.floor(i / 3) * 450}px`;
+    box.innerHTML = '<div class="space"></div>';
+    const frame = document.createElement('iframe');
+    frame.name = name;
+    frame.style.transform = `scale(${scale})`;
+    frame.dataset.scale = scale;
+    box.appendChild(frame);
+    // Room below, so that the box scrolls whatever the frame's scale.
+    box.insertAdjacentHTML('beforeend', '<div class="after"></div>');
+    document.body.appendChild(box);
+    frameOf[name] = frame;
+    if (kind == 'src') {
+      frame.src = childUrl(self, name);
+    } else if (kind == 'srcdoc') {
+      html.then((text) => { frame.srcdoc = text; });
+    } else if (kind == 'blob') {
+      html.then((text) => {
+        frame.src = URL.createObjectURL(new Blob([text], {type: 'text/html'}));
+      });
+    } else if (kind == 'sandbox') {
+      frame.sandbox = 'allow-scripts allow-forms';
+      frame.src = childUrl(self, name);
+    } else if (kind == 'cross') {
+      frame.src = childUrl(other, name, `&inner=${encodeURIComponent(childUrl(self, 'inner'))}`);
+    } else if (kind == 'toggled') {
+      // Off while it loads, as a viewer does while it pans, then on.
+      frame.style.pointerEvents = 'none';
+      frame.src = childUrl(other, name);
+    }
+    // Scrolled so that the frame's top is the box's.
+    box.scrollTop = 60;
+  });
+  const waitReady = setInterval(() => {
+    if (!window.ready.has('toggled')) return;
+    clearInterval(waitReady);
+    frameOf.toggled.style.pointerEvents = 'auto';
+    window.toggledOn = true;
+  }, 20);
+  // Where each frame is in the view: "name x y scale;...".
+  window.frames_ = () => {
+    const out = [];
+    for (const [name] of variants) {
+      const rect = frameOf[name].getBoundingClientRect();
+      const scale = Number(frameOf[name].dataset.scale);
+      out.push(`${name} ${rect.left} ${rect.top} ${scale}`);
+      if (name == 'cross') out.push(`inner ${rect.left + 200 * scale} ${rect.top + 5 * scale} ${scale}`);
+    }
+    return out.join(';');
+  };
+  window.allReady = () => variants.every(([name]) => window.ready.has(name)) &&
+      window.ready.has('inner') && window.toggledOn === true &&
+      [...document.querySelectorAll('.box')].every((box) => box.scrollTop == 60);
+</script>
+</body>
+</html>

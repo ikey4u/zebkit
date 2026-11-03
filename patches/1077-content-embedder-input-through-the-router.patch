@@ -1,0 +1,194 @@
+Content: an embedder's own input to the frames of a page, as a window's.
+
+zebkit's off-screen views (<zebkit/offscreen.h>) send the application's
+mouse, wheel and keys to the page with RenderWidgetHost::Forward*, to the
+page's main widget. A frame in another process (another site, or a
+sandboxed frame of an opaque origin) has a widget of its own there: the
+main frame's renderer only has a placeholder for it, and the frame got no
+clicks, hover, selection drags, scrolls or keys. A window's events go
+through the WebContents' RenderWidgetHostInputEventRouter instead
+(RenderWidgetHostViewAura, RenderWidgetHostViewMac, CEF's off-screen view):
+it hit tests the frames, keeps a pressed button's frame until release,
+sends enter and leave between frames, and keeps a scroll on its frame; keys
+go to GetFocusedRenderWidgetHost(). content/public/browser/zebkit_input.h
+gives an embedder the same entry points.
+
+The cursor hook (patches/1021) is called with the cursor the root view
+shows (DisplayCursor(), the CursorManager's choice of the frame under the
+mouse) rather than whatever widget last set one, which left a frame's
+cursor after the mouse had left the frame.
+
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -2187,6 +2187,7 @@
+     "web_contents/slow_web_preference_cache.h",
+     "web_contents/web_contents_impl.cc",
+     "zebkit_automation.cc",
++    "zebkit_input.cc",
+     "web_contents/web_contents_impl.h",
+     "web_contents/web_contents_view.h",
+     "web_contents/web_contents_view_aura.cc",
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -507,6 +507,7 @@
+     "web_contents_observer.cc",
+     "web_contents_observer.h",
+     "zebkit_automation.h",
++    "zebkit_input.h",
+     "web_contents_user_data.h",
+     "web_contents_view_delegate.cc",
+     "web_contents_view_delegate.h",
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -2191,7 +2191,10 @@
+ }
+ 
+ void RenderWidgetHostImpl::SetCursor(const ui::Cursor& cursor) {
+-  if (GetEmbedderWidgetHooks().cursor_changed) {
++  // A view with a cursor manager says which widget's cursor is shown, the
++  // one under the mouse of the page's frames, in DisplayCursor().
++  if (GetEmbedderWidgetHooks().cursor_changed &&
++      (!view_ || !view_->GetCursorManager())) {
+     GetEmbedderWidgetHooks().cursor_changed(this, cursor);
+   }
+   if (view_) {
+--- a/content/browser/renderer_host/render_widget_host_view_aura.cc
++++ b/content/browser/renderer_host/render_widget_host_view_aura.cc
+@@ -56,6 +56,7 @@
+ #include "content/browser/renderer_host/visible_time_request_trigger.h"
+ #include "content/public/browser/content_browser_client.h"
+ #include "content/public/browser/device_service.h"
++#include "content/public/browser/embedder_widget_hooks.h"
+ #include "content/public/browser/render_view_host.h"
+ #include "content/public/common/page_visibility_state.h"
+ #include "services/service_manager/public/cpp/interface_provider.h"
+@@ -1053,6 +1054,9 @@
+ }
+ 
+ void RenderWidgetHostViewAura::DisplayCursor(const ui::Cursor& cursor) {
++  if (GetEmbedderWidgetHooks().cursor_changed && host()) {
++    GetEmbedderWidgetHooks().cursor_changed(host(), cursor);
++  }
+   current_cursor_ = WebCursor(cursor);
+   current_cursor_.UpdateDisplayInfoForWindow(window_);
+   UpdateCursorIfOverSelf();
+--- a/content/browser/renderer_host/render_widget_host_view_mac.mm
++++ b/content/browser/renderer_host/render_widget_host_view_mac.mm
+@@ -710,6 +710,9 @@
+ }
+ 
+ void RenderWidgetHostViewMac::DisplayCursor(const ui::Cursor& cursor) {
++  if (GetEmbedderWidgetHooks().cursor_changed && host()) {
++    GetEmbedderWidgetHooks().cursor_changed(host(), cursor);
++  }
+   ns_view_->DisplayCursor(cursor);
+ }
+ 
+--- /dev/null
++++ b/content/browser/zebkit_input.cc
+@@ -0,0 +1,61 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: content/public/browser/zebkit_input.h.
++
++#include "content/public/browser/zebkit_input.h"
++
++#include "components/input/render_widget_host_input_event_router.h"
++#include "content/browser/renderer_host/render_widget_host_delegate.h"
++#include "content/browser/renderer_host/render_widget_host_impl.h"
++#include "content/browser/renderer_host/render_widget_host_view_base.h"
++#include "third_party/blink/public/common/input/web_mouse_event.h"
++#include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
++#include "ui/latency/latency_info.h"
++
++namespace content {
++
++namespace {
++
++input::RenderWidgetHostInputEventRouter* RouterOf(RenderWidgetHostViewBase* view) {
++  RenderWidgetHostImpl* host = view ? view->host() : nullptr;
++  return host && host->delegate() ? host->delegate()->GetInputEventRouter()
++                                  : nullptr;
++}
++
++}  // namespace
++
++void RouteMouseEvent(RenderWidgetHostView* root,
++                     const blink::WebMouseEvent& event) {
++  auto* view = static_cast<RenderWidgetHostViewBase*>(root);
++  if (!view || !view->host())
++    return;
++  blink::WebMouseEvent routed = event;
++  if (auto* router = RouterOf(view)) {
++    router->RouteMouseEvent(view, &routed, ui::LatencyInfo());
++    return;
++  }
++  view->ProcessMouseEvent(routed, ui::LatencyInfo());
++}
++
++void RouteMouseWheelEvent(RenderWidgetHostView* root,
++                          const blink::WebMouseWheelEvent& event) {
++  auto* view = static_cast<RenderWidgetHostViewBase*>(root);
++  if (!view || !view->host())
++    return;
++  blink::WebMouseWheelEvent routed = event;
++  if (auto* router = RouterOf(view)) {
++    router->RouteMouseWheelEvent(view, &routed, ui::LatencyInfo());
++    return;
++  }
++  view->ProcessMouseWheelEvent(routed, ui::LatencyInfo());
++}
++
++RenderWidgetHost* GetFocusedRenderWidgetHost(RenderWidgetHost* widget) {
++  RenderWidgetHostImpl* host = RenderWidgetHostImpl::From(widget);
++  if (!host || !host->delegate())
++    return widget;
++  RenderWidgetHostImpl* focused =
++      host->delegate()->GetFocusedRenderWidgetHost(host);
++  return focused ? focused : widget;
++}
++
++}  // namespace content
+--- /dev/null
++++ b/content/public/browser/zebkit_input.h
+@@ -0,0 +1,41 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: input an embedder makes itself (off-screen rendering) to a page's
++// widgets as the platform's events reach them in a window: through the
++// WebContents' input event router, which finds the frame under the mouse,
++// a frame of another site's included, keeps a pressed button's frame until
++// it is released, sends mouseenter and mouseleave between frames, and keeps
++// a scroll gesture on the frame it began in; and keys to the focused frame's
++// widget.
++
++#ifndef CONTENT_PUBLIC_BROWSER_ZEBKIT_INPUT_H_
++#define CONTENT_PUBLIC_BROWSER_ZEBKIT_INPUT_H_
++
++#include "content/common/content_export.h"
++
++namespace blink {
++class WebMouseEvent;
++class WebMouseWheelEvent;
++}  // namespace blink
++
++namespace content {
++
++class RenderWidgetHost;
++class RenderWidgetHostView;
++
++// @event, in @root's coordinates, to the widget under it, as
++// RenderWidgetHostViewAura and RenderWidgetHostViewMac send the platform's.
++// @root is a page's main view (or a popup's). Straight to @root's widget
++// where nothing routes.
++CONTENT_EXPORT void RouteMouseEvent(RenderWidgetHostView* root,
++                                    const blink::WebMouseEvent& event);
++CONTENT_EXPORT void RouteMouseWheelEvent(RenderWidgetHostView* root,
++                                         const blink::WebMouseWheelEvent& event);
++
++// The widget keys sent to @widget's page go to: the focused frame's
++// (RenderWidgetHostDelegate::GetFocusedRenderWidgetHost()), else @widget.
++CONTENT_EXPORT RenderWidgetHost* GetFocusedRenderWidgetHost(
++    RenderWidgetHost* widget);
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_ZEBKIT_INPUT_H_

@@ -36,6 +36,10 @@
 #   <select>'s list as a popup layer, no frames while idle, frames held
 #   back while the application holds its allowance, the frame rate limit.
 #   ENGINE_TEST_SHOTS=<dir> keeps pictures of the frames there.
+# - tests/engine/frames_input.c: input to a page's frames as a prototype
+#   viewer has them (same origin, srcdoc, blob:, sandboxed, another site's,
+#   scaled, in scrolled boxes): clicks, hover, selection drags, keys, an
+#   input method, the wheel, <select>, drops; on Linux also in a window.
 # - examples/offscreen-host: the same page drawn in one process and shown
 #   in another, which links nothing of zebkit's: the frames' buffers passed
 #   over a socket, the pixels the host gets checked, its input sent back,
@@ -233,6 +237,9 @@ build_against_package "$package" "$bin/scheme" "$tests/scheme.c"
 offscreen_options=()
 [[ "$ZEBKIT_TARGET" == macos ]] && offscreen_options=(-framework IOSurface)
 build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
+frames_options=()
+[[ "$ZEBKIT_TARGET" == linux && -f /usr/include/X11/Xlib.h ]] && frames_options=(-DFRAMES_X11 -lX11 -ldl)
+build_against_package "$package" "$bin/frames-input" "$tests/frames_input.c" -- "${frames_options[@]}"
 build_against_package "$package" "$bin/page" "$tests/page.c"
 build_against_package "$package" "$bin/popup" "$tests/popup.c"
 build_against_package "$package" "$bin/cookie-host" "$tests/cookie_host.c"
@@ -593,6 +600,27 @@ ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$p
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_SHOTS="${ENGINE_TEST_SHOTS:-}" \
     run offscreen "$offscreen_test" "${engine_switches[@]}"
 finished offscreen "the off-screen test"
+# Frames as a prototype viewer has them, input from the application; on Linux
+# again in the engine's own window, input from the X server.
+ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
+    run frames-input "$bin/frames-input" "${engine_switches[@]/profile/profile-frames}"
+finished frames-input "the frames' input test"
+if [[ "$ZEBKIT_HOST" == linux ]] && selected frames-input-window && command -v Xvfb > /dev/null; then
+    exec 8< <(Xvfb -displayfd 1 -screen 0 1600x1200x24 -nolisten tcp 2> /dev/null)
+    frames_xvfb=$!
+    pids+=("$frames_xvfb")
+    read -r -t 15 -u 8 frames_display || frames_display=
+    if [[ -n "$frames_display" ]]; then
+        ZEBKIT_TEST_WINDOW=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
+            run frames-input-window env -u WAYLAND_DISPLAY DISPLAY=":$frames_display" "$bin/frames-input" \
+            --no-sandbox --user-data-dir="$work/profile-frames-window"
+        finished frames-input-window "the frames' input test in a window"
+    else
+        echo "FAIL Xvfb did not start"; failed=1
+    fi
+    kill "$frames_xvfb" 2>/dev/null || true
+    exec 8<&-
+fi
 if [[ "$ZEBKIT_HOST" != windows ]]; then
 run offscreen-host "$bin/offscreen-show" --renderer="$bin/offscreen-render" \
     --url="http://127.0.0.1:$port/offscreen.html" --size=400x300@1 ${ENGINE_TEST_SHOTS:+--shots="$ENGINE_TEST_SHOTS"} \

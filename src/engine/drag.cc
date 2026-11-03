@@ -11,9 +11,12 @@
 // how it ended (dragend), as a window's drag loop does.
 //
 // Into the page: what the application drags in (files from the system's
-// file manager, text, links) goes to the page's widget as the window's
-// drop target would send it (RenderWidgetHost::DragTarget*), files made
-// readable by the page as they are dropped.
+// file manager, text, links) goes to the page's widgets as the window's
+// drop target would send it (RenderWidgetHost::DragTarget*): to the widget
+// under the point, a frame's of another process included, at the point in
+// it, a frame left when the drag moves on to another, as
+// WebContentsViewAura does; files made readable by the page as they are
+// dropped.
 //
 // CDP's own (Input.dispatchDragEvent, Input.setInterceptDrags, drags of
 // Input.dispatchMouseEvent's events) are content's, and come first.
@@ -45,6 +48,8 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "content/public/browser/zebkit_automation.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/common/drop_data.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
@@ -233,6 +238,10 @@ struct Target {
   blink::DragOperationsMask operations = blink::kDragOperationNone;
   bool entered = false;
   gfx::PointF point;
+  // The widget the drag is over (process and routing id), and the point in it.
+  int process = -1;
+  int routing = -1;
+  gfx::PointF local;
   unsigned operation = ZEBKIT_DRAG_NONE;
   int pending = 0;
   std::vector<base::OnceClosure> after;
@@ -347,7 +356,16 @@ class DragState : public content::WebContentsUserData<DragState>,
     source.reset();
     StopObserving();
     if (ended.widget) {
-      ended.widget->DragSourceEndedAt(point, point, ToOperation(operation),
+      // In the source's own coordinates: a frame's when it began in one.
+      gfx::PointF local = point;
+      if (content::RenderWidgetHostView* root =
+              GetWebContents().GetRenderWidgetHostView();
+          root && ended.widget->GetView() &&
+          ended.widget->GetView() != root) {
+        local = ended.widget->GetView()->TransformRootPointToViewCoordSpace(
+            point);
+      }
+      ended.widget->DragSourceEndedAt(local, point, ToOperation(operation),
                                       base::DoNothing());
       ended.widget->DragSourceSystemDragEnded();
     }
@@ -387,40 +405,105 @@ class DragState : public content::WebContentsUserData<DragState>,
           target.data.document_is_handling_drag = document_is_handling;
           if (also)
             std::move(also).Run(target.operation);
-          if (--target.pending > 0)
-            return;
-          std::vector<base::OnceClosure> after;
-          after.swap(target.after);
-          for (base::OnceClosure& closure : after)
-            std::move(closure).Run();
+          self->Settle();
         },
         weak_factory_.GetWeakPtr(), std::move(also));
   }
 
+  void Settle() {
+    if (--target.pending > 0)
+      return;
+    std::vector<base::OnceClosure> after;
+    after.swap(target.after);
+    for (base::OnceClosure& closure : after)
+      std::move(closure).Run();
+  }
+
+  content::RenderWidgetHost* Current() {
+    return target.process < 0
+               ? nullptr
+               : content::RenderWidgetHost::FromID(target.process,
+                                                   target.routing);
+  }
+
+  // The widget under @point, a frame's of another process included, and
+  // the point in it, to @then; the drag left the widget it was over when it
+  // is another (dragleave there, then dragenter in the new one). The hit
+  // tests are answered in the order they are asked, and a drop waits for
+  // them (pending).
+  using Located = base::OnceCallback<void(content::RenderWidgetHost*)>;
+  void Locate(gfx::PointF point, int modifiers, Located then) {
+    ++target.pending;
+    content::FindWidgetAtPoint(
+        &GetWebContents(), point,
+        base::BindOnce(
+            [](base::WeakPtr<DragState> self, gfx::PointF point, int modifiers,
+               Located then, content::RenderWidgetHost* widget,
+               gfx::PointF local) {
+              if (!self)
+                return;
+              if (!widget) {
+                widget = self->MainWidget();
+                local = point;
+              }
+              Target& target = self->target;
+              content::RenderWidgetHost* current = self->Current();
+              if (widget && target.entered && current != widget) {
+                if (current)
+                  current->DragTargetDragLeave(target.local, target.point);
+                content::DropData filtered = target.data;
+                widget->FilterDropData(&filtered);
+                widget->DragTargetDragEnter(filtered, local, point,
+                                            target.operations, modifiers,
+                                            self->Answer());
+              }
+              if (widget) {
+                target.process = widget->GetProcess()->GetDeprecatedID();
+                target.routing = widget->GetRoutingID();
+              }
+              target.local = local;
+              target.point = point;
+              std::move(then).Run(target.entered ? widget : nullptr);
+              self->Settle();
+            },
+            weak_factory_.GetWeakPtr(), point, modifiers, std::move(then)));
+  }
+
   void Enter(gfx::PointF point, int modifiers) {
-    content::RenderWidgetHost* widget = MainWidget();
-    if (!widget)
+    if (!MainWidget())
       return;
     target.point = point;
     target.entered = true;
-    content::DropData filtered = target.data;
-    widget->FilterDropData(&filtered);
-    widget->DragTargetDragEnter(filtered, point, point, target.operations,
-                                modifiers, Answer());
+    // No widget yet: the one under the point gets dragenter.
+    target.process = target.routing = -1;
+    Locate(point, modifiers, base::DoNothing());
   }
 
   void Over(gfx::PointF point,
             int modifiers,
             base::OnceCallback<void(unsigned)> done = {}) {
-    content::RenderWidgetHost* widget = MainWidget();
-    if (!widget || !target.entered) {
+    if (!MainWidget() || !target.entered) {
       if (done)
         std::move(done).Run(ZEBKIT_DRAG_NONE);
       return;
     }
-    target.point = point;
-    widget->DragTargetDragOver(point, point, target.operations, modifiers,
-                               Answer(std::move(done)));
+    Locate(point, modifiers,
+           base::BindOnce(
+               [](base::WeakPtr<DragState> self, gfx::PointF point,
+                  int modifiers, base::OnceCallback<void(unsigned)> done,
+                  content::RenderWidgetHost* widget) {
+                 if (!self || !widget) {
+                   if (done)
+                     std::move(done).Run(ZEBKIT_DRAG_NONE);
+                   return;
+                 }
+                 Target& target = self->target;
+                 widget->DragTargetDragOver(target.local, point,
+                                            target.operations, modifiers,
+                                            self->Answer(std::move(done)));
+               },
+               weak_factory_.GetWeakPtr(), point, modifiers,
+               std::move(done)));
   }
 
   void Leave() {
@@ -428,8 +511,9 @@ class DragState : public content::WebContentsUserData<DragState>,
       return;
     target.entered = false;
     target.operation = ZEBKIT_DRAG_NONE;
-    if (content::RenderWidgetHost* widget = MainWidget())
-      widget->DragTargetDragLeave(target.point, target.point);
+    if (content::RenderWidgetHost* widget = Current())
+      widget->DragTargetDragLeave(target.local, target.point);
+    target.process = target.routing = -1;
   }
 
   // Drops at @point once the dragovers are answered; @done gets what was
@@ -437,13 +521,17 @@ class DragState : public content::WebContentsUserData<DragState>,
   void Drop(gfx::PointF point,
             int modifiers,
             base::OnceCallback<void(unsigned)> done) {
+    // Dropped elsewhere than the last dragover: the widget there.
+    if (target.entered && point != target.point)
+      Locate(point, modifiers, base::DoNothing());
     WhenSettled(base::BindOnce(
         [](base::WeakPtr<DragState> self, gfx::PointF point, int modifiers,
            base::OnceCallback<void(unsigned)> done) {
           if (!self)
             return;
           Target& target = self->target;
-          content::RenderWidgetHost* widget = self->MainWidget();
+          // Where the last dragover was: the drop's point is the same.
+          content::RenderWidgetHost* widget = self->Current();
           if (!widget || !target.entered ||
               target.operation == ZEBKIT_DRAG_NONE) {
             self->Leave();
@@ -452,10 +540,11 @@ class DragState : public content::WebContentsUserData<DragState>,
           }
           const unsigned operation = target.operation;
           target.entered = false;
+          target.process = target.routing = -1;
           content::DropData filtered = target.data;
           widget->FilterDropData(&filtered);
           widget->DragTargetDrop(
-              filtered, point, point, modifiers,
+              filtered, target.local, point, modifiers,
               base::BindOnce(std::move(done), operation));
         },
         weak_factory_.GetWeakPtr(), point, modifiers, std::move(done)));

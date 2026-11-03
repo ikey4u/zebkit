@@ -802,6 +802,16 @@ int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }
   places its window by `zebkit_view_on_caret()`.
   `zebkit_view_on_cursor()` gives the cursor the page asks for, by its CSS
   name, or its image.
+- **Frames in the page** take their input as in a window, whatever their
+  origin, transform or scrolling: the mouse and the wheel go through the
+  page's input event router (Chromium's, as a window's events do), which
+  finds the frame under the mouse, a frame of another site or a sandboxed
+  one in a process of its own included, keeps a pressed button's frame
+  until it is released (a selection drag), and keeps a scroll on the frame
+  it began in; keys and an input method's text go to the focused frame,
+  and a drag from outside (`zebkit_view_drag_enter()` and the rest) to the
+  frame under it. The cursor is the one of the frame under the mouse
+  (`tests/engine/frames_input.c`).
 - **Popups.** A `<select>`'s list, a date or colour picker is a widget of
   its own: `zebkit_view_on_popup()` says where it is in the view, its
   frames are `ZEBKIT_LAYER_POPUP` with that place in `bounds`, the
