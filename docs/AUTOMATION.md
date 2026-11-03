@@ -803,7 +803,11 @@ CDP in between:
   (`zebkit-run` sends them, as Chrome does), console messages from CDP with their arguments,
   exposed functions' serialized arguments and answers, `beforeunload` and `page.close()`
   (pending calls and `request.response()` end with `TargetClosedError`), `dialogclosed` for
-  dialogs dismissed without a listener, a worker's uncaught exception as a page error.
+  dialogs dismissed without a listener, a worker's uncaught exception as a page error;
+  `dispatchEvent`'s serialized `eventInit` (wheel, device and drag events, a DataTransfer's
+  handle); `waitForFunction` through navigations, a string evaluated at each try, its page side
+  stopped at the timeout; the context options `validateBrowserContextOptions()` refuses; the
+  `Origin` header a route sees; `browser.contexts()`; a context's routes beside its page's.
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

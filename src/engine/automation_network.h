@@ -54,9 +54,11 @@ class Network {
   // The latest intercepted main-resource response for a navigation URL.
   virtual std::optional<base::DictValue> NavigationResponse(const std::string& url) = 0;
 
-  // Page.setNetworkInterceptionPatterns: [{glob}, {regexSource,
-  // regexFlags}]; empty for none.
+  // Page.setNetworkInterceptionPatterns (BrowserContext's when
+  // @context): [{glob}, {regexSource, regexFlags}]; empty for none. A
+  // request either set matches is routed.
   virtual bool SetPatterns(const base::ListValue& patterns,
+                           bool context,
                            std::string* error) = 0;
   // Page.setWebSocketInterceptionPatterns: the WebSockets whose URL
   // matches are routed (automation.cc); and whether @url is one.

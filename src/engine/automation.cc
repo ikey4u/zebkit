@@ -425,6 +425,11 @@ class Call {
   void Fail(const std::string& message) {
     if (finished_)
       return;
+    // What a polled function logged before its timeout comes first.
+    if (Name() == "waitForFunction" && Defer()) {
+      deferred_error_ = message;
+      return;
+    }
     finished_ = true;
     error_ = message;
     timer_.Stop();
@@ -440,8 +445,20 @@ class Call {
   }
 
   void TimedOut() {
+    // The page's own end comes first when it has one (a polled function
+    // stops there, frames.ts's aborted).
+    if (grace_ms_ > 0) {
+      timer_.Start(FROM_HERE, base::Milliseconds(std::exchange(grace_ms_, 0)),
+                   base::BindOnce(&Call::TimedOut, base::Unretained(this)));
+      return;
+    }
+    TimedOutNow();
+  }
+  void TimedOutNow() {
     Fail("Timeout " + base::NumberToString(timeout_ms_) + "ms exceeded.");
   }
+  // How long the page may take past the timeout to answer it.
+  void set_grace(int ms) { grace_ms_ = ms; }
 
   bool finished() const { return finished_; }
   const std::string& error() const { return error_; }
@@ -463,7 +480,8 @@ class Call {
     // A navigation's: after the messages already told, which its load
     // follows.
     const std::string name = Name();
-    const bool evaluation = name.find("valuate") != std::string::npos;
+    const bool evaluation =
+        name.find("valuate") != std::string::npos || name == "waitForFunction";
     if (deferring_ || (!evaluation && name != "goto" && name != "reload" && name != "setContent"))
       return false;
     deferring_ = true;
@@ -472,7 +490,10 @@ class Call {
   void Deferred() {
     if (finished_)
       return;
-    Done(deferred_result_ ? std::move(*deferred_result_) : base::Value(base::DictValue()));
+    if (deferred_error_)
+      Fail(*deferred_error_);
+    else
+      Done(deferred_result_ ? std::move(*deferred_result_) : base::Value(base::DictValue()));
   }
 
   void Release() {
@@ -506,7 +527,9 @@ class Call {
   std::vector<std::string> log_;
   bool finished_ = false;
   bool deferring_ = false;
+  int grace_ms_ = 0;
   std::optional<base::Value> deferred_result_;
+  std::optional<std::string> deferred_error_;
   std::string error_;
   std::string abort_id_;
   base::OnceClosure on_release_;
@@ -1954,7 +1977,8 @@ class Automation : public content::WebContentsObserver,
                   const std::string& step,
                   base::DictValue arg,
                   StepDone done,
-                  AutomationWorld world = AutomationWorld::kUtility) {
+                  AutomationWorld world = AutomationWorld::kUtility,
+                  std::vector<int32_t> extra = {}) {
     arg.Set("selector", target.selector);
     arg.Set("strict", target.strict);
     if (target.cap_ms)
@@ -1972,6 +1996,17 @@ class Automation : public content::WebContentsObserver,
       scope.Set("$h", 0);
       arg.Set("scope", std::move(scope));
       handles.push_back(target.scope);
+    }
+    // More of the call's own handles: arg's "handles", {"$h": i} each.
+    if (!extra.empty()) {
+      base::ListValue references;
+      for (int32_t handle : extra) {
+        base::DictValue reference;
+        reference.Set("$h", static_cast<int>(handles.size()));
+        references.Append(std::move(reference));
+        handles.push_back(handle);
+      }
+      arg.Set("handles", std::move(references));
     }
     RunStep(call, target.frame, world, step, std::move(arg), std::move(handles),
             std::move(done));
@@ -2849,6 +2884,11 @@ class Automation : public content::WebContentsObserver,
   // Frame.waitForFunction: the predicate in the page's world, polled there;
   // its value as a handle.
   void WaitForFunction(Call* call) {
+    if (call->Has("pollingInterval") && call->Number("pollingInterval") <= 0) {
+      call->Fail("Cannot poll with non-positive interval: " +
+                 base::NumberToString(call->Number("pollingInterval")));
+      return;
+    }
     content::RenderFrameHost* frame = FrameOf(call);
     if (!frame) {
       call->Fail(kFrameDetached);
@@ -2867,21 +2907,51 @@ class Automation : public content::WebContentsObserver,
       const bool empty = args[1] == ']';
       args = "[" + Json(base::Value(std::move(on))) + (empty ? "" : ",") + args.substr(1);
     }
-    Agent(frame)->WaitForFunction(
-        AutomationWorld::kMain, call->String("expression"), KindOf(call), args,
-        handles, static_cast<int>(call->Number("pollingInterval")),
-        call->Remaining(), !call->Flag("serialized"),
-        AnswerTo(call, frame->GetGlobalId(),
+    // Not AnswerTo()'s, which would answer as it goes when retried.
+    auto answered = base::BindOnce(
+        &Automation::Answered, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), frame->GetGlobalId(),
                  Then(call, base::BindOnce([](Call* call, base::Value value) {
                         if (value.is_dict() &&
                             value.GetDict().FindBool("timedOut").value_or(false)) {
-                          call->TimedOut();
+                          call->TimedOutNow();
                           return;
                         }
                         base::DictValue answer;
                         answer.Set("handle", std::move(value));
                         call->Done(base::Value(std::move(answer)));
-                      }))));
+                      })));
+    if (call->Remaining() > 0)
+      call->set_grace(1000);
+    // frames.ts's waitForFunctionExpression() outlives a navigation: it
+    // starts again in the new document, unless its arguments had handles.
+    Agent(frame)->WaitForFunction(
+        AutomationWorld::kMain, call->String("expression"), KindOf(call), args,
+        handles, static_cast<int>(call->Number("pollingInterval")),
+        call->Remaining(), !call->Flag("serialized"),
+        mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+            base::BindOnce(
+                [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, bool retry,
+                   mojom::AutomationAgent::WaitForFunctionCallback answered,
+                   AutomationStatus status, const std::string& result,
+                   std::vector<AutomationHandlePtr> kept) {
+                  if (status == AutomationStatus::kGone && retry && self && call &&
+                      !call->finished() && !call->Expired() && !self->Closing()) {
+                    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+                        FROM_HERE,
+                        base::BindOnce(
+                            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+                              if (self && call && !call->finished())
+                                self->WaitForFunction(call.get());
+                            },
+                            self, call),
+                        base::Milliseconds(20));
+                    return;
+                  }
+                  std::move(answered).Run(status, result, std::move(kept));
+                },
+                weak_factory_.GetWeakPtr(), call->GetWeakPtr(), handles.empty(),
+                std::move(answered)),
+            AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
   }
 
   // ---- JSHandle --------------------------------------------------------
@@ -3807,13 +3877,50 @@ class Automation : public content::WebContentsObserver,
   }
 
   // Frame.dispatchEvent, in the page's world as frames.ts has it.
+  // A serialized eventInit (Playwright's) has handles of the target's frame.
   void DispatchEvent(Call* call) {
     base::DictValue arg;
     arg.Set("type", call->String("type"));
     if (const base::Value* init = call->params().Find("eventInit"))
       arg.Set("eventInit", init->Clone());
-    StepOnTarget(call, "dispatchEvent", std::move(arg), AsDone(),
-                 AutomationWorld::kMain);
+    std::vector<std::string> ids;
+    if (call->Flag("serialized")) {
+      arg.Set("serializedInit", true);
+      if (const base::ListValue* given = call->params().FindList("eventInitHandles")) {
+        for (const base::Value& id : *given)
+          ids.push_back(id.is_string() ? id.GetString() : std::string());
+      }
+    }
+    ResolveTarget(
+        call, base::BindOnce(
+                  [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, base::DictValue arg,
+                     std::vector<std::string> ids, Target target) {
+                    if (!self || !call)
+                      return;
+                    content::RenderFrameHost* frame = self->Resolve(target.frame);
+                    std::vector<int32_t> extra;
+                    for (const std::string& id : ids) {
+                      const HandleRef* handle = self->FindHandle(id);
+                      if (!handle) {
+                        call->Fail(kDisposed);
+                        return;
+                      }
+                      if (!frame || handle->frame != frame->GetGlobalId()) {
+                        call->Fail("JSHandles can be evaluated only in the context they were created!");
+                        return;
+                      }
+                      extra.push_back(handle->id);
+                    }
+                    self->TargetStep(call.get(), target, "dispatchEvent", std::move(arg),
+                                     base::BindOnce(
+                                         [](base::WeakPtr<Call> call, base::Value) {
+                                           if (call)
+                                             call->Done();
+                                         },
+                                         call),
+                                     AutomationWorld::kMain, std::move(extra));
+                  },
+                  weak_factory_.GetWeakPtr(), call->GetWeakPtr(), std::move(arg), std::move(ids)));
   }
 
   // dom.ts's _selectOption(): options as {valueOrLabel}, {value}, {label},
@@ -5998,7 +6105,10 @@ class Automation : public content::WebContentsObserver,
       return;
     std::string error;
     const base::ListValue* patterns = call->params().FindList("patterns");
-    if (!network->SetPatterns(patterns ? patterns->Clone() : base::ListValue(), &error)) {
+    if (!network->SetPatterns(patterns ? patterns->Clone() : base::ListValue(),
+                              call->Flag("ofContext") ||
+                                  call->method().starts_with("BrowserContext."),
+                              &error)) {
       call->Fail(error);
       return;
     }
@@ -8281,6 +8391,9 @@ void ContextCommand(Call* call) {
   std::string method = removal ? "Page.removeRegistration" : "BrowserContext." + name;
   if (auto replayed = kReplayed->find(name); replayed != kReplayed->end()) {
     method = replayed->second;
+    // The context's routes apart from each page's own.
+    if (name == "setNetworkInterceptionPatterns")
+      params.Set("ofContext", true);
     if (name == "setNetworkInterceptionPatterns" ||
         name == "setWebSocketInterceptionPatterns") {
       std::erase_if(state.replay,

@@ -658,7 +658,22 @@ class Loader : public network::mojom::URLLoader,
     // Without its fragment, as network.ts's stripFragmentFromUrl().
     value.Set("url", request_.url.GetWithoutRef().spec());
     value.Set("method", request_.method);
-    value.Set("headers", RequestHeaders(request_.headers));
+    base::ListValue headers = RequestHeaders(request_.headers);
+    // The Origin the network service adds (cors_url_loader.cc), which
+    // DevTools' interception sees: a CORS request to another origin, or one
+    // that is not GET or HEAD.
+    const bool cors = request_.mode == network::mojom::RequestMode::kCors ||
+                      request_.mode == network::mojom::RequestMode::kCorsWithForcedPreflight;
+    if (request_.request_initiator && !request_.headers.HasHeader("Origin") &&
+        request_.mode != network::mojom::RequestMode::kNavigate &&
+        ((cors && !request_.request_initiator->IsSameOriginWith(request_.url)) ||
+         (request_.method != "GET" && request_.method != "HEAD"))) {
+      base::DictValue origin;
+      origin.Set("name", "Origin");
+      origin.Set("value", request_.request_initiator->Serialize());
+      headers.Append(std::move(origin));
+    }
+    value.Set("headers", std::move(headers));
     // The type DevTools has from Blink (XHR and fetch(), which the network
     // cannot tell apart), else the network's.
     value.Set("resourceType", devtools_type_.empty() ? std::string(ResourceType(request_)) : devtools_type_);
@@ -780,9 +795,11 @@ class NetworkImpl : public Network,
   }
 
   bool Intercepts(const GURL& url) const {
-    for (const auto& pattern : patterns_) {
-      if (RE2::PartialMatch(url.spec(), *pattern))
-        return true;
+    for (const auto* set : {&patterns_, &context_patterns_}) {
+      for (const auto& pattern : *set) {
+        if (RE2::PartialMatch(url.spec(), *pattern))
+          return true;
+      }
     }
     return false;
   }
@@ -801,8 +818,8 @@ class NetworkImpl : public Network,
   base::WeakPtr<NetworkImpl> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
 
   // Network
-  bool SetPatterns(const base::ListValue& patterns, std::string* error) override {
-    return Compile(patterns, &patterns_, error);
+  bool SetPatterns(const base::ListValue& patterns, bool context, std::string* error) override {
+    return Compile(patterns, context ? &context_patterns_ : &patterns_, error);
   }
 
   bool SetWebSocketPatterns(const base::ListValue& patterns,
@@ -1093,6 +1110,7 @@ class NetworkImpl : public Network,
 
   EventFunc emit_;
   std::vector<std::unique_ptr<RE2>> patterns_;
+  std::vector<std::unique_ptr<RE2>> context_patterns_;
   std::vector<std::unique_ptr<RE2>> web_socket_patterns_;
   std::vector<std::pair<std::string, std::string>> extra_headers_;
   std::map<std::string, base::WeakPtr<Loader>> routes_;

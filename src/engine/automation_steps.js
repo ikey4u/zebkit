@@ -491,7 +491,9 @@ steps.dispatchEvent = arg => poll(arg.timeout, kPollWaits, say => {
   const element = resolve(arg, say);
   if (!element)
     return undefined;
-  injected.dispatchEvent(element, arg.type, arg.eventInit || {});
+  // Playwright's serialized eventInit, its handles in arg.handles.
+  const init = arg.serializedInit ? parseEvaluationResultValue(arg.eventInit, arg.handles || []) : arg.eventInit;
+  injected.dispatchEvent(element, arg.type, init || {});
   return { done: true };
 });
 
@@ -1202,7 +1204,7 @@ return {
   // frames.ts's waitForFunctionExpression(): the predicate polled at each
   // animation frame or every @polling ms, until it is truthy; its value
   // as a handle.
-  waitForFunction(compiled, isFunction, argJson, handles, polling, timeout, plain) {
+  waitForFunction(compiled, isFunction, argJson, handles, polling, timeout, plain, thunk) {
     return answer(async out => {
       const args = parseJson(argJson);
       // locator.waitForFunction(): the agent puts the locator first; the
@@ -1214,10 +1216,21 @@ return {
           const element = query({ selector: on.waitOnSelector, strict: on.strict })[0];
           return element ? compiled(element, ...parameters) : undefined;
         }
+        if (thunk) {
+          // frames.ts's predicate: the expression's value, a function's
+          // kept and called each time.
+          let result = evaluated ?? compiled();
+          if (isFunction === undefined && typeof result === 'function') {
+            evaluated = result;
+            result = result(...parameters);
+          }
+          return result;
+        }
         if (isFunction === true || (isFunction === undefined && typeof compiled === 'function'))
           return compiled(...parameters);
         return compiled;
       };
+      let evaluated;
       const start = builtins.performance.now();
       return await new Promise((fulfill, reject) => {
         const next = () => {

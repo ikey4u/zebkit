@@ -472,7 +472,19 @@ class Agent : public content::RenderFrameObserver,
     }
     v8::Context::Scope context_scope(context);
     std::string error;
-    v8::Local<v8::Value> compiled = Compile(isolate, context, expression, kind, &error);
+    // An expression that is not a function is evaluated again at each try,
+    // as frames.ts's predicate evals it: a function returning it.
+    bool thunk = false;
+    v8::Local<v8::Value> compiled;
+    if (kind != AutomationExpression::kFunction) {
+      v8::TryCatch try_catch(isolate);
+      compiled = Compile(isolate, context, "() => (\n" + expression + "\n)",
+                         AutomationExpression::kFunction, &error);
+      thunk = !compiled.IsEmpty() && compiled->IsFunction();
+      error.clear();
+    }
+    if (!thunk)
+      compiled = Compile(isolate, context, expression, kind, &error);
     if (compiled.IsEmpty()) {
       std::move(callback).Run(AutomationStatus::kOk, ErrorJson(error), {});
       return;
@@ -485,7 +497,8 @@ class Agent : public content::RenderFrameObserver,
         polling > 0 ? v8::Local<v8::Value>(v8::Integer::New(isolate, polling))
                     : v8::Local<v8::Value>(v8::Undefined(isolate)),
         v8::Integer::New(isolate, timeout),
-        v8::Boolean::New(isolate, plain)};
+        v8::Boolean::New(isolate, plain),
+        v8::Boolean::New(isolate, thunk)};
     Invoke(world_id, "waitForFunction", argv, std::move(callback));
   }
 

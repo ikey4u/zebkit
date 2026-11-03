@@ -1288,6 +1288,31 @@ void Connection::NewRequest(int id, const std::string& parent, base::DictValue p
 
 // BrowserContext with its Tracing, APIRequestContext and Debugger.
 void Connection::NewContext(int id, base::DictValue params) {
+  // browserContext.ts's validateBrowserContextOptions().
+  if (params.FindBool("noDefaultViewport").value_or(false)) {
+    if (params.Find("deviceScaleFactor")) {
+      ReplyError(id, "\"deviceScaleFactor\" option is not supported with null \"viewport\"");
+      return;
+    }
+    if (params.FindBool("isMobile").value_or(false)) {
+      ReplyError(id, "\"isMobile\" option is not supported with null \"viewport\"");
+      return;
+    }
+  }
+  if (std::optional<double> fps = params.FindDoubleByDottedPath("recordVideo.fps"); fps && *fps <= 0) {
+    ReplyError(id, "\"recordVideo.fps\" must be a positive number, got " + base::NumberToString(*fps));
+    return;
+  }
+  // The storage state's origins, as setStorageState() finds them invalid.
+  if (const base::ListValue* origins = params.FindListByDottedPath("storageState.origins")) {
+    for (const base::Value& origin : *origins) {
+      const std::string* name = origin.is_dict() ? origin.GetDict().FindString("origin") : nullptr;
+      if (name && !GURL(*name).is_valid()) {
+        ReplyError(id, "Error setting storage state:\nInvalid URL: " + *name);
+        return;
+      }
+    }
+  }
   base::DictValue options = params.Clone();
   Native(id, nullptr, "Browser.newContext", std::move(params),
          base::BindOnce(
@@ -1348,6 +1373,10 @@ void Connection::NewContext(int id, base::DictValue params) {
                self->Find(tracing)->context = guid;
                self->Find(request)->context = guid;
                self->Find(request_tracing)->context = request;
+               // browserDispatcher.ts's: browser.contexts() has it.
+               base::DictValue created;
+               created.Set("context", Ref(guid));
+               self->Event(self->browser_, "context", std::move(created));
                base::DictValue answer;
                answer.Set("context", Ref(guid));
                // IndexedDB and OPFS of storageState's origins, put back in a
@@ -1917,6 +1946,10 @@ void Connection::PageEvent(const std::string& page_guid,
     if (!request)
       return;
     const std::string request_guid = RequestGuid(page_guid, *request);
+    // Its headers are all known now (crNetworkManager.ts: a routed request's
+    // raw headers are its own).
+    if (Object* routed = Find(request_guid))
+      routed->data.Set("routed", true);
     base::DictValue initializer;
     initializer.Set("request", Ref(request_guid));
     Object object;
@@ -3782,7 +3815,8 @@ void Connection::Command(int id,
                weak_factory_.GetWeakPtr(), id));
     return;
   } else if (type == "Request") {
-    if ((method == "response" || method == "rawRequestHeaders") &&
+    if ((method == "response" ||
+         (method == "rawRequestHeaders" && !object->data.FindBool("routed").value_or(false))) &&
         !object->data.FindString("response") && !object->data.FindBool("ended").value_or(false) &&
         Find(object->page)) {
       request_waiters_[guid].emplace_back(id, method);
@@ -3889,6 +3923,20 @@ void Connection::Command(int id,
     // In the words of the dispatchers' validator.
     ReplyError(id, "arg.handles: no object with guid");
     return;
+  }
+  // dispatchEvent's eventInit: serialized, with its handles (a DataTransfer).
+  if (method == "dispatchEvent" && params.FindDict("eventInit")) {
+    base::DictValue converted;
+    converted.Set("arg", std::move(*params.Extract("eventInit")));
+    if (!ToNativeArgs(converted)) {
+      ReplyError(id, "eventInit.handles: no object with guid");
+      return;
+    }
+    if (base::Value* init = converted.Find("arg"))
+      params.Set("eventInit", std::move(*init));
+    if (base::Value* handles = converted.Find("argHandles"))
+      params.Set("eventInitHandles", std::move(*handles));
+    params.Set("serialized", true);
   }
   if (method == "goto") {
     // frames.ts's constructURLBasedOnBaseURL().
