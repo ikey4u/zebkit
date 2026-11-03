@@ -203,8 +203,9 @@ in `examples/native-host` (Done table). What is left:
   isolated worlds, file choosers, camera and microphone, keys, context menu and
   fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
   requests (the headers the network adds are seen, a WebSocket's Cookie too since 2026-11-02;
-  `docs/ROADMAP_HOOKS.md`) and client certificates (no system stores: designed and costed in
-  `docs/ROADMAP_HOOKS.md`, not built).
+  `docs/ROADMAP_HOOKS.md`). Client certificates from the system's stores (NSS, Keychain, the
+  Windows store) behind the engine setting `clientCertificateStores`, the key staying in the store:
+  built 2026-11-03 and tested on Linux, the Mac and Windows (`hook-python-certstore`).
   The hook sources compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
 - **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).
   A new top-level widget takes no input until its first frame: the browser's
