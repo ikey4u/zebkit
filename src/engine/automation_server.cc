@@ -3008,6 +3008,15 @@ void Connection::Tracing(int id,
     return;
   } else if (method == "harStart") {
     const std::string har_id = "har@" + base::NumberToString(++next_guid_);
+    // urlGlob relative to the context's baseURL (resolveGlobBase()).
+    if (std::string* glob = params.FindStringByDottedPath("options.urlGlob");
+        glob && !glob->empty() && glob->front() == '/') {
+      if (const std::string* base_url = context->data.FindString("baseURL")) {
+        const GURL origin = GURL(*base_url).DeprecatedGetOriginAsURL();
+        if (origin.is_valid())
+          *glob = origin.spec().substr(0, origin.spec().size() - 1) + *glob;
+      }
+    }
     const base::DictValue* options = params.FindDict("options");
     Har& har = hars_[har_id];
     har.context = tracing->context;
@@ -3247,7 +3256,9 @@ void Connection::Command(int id,
           params.FindBool("failOnStatusCode")
               .value_or(object->data.FindBool("failOnStatusCode").value_or(false));
       // For a HAR of its context's (harTracer.ts's _onAPIRequest).
-      const std::string har_context = object->context.empty() ? guid : object->context;
+      // Its own Tracing's HAR too (context.request.tracing.startHar), keyed by
+      // the APIRequestContext itself; tab-separated with the context's.
+      const std::string har_context = (object->context.empty() ? guid : object->context) + "\t" + guid;
       base::DictValue har_request;
       for (const char* key : {"url", "method", "headers", "postData"}) {
         if (const base::Value* value = params.Find(key))
@@ -3266,8 +3277,11 @@ void Connection::Command(int id,
                      self->ReplyError(id, "zebkit: no response");
                      return;
                    }
+                   const size_t tab = har_context.find('\t');
+                   const std::string context_guid = har_context.substr(0, tab);
+                   const std::string own_guid = tab == std::string::npos ? std::string() : har_context.substr(tab + 1);
                    for (auto& [har_id, har] : self->hars_) {
-                     if (har.context == har_context)
+                     if (har.context == context_guid || (!own_guid.empty() && har.context == own_guid))
                        har.recorder->RecordFetch(har_request, *response);
                    }
                    const int status = response->FindInt("status").value_or(0);
@@ -3712,7 +3726,12 @@ void Connection::Command(int id,
           base = (secure ? "wss" : "ws") + base.substr(secure ? 5 : 4);
         }
         const bool has_scheme = glob->find("://") != std::string::npos;
-        if (!has_scheme && !base.empty() && glob->find_first_of("*?{[") == std::string::npos) {
+        if (!has_scheme && !base.empty() && glob->front() == '/' && glob->find_first_of("*?{[") != std::string::npos) {
+          // A path with wildcards: under the base's origin.
+          const GURL origin = GURL(base).DeprecatedGetOriginAsURL();
+          if (origin.is_valid())
+            *glob = origin.spec().substr(0, origin.spec().size() - 1) + *glob;
+        } else if (!has_scheme && !base.empty() && glob->find_first_of("*?{[") == std::string::npos) {
           const GURL resolved = GURL(base).Resolve(*glob);
           if (resolved.is_valid())
             *glob = resolved.spec();
