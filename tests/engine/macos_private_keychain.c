@@ -78,6 +78,12 @@ static OSStatus write_item(const char *path, CFDictionaryRef attributes) {
 
 static OSStatus private_copy_matching(CFDictionaryRef query, CFTypeRef *result) {
     char path[2048];
+    /* Identities (client certificates, tests/engine/hook_policies.py's
+     * cert-store) are the test's own keychain's: the real call, which an
+     * interposing library's own calls reach. */
+    CFTypeRef item_class = CFDictionaryGetValue(query, kSecClass);
+    if (item_class && CFEqual(item_class, kSecClassIdentity))
+        return SecItemCopyMatching(query, result);
     if (result)
         *result = NULL;
     if (!item_path(query, path, sizeof path))

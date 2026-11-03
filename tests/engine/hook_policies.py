@@ -175,6 +175,10 @@ def system_store(fixture, work, env):
         # A keychain of the test's own, first in the user's search list for the
         # run; any application may use its key, so that no access prompt shows.
         keychain = os.path.join(work, 'zebkit-test.keychain-db')
+        # The suite's own home keeps the search list there once it has a
+        # Preferences folder (scripts/engine-test.sh gives the engine that home).
+        os.makedirs(os.path.join(env.get('HOME', os.path.expanduser('~')), 'Library', 'Preferences'),
+                    exist_ok=True)
         listed = subprocess.run(['security', 'list-keychains', '-d', 'user'], check=True,
                                 capture_output=True, text=True).stdout
         before = [line.strip().strip('"') for line in listed.splitlines() if line.strip()]
