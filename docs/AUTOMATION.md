@@ -567,7 +567,8 @@ either:
   are listed as expected failures: locator handlers, `Frame.drop`, custom
   selector engines, JS and CSS coverage, the context's `proxy` and
   `clientCertificates` options,
-  `Route.redirectNavigationRequest`, service workers as `Worker`s, WebMCP.
+  `Route.redirectNavigationRequest`, WebMCP; a service worker's own requests
+  (not through the network proxy) and its console messages.
 
 **`CDPSession`** (`Browser.newBrowserCDPSession`, `BrowserContext.newCDPSession`
 of a page, or of a frame of another site, which is a target of its own) is a
@@ -609,6 +610,29 @@ the request's type (`xhr` or `fetch`), the headers as sent and received
 WebSockets as `WebSocket` objects with their frames, and offline as
 `Network.emulateNetworkConditions` (`navigator.onLine`); routes answer before the
 offline check, as Fetch's interception does.
+
+**Service workers** are the context's `Worker` objects while they run (the
+profile's `ServiceWorkerContext`), evaluated through the worker's DevTools target;
+a page's request that its service worker answers, which the network never sees,
+is reported from the page's DevTools `Network` events with `fromServiceWorker`
+and its body, or as failed.
+
+**Storage state** with `indexedDB` is collected as `browserContext.ts` does, with
+Playwright's storage script in the pages that show each origin and, for an origin
+given to the context that none shows, in a page of the origin whose requests are
+all answered with an empty document; `newContext({storageState})` and
+`setStorageState()` restore IndexedDB the same way. OPFS is not collected yet.
+
+**Routes**: a fulfilled cross-origin response gets the CORS check the network
+service would make (`network::cors::CheckAccess`) and, as `network.ts`, allows the
+request's origin unless it says otherwise. Route globs resolve against the
+context's `baseURL` (`ws:` for a WebSocket route of an `http:` base). WebSocket
+routes get their page's and server's messages and closes, pass-through included.
+
+**Frames**: a selector through frames works from an element handle; queries do
+not wait for an `<iframe>`, assertions look for the frames again every 250 ms as
+`frames.ts` polls, and elements in a hidden `<iframe>` are hidden. A main frame's
+`load` is its load event's: none after `window.stop()`.
 
 **Traces** of a remote client are recorded by the endpoint as
 `trace/recorder/tracing.ts` records them: before and after events of each call
@@ -725,6 +749,7 @@ CDP in between:
   |---|---|---|---|---|---|---|---|
   | zebkit, 2026-11-01 | 3028 | 1167 | 1067 | 580 | 197 | 8 | 587 |
   | zebkit, 2026-11-02 | 3233 | 962 | 1067 | 574 | 121 | 9 | 388 |
+  | zebkit, 2026-11-03 | 3566 | 512 | 1184 | 234 | 69 | 8 | 209 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by
@@ -735,27 +760,29 @@ CDP in between:
   fulfilled and in-flight responses; goto's referer. One engine aborted during the run (it was
   restarted, as `engines.mjs` does, at the cost of its worker's test).
 
-  **Not at parity: what is left, by cause** (the unexplained 388 and the timeouts among them):
-  - Playwright's own tools in a browser of their own: the trace viewer's 21 tests and the
-    debugger's 6 end in their timeout here, since the browser they launch is hidden from the run;
-    they are the listed "launches a browser itself" cause, but a timeout is never explained.
-  - HAR (22): the network gives the page's loaders no `Set-Cookie` and no raw headers (DevTools
-    has them from its own observer), so cookies and raw sizes of responses are missing; redirects
-    of API requests, entries served from the cache, the file write that fails.
-  - Screenshots (20): pixel differences against Playwright's snapshots (caret, animations,
-    fonts, WebGL, JPEG backgrounds), WebP options, the screencast overlay commands.
-  - Service workers (19 in `chromium.spec.ts`, more in `page-event-request`): not reported as
-    `Worker`s, their requests not attributed.
-  - Workers (13): their requests are not attributed to the worker, so network events and
-    routes for worker scripts and their fetches differ.
-  - WebSockets (13 route, 9 events, 5 HAR): frames of a routed socket's pass-through and the
-    socket's own events.
-  - Routes (12): CORS answers of a fulfilled request (Access-Control-Allow-Origin added by
-    Playwright's server), `sec-fetch-*` and `Cookie` as the route sees them, URLPattern options.
-  - Storage state (10): IndexedDB and OPFS in it, lone surrogates.
-  - Third-party cookies (9), `dispatchEvent` of device and drag events (8), page errors'
-    names and source URLs (6), `exposeFunction` with handles and cycles (6), `beforeunload` (6),
-    `page.close()` interrupting calls (6), clock (5), selectors through frames (5).
+  What moved it (2026-11-03): tests that launch a browser get `zebkit-run` (wrappers in the
+  run's browsers folder), so `browserType.launch()`, `connectOverCDP` and Playwright's codegen
+  run against the engine; in-process popups held as Chromium's DevTools holds them; `frameLocator()`
+  without a selector; frames entered from handles, through hidden iframes, without waiting for
+  queries; the page's DevTools `Network` events (XHR/fetch, raw headers per redirect hop, Cookie,
+  Set-Cookie, WebSockets, offline); page errors from `Runtime.exceptionThrown`; service workers as
+  `Worker`s and the requests they answer; CORS on fulfilled responses; WebSocket routes' events;
+  globs under `baseURL`; IndexedDB in storage state; traces recorded by the endpoint as
+  `tracing.ts` does; screenshots as `screenshotter.ts` and `crPage.ts` take them; no engine
+  aborted (the form-params parser that threw out of range is gone). The skipped tests rose by
+  117 because tests that launched nothing before now launch and skip what they skip on Chrome.
+
+  **Not at parity: what is left, by cause** (the unexplained 209 and the 69 timeouts):
+  - HAR (12): the popup's extra entry, connection and security details as Playwright reads them,
+    entries served from the cache, API requests' redirects, `startHar` of an APIRequestContext.
+  - Third-party cookies (9): partitioned cookies and third-party saving and loading.
+  - `dispatchEvent` of device, drag and drop events (8); screenshots' pixels (8: WebGL, masks,
+    a page navigating, fonts' wait message); routes (7: `sec-fetch-*`, Cookie and Set-Cookie as
+    a route sees them, URLPattern options, the disk cache); `exposeFunction` with handles and
+    cycles (6); `beforeunload` (6); clock (6); `page.close()` interrupting calls (6).
+  - Timeouts: a service worker's own requests (12 in `chromium.spec.ts`), `Browser.startTracing`
+    (6), the debugger (6), extensions (5), workers' console (5), mobile viewport (4), the trace
+    viewer that launches a browser (4).
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

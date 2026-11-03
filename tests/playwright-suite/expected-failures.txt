@@ -5,17 +5,12 @@
 # test that timed out or crashed is never explained here: summarize.py counts those
 # apart. It also lists entries that matched nothing, which is how a fix is noticed.
 
-# Not this endpoint's to do: a test that starts a browser of its own, or asks
-# for Playwright's own server, which a connected client does not have.
-library/browsertype-launch*.spec.ts | * | launches a browser itself: the endpoint is connected to, not launched (docs/AUTOMATION.md, section 5)
-library/browsercontext-reuse.spec.ts | * | launches a browser itself to reuse its context
-library/proxy.spec.ts | * | launches a browser itself with a proxy
-library/logger.spec.ts | * | launches a browser itself to read its logs
-library/launcher.spec.ts | * | launches a browser itself
-library/chromium/launcher.spec.ts | * | launches a browser itself
-library/chromium/connect-over-cdp.spec.ts | * | launches a browser itself and connects over CDP; zebkit's CDP is covered by tests/engine/cdp_clients.mjs
-library/chromium/extensions.spec.ts | * | launches a persistent browser with extensions, which a content-layer engine does not have
-library/inspector/*.spec.ts | * | the recorder and code generator are Playwright's tools in its own server (docs/AUTOMATION.md, section 5)
+# What a content-layer engine does not have (Chrome's WebUI and extensions), or
+# Playwright's own server, which a connected client does not have. Tests that
+# launch a browser get zebkit-run (scripts/playwright-suite.sh).
+library/chromium/connect-over-cdp.spec.ts | page has been discarded | it opens chrome://discards, Chrome's WebUI, which a content-layer engine does not have
+library/chromium/extensions.spec.ts | * | Chrome's extensions (a persistent context with --load-extension), which a content-layer engine does not have
+library/inspector/*.spec.ts | * | the recorder driven through the endpoint (BrowserContext.startRecording, page.pickLocator, the inspector's own page) is Playwright's server's; the CLI's codegen, which launches zebkit-run, runs
 library/debugger.spec.ts | * | page.pause() and the Debugger object need Playwright's own server (docs/AUTOMATION.md, section 5)
 library/trace-viewer*.spec.ts | * | launches Playwright's trace viewer in a browser of its own
 
@@ -59,7 +54,6 @@ library/browsercontext-har.spec.ts | redirect | Route.redirectNavigationRequest 
 library/tracing.spec.ts | collect trace with resources|not collect snapshots|exclude internal pages|collect two traces|previous chunks|overwrite existing|multiple chunks|ignore iframes|network failures|include buffers | a trace's resources are incomplete (automation_trace.cc)
 library/tracing.spec.ts | correct title|aria snapshots|action screenshots|group/groupEnd|hide internal stack | the title and details of a trace's events are incomplete (automation_trace.cc)
 library/browsercontext-service-worker-policy.spec.ts | * | serviceWorkers: "block" is not implemented
-library/chromium/disable-web-security.spec.ts | * | launch switches of a test's own browser
 library/browsercontext-viewport-mobile.spec.ts | * | isMobile's meta viewport handling (new since this package: Emulation.setDeviceMetricsOverride)
 library/chromium/chromium.spec.ts | serviceWorker\(\), and fromServiceWorker|intercept service worker|intercept only serviceworker|main service worker request|service worker importScripts|service worker requests in HAR|network events, routing, and annotations for Service|setOffline|setExtraHTTPHeaders | a service worker's own requests do not go through the network proxy (its loader factories are the storage partition's, not a page's): no events, routes, HAR, offline or extra headers for them
 library/chromium/chromium.spec.ts | console messages from service worker|console.log from ServiceWorker start | a service worker's console messages are not reported (they come from its DevTools target's Runtime.consoleAPICalled, which the endpoint does not keep a session to)

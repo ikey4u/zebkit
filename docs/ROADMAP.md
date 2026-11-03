@@ -280,7 +280,11 @@ in `examples/native-host` (Done table). What is left:
     script is pinned to the release the endpoint speaks (v1.64.1), and the endpoint gained
     CDP sessions, popups reported as `crPage.ts` reports them, AbortSignal, Playwright's call
     logs, HAR recorded by the endpoint as `harTracer.ts` does, CDP's cookies, request-based
-    `networkidle`; counts before and after in section 7.
+    `networkidle`; counts before and after in section 7. 2026-11-03: 3566 passed, 512 failed
+    (234 listed, 69 timeouts, 209 unexplained), from 3233 and 962: tests that launch a browser get
+    `zebkit-run`; popups held as Chromium's DevTools holds them; `frameLocator()`; DevTools'
+    network details; page errors as CDP gives them; service workers; CORS on fulfilled routes;
+    WebSocket routes; IndexedDB in storage state; traces by the endpoint. Chrome: 4196 and 5.
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
