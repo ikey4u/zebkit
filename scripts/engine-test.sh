@@ -605,6 +605,9 @@ finished offscreen "the off-screen test"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
     run frames-input "$bin/frames-input" "${engine_switches[@]/profile/profile-frames}"
 finished frames-input "the frames' input test"
+ZEBKIT_TEST_SCALE=2 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
+    run frames-input-scaled "$bin/frames-input" "${engine_switches[@]/profile/profile-frames-scaled}"
+finished frames-input-scaled "the frames' input test at twice the pixels"
 if [[ "$ZEBKIT_HOST" == linux ]] && selected frames-input-window && command -v Xvfb > /dev/null; then
     exec 8< <(Xvfb -displayfd 1 -screen 0 1600x1200x24 -nolisten tcp 2> /dev/null)
     frames_xvfb=$!

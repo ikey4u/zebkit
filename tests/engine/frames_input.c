@@ -18,6 +18,7 @@
  * input is the system's (XTEST), as a person's: the steps an X server cannot
  * make (an input method, a drop from outside) are left out, and those that
  * read what only an off-screen view reports (its cursor, its popup).
+ * ZEBKIT_TEST_SCALE=2 gives the off-screen view twice the pixels.
  */
 #include <zebkit/offscreen.h>
 #include <zebkit/page.h>
@@ -202,6 +203,22 @@ static void a_hover(void) {
 }
 static void a_click(void) { click(px(BUTTON), py(BUTTON)); }
 static void a_right_click(void) { press(px(BUTTON), py(BUTTON), ZEBKIT_BUTTON_RIGHT); }
+static uint32_t drag_ms(void) {
+    const char *pace = getenv("ZEBKIT_TEST_DRAG_MS");
+    return pace ? (uint32_t)atoi(pace) : 8;
+}
+static double drag_x, drag_y, drag_to;
+static int drag_step;
+static void drag_next(void *data) {
+    (void)data;
+    if (++drag_step <= 5) {
+        zebkit_view_send_mouse(view, ZEBKIT_MOUSE_MOVE, drag_x + (drag_to - drag_x) * drag_step / 5, drag_y,
+                               ZEBKIT_BUTTON_NONE, 0, ZEBKIT_MODIFIER_LEFT_BUTTON);
+        zebkit_post_delayed_task(drag_next, NULL, drag_ms());
+        return;
+    }
+    zebkit_view_send_mouse(view, ZEBKIT_MOUSE_UP, drag_to, drag_y, ZEBKIT_BUTTON_LEFT, 1, 0);
+}
 /* A drag over the line of text, from its start to past its middle. */
 static void a_select_text(void) {
     const double x = px(TEXT), y = py(TEXT), to = x + 100 * frame->scale;
@@ -216,6 +233,15 @@ static void a_select_text(void) {
     }
 #endif
     zebkit_view_send_mouse(view, ZEBKIT_MOUSE_DOWN, x, y, ZEBKIT_BUTTON_LEFT, 1, ZEBKIT_MODIFIER_LEFT_BUTTON);
+    /* The moves 8 ms apart, as a mouse's come; ZEBKIT_TEST_DRAG_MS another pace, 0 all
+     * at once, in the task of the press (on macOS a frame of another process then
+     * selects only to the first move: the open case in docs/API.md). */
+    const char *pace = getenv("ZEBKIT_TEST_DRAG_MS");
+    if (!pace || atoi(pace) > 0) {
+        drag_x = x, drag_y = y, drag_to = to, drag_step = 0;
+        zebkit_post_delayed_task(drag_next, NULL, drag_ms());
+        return;
+    }
     for (int i = 1; i <= 5; ++i)
         zebkit_view_send_mouse(view, ZEBKIT_MOUSE_MOVE, x + (to - x) * i / 5, y, ZEBKIT_BUTTON_NONE, 0,
                                ZEBKIT_MODIFIER_LEFT_BUTTON);
@@ -334,6 +360,13 @@ static void finish(void) {
     zebkit_quit();
 }
 
+static void report_seen(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    printf("     the frame's last events: %s\n", json ? json : error ? error : "");
+    ++step_index;
+    zebkit_post_delayed_task(next_step, NULL, 50);
+}
+
 static void evaluated(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
     const int done = !error && json && strcmp(json, "true") == 0;
@@ -346,6 +379,12 @@ static void evaluated(zebkit_view *v, const char *json, const char *error, void 
     } else {
         check(0, step->what, "%s%s in %s", error ? error : json ? json : "",
               condition ? "" : " (the test's condition false)", frame->name);
+        /* What the frame saw last, to tell why. */
+        char seen[256];
+        snprintf(seen, sizeof(seen), "JSON.stringify(log.filter((e) => e.startsWith('%s:')).slice(-8))",
+                 frame->name);
+        zebkit_view_evaluate(view, seen, report_seen, NULL);
+        return;
     }
     ++step_index;
     /* A moment between steps, as between a person's actions. */
@@ -468,7 +507,9 @@ static void start(void *data) {
         view = zebkit_view_new(url, 1200, 900);
         check(view != NULL, "zebkit_view_new", NULL);
     } else {
-        view = zebkit_view_new_offscreen(url, 1200, 900, 1);
+        /* ZEBKIT_TEST_SCALE: the view's scale (device pixels per CSS pixel). */
+        const char *scale = getenv("ZEBKIT_TEST_SCALE");
+        view = zebkit_view_new_offscreen(url, 1200, 900, scale ? (float)atof(scale) : 1);
         check(view != NULL, "zebkit_view_new_offscreen", NULL);
     }
     if (!view) {

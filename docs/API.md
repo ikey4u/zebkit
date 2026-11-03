@@ -811,7 +811,10 @@ int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }
   it began in; keys and an input method's text go to the focused frame,
   and a drag from outside (`zebkit_view_drag_enter()` and the rest) to the
   frame under it. The cursor is the one of the frame under the mouse
-  (`tests/engine/frames_input.c`).
+  (`tests/engine/frames_input.c`). Open on macOS: moves sent in the same
+  task as the press that starts a selection in a frame of another process
+  select only to the first of them; moves as a mouse sends them, even 2 ms
+  apart, select as in Chrome.
 - **Popups.** A `<select>`'s list, a date or colour picker is a widget of
   its own: `zebkit_view_on_popup()` says where it is in the view, its
   frames are `ZEBKIT_LAYER_POPUP` with that place in `bounds`, the
