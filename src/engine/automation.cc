@@ -37,6 +37,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
@@ -304,6 +305,11 @@ int ButtonBit(Button button) {
 // ---- A command ----------------------------------------------------------
 
 class Call;
+// An evaluation's answer after what the page logged meanwhile
+// (Automation::AfterConsole()): false when nothing waits, and the answer
+// goes now; else @answer runs once the page's console messages are out.
+// @barrier: after what the page's DevTools session has to tell as well.
+bool AnswerAfterConsole(zebkit_view* view, bool barrier, base::RepeatingClosure answer);
 // Calls given an "abortId", which Automation.abort ends (the endpoint's
 // __abort__, Playwright's AbortSignal).
 // A command's own calls may carry its parameters, and so its id: all go.
@@ -397,6 +403,10 @@ class Call {
   void Done(base::Value result = base::Value(base::DictValue())) {
     if (finished_)
       return;
+    if (Defer()) {
+      deferred_result_ = std::move(result);
+      return;
+    }
     finished_ = true;
     timer_.Stop();
     const std::string json = Json(result);
@@ -447,6 +457,24 @@ class Call {
   int attempt = 0;
 
  private:
+  // An evaluation's answer waits for the console messages the page made
+  // before it, as CDP's events come before its answers (crPage.ts).
+  bool Defer() {
+    // A navigation's: after the messages already told, which its load
+    // follows.
+    const std::string name = Name();
+    const bool evaluation = name.find("valuate") != std::string::npos;
+    if (deferring_ || (!evaluation && name != "goto" && name != "reload" && name != "setContent"))
+      return false;
+    deferring_ = true;
+    return AnswerAfterConsole(view_, evaluation, base::BindRepeating(&Call::Deferred, GetWeakPtr()));
+  }
+  void Deferred() {
+    if (finished_)
+      return;
+    Done(deferred_result_ ? std::move(*deferred_result_) : base::Value(base::DictValue()));
+  }
+
   void Release() {
     if (!abort_id_.empty()) {
       auto [first, last] = AbortableCalls().equal_range(abort_id_);
@@ -477,6 +505,8 @@ class Call {
   base::OneShotTimer timer_;
   std::vector<std::string> log_;
   bool finished_ = false;
+  bool deferring_ = false;
+  std::optional<base::Value> deferred_result_;
   std::string error_;
   std::string abort_id_;
   base::OnceClosure on_release_;
@@ -766,7 +796,288 @@ class Automation : public content::WebContentsObserver,
     // The page's uncaught exceptions as crPage.ts has them (Runtime.exceptionThrown):
     // the thrown value's description, name and stack.
     view_->Send("Runtime.enable", base::DictValue());
+    // What the browser itself logs (Log.entryAdded), as crPage.ts has it.
+    view_->Send("Log.enable", base::DictValue());
     runtime_exceptions_ = true;
+  }
+
+  // ---- Console (Runtime.consoleAPICalled, Log.entryAdded) --------------
+
+  // crExecutionContext.ts's renderPreview().
+  static std::string RenderPreview(const base::DictValue& object) {
+    const std::string* type = object.FindString("type");
+    if (type && *type == "undefined")
+      return "undefined";
+    if (const base::Value* value = object.Find("value")) {
+      if (value->is_string())
+        return value->GetString();
+      if (value->is_none())
+        return "null";
+      if (value->is_bool())
+        return value->GetBool() ? "true" : "false";
+      if (value->is_int())
+        return base::NumberToString(value->GetInt());
+      return Json(*value);
+    }
+    if (const std::string* unserializable = object.FindString("unserializableValue"))
+      return *unserializable;
+    const std::string* description = object.FindString("description");
+    const std::string* subtype = object.FindString("subtype");
+    const base::ListValue* properties = object.FindListByDottedPath("preview.properties");
+    if (description && *description == "Object" && properties) {
+      std::vector<std::string> tokens;
+      for (const base::Value& property : *properties) {
+        const std::string* name = property.GetDict().FindString("name");
+        const std::string* value = property.GetDict().FindString("value");
+        tokens.push_back((name ? *name : std::string()) + ": " +
+                         (value ? *value : std::string("undefined")));
+      }
+      return "{" + base::JoinString(tokens, ", ") + "}";
+    }
+    if (subtype && *subtype == "array" && properties) {
+      // javascript.ts's sparseArrayToString().
+      std::vector<std::pair<int, std::string>> entries;
+      for (const base::Value& property : *properties) {
+        const std::string* name = property.GetDict().FindString("name");
+        const std::string* value = property.GetDict().FindString("value");
+        int index = 0;
+        if (!name || !base::StringToInt(*name, &index) || index < 0)
+          continue;
+        entries.emplace_back(index, value ? *value : std::string("undefined"));
+      }
+      std::sort(entries.begin(), entries.end());
+      std::vector<std::string> tokens;
+      int last = -1;
+      for (const auto& [index, value] : entries) {
+        const int empty = index - last - 1;
+        if (empty == 1)
+          tokens.push_back("empty");
+        else if (empty > 1)
+          tokens.push_back("empty x " + base::NumberToString(empty));
+        tokens.push_back(value);
+        last = index;
+      }
+      return "[" + base::JoinString(tokens, ", ") + "]";
+    }
+    return description ? *description : std::string();
+  }
+
+  content::RenderFrameHost* FrameOfDevToolsToken(const std::string& token) {
+    content::RenderFrameHost* found = nullptr;
+    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (!found && frame->GetDevToolsFrameToken().ToString() == token)
+        found = frame;
+    });
+    return found;
+  }
+
+  // A console call of the page's world, its arguments as handles as
+  // crPage.ts's _onConsoleAPI() has them: left on the global object for a
+  // moment by Runtime.callFunctionOn, taken from there by the agent.
+  void ConsoleAPICalled(const base::DictValue& params) {
+    const int context = params.FindInt("executionContextId").value_or(0);
+    auto known = devtools_contexts_.find(context);
+    if (context == 0 || known == devtools_contexts_.end())
+      return;
+    content::RenderFrameHost* frame = FrameOfDevToolsToken(known->second);
+    if (!frame)
+      return;
+    const std::string* type = params.FindString("type");
+    base::DictValue message;
+    message.Set("type", type ? *type : std::string("log"));
+    std::vector<std::string> previews;
+    base::ListValue call_args;
+    const std::string key = "__zebkit_console_" + base::NumberToString(++next_console_) + "_" +
+                            base::NumberToString(base::RandUint64());
+    base::DictValue first;
+    first.Set("value", key);
+    call_args.Append(std::move(first));
+    if (const base::ListValue* args = params.FindList("args")) {
+      for (const base::Value& arg : *args) {
+        if (!arg.is_dict())
+          continue;
+        const base::DictValue& object = arg.GetDict();
+        previews.push_back(RenderPreview(object));
+        base::DictValue call_arg;
+        if (const std::string* id = object.FindString("objectId"))
+          call_arg.Set("objectId", *id);
+        else if (const std::string* unserializable = object.FindString("unserializableValue"))
+          call_arg.Set("unserializableValue", *unserializable);
+        else if (const base::Value* value = object.Find("value"))
+          call_arg.Set("value", value->Clone());
+        call_args.Append(std::move(call_arg));
+      }
+    }
+    message.Set("text", base::JoinString(previews, " "));
+    message.Set("frame", FrameId(frame));
+    base::DictValue location;
+    const base::ListValue* frames = params.FindListByDottedPath("stackTrace.callFrames");
+    const base::DictValue* top =
+        frames && !frames->empty() && frames->front().is_dict() ? &frames->front().GetDict() : nullptr;
+    const std::string* url = top ? top->FindString("url") : nullptr;
+    location.Set("url", url ? *url : std::string());
+    location.Set("lineNumber", top ? top->FindInt("lineNumber").value_or(0) : 0);
+    location.Set("columnNumber", top ? top->FindInt("columnNumber").value_or(0) : 0);
+    message.Set("location", std::move(location));
+    const uint64_t sequence = next_console_;
+    console_queue_[sequence] = std::move(message);
+    base::DictValue command;
+    command.Set("executionContextId", context);
+    command.Set("functionDeclaration",
+                "function (key, ...args) { Object.defineProperty(globalThis, key, "
+                "{ value: args, configurable: true }); }");
+    command.Set("arguments", std::move(call_args));
+    command.Set("silent", true);
+    view_->Send("Runtime.callFunctionOn", std::move(command),
+                base::BindOnce(&Automation::ConsoleArgsLeft, weak_factory_.GetWeakPtr(), sequence,
+                               frame->GetGlobalId(), key));
+  }
+
+  void ConsoleArgsLeft(uint64_t sequence,
+                       content::GlobalRenderFrameHostId frame_id,
+                       std::string key,
+                       const base::DictValue* result,
+                       const std::string& error) {
+    content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frame_id);
+    if (!error.empty() || !frame || !frame->IsRenderFrameLive()) {
+      ConsoleReady(sequence, base::ListValue());
+      return;
+    }
+    base::DictValue arg;
+    arg.Set("key", key);
+    Agent(frame)->Step(
+        AutomationWorld::kMain, "consoleArgs", Json(base::Value(std::move(arg))), {},
+        mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+            base::BindOnce(
+                [](base::WeakPtr<Automation> self, uint64_t sequence,
+                   content::GlobalRenderFrameHostId frame_id, AutomationStatus status,
+                   const std::string& result, std::vector<AutomationHandlePtr> kept) {
+                  if (!self)
+                    return;
+                  std::optional<base::Value> answer = Parse(result);
+                  base::Value* value = status == AutomationStatus::kOk && answer && answer->is_dict()
+                                           ? answer->GetDict().Find("value")
+                                           : nullptr;
+                  if (!value || !value->is_list()) {
+                    self->ConsoleReady(sequence, base::ListValue());
+                    return;
+                  }
+                  base::Value exposed = self->Expose(content::RenderFrameHost::FromID(frame_id),
+                                                     std::move(*value), kept);
+                  self->ConsoleReady(sequence, exposed.is_list() ? std::move(exposed.GetList())
+                                                                 : base::ListValue());
+                },
+                weak_factory_.GetWeakPtr(), sequence, frame_id),
+            AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+  }
+
+  // @answer once the page's DevTools session has told what came before now
+  // (a command's answer follows its events) and those messages are out.
+  bool AfterConsole(bool barrier, base::RepeatingClosure answer) {
+    if (!runtime_exceptions_ || !view_)
+      return false;
+    if (!barrier && console_queue_.empty())
+      return false;
+    // Whatever becomes of the session.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(FROM_HERE, answer,
+                                                                    base::Milliseconds(500));
+    if (!barrier) {
+      console_answers_.push_back(answer);
+      return true;
+    }
+    view_->Send("Runtime.getIsolateId", base::DictValue(),
+                base::BindOnce(
+                    [](base::WeakPtr<Automation> self, base::RepeatingClosure answer,
+                       const base::DictValue*, const std::string&) {
+                      if (self && !self->console_queue_.empty())
+                        self->console_answers_.push_back(answer);
+                      else
+                        answer.Run();
+                    },
+                    weak_factory_.GetWeakPtr(), answer));
+    return true;
+  }
+
+  // Console messages in the order the page made them.
+  void ConsoleReady(uint64_t sequence, base::ListValue args) {
+    auto found = console_queue_.find(sequence);
+    if (found == console_queue_.end())
+      return;
+    if (!found->second.FindString("event"))
+      found->second.Set("args", std::move(args));
+    found->second.Set("ready", true);
+    while (!console_queue_.empty() &&
+           console_queue_.begin()->second.FindBool("ready").value_or(false)) {
+      base::DictValue message = std::move(console_queue_.begin()->second);
+      console_queue_.erase(console_queue_.begin());
+      message.Remove("ready");
+      std::optional<std::string> event = message.Extract("event").and_then(
+          [](base::Value value) -> std::optional<std::string> {
+            return value.is_string() ? std::optional<std::string>(value.GetString()) : std::nullopt;
+          });
+      Emit(event ? *event : "BrowserContext.console", std::move(message));
+    }
+    if (console_queue_.empty()) {
+      std::vector<base::RepeatingClosure> answers = std::move(console_answers_);
+      for (base::RepeatingClosure& answer : answers)
+        answer.Run();
+    }
+  }
+
+  // crPage.ts's _onLogEntryAdded(): what the browser logs, without arguments.
+  void LogEntryAdded(const base::DictValue& params) {
+    const base::DictValue* entry = params.FindDict("entry");
+    const std::string* source = entry ? entry->FindString("source") : nullptr;
+    if (!entry)
+      return;
+    const std::string* level = entry->FindString("level");
+    std::string type = level ? *level : std::string("info");
+    // A dedicated worker's console, which its page shows too (the worker's
+    // own target has it for Playwright).
+    if (source && *source == "worker") {
+      type = type == "verbose" ? "debug" : type == "info" ? "log" : type;
+      // Its uncaught exception is the page's error (crPage.ts's workers'
+      // Runtime.exceptionThrown).
+      const std::string* message = entry->FindString("text");
+      if (type == "error" && message && message->starts_with("Uncaught ")) {
+        const std::string thrown = message->substr(9);
+        const size_t colon = thrown.find(": ");
+        const bool named = colon != std::string::npos && thrown.find(' ') == colon + 1 &&
+                           thrown.substr(0, colon).ends_with("Error");
+        base::DictValue error;
+        error.Set("name", named ? thrown.substr(0, colon) : std::string("Error"));
+        error.Set("message", named ? thrown.substr(colon + 2) : thrown);
+        error.Set("stack", thrown);
+        base::DictValue where;
+        const std::string* url = entry->FindString("url");
+        where.Set("url", url ? *url : std::string());
+        where.Set("lineNumber", entry->FindInt("lineNumber").value_or(0));
+        where.Set("columnNumber", 0);
+        base::DictValue event;
+        event.Set("error", std::move(error));
+        event.Set("location", std::move(where));
+        event.Set("ready", true);
+        event.Set("event", "Page.pageError");
+        console_queue_[++next_console_] = std::move(event);
+        ConsoleReady(next_console_, base::ListValue());
+        return;
+      }
+    }
+    const std::string* text = entry->FindString("text");
+    const std::string* url = entry->FindString("url");
+    base::DictValue message;
+    message.Set("type", type);
+    message.Set("text", text ? *text : std::string());
+    message.Set("frame", FrameId(MainFrame()));
+    base::DictValue location;
+    location.Set("url", url ? *url : std::string());
+    location.Set("lineNumber", entry->FindInt("lineNumber").value_or(0));
+    location.Set("columnNumber", 0);
+    message.Set("location", std::move(location));
+    message.Set("args", base::ListValue());
+    message.Set("ready", true);
+    console_queue_[++next_console_] = std::move(message);
+    ConsoleReady(next_console_, base::ListValue());
   }
 
   static base::ListValue HeaderList(const base::DictValue* headers) {
@@ -860,12 +1171,40 @@ class Automation : public content::WebContentsObserver,
     base::DictValue event;
     event.Set("error", std::move(error));
     event.Set("location", std::move(where));
-    Emit("Page.pageError", std::move(event));
+    // After the console messages before it.
+    event.Set("ready", true);
+    event.Set("event", "Page.pageError");
+    console_queue_[++next_console_] = std::move(event);
+    ConsoleReady(next_console_, base::ListValue());
   }
 
   void DevToolsEvent(const std::string& method, const base::DictValue& params) {
     if (method == "Runtime.exceptionThrown") {
       ExceptionThrown(params);
+      return;
+    }
+    if (method == "Runtime.executionContextCreated") {
+      // The page's worlds (not isolated ones): their frames.
+      const base::DictValue* context = params.FindDict("context");
+      const std::string* frame = context ? context->FindStringByDottedPath("auxData.frameId") : nullptr;
+      if (frame && context->FindBoolByDottedPath("auxData.isDefault").value_or(false))
+        devtools_contexts_[context->FindInt("id").value_or(0)] = *frame;
+      return;
+    }
+    if (method == "Runtime.executionContextDestroyed") {
+      devtools_contexts_.erase(params.FindInt("executionContextId").value_or(0));
+      return;
+    }
+    if (method == "Runtime.executionContextsCleared") {
+      devtools_contexts_.clear();
+      return;
+    }
+    if (method == "Runtime.consoleAPICalled") {
+      ConsoleAPICalled(params);
+      return;
+    }
+    if (method == "Log.entryAdded") {
+      LogEntryAdded(params);
       return;
     }
     Network* network = Network::For(web_contents());
@@ -1281,6 +1620,10 @@ class Automation : public content::WebContentsObserver,
     on_event_data_ = data;
   }
 
+  // Whether the page is going: an agent's call it cuts short fails as
+  // Playwright's do when their page closes, not as on a navigation.
+  bool Closing() const { return !web_contents() || web_contents()->IsBeingDestroyed(); }
+
   void Emit(const std::string& event, base::DictValue params) {
     TrackRequests(event, params);
     if (tracing_)
@@ -1547,7 +1890,7 @@ class Automation : public content::WebContentsObserver,
       if (step == "expect" && handles.empty())
         frame_ref.follow = true;
       if (!handles.empty() || !frame_ref.follow) {
-        call->Fail(handles.empty() ? kNavigated : kDetached);
+        call->Fail(Closing() ? kClosed : handles.empty() ? kNavigated : kDetached);
         return;
       }
       // A new document is coming: try there.
@@ -2319,7 +2662,7 @@ class Automation : public content::WebContentsObserver,
     if (!call)
       return;
     if (status == AutomationStatus::kGone) {
-      call->Fail(kNavigated);
+      call->Fail(Closing() ? kClosed : kNavigated);
       return;
     }
     std::optional<base::Value> answer = Parse(result);
@@ -4205,6 +4548,11 @@ class Automation : public content::WebContentsObserver,
       Emit("Page.pageError", std::move(params));
       return;
     }
+    // The page's DevTools session tells those of its process
+    // (ConsoleAPICalled(), LogEntryAdded()); a frame of another process's
+    // is told here.
+    if (runtime_exceptions_ && frame->GetProcess() == MainFrame()->GetProcess())
+      return;
     const char* type = "log";
     switch (level) {
       case blink::mojom::ConsoleMessageLevel::kVerbose:
@@ -4258,6 +4606,8 @@ class Automation : public content::WebContentsObserver,
     const bool enabled = call->Flag("enabled");
     if (event == "dialog") {
       hold_dialogs_ = enabled;
+    } else if (event == "dialogClosed") {
+      report_closed_dialogs_ = enabled;
     } else if (event == "fileChooser") {
       intercept_file_choosers_ = enabled;
     }
@@ -4265,7 +4615,9 @@ class Automation : public content::WebContentsObserver,
     call->Done();
   }
 
-  bool holds_dialogs() const { return hold_dialogs_; }
+  // A client that only hears of closed dialogs still gets them: held, then
+  // dismissed at once as Playwright's dialog.ts does without a handler.
+  bool holds_dialogs() const { return hold_dialogs_ || report_closed_dialogs_; }
 
   void DialogOpened(const zebkit_dialog& dialog) {
     static const char* const kTypes[] = {"alert", "confirm", "prompt",
@@ -4279,7 +4631,21 @@ class Automation : public content::WebContentsObserver,
     params.Set("defaultValue",
                dialog.default_prompt ? dialog.default_prompt : "");
     params.Set("held", dialog.held);
+    const bool dismiss = dialog.held && !hold_dialogs_;
+    if (dismiss)
+      params.Set("auto", true);
     Emit("BrowserContext.dialog", std::move(params));
+    if (!dismiss)
+      return;
+    // After the dialog manager has finished opening it.
+    const bool accept = dialog.type == ZEBKIT_DIALOG_BEFOREUNLOAD;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<Automation> self, uint64_t id, bool accept) {
+                         if (self && self->view_)
+                           zebkit_view_dialog_respond(self->view_, id, accept, nullptr);
+                       },
+                       weak_factory_.GetWeakPtr(), dialog.id, accept));
   }
 
   // Dialog.accept and dismiss.
@@ -5571,6 +5937,12 @@ class Automation : public content::WebContentsObserver,
   }
 
   void Close(Call* call) {
+    // page.close({runBeforeUnload: true}): the page's beforeunload handlers
+    // decide (their dialog is the client's), as crPage.ts's Page.close does.
+    if (call->Flag("runBeforeUnload")) {
+      RunBeforeUnload(call);
+      return;
+    }
     zebkit_view* view = call->view();
     call->Done();
     zebkit_view_close(view);
@@ -5579,8 +5951,11 @@ class Automation : public content::WebContentsObserver,
   // page.close({runBeforeUnload: true}): the page's handlers decide, and it
   // goes on its own when they let it.
   void RunBeforeUnload(Call* call) {
-    web_contents()->ClosePage();
+    // The view's own request to close (dialog.cc): its beforeunload dialog is
+    // held for the client, and the view closes once the handlers let it.
+    zebkit_view* view = call->view();
     call->Done();
+    zebkit_view_request_close(view);
   }
 
   // Page.webStorage*: of the main frame's origin.
@@ -5734,13 +6109,23 @@ class Automation : public content::WebContentsObserver,
   // mojom::AutomationHost
   void BindingCalled(const std::string& name,
                      const std::string& args,
+                     const std::string& serialized,
                      BindingCalledCallback callback) override {
     content::RenderFrameHost* frame =
         content::RenderFrameHost::FromID(hosts_.current_context());
     if (name == kWebSocketBinding) {
       std::optional<base::Value> parsed = Parse(args);
       WebSocketReport(frame, parsed ? std::move(*parsed) : base::Value());
-      std::move(callback).Run(true, "null");
+      std::move(callback).Run(true, "null", false, {});
+      return;
+    }
+    std::optional<base::Value> serialized_args = Parse(serialized);
+    // page.ts's PageBinding.dispatch(), on what a page's toJSON made of them.
+    if (!serialized.empty() && (!serialized_args || !serialized_args->is_list())) {
+      std::move(callback).Run(false,
+                              "serializedArgs is not an array. This can happen when "
+                              "Array.prototype.toJSON is defined incorrectly",
+                              false, {});
       return;
     }
     const std::string id = "b" + base::NumberToString(++next_binding_);
@@ -5750,6 +6135,8 @@ class Automation : public content::WebContentsObserver,
     params.Set("name", name);
     std::optional<base::Value> parsed = Parse(args);
     params.Set("args", parsed ? std::move(*parsed) : base::Value(base::ListValue()));
+    if (serialized_args)
+      params.Set("serializedArgs", std::move(*serialized_args));
     if (frame)
       params.Set("frame", FrameId(frame));
     Emit("BrowserContext.bindingCall", std::move(params));
@@ -5991,11 +6378,26 @@ class Automation : public content::WebContentsObserver,
     }
     BindingCalledCallback callback = std::move(found->second);
     bindings_.erase(found);
-    if (ok) {
+    if (call->Flag("serialized")) {
+      // Playwright's own answer: a serialized value ("arg") whose {h: i} are
+      // "argHandles"[i].
+      std::vector<int32_t> handles;
+      if (const base::ListValue* given = call->params().FindList("argHandles")) {
+        for (const base::Value& handle_id : *given) {
+          const HandleRef* handle = handle_id.is_string() ? FindHandle(handle_id.GetString()) : nullptr;
+          handles.push_back(handle ? handle->id : 0);
+        }
+      }
+      const base::Value* arg = call->params().Find("arg");
+      base::DictValue undefined;
+      undefined.Set("v", "undefined");
+      std::move(callback).Run(ok, arg ? Json(*arg) : Json(base::Value(std::move(undefined))), true,
+                              handles);
+    } else if (ok) {
       const base::Value* result = call->params().Find("result");
-      std::move(callback).Run(true, result ? Json(*result) : "null");
+      std::move(callback).Run(true, result ? Json(*result) : "null", false, {});
     } else {
-      std::move(callback).Run(false, call->String("error"));
+      std::move(callback).Run(false, call->String("error"), false, {});
     }
     call->Done();
   }
@@ -6643,6 +7045,12 @@ class Automation : public content::WebContentsObserver,
   bool emulated_offline_ = false;
   // Runtime.exceptionThrown comes from the page's DevTools session.
   bool runtime_exceptions_ = false;
+  // The page's worlds as DevTools numbers them: their frames' tokens.
+  std::map<int, std::string> devtools_contexts_;
+  // Console messages waiting for their arguments' handles, in order.
+  std::map<uint64_t, base::DictValue> console_queue_;
+  uint64_t next_console_ = 0;
+  std::vector<base::RepeatingClosure> console_answers_;
   // DevTools' requests of the page by their ids, for those a service worker
   // answers (Network.requestWillBeSent), and those reported so.
   std::map<std::string, base::DictValue> devtools_requests_;
@@ -6667,6 +7075,7 @@ class Automation : public content::WebContentsObserver,
   zebkit_automation_event_func on_event_ = nullptr;
   raw_ptr<void> on_event_data_ = nullptr;
   bool hold_dialogs_ = false;
+  bool report_closed_dialogs_ = false;
   bool intercept_file_choosers_ = false;
   std::map<std::string, FileChooser> file_choosers_;
   int next_chooser_ = 0;
@@ -6989,6 +7398,12 @@ void PopupHold::Hook(content::WebContents* opener, bool hold) {
 }
 
 // The dialogs of pages with automation, for Playwright's dialog events.
+bool AnswerAfterConsole(zebkit_view* view, bool barrier, base::RepeatingClosure answer) {
+  content::WebContents* contents = view ? view->web_contents() : nullptr;
+  Automation* automation = contents ? Automation::FromWebContents(contents) : nullptr;
+  return automation && automation->AfterConsole(barrier, std::move(answer));
+}
+
 class AutomationDialogs : public DialogObserver {
  public:
   bool HoldsDialogs(content::WebContents* contents) override {

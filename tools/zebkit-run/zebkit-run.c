@@ -11,8 +11,8 @@
  * "Playwright listening on ws://..." to stderr. Serving it, the engine gets the
  * switches Playwright launches Chromium with (chromiumSwitches.ts and
  * chromium.ts of the pinned release: no back-forward cache, no popup blocker,
- * no third-party storage partitioning, a desktop pointer and no scrollbars
- * when headless, ...), so that a page behaves as under Playwright's own
+ * no third-party storage partitioning, third-party cookies as Chrome has
+ * them, a desktop pointer and no scrollbars when headless, ...), so that a page behaves as under Playwright's own
  * server; the switches given after them win. The scripts use it to load
  * pages in a package (scripts/bench.sh, scripts/engine-test.sh,
  * scripts/automation-bench.sh, scripts/playwright-suite.sh). */
@@ -87,6 +87,8 @@ static const char *const playwright_switches[] = {
     "--allow-pre-commit-input",
     "--force-color-profile=srgb",
     "--export-tagged-pdf",
+    /* Chrome's default, which zebkit's is not: third-party cookies sent. */
+    "--zebkit-allow-third-party-cookies",
     "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,PaintHolding,"
     "ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,"
     "AvoidCorsURLLoaderRestartOnRedirect,HttpsUpgrades",

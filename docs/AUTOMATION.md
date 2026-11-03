@@ -316,7 +316,11 @@ of each `RenderFrame`, as `MediaCaptureAgent` is
   call DevTools' `DOM.setFileInputFiles` makes).
 - **Exposed functions** (`exposeBinding`) are V8 functions the agent
   defines on each new document's global before its own script, which call
-  the browser's `AutomationHost` and resolve with its answer.
+  the browser's `AutomationHost` and resolve with its answer. Their arguments
+  go as JSON and as Playwright's serialized values (`bindingsController.ts`:
+  cycles, windows and nodes), which the endpoint gives its client; the
+  client's answer comes back serialized, with its handles, and a rejection
+  is the client's error with its stack, or the value it threw.
 
 ### 4.2 Commands and auto-waiting
 
@@ -570,6 +574,17 @@ either:
   `Route.redirectNavigationRequest`, WebMCP; a service worker's own requests
   (not through the network proxy) and its console messages.
 
+**Console messages** come as `crPage.ts` has them: `Runtime.consoleAPICalled`
+and `Log.entryAdded` of the page's DevTools session (a frame of another
+process's from `WebContentsObserver`), the text from the arguments' previews
+(`renderPreview()`), the location from the stack's top frame, and the arguments
+as handles: `Runtime.callFunctionOn` leaves them on the global object for a
+moment and the agent takes them from there. Messages, and the page errors
+after them, keep their order; an evaluation answers after the page's DevTools
+session has told what came before it, and a navigation after the messages
+already told, as CDP's events come before its answers. A dedicated worker's
+messages are its page's too, and its uncaught exception is the page's error.
+
 **`CDPSession`** (`Browser.newBrowserCDPSession`, `BrowserContext.newCDPSession`
 of a page, or of a frame of another site, which is a target of its own) is a
 session of Chromium's DevTools in the engine's process, the browser's target or
@@ -652,7 +667,8 @@ omitted or attached (a zip with `har.har` beside the contents), URL filters,
 **The engine's switches**: `zebkit-run --playwright-port` gives the engine the
 switches Playwright launches Chromium with (no back-forward cache, no popup
 blocker, no third-party storage partitioning, a desktop pointer and no
-scrollbars when headless); a host serving the endpoint for Playwright's clients
+scrollbars when headless), and third-party cookies sent as Chrome sends them
+(zebkit's default blocks them); a host serving the endpoint for Playwright's clients
 should do the same.
 
 Native `Page.addInitScript`, `Page.exposeBinding` and their context versions
@@ -783,6 +799,11 @@ CDP in between:
   - Timeouts: a service worker's own requests (12 in `chromium.spec.ts`), `Browser.startTracing`
     (6), the debugger (6), extensions (5), workers' console (5), mobile viewport (4), the trace
     viewer that launches a browser (4).
+  Since that run, on the files concerned (counted at the next full run): third-party cookies
+  (`zebkit-run` sends them, as Chrome does), console messages from CDP with their arguments,
+  exposed functions' serialized arguments and answers, `beforeunload` and `page.close()`
+  (pending calls and `request.response()` end with `TargetClosedError`), `dialogclosed` for
+  dialogs dismissed without a listener, a worker's uncaught exception as a page error.
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

@@ -488,8 +488,13 @@ class Connection {
       }
     }
     inner.Set("message", text);
+    // errors.ts's names: a closed target's is TargetClosedError, which the
+    // client lets page.close() and the like ignore.
     inner.Set("name", aborted || name == "AbortError" ? "AbortError"
-                      : error.rfind("Timeout ", 0) == 0 ? "TimeoutError" : "Error");
+                      : error.rfind("Timeout ", 0) == 0 ? "TimeoutError"
+                      : error.rfind("Target page, context or browser has been closed", 0) == 0
+                          ? "TargetClosedError"
+                          : "Error");
     inner.Set("stack", "");
     base::DictValue outer;
     outer.Set("error", std::move(inner));
@@ -667,6 +672,48 @@ class Connection {
   std::map<std::string, Object> objects_;
   std::map<std::string, std::string> known_;
   std::map<zebkit_view*, std::string> pages_;
+  // page.close()s waiting for their page's close event.
+  std::map<std::string, std::vector<int>> close_replies_;
+  // request.response() and allHeaders() of a request still going, by its
+  // guid: answered when it has its response or ends (network.ts's).
+  std::map<std::string, std::vector<std::pair<int, std::string>>> request_waiters_;
+
+  base::DictValue RequestAnswer(const Object& request, const std::string& method) {
+    base::DictValue answer;
+    if (method == "response") {
+      if (const std::string* response = request.data.FindString("response"))
+        answer.Set("response", Ref(*response));
+    } else if (method == "rawRequestHeaders") {
+      const base::ListValue* raw = request.data.FindList("rawHeaders");
+      if (!raw)
+        raw = request.data.FindList("headers");
+      answer.Set("headers", raw ? raw->Clone() : base::ListValue());
+    }
+    return answer;
+  }
+
+  void AnswerRequestWaiters(const std::string& request_guid) {
+    auto waiting = request_waiters_.extract(request_guid);
+    Object* request = Find(request_guid);
+    if (!waiting || !request)
+      return;
+    for (const auto& [id, method] : waiting.mapped())
+      Reply(id, base::Value(RequestAnswer(*request, method)));
+  }
+
+  // What waits on the requests of @page_guid, which closed.
+  void FailRequestWaiters(const std::string& page_guid) {
+    for (auto it = request_waiters_.begin(); it != request_waiters_.end();) {
+      Object* request = Find(it->first);
+      if (request && request->page != page_guid) {
+        ++it;
+        continue;
+      }
+      for (const auto& waiter : it->second)
+        ReplyError(waiter.first, "Target page, context or browser has been closed");
+      it = request_waiters_.erase(it);
+    }
+  }
   std::map<std::string, std::string> fetched_;
   std::map<std::string, base::ListValue> fetch_logs_;
   // CDPSession objects' sessions, and their commands in flight: the session's
@@ -1735,11 +1782,17 @@ void Connection::PageEvent(const std::string& page_guid,
     console.Set("type", type ? *type : "log");
     const std::string* text = params.FindString("text");
     console.Set("text", text ? *text : "");
-    console.Set("args", base::ListValue());
+    // The arguments' handles, of the message's frame.
+    const std::string* frame_id = params.FindString("frame");
+    const std::string frame_guid = frame_id ? Known("frame", page_guid, *frame_id) : std::string();
+    base::Value* args = params.Find("args");
+    console.Set("args", args && args->is_list() ? Expose(page_guid, frame_guid, std::move(*args))
+                                                : base::Value(base::ListValue()));
     base::DictValue location;
     if (const base::DictValue* given = params.FindDict("location"))
       location = given->Clone();
-    location.Set("columnNumber", 0);
+    if (!location.FindInt("columnNumber"))
+      location.Set("columnNumber", 0);
     if (!location.FindString("url"))
       location.Set("url", "");
     if (!location.FindInt("lineNumber"))
@@ -1789,10 +1842,25 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string* id = params.FindString("dialog");
     object.id = id ? *id : std::string();
     object.page = page_guid;
+    const std::string dialog_id = object.id;
     const std::string guid = Create(context, "Dialog", std::move(initializer), std::move(object));
+    Remember("dialog", "", dialog_id, guid);
+    // Dismissed by the page's automation: the client hears only of its close.
+    if (params.FindBool("auto").value_or(false))
+      return;
     base::DictValue dialog;
     dialog.Set("dialog", Ref(guid));
     Event(context, "dialog", std::move(dialog));
+  } else if (event == "BrowserContext.dialogClosed") {
+    // The context's dialogClosed (page.ts emits it on the page too), once.
+    const std::string* id = params.FindString("dialog");
+    const std::string guid = id ? Known("dialog", "", *id) : std::string();
+    if (guid.empty())
+      return;
+    Remember("dialog", "", *id, std::string());
+    base::DictValue dialog;
+    dialog.Set("dialog", Ref(guid));
+    Event(context, "dialogClosed", std::move(dialog));
   } else if (event == "Page.request") {
     const std::string request = RequestGuid(page_guid, params);
     if (params.FindBool("isNavigationRequest").value_or(false)) {
@@ -1815,11 +1883,15 @@ void Connection::PageEvent(const std::string& page_guid,
     received.Set("response", Ref(response));
     received.Set("page", Ref(page_guid));
     Event(context, "response", std::move(received));
+    AnswerRequestWaiters(request);
   } else if (event == "Page.requestFinished" || event == "Page.requestFailed") {
     const std::string* id = params.FindString("request");
     const std::string request = id ? Known("request", page_guid, *id) : std::string();
     if (request.empty())
       return;
+    if (Object* object = Find(request))
+      object->data.Set("ended", true);
+    AnswerRequestWaiters(request);
     base::DictValue ended;
     ended.Set("request", Ref(request));
     ended.Set("responseEndTiming", params.FindDouble("responseEndTiming").value_or(-1.0));
@@ -1863,7 +1935,11 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string* name = params.FindString("name");
     initializer.Set("name", name ? *name : "");
     base::ListValue args;
-    if (const base::ListValue* given = params.FindList("args")) {
+    if (const base::ListValue* serialized = params.FindList("serializedArgs")) {
+      // As the page serialized them (bindingsController.ts).
+      for (const base::Value& arg : *serialized)
+        args.Append(ToProtocol(arg));
+    } else if (const base::ListValue* given = params.FindList("args")) {
       for (const base::Value& arg : *given)
         args.Append(Serialize(arg));
     }
@@ -2036,7 +2112,12 @@ void Connection::PageEvent(const std::string& page_guid,
   } else if (event == "Page.crash") {
     Event(page_guid, "crash", base::DictValue());
   } else if (event == "Page.close") {
+    FailRequestWaiters(page_guid);
     Event(page_guid, "close", base::DictValue());
+    if (auto waiting = close_replies_.extract(page_guid)) {
+      for (int reply : waiting.mapped())
+        Reply(reply, base::Value(base::DictValue()));
+    }
     for (auto it = pages_.begin(); it != pages_.end(); ++it) {
       if (it->second == page_guid) {
         pages_.erase(it);
@@ -3645,15 +3726,40 @@ void Connection::Command(int id,
     params.Set("dialog", object->id);
   } else if (type == "BindingCall") {
     params.Set("binding", object->id);
+    // What the page's promise settles with, as page.ts's
+    // deliverBindingResult() gives it: the value with its handles, the
+    // client's error with its stack, or the value it threw.
     if (method == "resolve") {
       base::Value* result = params.Find("result");
+      if (result && result->is_dict())
+        params.Set("arg", result->Clone());
       const base::Value* value =
           result && result->is_dict() ? result->GetDict().Find("value") : nullptr;
       params.Set("result", value ? Plain(*value) : base::Value());
     } else if (method == "reject") {
-      const std::string* message =
-          params.FindStringByDottedPath("error.error.message");
+      const base::DictValue* error = params.FindDictByDottedPath("error.error");
+      const base::Value* thrown = params.FindByDottedPath("error.value");
+      base::DictValue arg;
+      if (error) {
+        base::DictValue e;
+        for (const auto& [from, to] : {std::pair{"name", "n"}, {"message", "m"}, {"stack", "s"}}) {
+          const std::string* text = error->FindString(from);
+          e.Set(to, text ? *text : std::string());
+        }
+        base::DictValue value;
+        value.Set("e", std::move(e));
+        arg.Set("value", std::move(value));
+      } else if (thrown) {
+        arg.Set("value", thrown->Clone());
+      }
+      const std::string* message = error ? error->FindString("message") : nullptr;
       params.Set("error", message ? *message : "Error");
+      if (!arg.empty())
+        params.Set("arg", std::move(arg));
+    }
+    if (params.Find("arg") && !ToNativeArgs(params)) {
+      ReplyError(id, "JSHandle is disposed");
+      return;
     }
   } else if (type == "WebSocketRoute") {
     params.Set("webSocketRoute", object->id);
@@ -3676,17 +3782,13 @@ void Connection::Command(int id,
                weak_factory_.GetWeakPtr(), id));
     return;
   } else if (type == "Request") {
-    base::DictValue answer;
-    if (method == "response") {
-      if (const std::string* response = object->data.FindString("response"))
-        answer.Set("response", Ref(*response));
-    } else if (method == "rawRequestHeaders") {
-      const base::ListValue* raw = object->data.FindList("rawHeaders");
-      if (!raw)
-        raw = object->data.FindList("headers");
-      answer.Set("headers", raw ? raw->Clone() : base::ListValue());
+    if ((method == "response" || method == "rawRequestHeaders") &&
+        !object->data.FindString("response") && !object->data.FindBool("ended").value_or(false) &&
+        Find(object->page)) {
+      request_waiters_[guid].emplace_back(id, method);
+      return;
     }
-    Reply(id, base::Value(std::move(answer)));
+    Reply(id, base::Value(RequestAnswer(*object, method)));
     return;
   } else if (type == "Response") {
     if (method == "body") {
@@ -3723,6 +3825,18 @@ void Connection::Command(int id,
       answer.Set("sizes", object->data.FindDict("sizes") ? object->data.FindDict("sizes")->Clone() : std::move(sizes));
     }
     Reply(id, base::Value(std::move(answer)));
+    return;
+  } else if (type == "Page" && method == "close" && !params.FindBool("runBeforeUnload").value_or(false)) {
+    // crPage.ts's closePage(): answered once the page has closed, so that the
+    // client has its close event first (page.isClosed()).
+    zebkit_view* closing = ViewOf(*object);
+    if (!closing) {
+      Reply(id, base::Value(base::DictValue()));
+      return;
+    }
+    close_replies_[guid].push_back(id);
+    if (close_replies_[guid].size() == 1)
+      zebkit_view_close(closing);
     return;
   } else if (type == "Page" && method == "setNetworkInterceptionPatterns") {
     const base::ListValue* patterns = params.FindList("patterns");

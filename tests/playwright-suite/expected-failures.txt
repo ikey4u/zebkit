@@ -34,8 +34,7 @@ page/selectors-frame.spec.ts | survive | a frame detached while waited for fails
 
 # Differ, each with its cause known; a file's entry says what its failures are.
 library/browsercontext-locale.spec.ts | should format number$|should format date|isolated between contexts | number and date formats of locales the package's ICU data does not hold (English and CJK only, the size budget)
-page/page-event-console.spec.ts | should work @smoke|different console API|coerced|time/timeLog|window object|object previews | a console message's text is Blink's string, not rendered from its arguments as Runtime's preview is; args stay empty
-page/workers.spec.ts | console | a console message's text is Blink's string, not rendered from its arguments
+page/workers.spec.ts | console | a worker's console message comes from its page's Log domain (the worker's own target is not attached): Blink's string, no arguments
 page/jshandle-to-string.spec.ts | sparse | a console message's text is Blink's string, not rendered from its arguments
 library/har-websocket.spec.ts | * | HAR has no WebSocket entries
 page/page-drag.spec.ts | Drag and drop > (should work @smoke|should send the right|should not send dragover|should work inside iframe|should cancel on escape|should respect the drop|should work with the helper|should work if the drag event|should work with locators) | the native drag does not fire the page's drag events through the endpoint's mouse commands

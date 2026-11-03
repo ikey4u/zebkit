@@ -605,12 +605,12 @@ class Agent : public content::RenderFrameObserver,
     v8::Local<v8::Array> args = v8::Array::New(isolate, info.Length());
     for (int i = 0; i < info.Length(); ++i)
       args->Set(context, i, info[i]).Check();
-    v8::Local<v8::String> json;
-    if (!v8::JSON::Stringify(context, args).ToLocal(&json)) {
-      resolver->Reject(context, v8::Exception::TypeError(String(
-                                    isolate, "the arguments are not JSON")))
-          .Check();
-      return;
+    std::string plain;
+    {
+      v8::TryCatch try_catch(isolate);
+      v8::Local<v8::String> json;
+      if (v8::JSON::Stringify(context, args).ToLocal(&json))
+        plain = Text(isolate, json);
     }
     auto found = Agents().find(agent_id);
     if (found == Agents().end() || !found->second) {
@@ -625,8 +625,33 @@ class Agent : public content::RenderFrameObserver,
       resolver->Reject(context, v8::Exception::Error(String(isolate, "binding was disposed"))).Check();
       return;
     }
-    found->second->CallHost(name, Text(isolate, json), isolate, context,
-                            resolver);
+    // As Playwright's page has them: cycles, windows and nodes as well.
+    const std::string serialized = found->second->RunnerText(context, "bindingArgs", args);
+    if (plain.empty() && serialized.empty()) {
+      resolver->Reject(context, v8::Exception::TypeError(String(
+                                    isolate, "the arguments are not JSON")))
+          .Check();
+      return;
+    }
+    found->second->CallHost(name, plain, serialized, isolate, context, resolver);
+  }
+
+  // The page world's runner's @method called with @arg, synchronously: its
+  // string, or empty.
+  std::string RunnerText(v8::Local<v8::Context> context, const char* method,
+                         v8::Local<v8::Value> arg) {
+    v8::Isolate* isolate = v8::Isolate::GetCurrent();
+    v8::TryCatch try_catch(isolate);
+    v8::Local<v8::Object> runner = Runner(isolate, context, 0);
+    v8::Local<v8::Value> function;
+    v8::Local<v8::Value> result;
+    if (runner.IsEmpty() || !runner->Get(context, String(isolate, method)).ToLocal(&function) ||
+        !function->IsFunction() ||
+        !function.As<v8::Function>()->Call(context, runner, 1, &arg).ToLocal(&result) ||
+        !result->IsString()) {
+      return std::string();
+    }
+    return Text(isolate, result);
   }
 
   void SetMediaType(const std::string& media) override {
@@ -821,6 +846,7 @@ class Agent : public content::RenderFrameObserver,
 
   void CallHost(const std::string& name,
                 const std::string& args,
+                const std::string& serialized,
                 v8::Isolate* isolate,
                 v8::Local<v8::Context> context,
                 v8::Local<v8::Promise::Resolver> resolver) {
@@ -829,10 +855,11 @@ class Agent : public content::RenderFrameObserver,
     kept->context.Reset(isolate, context);
     kept->resolver.Reset(isolate, resolver);
     host_->BindingCalled(
-        name, args,
+        name, args, serialized,
         base::BindOnce(
-            [](std::unique_ptr<Binding> kept, bool ok,
-               const std::string& result) {
+            [](int64_t agent_id, std::unique_ptr<Binding> kept, bool ok,
+               const std::string& result, bool serialized_result,
+               const std::vector<int32_t>& handles) {
               v8::Isolate* isolate = v8::Isolate::GetCurrent();
               v8::HandleScope scope(isolate);
               v8::Local<v8::Context> context = kept->context.Get(isolate);
@@ -843,6 +870,20 @@ class Agent : public content::RenderFrameObserver,
                   context, v8::MicrotasksScope::kRunMicrotasks);
               v8::Local<v8::Promise::Resolver> resolver =
                   kept->resolver.Get(isolate);
+              auto found = Agents().find(agent_id);
+              if (serialized_result && found != Agents().end() && found->second) {
+                // Playwright's deliverBindingResult(): the value parsed, an
+                // error as the client threw it.
+                Agent* agent = found->second.get();
+                v8::Local<v8::Value> parsed;
+                if (!agent->RunnerValue(context, "bindingResult", String(isolate, result),
+                                        agent->Values(isolate, context, handles), &parsed)) {
+                  parsed = v8::Undefined(isolate);
+                }
+                std::ignore = ok ? resolver->Resolve(context, parsed)
+                                 : resolver->Reject(context, parsed);
+                return;
+              }
               if (!ok) {
                 std::ignore = resolver->Reject(
                     context, v8::Exception::Error(String(isolate, result)));
@@ -855,7 +896,21 @@ class Agent : public content::RenderFrameObserver,
               }
               std::ignore = resolver->Resolve(context, value);
             },
-            std::move(kept)));
+            id_, std::move(kept)));
+  }
+
+  // The page world's runner's @method called with @text and @values.
+  bool RunnerValue(v8::Local<v8::Context> context, const char* method,
+                   v8::Local<v8::Value> text, v8::Local<v8::Value> values,
+                   v8::Local<v8::Value>* result) {
+    v8::Isolate* isolate = v8::Isolate::GetCurrent();
+    v8::TryCatch try_catch(isolate);
+    v8::Local<v8::Object> runner = Runner(isolate, context, 0);
+    v8::Local<v8::Value> function;
+    v8::Local<v8::Value> argv[] = {text, values};
+    return !runner.IsEmpty() && runner->Get(context, String(isolate, method)).ToLocal(&function) &&
+           function->IsFunction() &&
+           function.As<v8::Function>()->Call(context, runner, 2, argv).ToLocal(result);
   }
 
   struct Binding {

@@ -43,9 +43,14 @@ enum AutomationExpression {
 // The browser's side, one for each frame: what a page calls.
 interface AutomationHost {
   // The page called @name, a function Expose() made, with @args (a JSON
-  // array): Playwright's exposeBinding. @result is the JSON the call's
-  // promise resolves to, or the message it rejects with.
-  BindingCalled(string name, string args) => (bool ok, string result);
+  // array, empty when they are not JSON) and @serialized (the same as
+  // Playwright's serialized values, bindingsController.ts's callBinding()):
+  // Playwright's exposeBinding. @result is the JSON the call's promise
+  // resolves to, or the message it rejects with; when @serialized_result,
+  // Playwright's serialized value of what it resolves or rejects with, whose
+  // {h: i} are @handles[i].
+  BindingCalled(string name, string args, string serialized)
+      => (bool ok, string result, bool serialized_result, array<int32> handles);
 
   // A worker of the frame's origin started, or ended: Playwright's Worker.
   // @worker is the renderer's number for it.

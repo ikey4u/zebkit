@@ -918,6 +918,18 @@ steps.addTag = (arg, out) => new Promise((fulfill, reject) => {
   }
 });
 
+// A console call's arguments, which the browser left under @key on the
+// global object (Runtime.callFunctionOn), as handles (crPage.ts's
+// _onConsoleAPI()).
+steps.consoleArgs = (arg, out) => {
+  const values = globalThis[arg.key] || [];
+  delete globalThis[arg.key];
+  const handles = [];
+  for (let i = 0; i < values.length; ++i)
+    handles[i] = out(values[i]);
+  return handles;
+};
+
 steps.title = () => document.title;
 steps.content = () => injected.documentContent(false);
 steps.viewport = () => ({ width: innerWidth, height: innerHeight });
@@ -1125,6 +1137,22 @@ async function answer(body, evaluation) {
 }
 
 return {
+  // A binding call's arguments as Playwright's page serializes them
+  // (bindingsController.ts's callBinding()), with the page's JSON.stringify
+  // as it has it.
+  bindingArgs(args) {
+    const serialized = [];
+    for (let i = 0; i < args.length; i++)
+      serialized[i] = serializeAsCallArgument(args[i], v => ({ fallThrough: v }));
+    return JSON.stringify(serialized);
+  },
+
+  // A binding call's answer, Playwright's serialized value whose {h: i} are
+  // @handles[i] (deliverBindingResult()).
+  bindingResult(json, handles) {
+    return parseEvaluationResultValue(parseJson(json), handles);
+  },
+
   // A step: steps[name](arg, out), @handles what arg's {"$h": i} are.
   step(name, argJson, handles) {
     return answer(out => {
