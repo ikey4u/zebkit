@@ -194,6 +194,12 @@ zebkit_v8_compiler_optimization = "//build/config/compiler:optimize"
 # V8 and Blink's heap are in a shared library: thread-local variables that
 # a library can have, as on Android.
 zebkit_v8_tls_local_dynamic = true
+# Overriding that: V8's and Blink's heap's thread-locals initial-exec, one
+# instruction each, as libzebkit.so.1 already needs static TLS
+# (patches/1040). Against local-dynamic, 2026-11-02: the DOM 2% (style 4%,
+# text 5%), text layout 3%, the long document's longest task 3%, for at
+# most 0.3 MB.
+zebkit_tls_initial_exec = true
 blink_heap_inside_shared_library = true
 
 # The engine is a library an application loads (libzebkit.so.1), and a

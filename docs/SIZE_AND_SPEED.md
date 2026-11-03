@@ -115,13 +115,43 @@ harness before and after (the commits have the runs):
   for code the PGO profile calls cold (`patches/1075`); LLVM's own inliner
   does Blink's hot code. DOM 406 to 370 ms in the same-objects comparison
   (style 19%, bindings 21% faster), text layout 4%, for 9.7 MB (+5.8% of
-  the package): the DOM gains more than the size costs. Tried and not
-  kept: `-inlinehint-threshold=360` at link (nothing); thread-locals as
-  initial-exec (`__tls_get_addr` is 0.7 to 3% of the DOM profiles, but the
-  switch rebuilds all of Blink and V8 and was measured at 0 to 1% for
-  layout before); `-O2` everywhere (`slim-speed`, +19% size, rejected
-  before). Electron's remaining lead on these is the rest of Chrome's
-  compiler settings, at the size they cost.
+  the package): the DOM gains more than the size costs. And the
+  thread-locals of V8 and Blink's heap are read initial-exec, in one
+  instruction (`zebkit_tls_initial_exec`, `patches/1040`; the library
+  already needs static TLS): the DOM 2%, its style 4% and text 5%, text
+  layout 3%, the long document's longest task 3%, for at most 0.3 MB.
+- **What is left, split against the reference.** Google's own Chrome
+  155.0.8059.84 for Linux (the Chromium zebkit is built from), run by the
+  same harness in an app window, medians of 5:
+
+  | | zebkit | Chrome 155 | Electron (156) |
+  |---|---:|---:|---:|
+  | DOM, fresh page, ms | 352 | 251 | 248 |
+  | Text layout, ms a layout (CPU) | 8.6 (12.0) | 7.6 (10.3) | 7.8 (10.6) |
+  | Long document, longest task, ms | 210 | 186 | 172 |
+
+  Chrome 155 is as fast as Electron on the DOM and on text layout, so
+  those gaps are zebkit's build, not the version; on the long document
+  the version is about 14 ms of the 38. Blink's hot code is compiled with
+  the same flags as Chrome's (`gn gen` of an official Chrome build beside
+  slim: the flags of the layout files differ only in Chrome's CFI, its
+  zeroed locals and its `-inlinehint-threshold`), with the same PGO profile
+  and no profile mismatch, and linked the same way but for the inliner;
+  linking with no size model at all gains nothing more. What differs is
+  around the code: a shared library rather than an executable (V8's and
+  Blink's thread-locals, now fixed), vtables as offsets, glibc's malloc
+  for what is not on Blink's heaps (PartitionAlloc cannot take malloc over
+  in a library), Chrome's `-O2` for everything else. Profiles of the same
+  DOM page show the same functions, Electron's inlined into fewer: no
+  zebkit-specific work. Tried and not kept: `-inlinehint-threshold=360` at
+  link (nothing), no size model at link (nothing, +5.5 MB); `-O2`
+  everywhere (`slim-speed`, +19% size, rejected before); vtables as
+  pointers (nothing on layout when tried, more size).
+- **Moving to Chromium 156** would take Electron's version: about 14 ms
+  of the long document's first layout, nothing on the DOM or text layout.
+  It is a new pin, the 76 patches carried over and every platform built
+  again (about seven hours of building here, a day or two of porting).
+  It belongs with the next Chromium update rather than on its own.
 - **`page.screenshot`** (native 30 to 41 ms since 2026-11-01): the move to
   `Page.captureScreenshot` waits for a fresh frame, and the PNG encoder,
   Skia's in Rust, was compiled at opt-level s: the encoding crossed a frame
@@ -161,10 +191,11 @@ first paint in 135 ms against 229, with 27% less CPU, and costs 5 to 18%
 less memory on the local pages; it lays text out 7% slower, runs the
 JavaScript and DOM page 15% slower (`slim-macos` is built without PGO), and
 its calls to the host were 7 to 22 times slower, before the call channel of
-2026-11-02. The Mac was not measured again after it: in the session open
-to this machine's tools that evening, zebkit's pages did not commit (the
-build from before the change crashed its GPU process there too) while
-Electron's ran; a run at the desktop is to do. On the Mac, Electron's
+2026-11-02. The Mac was not measured again after it: its console was
+locked (`IOConsoleLocked`), so windows there draw nothing and pages in them
+wait. Headless, the same build passed the whole engine suite there (136
+tests, the call channel's among them), as the 0.1.0 build passed its own;
+the windowed comparison waits for an unlocked desktop. On the Mac, Electron's
 window was not given the focus and zebkit's was. The Mac's runs used
 the package before the change to `goto` (`docs/AUTOMATION.md`), which
 changes none of these.
