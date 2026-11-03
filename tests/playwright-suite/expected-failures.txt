@@ -54,7 +54,6 @@ page/locator-frame.spec.ts | survive frame reattach | a frame detached while wai
 page/locator-frame.spec.ts | should wait for frame$|throw on ambiguity | the call log and the strict error through a frame locator lack frameSelectors.ts's words
 page/locator-query.spec.ts | nested frameLocators|common frame prefix | a composite locator whose operands enter the same frame is not reduced to that frame as selectorParser.ts's common frame prefix does
 page/expect-boolean.spec.ts | with frameLocator 2 | an assertion through a frame locator whose <iframe> is replaced or removed stays on the frame it entered; frames.ts resolves the frames again at each poll
-page/interception.spec.ts | activity from worker|worker requests when enabled | a dedicated worker's fetch reaches the server past page.route (checked: the test reads the server's answer); patches/1063 gives workers' factories to the network hooks, routes are per frame
 page/page-click-scroll.spec.ts | scroll into view display:contents|scroll into view element in iframe | scrolling a display:contents element or into a frame differs from DOM.scrollIntoViewIfNeeded
 page/elementhandle-scroll-into-view.spec.ts | display:contents | scrolling a display:contents element differs from DOM.scrollIntoViewIfNeeded
 library/browsercontext-har.spec.ts | redirect | Route.redirectNavigationRequest is not implemented

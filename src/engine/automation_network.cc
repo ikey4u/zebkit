@@ -43,6 +43,7 @@
 #include "net/ssl/ssl_cipher_suite_names.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
+#include "services/network/public/cpp/cors/cors.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
@@ -494,6 +495,30 @@ class Loader : public network::mojom::URLLoader,
           mime_type = *value;
       }
     }
+    // network.ts's _maybeAddCorsHeaders(): a cross-origin request's fulfilled
+    // response allows its origin unless it says otherwise. The Origin header
+    // is the network service's to add, from the initiator.
+    {
+      std::string origin = request_.headers.GetHeader("Origin").value_or(std::string());
+      if (origin.empty() && request_.request_initiator &&
+          network::cors::ShouldCheckCors(request_.url, request_.request_initiator, request_.mode)) {
+        origin = request_.request_initiator->Serialize();
+      }
+      bool has_cors = false;
+      if (const base::ListValue* headers = response.FindList("headers")) {
+        for (const base::Value& header : *headers) {
+          const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+          if (name && base::EqualsCaseInsensitiveASCII(*name, "access-control-allow-origin"))
+            has_cors = true;
+        }
+      }
+      if (!origin.empty() && request_.url.SchemeIsHTTPOrHTTPS() && !has_cors &&
+          url::Origin::Create(request_.url).Serialize() != base::TrimWhitespaceASCII(origin, base::TRIM_ALL)) {
+        raw += "access-control-allow-origin: " + origin + "\r\n";
+        raw += "access-control-allow-credentials: true\r\n";
+        raw += "vary: Origin\r\n";
+      }
+    }
     std::string body;
     if (const std::string* given = response.FindString("body")) {
       if (!response.FindBool("isBase64").value_or(false) ||
@@ -523,6 +548,20 @@ class Loader : public network::mojom::URLLoader,
                           written);
     }
     producer.reset();
+    // A cross-origin request's CORS check, which the network service makes
+    // of what it fetches and a fulfilled response would skip: Chromium's
+    // interception answers below it (fetch.spec.whatwg.org's CORS check).
+    if (request_.request_initiator &&
+        network::cors::ShouldCheckCors(request_.url, request_.request_initiator, request_.mode)) {
+      auto checked = network::cors::CheckAccess(
+          request_.url, head->headers->GetNormalizedHeader("access-control-allow-origin"),
+          head->headers->GetNormalizedHeader("access-control-allow-credentials"),
+          request_.credentials_mode, *request_.request_initiator);
+      if (!checked.has_value()) {
+        OnCompleteInternal(network::URLLoaderCompletionStatus(checked.error()));
+        return;
+      }
+    }
     // Response.body of a fulfilled request is what was given, as Playwright
     // keeps it (network.ts's Route.fulfill).
     KeepFulfilled(body);
