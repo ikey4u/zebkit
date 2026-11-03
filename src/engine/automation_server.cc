@@ -2017,9 +2017,10 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string* id = params.FindString("webSocketRoute");
     object.id = id ? *id : std::string();
     object.page = page_guid;
+    const std::string route_id = object.id;
     const std::string guid = Create(page_guid, "WebSocketRoute", std::move(initializer),
                                     std::move(object));
-    Remember("ws", page_guid, object.id, guid);
+    Remember("ws", page_guid, route_id, guid);
     base::DictValue route;
     route.Set("webSocketRoute", Ref(guid));
     Event(page_guid, "webSocketRoute", std::move(route));
@@ -3691,6 +3692,37 @@ void Connection::Command(int id,
   } else if (type == "Page" && method == "setNetworkInterceptionPatterns") {
     const base::ListValue* patterns = params.FindList("patterns");
     object->data.Set("routes", patterns && !patterns->empty());
+  }
+  // urlMatch.ts's resolveGlobBase(): a glob relative to the context's
+  // baseURL (ws: for WebSockets' of an http: one), and a URL without a path
+  // as the browser writes it (with "/").
+  if (method == "setNetworkInterceptionPatterns" || method == "setWebSocketInterceptionPatterns") {
+    Object* page = type == "Page" ? object : nullptr;
+    Object* context = page ? Find(page->context) : object;
+    const std::string* base_url = context ? context->data.FindString("baseURL") : nullptr;
+    const bool web_socket = method == "setWebSocketInterceptionPatterns";
+    if (base::ListValue* patterns = params.FindList("patterns")) {
+      for (base::Value& pattern : *patterns) {
+        std::string* glob = pattern.is_dict() ? pattern.GetDict().FindString("glob") : nullptr;
+        if (!glob || glob->empty() || glob->front() == '*')
+          continue;
+        std::string base = base_url ? *base_url : std::string();
+        if (web_socket && base.size() > 4 && base::StartsWith(base, "http", base::CompareCase::INSENSITIVE_ASCII)) {
+          const bool secure = base::StartsWith(base, "https", base::CompareCase::INSENSITIVE_ASCII);
+          base = (secure ? "wss" : "ws") + base.substr(secure ? 5 : 4);
+        }
+        const bool has_scheme = glob->find("://") != std::string::npos;
+        if (!has_scheme && !base.empty() && glob->find_first_of("*?{[") == std::string::npos) {
+          const GURL resolved = GURL(base).Resolve(*glob);
+          if (resolved.is_valid())
+            *glob = resolved.spec();
+        } else if (has_scheme && glob->find_first_of("*?{[") == std::string::npos) {
+          const GURL url(*glob);
+          if (url.is_valid())
+            *glob = url.spec();
+        }
+      }
+    }
   }
 
   // Evaluations: Playwright's serialized values end to end.
