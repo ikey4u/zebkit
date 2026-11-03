@@ -96,6 +96,9 @@ const snapshotterSource = (await esbuild.transform(snapshotterTs, { loader: 'ts'
     .replace(/^export \{[^}]*\};?$/mg, '')
     .replace(/^export .*$/mg, '');
 const webSocketMockSource = await bundleInjected('webSocketMock.ts');
+// storageState()'s IndexedDB and OPFS (browserContext.ts runs it in a page of
+// each origin): module.exports.StorageScript().
+const storageSource = await bundleInjected('storageScript.ts');
 
 const built = await esbuild.build({
   stdin: {
@@ -136,6 +139,8 @@ const license = `// Playwright's injected script, bundled by scripts/playwright-
 fs.writeFileSync(path.join(out, 'injected_script.js'), license + content);
 fs.writeFileSync(path.join(out, 'clock_script.js'),
     license.replace("injected script", "clock (injected/src/clock.ts)") + clockSource);
+fs.writeFileSync(path.join(out, 'storage_script.js'),
+    license.replace("injected script", "storage script (injected/src/storageScript.ts)") + storageSource);
 fs.writeFileSync(path.join(out, 'snapshotter_script.js'),
     license.replace("injected script", "DOM snapshot streamer (server/trace/recorder/snapshotterInjected.ts)") + snapshotterSource);
 fs.writeFileSync(path.join(out, 'websocket_mock_script.js'),

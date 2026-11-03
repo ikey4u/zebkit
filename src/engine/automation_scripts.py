@@ -33,9 +33,11 @@ OPTIONS = {
 
 
 def main():
-    injected_path, steps_path, clock_path, mock_path, snapshotter_path, out_path = sys.argv[1:7]
+    injected_path, steps_path, clock_path, mock_path, snapshotter_path, storage_path, out_path = sys.argv[1:8]
     with open(snapshotter_path, encoding="utf-8") as f:
         snapshotter = f.read()
+    with open(storage_path, encoding="utf-8") as f:
+        storage = f.read()
     with open(mock_path, encoding="utf-8") as f:
         mock = f.read()
     with open(clock_path, encoding="utf-8") as f:
@@ -76,6 +78,10 @@ def main():
                 "// is frameSnapshotStreamer(streamerName, removeNoScript).\n")
         f.write(array("kSnapshotterScript",
                       "(() => {\n%s\n;\nreturn frameSnapshotStreamer;\n})()" % snapshotter))
+        f.write("\n// Playwright's storage script: an expression whose value is its class,\n"
+                "// constructed with the browser's name (browserContext.ts's storageState()).\n")
+        f.write(array("kStorageScript",
+                      "(() => {\nconst module = {};\n%s\n;\nreturn module.exports.StorageScript();\n})()" % storage))
         f.write("\n}  // namespace zebkit\n\n#endif  // ZEBKIT_ENGINE_AUTOMATION_SCRIPTS_H_\n")
 
 

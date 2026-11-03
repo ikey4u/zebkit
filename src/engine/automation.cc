@@ -339,6 +339,7 @@ class Call {
   }
 
   const base::DictValue& params() const { return params_; }
+  base::DictValue& params() { return params_; }
   zebkit_view* view() const { return view_; }
   const std::string& method() const { return method_; }
   // "click" of "Frame.click" and "ElementHandle.click".
@@ -631,7 +632,24 @@ struct ContextState {
   // (addInitScript, exposeBinding, routes, subscriptions, clock): their
   // page's method and parameters.
   std::vector<std::pair<std::string, base::DictValue>> replay;
+  // Origins whose storage was given to the context (storageState), which
+  // storageState() visits when no page shows them (browserContext.ts's
+  // _origins).
+  std::set<std::string> storage_origins;
 };
+
+// Each of @origins in a page of @profile no client sees, whose every request
+// is answered with an empty document, as browserContext.ts's visitOrigins():
+// @expression evaluated there (made for the origin's entry), the values given
+// to @done by origin.
+using OriginValues = std::vector<std::pair<std::string, base::Value>>;
+void VisitOrigins(content::BrowserContext* profile,
+                  std::vector<base::DictValue> origins,
+                  base::RepeatingCallback<std::string(const base::DictValue&)> expression,
+                  base::OnceCallback<void(OriginValues)> done);
+std::string StorageScriptCall(const std::string& call);
+zebkit_context* RegisteredContext(const std::string& id);
+std::string ContextIdOfProfile(content::BrowserContext* profile);
 
 std::map<content::BrowserContext*, ContextState>& ContextStates() {
   static base::NoDestructor<std::map<content::BrowserContext*, ContextState>>
@@ -641,6 +659,9 @@ std::map<content::BrowserContext*, ContextState>& ContextStates() {
 
 // A view's automation: its page's agents and handles, the keyboard's and
 // the mouse's state, the navigations commands wait for, and its events.
+// BrowserContext.restoreStorage (below).
+void RestoreStorage(Call* call);
+
 // A profile's service workers as Playwright's Worker objects (below).
 void WatchServiceWorkers(content::BrowserContext* profile);
 bool ServiceWorkerWatch_Running(content::BrowserContext* profile);
@@ -6243,8 +6264,8 @@ class Automation : public content::WebContentsObserver,
                                  base::Value cookies) {
     ContextLocalStorage(
         profile, base::BindOnce(
-                     [](base::WeakPtr<Call> call, base::Value cookies, base::Value storage,
-                        const std::string& error) {
+                     [](content::BrowserContext* profile, base::WeakPtr<Call> call, base::Value cookies,
+                        base::Value storage, const std::string& error) {
                        if (!call)
                          return;
                        base::DictValue answer;
@@ -6254,14 +6275,178 @@ class Automation : public content::WebContentsObserver,
                        }
                        base::Value* origins = storage.is_dict() ? storage.GetDict().Find("origins") : nullptr;
                        answer.Set("origins", origins ? std::move(*origins) : base::Value(base::ListValue()));
+                       if (call->Flag("indexedDB") || call->Flag("opfs")) {
+                         AddPageStorage(profile, call, std::move(answer));
+                         return;
+                       }
                        call->Done(base::Value(std::move(answer)));
                      },
-                     call, std::move(cookies)));
+                     profile, call, std::move(cookies)));
+  }
+
+  // storageState({indexedDB, opfs}): each origin's databases and files, as
+  // browserContext.ts collects them with Playwright's storage script in a page
+  // of the origin; here the profile's pages that show one.
+  static void AddPageStorage(content::BrowserContext* profile, base::WeakPtr<Call> call,
+                             base::DictValue answer) {
+    std::vector<std::pair<Automation*, content::RenderFrameHost*>> frames;
+    std::set<std::string> seen;
+    if (profile) {
+      for (Automation* page : InProfile(profile)) {
+        content::RenderFrameHost* frame = page->MainFrame();
+        const url::Origin origin = frame->GetLastCommittedOrigin();
+        if (origin.opaque() || !frame->IsRenderFrameLive() || !seen.insert(origin.Serialize()).second)
+          continue;
+        frames.emplace_back(page, frame);
+      }
+    }
+    struct State {
+      base::WeakPtr<Call> call;
+      base::DictValue answer;
+      size_t left = 0;
+      raw_ptr<content::BrowserContext> profile;
+      std::set<std::string> shown;
+      std::string collect;
+    };
+    auto state = std::make_shared<State>();
+    state->call = call;
+    state->answer = std::move(answer);
+    state->left = frames.size();
+    state->profile = profile;
+    state->shown = seen;
+    state->collect = std::string("collect({ indexedDB: ") + (call->Flag("indexedDB") ? "true" : "false") +
+                     ", opfs: " + (call->Flag("opfs") ? "true" : "false") + " })";
+    auto finish = [](std::shared_ptr<State> state) {
+      if (!state->call)
+        return;
+      // The origins given to the context that no page shows: visited.
+      std::vector<base::DictValue> others;
+      content::BrowserContext* profile = state->profile;
+      if (profile) {
+        std::set<std::string> have;
+        for (const base::Value& item : *state->answer.FindList("origins")) {
+          if (const std::string* name = item.GetDict().FindString("origin"))
+            have.insert(*name);
+        }
+        for (const std::string& origin : ContextStates()[profile].storage_origins) {
+          if (have.contains(origin) || state->shown.contains(origin))
+            continue;
+          base::DictValue entry;
+          entry.Set("origin", origin);
+          others.push_back(std::move(entry));
+        }
+      }
+      if (others.empty()) {
+        state->call->Done(base::Value(std::move(state->answer)));
+        return;
+      }
+      const std::string expression = StorageScriptCall(state->collect);
+      VisitOrigins(profile, std::move(others),
+                   base::BindRepeating([](std::string expression, const base::DictValue&) { return expression; },
+                                       expression),
+                   base::BindOnce(
+                       [](std::shared_ptr<State> state, OriginValues values) {
+                         if (!state->call)
+                           return;
+                         base::ListValue* origins = state->answer.FindList("origins");
+                         for (auto& [origin, value] : values) {
+                           if (!value.is_dict())
+                             continue;
+                           const base::ListValue* local = value.GetDict().FindList("localStorage");
+                           const base::ListValue* databases = value.GetDict().FindList("indexedDB");
+                           const base::ListValue* files = value.GetDict().FindList("opfs");
+                           if ((!local || local->empty()) && (!databases || databases->empty()) &&
+                               (!files || files->empty())) {
+                             continue;
+                           }
+                           base::DictValue entry;
+                           entry.Set("origin", origin);
+                           entry.Set("localStorage", local ? local->Clone() : base::ListValue());
+                           if (databases)
+                             entry.Set("indexedDB", databases->Clone());
+                           if (files && !files->empty())
+                             entry.Set("opfs", files->Clone());
+                           origins->Append(std::move(entry));
+                         }
+                         state->call->Done(base::Value(std::move(state->answer)));
+                       },
+                       state));
+    };
+    if (frames.empty()) {
+      finish(state);
+      return;
+    }
+    const std::string expression =
+        "(() => { const script = new (" +
+        std::string(reinterpret_cast<const char*>(kStorageScript), sizeof(kStorageScript)) +
+        ")('chromium'); return script.collect({ indexedDB: " + (call->Flag("indexedDB") ? "true" : "false") +
+        ", opfs: " + (call->Flag("opfs") ? "true" : "false") + " }); })()";
+    for (auto [page, frame] : frames) {
+      const std::string origin = frame->GetLastCommittedOrigin().Serialize();
+      page->Agent(frame)->Evaluate(
+          AutomationWorld::kUtility, expression, AutomationExpression::kValue, "[]", {}, true, true,
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              base::BindOnce(
+                  [](std::shared_ptr<State> state, std::string origin, decltype(finish) finish,
+                     AutomationStatus status, const std::string& result, std::vector<AutomationHandlePtr>) {
+                    std::optional<base::Value> parsed = Parse(result);
+                    base::Value* value = parsed && parsed->is_dict() ? parsed->GetDict().Find("value") : nullptr;
+                    if (status == AutomationStatus::kOk && value && value->is_dict()) {
+                      base::ListValue* origins = state->answer.FindList("origins");
+                      base::DictValue* entry = nullptr;
+                      for (base::Value& item : *origins) {
+                        const std::string* name = item.GetDict().FindString("origin");
+                        if (name && *name == origin)
+                          entry = &item.GetDict();
+                      }
+                      const base::ListValue* databases = value->GetDict().FindList("indexedDB");
+                      const base::ListValue* files = value->GetDict().FindList("opfs");
+                      const bool has = (databases && !databases->empty()) || (files && !files->empty());
+                      if (!entry && has) {
+                        base::DictValue added;
+                        added.Set("origin", origin);
+                        added.Set("localStorage", base::ListValue());
+                        origins->Append(std::move(added));
+                        entry = &origins->back().GetDict();
+                      }
+                      if (entry && databases)
+                        entry->Set("indexedDB", databases->Clone());
+                      if (entry && files && !files->empty())
+                        entry->Set("opfs", files->Clone());
+                    }
+                    if (--state->left == 0)
+                      finish(state);
+                  },
+                  state, origin, finish),
+              AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+    }
   }
 
   // BrowserContext.setStorageState: its cookies set; the local storage of
   // its origins given to the frames that show them now.
   void SetStorageState(Call* call) {
+    // IndexedDB and OPFS first, through pages of their origins.
+    if (!call->Flag("restored")) {
+      const base::DictValue* given = call->params().FindDict("storageState");
+      const base::ListValue* origins = given ? given->FindList("origins") : call->params().FindList("origins");
+      base::DictValue restore;
+      restore.Set("context", call->String("context").empty()
+                                 ? ContextIdOfProfile(web_contents()->GetBrowserContext())
+                                 : call->String("context"));
+      restore.Set("origins", origins ? origins->Clone() : base::ListValue());
+      call->params().Set("restored", true);
+      auto* inner = new Call(nullptr, "BrowserContext.restoreStorage", std::move(restore),
+                             [](zebkit_view*, const char*, const char*, void* data) {
+                               auto* pending = static_cast<std::pair<base::WeakPtr<Automation>, base::WeakPtr<Call>>*>(data);
+                               if (pending->first && pending->second)
+                                 pending->first->SetStorageState(pending->second.get());
+                               delete pending;
+                             },
+                             new std::pair<base::WeakPtr<Automation>, base::WeakPtr<Call>>(
+                                 weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+      RestoreStorage(inner);
+      return;
+    }
     const base::DictValue* state = call->params().FindDict("storageState");
     if (!state)
       state = &call->params();
@@ -6620,6 +6805,41 @@ class ServiceWorkerEvaluation : public content::DevToolsAgentHostClient {
   scoped_refptr<content::DevToolsAgentHost> host_;
   Done done_;
 };
+
+// BrowserContext.restoreStorage {context, origins}: each origin's IndexedDB
+// and OPFS put back, as browserContext.ts's setStorageState() restores them in
+// a page of the origin; the origins remembered for storageState().
+void RestoreStorage(Call* call) {
+  zebkit_context* context = RegisteredContext(call->String("context"));
+  content::BrowserContext* profile = context ? ProfileOf(context) : nullptr;
+  std::vector<base::DictValue> origins;
+  if (const base::ListValue* given = call->params().FindList("origins")) {
+    for (const base::Value& item : *given) {
+      if (!item.is_dict())
+        continue;
+      const std::string* origin = item.GetDict().FindString("origin");
+      if (profile && origin)
+        ContextStates()[profile].storage_origins.insert(*origin);
+      const base::ListValue* databases = item.GetDict().FindList("indexedDB");
+      const base::ListValue* files = item.GetDict().FindList("opfs");
+      if ((databases && !databases->empty()) || (files && !files->empty()))
+        origins.push_back(item.GetDict().Clone());
+    }
+  }
+  if (!profile || origins.empty()) {
+    call->Done();
+    return;
+  }
+  VisitOrigins(profile, std::move(origins),
+               base::BindRepeating([](const base::DictValue& entry) {
+                 return StorageScriptCall("restore(" + Json(base::Value(entry.Clone())) + ")");
+               }),
+               base::BindOnce([](base::WeakPtr<Call> call, OriginValues) {
+                 if (call)
+                   call->Done();
+               },
+                              call->GetWeakPtr()));
+}
 
 // ServiceWorker.evaluateExpression {worker, expression, isFunction, arg}.
 void ServiceWorkerEvaluate(Call* call) {
@@ -7166,6 +7386,107 @@ Registry& Registered() {
   return *registry;
 }
 
+zebkit_context* RegisteredContext(const std::string& id) {
+  return Registered().Context(id);
+}
+
+std::string ContextIdOfProfile(content::BrowserContext* profile) {
+  for (auto& [id, context] : Registered().contexts) {
+    if (context && ProfileOf(context.get()) == profile)
+      return id;
+  }
+  return std::string();
+}
+
+std::string StorageScriptCall(const std::string& call) {
+  return "(() => { const script = new (" +
+         std::string(reinterpret_cast<const char*>(kStorageScript), sizeof(kStorageScript)) +
+         ")('chromium'); return script." + call + "; })()";
+}
+
+namespace {
+zebkit_context* ContextOfProfile(content::BrowserContext* profile) {
+  for (auto& [id, context] : Registered().contexts) {
+    if (context && ProfileOf(context.get()) == profile)
+      return context.get();
+  }
+  return nullptr;
+}
+
+struct OriginVisit {
+  base::WeakPtr<zebkit_view> view;
+  std::vector<base::DictValue> origins;
+  size_t next = 0;
+  base::RepeatingCallback<std::string(const base::DictValue&)> expression;
+  base::OnceCallback<void(OriginValues)> done;
+  OriginValues values;
+};
+
+void VisitNextOrigin(std::unique_ptr<OriginVisit> visit);
+
+void OriginEvaluated(zebkit_view*, const char* json, const char*, void* data) {
+  std::unique_ptr<OriginVisit> visit(static_cast<OriginVisit*>(data));
+  std::optional<base::Value> parsed = json ? Parse(json) : std::nullopt;
+  base::Value* value = parsed && parsed->is_dict() ? parsed->GetDict().Find("value") : nullptr;
+  const std::string* origin = visit->origins[visit->next].FindString("origin");
+  visit->values.emplace_back(origin ? *origin : std::string(), value ? std::move(*value) : base::Value());
+  ++visit->next;
+  VisitNextOrigin(std::move(visit));
+}
+
+void OriginLoaded(zebkit_view* view, const char*, const char*, void* data) {
+  std::unique_ptr<OriginVisit> visit(static_cast<OriginVisit*>(data));
+  if (!visit->view) {
+    VisitNextOrigin(std::move(visit));
+    return;
+  }
+  base::DictValue params;
+  params.Set("expression", visit->expression.Run(visit->origins[visit->next]));
+  params.Set("isFunction", false);
+  const std::string json = Json(base::Value(std::move(params)));
+  zebkit_automation_call(visit->view.get(), "Frame.evaluateExpression", json.c_str(), &OriginEvaluated,
+                         visit.release());
+}
+
+void VisitNextOrigin(std::unique_ptr<OriginVisit> visit) {
+  if (!visit->view || visit->next >= visit->origins.size()) {
+    if (visit->view)
+      zebkit_view_close(visit->view.get());
+    std::move(visit->done).Run(std::move(visit->values));
+    return;
+  }
+  const std::string* origin = visit->origins[visit->next].FindString("origin");
+  base::DictValue params;
+  params.Set("url", (origin ? *origin : std::string()) + "/");
+  params.Set("waitUntil", "load");
+  params.Set("timeout", 10000);
+  const std::string json = Json(base::Value(std::move(params)));
+  zebkit_view* view = visit->view.get();
+  zebkit_automation_call(view, "Frame.goto", json.c_str(), &OriginLoaded, visit.release());
+}
+}  // namespace
+
+void VisitOrigins(content::BrowserContext* profile,
+                  std::vector<base::DictValue> origins,
+                  base::RepeatingCallback<std::string(const base::DictValue&)> expression,
+                  base::OnceCallback<void(OriginValues)> done) {
+  zebkit_context* context = ContextOfProfile(profile);
+  zebkit_view* view = origins.empty() ? nullptr : zebkit_view_new_offscreen_in(context, nullptr, 800, 600, 1);
+  if (!view || !view->web_contents()) {
+    std::move(done).Run(OriginValues());
+    return;
+  }
+  Automation::For(view);
+  if (Network* network = Network::For(view->web_contents()))
+    network->SetBlankDocuments(true);
+  auto visit = std::make_unique<OriginVisit>();
+  visit->view = view->GetWeakPtr();
+  visit->origins = std::move(origins);
+  visit->expression = std::move(expression);
+  visit->done = std::move(done);
+  VisitNextOrigin(std::move(visit));
+}
+
 std::string Automation::Registered_IdOf() {
   return Registered().IdOf(view_.get());
 }
@@ -7484,6 +7805,51 @@ void ContextCommand(Call* call) {
                          },
                          profile, call->GetWeakPtr()));
       return;
+    } else if (name == "setStorageState") {
+      // No page: cookies and local storage into the profile, then IndexedDB and
+      // OPFS through pages of their origins.
+      const base::DictValue* state = params.FindDict("storageState");
+      base::DictValue cookies;
+      const base::ListValue* list = state ? state->FindList("cookies") : nullptr;
+      cookies.Set("cookies", list ? list->Clone() : base::ListValue());
+      const base::ListValue* origins = state ? state->FindList("origins") : nullptr;
+      base::ListValue given = origins ? origins->Clone() : base::ListValue();
+      ContextAddCookies(
+          profile, cookies,
+          base::BindOnce(
+              [](content::BrowserContext* profile, base::WeakPtr<Call> call, std::string context,
+                 base::ListValue origins, base::Value, const std::string& error) {
+                if (!call)
+                  return;
+                if (!error.empty()) {
+                  call->Fail(error);
+                  return;
+                }
+                ContextSetLocalStorage(
+                    profile, origins,
+                    base::BindOnce(
+                        [](base::WeakPtr<Call> call, std::string context, base::ListValue origins, base::Value,
+                           const std::string&) {
+                          if (!call)
+                            return;
+                          base::DictValue restore;
+                          restore.Set("context", context);
+                          restore.Set("origins", std::move(origins));
+                          auto* inner = new Call(nullptr, "BrowserContext.restoreStorage", std::move(restore),
+                                                 [](zebkit_view*, const char*, const char*, void* data) {
+                                                   auto* outer = static_cast<base::WeakPtr<Call>*>(data);
+                                                   if (*outer)
+                                                     (*outer)->Done();
+                                                   delete outer;
+                                                 },
+                                                 new base::WeakPtr<Call>(call));
+                          RestoreStorage(inner);
+                        },
+                        call, context, origins.Clone()),
+                    true);
+              },
+              profile, call->GetWeakPtr(), id, std::move(given)));
+      return;
     } else {
       call->Fail("zebkit: " + call->method() + " needs a page of the context");
       return;
@@ -7575,6 +7941,7 @@ const std::map<std::string, GlobalHandler>& GlobalHandlers() {
           {"Browser.newContext", &NewContext},
           {"BrowserContext.newPage", &NewPage},
           {"ServiceWorker.evaluateExpression", &ServiceWorkerEvaluate},
+          {"BrowserContext.restoreStorage", &RestoreStorage},
           {"BrowserContext.pages", &Pages},
           {"BrowserContext.close", &CloseContext},
           {"APIRequestContext.fetch", &ContextFetchCommand},

@@ -1301,6 +1301,24 @@ void Connection::NewContext(int id, base::DictValue params) {
                self->Find(request_tracing)->context = request;
                base::DictValue answer;
                answer.Set("context", Ref(guid));
+               // IndexedDB and OPFS of storageState's origins, put back in a
+               // page of each (browserContext.ts's setStorageState()).
+               const base::ListValue* origins =
+                   self->Find(guid)->data.FindListByDottedPath("contextOptions.storageState.origins");
+               if (origins && !origins->empty()) {
+                 base::DictValue restore;
+                 restore.Set("context", *context);
+                 restore.Set("origins", origins->Clone());
+                 self->Native(id, nullptr, "BrowserContext.restoreStorage", std::move(restore),
+                              base::BindOnce(
+                                  [](base::WeakPtr<Connection> self, int id, base::DictValue answer,
+                                     base::Value) {
+                                    if (self)
+                                      self->Reply(id, base::Value(std::move(answer)));
+                                  },
+                                  self, id, std::move(answer)));
+                 return;
+               }
                self->Reply(id, base::Value(std::move(answer)));
              },
              weak_factory_.GetWeakPtr(), id, std::move(options)));

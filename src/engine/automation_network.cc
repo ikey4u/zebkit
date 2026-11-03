@@ -814,6 +814,9 @@ class NetworkImpl : public Network,
   }
 
   void SetOffline(bool offline) override { offline_ = offline; }
+  void SetBlankDocuments(bool blank) override { blank_documents_ = blank; }
+  bool blank_documents() const { return blank_documents_; }
+  bool blank_documents_ = false;
 
   void KeepNavigationResponse(const std::string& url, const base::DictValue& response) {
     navigation_responses_.insert_or_assign(url, response.Clone());
@@ -1081,6 +1084,19 @@ void Loader::Start() {
       devtools_type_.clear();
   }
   network_->Emit("Page.request", RequestValue());
+  if (network_->blank_documents()) {
+    base::DictValue blank;
+    blank.Set("status", 200);
+    base::ListValue headers;
+    base::DictValue type;
+    type.Set("name", "content-type");
+    type.Set("value", "text/html");
+    headers.Append(std::move(type));
+    blank.Set("headers", std::move(headers));
+    blank.Set("body", "<html></html>");
+    Fulfill(blank);
+    return;
+  }
   // Offline, the network fails it, routed or not: a route answers first, as
   // Fetch's interception comes before Network.emulateNetworkConditions.
   if (!network_->Intercepts(request_.url)) {

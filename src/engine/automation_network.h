@@ -68,6 +68,9 @@ class Network {
   virtual void SetExtraHeaders(const base::ListValue& headers) = 0;
   // BrowserContext.setOffline: requests fail as without a network.
   virtual void SetOffline(bool offline) = 0;
+  // Every request answered with an empty HTML document (a page that only
+  // visits origins for their storage).
+  virtual void SetBlankDocuments(bool blank) = 0;
 
   // Route.continue ({url, method, headers, postData}), Route.fulfill
   // ({status, headers, body, isBase64}), Route.abort ({errorCode}): false
