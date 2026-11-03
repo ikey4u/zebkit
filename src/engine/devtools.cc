@@ -170,6 +170,17 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
     }
     if (dispatchable.ok() && WindowCommand(channel, dispatchable))
       return;
+    // Browser.setDockTile: Chrome's browser handler takes it on every platform
+    // and shows it only in macOS's Dock (Playwright's recorder sets its icon);
+    // an engine in an application's process has no Dock tile of its own.
+    if (dispatchable.ok() &&
+        crdtp::SpanEquals(crdtp::SpanFrom("Browser.setDockTile"), dispatchable.Method())) {
+      base::DictValue reply;
+      reply.Set("id", dispatchable.CallId());
+      reply.Set("result", base::DictValue());
+      Reply(channel, std::move(reply));
+      return;
+    }
     // Browser.close, as Chrome's browser handler has it, for a host that is a
     // browser launched by its client (zebkit-run serving a CDP pipe asks for
     // it): the engine quits. Another host's engine is not a CDP client's to end.

@@ -961,6 +961,17 @@ class Agent : public content::RenderFrameObserver,
   // @expression's value, compiled in @context without eval(): a function's
   // source as an expression, else a script whose value is the last
   // statement's, as DevTools' console has it.
+  // A script of the client's, as DevTools' Runtime.evaluate compiles it:
+  // shared cross-origin, so that an exception thrown later from its code is
+  // reported with its value (Runtime.exceptionThrown's exception, which V8's
+  // inspector leaves out for a script that is not).
+  static v8::MaybeLocal<v8::Script> CompileShared(v8::Isolate* isolate,
+                                                  v8::Local<v8::Context> context,
+                                                  const std::string& source) {
+    v8::ScriptOrigin origin(String(isolate, ""), 0, 0, /*resource_is_shared_cross_origin=*/true);
+    return v8::Script::Compile(context, String(isolate, source), &origin);
+  }
+
   v8::Local<v8::Value> Compile(v8::Isolate* isolate,
                                v8::Local<v8::Context> context,
                                const std::string& expression,
@@ -971,7 +982,7 @@ class Agent : public content::RenderFrameObserver,
     v8::Local<v8::Script> script;
     v8::Local<v8::Value> value;
     if (kind != AutomationExpression::kValue &&
-        v8::Script::Compile(context, String(isolate, "(" + expression + "\n)"))
+        CompileShared(isolate, context, "(" + expression + "\n)")
             .ToLocal(&script) &&
         script->Run(context).ToLocal(&value)) {
       return value;
@@ -990,15 +1001,14 @@ class Agent : public content::RenderFrameObserver,
           base::StartsWith(text, "async ")
               ? base::StrCat({"async function ", text.substr(6)})
               : base::StrCat({"function ", text});
-      if (v8::Script::Compile(context,
-                              String(isolate, "(" + shorthand + "\n)"))
+      if (CompileShared(isolate, context, "(" + shorthand + "\n)")
               .ToLocal(&script) &&
           script->Run(context).ToLocal(&value)) {
         return value;
       }
       try_catch.Reset();
     }
-    if (v8::Script::Compile(context, String(isolate, expression))
+    if (CompileShared(isolate, context, expression)
             .ToLocal(&script) &&
         script->Run(context).ToLocal(&value)) {
       return value;

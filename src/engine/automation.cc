@@ -763,6 +763,10 @@ class Automation : public content::WebContentsObserver,
     view_->SetProtocolEvents(base::BindRepeating(&Automation::DevToolsEvent,
                                                  weak_factory_.GetWeakPtr()));
     view_->Send("Network.enable", base::DictValue());
+    // The page's uncaught exceptions as crPage.ts has them (Runtime.exceptionThrown):
+    // the thrown value's description, name and stack.
+    view_->Send("Runtime.enable", base::DictValue());
+    runtime_exceptions_ = true;
   }
 
   static base::ListValue HeaderList(const base::DictValue* headers) {
@@ -784,7 +788,86 @@ class Automation : public content::WebContentsObserver,
     return list;
   }
 
+  // crProtocolHelper.ts's exceptionToError() and stackTraceToLocation().
+  void ExceptionThrown(const base::DictValue& params) {
+    const base::DictValue* details = params.FindDict("exceptionDetails");
+    if (!details)
+      return;
+    std::string text;
+    if (const base::DictValue* exception = details->FindDict("exception")) {
+      const std::string* description = exception->FindString("description");
+      const base::Value* value = exception->Find("value");
+      text = description ? *description
+                         : value ? (value->is_string() ? value->GetString() : Json(*value)) : "undefined";
+    } else {
+      const std::string* message = details->FindString("text");
+      text = message ? *message : std::string();
+      if (const base::ListValue* frames = details->FindListByDottedPath("stackTrace.callFrames")) {
+        for (const base::Value& frame : *frames) {
+          const base::DictValue& call = frame.GetDict();
+          const std::string* url = call.FindString("url");
+          const std::string* function = call.FindString("functionName");
+          text += "\n    at " + (function && !function->empty() ? *function : std::string("<anonymous>")) +
+                  " (" + (url ? *url : std::string()) + ":" +
+                  base::NumberToString(call.FindInt("lineNumber").value_or(0)) + ":" +
+                  base::NumberToString(call.FindInt("columnNumber").value_or(0)) + ")";
+        }
+      }
+    }
+    std::vector<std::string> lines = base::SplitString(text, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+    size_t first_frame = lines.size();
+    for (size_t i = 0; i < lines.size(); ++i) {
+      if (lines[i].starts_with("    at")) {
+        first_frame = i;
+        break;
+      }
+    }
+    std::string with_name, stack;
+    if (first_frame == lines.size()) {
+      with_name = text;
+    } else {
+      with_name = base::JoinString(base::span(lines).first(first_frame), "\n");
+      stack = text;
+    }
+    const size_t colon = with_name.find(':');
+    std::string name = colon != std::string::npos ? with_name.substr(0, colon) : std::string();
+    const std::string message = colon != std::string::npos && colon + 2 <= with_name.size()
+                                    ? with_name.substr(colon + 2)
+                                    : with_name;
+    if (const base::ListValue* properties = details->FindListByDottedPath("exception.preview.properties")) {
+      for (const base::Value& property : *properties) {
+        const std::string* key = property.GetDict().FindString("name");
+        if (key && *key == "name") {
+          const std::string* value = property.GetDict().FindString("value");
+          name = value ? *value : "Error";
+        }
+      }
+    }
+    base::DictValue error;
+    error.Set("name", name);
+    error.Set("message", message);
+    error.Set("stack", stack);
+    base::DictValue where;
+    const base::DictValue* top = nullptr;
+    if (const base::ListValue* frames = details->FindListByDottedPath("stackTrace.callFrames");
+        frames && !frames->empty()) {
+      top = &frames->front().GetDict();
+    }
+    const std::string* url = top ? top->FindString("url") : nullptr;
+    where.Set("url", url ? *url : std::string());
+    where.Set("lineNumber", top ? top->FindInt("lineNumber").value_or(0) : 0);
+    where.Set("columnNumber", top ? top->FindInt("columnNumber").value_or(0) : 0);
+    base::DictValue event;
+    event.Set("error", std::move(error));
+    event.Set("location", std::move(where));
+    Emit("Page.pageError", std::move(event));
+  }
+
   void DevToolsEvent(const std::string& method, const base::DictValue& params) {
+    if (method == "Runtime.exceptionThrown") {
+      ExceptionThrown(params);
+      return;
+    }
     Network* network = Network::For(web_contents());
     const std::string* request = params.FindString("requestId");
     if (!network || !request)
@@ -4096,6 +4179,10 @@ class Automation : public content::WebContentsObserver,
     if (level == blink::mojom::ConsoleMessageLevel::kError &&
         message.starts_with(u"Uncaught ") &&
         !(stack && stack->starts_with(u'\x01'))) {
+      // The page's DevTools session tells those of its process
+      // (ExceptionThrown()); a frame of another process's is told here.
+      if (runtime_exceptions_ && frame->GetProcess() == MainFrame()->GetProcess())
+        return;
       base::DictValue where;
       where.Set("url", base::UTF16ToUTF8(source));
       where.Set("lineNumber", line);
@@ -6554,6 +6641,8 @@ class Automation : public content::WebContentsObserver,
   std::unique_ptr<VideoRecorder> video_;
   bool web_socket_mock_ = false;
   bool emulated_offline_ = false;
+  // Runtime.exceptionThrown comes from the page's DevTools session.
+  bool runtime_exceptions_ = false;
   // DevTools' requests of the page by their ids, for those a service worker
   // answers (Network.requestWillBeSent), and those reported so.
   std::map<std::string, base::DictValue> devtools_requests_;
