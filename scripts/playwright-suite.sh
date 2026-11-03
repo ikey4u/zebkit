@@ -77,7 +77,7 @@ if [[ ! -e "$repo/packages/playwright-core/lib/coreBundle.js" ]]; then
 fi
 
 : > "$out/engine-exits.log"
-rm -rf "$out/test-results" "$out/profiles" "$out"/engine-*.url
+rm -rf "$out/test-results" "$out/profiles" "$out"/engine-*.url "$out/no-browsers"
 # As the server of Playwright under its own tests: window.builtins in pages.
 export PWTEST_UNDER_TEST=1
 export PW_SUITE_REPO="$repo" PW_SUITE_OUT="$out" PW_SUITE_DIR="$suite" PW_SUITE_WORKERS="$workers" \
@@ -96,10 +96,18 @@ if [[ "$target" == zebkit ]]; then
     [[ -d "$package" ]] || die "no package in $package: scripts/package.sh $profile"
     build_against_package "$package" "$out/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
     export PW_SUITE_BASE_PORT=$(( 21000 + RANDOM % 20000 ))
-    # A test that launches a browser of its own must not find Chrome here and
-    # pass without touching the engine: it fails, and the list says why.
-    mkdir -p "$out/no-browsers"
-    export PLAYWRIGHT_BROWSERS_PATH="$out/no-browsers"
+    # A test that launches a browser of its own launches zebkit: where Playwright
+    # looks for its Chromium is zebkit-run, which it drives over CDP's pipe as it
+    # drives Chrome (the suite's Chrome run launches the same way).
+    revision="$(cd "$repo" && "${node[@]}" -e "console.log(require('./packages/playwright-core/browsers.json').browsers.find(b => b.name === 'chromium').revision)")"
+    browsers="$out/browsers"
+    for executable in "chromium-$revision/chrome-linux64/chrome" \
+                      "chromium_headless_shell-$revision/chrome-headless-shell-linux64/chrome-headless-shell"; do
+        mkdir -p "$browsers/$(dirname "$executable")"
+        printf '#!/bin/sh\nexec %q --no-sandbox "$@"\n' "$out/zebkit-run" > "$browsers/$executable"
+        chmod +x "$browsers/$executable"
+    done
+    export PLAYWRIGHT_BROWSERS_PATH="$browsers"
     nice -n 19 ionice -c3 "${node[@]}" "$suite/engines.mjs" "$out/zebkit-run" "$PW_SUITE_BASE_PORT" "$workers" "$out" &
     engines=$!
     up=0

@@ -51,8 +51,16 @@ static void listening(const char *url, const char *error, void *data) {
         fprintf(stderr, "zebkit-run: %s\n", error);
 }
 
+static int no_startup_window;
+
 static void ready(void *data) {
     (void)data;
+    if (no_startup_window) {
+        /* A browser launched by a CDP client over its pipe, as Chrome is by
+         * Playwright: no window until it asks, and it ends with Browser.close. */
+        ++open_views;
+        return;
+    }
     if (playwright_port >= 0) {
         /* The client opens its own pages. */
         zebkit_automation_listen(playwright_port, listening, NULL);
@@ -100,11 +108,26 @@ int main(int argc, char **argv) {
             playwright_port = atoi(argv[i] + 18);
         else if (strcmp(argv[i], "--headless") == 0 || strncmp(argv[i], "--headless=", 11) == 0)
             headless = 1;
+        else if (strcmp(argv[i], "--no-startup-window") == 0)
+            no_startup_window = 1;
         else if (strncmp(argv[i], "--", 2) != 0 && url_count < 64)
             found[url_count++] = argv[i];
     }
-    if (playwright_port < 0)
-        return zebkit_main(argc, argv, ready, NULL);
+    if (playwright_port < 0) {
+        /* Served over a pipe, the client launched it: its Browser.close ends it. */
+        int pipe = 0;
+        for (int i = 1; i < argc; ++i)
+            pipe |= strcmp(argv[i], "--remote-debugging-pipe") == 0;
+        if (!pipe)
+            return zebkit_main(argc, argv, ready, NULL);
+        char **with = malloc(sizeof(char *) * (size_t)(argc + 2));
+        int count = 0;
+        for (int i = 0; i < argc; ++i)
+            with[count++] = argv[i];
+        with[count++] = "--zebkit-quit-on-browser-close";
+        with[count] = NULL;
+        return zebkit_main(count, with, ready, NULL);
+    }
     /* The program's name, Playwright's switches, then the caller's. */
     char **with = malloc(sizeof(char *) * (size_t)(argc + COUNT(playwright_switches) +
                                                     COUNT(playwright_headless_switches) + 1));

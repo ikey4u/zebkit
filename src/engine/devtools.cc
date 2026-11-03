@@ -43,6 +43,9 @@
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
+#include "base/command_line.h"
+#include "base/task/sequenced_task_runner.h"
+#include "zebkit/engine/include/zebkit/zebkit.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/page_internal.h"
@@ -167,6 +170,20 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
     }
     if (dispatchable.ok() && WindowCommand(channel, dispatchable))
       return;
+    // Browser.close, as Chrome's browser handler has it, for a host that is a
+    // browser launched by its client (zebkit-run serving a CDP pipe asks for
+    // it): the engine quits. Another host's engine is not a CDP client's to end.
+    if (dispatchable.ok() &&
+        crdtp::SpanEquals(crdtp::SpanFrom("Browser.close"), dispatchable.Method()) &&
+        base::CommandLine::ForCurrentProcess()->HasSwitch("zebkit-quit-on-browser-close")) {
+      base::DictValue reply;
+      reply.Set("id", dispatchable.CallId());
+      reply.Set("result", base::DictValue());
+      Reply(channel, std::move(reply));
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce([] { zebkit_quit(); }));
+      return;
+    }
     std::move(callback).Run(message);
   }
 
