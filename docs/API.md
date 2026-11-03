@@ -314,9 +314,12 @@ The getters give `{"explicit": ..., "effective": ...}`.
 | `downloads` | `save`, `deny` | engine, view; a function set still decides | `save` |
 | `newWindows` | `block-without-gesture`, `allow`, `block` | engine, view | `block-without-gesture` |
 | `spareRenderer` | boolean | engine | `false` |
+| `clientCertificateStores` | boolean | engine | `false` |
 
 A view's value goes before the engine's, except `thirdPartyCookies`. `--zebkit-allow-third-party-cookies`
-and `--zebkit-spare-renderer` stay the startup defaults. Cookies change asynchronously, and a document
+and `--zebkit-spare-renderer` stay the startup defaults, as does `--zebkit-client-certificate-stores`
+for `clientCertificateStores`: whether a TLS server's request for a client certificate is offered the
+operating system's identities (see the client certificate hook). Cookies change asynchronously, and a document
 may keep those it has read.
 
 ## Runtime document permissions
@@ -1297,7 +1300,7 @@ function, and once that opener closed, the popup is refused.
 |---|---|---|---|---|---|
 | Links to other programs | `zebkit_view_on_external_protocol` | `on_external_protocol` | `on_external_protocol` | `onExternalProtocol` | told only |
 | Downloads | `zebkit_view_on_download`, `_progress`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `DownloadRequest.respond('save', path)` | `on_download`, `DownloadRequest::save`, `cancel` | `onDownload`, `respond('save', path)` | cancelled |
-| Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond` | `on_client_certificate`, `respond('provide', pem, key)` | `on_client_certificate`, `provide`, `respond` | `onClientCertificate`, `respond('provide', pem, key)` | request fails |
+| Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond`, `zebkit_client_certificate_choose` | `on_client_certificate`, `respond('provide', pem, key)`, `choose(index)` | `on_client_certificate`, `provide`, `respond`, `choose` | `onClientCertificate`, `respond('provide', pem, key)`, `respond('choose', index)` | request fails |
 | Isolated worlds | `zebkit_view_add_world_script` | `add_world_script(source, world, main_frame_only)` | `add_world_script` | `addWorldScript(source, {world, mainFrameOnly})` | not asked |
 | File choosers | `zebkit_view_on_file_chooser`, `zebkit_file_chooser_respond` | `on_file_chooser`, `respond([paths])` | `on_file_chooser`, `respond(&[paths])` | `onFileChooser`, `respond([paths])` | cancelled |
 | Camera, microphone | `zebkit_view_on_media_access`, `zebkit_media_access_respond` | `on_media_access`, `respond(allow)` | `on_media_access`, `respond(allow, None, None)` | `onMediaAccess`, `respond(allow)` | refused |
@@ -1311,8 +1314,11 @@ Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` sta
 network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
 that hold fail closed (`<zebkit/hooks.h>`).
 
-Limits are in `docs/ROADMAP_HOOKS.md`: client certificates come from the application and not the
-system's stores.
+Client certificates come from the application, or, with the engine setting
+`clientCertificateStores`, from the operating system's store: the request's `identities` (subject,
+issuer, validity, SHA-256, the PEM certificate) of the user's NSS database on Linux, Keychain on
+macOS and the user's `MY` store on Windows, of which `choose(index)` answers with one; its key stays
+in the store, which signs. Limits are in `docs/ROADMAP_HOOKS.md`.
 
 ### Native media processing tools
 

@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
@@ -24,7 +25,9 @@ class RenderFrameHost;
 class WebContents;
 }  // namespace content
 namespace net {
+class ClientCertIdentity;
 class SSLCertRequestInfo;
+using ClientCertIdentityList = std::vector<std::unique_ptr<ClientCertIdentity>>;
 }
 
 namespace zebkit {
@@ -50,8 +53,10 @@ void CancelDownloadRequests(zebkit_view* view);
 void InstallClientCertificateHooks();
 void StopClientCertificateHooks();
 void CancelClientCertificateRequests(zebkit_view* view);
+// @identities: the operating system's (clientCertificateStores), else none.
 base::OnceClosure HandleClientCertificate(
     content::WebContents* contents, const net::SSLCertRequestInfo& info,
+    net::ClientCertIdentityList identities,
     std::unique_ptr<content::ClientCertificateDelegate> delegate);
 
 }  // namespace zebkit

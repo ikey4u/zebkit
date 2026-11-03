@@ -96,7 +96,15 @@ other = opened()
 # ---- What holds before anything is set: today's behaviour.
 assert zebkit.engine_settings() == {'explicit': {}, 'effective': {
     'thirdPartyCookies': 'block', 'spareRenderer': False, 'spareRendererRunning': False,
+    'clientCertificateStores': False,
     'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, zebkit.engine_settings()
+# The system's client certificate stores: the engine's, off by default.
+assert rejected(view.set_runtime_settings, {'clientCertificateStores': True}), 'stores of a view'
+zebkit.set_engine_settings({'clientCertificateStores': True})
+assert zebkit.engine_settings()['effective']['clientCertificateStores'] is True
+assert zebkit.engine_settings()['explicit'] == {'clientCertificateStores': True}
+zebkit.set_engine_settings({'clientCertificateStores': None})
+assert zebkit.engine_settings()['explicit'] == {}
 assert view.runtime_settings == {'explicit': {}, 'effective': {
     'thirdPartyCookies': 'block', 'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, view.runtime_settings
 

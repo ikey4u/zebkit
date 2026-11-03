@@ -83,6 +83,7 @@ struct EngineSettings {
   std::optional<zebkit_dialog_policy> dialogs;
   std::optional<bool> deny_downloads;
   std::optional<zebkit_popup_policy> new_windows;
+  std::optional<bool> client_certificate_stores;
 };
 EngineSettings& Engine() {
   static EngineSettings settings;
@@ -143,7 +144,13 @@ bool Validate(const base::DictValue& settings, bool engine, std::string* error) 
     else if (key == "dialogs") valid |= ValueOf(kDialogs, value).has_value();
     else if (key == "downloads") valid |= ValueOf(kDownloads, value).has_value();
     else if (key == "newWindows") valid |= ValueOf(kWindows, value).has_value();
-    else if (key == "spareRenderer") {
+    else if (key == "clientCertificateStores") {
+      if (!engine) {
+        *error = "clientCertificateStores is the whole engine's: zebkit_set_engine_settings";
+        return false;
+      }
+      valid |= value.is_bool();
+    } else if (key == "spareRenderer") {
       if (!engine) {
         *error = "spareRenderer is the whole engine's: zebkit_set_engine_settings";
         return false;
@@ -217,6 +224,10 @@ void SpareAfterLoad(content::BrowserContext* context) {
 std::optional<zebkit_dialog_policy> EngineDialogPolicy() { return Engine().dialogs; }
 std::optional<zebkit_popup_policy> EnginePopupPolicy() { return Engine().new_windows; }
 bool EngineDeniesDownloads() { return Engine().deny_downloads.value_or(false); }
+bool UsesClientCertificateStores() {
+  return Engine().client_certificate_stores.value_or(
+      base::CommandLine::ForCurrentProcess()->HasSwitch("zebkit-client-certificate-stores"));
+}
 
 }  // namespace zebkit
 
@@ -240,6 +251,8 @@ bool zebkit_set_engine_settings(const char* json, char** error) {
     for (content::BrowserContext* context : CookieContexts())
       ApplyCookies(context);
   }
+  if (const base::Value* value = settings.Find("clientCertificateStores"))
+    engine.client_certificate_stores = value->is_bool() ? std::optional<bool>(value->GetBool()) : std::nullopt;
   if (const base::Value* value = settings.Find("spareRenderer")) {
     engine.spare_renderer = value->is_bool() ? std::optional<bool>(value->GetBool()) : std::nullopt;
     ApplySpare(zebkit::UsesSpareRenderer(), zebkit::GetBrowserContext());
@@ -254,12 +267,15 @@ char* zebkit_get_engine_settings(void) {
   base::DictValue chosen, effective;
   PutName(chosen, "thirdPartyCookies", kCookies, engine.block_third_party_cookies);
   if (engine.spare_renderer) chosen.Set("spareRenderer", *engine.spare_renderer);
+  if (engine.client_certificate_stores)
+    chosen.Set("clientCertificateStores", *engine.client_certificate_stores);
   PutName(chosen, "dialogs", kDialogs, engine.dialogs);
   PutName(chosen, "downloads", kDownloads, engine.deny_downloads);
   PutName(chosen, "newWindows", kWindows, engine.new_windows);
   effective.Set("thirdPartyCookies", NameOf(kCookies, engine.block_third_party_cookies.value_or(
       !base::CommandLine::ForCurrentProcess()->HasSwitch("zebkit-allow-third-party-cookies"))));
   effective.Set("spareRenderer", zebkit::UsesSpareRenderer());
+  effective.Set("clientCertificateStores", zebkit::UsesClientCertificateStores());
   effective.Set("spareRendererRunning", !content::SpareRenderProcessHostManager::Get().GetSpares().empty());
   effective.Set("dialogs", NameOf(kDialogs, engine.dialogs.value_or(ZEBKIT_DIALOG_POLICY_DEFAULT)));
   effective.Set("downloads", NameOf(kDownloads, engine.deny_downloads.value_or(false)));

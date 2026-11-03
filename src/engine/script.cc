@@ -1709,6 +1709,13 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     ok = zebkit_download_respond(static_cast<zebkit_download_request*>(request),
                                  verb == "save" ? ZEBKIT_DOWNLOAD_SAVE : ZEBKIT_DOWNLOAD_CANCEL,
                                  info[4]->IsString() ? first.c_str() : nullptr, nullptr);
+  } else if (kind == "client-certificate" && Utf8(isolate, info[3]) == "choose") {
+    // One of the system store's identities, by its index.
+    if (!info[4]->IsNumber()) { PermissionTypeError(isolate, "choose takes an identity's index"); return; }
+    const double index = info[4].As<v8::Number>()->Value();
+    if (index < 0 || index > 65536) { PermissionTypeError(isolate, "choose takes an identity's index"); return; }
+    ok = zebkit_client_certificate_choose(static_cast<zebkit_client_certificate_request*>(request),
+                                          static_cast<size_t>(index), nullptr);
   } else if (kind == "client-certificate") {
     const auto verb = Utf8(isolate, info[3]);
     if ((verb != "none" && verb != "provide" && verb != "cancel") || !optional(4, &first) || !optional(5, &second)) {

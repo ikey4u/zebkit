@@ -299,14 +299,20 @@ off-screen frames (`patches/1021`) stay as they are, as hooks already.
   ones end when their document goes. Permissions Policy still refuses a frame before
   the media function is asked. Not done: screen and tab capture, still refused. The
   page still gets the keyup of a reserved key, as with Chrome's accelerators.
-- **Implemented, except for the system's stores: client certificates.** Asked with
+- **Implemented: client certificates, the system's stores included.** Asked with
   host, port and the server's accepted authorities; answered with a PEM chain and key
   checked against each other, with none, or by failing the request. Unanswered,
   the request fails without Chromium remembering anything. Known limit: Chromium
   remembers an answer for that host and port for the whole context, so a second view
-  is not asked, and a default of none holds even after a function is set. The operating
-  system's certificate stores (`CreateClientCertStore`) are not offered on any
-  platform. **Design and cost** (2026-11-02, not built): Chromium's own stores are in the
+  is not asked, and a default of none holds even after a function is set. **The operating
+  system's stores** (2026-11-03, built as designed below): with the engine setting
+  `clientCertificateStores` (off by default), `CreateClientCertStore` gives Chromium's store of the
+  platform, the request's `identities` describe what matches the server's authorities, and
+  `zebkit_client_certificate_choose` (`choose` in the bindings) continues with the identity's key,
+  acquired from the store. Tested by `tests/engine/hook_policies.py python:certstore` (an NSS
+  database made in the test's home by `tests/engine/nss_import.c`; a keychain of the test's own on
+  macOS; the user's store on Windows, removed after). Not offered: NSS keys behind the database's
+  password. The design as it was written: Chromium's own stores are in the
   network library already built into the engine: `net::ClientCertStoreNSS` (Linux, the
   user's NSS database, `~/.pki/nssdb`), `ClientCertStoreMac` (Keychain identities) and
   `ClientCertStoreWin` (the user's `MY` store). `ContentBrowserClient::CreateClientCertStore`

@@ -308,8 +308,18 @@ ZEBKIT_API bool zebkit_view_cancel_download(zebkit_view*, const char *download_i
  * chain, leaf first, with its PEM private key (RSA or EC); CANCEL fails the
  * request. Unanswered, a replaced handler and a closed view cancel. Chromium
  * remembers NONE and PROVIDE for that host and port in the whole context, so that
- * other views are not asked again, and CANCEL is not remembered. The operating
- * system's certificate stores are not offered.
+ * other views are not asked again, and CANCEL is not remembered.
+ *
+ * The operating system's certificate stores are offered only when the engine
+ * setting clientCertificateStores is true (zebkit_set_engine_settings): then
+ * metadata.identities lists the store's identities matching the server's
+ * authorities ({index, subject, issuer, validFromUnixMs, validUntilUnixMs,
+ * sha256, certificate}), from the user's NSS database on Linux, Keychain on
+ * macOS, the user's MY store on Windows, and zebkit_client_certificate_choose()
+ * answers with one: its key stays in the store, which signs; the engine never
+ * reads it. An NSS key behind the database's password is not offered, and
+ * Keychain may show its own access prompt the first time, which a host without
+ * a screen cannot answer.
  */
 typedef struct zebkit_client_certificate_request zebkit_client_certificate_request;
 typedef enum zebkit_client_certificate_action {
@@ -329,6 +339,12 @@ ZEBKIT_API char *zebkit_client_certificate_request_info(zebkit_client_certificat
 ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_request*,
                                                   zebkit_client_certificate_action action,
                                                   const char *certificate_pem, const char *key_pem, char **error);
+/* Answers with metadata.identities[index], the system store's: true when taken;
+ * the request then ends once the store has given its key (PROVIDE), or, when it
+ * gives none, as CANCEL. False with the reason in *error otherwise.
+ */
+ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_request*, size_t index,
+                                                 char **error);
 
 /* A script before the page's own in every new document, and at once in those there
  * are. An empty or NULL world is the page's; a name is an isolated world, one per

@@ -19,6 +19,10 @@ void SpareAfterLoad(content::BrowserContext* context);
 std::optional<zebkit_dialog_policy> EngineDialogPolicy();
 std::optional<zebkit_popup_policy> EnginePopupPolicy();
 bool EngineDeniesDownloads();
+// Whether a TLS server's request for a client certificate is offered the
+// operating system's identities (NSS, Keychain, the Windows store): off unless
+// the application sets "clientCertificateStores".
+bool UsesClientCertificateStores();
 // dialog.cc: what the view itself chose, apart from the engine's.
 std::optional<zebkit_dialog_policy> ExplicitDialogPolicy(zebkit_view* view);
 void ClearDialogPolicy(zebkit_view* view);

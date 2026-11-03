@@ -6,6 +6,15 @@
 #endif
 
 #include "content/public/common/webplugininfo.h"
+#include "crypto/crypto_buildflags.h"
+#include "net/ssl/client_cert_store.h"
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
+#include "net/ssl/client_cert_store_nss.h"
+#elif BUILDFLAG(IS_MAC)
+#include "net/ssl/client_cert_store_mac.h"
+#elif BUILDFLAG(IS_WIN)
+#include "net/ssl/client_cert_store_win.h"
+#endif
 #include "zebkit/engine/engine.h"
 
 #if BUILDFLAG(IS_POSIX)
@@ -1026,6 +1035,27 @@ bool BrowserClient::HandleExternalProtocol(
   return true;
 }
 
+// The operating system's identities (NSS's database, Keychain, the user's
+// Windows store), only when the application allows them
+// (zebkit_set_engine_settings's clientCertificateStores): their keys stay in
+// the store, which signs.
+std::unique_ptr<net::ClientCertStore> BrowserClient::CreateClientCertStore(
+    content::BrowserContext* browser_context) {
+  if (!UsesClientCertificateStores())
+    return nullptr;
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
+  // No password delegate: identities whose key needs the database's password
+  // are not offered (hooks.h).
+  return std::make_unique<net::ClientCertStoreNSS>(net::ClientCertStoreNSS::PasswordDelegateFactory());
+#elif BUILDFLAG(IS_MAC)
+  return std::make_unique<net::ClientCertStoreMac>();
+#elif BUILDFLAG(IS_WIN)
+  return std::make_unique<net::ClientCertStoreWin>();
+#else
+  return nullptr;
+#endif
+}
+
 base::OnceClosure BrowserClient::SelectClientCertificate(
     content::BrowserContext* browser_context,
     int process_id,
@@ -1033,7 +1063,8 @@ base::OnceClosure BrowserClient::SelectClientCertificate(
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,
     std::unique_ptr<content::ClientCertificateDelegate> delegate) {
-  return HandleClientCertificate(web_contents, *cert_request_info, std::move(delegate));
+  return HandleClientCertificate(web_contents, *cert_request_info, std::move(client_certs),
+                                 std::move(delegate));
 }
 
 std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(

@@ -125,6 +125,11 @@ impl ClientCertificateRequest {
         let (certificate, key) = (cstring(certificate_pem)?, cstring(key_pem)?);
         Ok(unsafe { sys::zebkit_client_certificate_respond(self.raw, 1, certificate.as_ptr(), key.as_ptr(), std::ptr::null_mut()) })
     }
+    /// One of the metadata's `identities`, the system store's (the engine
+    /// setting `clientCertificateStores`): its key stays in the store.
+    pub fn choose(&self, index: usize) -> bool {
+        unsafe { sys::zebkit_client_certificate_choose(self.raw, index, std::ptr::null_mut()) }
+    }
 }
 
 impl FileChooserRequest {

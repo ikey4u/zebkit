@@ -880,6 +880,9 @@ for hook_group in "${hook_groups[@]}"; do
 done
 run hook-python-popup env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
     python3 "$tests/hook_policies.py" "python:popup" python3 "$tests/hook_policies_python.py"
+# The operating system's client certificate store, chosen from (clientCertificateStores).
+run hook-python-certstore env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python:$tests" \
+    python3 "$tests/hook_policies.py" "python:certstore" python3 "$tests/hook_policies_python.py"
 # What zebkit decides, changed while it runs, in every language (tests/engine/runtime_settings.py).
 run runtime-settings-c python3 "$tests/runtime_settings.py" c "$bin/runtime-settings" @switches@
 finished runtime-settings-c "the C runtime settings test"

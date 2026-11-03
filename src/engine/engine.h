@@ -244,6 +244,8 @@ class BrowserClient : public content::ContentBrowserClient {
       content::RenderFrameHost* initiator_document,
       const net::IsolationInfo& isolation_info,
       mojo::PendingRemote<network::mojom::URLLoaderFactory>* out_factory) override;
+  std::unique_ptr<net::ClientCertStore> CreateClientCertStore(
+      content::BrowserContext* browser_context) override;
   base::OnceClosure SelectClientCertificate(
       content::BrowserContext* browser_context,
       int process_id,

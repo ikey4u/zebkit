@@ -217,6 +217,7 @@ _view_on_client_certificate_result = _declare("zebkit_view_on_client_certificate
 _view_client_certificate_timeout = _declare("zebkit_view_set_client_certificate_timeout", _B, _V, ctypes.c_uint32)
 _client_certificate_info = _declare("zebkit_client_certificate_request_info", _P, _P)
 _client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, _P, _I, _S, _S, _P)
+_client_certificate_choose = _declare("zebkit_client_certificate_choose", _B, _P, ctypes.c_size_t, _P)
 _view_attach_native = _declare("zebkit_view_attach_native", _B, _V, ctypes.c_size_t, _I, _I, _I, _I, _EP)
 _view_detach_native = _declare("zebkit_view_detach_native", _B, _V)
 _view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
@@ -290,6 +291,10 @@ class ClientCertificateRequest(_Request):
         return bool(_client_certificate_respond(self._handle, actions[action],
                                                  None if certificate is None else certificate.encode(),
                                                  None if key is None else key.encode(), None))
+
+    def choose(self, index):
+        """One of metadata['identities'], the system store's (clientCertificateStores)."""
+        return bool(_client_certificate_choose(self._handle, int(index), None))
 
 
 class FileChooserRequest(_Request):

@@ -208,14 +208,28 @@ def certificate(mode):
             assert request.respond('cancel')
         elif mode == 'cert-close':
             view.close()
+        elif mode == 'cert-store':
+            # The system's store's identity, chosen; its key stays there.
+            found = [i for i in request.metadata['identities'] if i['subject'] == 'zebkit-client']
+            assert found, request.metadata['identities']
+            assert found[0]['certificate'].startswith('-----BEGIN CERTIFICATE-----')
+            assert len(found[0]['sha256']) == 64 and found[0]['validFromUnixMs'] < found[0]['validUntilUnixMs']
+            assert not request.choose(len(request.metadata['identities']) + 5)
+            assert request.choose(found[0]['index'])
+        elif mode == 'cert-store-off':
+            # Without the engine setting, the store is not offered.
+            assert request.metadata['identities'] == [], request.metadata
+            assert request.respond('none')
+    if mode == 'cert-store':
+        zebkit.set_engine_settings({'clientCertificateStores': True})
     if mode != 'cert-default':
         view.on_client_certificate(guarded(asked))
     if mode == 'cert-timeout':
         view.set_client_certificate_timeout(50)
     view.load(TLS + '/secure')
-    if mode == 'cert-provide':
+    if mode in ('cert-provide', 'cert-store'):
         wait(lambda: view.title == 'cert:zebkit-client', 'with the certificate')
-    elif mode in ('cert-none', 'cert-default'):
+    elif mode in ('cert-none', 'cert-default', 'cert-store-off'):
         wait(lambda: view.title == 'cert:none', 'without a certificate')
     elif mode in ('cert-cancel', 'cert-timeout'):
         wait(lambda: 'failed' in state['loads'], 'failed')

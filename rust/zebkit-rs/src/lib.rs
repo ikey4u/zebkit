@@ -231,6 +231,7 @@ extern "C" {
     pub fn zebkit_view_set_client_certificate_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
     pub fn zebkit_client_certificate_request_info(request: *mut zebkit_client_certificate_request) -> *mut c_char;
     pub fn zebkit_client_certificate_respond(request: *mut zebkit_client_certificate_request, action: c_int, certificate_pem: *const c_char, key_pem: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_client_certificate_choose(request: *mut zebkit_client_certificate_request, index: usize, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_add_world_script(view: *mut zebkit_view, world: *const c_char, source: *const c_char, main_frame_only: bool, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_on_file_chooser(view: *mut zebkit_view, func: Option<zebkit_file_chooser_func>, data: *mut c_void);
     pub fn zebkit_view_on_file_chooser_result(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);

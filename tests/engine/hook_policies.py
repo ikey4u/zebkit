@@ -1,6 +1,7 @@
 """One program, one mode, one engine: tests/engine/hook_policies.py <language> <command...>.
 The program does what the mode says through its language's binding; this checks what
 the servers saw and gives the input a person would, over CDP."""
+import atexit
 import base64
 import json
 import os
@@ -22,6 +23,8 @@ MODES = {
     'certificate': ['cert-provide', 'cert-none', 'cert-cancel', 'cert-timeout', 'cert-close',
                     'cert-pending-close', 'cert-replace', 'cert-default'],
     'world': ['world'],
+    # The system's client certificate stores (clientCertificateStores), Python only.
+    'certstore': ['cert-store', 'cert-store-off'],
     'page': ['file-open', 'file-multiple', 'file-folder', 'file-cancel', 'file-timeout', 'file-close',
              'file-pending-close', 'file-replace', 'media-allow', 'media-deny', 'media-timeout',
              'media-close', 'media-pending-close', 'media-replace', 'keys', 'menu', 'fullscreen-allow',
@@ -128,10 +131,87 @@ def give_input(mode, url, child):
         pass  # The program finished and closed the page.
 
 
+def nss_import_program(work):
+    """tests/engine/nss_import.c, built against the system's NSS (or the sysroot's headers)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    sysroot = os.path.join(root, 'upstream', 'chromium', 'src', 'build', 'linux', 'debian_bullseye_amd64-sysroot')
+    includes = []
+    for base in ('/usr/include', os.path.join(sysroot, 'usr', 'include')):
+        if os.path.exists(os.path.join(base, 'nss', 'pk11pub.h')):
+            includes = ['-I' + os.path.join(base, 'nss'), '-I' + os.path.join(base, 'nspr')]
+            break
+    assert includes, 'no NSS headers'
+    program = os.path.join(work, 'nss_import')
+    subprocess.run(['cc', '-O1', *includes, os.path.join(here, 'nss_import.c'), '-o', program,
+                    '-l:libnss3.so', '-l:libnssutil3.so', '-l:libnspr4.so'], check=True)
+    return program
+
+
+def system_store(fixture, work, env):
+    """The fixture's client identity in the operating system's store the engine reads."""
+    if sys.platform.startswith('linux'):
+        # The user's NSS database, ~/.pki/nssdb, in a home of the test's own.
+        home = os.path.join(work, 'home')
+        database = os.path.join(home, '.pki', 'nssdb')
+        os.makedirs(database)
+        der, key = os.path.join(work, 'client.der'), os.path.join(work, 'client.pk8')
+        subprocess.run(['openssl', 'x509', '-in', str(fixture.dir / 'client.pem'), '-outform', 'DER', '-out', der],
+                       check=True)
+        subprocess.run(['openssl', 'pkcs8', '-topk8', '-nocrypt', '-in', str(fixture.dir / 'client.key'),
+                        '-outform', 'DER', '-out', key], check=True)
+        subprocess.run([nss_import_program(work), database, der, key, 'zebkit-client'], check=True,
+                       stdout=subprocess.DEVNULL)
+        env['HOME'] = home
+        return lambda: None
+    pem, key = str(fixture.dir / 'client.pem'), str(fixture.dir / 'client.key')
+    p12 = os.path.join(work, 'client.p12')
+    # The older ciphers, which Keychain and every Windows import read.
+    export = ['openssl', 'pkcs12', '-export', '-inkey', key, '-in', pem, '-out', p12, '-passout', 'pass:zebkit']
+    if subprocess.run(export + ['-legacy'], capture_output=True).returncode != 0:
+        subprocess.run(export + ['-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1'],
+                       check=True, capture_output=True)
+    if sys.platform == 'darwin':
+        # A keychain of the test's own, first in the user's search list for the
+        # run; any application may use its key, so that no access prompt shows.
+        keychain = os.path.join(work, 'zebkit-test.keychain-db')
+        listed = subprocess.run(['security', 'list-keychains', '-d', 'user'], check=True,
+                                capture_output=True, text=True).stdout
+        before = [line.strip().strip('"') for line in listed.splitlines() if line.strip()]
+        subprocess.run(['security', 'create-keychain', '-p', 'zebkit', keychain], check=True)
+        subprocess.run(['security', 'unlock-keychain', '-p', 'zebkit', keychain], check=True)
+        subprocess.run(['security', 'set-keychain-settings', keychain], check=True)
+        subprocess.run(['security', 'import', p12, '-k', keychain, '-P', 'zebkit', '-f', 'pkcs12', '-A'],
+                       check=True, capture_output=True)
+        subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', keychain, *before], check=True)
+        done = []
+        def undo():
+            if not done:
+                done.append(True)
+                subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *before])
+                subprocess.run(['security', 'delete-keychain', keychain], capture_output=True)
+        return undo
+    if sys.platform == 'win32':
+        # The user's MY store, as the Windows certificate dialog fills it.
+        script = ("$p = ConvertTo-SecureString -String 'zebkit' -AsPlainText -Force; "
+                  f"(Import-PfxCertificate -FilePath '{p12}' -CertStoreLocation Cert:\\CurrentUser\\My "
+                  "-Password $p).Thumbprint")
+        thumbprint = subprocess.run(['powershell', '-NoProfile', '-Command', script], check=True,
+                                    capture_output=True, text=True).stdout.strip().splitlines()[-1]
+        def undo():
+            subprocess.run(['powershell', '-NoProfile', '-Command',
+                            f'Remove-Item Cert:\\CurrentUser\\My\\{thumbprint}'])
+        return undo
+    raise AssertionError('no system store set up for ' + sys.platform)
+
+
 def run(language, command, mode):
     with HookFixture() as fixture, tempfile.TemporaryDirectory(prefix='zebkit-hook-run-') as work:
         env = dict(os.environ, **fixture.env(mode, work))
         env.pop('LD_PRELOAD', None)
+        undo_store = system_store(fixture, work, env) if mode.startswith('cert-store') else (lambda: None)
+        # Also when the run fails: the user's own store is left as it was.
+        atexit.register(undo_store)
         # This program stays on the host's libraries; only the child gets others.
         if os.environ.get('ZEBKIT_HOOK_CHILD_LIBRARY_PATH'):
             env['LD_LIBRARY_PATH'] = os.environ['ZEBKIT_HOOK_CHILD_LIBRARY_PATH']
@@ -190,8 +270,11 @@ def run(language, command, mode):
         if problem:
             raise AssertionError(f'{language} {mode} exit {child.returncode} {driver_error}:\n{out}\n{"".join(errors[-20:])}')
         # What the servers saw, whatever the program believes.
-        if mode == 'cert-provide':
+        undo_store()
+        if mode in ('cert-provide', 'cert-store'):
             assert 'zebkit-client' in fixture.peers, fixture.peers
+        if mode == 'cert-store-off':
+            assert fixture.peers and set(fixture.peers) == {'none'}, fixture.peers
         if mode in ('cert-none', 'cert-default'):
             assert fixture.peers and set(fixture.peers) == {'none'}, fixture.peers
         if mode in ('cert-cancel', 'cert-timeout', 'cert-close', 'cert-pending-close', 'cert-replace'):

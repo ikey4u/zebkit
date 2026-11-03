@@ -4,12 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/base64.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
+#include "crypto/sha2.h"
+#include "net/ssl/client_cert_identity.h"
 #include "base/memory/scoped_refptr.h"
 #include "content/public/browser/client_certificate_delegate.h"
 #include "content/public/browser/web_contents.h"
@@ -60,6 +65,22 @@ void Answer(std::unique_ptr<content::ClientCertificateDelegate> delegate,
     delegate->ContinueWithCertificate(std::move(decision.certificate), std::move(decision.key));
 }
 
+// The store's identities of each pending request, by its id, for
+// zebkit_client_certificate_choose().
+std::map<uintptr_t, net::ClientCertIdentityList>& Identities() {
+  static base::NoDestructor<std::map<uintptr_t, net::ClientCertIdentityList>> identities;
+  return *identities;
+}
+void PruneIdentities() {
+  auto& identities = Identities();
+  for (auto it = identities.begin(); it != identities.end();) {
+    if (Requests::Get().Find(it->first))
+      ++it;
+    else
+      it = identities.erase(it);
+  }
+}
+
 }  // namespace
 
 void InstallClientCertificateHooks() { Requests::Get().Start(); }
@@ -70,6 +91,7 @@ void CancelClientCertificateRequests(zebkit_view* view) {
 
 base::OnceClosure HandleClientCertificate(
     content::WebContents* contents, const net::SSLCertRequestInfo& info,
+    net::ClientCertIdentityList identities,
     std::unique_ptr<content::ClientCertificateDelegate> delegate) {
   auto& requests = Requests::Get();
   zebkit_view* view = contents ? ViewOf(contents) : nullptr;
@@ -88,9 +110,32 @@ base::OnceClosure HandleClientCertificate(
   for (const std::string& name : info.cert_authorities)
     authorities.Append(base::Base64Encode(name));
   metadata.Set("certificateAuthorities", std::move(authorities));
+  // The operating system's identities that match the server's authorities
+  // (clientCertificateStores): described, chosen by index; their keys stay in
+  // the store.
+  base::ListValue offered;
+  for (size_t i = 0; i < identities.size(); ++i) {
+    net::X509Certificate* certificate = identities[i]->certificate();
+    base::DictValue identity;
+    identity.Set("index", static_cast<int>(i));
+    identity.Set("subject", certificate->subject().GetDisplayName());
+    identity.Set("issuer", certificate->issuer().GetDisplayName());
+    identity.Set("validFromUnixMs", certificate->valid_start().InMillisecondsFSinceUnixEpoch());
+    identity.Set("validUntilUnixMs", certificate->valid_expiry().InMillisecondsFSinceUnixEpoch());
+    const auto der = net::x509_util::CryptoBufferAsSpan(certificate->cert_buffer());
+    identity.Set("sha256", base::ToLowerASCII(base::HexEncode(crypto::SHA256Hash(der))));
+    std::string pem;
+    if (net::X509Certificate::GetPEMEncoded(certificate->cert_buffer(), &pem))
+      identity.Set("certificate", pem);
+    offered.Append(std::move(identity));
+  }
+  metadata.Set("identities", std::move(offered));
   Requests::Reply reply = base::BindOnce(&Answer, std::move(delegate));
   if (!requests.Ask(view, std::move(metadata), reply))
     return base::OnceClosure();
+  PruneIdentities();
+  if (!identities.empty())
+    Identities()[requests.last_id()] = std::move(identities);
   return base::BindOnce([](uintptr_t id) { Requests::Get().Abandon(id); }, requests.last_id());
 }
 
@@ -168,6 +213,40 @@ bool zebkit_client_certificate_respond(zebkit_client_certificate_request* reques
     return fail("only PROVIDE takes a certificate");
   }
   requests.Settle(id, std::move(decision), "answered");
+  return true;
+}
+bool zebkit_client_certificate_choose(zebkit_client_certificate_request* request, size_t index,
+                                      char** error) {
+  auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
+  auto& requests = zebkit::Requests::Get();
+  if (!requests.Ready()) return fail("client certificate replies need the engine thread");
+  const auto id = reinterpret_cast<uintptr_t>(request);
+  if (!requests.Find(id)) return fail("the request is no longer pending");
+  auto found = zebkit::Identities().find(id);
+  if (found == zebkit::Identities().end() || index >= found->second.size() || !found->second[index])
+    return fail("no such identity of the system's stores");
+  std::unique_ptr<net::ClientCertIdentity> identity = std::move(found->second[index]);
+  zebkit::Identities().erase(found);
+  scoped_refptr<net::X509Certificate> certificate(identity->certificate());
+  // The key stays in its store, which signs (NSS, Keychain, CNG).
+  net::ClientCertIdentity::SelfOwningAcquirePrivateKey(
+      std::move(identity),
+      base::BindOnce(
+          [](uintptr_t id, scoped_refptr<net::X509Certificate> certificate,
+             scoped_refptr<net::SSLPrivateKey> key) {
+            auto& requests = zebkit::Requests::Get();
+            if (!requests.Find(id))
+              return;
+            zebkit::Traits::Decision decision;
+            const bool has_key = !!key;
+            if (key) {
+              decision.action = ZEBKIT_CLIENT_CERTIFICATE_PROVIDE;
+              decision.certificate = std::move(certificate);
+              decision.key = std::move(key);
+            }
+            requests.Settle(id, std::move(decision), has_key ? "answered" : "no-key");
+          },
+          id, std::move(certificate)));
   return true;
 }
 }  // extern "C"
