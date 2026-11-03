@@ -1935,6 +1935,53 @@ void Connection::PageEvent(const std::string& page_guid,
     base::DictValue worker;
     worker.Set("worker", Ref(guid));
     Event(page_guid, "worker", std::move(worker));
+  } else if (event == "BrowserContext.serviceWorker") {
+    // crServiceWorker.ts: a Worker of the context's.
+    const std::string* id = params.FindString("worker");
+    if (!id || !Known("serviceworker", "", *id).empty())
+      return;
+    base::DictValue initializer;
+    const std::string* url = params.FindString("url");
+    initializer.Set("url", url ? *url : "");
+    Object object;
+    object.id = *id;
+    object.context = page->context;
+    object.data.Set("serviceWorker", true);
+    const std::string guid = Create(page->context, "Worker", std::move(initializer), std::move(object));
+    Remember("serviceworker", "", *id, guid);
+    base::DictValue worker;
+    worker.Set("worker", Ref(guid));
+    Event(page->context, "serviceWorker", std::move(worker));
+  } else if (event == "ServiceWorker.close") {
+    const std::string* id = params.FindString("worker");
+    const std::string guid = id ? Known("serviceworker", "", *id) : std::string();
+    if (!guid.empty()) {
+      Event(guid, "close", base::DictValue());
+      Dispose(guid);
+      Remember("serviceworker", "", *id, std::string());
+    }
+  } else if (event == "ServiceWorker.console") {
+    const std::string* id = params.FindString("worker");
+    const std::string guid = id ? Known("serviceworker", "", *id) : std::string();
+    if (guid.empty())
+      return;
+    base::DictValue console;
+    const std::string* type = params.FindString("type");
+    console.Set("type", type ? *type : "log");
+    const std::string* text = params.FindString("text");
+    console.Set("text", text ? *text : "");
+    console.Set("args", base::ListValue());
+    base::DictValue location;
+    if (const base::DictValue* given = params.FindDict("location")) {
+      const std::string* url = given->FindString("url");
+      location.Set("url", url ? *url : "");
+      location.Set("lineNumber", given->FindInt("lineNumber").value_or(0));
+    }
+    location.Set("columnNumber", 0);
+    console.Set("location", std::move(location));
+    console.Set("timestamp", base::Time::Now().InMillisecondsFSinceUnixEpoch());
+    console.Set("worker", Ref(guid));
+    Event(page->context, "console", std::move(console));
   } else if (event == "Worker.close") {
     const std::string* id = params.FindString("worker");
     const std::string guid = id ? Known("worker", page_guid, *id) : std::string();
@@ -3478,6 +3525,34 @@ void Connection::Command(int id,
     return;
   }
   zebkit_view* view = ViewOf(*object);
+  // A service worker is the context's, of no page.
+  if (!view && type == "Worker" && object->data.FindBool("serviceWorker").value_or(false)) {
+    if (method == "evaluateExpressionHandle") {
+      ReplyError(id, "zebkit: a service worker's handles are not kept; evaluate() answers by value");
+      return;
+    }
+    if (method != "evaluateExpression") {
+      empty_reply();
+      return;
+    }
+    params.Set("worker", object->id);
+    if (base::Value* arg = params.Find("arg"); arg && arg->is_dict()) {
+      if (base::Value* value = arg->GetDict().Find("value"))
+        params.Set("arg", Plain(*value));
+    }
+    Native(id, nullptr, "ServiceWorker.evaluateExpression", std::move(params),
+           base::BindOnce(
+               [](base::WeakPtr<Connection> self, int id, base::Value result) {
+                 if (!self)
+                   return;
+                 base::Value* value = result.is_dict() ? result.GetDict().Find("value") : nullptr;
+                 base::DictValue answer;
+                 answer.Set("value", value ? Serialize(*value) : Serialize(base::Value()));
+                 self->Reply(id, base::Value(std::move(answer)));
+               },
+               weak_factory_.GetWeakPtr(), id));
+    return;
+  }
   if (!view) {
     if (type == "Android" || type == "Electron" || type == "BrowserType" ||
         type == "Debugger" || type == "Playwright") {

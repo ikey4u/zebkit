@@ -89,6 +89,25 @@ class Network {
                                  const std::string& devtools_id,
                                  base::ListValue headers) = 0;
 
+  // A request of the page's that its service worker answered, which the
+  // network never saw (DevTools' Network.responseReceived with
+  // fromServiceWorker): Page.request and Page.response of it, @request and
+  // @response as their params without "request"; then its end, with the
+  // body, or its failure. Nothing for one the network saw.
+  virtual void ServedByWorker(const std::string& devtools_id,
+                              base::DictValue request,
+                              base::DictValue response) = 0;
+  virtual void ServedByWorkerEnded(const std::string& devtools_id,
+                                   std::optional<std::string> body,
+                                   const std::string& failure) = 0;
+  // One that failed before the network saw it (a service worker's rejected
+  // respondWith()): Page.request, then Page.requestFailed.
+  virtual void ServedByWorkerFailed(const std::string& devtools_id,
+                                    base::DictValue request,
+                                    const std::string& failure) = 0;
+  // Whether the network saw the request DevTools calls @devtools_id.
+  virtual bool SawDevToolsRequest(const std::string& devtools_id) const = 0;
+
   // The URL of the request route @route holds, if it holds one.
   virtual std::optional<std::string> RouteUrl(const std::string& route) = 0;
 

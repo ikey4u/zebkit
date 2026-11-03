@@ -889,6 +889,59 @@ class NetworkImpl : public Network,
       chain.pending.emplace_back(kind, std::move(headers));
     FlushExtraInfo(chain);
   }
+  bool SawDevToolsRequest(const std::string& devtools_id) const override {
+    auto found = devtools_chains_.find(devtools_id);
+    return found != devtools_chains_.end() && !found->second.hops.empty();
+  }
+  void ServedByWorker(const std::string& devtools_id,
+                      base::DictValue request,
+                      base::DictValue response) override {
+    if (SawDevToolsRequest(devtools_id) || worker_served_.contains(devtools_id))
+      return;
+    const std::string id = NextId("q");
+    worker_served_[devtools_id] = id;
+    if (worker_served_.size() > 2000)
+      worker_served_.erase(worker_served_.begin());
+    request.Set("request", id);
+    Emit("Page.request", std::move(request));
+    response.Set("request", id);
+    response.Set("fromServiceWorker", true);
+    Emit("Page.response", std::move(response));
+    BodyStarted(id);
+  }
+  void ServedByWorkerEnded(const std::string& devtools_id,
+                           std::optional<std::string> body,
+                           const std::string& failure) override {
+    auto found = worker_served_.find(devtools_id);
+    if (found == worker_served_.end())
+      return;
+    const std::string id = found->second;
+    worker_served_.erase(found);
+    BodyEnded(id, std::move(body));
+    base::DictValue params;
+    params.Set("request", id);
+    if (!failure.empty()) {
+      params.Set("failureText", failure);
+      Emit("Page.requestFailed", std::move(params));
+    } else {
+      params.Set("responseEndTiming", -1);
+      Emit("Page.requestFinished", std::move(params));
+    }
+  }
+  void ServedByWorkerFailed(const std::string& devtools_id,
+                            base::DictValue request,
+                            const std::string& failure) override {
+    if (SawDevToolsRequest(devtools_id) || worker_served_.contains(devtools_id))
+      return;
+    const std::string id = NextId("q");
+    request.Set("request", id);
+    Emit("Page.request", std::move(request));
+    base::DictValue params;
+    params.Set("request", id);
+    params.Set("failureText", failure);
+    Emit("Page.requestFailed", std::move(params));
+  }
+  std::map<std::string, std::string> worker_served_;
   struct DevToolsChain {
     std::vector<std::string> hops;
     size_t requests = 0;
