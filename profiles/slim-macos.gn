@@ -46,3 +46,8 @@ chrome_pgo_phase = 0
 # has it: libcups is the system's (/usr/lib/libcups.2.dylib). slim leaves
 # it off on Linux, where nothing needs it.
 use_cups = true
+
+# No CFI: Chrome has none here, and slim turns it on only for its Linux
+# PGO profile.
+is_cfi = false
+use_cfi_icall = false

@@ -1,0 +1,20 @@
+# zebkit-base: slim
+#
+# slim compiled as Google compiles Chrome, as far as a library allows: -O2
+# everywhere, no size-trained inliner, V8 at the level it chooses, vtables
+# as pointers, Chrome's CFI and zeroed locals. What slim leaves out stays
+# out; the allocator stays the host's (a library cannot take malloc over).
+# A profile to measure with: what of the gap to Chrome 155 is how slim is
+# compiled.
+
+optimize_for_size = false
+use_ml_inliner = false
+zebkit_ml_inliner_cold_cutoff = 0
+zebkit_min_size_patterns = []
+zebkit_speed_patterns = []
+zebkit_max_speed_patterns = []
+zebkit_v8_optimization = ""
+zebkit_v8_compiler_optimization = ""
+use_relative_vtables_abi = false
+is_cfi = true
+init_stack_vars = true

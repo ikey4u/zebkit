@@ -32,3 +32,8 @@ enable_library_cdms = true
 # from metagen, which reads the build graph again with gn desc and so without
 # the root that scripts/build.sh gives gn gen (as on macOS).
 v8_use_metagen_instance_types = false
+
+# No CFI: Chrome has none here, and slim turns it on only for its Linux
+# PGO profile.
+is_cfi = false
+use_cfi_icall = false

@@ -22,11 +22,18 @@ use_relative_vtables_abi = true
 # before 2.36 does not (patches/1005-pack-relative-relocations.patch).
 zebkit_pack_relocations = true
 
-# Control Flow Integrity, which official Linux builds turn on: a check
-# before every virtual and indirect call that its target has the expected
-# type. It is hardening against memory bugs, not a feature, and it costs
-# both size and some speed. The renderer sandbox stays.
-is_cfi = false
+# Control Flow Integrity on virtual calls, as official Linux Chrome builds
+# have it. Not for its checks: Chrome's PGO profile (chrome_pgo_phase) was
+# recorded from a CFI build, and the checks are part of each function's
+# control flow, so without them the profile's hashes do not match and
+# Blink's hottest layout functions got no profile at all. With them,
+# 2026-11-03: the DOM 19% faster (346 to 280 ms), text layout 6%, the long
+# document 6%, for 3.1 MB (+1.8% of the package). Calls through function
+# pointers stay unchecked (use_cfi_icall): they reach the application's
+# callbacks, outside the library. macOS and Windows have no CFI in Chrome
+# and no CFI profile; their profiles turn it off.
+is_cfi = true
+use_cfi_icall = false
 
 # Services of a desktop session the content layer can use and zebkit does
 # not: printers through CUPS, Kerberos sign-on, GNOME's settings, GTK's

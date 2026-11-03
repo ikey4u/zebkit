@@ -131,22 +131,25 @@ harness before and after (the commits have the runs):
   | Long document, longest task, ms | 210 | 186 | 172 |
 
   Chrome 155 is as fast as Electron on the DOM and on text layout, so
-  those gaps are zebkit's build, not the version; on the long document
-  the version is about 14 ms of the 38. Blink's hot code is compiled with
-  the same flags as Chrome's (`gn gen` of an official Chrome build beside
-  slim: the flags of the layout files differ only in Chrome's CFI, its
-  zeroed locals and its `-inlinehint-threshold`), with the same PGO profile
-  and no profile mismatch, and linked the same way but for the inliner;
-  linking with no size model at all gains nothing more. What differs is
-  around the code: a shared library rather than an executable (V8's and
-  Blink's thread-locals, now fixed), vtables as offsets, glibc's malloc
-  for what is not on Blink's heaps (PartitionAlloc cannot take malloc over
-  in a library), Chrome's `-O2` for everything else. Profiles of the same
-  DOM page show the same functions, Electron's inlined into fewer: no
-  zebkit-specific work. Tried and not kept: `-inlinehint-threshold=360` at
-  link (nothing), no size model at link (nothing, +5.5 MB); `-O2`
-  everywhere (`slim-speed`, +19% size, rejected before); vtables as
-  pointers (nothing on layout when tried, more size).
+  those gaps were zebkit's build, not the version. zebkit built with
+  Chrome's own arguments as far as a library allows
+  (`profiles/slim-chrome.gn`) runs the DOM page in 254 ms, Chrome's speed,
+  for 26 MB more. Taken apart one change at a time: vtables as pointers,
+  nothing; V8 at -O3 and base, ICU, Skia and the bindings at -O2, nothing;
+  no `-Os` and no size model anywhere, 2%. The rest was **CFI**: Chrome's
+  PGO profile is recorded from a CFI build, whose checks are branches in
+  every function with a virtual call; without them the profile's hashes
+  do not match and the hottest layout functions
+  (`BlockLayoutAlgorithm::Layout`, `HandleInflow`) were compiled with no
+  profile at all (in `block_layout_algorithm.cc`, 172 functions with a
+  profile against 224; the warnings that would say so are off in
+  Chromium's build). slim now has CFI on virtual calls (`is_cfi`, not on
+  calls through function pointers, which reach the application's
+  callbacks): DOM 346 to 280 ms, text layout 8.6 to 8.1 ms (CPU 12.1 to
+  11.2), the long document's longest task 213 to 201 ms, for 3.1 MB (+1.8%
+  of the package). What is left to Chrome (280 against 252 ms on the DOM,
+  8.1 against 7.6 on text layout) is mostly size optimisation and the
+  checks on indirect calls Chrome's profile also has.
 - **Moving to Chromium 156** would take Electron's version: about 14 ms
   of the long document's first layout, nothing on the DOM or text layout.
   It is a new pin, the 76 patches carried over and every platform built
