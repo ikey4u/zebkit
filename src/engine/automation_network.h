@@ -77,6 +77,18 @@ class Network {
   virtual bool Fulfill(const std::string& route,
                        const base::DictValue& response) = 0;
   virtual bool Abort(const std::string& route, const std::string& error) = 0;
+  // What the page's DevTools session says of a request, by its DevTools id
+  // (ResourceRequest::devtools_request_id): Network.requestWillBeSent's type
+  // ("XHR", "Fetch", ...), and the network's own headers
+  // (requestWillBeSentExtraInfo: "request", responseReceivedExtraInfo:
+  // "response"), raw: the Cookie and Set-Cookie with them. Told as
+  // Page.requestType, Page.requestExtraInfo and Page.responseExtraInfo of
+  // the request they are of.
+  virtual void DevToolsType(const std::string& devtools_id, const std::string& type) = 0;
+  virtual void DevToolsExtraInfo(const std::string& kind,
+                                 const std::string& devtools_id,
+                                 base::ListValue headers) = 0;
+
   // The URL of the request route @route holds, if it holds one.
   virtual std::optional<std::string> RouteUrl(const std::string& route) = 0;
 

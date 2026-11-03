@@ -328,6 +328,23 @@ class Agent : public content::RenderFrameObserver,
  public:
   explicit Agent(content::RenderFrame* render_frame)
       : content::RenderFrameObserver(render_frame) {
+    // A popup its opener in this process made: its context's functions are
+    // there from its first script on, as the opener may call them at once
+    // (popup.spec.ts), before the browser has told the popup of them.
+    if (render_frame->IsMainFrame()) {
+      blink::WebFrame* opener = render_frame->GetWebFrame()->Opener();
+      if (opener && opener->IsWebLocalFrame()) {
+        content::RenderFrame* opener_frame =
+            content::RenderFrame::FromWebFrame(opener->ToWebLocalFrame());
+        for (Agent* agent : All()) {
+          if (agent->render_frame() == opener_frame) {
+            exposed_ = agent->inherited_;
+            inherited_ = agent->inherited_;
+            break;
+          }
+        }
+      }
+    }
     All().insert(this);
     render_frame->GetAssociatedInterfaceRegistry()
         ->AddInterface<mojom::AutomationAgent>(base::BindRepeating(
@@ -546,7 +563,9 @@ class Agent : public content::RenderFrameObserver,
     Invoke(world_id, "select", argv, std::move(callback));
   }
 
-  void Expose(const std::vector<std::string>& names) override {
+  void Expose(const std::vector<std::string>& names,
+              const std::vector<std::string>& inherited) override {
+    inherited_ = inherited;
     std::vector<std::string> added;
     for (const std::string& name : names) {
       if (std::find(exposed_.begin(), exposed_.end(), name) == exposed_.end()) {
@@ -1188,6 +1207,7 @@ class Agent : public content::RenderFrameObserver,
   }
 
   std::vector<std::string> exposed_;
+  std::vector<std::string> inherited_;
   uint32_t next_binding_generation_ = 0;
   std::map<std::string, uint32_t> binding_generations_;
   std::set<int32_t> reported_workers_;

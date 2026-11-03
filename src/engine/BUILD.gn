@@ -235,6 +235,7 @@ action("automation_scripts") {
     "playwright/clock_script.js",
     "playwright/injected_script.js",
     "playwright/websocket_mock_script.js",
+    "playwright/snapshotter_script.js",
   ]
   outputs = [ "$target_gen_dir/automation_scripts.h" ]
   args = [
@@ -242,6 +243,7 @@ action("automation_scripts") {
     rebase_path("automation_steps.js", root_build_dir),
     rebase_path("playwright/clock_script.js", root_build_dir),
     rebase_path("playwright/websocket_mock_script.js", root_build_dir),
+    rebase_path("playwright/snapshotter_script.js", root_build_dir),
     rebase_path("$target_gen_dir/automation_scripts.h", root_build_dir),
   ]
 }

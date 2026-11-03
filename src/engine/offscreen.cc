@@ -85,6 +85,7 @@
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
@@ -1801,14 +1802,18 @@ void OnPopupShown(content::WebContents* contents,
 
 }  // namespace
 
-void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup) {
+void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup,
+                       const blink::mojom::WindowFeatures& features) {
   Offscreen* offscreen = Offscreen::Of(opener);
   if (!offscreen || !popup->web_contents())
     return;
   // The size the page asked for (window.open's features), or the opener's.
-  gfx::Size size = popup->web_contents()->GetContainerBounds().size();
-  if (size.width() < 2 || size.height() < 2)
-    size = offscreen->size();
+  gfx::Size size = offscreen->size();
+  const gfx::Size asked = popup->web_contents()->GetContainerBounds().size();
+  if (features.has_width && asked.width() >= 2)
+    size.set_width(asked.width());
+  if (features.has_height && asked.height() >= 2)
+    size.set_height(asked.height());
   // Deleted with the page (Offscreen::WebContentsDestroyed).
   new Offscreen(popup, size, offscreen->scale());
   popup->authentication_ui_enabled_ = opener->authentication_ui_enabled_;

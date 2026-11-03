@@ -190,15 +190,23 @@ std::string Unescape(const std::string& text) {
                 base::UnescapeRule::REPLACE_PLUS_WITH_SPACE);
 }
 
-base::ListValue QueryString(const GURL& url) {
-  base::ListValue query;
-  for (net::QueryIterator it(url); !it.IsAtEnd(); it.Advance()) {
+// name=value&... as URLSearchParams reads it, from text that may be anything
+// (a page's post data): no URL parser in between.
+base::ListValue FormPairs(std::string_view text) {
+  base::ListValue pairs;
+  for (const std::string& part : base::SplitString(text, "&", base::KEEP_WHITESPACE,
+                                                    base::SPLIT_WANT_NONEMPTY)) {
+    const size_t equals = part.find('=');
     base::DictValue pair;
-    pair.Set("name", Unescape(std::string(it.GetKey())));
-    pair.Set("value", it.GetUnescapedValue());
-    query.Append(std::move(pair));
+    pair.Set("name", Unescape(equals == std::string::npos ? part : part.substr(0, equals)));
+    pair.Set("value", equals == std::string::npos ? std::string() : Unescape(part.substr(equals + 1)));
+    pairs.Append(std::move(pair));
   }
-  return query;
+  return pairs;
+}
+
+base::ListValue QueryString(const GURL& url) {
+  return url.is_valid() && url.has_query() ? FormPairs(url.query()) : base::ListValue();
 }
 
 }  // namespace
@@ -214,6 +222,8 @@ HarRecorder::HarRecorder(const base::DictValue& options) {
     const std::string* flags = options.FindString("urlRegexFlags");
     url_regex_ = (flags && flags->find('i') != std::string::npos ? "(?i)" : "") + *regex;
   }
+  if (const std::string* prefix = options.FindString("resourcesPrefix"))
+    resources_prefix_ = *prefix;
 }
 
 HarRecorder::~HarRecorder() = default;
@@ -288,6 +298,12 @@ void HarRecorder::Record(const std::string& event,
     entry.response = params.Clone();
   } else if (event == "Page.requestContinued") {
     entry.overrides = params.Clone();
+  } else if (event == "Page.requestExtraInfo") {
+    if (const base::ListValue* headers = params.FindList("headers"))
+      entry.raw_request_headers = headers->Clone();
+  } else if (event == "Page.responseExtraInfo") {
+    if (const base::ListValue* headers = params.FindList("headers"))
+      entry.raw_response_headers = headers->Clone();
   } else if (event == "Page.requestFinished" || event == "Page.requestFailed") {
     entry.ended = base::TimeTicks::Now();
     entry.finished_params = params.Clone();
@@ -343,7 +359,10 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   const std::string* method = given.FindString("method");
   if (!method)
     method = entry.request.FindString("method");
-  const base::ListValue* request_headers = given.FindList("headers");
+  // The network's own headers when it said them (harTracer.ts's
+  // internalRawRequestHeaders), else what the page sent.
+  const base::ListValue* request_headers =
+      entry.raw_request_headers && !entry.overrides ? &*entry.raw_request_headers : given.FindList("headers");
   if (!request_headers)
     request_headers = entry.request.FindList("headers");
   const bool responded = !entry.response.empty();
@@ -352,7 +371,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
 
   // What a client's file of the contents is called, and the file.
   auto blob = [&](const std::string& bytes, const std::string& mime) {
-    const std::string name = base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(bytes)))) +
+    const std::string name = resources_prefix_ +
+                             base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(bytes)))) +
                              "." + Extension(mime);
     if (files)
       (*files)[name] = bytes;
@@ -396,16 +416,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
     data.Set("text", content_ == "embed" && mime != "application/octet-stream" ? post_data : "");
     if (content_ == "attach")
       data.Set("_file", blob(post_data, mime));
-    base::ListValue params;
-    if (mime == "application/x-www-form-urlencoded") {
-      for (net::QueryIterator it(GURL("http://x/?" + post_data)); !it.IsAtEnd(); it.Advance()) {
-        base::DictValue pair;
-        pair.Set("name", Unescape(std::string(it.GetKey())));
-        pair.Set("value", it.GetUnescapedValue());
-        params.Append(std::move(pair));
-      }
-    }
-    data.Set("params", std::move(params));
+    data.Set("params", mime == "application/x-www-form-urlencoded" ? FormPairs(post_data)
+                                                                     : base::ListValue());
     request.Set("postData", std::move(data));
   }
 
@@ -414,7 +426,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   const std::string* status_text = entry.response.FindString("statusText");
   response.Set("statusText", status_text ? *status_text : "");
   response.Set("httpVersion", http_version);
-  const base::ListValue* response_headers = entry.response.FindList("headers");
+  const base::ListValue* response_headers =
+      entry.raw_response_headers ? &*entry.raw_response_headers : entry.response.FindList("headers");
   base::ListValue response_cookies;
   if (!minimal_ && response_headers) {
     for (const base::Value& header : *response_headers) {
@@ -536,12 +549,13 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   return har;
 }
 
-base::ListValue HarRecorder::Entries(const BodyFunc& body) const {
+base::ListValue HarRecorder::Entries(const BodyFunc& body,
+                                     std::map<std::string, std::string>* files) const {
   base::ListValue entries;
   for (const std::string& id : order_) {
     auto found = entries_.find(id);
     if (found != entries_.end())
-      entries.Append(EntryValue(id, found->second, body, nullptr));
+      entries.Append(EntryValue(id, found->second, body, files));
   }
   return entries;
 }

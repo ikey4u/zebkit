@@ -20,6 +20,11 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "build/build_config.h"
+#include "zebkit/engine/playwright/protocol_metainfo.h"
+#include "third_party/zlib/google/zip.h"
+#include "base/hash/sha1.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -457,9 +462,10 @@ class Connection {
     // The protocol's optional fields are absent, never null: the client's
     // validator throws on null, in a place where its call then never ends.
     RemoveNulls(result);
+    base::Value traced_result = result.is_none() ? base::Value() : result.Clone();
     if (!result.is_none())
       message.Set("result", std::move(result));
-    send_.Run(Json(base::Value(std::move(message))));
+    Answered(id, std::move(message), std::string(), std::move(traced_result));
   }
 
   void ReplyError(int id, const std::string& error, const std::string& name = std::string()) {
@@ -473,7 +479,7 @@ class Connection {
     if (const size_t at = error.find("\nCall log:"); at != std::string::npos && aborted) {
       // The log apart, as dispatcher.ts sends it.
       text = error.substr(0, at);
-      for (const std::string& line : base::SplitString(error.substr(at + 11), "\n",
+      for (const std::string& line : base::SplitString(error.substr(at + 10), "\n",
                                                        base::KEEP_WHITESPACE,
                                                        base::SPLIT_WANT_NONEMPTY)) {
         log.Append(line);
@@ -490,7 +496,7 @@ class Connection {
     if (!log.empty())
       message.Set("log", std::move(log));
     message.Set("error", std::move(outer));
-    send_.Run(Json(base::Value(std::move(message))));
+    Answered(id, std::move(message), text.empty() ? std::string("Error") : text, base::Value());
   }
 
   // Frame.expect's failure, as Playwright's ExpectError reaches its client:
@@ -521,7 +527,7 @@ class Connection {
     message.Set("error", std::move(outer));
     message.Set("errorDetails", std::move(details));
     message.Set("log", std::move(log));
-    send_.Run(Json(base::Value(std::move(message))));
+    Answered(id, std::move(message), "Expect failed", base::Value());
   }
 
   void Event(const std::string& guid, const std::string& method, base::DictValue params) {
@@ -679,6 +685,49 @@ class Connection {
   std::map<std::string, Har> hars_;
   void HarEvent(const std::string& page_guid, const std::string& event,
                 const base::DictValue& params);
+
+  // ---- Traces, as Playwright's server records them (trace/recorder/tracing.ts):
+  // the protocol's calls of a context's objects, before and after, with DOM
+  // snapshots, console, page events, the network as HAR, screencast frames.
+  struct Trace {
+    base::DictValue options;
+    std::string name;
+    int chunk = 0;
+    bool recording = false;
+    bool snapshot_reset = true;
+    std::vector<std::string> lines;
+    std::map<std::string, std::string> chunk_files;
+    std::map<std::string, std::string> cross_files;
+    std::unique_ptr<HarRecorder> network;
+    std::vector<std::string> groups;
+    base::TimeTicks last_frame;
+  };
+  std::map<std::string, Trace> traces_;
+  struct TracedCall {
+    std::string context;
+    std::string call_id;
+    std::string page;
+    bool snapshot_after = false;
+  };
+  std::map<int, TracedCall> traced_calls_;
+  const base::TimeTicks origin_ = base::TimeTicks::Now();
+  double Monotonic() const { return (base::TimeTicks::Now() - origin_).InMillisecondsF(); }
+  std::string ContextOf(const std::string& guid);
+  std::string PageOf(const std::string& guid);
+  base::Value TraceValue(const base::Value& value);
+  void TraceLine(Trace& trace, base::DictValue event);
+  bool BeforeCall(int id, const std::string& guid, const std::string& method,
+                  const base::DictValue& params, const base::DictValue* metadata,
+                  base::OnceClosure run);
+  void Answered(int id, base::DictValue message, const std::string& error, base::Value result);
+  void CaptureTraceSnapshot(const std::string& context, const std::string& page,
+                            const std::string& call_id, const std::string& phase,
+                            base::OnceClosure then);
+  void TraceScreencastFrame(const std::string& context, const std::string& page);
+  void TraceEvent(const std::string& page_guid, const std::string& event,
+                  const base::DictValue& params);
+  void TraceCommand(int id, const std::string& context, const std::string& method,
+                    base::DictValue params);
   void HarExport(int id, const std::string& har_id, const std::string& mode,
                  const std::string& parent);
   // page.consoleMessages(), pageErrors(), requests(): what the page has had,
@@ -771,7 +820,29 @@ void Connection::Received(const std::string& text) {
       command_params.Set("expectTitle", *title);
     }
   }
-  Command(id, *guid, *method, std::move(command_params));
+  base::OnceClosure run = base::BindOnce(
+      [](base::WeakPtr<Connection> self, int id, std::string guid, std::string method,
+         base::DictValue params) {
+        if (self)
+          self->Command(id, guid, method, std::move(params));
+      },
+      weak_factory_.GetWeakPtr(), id, *guid, *method, command_params.Clone());
+  if (!traces_.empty()) {
+    base::DictValue traced = params ? command_params.Clone() : base::DictValue();
+    traced.Remove("abortId");
+    traced.Remove("expectTitle");
+    if (BeforeCall(id, *guid, *method, traced, dict.FindDict("metadata"), std::move(run)))
+      return;
+    // Not traced: run was not taken.
+    run = base::BindOnce(
+        [](base::WeakPtr<Connection> self, int id, std::string guid, std::string method,
+           base::DictValue params) {
+          if (self)
+            self->Command(id, guid, method, std::move(params));
+        },
+        weak_factory_.GetWeakPtr(), id, *guid, *method, std::move(command_params));
+  }
+  std::move(run).Run();
 }
 
 void Connection::Initialize(int id) {
@@ -822,6 +893,15 @@ void Connection::Native(int id,
         std::unique_ptr<Pending> pending(static_cast<Pending*>(data));
         if (!pending->connection)
           return;
+        if (error && pending->id < 0) {
+          // The connection's own (a trace's snapshot): its continuation runs
+          // anyway, with {error}, as a command waits on it.
+          base::DictValue failed;
+          failed.Set("error", error);
+          LOG(WARNING) << "zebkit: trace capture failed: " << error;
+          std::move(pending->then).Run(base::Value(std::move(failed)));
+          return;
+        }
         if (error) {
           pending->connection->ReplyError(pending->id, error);
           return;
@@ -984,6 +1064,10 @@ std::string Connection::ResponseGuid(const std::string& page_guid,
   object.id = request ? request->id : std::string();
   object.page = page_guid;
   object.data = response.Clone();
+  if (request) {
+    if (const base::ListValue* raw = request->data.FindList("rawResponseHeaders"))
+      object.data.Set("rawHeaders", raw->Clone());
+  }
   const std::string guid =
       Create(request_guid, "Response", std::move(initializer), std::move(object));
   if (request)
@@ -1166,8 +1250,14 @@ void Connection::NewContext(int id, base::DictValue params) {
                const std::string tracing =
                    self->Create(self->browser_, "Tracing", base::DictValue(),
                                 std::move(tracing_object));
+               // context.request's own (tracing.spec.ts: recorded apart).
+               Object request_tracing_object;
+               request_tracing_object.id = *context;
+               const std::string request_tracing =
+                   self->Create(self->browser_, "Tracing", base::DictValue(),
+                                std::move(request_tracing_object));
                base::DictValue request_init;
-               request_init.Set("tracing", Ref(tracing));
+               request_init.Set("tracing", Ref(request_tracing));
                // page.request's defaults: the context's options, as
                // BrowserContextAPIRequestContext._defaultOptions().
                Object request_object;
@@ -1195,11 +1285,13 @@ void Connection::NewContext(int id, base::DictValue params) {
                  object.data.Set("viewport", viewport->Clone());
                if (options.FindBool("noDefaultViewport").value_or(false))
                  object.data.Set("noDefaultViewport", true);
+               object.data.Set("contextOptions", options.Clone());
                initializer.Set("options", std::move(options));
                const std::string guid = self->Create(self->browser_, "BrowserContext",
                                                      std::move(initializer), std::move(object));
                self->Find(tracing)->context = guid;
                self->Find(request)->context = guid;
+               self->Find(request_tracing)->context = request;
                base::DictValue answer;
                answer.Set("context", Ref(guid));
                self->Reply(id, base::Value(std::move(answer)));
@@ -1491,6 +1583,54 @@ void Connection::PageEvent(const std::string& page_guid,
     return;
   if (!hars_.empty())
     HarEvent(page_guid, event, params);
+  if (!traces_.empty())
+    TraceEvent(page_guid, event, params);
+  // A page's WebSockets (crNetworkManager.ts's), and their frames.
+  if (event == "Page.webSocket") {
+    const std::string* socket = params.FindString("socket");
+    const std::string* url = params.FindString("url");
+    if (!socket)
+      return;
+    base::DictValue initializer;
+    initializer.Set("url", url ? *url : std::string());
+    Object object;
+    object.id = *socket;
+    object.page = page_guid;
+    const std::string guid = Create(page_guid, "WebSocket", std::move(initializer), std::move(object));
+    Remember("websocket", page_guid, *socket, guid);
+    base::DictValue created;
+    created.Set("webSocket", Ref(guid));
+    Event(page_guid, "webSocket", std::move(created));
+    return;
+  }
+  if (event.starts_with("WebSocket.") &&
+      (event == "WebSocket.frameSent" || event == "WebSocket.frameReceived" ||
+       event == "WebSocket.socketError" || event == "WebSocket.close")) {
+    const std::string* socket = params.FindString("socket");
+    const std::string guid = socket ? Known("websocket", page_guid, *socket) : std::string();
+    if (!guid.empty()) {
+      params.Remove("socket");
+      Event(guid, event.substr(sizeof("WebSocket.") - 1), std::move(params));
+      return;
+    }
+  }
+  // The network's own headers (raw: Cookie, Set-Cookie), for allHeaders().
+  if (event == "Page.requestExtraInfo" || event == "Page.responseExtraInfo") {
+    const std::string* request = params.FindString("request");
+    const base::ListValue* headers = params.FindList("headers");
+    Object* request_object = request ? Find(Known("request", page_guid, *request)) : nullptr;
+    if (!request_object || !headers)
+      return;
+    if (event == "Page.requestExtraInfo") {
+      request_object->data.Set("rawHeaders", headers->Clone());
+    } else if (const std::string* response = request_object->data.FindString("response");
+               response && Find(*response)) {
+      Find(*response)->data.Set("rawHeaders", headers->Clone());
+    } else {
+      request_object->data.Set("rawResponseHeaders", headers->Clone());
+    }
+    return;
+  }
   const std::string context = page->context;
   auto frame_of = [&](const char* key) {
     const std::string* id = params.FindString(key);
@@ -1943,7 +2083,8 @@ void Connection::HarEvent(const std::string& page_guid,
     return;
   const bool network = event == "Page.request" || event == "Page.response" ||
                        event == "Page.requestContinued" || event == "Page.requestFinished" ||
-                       event == "Page.requestFailed";
+                       event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
+                       event == "Page.responseExtraInfo";
   const bool lifecycle = event == "Frame.loadstate";
   if (!network && !lifecycle)
     return;
@@ -2035,6 +2176,676 @@ void Connection::HarExport(int id,
           weak_factory_.GetWeakPtr(), id, parent, archive, std::move(recorder)));
 }
 
+// ---- Traces ---------------------------------------------------------------
+
+std::string Connection::ContextOf(const std::string& guid) {
+  Object* object = Find(guid);
+  if (!object)
+    return std::string();
+  if (object->type == "BrowserContext")
+    return guid;
+  // An APIRequestContext is traced by its own Tracing.
+  if (object->type == "APIRequestContext")
+    return guid;
+  if (object->type == "Tracing")
+    return object->context.empty() ? guid : object->context;
+  if (object->type == "Page")
+    return object->context;
+  Object* page = Find(object->page);
+  return page ? page->context : std::string();
+}
+
+std::string Connection::PageOf(const std::string& guid) {
+  Object* object = Find(guid);
+  if (!object)
+    return std::string();
+  return object->type == "Page" ? guid : object->page;
+}
+
+// tracing.ts's visitTraceEvent(): a reference to a protocol object is its
+// type, "<ElementHandle>".
+base::Value Connection::TraceValue(const base::Value& value) {
+  if (value.is_list()) {
+    base::ListValue list;
+    for (const base::Value& item : value.GetList())
+      list.Append(TraceValue(item));
+    return base::Value(std::move(list));
+  }
+  if (!value.is_dict())
+    return value.Clone();
+  const base::DictValue& dict = value.GetDict();
+  if (dict.size() == 1) {
+    if (const std::string* guid = dict.FindString("guid")) {
+      Object* object = Find(*guid);
+      const size_t at = guid->find('@');
+      std::string type = object ? object->type : guid->substr(0, at);
+      if (!object && !type.empty())
+        type[0] = static_cast<char>(toupper(type[0]));
+      return base::Value("<" + type + ">");
+    }
+  }
+  base::DictValue result;
+  for (const auto [key, item] : dict)
+    result.Set(key, TraceValue(item));
+  return base::Value(std::move(result));
+}
+
+void Connection::TraceLine(Trace& trace, base::DictValue event) {
+  trace.lines.push_back(Json(base::Value(std::move(event))));
+}
+
+namespace {
+const ProtocolMethodInfo* MethodInfo(const std::string& name) {
+  for (const ProtocolMethodInfo& info : kProtocolMethods) {
+    if (name == info.method)
+      return &info;
+  }
+  return nullptr;
+}
+}  // namespace
+
+bool Connection::BeforeCall(int id,
+                            const std::string& guid,
+                            const std::string& method,
+                            const base::DictValue& params,
+                            const base::DictValue* metadata,
+                            base::OnceClosure run) {
+  Object* object = Find(guid);
+  if (!object || object->type == "Tracing" || object->type == "LocalUtils")
+    return false;
+  const std::string context = ContextOf(guid);
+  auto found = traces_.find(context);
+  if (found == traces_.end() || !found->second.recording)
+    return false;
+  const ProtocolMethodInfo* info = MethodInfo(object->type + "." + method);
+  const bool internal = (metadata && metadata->FindBool("internal").value_or(false)) || (info && info->internal);
+  if (internal)
+    return false;
+  Trace& trace = found->second;
+  // dispatcher.ts's CallMetadata id.
+  const base::Value* given = ids_.contains(id) ? &ids_[id] : nullptr;
+  const std::string client_id = !given ? base::NumberToString(id)
+                                : given->is_string() ? given->GetString()
+                                : given->is_int() ? base::NumberToString(given->GetInt())
+                                                  : Json(*given);
+  TracedCall call{context, "call@" + client_id, PageOf(guid)};
+  base::DictValue event;
+  event.Set("type", "before");
+  event.Set("callId", call.call_id);
+  event.Set("startTime", Monotonic());
+  if (const std::string* title = metadata ? metadata->FindString("title") : nullptr)
+    event.Set("title", *title);
+  event.Set("class", object->type);
+  event.Set("method", method);
+  base::Value traced_params = TraceValue(base::Value(params.Clone()));
+  if (metadata) {
+    if (std::optional<double> timeout = metadata->FindDouble("timeout"))
+      traced_params.GetDict().Set("timeout", *timeout);
+  }
+  event.Set("params", std::move(traced_params));
+  if (!trace.groups.empty())
+    event.Set("parentId", trace.groups.back());
+  TraceLine(trace, std::move(event));
+  const bool snapshots = trace.options.FindBool("snapshotDom").value_or(false) && info && info->snapshot &&
+                         !call.page.empty();
+  call.snapshot_after = snapshots;
+  const std::string call_id = call.call_id;
+  const std::string page = call.page;
+  traced_calls_[id] = std::move(call);
+  if (snapshots && (!info->input || info->auto_waiting)) {
+    CaptureTraceSnapshot(context, page, call_id, "before", std::move(run));
+    return true;
+  }
+  std::move(run).Run();
+  return true;
+}
+
+void Connection::Answered(int id, base::DictValue message, const std::string& error, base::Value result) {
+  auto found = traced_calls_.find(id);
+  if (found == traced_calls_.end()) {
+    send_.Run(Json(base::Value(std::move(message))));
+    return;
+  }
+  TracedCall call = std::move(found->second);
+  traced_calls_.erase(found);
+  auto trace = traces_.find(call.context);
+  if (trace == traces_.end() || !trace->second.recording) {
+    send_.Run(Json(base::Value(std::move(message))));
+    return;
+  }
+  base::DictValue event;
+  event.Set("type", "after");
+  event.Set("callId", call.call_id);
+  event.Set("endTime", Monotonic());
+  if (!error.empty()) {
+    base::DictValue failure;
+    failure.Set("message", error);
+    failure.Set("name", error.rfind("Timeout ", 0) == 0 ? "TimeoutError" : "Error");
+    event.Set("error", std::move(failure));
+  } else if (!result.is_none()) {
+    event.Set("result", TraceValue(result));
+  }
+  TraceLine(trace->second, std::move(event));
+  if (trace->second.options.FindBool("screencast").value_or(false) && !call.page.empty())
+    TraceScreencastFrame(call.context, call.page);
+  auto send = base::BindOnce(
+      [](base::WeakPtr<Connection> self, std::string json) {
+        if (self)
+          self->send_.Run(json);
+      },
+      weak_factory_.GetWeakPtr(), Json(base::Value(std::move(message))));
+  if (call.snapshot_after) {
+    CaptureTraceSnapshot(call.context, call.page, call.call_id, "after", std::move(send));
+    return;
+  }
+  std::move(send).Run();
+}
+
+void Connection::CaptureTraceSnapshot(const std::string& context,
+                                      const std::string& page,
+                                      const std::string& call_id,
+                                      const std::string& phase,
+                                      base::OnceClosure then) {
+  Object* page_object = Find(page);
+  zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
+  auto trace = traces_.find(context);
+  if (!view || trace == traces_.end()) {
+    std::move(then).Run();
+    return;
+  }
+  base::DictValue params;
+  params.Set("streamer", "__playwright_snapshot_streamer_zebkit");
+  // The first of a chunk starts the history again; the first of an action, its
+  // node references (snapshotter.ts).
+  if (trace->second.snapshot_reset) {
+    params.Set("reset", "history");
+    trace->second.snapshot_reset = false;
+  } else if (phase == "before") {
+    params.Set("reset", "targets");
+  }
+  params.Set("removeNoScript", true);
+  // A page that cannot answer (a dialog open) holds no command for long: the
+  // snapshot is given up after a while, as snapshotter.ts's races do.
+  auto once = std::make_shared<base::OnceClosure>(std::move(then));
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
+        if (*once) std::move(*once).Run();
+      }, once),
+      base::Seconds(1));
+  then = base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
+    if (*once) std::move(*once).Run();
+  }, once);
+  Native(-1, view, "Page.captureSnapshot", std::move(params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, std::string page,
+                std::string call_id, std::string phase, base::OnceClosure then, base::Value result) {
+               if (!self) {
+                 std::move(then).Run();
+                 return;
+               }
+               auto trace = self->traces_.find(context);
+               const base::ListValue* snapshots =
+                   result.is_dict() ? result.GetDict().FindList("snapshots") : nullptr;
+               if (trace != self->traces_.end() && trace->second.recording && snapshots) {
+                 for (const base::Value& item : *snapshots) {
+                   const base::DictValue* data = item.GetDict().FindDict("data");
+                   const std::string* frame = item.GetDict().FindString("frame");
+                   if (!data || !frame)
+                     continue;
+                   base::DictValue snapshot;
+                   snapshot.Set("callId", call_id);
+                   snapshot.Set("phase", phase);
+                   snapshot.Set("pageId", page);
+                   snapshot.Set("frameId", self->Known("frame", page, *frame));
+                   for (const char* key : {"doctype", "html", "viewport", "wallTime", "collectionTime"}) {
+                     if (const base::Value* value = data->Find(key))
+                       snapshot.Set(key, value->Clone());
+                   }
+                   if (const std::string* url = data->FindString("url"))
+                     snapshot.Set("frameUrl", *url);
+                   snapshot.Set("timestamp", self->Monotonic());
+                   base::ListValue overrides;
+                   if (const base::ListValue* given = data->FindList("resourceOverrides")) {
+                     for (const base::Value& entry : *given) {
+                       const std::string* url = entry.GetDict().FindString("url");
+                       const base::Value* content = entry.GetDict().Find("content");
+                       if (!url || !content)
+                         continue;
+                       base::DictValue override_entry;
+                       override_entry.Set("url", *url);
+                       if (content->is_string()) {
+                         const std::string* type = entry.GetDict().FindString("contentType");
+                         const std::string ext = type && type->find("css") != std::string::npos ? "css" : "dat";
+                         const std::string name = "resources/" +
+                             base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(content->GetString())))) +
+                             "." + ext;
+                         trace->second.chunk_files[name] = content->GetString();
+                         override_entry.Set("file", name);
+                       } else {
+                         override_entry.Set("ref", content->Clone());
+                       }
+                       overrides.Append(std::move(override_entry));
+                     }
+                   }
+                   snapshot.Set("resourceOverrides", std::move(overrides));
+                   snapshot.Set("isMainFrame", item.GetDict().FindBool("isMainFrame").value_or(false));
+                   base::DictValue event;
+                   event.Set("type", "frame-snapshot");
+                   event.Set("snapshot", std::move(snapshot));
+                   self->TraceLine(trace->second, std::move(event));
+                 }
+               }
+               std::move(then).Run();
+             },
+             weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(then)));
+}
+
+void Connection::TraceScreencastFrame(const std::string& context, const std::string& page) {
+  auto trace = traces_.find(context);
+  Object* page_object = Find(page);
+  zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
+  if (trace == traces_.end() || !view)
+    return;
+  base::DictValue params;
+  params.Set("type", "jpeg");
+  params.Set("quality", 50);
+  params.Set("scale", "css");
+  Native(-1, view, "Page.screenshot", std::move(params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, std::string page, base::Value result) {
+               if (!self)
+                 return;
+               auto trace = self->traces_.find(context);
+               const std::string* data = result.is_dict() ? result.GetDict().FindString("binary") : nullptr;
+               std::string bytes;
+               if (trace == self->traces_.end() || !trace->second.recording || !data ||
+                   !base::Base64Decode(*data, &bytes)) {
+                 return;
+               }
+               Object* page_object = self->Find(page);
+               const base::DictValue* viewport = page_object ? page_object->data.FindDict("viewport") : nullptr;
+               const std::string file = "screencast/" + page + "-" +
+                                        base::NumberToString(static_cast<int64_t>(base::Time::Now().InMillisecondsFSinceUnixEpoch())) +
+                                        ".jpeg";
+               trace->second.chunk_files[file] = bytes;
+               base::DictValue event;
+               event.Set("type", "screencast-frame");
+               event.Set("pageId", page);
+               event.Set("file", file);
+               event.Set("width", viewport ? viewport->FindInt("width").value_or(1280) : 1280);
+               event.Set("height", viewport ? viewport->FindInt("height").value_or(720) : 720);
+               event.Set("timestamp", self->Monotonic());
+               self->TraceLine(trace->second, std::move(event));
+             },
+             weak_factory_.GetWeakPtr(), context, page));
+}
+
+void Connection::TraceEvent(const std::string& page_guid,
+                            const std::string& event,
+                            const base::DictValue& params) {
+  Object* page = Find(page_guid);
+  if (!page)
+    return;
+  auto found = traces_.find(page->context);
+  if (found == traces_.end() || !found->second.recording)
+    return;
+  Trace& trace = found->second;
+  if (event == "Page.request" || event == "Page.response" || event == "Page.requestFinished" ||
+      event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
+      event == "Page.responseExtraInfo") {
+    const std::string* frame = params.FindString("frame");
+    trace.network->Record(event, params, page_guid,
+                          frame ? Known("frame", page_guid, *frame) : std::string());
+    const std::string* request = params.FindString("request");
+    zebkit_view* view = zebkit_automation_page(page->id.c_str());
+    if (event == "Page.requestFinished" && request && view && view->web_contents()) {
+      if (Network* network = Network::For(view->web_contents())) {
+        network->WhenBody(*request, base::BindOnce(
+                                        [](base::WeakPtr<Connection> self, std::string context,
+                                           std::string request, std::optional<std::string> body) {
+                                          if (!self)
+                                            return;
+                                          auto trace = self->traces_.find(context);
+                                          if (trace != self->traces_.end())
+                                            trace->second.network->SetBody(request, std::move(body));
+                                        },
+                                        weak_factory_.GetWeakPtr(), page->context, *request));
+      }
+    }
+    return;
+  }
+  base::DictValue line;
+  if (event == "BrowserContext.console") {
+    line.Set("type", "console");
+    const std::string* type = params.FindString("type");
+    line.Set("messageType", type ? *type : "log");
+    const std::string* text = params.FindString("text");
+    line.Set("text", text ? *text : std::string());
+    line.Set("args", base::ListValue());
+    base::DictValue location;
+    if (const base::DictValue* given = params.FindDict("location"))
+      location = given->Clone();
+    line.Set("location", std::move(location));
+    line.Set("time", Monotonic());
+    line.Set("pageId", page_guid);
+  } else if (event == "Page.pageError") {
+    line.Set("type", "event");
+    line.Set("time", Monotonic());
+    line.Set("class", "BrowserContext");
+    line.Set("method", "pageError");
+    base::DictValue values;
+    if (const base::DictValue* error = params.FindDict("error")) {
+      base::DictValue serialized;
+      base::DictValue inner;
+      for (const char* key : {"message", "name", "stack"}) {
+        if (const std::string* value = error->FindString(key))
+          inner.Set(key, *value);
+      }
+      serialized.Set("error", std::move(inner));
+      values.Set("error", std::move(serialized));
+    }
+    if (const base::DictValue* where = params.FindDict("location")) {
+      base::DictValue location;
+      if (const std::string* url = where->FindString("url"))
+        location.Set("url", *url);
+      location.Set("line", where->FindInt("lineNumber").value_or(0));
+      location.Set("column", where->FindInt("columnNumber").value_or(0));
+      values.Set("location", std::move(location));
+    }
+    line.Set("params", std::move(values));
+    line.Set("pageId", page_guid);
+  } else if (event == "Page.close") {
+    line.Set("type", "event");
+    line.Set("time", Monotonic());
+    line.Set("class", "BrowserContext");
+    line.Set("method", "pageClosed");
+    base::DictValue values;
+    values.Set("pageId", page_guid);
+    line.Set("params", std::move(values));
+  } else if (event == "BrowserContext.dialog") {
+    line.Set("type", "event");
+    line.Set("time", Monotonic());
+    line.Set("class", "BrowserContext");
+    line.Set("method", "dialog");
+    base::DictValue values;
+    values.Set("pageId", page_guid);
+    for (const char* key : {"type", "message", "defaultValue"}) {
+      if (const std::string* value = params.FindString(key))
+        values.Set(key, *value);
+    }
+    line.Set("params", std::move(values));
+  } else {
+    return;
+  }
+  TraceLine(trace, std::move(line));
+}
+
+void Connection::TraceCommand(int id,
+                              const std::string& context,
+                              const std::string& method,
+                              base::DictValue params) {
+  if (method == "tracingStart") {
+    Trace& trace = traces_[context];
+    if (trace.network) {
+      ReplyError(id, "Tracing has been already started");
+      return;
+    }
+    trace.options = params.Clone();
+    const std::string* name = params.FindString("name");
+    trace.name = name ? *name : base::UnguessableToken::Create().ToString();
+    base::DictValue har;
+    har.Set("content", "attach");
+    har.Set("resourcesPrefix", "resources/");
+    trace.network = std::make_unique<HarRecorder>(har);
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  auto found = traces_.find(context);
+  if (found == traces_.end() || !found->second.network) {
+    if (method == "tracingStop" || method == "tracingGroupEnd" || method == "tracingGroup") {
+      Reply(id, base::Value(base::DictValue()));
+      return;
+    }
+    if (method == "tracingStopChunk" && params.FindString("mode") &&
+        *params.FindString("mode") == "discard") {
+      Reply(id, base::Value(base::DictValue()));
+      return;
+    }
+    ReplyError(id, method == "tracingStartChunk" ? "Must start tracing before starting a new chunk"
+                                                 : "Must start tracing before stopping");
+    return;
+  }
+  Trace& trace = found->second;
+  if (method == "tracingStartChunk") {
+    if (const std::string* name = params.FindString("name"); name && *name != trace.name) {
+      trace.name = *name;
+      trace.chunk = 0;
+    }
+    trace.recording = true;
+    trace.snapshot_reset = true;
+    {
+      base::DictValue har;
+      har.Set("content", "attach");
+      har.Set("resourcesPrefix", "resources/");
+      trace.network = std::make_unique<HarRecorder>(har);
+    }
+    trace.lines.clear();
+    trace.chunk_files.clear();
+    trace.groups.clear();
+    ++trace.chunk;
+    Object* context_object = Find(context);
+    base::DictValue event;
+    event.Set("version", 10);
+    event.Set("type", "context-options");
+    event.Set("origin", "library");
+    event.Set("browserName", "chromium");
+    event.Set("channel", "chromium");
+    event.Set("playwrightVersion", kPlaywrightVersion);
+    const base::DictValue* options = context_object ? context_object->data.FindDict("contextOptions") : nullptr;
+    event.Set("options", options ? options->Clone() : base::DictValue());
+#if BUILDFLAG(IS_MAC)
+    event.Set("platform", "darwin");
+#elif BUILDFLAG(IS_WIN)
+    event.Set("platform", "win32");
+#else
+    event.Set("platform", "linux");
+#endif
+    event.Set("wallTime", base::Time::Now().InMillisecondsFSinceUnixEpoch());
+    event.Set("monotonicTime", Monotonic());
+    event.Set("sdkLanguage", "javascript");
+    event.Set("testIdAttributeName", "data-testid");
+    if (const std::string* title = params.FindString("title"))
+      event.Set("title", *title);
+    TraceLine(trace, std::move(event));
+    // The pages there are.
+    for (const auto& [view, page_guid] : pages_) {
+      Object* page = Find(page_guid);
+      if (!page || page->context != context)
+        continue;
+      base::DictValue opened;
+      opened.Set("type", "event");
+      opened.Set("time", Monotonic());
+      opened.Set("class", "BrowserContext");
+      opened.Set("method", "page");
+      base::DictValue values;
+      values.Set("pageId", page_guid);
+      opened.Set("params", std::move(values));
+      TraceLine(trace, std::move(opened));
+    }
+    base::DictValue answer;
+    answer.Set("traceName", trace.name);
+    Reply(id, base::Value(std::move(answer)));
+    return;
+  }
+  if (method == "tracingGroup") {
+    base::DictValue event;
+    const std::string call_id = "group@" + base::NumberToString(++next_guid_);
+    event.Set("type", "before");
+    event.Set("callId", call_id);
+    event.Set("startTime", Monotonic());
+    const std::string* name = params.FindString("name");
+    event.Set("title", name ? *name : std::string());
+    event.Set("class", "Tracing");
+    event.Set("method", "tracingGroup");
+    event.Set("params", base::DictValue());
+    base::ListValue stack;
+    if (const base::DictValue* location = params.FindDict("location")) {
+      base::DictValue frame;
+      const std::string* file = location->FindString("file");
+      frame.Set("file", file ? *file : std::string());
+      frame.Set("line", location->FindInt("line").value_or(0));
+      frame.Set("column", location->FindInt("column").value_or(0));
+      stack.Append(std::move(frame));
+    }
+    event.Set("stack", std::move(stack));
+    if (!trace.groups.empty())
+      event.Set("parentId", trace.groups.back());
+    trace.groups.push_back(call_id);
+    if (trace.recording)
+      TraceLine(trace, std::move(event));
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  auto end_groups = [&](Trace& trace) {
+    while (!trace.groups.empty()) {
+      base::DictValue event;
+      event.Set("type", "after");
+      event.Set("callId", trace.groups.back());
+      event.Set("endTime", Monotonic());
+      trace.groups.pop_back();
+      if (trace.recording)
+        TraceLine(trace, std::move(event));
+    }
+  };
+  if (method == "tracingGroupEnd") {
+    if (!trace.groups.empty()) {
+      base::DictValue event;
+      event.Set("type", "after");
+      event.Set("callId", trace.groups.back());
+      event.Set("endTime", Monotonic());
+      trace.groups.pop_back();
+      if (trace.recording)
+        TraceLine(trace, std::move(event));
+    }
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  if (method == "tracingStop") {
+    if (trace.recording) {
+      ReplyError(id, "Must stop trace file before stopping tracing");
+      return;
+    }
+    traces_.erase(found);
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  // tracingStopChunk {mode: archive, discard, entries}.
+  const std::string* mode_value = params.FindString("mode");
+  const std::string mode = mode_value ? *mode_value : "archive";
+  if (!trace.recording) {
+    if (mode == "discard") {
+      Reply(id, base::Value(base::DictValue()));
+      return;
+    }
+    ReplyError(id, "Must start tracing before stopping");
+    return;
+  }
+  end_groups(trace);
+  trace.recording = false;
+  if (mode == "discard") {
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  std::map<std::string, std::string> files = std::move(trace.chunk_files);
+  trace.chunk_files.clear();
+  std::string text;
+  for (const std::string& line : trace.lines)
+    text += line + "\n";
+  trace.lines.clear();
+  files["trace.trace"] = std::move(text);
+  std::string network;
+  std::map<std::string, std::string> resources;
+  base::ListValue network_entries = trace.network->Entries(
+      base::BindRepeating([](const std::string&) -> std::optional<std::string> { return std::nullopt; }),
+      &resources);
+  for (base::Value& entry : network_entries) {
+    base::DictValue line;
+    line.Set("type", "resource-snapshot");
+    line.Set("snapshot", std::move(entry));
+    network += Json(base::Value(std::move(line))) + "\n";
+  }
+  for (auto& [name, bytes] : resources)
+    trace.cross_files[name] = std::move(bytes);
+  for (const auto& [name, bytes] : trace.cross_files)
+    files[name] = bytes;
+  files["trace.network"] = std::move(network);
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(
+          [](std::map<std::string, std::string> files, bool archive) -> std::optional<base::FilePath> {
+            base::FilePath directory;
+            if (!base::CreateNewTempDirectory(FILE_PATH_LITERAL("zebkit-trace"), &directory))
+              return std::nullopt;
+            for (const auto& [name, bytes] : files) {
+              const base::FilePath path = directory.AppendASCII(name);
+              base::CreateDirectory(path.DirName());
+              if (!base::WriteFile(path, bytes))
+                return std::nullopt;
+            }
+            if (!archive)
+              return directory;
+            // Files only, as Playwright's archives: a client unpacking it
+            // refuses directory entries ("resources/").
+            const base::FilePath zip = directory.AddExtensionASCII(".zip");
+            std::vector<base::FilePath> names;
+            for (const auto& [name, bytes] : files)
+              names.push_back(base::FilePath::FromASCII(name));
+            zip::ZipParams params;
+            params.src_dir = directory;
+            params.dest_file = zip;
+            params.src_files = names;
+            if (!zip::Zip(params))
+              return std::nullopt;
+            base::DeletePathRecursively(directory);
+            return zip;
+          },
+          std::move(files), mode == "archive"),
+      base::BindOnce(
+          [](base::WeakPtr<Connection> self, int id, std::string context, bool archive,
+             std::optional<base::FilePath> path) {
+            if (!self)
+              return;
+            if (!path) {
+              self->ReplyError(id, "zebkit: the trace could not be written");
+              return;
+            }
+            base::DictValue answer;
+            if (archive) {
+              base::DictValue initializer;
+              initializer.Set("absolutePath", path->AsUTF8Unsafe());
+              Object artifact;
+              artifact.id = path->AsUTF8Unsafe();
+              artifact.data.Set("path", path->AsUTF8Unsafe());
+              answer.Set("artifact", Ref(self->Create(context, "Artifact", std::move(initializer),
+                                                      std::move(artifact))));
+            } else {
+              base::ListValue entries;
+              base::FileEnumerator files(*path, true, base::FileEnumerator::FILES);
+              for (base::FilePath file = files.Next(); !file.empty(); file = files.Next()) {
+                base::FilePath relative;
+                path->AppendRelativePath(file, &relative);
+                base::DictValue entry;
+                entry.Set("name", relative.AsUTF8Unsafe());
+                entry.Set("value", file.AsUTF8Unsafe());
+                entries.Append(std::move(entry));
+              }
+              answer.Set("entries", std::move(entries));
+            }
+            self->Reply(id, base::Value(std::move(answer)));
+          },
+          weak_factory_.GetWeakPtr(), id, context, mode == "archive"));
+}
+
 void Connection::CreateTempFiles(int id, base::DictValue params) {
   const std::string* root_name = params.FindString("rootDirName");
   const std::string root = root_name ? *root_name : std::string();
@@ -2118,13 +2929,10 @@ void Connection::Tracing(int id,
     ReplyError(id, "Target page, context or browser has been closed");
     return;
   }
-  if (method == "tracingStart") {
-    context->data.Set("tracingStart", params.Clone());
-  } else if (method == "tracingStartChunk") {
-    context->data.Set("tracingChunk", params.Clone());
-  } else if (method == "tracingStop") {
-    context->data.Remove("tracingStart");
-    context->data.Remove("tracingChunk");
+  if (method == "tracingStart" || method == "tracingStartChunk" || method == "tracingStopChunk" ||
+      method == "tracingStop" || method == "tracingGroup" || method == "tracingGroupEnd") {
+    TraceCommand(id, tracing->context, method, std::move(params));
+    return;
   } else if (method == "harStart") {
     const std::string har_id = "har@" + base::NumberToString(++next_guid_);
     const base::DictValue* options = params.FindDict("options");
@@ -2737,7 +3545,10 @@ void Connection::Command(int id,
       if (const std::string* response = object->data.FindString("response"))
         answer.Set("response", Ref(*response));
     } else if (method == "rawRequestHeaders") {
-      answer.Set("headers", object->data.FindList("headers") ? object->data.FindList("headers")->Clone() : base::ListValue());
+      const base::ListValue* raw = object->data.FindList("rawHeaders");
+      if (!raw)
+        raw = object->data.FindList("headers");
+      answer.Set("headers", raw ? raw->Clone() : base::ListValue());
     }
     Reply(id, base::Value(std::move(answer)));
     return;
@@ -2750,7 +3561,10 @@ void Connection::Command(int id,
     }
     base::DictValue answer;
     if (method == "rawResponseHeaders") {
-      answer.Set("headers", object->data.FindList("headers") ? object->data.FindList("headers")->Clone() : base::ListValue());
+      const base::ListValue* raw = object->data.FindList("rawHeaders");
+      if (!raw)
+        raw = object->data.FindList("headers");
+      answer.Set("headers", raw ? raw->Clone() : base::ListValue());
     } else if (method == "httpVersion") {
       const std::string* version = object->data.FindString("httpVersion");
       answer.Set("value", version ? "HTTP/" + *version : "HTTP/1.1");

@@ -57,7 +57,9 @@ interface AutomationHost {
 interface AutomationAgent {
   // Replace the functions exposed in the page world, now and in future
   // documents. Removed functions are deleted and retained references reject.
-  Expose(array<string> names);
+  // @inherited: those of @names a popup opened from this frame has from its
+  // first script on (its context's, not the page's own).
+  Expose(array<string> names, array<string> inherited);
 
   // Runs step @step of automation_steps.js in @world with @arg, a JSON
   // object whose {"$h": i} are @handles[i]. A step that asks for text to

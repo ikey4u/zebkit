@@ -290,8 +290,19 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
   const bool user_agent = protocol_user_agent_ &&
       protocol_user_agent_applied_[target] != protocol_user_agent_revision_;
   if (applied >= protocol_script_sources_.size() && !user_agent) {
+    if (protocol_hold_start_) return;  // ReleaseStart()
     protocol_ready_targets_.insert(target);
     auto weak = GetWeakPtr();
+    if (protocol_flush_before_run_) {
+      // Held: what came meanwhile first (scripts with runImmediately, the
+      // viewport), then the window's first script.
+      protocol_flush_before_run_ = false;
+      FlushTargetCommands(target);
+      if (!weak) return;
+      SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
+      if (weak) MaybeRunDeferredLoad();
+      return;
+    }
     SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
     if (!weak) return;
     FlushTargetCommands(target);
@@ -351,9 +362,31 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
   // before resuming. Acknowledgements still gate subsequent host commands.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
       base::BindOnce([](base::WeakPtr<zebkit_view> view, std::string target) {
-        if (view && view->protocol_sessions_.contains(target))
+        if (view && !view->protocol_hold_start_ && !view->protocol_flush_before_run_ &&
+            view->protocol_sessions_.contains(target))
           view->SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
       }, weak, target));
+}
+
+void zebkit_view::HoldStart() {
+  protocol_hold_start_ = true;
+  EnsureSession();
+}
+
+void zebkit_view::ReleaseStart() {
+  if (!protocol_hold_start_) return;
+  protocol_hold_start_ = false;
+  protocol_flush_before_run_ = true;
+  std::vector<std::string> targets;
+  for (const auto& [target, session] : protocol_sessions_) {
+    if (!protocol_ready_targets_.contains(target) && !protocol_initializing_.contains(target))
+      targets.push_back(target);
+  }
+  auto weak = GetWeakPtr();
+  for (const auto& target : targets) {
+    if (!weak) return;
+    InitializeProtocolTarget(target);
+  }
 }
 
 bool zebkit_view::RecordProtocolScript(const std::string& target, size_t index,
@@ -462,7 +495,12 @@ void zebkit_view::Send(const std::string& method,
     protocol_scripts_applied_[target] = protocol_script_sources_.size();
   protocol_pending_targets_[id] = target;
   auto session = protocol_sessions_.find(target);
-  if (session == protocol_sessions_.end() || !protocol_ready_targets_.contains(target)) {
+  // A held popup's target takes commands at once (its renderer runs them
+  // while it waits, the browser's apply before its first request); only its
+  // release waits (ReleaseStart()).
+  const bool held = protocol_hold_start_ && session != protocol_sessions_.end() &&
+                    !protocol_initializing_.contains(target);
+  if (session == protocol_sessions_.end() || (!protocol_ready_targets_.contains(target) && !held)) {
     protocol_queued_.emplace_back(target, std::move(message));
     return;
   }
@@ -774,6 +812,7 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
   if (const auto* method = reply.FindString("method")) {
     const auto* params = reply.FindDict("params");
     if (!params) return;
+    if (protocol_events_) protocol_events_.Run(*method, *params);
     if (*method == "Target.attachedToTarget") {
       const auto* session = params->FindString("sessionId");
       const auto* info = params->FindDict("targetInfo");
@@ -1035,10 +1074,41 @@ void HandlePopup(content::WebContents* opener,
   made->navigation_timeout_ms_ = view->navigation_timeout_ms_;
   made->certificate_timeout_ms_ = view->certificate_timeout_ms_;
   made->http_auth_timeout_ms_ = view->http_auth_timeout_ms_;
-  MakeOffscreenLike(view, made);
+  MakeOffscreenLike(view, made, features);
+  // Held while automation sets it up, then released after what that posted.
+  const bool held = PopupStartsHeld();
+  if (held) {
+    made->HoldStart();
+  }
+  if (PopupHoldFunc hook = PopupHoldHook())
+    hook(nullptr, false);
   SetWindowOpenInfo(view, made, url, disposition, features, user_gesture);
+  base::WeakPtr<zebkit_view> weak = made->GetWeakPtr();
   if (view->on_window_open_)
     view->on_window_open_(view, made, url.spec().c_str(), view->on_window_open_data_);
+  if (held) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<zebkit_view> view) {
+                         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                             FROM_HERE, base::BindOnce(
+                                            [](base::WeakPtr<zebkit_view> view) {
+                                              if (view) view->ReleaseStart();
+                                            },
+                                            view));
+                       },
+                       weak));
+  }
+}
+
+bool& PopupStartsHeld() {
+  static bool held = false;
+  return held;
+}
+
+PopupHoldFunc& PopupHoldHook() {
+  static PopupHoldFunc hook = nullptr;
+  return hook;
 }
 
 zebkit_view* ViewOf(content::WebContents* contents) {

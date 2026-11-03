@@ -67,7 +67,9 @@ class HarRecorder {
   // response's body by its request when SetBody() did not.
   using BodyFunc = base::RepeatingCallback<std::optional<std::string>(
       const std::string& request)>;
-  base::ListValue Entries(const BodyFunc& body) const;
+  // With @files, the attached contents by their names.
+  base::ListValue Entries(const BodyFunc& body,
+                          std::map<std::string, std::string>* files = nullptr) const;
 
   // HAR 1.2 to @path (a temporary file when empty); with @archive a zip of
   // it as har.har with the attached contents beside it, which is what a remote
@@ -91,6 +93,8 @@ class HarRecorder {
     base::DictValue response;
     base::DictValue finished_params;
     std::optional<base::DictValue> overrides;
+    std::optional<base::ListValue> raw_request_headers;
+    std::optional<base::ListValue> raw_response_headers;
     std::string redirect_url;
     std::string failure;
     bool has_body = false;
@@ -111,6 +115,8 @@ class HarRecorder {
                              std::map<std::string, std::string>* files) const;
 
   std::string content_ = "embed";
+  // Before an attached content's name: traces' "resources/".
+  std::string resources_prefix_;
   bool minimal_ = false;
   std::string url_glob_;
   std::string url_regex_;

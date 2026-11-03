@@ -107,8 +107,19 @@ void HandlePopup(content::WebContents* opener,
                  WindowOpenDisposition disposition,
                  const blink::mojom::WindowFeatures& features,
                  bool user_gesture);
-// A popup of an off-screen view off the screen too (offscreen.cc).
-void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup);
+// A popup of an off-screen view off the screen too (offscreen.cc), the size
+// window.open's features ask for when they do, else its opener's.
+void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup,
+                       const blink::mojom::WindowFeatures& features);
+// Whether a window.open() waits, in the opener's script, for its popup's
+// DevTools session (automation holds popups as Chromium's DevTools does with
+// Target.setAutoAttach, so their first script has the context's scripts).
+bool& PopupStartsHeld();
+// Set by automation: asked with @opener and true as a window.open() is allowed
+// (BrowserClient::CanCreateWindow(), before Chromium decides whether the new
+// window waits), and with null and false once the popup has its view.
+using PopupHoldFunc = void (*)(content::WebContents* opener, bool hold);
+PopupHoldFunc& PopupHoldHook();
 
 // The view delegate: the drop told to the application.
 std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
@@ -321,6 +332,18 @@ struct zebkit_view : public content::WebContentsObserver,
   bool offscreen_view_ = false;
   bool offscreen_focused_ = false;
 
+  // A popup's first script waits until ReleaseStart(): its page target is
+  // released (Runtime.runIfWaitingForDebugger) once what was sent meanwhile
+  // has been, as Chromium's DevTools holds a new window for its client.
+  void HoldStart();
+  void ReleaseStart();
+
+  // Automation's use of the view's own DevTools session's events.
+  void SetProtocolEvents(
+      base::RepeatingCallback<void(const std::string& method, const base::DictValue& params)> events) {
+    protocol_events_ = std::move(events);
+  }
+
  private:
   struct GrantEntry {
     unsigned allow = 0;
@@ -379,6 +402,12 @@ struct zebkit_view : public content::WebContentsObserver,
   int protocol_auto_attach_id_ = 0;
   bool protocol_attach_failed_ = false;
   bool protocol_closing_ = false;
+  bool protocol_hold_start_ = false;
+  bool protocol_flush_before_run_ = false;
+  // The events of the view's own DevTools session, for automation's use
+  // (Network's request types and the network's raw headers).
+  base::RepeatingCallback<void(const std::string& method, const base::DictValue& params)>
+      protocol_events_;
   bool bridge_installed_ = false;
   // Until the browser has the scripts for new documents (zebkit.*, and the
   // application's), a load waits: a document committed first would be

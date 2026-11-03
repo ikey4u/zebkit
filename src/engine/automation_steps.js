@@ -581,51 +581,94 @@ steps.scrollIntoViewForScreenshot = arg => poll(arg.timeout, kActionWaits, async
 // screenshotter.ts's inPagePrepareForScreenshots() and the masks, undone by
 // restoreScreenshot; and what the clip needs of the page.
 let screenshotUndo = [];
-steps.prepareScreenshot = arg => {
+// screenshotter.ts's inPagePrepareForScreenshots(): the style in every root,
+// shadow ones too; the caret hidden (unless caret is "initial") on what can have
+// one; finite animations finished and infinite ones cancelled until after, those
+// that start meanwhile too; the masks as Playwright's highlight draws them; then
+// the fonts loaded.
+steps.prepareScreenshot = async arg => {
   // What a screenshot that timed out left.
   steps.restoreScreenshot();
-  const add = css => {
-    const style = document.createElement('style');
-    style.textContent = css;
-    (document.head || document.documentElement).append(style);
-    screenshotUndo.push(() => style.remove());
-  };
-  // No caret without a focused element or an editable document: nothing to hide,
-  // and no style to recalculate for the whole page (screenshotter.ts adds it always,
-  // over a round trip per frame; this is what a plain screenshot then costs).
-  const active = document.activeElement;
-  const mayHaveCaret = (active && active !== document.body && active !== document.documentElement) ||
-      document.designMode === 'on' || document.body?.isContentEditable || document.documentElement?.isContentEditable;
-  if (arg.caret !== 'initial' && mayHaveCaret)
-    add('*:not(#playwright-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa):not(#playwright-bbb) { caret-color: transparent !important; }');
-  if (arg.style)
-    add(arg.style);
-  if (arg.animations === 'disabled') {
-    for (const animation of document.getAnimations()) {
-      const timing = animation.effect?.getTiming();
-      if (timing && Number.isFinite(timing.iterations) && Number.isFinite(timing.duration)) {
-        const { playState, currentTime } = animation;
-        animation.finish();
-        screenshotUndo.push(() => {
-          animation.currentTime = currentTime;
-          if (playState === 'running')
-            animation.play();
-        });
-      } else {
-        animation.cancel();
-        screenshotUndo.push(() => animation.play());
+  const hideCaret = arg.caret !== 'initial';
+  const disableAnimations = arg.animations === 'disabled';
+  if (arg.style || hideCaret || disableAnimations) {
+    const roots = [];
+    const collect = root => {
+      roots.push(root);
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      do {
+        const node = walker.currentNode;
+        const shadow = node instanceof Element ? node.shadowRoot : null;
+        if (shadow)
+          collect(shadow);
+      } while (walker.nextNode());
+    };
+    collect(document);
+    if (arg.style) {
+      for (const root of roots) {
+        const tag = document.createElement('style');
+        tag.textContent = arg.style;
+        if (root === document)
+          document.documentElement.append(tag);
+        else
+          root.append(tag);
+        screenshotUndo.push(() => tag.remove());
       }
+    }
+    if (hideCaret) {
+      const elements = new Map();
+      for (const root of roots) {
+        root.querySelectorAll('input,textarea,[contenteditable]').forEach(element => {
+          elements.set(element, { value: element.style.getPropertyValue('caret-color'), priority: element.style.getPropertyPriority('caret-color') });
+          element.style.setProperty('caret-color', 'transparent', 'important');
+        });
+      }
+      screenshotUndo.push(() => {
+        for (const [element, value] of elements)
+          element.style.setProperty('caret-color', value.value, value.priority);
+      });
+    }
+    if (disableAnimations) {
+      const resume = new Set();
+      const handle = root => {
+        for (const animation of root.getAnimations()) {
+          if (!animation.effect || animation.playbackRate === 0 || resume.has(animation))
+            continue;
+          const endTime = animation.effect.getComputedTiming().endTime;
+          if (Number.isFinite(endTime)) {
+            try { animation.finish(); } catch (e) {}
+          } else {
+            try { animation.cancel(); resume.add(animation); } catch (e) {}
+          }
+        }
+      };
+      for (const root of roots) {
+        const handleRoot = () => handle(root);
+        handleRoot();
+        root.addEventListener('transitionrun', handleRoot);
+        root.addEventListener('animationstart', handleRoot);
+        screenshotUndo.push(() => {
+          root.removeEventListener('transitionrun', handleRoot);
+          root.removeEventListener('animationstart', handleRoot);
+        });
+      }
+      screenshotUndo.push(() => {
+        for (const animation of resume) {
+          try { animation.play(); } catch (e) {}
+        }
+      });
     }
   }
-  for (const selector of arg.mask || []) {
-    for (const element of injected.querySelectorAll(injected.parseSelector(selector), document)) {
-      for (const rect of element.getClientRects()) {
-        const box = document.createElement('div');
-        box.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:${arg.maskColor || '#FF00FF'};z-index:2147483647;pointer-events:none`;
-        document.documentElement.append(box);
-        screenshotUndo.push(() => box.remove());
-      }
-    }
+  if (arg.mask && arg.mask.length) {
+    const elements = [];
+    for (const selector of arg.mask)
+      elements.push(...injected.querySelectorAll(injected.parseSelector(selector), document));
+    injected.addMaskedElements(elements, arg.maskColor || '#F0F');
+    screenshotUndo.push(() => injected.hideHighlight());
+  }
+  try {
+    await document.fonts.ready;
+  } catch (e) {
   }
   return {};
 };
@@ -641,9 +684,13 @@ steps.screenshotMetrics = () => {
   return {
     scrollX: scrollX, scrollY: scrollY,
     viewportWidth: innerWidth, viewportHeight: innerHeight,
-    documentWidth: Math.max(root.scrollWidth, root.offsetWidth, root.clientWidth, body?.scrollWidth ?? 0, body?.offsetWidth ?? 0),
-    documentHeight: Math.max(root.scrollHeight, root.offsetHeight, root.clientHeight, body?.scrollHeight ?? 0, body?.offsetHeight ?? 0),
+    documentWidth: Math.max(body?.scrollWidth ?? 0, root.scrollWidth, body?.offsetWidth ?? 0, root.offsetWidth, body?.clientWidth ?? 0, root.clientWidth),
+    documentHeight: Math.max(body?.scrollHeight ?? 0, root.scrollHeight, body?.offsetHeight ?? 0, root.offsetHeight, body?.clientHeight ?? 0, root.clientHeight),
     deviceScaleFactor: devicePixelRatio,
+    // Page.getLayoutMetrics's visualViewport (crPage.ts's takeScreenshot()).
+    visualScale: visualViewport ? visualViewport.scale : 1,
+    visualPageX: visualViewport ? visualViewport.pageLeft : scrollX,
+    visualPageY: visualViewport ? visualViewport.pageTop : scrollY,
   };
 };
 

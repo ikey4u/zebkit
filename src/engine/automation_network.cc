@@ -321,6 +321,84 @@ class BodyTee : public mojo::DataPipeDrainer::Client {
   Done done_;
 };
 
+// A fulfilled response's status text, as Playwright gives Fetch.fulfillRequest
+// its responsePhrase (network.ts's statusText()): IANA's, "Unknown" else.
+std::string FulfillStatusText(int status) {
+  static constexpr struct {
+    int status;
+    const char* text;
+  } kTexts[] = {
+      {100, "Continue"},
+      {101, "Switching Protocols"},
+      {102, "Processing"},
+      {103, "Early Hints"},
+      {200, "OK"},
+      {201, "Created"},
+      {202, "Accepted"},
+      {203, "Non-Authoritative Information"},
+      {204, "No Content"},
+      {205, "Reset Content"},
+      {206, "Partial Content"},
+      {207, "Multi-Status"},
+      {208, "Already Reported"},
+      {226, "IM Used"},
+      {300, "Multiple Choices"},
+      {301, "Moved Permanently"},
+      {302, "Found"},
+      {303, "See Other"},
+      {304, "Not Modified"},
+      {305, "Use Proxy"},
+      {306, "Switch Proxy"},
+      {307, "Temporary Redirect"},
+      {308, "Permanent Redirect"},
+      {400, "Bad Request"},
+      {401, "Unauthorized"},
+      {402, "Payment Required"},
+      {403, "Forbidden"},
+      {404, "Not Found"},
+      {405, "Method Not Allowed"},
+      {406, "Not Acceptable"},
+      {407, "Proxy Authentication Required"},
+      {408, "Request Timeout"},
+      {409, "Conflict"},
+      {410, "Gone"},
+      {411, "Length Required"},
+      {412, "Precondition Failed"},
+      {413, "Payload Too Large"},
+      {414, "URI Too Long"},
+      {415, "Unsupported Media Type"},
+      {416, "Range Not Satisfiable"},
+      {417, "Expectation Failed"},
+      {418, "I'm a teapot"},
+      {421, "Misdirected Request"},
+      {422, "Unprocessable Entity"},
+      {423, "Locked"},
+      {424, "Failed Dependency"},
+      {425, "Too Early"},
+      {426, "Upgrade Required"},
+      {428, "Precondition Required"},
+      {429, "Too Many Requests"},
+      {431, "Request Header Fields Too Large"},
+      {451, "Unavailable For Legal Reasons"},
+      {500, "Internal Server Error"},
+      {501, "Not Implemented"},
+      {502, "Bad Gateway"},
+      {503, "Service Unavailable"},
+      {504, "Gateway Timeout"},
+      {505, "HTTP Version Not Supported"},
+      {506, "Variant Also Negotiates"},
+      {507, "Insufficient Storage"},
+      {508, "Loop Detected"},
+      {510, "Not Extended"},
+      {511, "Network Authentication Required"},
+  };
+  for (const auto& entry : kTexts) {
+    if (entry.status == status)
+      return entry.text;
+  }
+  return "Unknown";
+}
+
 // One request of the page, between the page's loader and the network's.
 class Loader : public network::mojom::URLLoader,
                public network::mojom::URLLoaderClient {
@@ -403,9 +481,7 @@ class Loader : public network::mojom::URLLoader,
   void Fulfill(const base::DictValue& response) {
     const int status = response.FindInt("status").value_or(200);
     std::string raw = "HTTP/1.1 " + base::NumberToString(status) + " " +
-                      std::string(net::GetHttpReasonPhrase(
-                          static_cast<net::HttpStatusCode>(status)))
-                      + "\r\n";
+                      FulfillStatusText(status) + "\r\n";
     std::string mime_type = "text/plain";
     if (const base::ListValue* headers = response.FindList("headers")) {
       for (const base::Value& header : *headers) {
@@ -508,7 +584,9 @@ class Loader : public network::mojom::URLLoader,
     value.Set("url", request_.url.GetWithoutRef().spec());
     value.Set("method", request_.method);
     value.Set("headers", RequestHeaders(request_.headers));
-    value.Set("resourceType", ResourceType(request_));
+    // The type DevTools has from Blink (XHR and fetch(), which the network
+    // cannot tell apart), else the network's.
+    value.Set("resourceType", devtools_type_.empty() ? std::string(ResourceType(request_)) : devtools_type_);
     value.Set("isNavigationRequest", navigation_);
     value.Set("frame", frame_);
     if (!redirected_from_.empty())
@@ -547,6 +625,8 @@ class Loader : public network::mojom::URLLoader,
   std::string id_;
   // The URL asked for, when route.continue() changed it.
   std::string original_url_;
+  // The page's DevTools session's type for it, lower case, if it said one.
+  std::string devtools_type_;
   std::string frame_;
   bool navigation_;
   int32_t request_id_;
@@ -781,6 +861,58 @@ class NetworkImpl : public Network,
     return true;
   }
 
+  void DevToolsType(const std::string& devtools_id, const std::string& type) override {
+    devtools_types_[devtools_id] = type;
+    if (devtools_types_.size() > 2000)
+      devtools_types_.erase(devtools_types_.begin());
+  }
+  std::string DevToolsTypeOf(const std::string& devtools_id) const {
+    auto found = devtools_types_.find(devtools_id);
+    return found == devtools_types_.end() ? std::string() : found->second;
+  }
+  // A request's DevTools id known, or the next request of its redirects:
+  // DevTools tells each hop's headers in order, under the same id.
+  void DevToolsRequestStarted(const std::string& devtools_id, const std::string& request) {
+    if (devtools_chains_.size() > 2000 && !devtools_chains_.contains(devtools_id))
+      devtools_chains_.erase(devtools_chains_.begin());
+    DevToolsChain& chain = devtools_chains_[devtools_id];
+    chain.hops.push_back(request);
+    FlushExtraInfo(chain);
+  }
+  void DevToolsExtraInfo(const std::string& kind,
+                         const std::string& devtools_id,
+                         base::ListValue headers) override {
+    if (devtools_chains_.size() > 2000 && !devtools_chains_.contains(devtools_id))
+      devtools_chains_.erase(devtools_chains_.begin());
+    DevToolsChain& chain = devtools_chains_[devtools_id];
+    if (chain.pending.size() < 64)
+      chain.pending.emplace_back(kind, std::move(headers));
+    FlushExtraInfo(chain);
+  }
+  struct DevToolsChain {
+    std::vector<std::string> hops;
+    size_t requests = 0;
+    size_t responses = 0;
+    std::vector<std::pair<std::string, base::ListValue>> pending;
+  };
+  void FlushExtraInfo(DevToolsChain& chain) {
+    for (auto it = chain.pending.begin(); it != chain.pending.end();) {
+      size_t& next = it->first == "request" ? chain.requests : chain.responses;
+      if (next >= chain.hops.size()) {
+        ++it;
+        continue;
+      }
+      EmitExtraInfo(it->first, chain.hops[next++], std::move(it->second));
+      it = chain.pending.erase(it);
+    }
+  }
+  void EmitExtraInfo(const std::string& kind, const std::string& request, base::ListValue headers) {
+    base::DictValue params;
+    params.Set("request", request);
+    params.Set("headers", std::move(headers));
+    Emit(kind == "request" ? "Page.requestExtraInfo" : "Page.responseExtraInfo", std::move(params));
+  }
+
   std::optional<std::string> RouteUrl(const std::string& route) override {
     auto found = routes_.find(route);
     if (found == routes_.end() || !found->second)
@@ -824,6 +956,10 @@ class NetworkImpl : public Network,
   int next_id_ = 0;
   bool offline_ = false;
   std::map<std::string, std::string> bodies_;
+  // DevTools' ids of the page's requests: their types, their requests, and
+  // the extra info that came before the request.
+  std::map<std::string, std::string> devtools_types_;
+  std::map<std::string, DevToolsChain> devtools_chains_;
   // Bodies on their way, and Response.body calls waiting for them.
   std::set<std::string> bodies_coming_;
   std::map<std::string, std::vector<BodyFunc>> body_waiters_;
@@ -845,12 +981,21 @@ void Loader::Start() {
     return;
   }
   network_->AddExtraHeaders(request_);
-  network_->Emit("Page.request", RequestValue());
-  if (network_->offline()) {
-    Complete(net::ERR_INTERNET_DISCONNECTED);
-    return;
+  if (request_.devtools_request_id) {
+    network_->DevToolsRequestStarted(*request_.devtools_request_id, id_);
+    devtools_type_ = base::ToLowerASCII(network_->DevToolsTypeOf(*request_.devtools_request_id));
+    // DevTools says "other" where the network knows better (a document).
+    if (devtools_type_ == "other" || devtools_type_ == "document")
+      devtools_type_.clear();
   }
+  network_->Emit("Page.request", RequestValue());
+  // Offline, the network fails it, routed or not: a route answers first, as
+  // Fetch's interception comes before Network.emulateNetworkConditions.
   if (!network_->Intercepts(request_.url)) {
+    if (network_->offline()) {
+      Complete(net::ERR_INTERNET_DISCONNECTED);
+      return;
+    }
     Continue({});
     return;
   }
@@ -995,6 +1140,8 @@ void Loader::OnReceiveRedirect(const net::RedirectInfo& redirect,
     timing_start_ = base::TimeTicks::Now();
     wall_start_ = base::Time::Now();
     response_headers_size_ = 0;
+    if (request_.devtools_request_id)
+      network_->DevToolsRequestStarted(*request_.devtools_request_id, id_);
     network_->Emit("Page.request", RequestValue());
   }
   client_->OnReceiveRedirect(redirect, std::move(head));

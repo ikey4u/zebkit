@@ -11,7 +11,7 @@ server/clock.ts installs it, as kClockScript.
 And the WebSocket mock (playwright/websocket_mock_script.js), installed as
 webSocketRouteDispatcher.ts installs it, as kWebSocketMockScript.
 
-    automation_scripts.py <injected_script.js> <automation_steps.js> <clock_script.js> <websocket_mock_script.js> <out.h>
+    automation_scripts.py <injected_script.js> <automation_steps.js> <clock_script.js> <websocket_mock_script.js> <snapshotter_script.js> <out.h>
 """
 
 import json
@@ -33,7 +33,9 @@ OPTIONS = {
 
 
 def main():
-    injected_path, steps_path, clock_path, mock_path, out_path = sys.argv[1:6]
+    injected_path, steps_path, clock_path, mock_path, snapshotter_path, out_path = sys.argv[1:7]
+    with open(snapshotter_path, encoding="utf-8") as f:
+        snapshotter = f.read()
     with open(mock_path, encoding="utf-8") as f:
         mock = f.read()
     with open(clock_path, encoding="utf-8") as f:
@@ -70,6 +72,10 @@ def main():
         f.write("\n// Playwright's WebSocket mock, made in a document.\n")
         f.write(array("kWebSocketMockScript",
                       "(() => {\nconst module = {};\n%s\n;\n(module.exports.inject())(globalThis);\n})();\n" % mock))
+        f.write("\n// Playwright's DOM snapshot streamer for traces: an expression whose value\n"
+                "// is frameSnapshotStreamer(streamerName, removeNoScript).\n")
+        f.write(array("kSnapshotterScript",
+                      "(() => {\n%s\n;\nreturn frameSnapshotStreamer;\n})()" % snapshotter))
         f.write("\n}  // namespace zebkit\n\n#endif  // ZEBKIT_ENGINE_AUTOMATION_SCRIPTS_H_\n")
 
 

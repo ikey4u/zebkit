@@ -843,6 +843,18 @@ bool BrowserClient::CanCreateWindow(
           opener, opener_url, opener_top_level_frame_url, source_origin,
           container_type, target_url, referrer, frame_name, disposition, features,
           user_gesture, opener_suppressed, no_javascript_access);
+  // Automation's popups wait for their context's settings (view.h).
+  if (allowed && opener) {
+    if (PopupHoldFunc hook = PopupHoldHook()) {
+      hook(content::WebContents::FromRenderFrameHost(opener), true);
+      // Unless HandlePopup() did: a window that was not made after all.
+      content::GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce([] {
+            if (PopupHoldFunc hook = PopupHoldHook())
+              hook(nullptr, false);
+          }));
+    }
+  }
   if (opens_window && view && view->on_window_open_event_) {
     base::DictValue event;
     event.Set("phase", "decision"); event.Set("allowed", allowed);
@@ -1091,8 +1103,12 @@ void BrowserClient::WillCreateURLLoaderFactory(
              type == URLLoaderFactoryType::kServiceWorkerSubResource) {
     InterceptNetworkHookFactory(browser_context, frame, NetworkHookFactory::kServiceWorker, factory_builder, header_client);
   }
+  // A dedicated worker's requests too, as its page's (Playwright reports and
+  // routes them on the page).
   if (type == URLLoaderFactoryType::kNavigation ||
-      type == URLLoaderFactoryType::kDocumentSubResource) {
+      type == URLLoaderFactoryType::kDocumentSubResource ||
+      type == URLLoaderFactoryType::kWorkerMainResource ||
+      type == URLLoaderFactoryType::kWorkerSubResource) {
     InterceptURLLoaderFactory(frame, factory_builder);
   }
 }

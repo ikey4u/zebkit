@@ -38,6 +38,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/version_info/version_info.h"
 #include "base/task/sequenced_task_runner.h"
@@ -48,6 +49,8 @@
 #include "build/build_config.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -183,6 +186,8 @@ constexpr char kWebSocketBinding[] = "__pwWebSocketBinding";
 constexpr char kFrameDetached[] = "Frame was detached";
 // How a selector enters the next frame (frameSelectors.ts).
 constexpr char kEnterFrame[] = " >> internal:control=enter-frame >> ";
+// frameLocator() without a selector: the frame of the subtree that matches.
+constexpr char kAnyFrame[] = "internal:control=any-frame";
 
 // A selector in a call log as Playwright's asLocator() shows a CSS one; one of
 // its own engines' chains stays as it is.
@@ -361,6 +366,10 @@ class Call {
         (deadline_ - base::TimeTicks::Now()).InMilliseconds());
     return left > 0 ? left : 1;
   }
+  // An assertion through frameLocator() that matched in no frame yet: it
+  // searches the frames again unless it passes.
+  bool any_frame_retry = false;
+
   bool Expired() const {
     return timeout_ms_ > 0 && base::TimeTicks::Now() >= deadline_;
   }
@@ -504,6 +513,9 @@ struct Target {
   FrameRef frame;
   std::string selector;
   bool strict = false;
+  // frameLocator() found nothing yet: a step waits this long at most, after
+  // which the frames are searched again (Call::any_frame_retry).
+  int cap_ms = 0;
   // The agent's handle of the element the selector is inside; 0 for none.
   int32_t scope = 0;
 };
@@ -537,6 +549,70 @@ base::Value RegistrationResult(const std::string& id, const std::string& kind) {
 
 // What a context (a profile) has for all its pages: Browser.newContext's
 // options and the BrowserContext commands that change them.
+// Chromium holds a window.open() popup for its DevTools client while a browser
+// session auto-attaches (TargetHandler::ShouldThrottlePopups()), as with
+// Playwright's own: the opener's script waits in window.open() until the
+// popup's page target is released. This session attaches to nothing itself,
+// and auto-attaches only from an automated opener's allowed window.open() to
+// its popup's view (zebkit::PopupHoldHook()), since a browser session that
+// stays would change how every new page starts; each popup's view holds and
+// releases its own target (zebkit_view::HoldStart()), after its automation
+// has applied the context (init scripts, viewport).
+class PopupHold : public content::DevToolsAgentHostClient {
+ public:
+  static void Install() { zebkit::PopupHoldHook() = &PopupHold::Hook; }
+
+  static void Hook(content::WebContents* opener, bool hold);
+
+  void Set(bool hold) {
+    if (hold == armed_)
+      return;
+    if (!host_) {
+      host_ = content::DevToolsAgentHost::CreateForBrowser(nullptr, {});
+      if (!host_ || !host_->AttachClient(this)) {
+        host_ = nullptr;
+        return;
+      }
+    }
+    base::DictValue params;
+    params.Set("autoAttach", hold);
+    params.Set("waitForDebuggerOnStart", false);
+    params.Set("flatten", true);
+    base::ListValue filter;
+    base::DictValue none;
+    none.Set("exclude", true);
+    filter.Append(std::move(none));
+    params.Set("filter", std::move(filter));
+    base::DictValue message;
+    message.Set("id", ++next_id_);
+    message.Set("method", "Target.setAutoAttach");
+    message.Set("params", std::move(params));
+    const std::string json = Json(base::Value(std::move(message)));
+    host_->DispatchProtocolMessage(this, base::as_byte_span(json));
+    armed_ = hold;
+    zebkit::PopupStartsHeld() = hold;
+  }
+
+  static PopupHold& Get() {
+    static base::NoDestructor<PopupHold> hold;
+    return *hold;
+  }
+
+  // content::DevToolsAgentHostClient
+  void DispatchProtocolMessage(content::DevToolsAgentHost*,
+                               base::span<const uint8_t>) override {}
+  void AgentHostClosed(content::DevToolsAgentHost*) override {
+    armed_ = false;
+    zebkit::PopupStartsHeld() = false;
+    host_ = nullptr;
+  }
+
+ private:
+  scoped_refptr<content::DevToolsAgentHost> host_;
+  bool armed_ = false;
+  int next_id_ = 0;
+};
+
 struct ContextState {
   base::DictValue options;
   std::optional<content::GeolocationOverride> geolocation;
@@ -574,6 +650,34 @@ class Automation : public content::WebContentsObserver,
     return std::find(exposed_.begin(), exposed_.end(), name) != exposed_.end();
   }
 
+  // The context's exposed functions (BrowserContext.exposeBinding), which a
+  // popup has from its first script on.
+  std::vector<std::string> ContextBindings() {
+    std::vector<std::string> names;
+    for (const auto& [method, params] : Context().replay) {
+      const std::string* name = params.FindString("name");
+      if (method == "Page.exposeBinding" && name)
+        names.push_back(*name);
+    }
+    return names;
+  }
+
+  // navigator.onLine and the network's offline state, as crNetworkManager.ts
+  // emulates it on each page's session (Network.emulateNetworkConditions).
+  void EmulateOffline(bool offline) {
+    if (Network* network = Network::For(web_contents()))
+      network->SetOffline(offline);
+    if (!view_ || (!offline && !emulated_offline_))
+      return;
+    emulated_offline_ = offline;
+    base::DictValue params;
+    params.Set("offline", offline);
+    params.Set("latency", 0);
+    params.Set("downloadThroughput", -1);
+    params.Set("uploadThroughput", -1);
+    view_->Send("Network.emulateNetworkConditions", std::move(params));
+  }
+
   static Automation* For(zebkit_view* view) {
     content::WebContents* contents = view->web_contents();
     if (!contents)
@@ -598,6 +702,7 @@ class Automation : public content::WebContentsObserver,
   // requests through the network's proxy from now on (as DevTools' Fetch
   // domain, patches/1038).
   void Started() {
+    PopupHold::Install();
     MainFrame()->ForEachRenderFrameHost([this](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
         content::UpdateSubresourceLoaderFactories(frame);
@@ -605,6 +710,87 @@ class Automation : public content::WebContentsObserver,
       StartIdleTimer(frame->GetFrameTreeNodeId());
     });
     ApplyContext();
+    WatchDevToolsNetwork();
+  }
+
+  // The page's DevTools session's Network domain, for what only Blink and the
+  // network's own observer know: XHR and fetch() apart, and the headers as the
+  // network sent and received them (Cookie, Set-Cookie), as Playwright has
+  // them from CDP.
+  void WatchDevToolsNetwork() {
+    if (!view_)
+      return;
+    view_->SetProtocolEvents(base::BindRepeating(&Automation::DevToolsEvent,
+                                                 weak_factory_.GetWeakPtr()));
+    view_->Send("Network.enable", base::DictValue());
+  }
+
+  static base::ListValue HeaderList(const base::DictValue* headers) {
+    base::ListValue list;
+    if (!headers)
+      return list;
+    for (auto [name, value] : *headers) {
+      if (!value.is_string())
+        continue;
+      // CDP joins repeated headers with new lines (crNetworkManager.ts splits).
+      for (const std::string& line : base::SplitString(value.GetString(), "\n", base::KEEP_WHITESPACE,
+                                                        base::SPLIT_WANT_ALL)) {
+        base::DictValue header;
+        header.Set("name", name);
+        header.Set("value", line);
+        list.Append(std::move(header));
+      }
+    }
+    return list;
+  }
+
+  void DevToolsEvent(const std::string& method, const base::DictValue& params) {
+    Network* network = Network::For(web_contents());
+    const std::string* request = params.FindString("requestId");
+    if (!network || !request)
+      return;
+    if (method == "Network.requestWillBeSent") {
+      if (const std::string* type = params.FindString("type"))
+        network->DevToolsType(*request, *type);
+    } else if (method == "Network.requestWillBeSentExtraInfo") {
+      network->DevToolsExtraInfo("request", *request, HeaderList(params.FindDict("headers")));
+    } else if (method == "Network.responseReceivedExtraInfo") {
+      network->DevToolsExtraInfo("response", *request, HeaderList(params.FindDict("headers")));
+    } else if (method == "Network.webSocketCreated") {
+      // A page's WebSockets, as crNetworkManager.ts makes Playwright's.
+      base::DictValue socket;
+      socket.Set("socket", "s" + *request);
+      const std::string* url = params.FindString("url");
+      socket.Set("url", url ? *url : std::string());
+      Emit("Page.webSocket", std::move(socket));
+    } else if (method == "Network.webSocketHandshakeResponseReceived") {
+      const int status = params.FindIntByDottedPath("response.status").value_or(101);
+      if (status >= 400) {
+        const std::string* text = params.FindStringByDottedPath("response.statusText");
+        base::DictValue error;
+        error.Set("socket", "s" + *request);
+        error.Set("error", (text ? *text : std::string()) + ": " + base::NumberToString(status));
+        Emit("WebSocket.socketError", std::move(error));
+      }
+    } else if (method == "Network.webSocketFrameSent" || method == "Network.webSocketFrameReceived") {
+      base::DictValue frame;
+      frame.Set("socket", "s" + *request);
+      frame.Set("opcode", params.FindIntByDottedPath("response.opcode").value_or(1));
+      const std::string* data = params.FindStringByDottedPath("response.payloadData");
+      frame.Set("data", data ? *data : std::string());
+      Emit(method == "Network.webSocketFrameSent" ? "WebSocket.frameSent" : "WebSocket.frameReceived",
+           std::move(frame));
+    } else if (method == "Network.webSocketFrameError") {
+      base::DictValue error;
+      error.Set("socket", "s" + *request);
+      const std::string* message = params.FindString("errorMessage");
+      error.Set("error", message ? *message : std::string());
+      Emit("WebSocket.socketError", std::move(error));
+    } else if (method == "Network.webSocketClosed") {
+      base::DictValue closed;
+      closed.Set("socket", "s" + *request);
+      Emit("WebSocket.close", std::move(closed));
+    }
   }
 
   // The context's settings for this page (Browser.newContext's options).
@@ -612,8 +798,7 @@ class Automation : public content::WebContentsObserver,
     ContextState& state = ContextStates()[web_contents()->GetBrowserContext()];
     if (state.geolocation)
       content::SetGeolocationOverride(web_contents(), state.geolocation);
-    if (Network* network = Network::For(web_contents()))
-      network->SetOffline(state.offline);
+    EmulateOffline(state.offline);
     ApplyExtraHeaders();
     const base::DictValue& options = state.options;
     if (const std::string* agent = options.FindString("userAgent"))
@@ -747,10 +932,8 @@ class Automation : public content::WebContentsObserver,
   // the context.
   void ContextOffline(Call* call) {
     Context().offline = call->Flag("offline");
-    for (Automation* page : InProfile(web_contents()->GetBrowserContext())) {
-      if (Network* network = Network::For(page->web_contents()))
-        network->SetOffline(call->Flag("offline"));
-    }
+    for (Automation* page : InProfile(web_contents()->GetBrowserContext()))
+      page->EmulateOffline(call->Flag("offline"));
     call->Done();
   }
 
@@ -784,6 +967,20 @@ class Automation : public content::WebContentsObserver,
     }
     for (const base::Value& header : page_extra_headers_)
       merged.Append(header.Clone());
+    // And the session's, which a WebSocket's handshake has from the network
+    // (Network.setExtraHTTPHeaders, as Playwright sets them).
+    if (view_) {
+      base::DictValue headers;
+      for (const base::Value& header : merged) {
+        const std::string* name = header.GetDict().FindString("name");
+        const std::string* value = header.GetDict().FindString("value");
+        if (name && value)
+          headers.Set(*name, *value);
+      }
+      base::DictValue params;
+      params.Set("headers", std::move(headers));
+      view_->Send("Network.setExtraHTTPHeaders", std::move(params));
+    }
     network->SetExtraHeaders(merged);
   }
 
@@ -1076,7 +1273,12 @@ class Automation : public content::WebContentsObserver,
       call->Fail(handles.empty() ? kFrameDetached : kDetached);
       return;
     }
-    arg.Set("timeout", call->Remaining());
+    int remaining = call->Remaining();
+    if (std::optional<int> cap = arg.FindInt("timeoutCap")) {
+      remaining = remaining > 0 ? std::min(remaining, *cap) : *cap;
+      arg.Remove("timeoutCap");
+    }
+    arg.Set("timeout", remaining);
     const std::string json = Json(base::Value(arg.Clone()));
     const content::GlobalRenderFrameHostId frame_id = frame->GetGlobalId();
     Agent(frame)->Step(
@@ -1175,6 +1377,8 @@ class Automation : public content::WebContentsObserver,
                   AutomationWorld world = AutomationWorld::kUtility) {
     arg.Set("selector", target.selector);
     arg.Set("strict", target.strict);
+    if (target.cap_ms)
+      arg.Set("timeoutCap", target.cap_ms);
     std::vector<int32_t> handles;
     if (target.scope) {
       base::DictValue scope;
@@ -1210,6 +1414,10 @@ class Automation : public content::WebContentsObserver,
                           name == "waitForSelector";
       target.selector = inside ? selector : ":scope";
       target.strict = inside && call->Flag("strict");
+      if (inside && IsAnyFrame(selector)) {
+        AnyFrameTarget(call, std::move(target), std::move(done));
+        return;
+      }
       std::move(done).Run(std::move(target));
       return;
     }
@@ -1220,6 +1428,20 @@ class Automation : public content::WebContentsObserver,
     }
     target.frame = Follow(frame);
     target.strict = call->Flag("strict");
+    if (IsAnyFrame(selector)) {
+      target.selector = selector;
+      AnyFrameTarget(call, std::move(target), std::move(done));
+      return;
+    }
+    // selectorParser.ts: frameLocator() only first, and not in an operand.
+    if (const size_t at = selector.find(kAnyFrame); at != std::string::npos) {
+      const bool nested = at > 0 && (selector[at - 1] == '"' || selector[at - 1] == '\'');
+      call->Fail(nested ? "frameLocator() is not allowed inside composite locators, while querying \"" +
+                              selector + "\""
+                        : "\"any-frame\" is only allowed as the first selector token, while parsing selector " +
+                              selector);
+      return;
+    }
     std::vector<std::string> chunks;
     size_t start = 0;
     for (size_t at;
@@ -1250,6 +1472,211 @@ class Automation : public content::WebContentsObserver,
     chunks.pop_back();
     EnterFrames(call->GetWeakPtr(), std::move(target), std::move(chunks), 0,
                 std::move(done));
+  }
+
+  // ---- frameLocator(): internal:control=any-frame ------------------------
+
+  static bool IsAnyFrame(const std::string& selector) {
+    return selector == kAnyFrame || selector.starts_with(std::string(kAnyFrame) + " >> ");
+  }
+
+  static std::string AnyFrameRest(const std::string& selector) {
+    const size_t prefix = sizeof(kAnyFrame) - 1 + 4;
+    return selector.size() > prefix ? selector.substr(prefix) : std::string();
+  }
+
+  static std::string AnyFrameLocatorText(const std::string& selector) {
+    const std::string rest = AnyFrameRest(selector);
+    if (rest.find(" >> ") == std::string::npos && rest.find("internal:") == std::string::npos &&
+        rest.find('=') == std::string::npos) {
+      return "frameLocator().locator('" + rest + "')";
+    }
+    return selector;
+  }
+
+  // frameSelectors.ts's splitSelectorByFrame() checks, then the frame of the
+  // subtree in which the rest matches (resolveFramesForSelector()).
+  void AnyFrameTarget(Call* call, Target target, TargetDone done) {
+    const std::string selector = target.selector;
+    const std::string rest = AnyFrameRest(selector);
+    if (rest.empty()) {
+      call->Fail("Selector cannot be empty after frameLocator(), while parsing selector " + selector);
+      return;
+    }
+    // Inside a composite locator's operand (quoted), or again later.
+    if (const size_t at = rest.find(kAnyFrame); at != std::string::npos) {
+      const bool nested = at > 0 && (rest[at - 1] == '"' || rest[at - 1] == '\'');
+      call->Fail(nested ? "frameLocator() is not allowed inside composite locators, while querying \"" +
+                              AnyFrameLocatorText(selector) + "\""
+                        : "\"any-frame\" is only allowed as the first selector token, while parsing selector " +
+                              selector);
+      return;
+    }
+    if (rest.starts_with("internal:control=enter-frame")) {
+      call->Fail("Selector cannot start with entering frame, select the iframe first");
+      return;
+    }
+    if (rest.ends_with(" >> internal:control=enter-frame")) {
+      call->Fail("Selector cannot end with entering frame, while parsing selector " + selector);
+      return;
+    }
+    call->Log("waiting for " + AnyFrameLocatorText(selector));
+    target.selector = rest;
+    AnyFrameSearch(call->GetWeakPtr(), std::move(target), std::move(done));
+  }
+
+  struct AnyFrameProbe {
+    base::WeakPtr<Call> call;
+    Target target;
+    TargetDone done;
+    std::vector<content::GlobalRenderFrameHostId> frames;
+    std::vector<int> counts;
+    std::string error;
+    size_t pending = 0;
+  };
+
+  // Each frame of the subtree asked how many elements the selector's first
+  // part has there; the one frame that has some is where it continues.
+  void AnyFrameSearch(base::WeakPtr<Call> call, Target target, TargetDone done) {
+    if (!call || call->finished())
+      return;
+    content::RenderFrameHost* start = Resolve(target.frame);
+    if (!start) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    auto probe = std::make_shared<AnyFrameProbe>();
+    probe->call = call;
+    probe->done = std::move(done);
+    const size_t enter = target.selector.find(kEnterFrame);
+    const std::string first =
+        enter == std::string::npos ? target.selector : target.selector.substr(0, enter);
+    start->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (frame->IsActive() && frame->IsRenderFrameLive())
+        probe->frames.push_back(frame->GetGlobalId());
+    });
+    probe->counts.assign(probe->frames.size(), 0);
+    probe->pending = probe->frames.size();
+    const int32_t scope = target.scope;
+    probe->target = std::move(target);
+    const content::GlobalRenderFrameHostId start_id = start->GetGlobalId();
+    const std::vector<content::GlobalRenderFrameHostId> frames = probe->frames;
+    for (size_t i = 0; i < frames.size(); ++i) {
+      content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frames[i]);
+      base::DictValue arg;
+      arg.Set("selector", first);
+      arg.Set("strict", false);
+      arg.Set("timeout", 0);
+      std::vector<int32_t> handles;
+      if (frames[i] == start_id && scope) {
+        base::DictValue scope_ref;
+        scope_ref.Set("$h", 0);
+        arg.Set("scope", std::move(scope_ref));
+        handles.push_back(scope);
+      }
+      Agent(frame)->Step(
+          AutomationWorld::kUtility, "queryCount", Json(base::Value(std::move(arg))), handles,
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              base::BindOnce(&Automation::AnyFrameCounted, weak_factory_.GetWeakPtr(), probe, i,
+                             frames[i] == start_id),
+              AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+    }
+  }
+
+  void AnyFrameCounted(std::shared_ptr<AnyFrameProbe> probe,
+                       size_t index,
+                       bool start,
+                       AutomationStatus status,
+                       const std::string& result,
+                       std::vector<AutomationHandlePtr>) {
+    if (status == AutomationStatus::kOk) {
+      std::optional<base::Value> answer = Parse(result);
+      const base::DictValue* dict = answer && answer->is_dict() ? &answer->GetDict() : nullptr;
+      if (dict && dict->FindBool("ok").value_or(false)) {
+        const base::Value* value = dict->Find("value");
+        if (value && value->is_dict())
+          value = value->GetDict().Find("value");
+        if (value && value->is_int())
+          probe->counts[index] = value->GetInt();
+        else if (value && value->is_double())
+          probe->counts[index] = static_cast<int>(value->GetDouble());
+      } else if (dict && start) {
+        const std::string* error = dict->FindString("error");
+        probe->error = error ? *error : "Error";
+      }
+    }
+    if (--probe->pending)
+      return;
+    Call* call = probe->call.get();
+    if (!call || call->finished())
+      return;
+    if (!probe->error.empty()) {
+      call->Fail(probe->error);
+      return;
+    }
+    std::vector<size_t> matched;
+    for (size_t i = 0; i < probe->counts.size(); ++i) {
+      if (probe->counts[i] > 0)
+        matched.push_back(i);
+    }
+    Target target = std::move(probe->target);
+    if (matched.size() > 1) {
+      // frames.ts's expect(): a non-recoverable error is the assertion's.
+      if (call->Name() == "expect") {
+        base::DictValue failed;
+        failed.Set("matches", call->Flag("isNot"));
+        failed.Set("errorMessage", "frameLocator() matched elements in multiple frames.");
+        call->Done(base::Value(std::move(failed)));
+        return;
+      }
+      call->Fail("frameLocator() matched elements in multiple frames.");
+      return;
+    }
+    if (matched.size() == 1) {
+      content::RenderFrameHost* frame = content::RenderFrameHost::FromID(probe->frames[matched[0]]);
+      if (!frame) {
+        call->Fail(kFrameDetached);
+        return;
+      }
+      if (Resolve(target.frame) != frame)
+        target.scope = 0;
+      target.frame = Follow(frame);
+      AnyFrameContinue(call, std::move(target), std::move(probe->done));
+      return;
+    }
+    // Nowhere yet: an answer of what there is, an assertion for a while in the
+    // starting frame, anything else once the frames have it.
+    const std::string name = call->Name();
+    if (name == "queryCount" || name == "querySelector" || name == "querySelectorAll" ||
+        name == "evalOnSelectorAll" || name == "isVisible" || name == "isHidden" ||
+        (name == "expect" && target.selector.find(kEnterFrame) == std::string::npos)) {
+      if (name == "expect" && !call->Expired()) {
+        target.cap_ms = 250;
+        call->any_frame_retry = true;
+      }
+      AnyFrameContinue(call, std::move(target), std::move(probe->done));
+      return;
+    }
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&Automation::AnyFrameSearch, weak_factory_.GetWeakPtr(), probe->call,
+                       std::move(target), std::move(probe->done)),
+        base::Milliseconds(100));
+  }
+
+  // The rest, frames entered as without frameLocator().
+  void AnyFrameContinue(Call* call, Target target, TargetDone done) {
+    std::vector<std::string> chunks;
+    const std::string selector = target.selector;
+    size_t start = 0;
+    for (size_t at; (at = selector.find(kEnterFrame, start)) != std::string::npos;) {
+      chunks.push_back(selector.substr(start, at - start));
+      start = at + sizeof(kEnterFrame) - 1;
+    }
+    chunks.push_back(selector.substr(start));
+    target.selector = chunks.back();
+    chunks.pop_back();
+    EnterFrames(call->GetWeakPtr(), std::move(target), std::move(chunks), 0, std::move(done));
   }
 
   // Each frame's <iframe> found in its parent and its frame entered, until
@@ -1925,12 +2352,25 @@ class Automation : public content::WebContentsObserver,
                 }));
       return;
     }
-    call->Log("waiting for " + LocatorText(call->String("selector")));
+    if (!IsAnyFrame(call->String("selector")))
+      call->Log("waiting for " + LocatorText(call->String("selector")));
     // frames.ts: a property is of the page's own objects.
     StepOnTarget(call, "expect", std::move(arg),
-                 base::BindOnce([](Call* call, base::Value value) {
+                 base::BindOnce([](base::WeakPtr<Automation> self, Call* call, base::Value value) {
+                   // Through frameLocator(), nowhere yet: again, in the frames
+                   // there are now.
+                   if (call->any_frame_retry && self && !call->Expired()) {
+                     call->any_frame_retry = false;
+                     const base::DictValue* dict = value.is_dict() ? &value.GetDict() : nullptr;
+                     const bool is_not = call->Flag("isNot");
+                     const bool passed = dict && dict->FindBool("matches").value_or(is_not) != is_not;
+                     if (dict && !passed && !dict->Find("errorMessage")) {
+                       self->Expect(call);
+                       return;
+                     }
+                   }
                    call->Done(std::move(value));
-                 }),
+                 }, weak_factory_.GetWeakPtr()),
                  call->String("expression") == "to.have.property"
                      ? AutomationWorld::kMain
                      : AutomationWorld::kUtility);
@@ -1956,6 +2396,74 @@ class Automation : public content::WebContentsObserver,
     // modified click, which has none (CDP's openerId).
     answer.Set("hasOpener", web_contents()->HasLiveOriginalOpenerChain());
     call->Done(base::Value(std::move(answer)));
+  }
+
+  void NothingToDo(Call* call) { call->Done(); }
+
+  // Page.captureSnapshot {streamer, reset, removeNoScript}: a DOM snapshot of
+  // each frame, as snapshotter.ts takes it for a trace (snapshotterInjected.ts's
+  // streamer, made in the frame's main world the first time):
+  // {snapshots: [{frame, isMainFrame, data}]}, the main frame first.
+  void CaptureSnapshot(Call* call) {
+    const std::string streamer = call->String("streamer");
+    const std::string reset = call->Has("reset") ? "\"" + call->String("reset") + "\"" : "undefined";
+    const std::string expression =
+        "(() => { const s = " + Json(base::Value(streamer)) + "; if (!window[s]) (" +
+        std::string(reinterpret_cast<const char*>(kSnapshotterScript), sizeof(kSnapshotterScript)) +
+        ")(s, " + (call->Flag("removeNoScript") ? "true" : "false") + "); return window[s].captureSnapshot(" +
+        reset + "); })()";
+    std::vector<content::RenderFrameHost*> frames;
+    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (frame->IsActive() && frame->IsRenderFrameLive())
+        frames.push_back(frame);
+    });
+    struct State {
+      std::vector<base::Value> results;
+      size_t left;
+    };
+    auto state = std::make_shared<State>();
+    state->results.resize(frames.size());
+    state->left = frames.size();
+    auto finish = [](base::WeakPtr<Call> call, std::shared_ptr<State> state) {
+      if (!call)
+        return;
+      base::ListValue list;
+      for (base::Value& value : state->results) {
+        if (value.is_dict())
+          list.Append(std::move(value));
+      }
+      base::DictValue answer;
+      answer.Set("snapshots", std::move(list));
+      call->Done(base::Value(std::move(answer)));
+    };
+    if (frames.empty()) {
+      finish(call->GetWeakPtr(), state);
+      return;
+    }
+    for (size_t i = 0; i < frames.size(); ++i) {
+      content::RenderFrameHost* frame = frames[i];
+      base::DictValue entry;
+      entry.Set("frame", FrameId(frame));
+      entry.Set("isMainFrame", !frame->GetParent());
+      Agent(frame)->Evaluate(
+          AutomationWorld::kMain, expression, AutomationExpression::kValue, "[]", {}, true, true,
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              base::BindOnce(
+                  [](base::WeakPtr<Call> call, std::shared_ptr<State> state, size_t index,
+                     base::DictValue entry, decltype(finish) finish, AutomationStatus status,
+                     const std::string& result, std::vector<AutomationHandlePtr>) {
+                    std::optional<base::Value> answer = Parse(result);
+                    base::Value* value = answer && answer->is_dict() ? answer->GetDict().Find("value") : nullptr;
+                    if (status == AutomationStatus::kOk && value && value->is_dict()) {
+                      entry.Set("data", std::move(*value));
+                      state->results[index] = base::Value(std::move(entry));
+                    }
+                    if (--state->left == 0)
+                      finish(call, state);
+                  },
+                  call->GetWeakPtr(), state, i, std::move(entry), finish),
+              AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+    }
   }
 
   // Page.waitForInitialNavigation: answers once the page's main frame has
@@ -3219,7 +3727,7 @@ class Automation : public content::WebContentsObserver,
     if (!media_type_.empty())
       Agent(frame)->SetMediaType(media_type_);
     if (!exposed_.empty())
-      Agent(frame)->Expose(exposed_);
+      Agent(frame)->Expose(exposed_, ContextBindings());
     if (frame->GetParent() && frame->IsActive())
       Emit("Page.frameAttached", FrameValue(frame));
   }
@@ -4167,13 +4675,34 @@ class Automation : public content::WebContentsObserver,
   // Page.captureScreenshot (formats, clips beyond the view, scales).
   void Screenshot(Call* call) {
     // screenshotter.ts's validateScreenshotOptions().
+    const std::string type = call->String("type");
+    if (!type.empty() && type != "png" && type != "jpeg" && type != "webp") {
+      call->Fail("Unknown options.type value: " + type);
+      return;
+    }
+    if (call->Has("quality")) {
+      const double quality = call->Number("quality");
+      if (type.empty() || type == "png") {
+        call->Fail("options.quality is unsupported for the png screenshots");
+        return;
+      }
+      if (quality != static_cast<int>(quality)) {
+        call->Fail("Expected options.quality to be an integer");
+        return;
+      }
+      if (quality < 0 || quality > 100) {
+        call->Fail("Expected options.quality to be between 0 and 100 (inclusive), got " +
+                   base::NumberToString(static_cast<int>(quality)));
+        return;
+      }
+    }
     if (const base::DictValue* clip = call->params().FindDict("clip")) {
       if (clip->FindDouble("width").value_or(0) <= 0) {
-        call->Fail("Expected options.clip.width to be greater than 0");
+        call->Fail("Expected options.clip.width to be greater than 0.");
         return;
       }
       if (clip->FindDouble("height").value_or(0) <= 0) {
-        call->Fail("Expected options.clip.height to be greater than 0");
+        call->Fail("Expected options.clip.height to be greater than 0.");
         return;
       }
     }
@@ -4241,6 +4770,14 @@ class Automation : public content::WebContentsObserver,
                 call->Fail("Node is either not visible or not an HTMLElement");
                 return;
               }
+              if (box.GetDict().FindDouble("width").value_or(0) == 0) {
+                call->Fail("Node has 0 width.");
+                return;
+              }
+              if (box.GetDict().FindDouble("height").value_or(0) == 0) {
+                call->Fail("Node has 0 height.");
+                return;
+              }
               const gfx::PointF origin(box.GetDict().FindDouble("x").value_or(0),
                                        box.GetDict().FindDouble("y").value_or(0));
               const gfx::SizeF size(box.GetDict().FindDouble("width").value_or(0),
@@ -4285,60 +4822,83 @@ class Automation : public content::WebContentsObserver,
     const base::DictValue& m = metrics.GetDict();
     const double scroll_x = m.FindDouble("scrollX").value_or(0);
     const double scroll_y = m.FindDouble("scrollY").value_or(0);
-    const double viewport_width = m.FindDouble("viewportWidth").value_or(0);
-    const double viewport_height = m.FindDouble("viewportHeight").value_or(0);
-    const double scale_factor = m.FindDouble("deviceScaleFactor").value_or(1);
-    std::optional<gfx::RectF> document;
-    bool beyond = false;
-    if (call->Flag("fullPage")) {
-      document = gfx::RectF(0, 0, m.FindDouble("documentWidth").value_or(0),
-                            m.FindDouble("documentHeight").value_or(0));
-      if (clip) {
-        // A clip of a full page is in the document's coordinates.
-        document->Intersect(*clip);
-      }
-      beyond = true;
-    } else if (clip) {
-      const bool own_clip = !call->OnHandle();
-      if (own_clip) {
-        // A page's clip stays within the viewport.
-        gfx::RectF view(viewport_width, viewport_height);
-        clip->Intersect(view);
-      }
-      document = gfx::RectF(clip->x() + scroll_x, clip->y() + scroll_y,
-                            clip->width(), clip->height());
-      beyond = clip->width() > viewport_width || clip->height() > viewport_height;
+    // screenshotter.ts: the emulated viewport's size when there is one (a
+    // mobile page's layout may be wider), else the window's.
+    double viewport_width = m.FindDouble("viewportWidth").value_or(0);
+    double viewport_height = m.FindDouble("viewportHeight").value_or(0);
+    if (viewport_) {
+      viewport_width = viewport_->width();
+      viewport_height = viewport_->height();
+    } else if (const base::DictValue* given = Context().options.FindDict("viewport")) {
+      viewport_width = given->FindInt("width").value_or(static_cast<int>(viewport_width));
+      viewport_height = given->FindInt("height").value_or(static_cast<int>(viewport_height));
     }
-    if (document && document->IsEmpty()) {
+    const double scale_factor = m.FindDouble("deviceScaleFactor").value_or(1);
+    // screenshotter.ts and crPage.ts's takeScreenshot(): a clip always, in the
+    // document's coordinates; beyond the viewport only when it does not fit.
+    auto enclosing = [](const gfx::RectF& rect) {
+      const double x = std::floor(rect.x() + 1e-3), y = std::floor(rect.y() + 1e-3);
+      const double x2 = std::ceil(rect.right() - 1e-3), y2 = std::ceil(rect.bottom() - 1e-3);
+      return gfx::RectF(x, y, x2 - x, y2 - y);
+    };
+    // trimClipToSize().
+    auto trim = [](const gfx::RectF& clip, double width, double height) {
+      const double x1 = std::max(0.0, std::min<double>(clip.x(), width));
+      const double y1 = std::max(0.0, std::min<double>(clip.y(), height));
+      const double x2 = std::max(0.0, std::min<double>(clip.right(), width));
+      const double y2 = std::max(0.0, std::min<double>(clip.bottom(), height));
+      return gfx::RectF(x1, y1, x2 - x1, y2 - y1);
+    };
+    gfx::RectF document;
+    bool fits = true;
+    double visual_scale = 1;
+    if (call->OnHandle()) {
+      // The element's box, of the viewport, moved by the scroll.
+      document = enclosing(gfx::RectF(clip->x() + scroll_x, clip->y() + scroll_y,
+                                      clip->width(), clip->height()));
+      fits = clip->width() <= viewport_width && clip->height() <= viewport_height;
+    } else if (call->Flag("fullPage")) {
+      const double width = m.FindDouble("documentWidth").value_or(0);
+      const double height = m.FindDouble("documentHeight").value_or(0);
+      document = gfx::RectF(0, 0, width, height);
+      fits = width <= viewport_width && height <= viewport_height;
+      if (clip)
+        document = trim(*clip, width, height);
+    } else {
+      // crPage.ts: the visual viewport's, at its scale (a zoomed-out mobile
+      // layout is taken as it shows).
+      const gfx::RectF view = clip ? trim(*clip, viewport_width, viewport_height)
+                                   : gfx::RectF(0, 0, viewport_width, viewport_height);
+      visual_scale = m.FindDouble("visualScale").value_or(1);
+      if (visual_scale <= 0)
+        visual_scale = 1;
+      document = gfx::RectF(m.FindDouble("visualPageX").value_or(scroll_x) + view.x(),
+                            m.FindDouble("visualPageY").value_or(scroll_y) + view.y(),
+                            std::ceil(view.width() / visual_scale - 1e-3),
+                            std::ceil(view.height() / visual_scale - 1e-3));
+    }
+    if (document.width() <= 0 || document.height() <= 0) {
       RestoreScreenshot(call, std::string(),
                         "Clipped area is either empty or outside the resulting image");
       return;
     }
-    const std::string type = call->String("type");
+    const std::string type = call->String("type").empty() ? "png" : call->String("type");
     base::DictValue params;
-    params.Set("format", type.empty() ? "png" : type);
-    if (call->Has("quality"))
-      params.Set("quality", static_cast<int>(call->Number("quality")));
-    params.Set("captureBeyondViewport", beyond);
-    if (document) {
-      const gfx::Rect whole = gfx::ToEnclosingRect(*document);
-      base::DictValue region;
-      region.Set("x", whole.x());
-      region.Set("y", whole.y());
-      region.Set("width", whole.width());
-      region.Set("height", whole.height());
-      region.Set("scale", call->String("scale") == "css" ? 1 / scale_factor : 1.0);
-      params.Set("clip", std::move(region));
-    } else if (call->String("scale") == "css") {
-      base::DictValue region;
-      region.Set("x", scroll_x);
-      region.Set("y", scroll_y);
-      region.Set("width", viewport_width);
-      region.Set("height", viewport_height);
-      region.Set("scale", 1 / scale_factor);
-      params.Set("clip", std::move(region));
-    }
-    const bool transparent = call->Flag("omitBackground");
+    params.Set("format", type);
+    // jpeg 80 and webp 100 (lossless) unless given, as screenshotter.ts.
+    if (type != "png")
+      params.Set("quality", call->Has("quality") ? static_cast<int>(call->Number("quality"))
+                                                 : type == "jpeg" ? 80 : 100);
+    params.Set("captureBeyondViewport", !fits);
+    base::DictValue region;
+    region.Set("x", document.x());
+    region.Set("y", document.y());
+    region.Set("width", document.width());
+    region.Set("height", document.height());
+    region.Set("scale", call->String("scale") == "css" ? visual_scale / scale_factor : visual_scale);
+    params.Set("clip", std::move(region));
+    // jpeg has no transparency.
+    const bool transparent = call->Flag("omitBackground") && type != "jpeg";
     if (transparent) {
       base::DictValue color;
       color.Set("r", 0);
@@ -4482,6 +5042,7 @@ class Automation : public content::WebContentsObserver,
     // The off-screen view's own size: a resize behind its back lasts only
     // until its next frame.
     zebkit_view_set_size(call->view(), width, height, 0);
+    viewport_ = gfx::Size(width, height);
     WaitForViewport(call->GetWeakPtr(), width, height);
   }
 
@@ -4538,7 +5099,7 @@ class Automation : public content::WebContentsObserver,
       binding_registrations_.erase(binding);
       MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
         if (frame->IsRenderFrameLive())
-          Agent(frame)->Expose(exposed_);
+          Agent(frame)->Expose(exposed_, ContextBindings());
       });
     }
     auto script = init_scripts_.find(id);
@@ -4704,8 +5265,8 @@ class Automation : public content::WebContentsObserver,
   }
 
   void SetOffline(Call* call) {
-    if (Network* network = NetworkOf(call)) {
-      network->SetOffline(call->Flag("offline"));
+    if (NetworkOf(call)) {
+      EmulateOffline(call->Flag("offline"));
       call->Done();
     }
   }
@@ -4730,7 +5291,7 @@ class Automation : public content::WebContentsObserver,
     exposed_.push_back(name);
     MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
-        Agent(frame)->Expose(exposed_);
+        Agent(frame)->Expose(exposed_, ContextBindings());
     });
     call->Done(RegistrationResult(id, "binding"));
   }
@@ -4789,7 +5350,7 @@ class Automation : public content::WebContentsObserver,
     exposed_.push_back(kWebSocketBinding);
     MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
-        Agent(frame)->Expose(exposed_);
+        Agent(frame)->Expose(exposed_, ContextBindings());
     });
     const std::string mock(reinterpret_cast<const char*>(kWebSocketMockScript),
                            sizeof(kWebSocketMockScript));
@@ -5485,6 +6046,9 @@ class Automation : public content::WebContentsObserver,
   int next_har_ = 0;
   std::unique_ptr<VideoRecorder> video_;
   bool web_socket_mock_ = false;
+  bool emulated_offline_ = false;
+  // Page.setViewportSize's, which outranks the context's.
+  std::optional<gfx::Size> viewport_;
   struct WorkerRef {
     content::GlobalRenderFrameHostId frame;
     int32_t number;
@@ -5551,6 +6115,13 @@ class Automation : public content::WebContentsObserver,
 };
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(Automation);
+
+// An automated page's window.open(): held until the popup has its view.
+void PopupHold::Hook(content::WebContents* opener, bool hold) {
+  if (hold && (!opener || !Automation::FromWebContents(opener)))
+    return;
+  Get().Set(hold);
+}
 
 // The dialogs of pages with automation, for Playwright's dialog events.
 class AutomationDialogs : public DialogObserver {
@@ -5886,6 +6457,11 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.goForward", &A::GoForward},
           {"Page.frames", &A::Frames},
           {"Page.waitForInitialNavigation", &A::WaitForInitialNavigation},
+          // Playwright's screencast overlays are its server's own drawings in
+          // the page: with none drawn, hiding them is nothing to do.
+          {"Page.screencastSetOverlayVisible", &A::NothingToDo},
+          {"Page.captureSnapshot", &A::CaptureSnapshot},
+          {"Page.screencastHideActions", &A::NothingToDo},
           {"Page.keyboardDown", &A::Gated<&A::KeyboardDown>},
           {"Page.keyboardUp", &A::Gated<&A::KeyboardUp>},
           {"Page.keyboardPress", &A::Gated<&A::KeyboardPress>},
