@@ -600,6 +600,12 @@ class PopupHold : public content::DevToolsAgentHostClient {
     host_->DispatchProtocolMessage(this, base::as_byte_span(json));
     armed_ = hold;
     zebkit::PopupStartsHeld() = hold;
+    // Not kept between popups: a browser session attached changes what the
+    // pages' own sessions are told (their WebSockets' events stopped).
+    if (!hold && host_) {
+      host_->DetachClient(this);
+      host_ = nullptr;
+    }
   }
 
   static PopupHold& Get() {
