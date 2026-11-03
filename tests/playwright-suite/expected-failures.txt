@@ -5,8 +5,6 @@
 # test that timed out or crashed is never explained here: summarize.py counts those
 # apart. It also lists entries that matched nothing, which is how a fix is noticed.
 
-* | error:browserType\.launch.*Executable doesn't exist | starts a browser of its own, which this run hides so that it cannot pass without the engine: the endpoint is connected to, not launched
-
 # Not this endpoint's to do: a test that starts a browser of its own, or asks
 # for Playwright's own server, which a connected client does not have.
 library/browsertype-launch*.spec.ts | * | launches a browser itself: the endpoint is connected to, not launched (docs/AUTOMATION.md, section 5)
@@ -37,10 +35,8 @@ library/webmcp*.spec.ts | * | Frame.webmcpTools and webmcpCallTool are not imple
 page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented
 page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented
 page/page-drop.spec.ts | * | Frame.drop is not implemented
-page/locator-any-frame.spec.ts | * | page.frameLocator() with no selector (internal:control=any-frame) is not implemented
 page/selectors-frame.spec.ts | \(handle\) | a selector through a frame from an element handle: ResolveTarget splits enter-frame only from a frame, not from a handle
 page/selectors-frame.spec.ts | survive | a frame detached while waited for fails with "Frame was detached"; frameSelectors.ts retries
-page/selectors-frame.spec.ts | any-frame|from any frame|match multiple|descendant frame|chain across|deeply nested|in multiple frames | internal:control=any-frame (frameLocator() without a selector) is not implemented
 
 # Differ, each with its cause known; a file's entry says what its failures are.
 library/browsercontext-locale.spec.ts | should format number$|should format date|isolated between contexts | number and date formats of locales the package's ICU data does not hold (English and CJK only, the size budget)
@@ -48,12 +44,9 @@ page/page-event-console.spec.ts | should work @smoke|different console API|coerc
 page/workers.spec.ts | console | a console message's text is Blink's string, not rendered from its arguments
 page/jshandle-to-string.spec.ts | sparse | a console message's text is Blink's string, not rendered from its arguments
 library/route-web-socket.spec.ts | pass-through | WebSocketRoute's pass-through to the server misses frames here
-library/web-socket.spec.ts | extra HTTP headers | extraHTTPHeaders are not applied to a WebSocket's handshake
 library/har-websocket.spec.ts | * | HAR has no WebSocket entries
 page/page-drag.spec.ts | Drag and drop > (should work @smoke|should send the right|should not send dragover|should work inside iframe|should cancel on escape|should respect the drop|should work with the helper|should work if the drag event|should work with locators) | the native drag does not fire the page's drag events through the endpoint's mouse commands
-page/page-network-request.spec.ts | same headers as the server|report raw headers|allHeaders\(\) until|all cookies in one header | allHeaders() has what the renderer sent, not the network's final request headers
 page/page-network-sizes.spec.ts | * | header sizes follow the observed headers (docs/AUTOMATION.md, section 5)
-page/page-request-fulfill.spec.ts | status code|unuassigned | fulfilled status text comes from the network stack's table, not Playwright's
 page/page-aria-snapshot-ai.spec.ts | iframe|frameset|frame snapshots | snapshots do not stitch the frames' documents
 page/page-add-init-script-callback.spec.ts | global | exposeBinding's noGlobal is not honoured: an exposed function is a property of the window
 page/frame-hierarchy.spec.ts | frame\.name | a frame's name does not fall back to its element's id as DOM's Page.frameNavigated does
@@ -71,7 +64,3 @@ library/tracing.spec.ts | correct title|aria snapshots|action screenshots|group/
 library/browsercontext-service-worker-policy.spec.ts | * | serviceWorkers: "block" is not implemented
 library/chromium/disable-web-security.spec.ts | * | launch switches of a test's own browser
 library/browsercontext-viewport-mobile.spec.ts | * | isMobile's meta viewport handling (new since this package: Emulation.setDeviceMetricsOverride)
-
-# Known, not built yet (2026-11-02): each says what it would take.
-library/popup.spec.ts | in-process popup|should inherit offline|should inherit viewport size|should expose function from browser context|should not dispatch binding on a closed page | a popup opened in its opener's process is read by the opener in the same task, before its context's init scripts, bindings, viewport and offline state reach it: Playwright has Chromium pause the new target for its debugger (waitForDebuggerOnStart); the automation would need the renderer's agent to take them from its opener's
-page/page-event-request.spec.ts | main resource xhr should have type xhr | an XMLHttpRequest and a fetch() reach the network alike (fetch-like, no destination): only Blink knows which, so both are "fetch" here; DevTools learns it from the renderer

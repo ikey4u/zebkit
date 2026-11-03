@@ -566,7 +566,7 @@ either:
 - **Protocol commands not implemented yet**, which fail with "no command" or
   are listed as expected failures: locator handlers, `Frame.drop`, custom
   selector engines, JS and CSS coverage, the context's `proxy` and
-  `clientCertificates` options, `page.frameLocator()` with no selector,
+  `clientCertificates` options,
   `Route.redirectNavigationRequest`, service workers as `Worker`s, WebMCP.
 
 **`CDPSession`** (`Browser.newBrowserCDPSession`, `BrowserContext.newCDPSession`
@@ -582,6 +582,40 @@ so `page.url()` is the document's; with an opener only when they have one (a
 page Chromium opened for a modified click has none). What they do meanwhile is
 kept and given after; a route, a dialog, a binding's call, a file chooser or a
 download reports the popup at once, since the client must answer it.
+A popup opened in its opener's process is read by the opener in the same task
+(`window.open()` returns its window), so it is held there as Chromium's DevTools
+holds it for Playwright's browser session (`Target.setAutoAttach`, which makes
+`CreateNewWindow` answer "wait for the debugger"): from an automated page's
+allowed `window.open()` until the popup has its view, a browser session of the
+engine's own auto-attaches to nothing, and the popup's view releases its page
+target (`Runtime.runIfWaitingForDebugger`) after the context's init scripts,
+viewport, user agent and offline state are in. The context's exposed functions
+are there from its first script because the renderer's agent of the popup takes
+them from its opener's.
+
+**`page.frameLocator()` with no selector** (`internal:control=any-frame`) is
+resolved as `frameSelectors.ts` resolves it: each frame of the starting frame's
+subtree is asked how many elements the selector's first part has; one frame
+with some is where the rest continues, more is "frameLocator() matched elements
+in multiple frames"; none yet keeps waiting, except a query (count, `$$`) and an
+assertion, which looks again after 250 ms until it passes or times out. Not yet:
+a scope handle restricting the child frames, and hidden iframes.
+
+**Network details from DevTools.** Each page's own DevTools session has its
+`Network` domain on, for what only Blink and the network service's observer know:
+the request's type (`xhr` or `fetch`), the headers as sent and received
+(`Network.requestWillBeSentExtraInfo`, `responseReceivedExtraInfo`: `Cookie`,
+`Set-Cookie`, for `allHeaders()` and HAR), each redirect hop's in order,
+WebSockets as `WebSocket` objects with their frames, and offline as
+`Network.emulateNetworkConditions` (`navigator.onLine`); routes answer before the
+offline check, as Fetch's interception does.
+
+**Traces** of a remote client are recorded by the endpoint as
+`trace/recorder/tracing.ts` records them: before and after events of each call
+with its title and parameters, DOM snapshots before and after an action
+(`snapshotterInjected.ts` run in each frame), screencast frames, console and
+page events, the network as HAR resources, chunks and groups, `context.request`
+traced apart; a zip of files only, as Playwright's archives.
 
 **HAR** is recorded by the endpoint for a context, or a page, as
 `har/harTracer.ts` does in Playwright's server, from the network events of all
