@@ -16,7 +16,10 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -29,6 +32,8 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/barrier_closure.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
@@ -44,6 +49,20 @@
 #include "components/version_info/version_info.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "net/base/mime_util.h"
+#include "crypto/openssl_util.h"
+#include "net/cert/x509_certificate.h"
+#include "net/cert/x509_util.h"
+#include "net/ssl/openssl_private_key.h"
+#include "net/ssl/ssl_cert_request_info.h"
+#include "net/ssl/ssl_private_key.h"
+#include "content/public/browser/client_certificate_delegate.h"
+#include "third_party/boringssl/src/include/openssl/bio.h"
+#include "third_party/boringssl/src/include/openssl/err.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
+#include "third_party/boringssl/src/include/openssl/pem.h"
+#include "third_party/boringssl/src/include/openssl/pkcs8.h"
+#include "third_party/boringssl/src/include/openssl/x509.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
@@ -114,6 +133,8 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "zebkit/engine/automation.h"
+#include "zebkit/engine/automation_compare.h"
+#include "zebkit/engine/automation_webauthn.h"
 #include "zebkit/engine/permission_types.h"
 #include "content/public/browser/embedder_permission_hooks.h"
 #include "zebkit/engine/automation.mojom.h"
@@ -189,6 +210,8 @@ constexpr char kInputDropped[] =
 constexpr char kDisposed[] = "JSHandle is disposed";
 // The binding Playwright's WebSocket mock reports through.
 constexpr char kWebSocketBinding[] = "__pwWebSocketBinding";
+// credentials.ts's binding, answered here.
+constexpr char kWebAuthnBinding[] = "__pwWebAuthnBinding";
 constexpr char kFrameDetached[] = "Frame was detached";
 // How a selector enters the next frame (frameSelectors.ts).
 constexpr char kEnterFrame[] = " >> internal:control=enter-frame >> ";
@@ -452,8 +475,16 @@ class Call {
                    base::BindOnce(&Call::TimedOut, base::Unretained(this)));
       return;
     }
+    if (on_timeout_) {
+      std::move(on_timeout_).Run();
+      return;
+    }
     TimedOutNow();
   }
+  // Run at the timeout instead of failing with it: the call answers itself.
+  void OnTimeout(base::OnceClosure closure) { on_timeout_ = std::move(closure); }
+  const std::vector<std::string>& log() const { return log_; }
+  int timeout_ms() const { return timeout_ms_; }
   void TimedOutNow() {
     Fail("Timeout " + base::NumberToString(timeout_ms_) + "ms exceeded.");
   }
@@ -537,6 +568,7 @@ class Call {
   std::string error_;
   std::string abort_id_;
   base::OnceClosure on_release_;
+  base::OnceClosure on_timeout_;
   base::WeakPtrFactory<Call> weak_factory_{this};
 };
 
@@ -699,7 +731,37 @@ struct ContextState {
   // storageState() visits when no page shows them (browserContext.ts's
   // _origins).
   std::set<std::string> storage_origins;
+  // Its virtual WebAuthn authenticator's passkeys (credentials.ts's
+  // registry, in their order), and whether pages use it (install()).
+  std::vector<Passkey> passkeys;
+  bool webauthn = false;
+  // selectors.ts's custom engines ({name, source, contentScript}) and the
+  // test id attribute, for the injected script of each document.
+  base::ListValue selector_engines;
+  std::string test_id_attribute;
+  // The origins its frames have shown (browserContext.ts's _origins).
+  std::set<std::string> visited_origins;
 };
+
+base::ListValue PasskeysOf(const ContextState& state) {
+  base::ListValue list;
+  for (const Passkey& passkey : state.passkeys)
+    list.Append(PasskeyValue(passkey));
+  return list;
+}
+
+// credentials.ts's create(): a passkey of the context's, one of the same id
+// replaced.
+bool AddPasskey(ContextState& state, const base::DictValue& options, base::DictValue* made, std::string* error) {
+  Passkey passkey;
+  if (!CreatePasskey(options, &passkey, error))
+    return false;
+  std::erase_if(state.passkeys, [&](const Passkey& other) { return other.id == passkey.id; });
+  if (made)
+    *made = PasskeyValue(passkey);
+  state.passkeys.push_back(std::move(passkey));
+  return true;
+}
 
 // Each of @origins in a page of @profile no client sees, whose every request
 // is answered with an empty document, as browserContext.ts's visitOrigins():
@@ -826,6 +888,277 @@ class Automation : public content::WebContentsObserver,
     // What the browser itself logs (Log.entryAdded), as crPage.ts has it.
     view_->Send("Log.enable", base::DictValue());
     runtime_exceptions_ = true;
+  }
+
+  // ---- Coverage (Page.startJSCoverage, startCSSCoverage) ---------------
+  // crCoverage.ts on the page's DevTools session: V8's precise coverage of
+  // the scripts parsed meanwhile, and the style rules Blink used.
+
+  struct JsCoverage {
+    bool reset = true;
+    bool anonymous = false;
+    std::set<std::string> scripts;
+    std::map<std::string, std::string> sources;
+  };
+  struct CssCoverage {
+    bool reset = true;
+    // Each sheet's URL and text, by its id.
+    std::map<std::string, std::pair<std::string, std::string>> sheets;
+  };
+
+  void CoverageEvent(const std::string& method, const base::DictValue& params) {
+    if (method == "Debugger.paused") {
+      if (js_coverage_)
+        view_->Send("Debugger.resume", base::DictValue());
+      return;
+    }
+    if (method == "Debugger.scriptParsed" && js_coverage_) {
+      const std::string* id = params.FindString("scriptId");
+      const std::string* url = params.FindString("url");
+      if (!id)
+        return;
+      js_coverage_->scripts.insert(*id);
+      if ((!url || url->empty()) && !js_coverage_->anonymous)
+        return;
+      base::DictValue source;
+      source.Set("scriptId", *id);
+      view_->Send("Debugger.getScriptSource", std::move(source),
+                  base::BindOnce(
+                      [](base::WeakPtr<Automation> self, std::string id, const base::DictValue* result,
+                         const std::string&) {
+                        const std::string* text = result ? result->FindString("scriptSource") : nullptr;
+                        if (self && self->js_coverage_ && text)
+                          self->js_coverage_->sources[id] = *text;
+                      },
+                      weak_factory_.GetWeakPtr(), *id));
+      return;
+    }
+    if (method == "CSS.styleSheetAdded" && css_coverage_) {
+      const std::string* id = params.FindStringByDottedPath("header.styleSheetId");
+      const std::string* url = params.FindStringByDottedPath("header.sourceURL");
+      if (!id || !url || url->empty())
+        return;
+      base::DictValue text;
+      text.Set("styleSheetId", *id);
+      view_->Send("CSS.getStyleSheetText", std::move(text),
+                  base::BindOnce(
+                      [](base::WeakPtr<Automation> self, std::string id, std::string url,
+                         const base::DictValue* result, const std::string&) {
+                        const std::string* text = result ? result->FindString("text") : nullptr;
+                        if (self && self->css_coverage_ && text)
+                          self->css_coverage_->sheets[id] = {url, *text};
+                      },
+                      weak_factory_.GetWeakPtr(), *id, *url));
+    }
+  }
+
+  // The commands' answers in order: @done once the last has answered.
+  void SendAll(std::vector<std::pair<std::string, base::DictValue>> commands, base::OnceClosure done) {
+    auto left = std::make_shared<size_t>(commands.size());
+    auto once = std::make_shared<base::OnceClosure>(std::move(done));
+    if (commands.empty()) {
+      std::move(*once).Run();
+      return;
+    }
+    for (auto& [method, params] : commands) {
+      view_->Send(method, std::move(params),
+                  base::BindOnce(
+                      [](std::shared_ptr<size_t> left, std::shared_ptr<base::OnceClosure> once,
+                         const base::DictValue*, const std::string&) {
+                        if (--*left == 0 && *once)
+                          std::move(*once).Run();
+                      },
+                      left, once));
+    }
+  }
+
+  void StartJSCoverage(Call* call) {
+    if (js_coverage_) {
+      call->Fail("JSCoverage is already enabled");
+      return;
+    }
+    js_coverage_.emplace();
+    js_coverage_->reset = call->params().FindBool("resetOnNavigation").value_or(true);
+    js_coverage_->anonymous = call->Flag("reportAnonymousScripts");
+    base::DictValue precise;
+    precise.Set("callCount", true);
+    precise.Set("detailed", true);
+    base::DictValue skip;
+    skip.Set("skip", true);
+    std::vector<std::pair<std::string, base::DictValue>> commands;
+    commands.emplace_back("Profiler.enable", base::DictValue());
+    commands.emplace_back("Profiler.startPreciseCoverage", std::move(precise));
+    commands.emplace_back("Debugger.enable", base::DictValue());
+    commands.emplace_back("Debugger.setSkipAllPauses", std::move(skip));
+    SendAll(std::move(commands), base::BindOnce(
+                                     [](base::WeakPtr<Call> call) {
+                                       if (call)
+                                         call->Done();
+                                     },
+                                     call->GetWeakPtr()));
+  }
+
+  void StopJSCoverage(Call* call) {
+    if (!js_coverage_) {
+      base::DictValue answer;
+      answer.Set("entries", base::ListValue());
+      call->Done(base::Value(std::move(answer)));
+      return;
+    }
+    view_->Send(
+        "Profiler.takePreciseCoverage", base::DictValue(),
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, const base::DictValue* result,
+               const std::string& error) {
+              if (!self || !call)
+                return;
+              std::optional<JsCoverage> coverage = std::move(self->js_coverage_);
+              self->js_coverage_.reset();
+              base::ListValue entries;
+              const base::ListValue* given = result ? result->FindList("result") : nullptr;
+              const base::ListValue empty;
+              for (const base::Value& item : given ? *given : empty) {
+                if (!item.is_dict() || !coverage)
+                  continue;
+                const std::string* id = item.GetDict().FindString("scriptId");
+                const std::string* url = item.GetDict().FindString("url");
+                if (!id || !coverage->scripts.contains(*id))
+                  continue;
+                if ((!url || url->empty()) && !coverage->anonymous)
+                  continue;
+                base::DictValue entry = item.GetDict().Clone();
+                if (auto source = coverage->sources.find(*id); source != coverage->sources.end())
+                  entry.Set("source", source->second);
+                entries.Append(std::move(entry));
+              }
+              base::DictValue answer;
+              answer.Set("entries", std::move(entries));
+              call->Done(base::Value(std::move(answer)));
+            },
+            weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+    view_->Send("Profiler.stopPreciseCoverage", base::DictValue());
+    view_->Send("Profiler.disable", base::DictValue());
+    view_->Send("Debugger.disable", base::DictValue());
+  }
+
+  void StartCSSCoverage(Call* call) {
+    if (css_coverage_) {
+      call->Fail("CSSCoverage is already enabled");
+      return;
+    }
+    css_coverage_.emplace();
+    css_coverage_->reset = call->params().FindBool("resetOnNavigation").value_or(true);
+    std::vector<std::pair<std::string, base::DictValue>> commands;
+    commands.emplace_back("DOM.enable", base::DictValue());
+    commands.emplace_back("CSS.enable", base::DictValue());
+    commands.emplace_back("CSS.startRuleUsageTracking", base::DictValue());
+    SendAll(std::move(commands), base::BindOnce(
+                                     [](base::WeakPtr<Call> call) {
+                                       if (call)
+                                         call->Done();
+                                     },
+                                     call->GetWeakPtr()));
+  }
+
+  // crCoverage.ts's convertToDisjointRanges(): the used parts of nested
+  // rule ranges, as disjoint ones.
+  static base::ListValue DisjointRanges(std::vector<std::tuple<int, int, int>> ranges) {
+    struct Point {
+      int offset;
+      int type;  // 0 start, 1 end
+      int start, end, count;
+    };
+    std::vector<Point> points;
+    for (const auto& [start, end, count] : ranges) {
+      points.push_back({start, 0, start, end, count});
+      points.push_back({end, 1, start, end, count});
+    }
+    std::sort(points.begin(), points.end(), [](const Point& a, const Point& b) {
+      if (a.offset != b.offset)
+        return a.offset < b.offset;
+      if (a.type != b.type)
+        return a.type > b.type;
+      const int a_length = a.end - a.start;
+      const int b_length = b.end - b.start;
+      if (a.type == 0)
+        return a_length > b_length;
+      return a_length < b_length;
+    });
+    std::vector<int> counts;
+    std::vector<std::pair<int, int>> results;
+    int last = 0;
+    for (const Point& point : points) {
+      if (!counts.empty() && last < point.offset && counts.back() > 0) {
+        if (!results.empty() && results.back().second == last)
+          results.back().second = point.offset;
+        else
+          results.emplace_back(last, point.offset);
+      }
+      last = point.offset;
+      if (point.type == 0)
+        counts.push_back(point.count);
+      else if (!counts.empty())
+        counts.pop_back();
+    }
+    base::ListValue list;
+    for (const auto& [start, end] : results) {
+      if (end - start <= 1)
+        continue;
+      base::DictValue range;
+      range.Set("start", start);
+      range.Set("end", end);
+      list.Append(std::move(range));
+    }
+    return list;
+  }
+
+  void StopCSSCoverage(Call* call) {
+    if (!css_coverage_) {
+      base::DictValue answer;
+      answer.Set("entries", base::ListValue());
+      call->Done(base::Value(std::move(answer)));
+      return;
+    }
+    view_->Send(
+        "CSS.stopRuleUsageTracking", base::DictValue(),
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, const base::DictValue* result,
+               const std::string& error) {
+              if (!self || !call)
+                return;
+              std::optional<CssCoverage> coverage = std::move(self->css_coverage_);
+              self->css_coverage_.reset();
+              self->view_->Send("CSS.disable", base::DictValue());
+              self->view_->Send("DOM.disable", base::DictValue());
+              std::map<std::string, std::vector<std::tuple<int, int, int>>> by_sheet;
+              const base::ListValue* usage = result ? result->FindList("ruleUsage") : nullptr;
+              const base::ListValue empty;
+              for (const base::Value& item : usage ? *usage : empty) {
+                if (!item.is_dict())
+                  continue;
+                const std::string* id = item.GetDict().FindString("styleSheetId");
+                if (!id)
+                  continue;
+                by_sheet[*id].emplace_back(
+                    static_cast<int>(item.GetDict().FindDouble("startOffset").value_or(0)),
+                    static_cast<int>(item.GetDict().FindDouble("endOffset").value_or(0)),
+                    item.GetDict().FindBool("used").value_or(false) ? 1 : 0);
+              }
+              base::ListValue entries;
+              if (coverage) {
+                for (const auto& [id, sheet] : coverage->sheets) {
+                  base::DictValue entry;
+                  entry.Set("url", sheet.first);
+                  entry.Set("text", sheet.second);
+                  entry.Set("ranges", DisjointRanges(by_sheet[id]));
+                  entries.Append(std::move(entry));
+                }
+              }
+              base::DictValue answer;
+              answer.Set("entries", std::move(entries));
+              call->Done(base::Value(std::move(answer)));
+            },
+            weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
   }
 
   // ---- Console (Runtime.consoleAPICalled, Log.entryAdded) --------------
@@ -1224,6 +1557,18 @@ class Automation : public content::WebContentsObserver,
     }
     if (method == "Runtime.executionContextsCleared") {
       devtools_contexts_.clear();
+      // crCoverage.ts: a new document starts the coverage again.
+      if (js_coverage_ && js_coverage_->reset) {
+        js_coverage_->scripts.clear();
+        js_coverage_->sources.clear();
+      }
+      if (css_coverage_ && css_coverage_->reset)
+        css_coverage_->sheets.clear();
+      return;
+    }
+    if (method == "Debugger.scriptParsed" || method == "Debugger.paused" ||
+        method == "CSS.styleSheetAdded") {
+      CoverageEvent(method, params);
       return;
     }
     if (method == "Runtime.consoleAPICalled") {
@@ -1246,10 +1591,17 @@ class Automation : public content::WebContentsObserver,
       devtools_requests_[*request] = params.Clone();
       if (devtools_requests_.size() > 500)
         devtools_requests_.erase(devtools_requests_.begin());
+    } else if (method == "Network.requestServedFromCache") {
+      // Blink's memory cache, which no request leaves for (crNetworkManager.ts
+      // reports it as any other).
+      memory_cached_.insert(*request);
+      if (memory_cached_.size() > 500)
+        memory_cached_.erase(memory_cached_.begin());
     } else if (method == "Network.responseReceived") {
       const base::DictValue* response = params.FindDict("response");
       auto sent = devtools_requests_.find(*request);
-      if (response && response->FindBool("fromServiceWorker").value_or(false) &&
+      const bool from_memory = memory_cached_.erase(*request) > 0;
+      if (response && (from_memory || response->FindBool("fromServiceWorker").value_or(false)) &&
           sent != devtools_requests_.end() && !network->SawDevToolsRequest(*request)) {
         const base::DictValue& will = sent->second;
         base::DictValue value;
@@ -1277,6 +1629,8 @@ class Automation : public content::WebContentsObserver,
                                 "secureConnectionStart", "requestStart", "responseStart"})
           timing.Set(key, -1);
         answer.Set("timing", std::move(timing));
+        if (from_memory)
+          answer.Set("fromServiceWorker", false);
         network->ServedByWorker(*request, std::move(value), std::move(answer));
         worker_served_.insert(*request);
       }
@@ -1346,7 +1700,22 @@ class Automation : public content::WebContentsObserver,
       const std::string* url = params.FindString("url");
       socket.Set("url", url ? *url : std::string());
       Emit("Page.webSocket", std::move(socket));
+    } else if (method == "Network.webSocketWillSendHandshakeRequest") {
+      // For HAR (harTracer.ts's WebSocket Request event).
+      base::DictValue handshake;
+      handshake.Set("socket", "s" + *request);
+      handshake.Set("headers", HeaderList(params.FindDictByDottedPath("request.headers")));
+      Emit("WebSocket.request", std::move(handshake));
     } else if (method == "Network.webSocketHandshakeResponseReceived") {
+      {
+        base::DictValue handshake;
+        handshake.Set("socket", "s" + *request);
+        handshake.Set("status", params.FindIntByDottedPath("response.status").value_or(101));
+        const std::string* status_text = params.FindStringByDottedPath("response.statusText");
+        handshake.Set("statusText", status_text ? *status_text : std::string());
+        handshake.Set("headers", HeaderList(params.FindDictByDottedPath("response.headers")));
+        Emit("WebSocket.response", std::move(handshake));
+      }
       const int status = params.FindIntByDottedPath("response.status").value_or(101);
       if (status >= 400) {
         const std::string* text = params.FindStringByDottedPath("response.statusText");
@@ -1441,11 +1810,8 @@ class Automation : public content::WebContentsObserver,
                      screen ? screen->FindInt("height").value_or(height) : height);
     }
     // crPage.ts: touch as a touchscreen's, (hover: none) and (pointer: coarse).
-    if (options.FindBool("hasTouch").value_or(false)) {
-      base::DictValue params;
-      params.Set("enabled", true);
-      view_->Send("Emulation.setTouchEmulationEnabled", std::move(params));
-    }
+    if (options.FindBool("hasTouch").value_or(false))
+      EmulateTouch();
     // The context's commands, again for this page, once it has its
     // automation.
     for (const auto& [method, params] : state.replay) {
@@ -1481,6 +1847,13 @@ class Automation : public content::WebContentsObserver,
   // (NewPage, SetViewportSize), with the scale factor of its own unless the
   // context gives one.
   void EmulateMetrics(int width, int height, int screen_width, int screen_height) {
+    // A page without its view yet (a popup Chromium opened with OpenURL):
+    // DevTools' emulation needs it, so it waits for the page's view.
+    if (!web_contents()->GetRenderWidgetHostView()) {
+      pending_metrics_ = std::array<int, 4>{width, height, screen_width, screen_height};
+      return;
+    }
+    pending_metrics_.reset();
     const base::DictValue& options = ContextStates()[web_contents()->GetBrowserContext()].options;
     const bool mobile = options.FindBool("isMobile").value_or(false);
     const std::optional<double> scale = options.FindDouble("deviceScaleFactor");
@@ -1651,7 +2024,7 @@ class Automation : public content::WebContentsObserver,
   void Run(Call* call, Handler handler) {
     if (active_calls_++ == 0)
       FastFrames(true);
-    if (tracing_ && call->method().rfind("Tracing.", 0) != 0)
+    if (tracing_ && call->method().rfind("Tracing.", 0) != 0 && !call->Flag("internalCall"))
       traced_[call] = tracing_->Before(call->method(), call->params());
     std::erase_if(calls_,
                   [](const base::WeakPtr<Call>& call) { return !call; });
@@ -1912,6 +2285,8 @@ class Automation : public content::WebContentsObserver,
     }
     content::RenderFrameHost* frame = Resolve(frame_ref);
     if (!frame) {
+      if (RetryThroughFrames(call))
+        return;
       call->Fail(handles.empty() ? kFrameDetached : kDetached);
       return;
     }
@@ -1921,6 +2296,16 @@ class Automation : public content::WebContentsObserver,
       arg.Remove("timeoutCap");
     }
     arg.Set("timeout", remaining);
+    arg.Set("frameSeq", FrameSeq(frame));
+    // dom.ts's injectedScript(): the context's selector engines and test id
+    // attribute; selectors.ts's parseSelector(): a selector of an engine of
+    // the page's world is resolved there.
+    if (std::optional<base::DictValue> selectors = SelectorOptions()) {
+      const std::string* selector = arg.FindString("selector");
+      if (world == AutomationWorld::kUtility && selector && NeedsMainWorld(*selector))
+        world = AutomationWorld::kMain;
+      arg.Set("selectorOptions", std::move(*selectors));
+    }
     const std::string json = Json(base::Value(arg.Clone()));
     const content::GlobalRenderFrameHostId frame_id = frame->GetGlobalId();
     Agent(frame)->Step(
@@ -1932,6 +2317,55 @@ class Automation : public content::WebContentsObserver,
                            handles, std::move(done)),
             AutomationStatus::kGone, std::string(),
             std::vector<AutomationHandlePtr>()));
+  }
+
+  // The context's selector engines and test id attribute, for the injected
+  // script (dom.ts's injectedScript()); nullopt when it has none of its own.
+  std::optional<base::DictValue> SelectorOptions() {
+    const ContextState& context = Context();
+    if (context.selector_engines.empty() && context.test_id_attribute.empty())
+      return std::nullopt;
+    base::DictValue selectors;
+    base::ListValue engines;
+    for (const base::Value& engine : context.selector_engines) {
+      const std::string* name = engine.GetDict().FindString("name");
+      const std::string* source = engine.GetDict().FindString("source");
+      if (!name || !source)
+        continue;
+      base::DictValue custom;
+      custom.Set("name", *name);
+      custom.Set("source", "(" + *source + ")");
+      engines.Append(std::move(custom));
+    }
+    selectors.Set("customEngines", std::move(engines));
+    if (!context.test_id_attribute.empty())
+      selectors.Set("testIdAttributeName", context.test_id_attribute);
+    return selectors;
+  }
+
+  // selectors.ts's parseSelector(): an engine of the page's own world.
+  bool NeedsMainWorld(const std::string& selector) {
+    for (const base::Value& engine : Context().selector_engines) {
+      const std::string* name = engine.GetDict().FindString("name");
+      if (name && !engine.GetDict().FindBool("contentScript").value_or(false) &&
+          selector.find(*name + "=") != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The options to @frame's runner in @world before a call that is not a step
+  // (Select): the agent's calls keep their order.
+  void SendSelectorOptions(content::RenderFrameHost* frame, AutomationWorld world) {
+    std::optional<base::DictValue> selectors = SelectorOptions();
+    if (!selectors)
+      return;
+    base::DictValue arg;
+    arg.Set("selectorOptions", std::move(*selectors));
+    arg.Set("frameSeq", FrameSeq(frame));
+    Agent(frame)->Step(world, "noop", Json(base::Value(std::move(arg))), {},
+                       base::BindOnce([](AutomationStatus, const std::string&, std::vector<AutomationHandlePtr>) {}));
   }
 
   void StepAnswered(base::WeakPtr<Call> call,
@@ -1952,6 +2386,8 @@ class Automation : public content::WebContentsObserver,
       if (step == "expect" && handles.empty())
         frame_ref.follow = true;
       if (!handles.empty() || !frame_ref.follow) {
+        if (!Closing() && RetryThroughFrames(call.get()))
+          return;
         call->Fail(Closing() ? kClosed : handles.empty() ? kNavigated : kDetached);
         return;
       }
@@ -1987,6 +2423,30 @@ class Automation : public content::WebContentsObserver,
     value = Expose(content::RenderFrameHost::FromID(frame_id), std::move(value),
                    kept);
     std::move(done).Run(std::move(value));
+  }
+
+  // frameSelectors.ts resolves a selector's frames again at each try: a
+  // wait through a frame that went (detached, navigated) starts over from
+  // the call's own frame, until its timeout.
+  bool RetryThroughFrames(Call* call) {
+    if ((call->method().rfind("Frame.", 0) != 0 && call->method() != "ElementHandle.waitForSelector") ||
+        call->Expired() ||
+        call->String("selector").find("internal:control=enter-frame") == std::string::npos) {
+      return false;
+    }
+    auto handler = Handlers().find(call->method());
+    if (handler == Handlers().end())
+      return false;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, Handler handler) {
+              if (self && call && !call->finished())
+                (self.get()->*handler)(call.get());
+            },
+            weak_factory_.GetWeakPtr(), call->GetWeakPtr(), handler->second),
+        base::Milliseconds(100));
+    return true;
   }
 
   void RunStepAgain(base::WeakPtr<Call> call,
@@ -2091,6 +2551,26 @@ class Automation : public content::WebContentsObserver,
     if (!frame) {
       call->Fail(kFrameDetached);
       return;
+    }
+    // frameSelectors.ts's _jumpToAriaRefFrameIfNeeded(): a ref of a frame's
+    // snapshot (f<seq>e<n>) is looked for in that frame.
+    if (selector.starts_with("aria-ref=f")) {
+      const size_t end = selector.find_first_of(" >", 10);
+      const std::string body = selector.substr(9, end == std::string::npos ? std::string::npos : end - 9);
+      const size_t e = body.find('e');
+      int seq = 0;
+      if (e != std::string::npos && base::StringToInt(std::string_view(body).substr(1, e - 1), &seq)) {
+        content::RenderFrameHost* found = nullptr;
+        MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* each) {
+          if (!found && each->IsActive() && FrameSeq(each) == seq)
+            found = each;
+        });
+        if (!found) {
+          call->Fail("Invalid frame in aria-ref selector \"" + selector + "\"");
+          return;
+        }
+        frame = found;
+      }
     }
     target.frame = Follow(frame);
     target.strict = call->Flag("strict");
@@ -2874,6 +3354,7 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kFrameDetached);
       return;
     }
+    SendSelectorOptions(frame, AutomationWorld::kMain);
     Agent(frame)->Select(
         AutomationWorld::kMain, target.selector, target.strict && !all,
         target.scope, all,
@@ -3175,7 +3656,29 @@ class Automation : public content::WebContentsObserver,
     arg.Set("html", call->String("html"));
     const std::string wait_until = call->String("waitUntil");
     arg.Set("waitUntil", wait_until.empty() ? "load" : wait_until);
-    FrameStep(call, "setContent", std::move(arg), AsDone());
+    content::RenderFrameHost* frame = wait_until == "networkidle" ? FrameOf(call) : nullptr;
+    if (!frame) {
+      FrameStep(call, "setContent", std::move(arg), AsDone());
+      return;
+    }
+    // frames.ts's setContent() waits for the new document's lifecycle: the
+    // network of the one it replaces is forgotten, the load waited for, then
+    // 500 ms without requests.
+    const content::FrameTreeNodeId node = frame->GetFrameTreeNodeId();
+    lifecycles_[node].network_idle = false;
+    ClearRequests(node);
+    arg.Set("waitUntil", "load");
+    FrameStep(call, "setContent", std::move(arg),
+              base::BindOnce(
+                  [](base::WeakPtr<Automation> self, content::FrameTreeNodeId node, Call* call,
+                     base::Value) {
+                    if (!self)
+                      return;
+                    self->navigation_waiters_.push_back(
+                        {call->GetWeakPtr(), 0, "networkidle", base::Value(base::DictValue()), node});
+                    self->Settle();
+                  },
+                  weak_factory_.GetWeakPtr(), node));
   }
 
   void AddScriptTag(Call* call) { AddTag(call, "script"); }
@@ -3191,11 +3694,49 @@ class Automation : public content::WebContentsObserver,
   }
 
   void AriaSnapshot(Call* call) {
+    // page.ts's ariaSnapshotJSONForFrame(): the iframes' snapshots stitched
+    // in, unless of a locator not in "ai" mode.
+    if (!call->OnHandle() && (call->String("selector").empty() || call->String("mode") == "ai")) {
+      base::DictValue options;
+      options.Set("mode", call->String("mode").empty() ? "default" : call->String("mode"));
+      if (call->Has("depth"))
+        options.Set("depth", static_cast<int>(call->Number("depth")));
+      for (const char* key : {"boxes", "doNotRenderActive"}) {
+        if (call->Flag(key))
+          options.Set(key, true);
+      }
+      const std::string selector = call->String("selector");
+      AriaTree(call->GetWeakPtr(), selector.empty() ? "body,frameset" : selector, !selector.empty(),
+               std::move(options),
+               base::BindOnce(
+                   [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::optional<base::Value> json,
+                      std::string error) {
+                     if (!self || !call)
+                       return;
+                     if (!json) {
+                       call->Fail(error);
+                       return;
+                     }
+                     if (call->Name() == "ariaSnapshotJSON") {
+                       base::DictValue answer;
+                       answer.Set("snapshot", std::move(*json));
+                       call->Done(base::Value(std::move(answer)));
+                       return;
+                     }
+                     base::DictValue arg;
+                     arg.Set("json", std::move(*json));
+                     self->FrameStep(call.get(), "renderAria", std::move(arg), AsKey("", "snapshot"));
+                   },
+                   weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+      return;
+    }
     base::DictValue arg;
     arg.Set("mode",
             call->String("mode").empty() ? "default" : call->String("mode"));
     if (call->Has("depth"))
       arg.Set("depth", static_cast<int>(call->Number("depth")));
+    if (call->Flag("boxes"))
+      arg.Set("boxes", true);
     arg.Set("json", call->Name() == "ariaSnapshotJSON");
     if (call->String("selector").empty() && !call->OnHandle()) {
       FrameStep(call, "ariaSnapshot", std::move(arg),
@@ -3204,6 +3745,209 @@ class Automation : public content::WebContentsObserver,
     }
     StepOnTarget(call, "ariaSnapshot", std::move(arg),
                  AsPolledKey("snapshot", "snapshot"));
+  }
+
+  // One frame's snapshot (the element @selector, through frames, names),
+  // then each iframe's it shows, merged as its children; the json to
+  // @done, or nullopt and the error.
+  using AriaDone = base::OnceCallback<void(std::optional<base::Value> json, std::string error)>;
+  void AriaTree(base::WeakPtr<Call> call, std::string selector, bool strict, base::DictValue options,
+                AriaDone done) {
+    if (!call)
+      return;
+    base::DictValue params = options.Clone();
+    const std::string frame = call->String("frame");
+    if (!frame.empty())
+      params.Set("frame", frame);
+    params.Set("selector", selector);
+    params.Set("strict", strict);
+    params.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+    InnerCall("Frame.ariaSnapshotTree", &Automation::AriaSnapshotTree, std::move(params),
+              base::BindOnce(&Automation::AriaTreeTaken, weak_factory_.GetWeakPtr(), call, selector,
+                             std::move(options), std::move(done)));
+  }
+
+  void AriaTreeTaken(base::WeakPtr<Call> call, std::string selector, base::DictValue options, AriaDone done,
+                     base::Value result, const std::string& error) {
+    if (!call)
+      return;
+    base::Value* tree = result.is_dict() ? result.GetDict().Find("tree") : nullptr;
+    base::Value* json = tree && tree->is_dict() ? tree->GetDict().Find("json") : nullptr;
+    if (!json) {
+      std::move(done).Run(std::nullopt, error.empty() ? std::string("zebkit: no snapshot") : error);
+      return;
+    }
+    // Only the iframes it shows (not cut off by its depth).
+    std::vector<std::pair<std::string, int>> refs;
+    const base::ListValue* iframe_refs = tree->GetDict().FindList("iframeRefs");
+    const base::DictValue* depths = tree->GetDict().FindDict("iframeDepths");
+    if (iframe_refs) {
+      for (const base::Value& ref : *iframe_refs) {
+        if (!ref.is_string() || !depths || !depths->Find(ref.GetString()))
+          continue;
+        refs.emplace_back(ref.GetString(), depths->FindInt(ref.GetString()).value_or(0));
+      }
+    }
+    struct Stitch {
+      base::Value json;
+      std::map<std::string, base::Value> children;
+      AriaDone done;
+    };
+    auto stitch = std::make_shared<Stitch>();
+    stitch->json = std::move(*json);
+    stitch->done = std::move(done);
+    auto finish = base::BarrierClosure(
+        refs.size(), base::BindOnce(
+                         [](std::shared_ptr<Stitch> stitch) {
+                           // mergeIframeChildren().
+                           std::function<void(base::Value&)> walk = [&](base::Value& node) {
+                             if (!node.is_dict())
+                               return;
+                             const std::string* role = node.GetDict().FindString("role");
+                             const std::string* ref = node.GetDict().FindString("ref");
+                             if (role && *role == "iframe" && ref) {
+                               auto child = stitch->children.find(*ref);
+                               if (child != stitch->children.end() && child->second.is_list() &&
+                                   !child->second.GetList().empty()) {
+                                 node.GetDict().Set("children", std::move(child->second));
+                               }
+                               return;
+                             }
+                             if (base::ListValue* children = node.GetDict().FindList("children")) {
+                               for (base::Value& item : *children)
+                                 walk(item);
+                             }
+                           };
+                           if (stitch->json.is_list()) {
+                             for (base::Value& node : stitch->json.GetList())
+                               walk(node);
+                           }
+                           std::move(stitch->done).Run(std::move(stitch->json), std::string());
+                         },
+                         stitch));
+    for (const auto& [ref, depth] : refs) {
+      base::DictValue child_options = options.Clone();
+      if (std::optional<int> given = options.FindInt("depth"); given && *given)
+        child_options.Set("depth", *given - depth - 1);
+      // Non-strict: a frameset document has several.
+      AriaTree(call, selector + " >> aria-ref=" + ref + kEnterFrame + "body,frameset", false,
+               std::move(child_options),
+               base::BindOnce(
+                   [](std::shared_ptr<Stitch> stitch, std::string ref, base::RepeatingClosure finish,
+                      std::optional<base::Value> json, std::string) {
+                     stitch->children[ref] = json ? std::move(*json) : base::Value(base::ListValue());
+                     finish.Run();
+                   },
+                   stitch, ref, finish));
+    }
+  }
+
+  // Frame.resolveSelector {selector}: frames.ts's resolveSelector(), the
+  // element's generated selector, through the frames it is in.
+  void ResolveSelector(Call* call) {
+    ResolveTarget(call, base::BindOnce(&Automation::ResolveSelectorOn, weak_factory_.GetWeakPtr(),
+                                       call->GetWeakPtr()));
+  }
+
+  void ResolveSelectorOn(base::WeakPtr<Call> call, Target target) {
+    if (!call)
+      return;
+    content::RenderFrameHost* frame = Resolve(target.frame);
+    if (!frame) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    const content::GlobalRenderFrameHostId frame_id = frame->GetGlobalId();
+    TargetStep(call.get(), target, "generateSelector", base::DictValue(),
+               base::BindOnce(
+                   [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                      content::GlobalRenderFrameHostId frame_id, base::Value value) {
+                     if (!self || !call)
+                       return;
+                     if (!value.is_string()) {
+                       call->Fail("No element matching " + call->String("selector"));
+                       return;
+                     }
+                     self->ResolveSelectorUp(call, frame_id, {value.GetString()});
+                   },
+                   weak_factory_.GetWeakPtr(), call, frame_id));
+  }
+
+  void ResolveSelectorUp(base::WeakPtr<Call> call,
+                         content::GlobalRenderFrameHostId frame_id,
+                         std::vector<std::string> chain) {
+    if (!call)
+      return;
+    content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frame_id);
+    if (!frame) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    content::RenderFrameHost* parent = frame->GetParent();
+    if (!parent) {
+      std::reverse(chain.begin(), chain.end());
+      base::DictValue answer;
+      answer.Set("resolvedSelector", base::JoinString(chain, " >> internal:control=enter-frame >> "));
+      call->Done(base::Value(std::move(answer)));
+      return;
+    }
+    base::DictValue params;
+    params.Set("frame", FrameId(frame));
+    params.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+    const content::GlobalRenderFrameHostId parent_id = parent->GetGlobalId();
+    InnerCall(
+        "Frame.frameElement", &Automation::FrameElement, std::move(params),
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, content::GlobalRenderFrameHostId parent_id,
+               std::vector<std::string> chain, base::Value result, const std::string& error) {
+              if (!self || !call)
+                return;
+              const std::string* id =
+                  result.is_dict() ? result.GetDict().FindStringByDottedPath("element.handle") : nullptr;
+              const HandleRef* handle = id ? self->FindHandle(*id) : nullptr;
+              content::RenderFrameHost* owner = handle ? content::RenderFrameHost::FromID(handle->frame) : nullptr;
+              if (!owner) {
+                call->Fail("Unable to generate locator for " + call->String("selector"));
+                return;
+              }
+              Target target;
+              target.frame = Exact(owner);
+              target.scope = handle->id;
+              target.selector = ":scope";
+              const std::string handle_id = *id;
+              self->TargetStep(
+                  call.get(), target, "generateSelector", base::DictValue(),
+                  base::BindOnce(
+                      [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                         content::GlobalRenderFrameHostId parent_id, std::vector<std::string> chain,
+                         std::string handle_id, base::Value value) {
+                        if (!self || !call)
+                          return;
+                        self->Dispose(handle_id);
+                        if (!value.is_string()) {
+                          call->Fail("Unable to generate locator for " + call->String("selector"));
+                          return;
+                        }
+                        chain.push_back(value.GetString());
+                        self->ResolveSelectorUp(call, parent_id, std::move(chain));
+                      },
+                      self, call, parent_id, std::move(chain), handle_id));
+            },
+            weak_factory_.GetWeakPtr(), call, parent_id, std::move(chain)));
+  }
+
+  // Frame.ariaSnapshotTree (the endpoint's own): one frame's snapshot with
+  // its iframes' refs, {tree: {json, iframeRefs, iframeDepths}}.
+  void AriaSnapshotTree(Call* call) {
+    base::DictValue arg;
+    arg.Set("mode", call->String("mode").empty() ? "default" : call->String("mode"));
+    if (call->Has("depth"))
+      arg.Set("depth", static_cast<int>(call->Number("depth")));
+    for (const char* key : {"boxes", "doNotRenderActive"}) {
+      if (call->Flag(key))
+        arg.Set(key, true);
+    }
+    StepOnTarget(call, "ariaSnapshotTree", std::move(arg), AsPolledKey("tree", "tree"));
   }
 
   // Frame.expect: Playwright's assertions (expect(locator).toHaveText() and
@@ -3509,7 +4253,72 @@ class Automation : public content::WebContentsObserver,
     // target.
     bool down_only = false;
     bool up_only = false;
+    // Frame.drop: no input, the drag events of dom.ts's _drop() at the point.
+    bool drop = false;
   };
+
+  // Frame.drop {selector, payloads, localPaths, data, position}: frames.ts's
+  // drop(), the files read here as the server reads them.
+  void Drop(Call* call) {
+    const base::ListValue* payloads = call->params().FindList("payloads");
+    const base::ListValue* paths = call->params().FindList("localPaths");
+    const base::ListValue* data = call->params().FindList("data");
+    const bool files = (payloads && !payloads->empty()) || (paths && !paths->empty());
+    if (!files && !(data && !data->empty())) {
+      call->Fail("At least one of \"files\" or \"data\" must be provided.");
+      return;
+    }
+    std::vector<base::FilePath> local;
+    if (paths && !(payloads && !payloads->empty())) {
+      for (const base::Value& path : *paths) {
+        if (path.is_string())
+          local.push_back(base::FilePath::FromUTF8Unsafe(path.GetString()));
+      }
+    }
+    if (local.empty()) {
+      DropRead(call->GetWeakPtr(), std::nullopt);
+      return;
+    }
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE, {base::MayBlock()},
+        base::BindOnce(
+            [](std::vector<base::FilePath> paths) -> std::optional<base::ListValue> {
+              base::ListValue payloads;
+              for (const base::FilePath& path : paths) {
+                std::string bytes;
+                base::File::Info info;
+                if (!base::ReadFileToString(path, &bytes) || !base::GetFileInfo(path, &info))
+                  return std::nullopt;
+                std::string type;
+                if (!net::GetMimeTypeFromFile(path, &type))
+                  type = "application/octet-stream";
+                base::DictValue payload;
+                payload.Set("name", path.BaseName().AsUTF8Unsafe());
+                payload.Set("mimeType", type);
+                payload.Set("buffer", base::Base64Encode(bytes));
+                payload.Set("lastModifiedMs", info.last_modified.InMillisecondsFSinceUnixEpoch());
+                payloads.Append(std::move(payload));
+              }
+              return payloads;
+            },
+            std::move(local)),
+        base::BindOnce(&Automation::DropRead, weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+  }
+
+  void DropRead(base::WeakPtr<Call> call, std::optional<base::ListValue> read) {
+    if (!call)
+      return;
+    if (read)
+      call->params().Set("payloads", std::move(*read));
+    else if (!call->params().FindList("payloads"))
+      call->params().Set("payloads", base::ListValue());
+    PointerAction action;
+    action.name = "drop";
+    action.click = false;
+    action.wait_for_enabled = false;
+    action.drop = true;
+    Pointer(call.get(), action);
+  }
 
   void Click(Call* call) { Pointer(call, {}); }
   void Dblclick(Call* call) {
@@ -3725,6 +4534,32 @@ class Automation : public content::WebContentsObserver,
           std::move(finish).Run();
         },
         weak_factory_.GetWeakPtr(), std::move(restore), std::move(finish));
+    if (action.drop) {
+      base::DictValue arg;
+      const base::ListValue* payloads = call->params().FindList("payloads");
+      arg.Set("payloads", payloads ? payloads->Clone() : base::ListValue());
+      const base::ListValue* data = call->params().FindList("data");
+      arg.Set("data", data ? data->Clone() : base::ListValue());
+      base::DictValue point;
+      point.Set("x", in_root.x());
+      point.Set("y", in_root.y());
+      arg.Set("point", std::move(point));
+      call->Log("  performing drop action");
+      TargetStep(call.get(), target, "drop", std::move(arg),
+                 base::BindOnce(
+                     [](base::WeakPtr<Call> call, base::OnceClosure restored, base::Value value) {
+                       if (!call)
+                         return;
+                       if (value.is_string() && value.GetString() == "not-accepted") {
+                         call->Fail("Drop target did not accept the drop \u2014 its dragover handler did not "
+                                    "call preventDefault()");
+                         return;
+                       }
+                       std::move(restored).Run();
+                     },
+                     call, std::move(restored)));
+      return;
+    }
     if (action.tap) {
       SendTap(widget, in_widget, std::move(restored));
       return;
@@ -3748,8 +4583,21 @@ class Automation : public content::WebContentsObserver,
                 self->MouseDownIn(widget, button, 1);
                 self->WhenAcked(Type::kMouseDown, std::move(restored));
               } else if (up_only) {
-                self->MouseUpIn(widget, button, 1);
-                self->WhenAcked(Type::kMouseUp, std::move(restored));
+                // After the move, which may start the page's drag
+                // (dragAndDrop()): the release ends it.
+                self->WhenAcked(
+                    Type::kMouseMove,
+                    base::BindOnce(
+                        [](base::WeakPtr<Automation> self, content::RenderWidgetHost* widget, Button button,
+                           base::OnceClosure restored) {
+                          if (!self || self->mouse_widget_.get() != widget) {
+                            std::move(restored).Run();
+                            return;
+                          }
+                          self->MouseUpIn(widget, button, 1);
+                          self->WhenAcked(Type::kMouseUp, std::move(restored));
+                        },
+                        self, widget, button, std::move(restored)));
               } else if (click) {
                 self->PressAndRelease(call.get(), widget, button, click_count, 1, delay,
                                       std::move(restored));
@@ -3798,7 +4646,9 @@ class Automation : public content::WebContentsObserver,
       }
       call->Log("retrying " + action.name + " action");
       ++call->attempt;
-      PointerOn(call, action, std::move(target));
+      LocatorHandlersCheckpoint(call.get(), base::BindOnce(&Automation::PointerOn,
+                                                           weak_factory_.GetWeakPtr(), call,
+                                                           action, std::move(target)));
       return;
     }
     if (action.checked && !call->Flag("trial")) {
@@ -3867,7 +4717,7 @@ class Automation : public content::WebContentsObserver,
     call->Log("waiting for scheduled navigations to finish");
     navigation_waiters_.push_back({call->GetWeakPtr(), it->second, "commit",
                                    base::Value(),
-                                   MainFrame()->GetFrameTreeNodeId()});
+                                   MainFrame()->GetFrameTreeNodeId(), true});
     watched_navigations_.erase(it);
   }
 
@@ -4150,6 +5000,9 @@ class Automation : public content::WebContentsObserver,
     base::Value response;
     // The frame navigated.
     content::FrameTreeNodeId frame;
+    // An action's navigation (frames.ts's scheduled navigations): one that
+    // fails or becomes a download ends the wait, not the action.
+    bool input = false;
   };
 
   // The lifecycle of a frame's document, as Playwright's loadstate events.
@@ -4334,6 +5187,18 @@ class Automation : public content::WebContentsObserver,
   }
 
   void DidFinishNavigation(content::NavigationHandle* navigation) override {
+    // frames.ts: the main frame numbered again when it leaves a real document,
+    // so that ARIA refs of the old one do not resolve in the new.
+    if (navigation->IsInPrimaryMainFrame() && navigation->HasCommitted() && !navigation->IsSameDocument()) {
+      const GURL previous = navigation->GetPreviousPrimaryMainFrameURL();
+      if (previous.is_valid() && !previous.IsAboutBlank())
+        frame_seqs_[navigation->GetFrameTreeNodeId()] = next_frame_seq_++;
+    }
+    if (navigation->HasCommitted() && !navigation->IsErrorPage() && navigation->GetRenderFrameHost()) {
+      const url::Origin origin = navigation->GetRenderFrameHost()->GetLastCommittedOrigin();
+      if (!origin.opaque())
+        Context().visited_origins.insert(origin.Serialize());
+    }
     if (navigation->IsInPrimaryMainFrame() && !initial_navigation_waiters_.empty() &&
         !navigation->IsSameDocument()) {
       content::NavigationEntry* entry = web_contents()->GetController().GetLastCommittedEntry();
@@ -4395,8 +5260,21 @@ class Automation : public content::WebContentsObserver,
       if (waiter.navigation_id != id || !waiter.call)
         continue;
       if (!navigation->HasCommitted() || navigation->IsErrorPage()) {
+        if (waiter.input) {
+          waiter.call->Done();
+          continue;
+        }
         waiter.call->Fail(net::ErrorToString(navigation->GetNetErrorCode()) +
                           " at " + navigation->GetURL().spec());
+        continue;
+      }
+      // A challenge no credentials answered: Chrome's login prompt cancels
+      // the navigation (LoginTabHelper), as Playwright's tests know it.
+      if (navigation->IsInPrimaryMainFrame() && unanswered_auth_.contains(navigation->GetURL()) &&
+          navigation->GetResponseHeaders() && navigation->GetResponseHeaders()->response_code() == 401 &&
+          !waiter.input) {
+        waiter.call->Fail(net::ErrorToString(net::ERR_INVALID_AUTH_CREDENTIALS) + " at " +
+                          navigation->GetURL().spec());
         continue;
       }
       waiter.response = base::Value(ResponseOf(navigation));
@@ -4404,8 +5282,13 @@ class Automation : public content::WebContentsObserver,
         Answer(waiter);
     }
     --settling_;
+    if (navigation->IsInPrimaryMainFrame())
+      unanswered_auth_.erase(navigation->GetURL());
     Settle();
   }
+
+  // A main frame navigation's challenge that no credentials answered.
+  void UnansweredAuth(const GURL& url) { unanswered_auth_.insert(url); }
 
   base::DictValue ResponseOf(content::NavigationHandle* navigation) {
     // What was kept is of an earlier load: these two load nothing.
@@ -4637,7 +5520,42 @@ class Automation : public content::WebContentsObserver,
     EmulateFocus();
   }
 
+  void RenderViewReady() override {
+    if (!web_contents()->GetRenderWidgetHostView())
+      return;
+    if (pending_metrics_) {
+      const std::array<int, 4> metrics = *pending_metrics_;
+      EmulateMetrics(metrics[0], metrics[1], metrics[2], metrics[3]);
+    }
+    if (pending_touch_)
+      EmulateTouch();
+  }
+
+  // Emulation.setTouchEmulationEnabled, once the page has its view.
+  void EmulateTouch() {
+    pending_touch_ = !web_contents()->GetRenderWidgetHostView();
+    if (pending_touch_)
+      return;
+    base::DictValue params;
+    params.Set("enabled", true);
+    view_->Send("Emulation.setTouchEmulationEnabled", std::move(params));
+  }
+
+  // frames.ts's Frame.seq: the page's frames numbered as they are made, the
+  // main frame 0 (the injected script's refs of a frame's ARIA snapshot).
+  int FrameSeq(content::RenderFrameHost* frame) {
+    if (!frame->GetParent()) {
+      auto main = frame_seqs_.find(frame->GetFrameTreeNodeId());
+      return main == frame_seqs_.end() ? 0 : main->second;
+    }
+    auto [found, made] = frame_seqs_.try_emplace(frame->GetFrameTreeNodeId(), next_frame_seq_);
+    if (made)
+      ++next_frame_seq_;
+    return found->second;
+  }
+
   void RenderFrameCreated(content::RenderFrameHost* frame) override {
+    FrameSeq(frame);
     // A frame is idle 500 ms after it is made with nothing to load, as
     // frames.ts starts its timer when a Frame is made (a javascript: or a
     // broken URL's frame commits nothing).
@@ -4864,6 +5782,288 @@ class Automation : public content::WebContentsObserver,
                                      chooser.mode);
     }
     call->Done();
+  }
+
+  // ---- Locator handlers (page.ts) --------------------------------------
+
+  // A command of the endpoint's own, which no trace records: @handler with
+  // @params, its answer (or error) to @reply.
+  using InnerReply = base::OnceCallback<void(base::Value result, const std::string& error)>;
+  void InnerCall(const std::string& method, Handler handler, base::DictValue params, InnerReply reply) {
+    params.Set("internalCall", true);
+    auto* call = new Call(
+        view_, method, std::move(params),
+        [](zebkit_view*, const char* json, const char* error, void* data) {
+          std::unique_ptr<InnerReply> reply(static_cast<InnerReply*>(data));
+          std::optional<base::Value> result = json ? Parse(json) : std::nullopt;
+          std::move(*reply).Run(result ? std::move(*result) : base::Value(), error ? error : "");
+        },
+        new InnerReply(std::move(reply)));
+    Run(call, handler);
+  }
+
+  // Page.registerLocatorHandler {selector, noWaitAfter}: {uid}.
+  void RegisterLocatorHandler(Call* call) {
+    base::DictValue arg;
+    arg.Set("selector", call->String("selector"));
+    FrameStep(call, "locatorText", std::move(arg),
+              base::BindOnce(
+                  [](base::WeakPtr<Automation> self, Call* call, base::Value text) {
+                    if (!self)
+                      return;
+                    LocatorHandler handler;
+                    handler.selector = call->String("selector");
+                    handler.text = text.is_string() ? text.GetString() : LocatorText(handler.selector);
+                    handler.no_wait_after = call->Flag("noWaitAfter");
+                    const int uid = ++self->last_locator_handler_;
+                    self->locator_handlers_[uid] = std::move(handler);
+                    base::DictValue answer;
+                    answer.Set("uid", uid);
+                    call->Done(base::Value(std::move(answer)));
+                  },
+                  weak_factory_.GetWeakPtr()));
+  }
+
+  // Page.resolveLocatorHandlerNoReply {uid, remove}.
+  void ResolveLocatorHandler(Call* call) {
+    const int uid = static_cast<int>(call->Number("uid"));
+    auto found = locator_handlers_.find(uid);
+    std::vector<base::OnceClosure> resolved;
+    if (found != locator_handlers_.end()) {
+      resolved = std::move(found->second.resolved);
+      found->second.resolved.clear();
+      found->second.triggered = false;
+      if (call->Flag("remove"))
+        locator_handlers_.erase(found);
+    }
+    call->Done();
+    for (base::OnceClosure& closure : resolved)
+      std::move(closure).Run();
+  }
+
+  // Page.unregisterLocatorHandler {uid}.
+  void UnregisterLocatorHandler(Call* call) {
+    locator_handlers_.erase(static_cast<int>(call->Number("uid")));
+    call->Done();
+  }
+
+  bool InLocatorHandler() {
+    std::erase_if(in_locator_handler_, [](const base::WeakPtr<Call>& call) { return !call; });
+    return !in_locator_handler_.empty();
+  }
+
+  // page.ts's _performLocatorHandlersCheckpoint(): each handler whose
+  // locator is visible is triggered, the client runs it, and the action
+  // goes on once the locator is hidden (unless noWaitAfter).
+  void LocatorHandlersCheckpoint(Call* call, base::OnceClosure next) {
+    if (locator_handlers_.empty() || call->Flag("force") || call->Flag("internalCall") ||
+        InLocatorHandler()) {
+      std::move(next).Run();
+      return;
+    }
+    std::vector<int> uids;
+    for (const auto& [uid, handler] : locator_handlers_)
+      uids.push_back(uid);
+    CheckLocatorHandler(call->GetWeakPtr(), std::move(uids), 0, std::move(next));
+  }
+
+  void CheckLocatorHandler(base::WeakPtr<Call> call, std::vector<int> uids, size_t index,
+                           base::OnceClosure next) {
+    if (!call)
+      return;
+    if (index >= uids.size()) {
+      std::move(next).Run();
+      return;
+    }
+    auto found = locator_handlers_.find(uids[index]);
+    if (found == locator_handlers_.end()) {
+      CheckLocatorHandler(call, std::move(uids), index + 1, std::move(next));
+      return;
+    }
+    if (found->second.triggered) {
+      RunLocatorHandler(call, std::move(uids), index, std::move(next));
+      return;
+    }
+    base::DictValue params;
+    params.Set("frame", FrameId(MainFrame()));
+    params.Set("selector", found->second.selector);
+    params.Set("strict", true);
+    params.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+    InnerCall("Frame.isVisible", &Automation::IsVisible, std::move(params),
+              base::BindOnce(
+                  [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::vector<int> uids,
+                     size_t index, base::OnceClosure next, base::Value result, const std::string&) {
+                    if (!self || !call)
+                      return;
+                    auto found = self->locator_handlers_.find(uids[index]);
+                    const base::Value* value = result.is_dict() ? result.GetDict().Find("value") : nullptr;
+                    const bool visible = value && value->is_bool() && value->GetBool();
+                    if (found != self->locator_handlers_.end() && visible && !found->second.triggered) {
+                      found->second.triggered = true;
+                      base::DictValue event;
+                      event.Set("uid", uids[index]);
+                      self->Emit("Page.locatorHandlerTriggered", std::move(event));
+                    }
+                    if (found != self->locator_handlers_.end() && found->second.triggered) {
+                      self->RunLocatorHandler(call, std::move(uids), index, std::move(next));
+                      return;
+                    }
+                    self->CheckLocatorHandler(call, std::move(uids), index + 1, std::move(next));
+                  },
+                  weak_factory_.GetWeakPtr(), call, std::move(uids), index, std::move(next)));
+  }
+
+  void RunLocatorHandler(base::WeakPtr<Call> call, std::vector<int> uids, size_t index,
+                         base::OnceClosure next) {
+    auto found = locator_handlers_.find(uids[index]);
+    if (!call || found == locator_handlers_.end())
+      return;
+    in_locator_handler_.push_back(call);
+    call->Log("  found " + found->second.text + ", intercepting action to run the handler");
+    const std::string selector = found->second.selector;
+    const std::string text = found->second.text;
+    const bool no_wait_after = found->second.no_wait_after;
+    auto finished = base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::vector<int> uids,
+           size_t index, base::OnceClosure next) {
+          if (!self || !call)
+            return;
+          std::erase_if(self->in_locator_handler_, [&](const base::WeakPtr<Call>& each) {
+            return !each || each.get() == call.get();
+          });
+          call->Log("  interception handler has finished, continuing");
+          self->CheckLocatorHandler(call, std::move(uids), index + 1, std::move(next));
+        },
+        weak_factory_.GetWeakPtr(), call, std::move(uids), index, std::move(next));
+    found->second.resolved.push_back(base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::string selector,
+           std::string text, bool no_wait_after, base::OnceClosure finished) {
+          if (!self || !call)
+            return;
+          if (no_wait_after) {
+            call->Log("  locator handler has finished");
+            std::move(finished).Run();
+            return;
+          }
+          call->Log("  locator handler has finished, waiting for " + text + " to be hidden");
+          base::DictValue params;
+          params.Set("frame", FrameId(self->MainFrame()));
+          params.Set("selector", selector);
+          params.Set("state", "hidden");
+          params.Set("omitReturnValue", true);
+          params.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+          self->InnerCall("Frame.waitForSelector", &Automation::WaitForSelector, std::move(params),
+                          base::BindOnce(
+                              [](base::OnceClosure finished, base::Value, const std::string&) {
+                                std::move(finished).Run();
+                              },
+                              std::move(finished)));
+        },
+        weak_factory_.GetWeakPtr(), call, selector, text, no_wait_after, std::move(finished)));
+  }
+
+  // An action of frames.ts's _retryWithProgressIfNotConnected() or dom.ts's
+  // _retryAction(), or an assertion: the locator handlers first.
+  template <void (Automation::*method)(Call*)>
+  void Prechecked(Call* call) {
+    LocatorHandlersCheckpoint(call, base::BindOnce(
+                                        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+                                          if (self && call)
+                                            (self.get()->*method)(call.get());
+                                        },
+                                        weak_factory_.GetWeakPtr(), call->GetWeakPtr()));
+  }
+
+  // ---- WebAuthn (server/credentials.ts) --------------------------------
+
+  // install() in this page: the binding in its frames, the script in its
+  // documents now and to come.
+  void InstallWebAuthn() {
+    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (frame->IsRenderFrameLive())
+        Agent(frame)->Expose(exposed_, ContextBindings());
+    });
+    const std::string script(reinterpret_cast<const char*>(kWebAuthnScript), sizeof(kWebAuthnScript));
+    zebkit_view_add_script(view_, script.c_str());
+    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (!frame->IsRenderFrameLive())
+        return;
+      Agent(frame)->Evaluate(AutomationWorld::kMain, script, AutomationExpression::kValue, "[]", {}, true, true,
+                             base::BindOnce([](AutomationStatus, const std::string&,
+                                               std::vector<AutomationHandlePtr>) {}));
+    });
+  }
+
+  // ---- WebMCP (server/webmcp.ts) ---------------------------------------
+
+  // assertBrowserSupport(): Chromium's WebMCP is on with
+  // --enable-features=WebMCP, which Playwright checks for in its launch.
+  static bool WebMcpEnabled() {
+    const base::FeatureList* features = base::FeatureList::GetInstance();
+    return features && features->IsFeatureOverriddenFromCommandLine("WebMCP");
+  }
+
+  // @body run with `webmcp`, the frame's WebMCPScript, in its utility world.
+  void RunWebMcp(Call* call, const std::string& body, Answerer answer) {
+    if (!WebMcpEnabled()) {
+      call->Fail("WebMCP is not enabled. Launch the browser with the \"--enable-features=WebMCP\" argument.");
+      return;
+    }
+    content::RenderFrameHost* frame = FrameOf(call);
+    if (!frame) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    const std::string expression =
+        "(async () => {\nconst webmcp = new (" +
+        std::string(reinterpret_cast<const char*>(kWebMcpScript), sizeof(kWebMcpScript)) +
+        ")(globalThis);\nconst tools = (await webmcp.tools()).map(tool => {\n"
+        "  const annotations = {};\n"
+        "  for (const key of ['readOnly', 'untrustedContent', 'consequential'])\n"
+        "    if (tool.annotations?.[key]) annotations[key] = true;\n"
+        "  return { name: tool.name, description: tool.description,\n"
+        "    ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),\n"
+        "    ...(Object.keys(annotations).length ? { annotations } : {}) };\n"
+        "});\n" +
+        body + "\n})()";
+    Agent(frame)->Evaluate(AutomationWorld::kUtility, expression, AutomationExpression::kValue, "[]", {},
+                           true, true, AnswerTo(call, frame->GetGlobalId(), Then(call, std::move(answer))));
+  }
+
+  // Frame.webmcpTools: {tools}.
+  void WebMcpTools(Call* call) {
+    RunWebMcp(call, "return tools;", AsKey("", "tools"));
+  }
+
+  // Frame.webmcpCallTool {name, input}: {result}.
+  void WebMcpCallTool(Call* call) {
+    const base::Value* input = call->params().Find("input");
+    const std::string body =
+        "const name = " + Json(base::Value(call->String("name"))) +
+        ";\nif (!tools.some(tool => tool.name === name)) return { missing: tools.map(tool => tool.name) };\n"
+        "return { result: await webmcp.callTool(name, " +
+        (input && !input->is_none() ? Json(*input) : std::string("{}")) + ") };";
+    RunWebMcp(call, body, base::BindOnce([](Call* call, base::Value value) {
+                if (!value.is_dict()) {
+                  call->Fail("zebkit: no answer from WebMCP");
+                  return;
+                }
+                if (const base::ListValue* missing = value.GetDict().FindList("missing")) {
+                  std::vector<std::string> names;
+                  for (const base::Value& name : *missing) {
+                    if (name.is_string())
+                      names.push_back(name.GetString());
+                  }
+                  call->Fail("No WebMCP tool named \"" + call->String("name") + "\"." +
+                             (names.empty() ? std::string(" The frame does not register any WebMCP tools.")
+                                            : " Available tools: " + base::JoinString(names, ", ") + "."));
+                  return;
+                }
+                base::DictValue answer;
+                if (base::Value* result = value.GetDict().Find("result"))
+                  answer.Set("result", std::move(*result));
+                call->Done(base::Value(std::move(answer)));
+              }));
   }
 
   // ---- Keyboard --------------------------------------------------------
@@ -5101,6 +6301,14 @@ class Automation : public content::WebContentsObserver,
     // As CDP's: without a native event, an unhandled key does not go on to
     // the browser's own shortcuts.
     event.skip_if_unhandled = true;
+    // During a drag the page started, Escape cancels it (drag.cc).
+    zebkit_key_event drag_key = {};
+    drag_key.type = down ? ZEBKIT_KEY_DOWN : ZEBKIT_KEY_UP;
+    drag_key.key_code = description.key_code_without_location;
+    drag_key.code = description.code;
+    drag_key.key = description.key;
+    if (DragTakesKey(view_, drag_key))
+      return type;
     content::RenderFrameHost* frame = web_contents()->GetFocusedFrame();
     if (!frame)
       frame = MainFrame();
@@ -5538,6 +6746,19 @@ class Automation : public content::WebContentsObserver,
     event.force = buttons_.empty() ? 0 : 0.5;
     event.SetPositionInWidget(point);
     event.SetPositionInScreen(ScreenPoint(widget, point));
+    // A drag the page started goes on from these, over the page (drag.cc),
+    // as an application's mouse events carry it: no event reaches the page
+    // for them, so nothing waits for an acknowledgement.
+    if (type == Type::kMouseMove || type == Type::kMouseUp) {
+      gfx::PointF root = point;
+      if (content::RenderWidgetHostView* view = widget->GetView())
+        root = view->TransformPointToRootCoordSpaceF(point);
+      if (DragTakesMouse(view_, type == Type::kMouseMove ? ZEBKIT_MOUSE_MOVE : ZEBKIT_MOUSE_UP,
+                         root.x(), root.y(), 0)) {
+        return;
+      }
+      NoteMousePosition(view_, root.x(), root.y());
+    }
     Observe(widget);
     last_sent_[type] = event.TimeStamp();
     widget->ForwardMouseEvent(event);
@@ -5659,6 +6880,233 @@ class Automation : public content::WebContentsObserver,
     ScreenshotStyled(call, base::BindOnce(&Automation::ScreenshotPrepared,
                                           weak_factory_.GetWeakPtr(),
                                           call->GetWeakPtr()));
+  }
+
+  // ---- Page.expectScreenshot (page.ts's expectScreenshot()) -----------
+
+  struct ScreenshotExpectation {
+    std::optional<std::string> expected;
+    std::optional<std::string> actual;
+    std::optional<std::string> previous;
+    bool first = true;
+    size_t tries = 0;
+    ImageCompareOptions options;
+    // The last comparison that failed: its message, diff, actual, previous.
+    std::optional<std::string> message;
+    std::optional<std::string> diff;
+    std::optional<std::string> failed_actual;
+    std::optional<std::string> failed_previous;
+  };
+
+  void ExpectScreenshot(Call* call) {
+    auto expectation = std::make_shared<ScreenshotExpectation>();
+    if (const std::string* title = call->params().FindString("expectTitle")) {
+      call->Log(*title + (call->timeout_ms() > 0
+                              ? " with timeout " + base::NumberToString(call->timeout_ms()) + "ms"
+                              : std::string()));
+    }
+    if (const std::string* expected = call->params().FindString("expected")) {
+      std::string bytes;
+      if (base::Base64Decode(*expected, &bytes))
+        expectation->expected = std::move(bytes);
+    }
+    expectation->options.threshold = call->params().FindDouble("threshold");
+    expectation->options.max_diff_pixels = call->params().FindDouble("maxDiffPixels");
+    expectation->options.max_diff_pixel_ratio = call->params().FindDouble("maxDiffPixelRatio");
+    expectation->options.comparator = call->String("comparator");
+    if (!expectation->expected && call->Flag("isNot")) {
+      ExpectScreenshotFailed(call->GetWeakPtr(), expectation, "\"not\" matcher requires expected result",
+                             false);
+      return;
+    }
+    call->OnTimeout(base::BindOnce(
+        [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+           std::shared_ptr<ScreenshotExpectation> expectation) {
+          if (!self || !call)
+            return;
+          const std::string timeout = "Timeout " + base::NumberToString(call->timeout_ms()) + "ms exceeded.";
+          self->ExpectScreenshotFailed(call, expectation,
+                                       expectation->failed_previous
+                                           ? std::string("Failed to take two consecutive stable screenshots.")
+                                           : timeout,
+                                       true, timeout);
+        },
+        weak_factory_.GetWeakPtr(), call->GetWeakPtr(), expectation));
+    call->Log(expectation->expected ? "  verifying given screenshot expectation"
+                                    : "  generating new stable screenshot expectation");
+    ExpectScreenshotTry(call->GetWeakPtr(), expectation);
+  }
+
+  void ExpectScreenshotTry(base::WeakPtr<Call> call, std::shared_ptr<ScreenshotExpectation> expectation) {
+    if (!call)
+      return;
+    if (Closing()) {
+      ExpectScreenshotFailed(call, expectation, "The page has closed", false);
+      return;
+    }
+    static constexpr int kWaits[] = {0, 100, 250, 500};
+    const int wait = expectation->tries < std::size(kWaits) ? kWaits[expectation->tries] : 1000;
+    ++expectation->tries;
+    if (wait)
+      call->Log("waiting " + base::NumberToString(wait) + "ms before taking screenshot");
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&Automation::ExpectScreenshotTake, weak_factory_.GetWeakPtr(), call,
+                       expectation),
+        base::Milliseconds(wait));
+  }
+
+  void ExpectScreenshotTake(base::WeakPtr<Call> call, std::shared_ptr<ScreenshotExpectation> expectation) {
+    if (!call)
+      return;
+    base::DictValue params = call->params().Clone();
+    for (const char* key : {"expected", "isNot", "locator", "comparator", "threshold", "maxDiffPixels",
+                            "maxDiffPixelRatio", "expectTitle", "abortId", "timeout"}) {
+      params.Remove(key);
+    }
+    params.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+    const base::DictValue* locator = call->params().FindDict("locator");
+    if (!locator) {
+      InnerCall("Page.screenshot", &Automation::Screenshot, std::move(params),
+                base::BindOnce(&Automation::ExpectScreenshotTaken, weak_factory_.GetWeakPtr(), call,
+                               expectation));
+      return;
+    }
+    // rafrafTimeoutScreenshotElementWithProgress(): the locator's element,
+    // then its screenshot.
+    base::DictValue wait;
+    if (const std::string* frame = locator->FindString("frame"))
+      wait.Set("frame", *frame);
+    const std::string* selector = locator->FindString("selector");
+    wait.Set("selector", selector ? *selector : std::string());
+    wait.Set("strict", true);
+    wait.Set("state", "visible");
+    wait.Set("timeout", call->Remaining() ? call->Remaining() : kDefaultTimeoutMs);
+    InnerCall(
+        "Frame.waitForSelector", &Automation::WaitForSelector, std::move(wait),
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+               std::shared_ptr<ScreenshotExpectation> expectation, base::DictValue params, base::Value result,
+               const std::string& error) {
+              if (!self || !call)
+                return;
+              const std::string* handle =
+                  result.is_dict() ? result.GetDict().FindStringByDottedPath("element.handle") : nullptr;
+              if (!handle) {
+                self->ExpectScreenshotTaken(call, expectation, base::Value(),
+                                            error.empty() ? std::string("no element") : error);
+                return;
+              }
+              const std::string id = *handle;
+              params.Set("handle", id);
+              self->InnerCall("ElementHandle.screenshot", &Automation::Screenshot, std::move(params),
+                              base::BindOnce(
+                                  [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                                     std::shared_ptr<ScreenshotExpectation> expectation, std::string id,
+                                     base::Value result, const std::string& error) {
+                                    if (!self)
+                                      return;
+                                    self->Dispose(id);
+                                    self->ExpectScreenshotTaken(call, expectation, std::move(result), error);
+                                  },
+                                  self, call, expectation, id));
+            },
+            weak_factory_.GetWeakPtr(), call, expectation, std::move(params)));
+  }
+
+  // areEqualScreenshots(): whether @actual and @expected are as the
+  // assertion wants (equal, or not with isNot), keeping the failed result.
+  bool ScreenshotsAgree(Call* call, ScreenshotExpectation& expectation, const std::string& actual,
+                        const std::string* expected, const std::string* previous, std::string* error) {
+    if (!expected)
+      return false;
+    std::optional<ImageDifference> difference =
+        CompareImages(base::as_byte_span(actual), base::as_byte_span(*expected), expectation.options, error);
+    if (!error->empty())
+      return false;
+    if (difference.has_value() == call->Flag("isNot"))
+      return true;
+    if (difference) {
+      expectation.message = difference->message;
+      expectation.diff = std::string(difference->diff.begin(), difference->diff.end());
+      expectation.failed_actual = actual;
+      expectation.failed_previous = previous ? std::optional<std::string>(*previous) : std::nullopt;
+    }
+    return false;
+  }
+
+  void ExpectScreenshotTaken(base::WeakPtr<Call> call, std::shared_ptr<ScreenshotExpectation> expectation,
+                             base::Value result, const std::string& error) {
+    if (!call)
+      return;
+    const std::string* binary = result.is_dict() ? result.GetDict().FindString("binary") : nullptr;
+    std::string bytes;
+    if (!error.empty() || !binary || !base::Base64Decode(*binary, &bytes)) {
+      call->Log("failed to take screenshot - " + (error.empty() ? std::string("no picture") : error));
+      ExpectScreenshotTry(call, expectation);
+      return;
+    }
+    expectation->previous = std::move(expectation->actual);
+    expectation->actual = std::move(bytes);
+    const std::string* against = expectation->expected && expectation->first
+                                     ? &*expectation->expected
+                                     : (expectation->previous ? &*expectation->previous : nullptr);
+    std::string compare_error;
+    const bool agree = ScreenshotsAgree(call.get(), *expectation, *expectation->actual, against,
+                                        expectation->previous ? &*expectation->previous : nullptr,
+                                        &compare_error);
+    if (!compare_error.empty()) {
+      ExpectScreenshotFailed(call, expectation, compare_error, false);
+      return;
+    }
+    if (!agree) {
+      if (expectation->message)
+        call->Log(*expectation->message);
+      expectation->first = false;
+      ExpectScreenshotTry(call, expectation);
+      return;
+    }
+    if (!expectation->first)
+      call->Log("captured a stable screenshot");
+    if (!expectation->expected) {
+      base::DictValue answer;
+      answer.Set("actual", base::Base64Encode(*expectation->actual));
+      call->Done(base::Value(std::move(answer)));
+      return;
+    }
+    if (!expectation->first &&
+        !ScreenshotsAgree(call.get(), *expectation, *expectation->actual, &*expectation->expected, nullptr,
+                          &compare_error)) {
+      ExpectScreenshotFailed(call, expectation,
+                             compare_error.empty() ? expectation->message.value_or("") : compare_error, false);
+      return;
+    }
+    call->Log("screenshot matched expectation");
+    call->Done();
+  }
+
+  // page.ts's catch: the error with the screenshots, for the client's diff.
+  void ExpectScreenshotFailed(base::WeakPtr<Call> call, std::shared_ptr<ScreenshotExpectation> expectation,
+                              const std::string& message, bool timed_out,
+                              const std::string& last_line = std::string()) {
+    if (!call)
+      return;
+    base::DictValue answer;
+    answer.Set("expectScreenshotFailed", true);
+    answer.Set("errorMessage", message);
+    answer.Set("timedOut", timed_out);
+    if (expectation->failed_actual)
+      answer.Set("actual", base::Base64Encode(*expectation->failed_actual));
+    if (expectation->failed_previous)
+      answer.Set("previous", base::Base64Encode(*expectation->failed_previous));
+    if (expectation->diff)
+      answer.Set("diff", base::Base64Encode(*expectation->diff));
+    base::ListValue log;
+    for (const std::string& line : call->log())
+      log.Append(line);
+    log.Append(last_line.empty() ? message : last_line);
+    answer.Set("log", std::move(log));
+    call->Done(base::Value(std::move(answer)));
   }
 
   void ScreenshotStyled(Call* call, base::OnceClosure next) {
@@ -6286,6 +7734,16 @@ class Automation : public content::WebContentsObserver,
       std::move(callback).Run(true, "null", false, {});
       return;
     }
+    if (name == kWebAuthnBinding) {
+      std::optional<base::Value> parsed = Parse(args);
+      const base::DictValue* request = parsed && parsed->is_list() && !parsed->GetList().empty()
+                                           ? parsed->GetList()[0].GetIfDict()
+                                           : nullptr;
+      base::DictValue answer =
+          request ? PasskeyRequest(Context().passkeys, *request) : PasskeyRequest(Context().passkeys, base::DictValue());
+      std::move(callback).Run(true, Json(base::Value(std::move(answer))), false, {});
+      return;
+    }
     std::optional<base::Value> serialized_args = Parse(serialized);
     // page.ts's PageBinding.dispatch(), on what a page's toJSON made of them.
     if (!serialized.empty() && (!serialized_args || !serialized_args->is_list())) {
@@ -6741,6 +8199,43 @@ class Automation : public content::WebContentsObserver,
     if (method != "resume") {
       const char* number = ticks ? "ticksNumber" : "timeNumber";
       const char* text = ticks ? "ticksString" : "timeString";
+      // clock.ts's parseTime(): what new Date() cannot hold is refused.
+      if (!ticks && call->Has(number) && !(std::abs(call->Number(number)) <= 8.64e15)) {
+        const double given = call->Number(number);
+        call->Fail("Invalid date: " + JsNumber(given));
+        return;
+      }
+      if (!ticks && call->Has(text) && !call->Flag("parsedTime")) {
+        // Parsed as the page's Date parses it, then given as a number.
+        Agent(MainFrame())->Evaluate(
+            AutomationWorld::kMain, TimeOf(call->String(text)), AutomationExpression::kValue,
+            "[]", {}, true, true,
+            mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+                base::BindOnce(
+                    [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                       std::string method, AutomationStatus status, const std::string& result,
+                       std::vector<AutomationHandlePtr>) {
+                      if (!self || !call)
+                        return;
+                      std::optional<base::Value> answer = Parse(result);
+                      const base::Value* value =
+                          answer && answer->is_dict() ? answer->GetDict().Find("value") : nullptr;
+                      if (status == AutomationStatus::kOk && value &&
+                          !(value->is_int() || value->is_double())) {
+                        call->Fail("Invalid date: " + call->String("timeString"));
+                        return;
+                      }
+                      call->params().Set("parsedTime", true);
+                      if (value && (value->is_int() || value->is_double())) {
+                        call->params().Remove("timeString");
+                        call->params().Set("timeNumber", value->GetDouble());
+                      }
+                      self->Clock(call.get(), method, false);
+                    },
+                    weak_factory_.GetWeakPtr(), call->GetWeakPtr(), method),
+                AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+        return;
+      }
       if (call->Has(number)) {
         value = base::NumberToString(call->Number(number));
       } else if (call->Has(text)) {
@@ -6764,8 +8259,9 @@ class Automation : public content::WebContentsObserver,
                             sizeof(kClockScript));
       zebkit_view_add_script(call->view(), scripts.c_str());
     }
+    // An integer, as server/clock.ts's Date.now().
     const std::string now = base::NumberToString(
-        base::Time::Now().InMillisecondsFSinceUnixEpoch());
+        base::Time::Now().InMillisecondsSinceUnixEpoch());
     const std::string log = "globalThis.__pwClock.controller.log('" + method +
                             "', " + now + (value.empty() ? "" : ", " + value) +
                             ")";
@@ -6776,6 +8272,35 @@ class Automation : public content::WebContentsObserver,
     zebkit_view_add_script(call->view(), replay.c_str());
     scripts += "\nglobalThis.__pwClock.controller." + method + "(" + value + ");";
     EvaluateInAllFrames(call, scripts);
+  }
+
+  // A number as JavaScript's String() writes it: an integer below 1e21 in
+  // full, whatever exponent the shortest form has.
+  static std::string JsNumber(double value) {
+    std::string text = base::NumberToString(value);
+    const size_t e = text.find('e');
+    if (e == std::string::npos || !std::isfinite(value))
+      return text;
+    int exponent = 0;
+    if (!base::StringToInt(text.substr(e + 1), &exponent) || exponent < 0 || exponent >= 21)
+      return text;
+    std::string mantissa = text.substr(0, e);
+    const bool negative = !mantissa.empty() && mantissa[0] == '-';
+    if (negative)
+      mantissa.erase(0, 1);
+    const size_t dot = mantissa.find('.');
+    std::string digits = mantissa;
+    int point = static_cast<int>(mantissa.size());
+    if (dot != std::string::npos) {
+      digits.erase(dot, 1);
+      point = static_cast<int>(dot);
+    }
+    point += exponent;
+    if (point >= static_cast<int>(digits.size()))
+      digits.append(point - digits.size(), '0');
+    else
+      digits.insert(point, ".");
+    return (negative ? "-" : "") + digits;
   }
 
   // server/clock.ts's parseTicks(): 1000, "01:10:00".
@@ -6802,6 +8327,61 @@ class Automation : public content::WebContentsObserver,
   // A date's milliseconds, read by the page as Date.parse() reads it.
   static std::string TimeOf(const std::string& text) {
     return "Date.parse(" + Json(base::Value(text)) + ")";
+  }
+
+  // Page.evaluateInFrames {expression}: its value in the main world of each
+  // frame, as frame.nonStallingRawEvaluateInExistingMainContext() gives it
+  // (the endpoint's tracing coverage): {values, errors}.
+  void EvaluateInFrames(Call* call) {
+    struct State {
+      base::WeakPtr<Call> call;
+      size_t left = 0;
+      base::ListValue values;
+      base::ListValue errors;
+    };
+    auto state = std::make_shared<State>();
+    state->call = call->GetWeakPtr();
+    std::vector<content::RenderFrameHost*> frames;
+    MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+      if (frame->IsRenderFrameLive())
+        frames.push_back(frame);
+    });
+    state->left = frames.size();
+    auto finish = [](std::shared_ptr<State> state) {
+      if (!state->call)
+        return;
+      base::DictValue answer;
+      answer.Set("values", std::move(state->values));
+      answer.Set("errors", std::move(state->errors));
+      state->call->Done(base::Value(std::move(answer)));
+    };
+    if (frames.empty()) {
+      finish(state);
+      return;
+    }
+    for (content::RenderFrameHost* frame : frames) {
+      Agent(frame)->Evaluate(
+          AutomationWorld::kMain, call->String("expression"), AutomationExpression::kValue, "[]", {}, true,
+          true,
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              base::BindOnce(
+                  [](std::shared_ptr<State> state, decltype(finish) finish, AutomationStatus status,
+                     const std::string& result, std::vector<AutomationHandlePtr>) {
+                    std::optional<base::Value> answer = Parse(result);
+                    if (status == AutomationStatus::kOk && answer && answer->is_dict()) {
+                      if (answer->GetDict().FindBool("ok").value_or(false)) {
+                        base::Value* value = answer->GetDict().Find("value");
+                        state->values.Append(value ? std::move(*value) : base::Value());
+                      } else if (const std::string* error = answer->GetDict().FindString("error")) {
+                        state->errors.Append(*error);
+                      }
+                    }
+                    if (--state->left == 0)
+                      finish(state);
+                  },
+                  state, finish),
+              AutomationStatus::kGone, std::string(), std::vector<AutomationHandlePtr>()));
+    }
   }
 
   void EvaluateInAllFrames(Call* call, const std::string& script) {
@@ -6937,6 +8517,8 @@ class Automation : public content::WebContentsObserver,
                        }
                        base::Value* origins = storage.is_dict() ? storage.GetDict().Find("origins") : nullptr;
                        answer.Set("origins", origins ? std::move(*origins) : base::Value(base::ListValue()));
+                       if (call->Flag("credentials"))
+                         answer.Set("credentials", PasskeysOf(ContextStates()[profile]));
                        if (call->Flag("indexedDB") || call->Flag("opfs")) {
                          AddPageStorage(profile, call, std::move(answer));
                          return;
@@ -7212,6 +8794,32 @@ class Automation : public content::WebContentsObserver,
   bool emulated_offline_ = false;
   // Runtime.exceptionThrown comes from the page's DevTools session.
   bool runtime_exceptions_ = false;
+  // The viewport's emulation waiting for the page's view.
+  std::optional<std::array<int, 4>> pending_metrics_;
+  bool pending_touch_ = false;
+  // What Page.startJSCoverage and startCSSCoverage collect, while on.
+  std::optional<JsCoverage> js_coverage_;
+  std::optional<CssCoverage> css_coverage_;
+  // Requests Blink's memory cache answered (Network.requestServedFromCache).
+  std::set<std::string> memory_cached_;
+  std::set<GURL> unanswered_auth_;
+  std::map<content::FrameTreeNodeId, int> frame_seqs_;
+  int next_frame_seq_ = 1;
+  // page.ts's locator handlers, by uid.
+  struct LocatorHandler {
+    std::string selector;
+    // asLocator()'s text of the selector, for the call logs.
+    std::string text;
+    bool no_wait_after = false;
+    // Triggered, until the client resolves it: the checkpoints that wait.
+    bool triggered = false;
+    std::vector<base::OnceClosure> resolved;
+  };
+  std::map<int, LocatorHandler> locator_handlers_;
+  int last_locator_handler_ = 0;
+  // The calls waiting for a handler (page.ts's _locatorHandlerRunningCounter):
+  // while one lives, the handler's own actions skip the checkpoint.
+  std::vector<base::WeakPtr<Call>> in_locator_handler_;
   // The page's worlds as DevTools numbers them: their frames' tokens.
   std::map<int, std::string> devtools_contexts_;
   // Console messages waiting for their arguments' handles, in order.
@@ -7819,7 +9427,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Frame.isEditable", &A::IsEditable},
           {"Frame.isVisible", &A::IsVisible},
           {"Frame.isHidden", &A::IsHidden},
-          {"Frame.waitForSelector", &A::WaitForSelector},
+          {"Frame.waitForSelector", &A::Prechecked<&A::WaitForSelector>},
           {"Frame.waitForFunction", &A::WaitForFunction},
           {"Frame.waitForTimeout", &A::WaitForTimeout},
           {"Frame.waitForLoadState", &A::WaitForLoadState},
@@ -7830,23 +9438,26 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Frame.addStyleTag", &A::AddStyleTag},
           {"Frame.ariaSnapshot", &A::AriaSnapshot},
           {"Frame.ariaSnapshotJSON", &A::AriaSnapshot},
-          {"Frame.expect", &A::Expect},
-          {"Frame.click", &A::Click},
-          {"Frame.dblclick", &A::Dblclick},
-          {"Frame.hover", &A::Hover},
-          {"Frame.tap", &A::Tap},
-          {"Frame.check", &A::Check},
-          {"Frame.uncheck", &A::Uncheck},
-          {"Frame.dragAndDrop", &A::DragAndDrop},
-          {"Frame.fill", &A::Fill},
-          {"Frame.focus", &A::Focus},
-          {"Frame.blur", &A::Blur},
-          {"Frame.press", &A::FramePress},
-          {"Frame.type", &A::FrameType},
-          {"Frame.selectOption", &A::SelectOption},
-          {"Frame.setInputFiles", &A::SetInputFiles},
+          {"Frame.expect", &A::Prechecked<&A::Expect>},
+          {"Frame.click", &A::Prechecked<&A::Click>},
+          {"Frame.dblclick", &A::Prechecked<&A::Dblclick>},
+          {"Frame.hover", &A::Prechecked<&A::Hover>},
+          {"Frame.tap", &A::Prechecked<&A::Tap>},
+          {"Frame.check", &A::Prechecked<&A::Check>},
+          {"Frame.uncheck", &A::Prechecked<&A::Uncheck>},
+          {"Frame.dragAndDrop", &A::Prechecked<&A::DragAndDrop>},
+          {"Frame.fill", &A::Prechecked<&A::Fill>},
+          {"Frame.focus", &A::Prechecked<&A::Focus>},
+          {"Frame.blur", &A::Prechecked<&A::Blur>},
+          {"Frame.press", &A::Prechecked<&A::FramePress>},
+          {"Frame.type", &A::Prechecked<&A::FrameType>},
+          {"Frame.selectOption", &A::Prechecked<&A::SelectOption>},
+          {"Frame.setInputFiles", &A::Prechecked<&A::SetInputFiles>},
           {"Frame.dispatchEvent", &A::DispatchEvent},
+          {"Frame.drop", &A::Prechecked<&A::Drop>},
           {"Frame.goto", &A::Goto},
+          {"Frame.webmcpTools", &A::WebMcpTools},
+          {"Frame.webmcpCallTool", &A::WebMcpCallTool},
           // ElementHandle
           {"ElementHandle.evaluateExpression", &A::Evaluate},
           {"ElementHandle.evaluateExpressionHandle", &A::Evaluate},
@@ -7855,17 +9466,17 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"ElementHandle.querySelector", &A::QuerySelector},
           {"ElementHandle.querySelectorAll", &A::QuerySelector},
           {"ElementHandle.boundingBox", &A::BoundingBox},
-          {"ElementHandle.check", &A::Check},
-          {"ElementHandle.uncheck", &A::Uncheck},
-          {"ElementHandle.setChecked", &A::SetChecked},
-          {"ElementHandle.click", &A::Click},
-          {"ElementHandle.dblclick", &A::Dblclick},
-          {"ElementHandle.hover", &A::Hover},
-          {"ElementHandle.tap", &A::Tap},
+          {"ElementHandle.check", &A::Prechecked<&A::Check>},
+          {"ElementHandle.uncheck", &A::Prechecked<&A::Uncheck>},
+          {"ElementHandle.setChecked", &A::Prechecked<&A::SetChecked>},
+          {"ElementHandle.click", &A::Prechecked<&A::Click>},
+          {"ElementHandle.dblclick", &A::Prechecked<&A::Dblclick>},
+          {"ElementHandle.hover", &A::Prechecked<&A::Hover>},
+          {"ElementHandle.tap", &A::Prechecked<&A::Tap>},
           {"ElementHandle.contentFrame", &A::ContentFrame},
           {"ElementHandle.ownerFrame", &A::OwnerFrame},
           {"ElementHandle.dispatchEvent", &A::DispatchEvent},
-          {"ElementHandle.fill", &A::Fill},
+          {"ElementHandle.fill", &A::Prechecked<&A::Fill>},
           {"ElementHandle.focus", &A::Focus},
           {"ElementHandle.getAttribute", &A::GetAttribute},
           {"ElementHandle.innerHTML", &A::InnerHtml},
@@ -7881,12 +9492,12 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"ElementHandle.type", &A::FrameType},
           {"ElementHandle.screenshot", &A::Screenshot},
           {"ElementHandle.scrollIntoViewIfNeeded", &A::ScrollIntoViewIfNeeded},
-          {"ElementHandle.selectOption", &A::SelectOption},
+          {"ElementHandle.selectOption", &A::Prechecked<&A::SelectOption>},
           {"ElementHandle.selectText", &A::SelectText},
           {"ElementHandle.setInputFiles", &A::SetInputFiles},
           {"ElementHandle.textContent", &A::TextContent},
           {"ElementHandle.waitForElementState", &A::WaitForElementState},
-          {"ElementHandle.waitForSelector", &A::WaitForSelector},
+          {"ElementHandle.waitForSelector", &A::Prechecked<&A::WaitForSelector>},
           {"ElementHandle.getProperty", &A::GetProperty},
           {"ElementHandle.getPropertyList", &A::GetPropertyList},
           {"ElementHandle.jsonValue", &A::JsonValue},
@@ -7921,8 +9532,17 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.mouseWheel", &A::Gated<&A::MouseWheelCommand>},
           {"Page.touchscreenTap", &A::Gated<&A::TouchscreenTap>},
           {"Page.screenshot", &A::Screenshot},
+          {"Page.expectScreenshot", &A::Prechecked<&A::ExpectScreenshot>},
           {"Page.setViewportSize", &A::SetViewportSize},
+          {"Page.startJSCoverage", &A::StartJSCoverage},
+          {"Page.registerLocatorHandler", &A::RegisterLocatorHandler},
+          {"Page.resolveLocatorHandlerNoReply", &A::ResolveLocatorHandler},
+          {"Page.unregisterLocatorHandler", &A::UnregisterLocatorHandler},
+          {"Page.stopJSCoverage", &A::StopJSCoverage},
+          {"Page.startCSSCoverage", &A::StartCSSCoverage},
+          {"Page.stopCSSCoverage", &A::StopCSSCoverage},
           {"Page.addInitScript", &A::AddInitScript},
+          {"Page.evaluateInFrames", &A::EvaluateInFrames},
           {"Page.removeRegistration", &A::RemoveRegistration},
           {"Page.pdf", &A::Pdf},
           {"Page.close", &A::Close},
@@ -7950,6 +9570,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.webStorageRemoveItem", &A::WebStorage},
           {"Page.webStorageClear", &A::WebStorage},
           {"Frame.frameElement", &A::FrameElement},
+          {"Frame.resolveSelector", &A::ResolveSelector},
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},
           {"Worker.evaluateExpression", &A::WorkerEvaluate},
@@ -8168,10 +9789,49 @@ std::string Automation::Registered_IdOf() {
   return Registered().IdOf(view_.get());
 }
 
+void InstallWebAuthn(content::BrowserContext* profile);
+
+// What Node's tls.createSecureContext() says of a client certificate's PFX that
+// does not load (socksClientCertificatesInterceptor.ts), "" when it does.
+std::string PfxError(const base::DictValue& given) {
+  const std::string* pfx64 = given.FindString("pfx");
+  std::string pfx;
+  if (!pfx64 || !base::Base64Decode(*pfx64, &pfx) || pfx.empty())
+    return std::string();
+  const std::string* passphrase = given.FindString("passphrase");
+  crypto::OpenSSLErrStackTracer clear_errors(FROM_HERE);
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pfx.data());
+  bssl::UniquePtr<PKCS12> p12(d2i_PKCS12(nullptr, &bytes, pfx.size()));
+  EVP_PKEY* key = nullptr;
+  X509* cert = nullptr;
+  STACK_OF(X509)* chain = nullptr;
+  if (p12 && PKCS12_parse(p12.get(), passphrase ? passphrase->c_str() : "", &key, &cert, &chain)) {
+    EVP_PKEY_free(key);
+    X509_free(cert);
+    sk_X509_pop_free(chain, X509_free);
+    return std::string();
+  }
+  const uint32_t error = ERR_peek_last_error();
+  if (ERR_GET_LIB(error) == ERR_LIB_PKCS8 && ERR_GET_REASON(error) == PKCS8_R_INCORRECT_PASSWORD)
+    return "Failed to load client certificate: mac verify failure";
+  return "Unsupported TLS certificate. Most likely you are using an old certificate format.";
+}
+
+using ProxyRules = std::pair<std::string, std::string>;
+// The proxy of the context being made, until its network context asks.
+std::optional<ProxyRules>& PendingProxy() {
+  static base::NoDestructor<std::optional<ProxyRules>> pending;
+  return *pending;
+}
+std::map<content::BrowserContext*, ProxyRules>& ContextProxies() {
+  static base::NoDestructor<std::map<content::BrowserContext*, ProxyRules>> proxies;
+  return *proxies;
+}
+
 // Browser.newContext: a profile of its own, in memory, with Playwright's
 // options for its pages (viewport, userAgent, hasTouch, javaScriptEnabled,
 // colorScheme, reducedMotion, forcedColors, geolocation, permissions,
-// extraHTTPHeaders, offline, httpCredentials, storageState's cookies).
+// extraHTTPHeaders, offline, httpCredentials, storageState's cookies, proxy).
 void NewContext(Call* call) {
   if (const auto* permissions = call->params().Find("permissions")) {
     if (!permissions->is_list()) { call->Fail("permissions must be a list"); return; }
@@ -8182,10 +9842,85 @@ void NewContext(Call* call) {
       }
     }
   }
+  // browserContext.ts's verifyClientCertificates().
+  if (const base::ListValue* certificates = call->params().FindList("clientCertificates")) {
+    for (const base::Value& entry : *certificates) {
+      const base::DictValue* given = entry.GetIfDict();
+      if (!given)
+        continue;
+      auto has = [&](const char* key) {
+        const std::string* value = given->FindString(key);
+        return value && !value->empty();
+      };
+      const char* error = !has("origin") ? "clientCertificates.origin is required"
+                          : !has("cert") && !has("key") && !has("passphrase") && !has("pfx")
+                              ? "None of cert, key, passphrase or pfx is specified"
+                          : has("cert") && !has("key") ? "cert is specified without key"
+                          : !has("cert") && has("key") ? "key is specified without cert"
+                          : has("pfx") && (has("cert") || has("key"))
+                              ? "pfx is specified together with cert, key or passphrase"
+                              : nullptr;
+      if (error) {
+        call->Fail(error);
+        return;
+      }
+      if (const std::string pfx = PfxError(*given); !pfx.empty()) {
+        call->Fail(pfx);
+        return;
+      }
+    }
+  }
+  // browserContext.ts's normalizeProxySettings(), then crBrowser.ts's
+  // proxyServer and proxyBypassList; the network context takes them
+  // (AutomationProxyFor()).
+  std::optional<ProxyRules> proxy;
+  if (const base::DictValue* given = call->params().FindDict("proxy")) {
+    const std::string* server = given->FindString("server");
+    const std::string* username = given->FindString("username");
+    const std::string* password = given->FindString("password");
+    GURL url(server ? *server : std::string());
+    if (!url.is_valid() || !url.has_host())
+      url = GURL("http://" + (server ? *server : std::string()));
+    const bool credentials = (username && !username->empty()) || (password && !password->empty());
+    if (url.SchemeIs("socks4") && credentials) {
+      call->Fail("Socks4 proxy protocol does not support authentication");
+      return;
+    }
+    if (url.SchemeIs("socks5") && credentials) {
+      call->Fail("Browser does not support socks5 proxy authentication");
+      return;
+    }
+    std::string bypass;
+    if (const std::string* list = given->FindString("bypass")) {
+      std::vector<std::string> hosts = base::SplitString(*list, ",", base::TRIM_WHITESPACE,
+                                                         base::SPLIT_WANT_ALL);
+      bypass = base::JoinString(hosts, ",");
+    }
+    // shouldProxyLoopback(): unless the bypass names a loopback host.
+    bool loopback = true;
+    for (const std::string& host : base::SplitString(bypass, ",", base::TRIM_WHITESPACE,
+                                                     base::SPLIT_WANT_ALL)) {
+      for (const char* name : {"localhost", "127.0.0.1", "::1", "[::]", "[::1]", "<loopback>", "<-loopback>"})
+        loopback &= host != name;
+    }
+    if (loopback)
+      bypass = "<-loopback>" + (bypass.empty() ? std::string() : "," + bypass);
+    std::string host(url.host());
+    if (url.HostIsIPAddress() && host.find(':') != std::string::npos && !host.starts_with("["))
+      host = "[" + host + "]";
+    proxy = ProxyRules(std::string(url.scheme()) + "://" + host +
+                           (url.has_port() ? ":" + std::string(url.port()) : std::string()),
+                       bypass);
+  }
+  PendingProxy() = proxy;
   zebkit_context* context = zebkit_context_new();
   const std::string id = "x" + base::NumberToString(++Registered().next);
   Registered().contexts[id] = context;
   content::BrowserContext* profile = ProfileOf(context);
+  if (PendingProxy()) {
+    ContextProxies()[profile] = *PendingProxy();
+    PendingProxy().reset();
+  }
   ContextState& state = ContextStates()[profile];
   state.options = call->params().Clone();
   if (const base::DictValue* geolocation = state.options.FindDict("geolocation")) {
@@ -8195,9 +9930,42 @@ void NewContext(Call* call) {
         geolocation->FindDouble("accuracy").value_or(0)};
   }
   state.credentials = HttpCredentialsOf(state.options);
+  // browserContext.ts's authenticateProxyViaCredentials().
+  if (const std::string* username = state.options.FindStringByDottedPath("proxy.username");
+      username && !username->empty()) {
+    const std::string* password = state.options.FindStringByDottedPath("proxy.password");
+    base::DictValue entry;
+    entry.Set("username", *username);
+    entry.Set("password", password ? *password : std::string());
+    state.credentials = base::ListValue();
+    state.credentials.Append(std::move(entry));
+  }
   if (const base::ListValue* headers = state.options.FindList("extraHTTPHeaders"))
     state.extra_headers = headers->Clone();
   state.offline = state.options.FindBool("offline").value_or(false);
+  if (const base::ListValue* engines = state.options.FindList("selectorEngines"))
+    state.selector_engines = engines->Clone();
+  if (const std::string* attribute = state.options.FindString("testIdAttributeName"))
+    state.test_id_attribute = *attribute;
+  // setStorageState()'s credentials: the passkeys, and the authenticator.
+  if (const base::ListValue* passkeys = state.options.FindListByDottedPath("storageState.credentials");
+      passkeys && !passkeys->empty()) {
+    for (const base::Value& passkey : *passkeys) {
+      std::string error;
+      if (passkey.is_dict())
+        AddPasskey(state, passkey.GetDict(), nullptr, &error);
+    }
+    InstallWebAuthn(profile);
+  }
+  // browserContext.ts's _initialize(): serviceWorkers "block".
+  if (const std::string* workers = state.options.FindString("serviceWorkers"); workers && *workers == "block") {
+    base::DictValue script;
+    script.Set("source",
+               "\nif (self.ServiceWorkerContainer) ServiceWorkerContainer.prototype.register = async () => { "
+               "console.warn('Service Worker registration blocked by Playwright'); };\n");
+    script.Set("registration", RegistrationId(script));
+    state.replay.emplace_back("Page.addInitScript", std::move(script));
+  }
   base::DictValue answer;
   answer.Set("context", id);
   auto complete = base::BindOnce(
@@ -8342,6 +10110,29 @@ void CloseContext(Call* call) {
 // A BrowserContext command with "context" and no page (Playwright's
 // endpoint, automation_server.cc): for the profile itself, for every page
 // of the context, and kept for its pages to come.
+// credentials.ts's install(): the binding and the script for the context's
+// pages to come (its replay), and in those it has.
+void InstallWebAuthn(content::BrowserContext* profile) {
+  ContextState& state = ContextStates()[profile];
+  if (state.webauthn)
+    return;
+  state.webauthn = true;
+  base::DictValue binding;
+  binding.Set("name", kWebAuthnBinding);
+  binding.Set("registration", RegistrationId(base::DictValue()));
+  state.replay.emplace_back("Page.exposeBinding", std::move(binding));
+  base::DictValue script;
+  script.Set("source", std::string(reinterpret_cast<const char*>(kWebAuthnScript), sizeof(kWebAuthnScript)));
+  script.Set("registration", RegistrationId(base::DictValue()));
+  state.replay.emplace_back("Page.addInitScript", std::move(script));
+  for (zebkit_view* view : zebkit_view::Views()) {
+    if (!view->web_contents() || view->web_contents()->GetBrowserContext() != profile)
+      continue;
+    if (Automation* automation = Automation::FromWebContents(view->web_contents()))
+      automation->InstallWebAuthn();
+  }
+}
+
 void ContextCommand(Call* call) {
   const std::string id = call->String("context");
   zebkit_context* context = id.empty() ? nullptr : Registered().Context(id);
@@ -8377,6 +10168,125 @@ void ContextCommand(Call* call) {
       call->Fail("Function \"" + *binding + "\" has been already registered");
       return;
     }
+  }
+  // selectors.ts's register(), for the context's documents from now on.
+  if (name == "registerSelectorEngine") {
+    const base::DictValue* engine = params.FindDict("selectorEngine");
+    const std::string* engine_name = engine ? engine->FindString("name") : nullptr;
+    if (!engine_name || engine_name->empty() ||
+        !std::all_of(engine_name->begin(), engine_name->end(),
+                     [](char c) { return base::IsAsciiAlphaNumeric(c) || c == '_' || c == '-'; })) {
+      call->Fail("Selector engine name may only contain [a-zA-Z0-9_] characters");
+      return;
+    }
+    static constexpr const char* kBuiltin[] = {
+        "css", "css:light", "xpath", "xpath:light", "_react", "_vue", "text", "text:light", "id",
+        "id:light", "data-testid", "data-testid:light", "data-test-id", "data-test-id:light", "data-test",
+        "data-test:light", "nth", "visible", "internal:control", "internal:has", "internal:has-not",
+        "internal:has-text", "internal:has-not-text", "internal:and", "internal:or", "internal:chain",
+        "role", "internal:attr", "internal:label", "internal:text", "internal:role", "internal:testid",
+        "internal:describe", "aria-ref", "aria-template", "zs", "zs:light"};
+    for (const char* builtin : kBuiltin) {
+      if (*engine_name == builtin) {
+        call->Fail("\"" + *engine_name + "\" is a predefined selector engine");
+        return;
+      }
+    }
+    for (const base::Value& existing : state.selector_engines) {
+      const std::string* other = existing.GetDict().FindString("name");
+      if (other && *other == *engine_name) {
+        call->Fail("\"" + *engine_name + "\" selector engine has been already registered");
+        return;
+      }
+    }
+    state.selector_engines.Append(engine->Clone());
+    call->Done();
+    return;
+  }
+  if (name == "setTestIdAttributeName") {
+    state.test_id_attribute = call->String("testIdAttributeName");
+    call->Done();
+    return;
+  }
+  // coverageRecorder.ts's _harvestOriginsWithoutPage(): @expression in a
+  // page of each origin the context showed that no page shows now.
+  if (name == "harvestOrigins") {
+    std::set<std::string> live;
+    for (zebkit_view* view : pages) {
+      view->web_contents()->GetPrimaryMainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+        if (!frame->GetLastCommittedOrigin().opaque())
+          live.insert(frame->GetLastCommittedOrigin().Serialize());
+      });
+    }
+    std::vector<base::DictValue> origins;
+    for (const std::string& origin : state.visited_origins) {
+      if (live.contains(origin))
+        continue;
+      base::DictValue entry;
+      entry.Set("origin", origin);
+      origins.push_back(std::move(entry));
+    }
+    if (origins.empty()) {
+      base::DictValue answer;
+      answer.Set("values", base::ListValue());
+      call->Done(base::Value(std::move(answer)));
+      return;
+    }
+    VisitOrigins(profile, std::move(origins),
+                 base::BindRepeating([](std::string expression, const base::DictValue&) { return expression; },
+                                     call->String("expression")),
+                 base::BindOnce(
+                     [](base::WeakPtr<Call> call, OriginValues values) {
+                       if (!call)
+                         return;
+                       base::ListValue list;
+                       for (auto& [origin, value] : values)
+                         list.Append(std::move(value));
+                       base::DictValue answer;
+                       answer.Set("values", std::move(list));
+                       call->Done(base::Value(std::move(answer)));
+                     },
+                     call->GetWeakPtr()));
+    return;
+  }
+  // credentials.ts: the context's passkeys, and its authenticator.
+  if (name == "credentialsCreate") {
+    base::DictValue made;
+    std::string error;
+    if (!AddPasskey(state, params, &made, &error)) {
+      call->Fail(error);
+      return;
+    }
+    base::DictValue answer;
+    answer.Set("credential", std::move(made));
+    call->Done(base::Value(std::move(answer)));
+    return;
+  }
+  if (name == "credentialsGet") {
+    const std::string* rp_id = params.FindString("rpId");
+    const std::string* wanted = params.FindString("id");
+    base::ListValue list;
+    for (const Passkey& passkey : state.passkeys) {
+      if ((rp_id && !rp_id->empty() && passkey.rp_id != *rp_id) ||
+          (wanted && !wanted->empty() && passkey.id != *wanted))
+        continue;
+      list.Append(PasskeyValue(passkey));
+    }
+    base::DictValue answer;
+    answer.Set("credentials", std::move(list));
+    call->Done(base::Value(std::move(answer)));
+    return;
+  }
+  if (name == "credentialsDelete") {
+    const std::string* wanted = params.FindString("id");
+    std::erase_if(state.passkeys, [&](const Passkey& passkey) { return wanted && passkey.id == *wanted; });
+    call->Done();
+    return;
+  }
+  if (name == "credentialsInstall") {
+    InstallWebAuthn(profile);
+    call->Done();
+    return;
   }
   const bool registration = name == "addInitScript" || name == "exposeBinding";
   if (registration)
@@ -8656,13 +10566,127 @@ class LoginDelegate : public content::LoginDelegate {
 
 }  // namespace
 
+
+std::optional<std::pair<std::string, std::string>> AutomationProxyFor(
+    content::BrowserContext* profile) {
+  if (auto found = ContextProxies().find(profile); found != ContextProxies().end())
+    return found->second;
+  if (PendingProxy()) {
+    ContextProxies()[profile] = *PendingProxy();
+    PendingProxy().reset();
+    return ContextProxies()[profile];
+  }
+  return std::nullopt;
+}
+
+bool AutomationDrivesInput(content::WebContents* contents) {
+  return contents && Automation::FromWebContents(contents);
+}
+
 void ForgetAutomationContext(content::BrowserContext* profile) {
   ContextStates().erase(profile);
+  ContextProxies().erase(profile);
+}
+
+namespace {
+
+// One of clientCertificates ({cert, key, passphrase} or {pfx, passphrase},
+// base64), as the identity Chromium sends; nullptr pair when it is not one.
+std::pair<scoped_refptr<net::X509Certificate>, scoped_refptr<net::SSLPrivateKey>> ClientIdentity(
+    const base::DictValue& given) {
+  auto decoded = [&](const char* key) {
+    std::string bytes;
+    const std::string* text = given.FindString(key);
+    if (text)
+      base::Base64Decode(*text, &bytes);
+    return bytes;
+  };
+  const std::string* passphrase = given.FindString("passphrase");
+  crypto::OpenSSLErrStackTracer clear_errors(FROM_HERE);
+  bssl::UniquePtr<EVP_PKEY> key;
+  scoped_refptr<net::X509Certificate> leaf;
+  if (const std::string pfx = decoded("pfx"); !pfx.empty()) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pfx.data());
+    bssl::UniquePtr<PKCS12> p12(d2i_PKCS12(nullptr, &bytes, pfx.size()));
+    EVP_PKEY* parsed_key = nullptr;
+    X509* parsed_cert = nullptr;
+    STACK_OF(X509)* chain = nullptr;
+    if (!p12 || !PKCS12_parse(p12.get(), passphrase ? passphrase->c_str() : "", &parsed_key, &parsed_cert, &chain))
+      return {};
+    key.reset(parsed_key);
+    bssl::UniquePtr<X509> cert(parsed_cert);
+    bssl::UniquePtr<STACK_OF(X509)> intermediates(chain);
+    uint8_t* der = nullptr;
+    const int length = cert ? i2d_X509(cert.get(), &der) : -1;
+    if (length <= 0)
+      return {};
+    bssl::UniquePtr<uint8_t> owned(der);
+    std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> others;
+    for (size_t i = 0; intermediates && i < sk_X509_num(intermediates.get()); ++i) {
+      uint8_t* other = nullptr;
+      const int other_length = i2d_X509(sk_X509_value(intermediates.get(), i), &other);
+      if (other_length <= 0)
+        continue;
+      bssl::UniquePtr<uint8_t> other_owned(other);
+      others.push_back(net::x509_util::CreateCryptoBuffer(
+          base::span<const uint8_t>(other, static_cast<size_t>(other_length))));
+    }
+    leaf = net::X509Certificate::CreateFromBuffer(
+        net::x509_util::CreateCryptoBuffer(base::span<const uint8_t>(der, static_cast<size_t>(length))),
+        std::move(others));
+  } else {
+    const std::string cert_pem = decoded("cert");
+    const std::string key_pem = decoded("key");
+    net::CertificateList list = net::X509Certificate::CreateCertificateListFromBytes(
+        base::as_byte_span(cert_pem), net::X509Certificate::FORMAT_PEM_CERT_SEQUENCE);
+    if (list.empty())
+      return {};
+    std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
+    for (size_t i = 1; i < list.size(); ++i)
+      intermediates.push_back(bssl::UpRef(list[i]->cert_buffer()));
+    leaf = net::X509Certificate::CreateFromBuffer(bssl::UpRef(list[0]->cert_buffer()), std::move(intermediates));
+    bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(key_pem.data(), key_pem.size()));
+    key.reset(bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr,
+                                            passphrase ? const_cast<char*>(passphrase->c_str()) : nullptr)
+                  : nullptr);
+  }
+  if (!leaf || !key)
+    return {};
+  return {std::move(leaf), net::WrapOpenSSLPrivateKey(std::move(key))};
+}
+
+}  // namespace
+
+bool AutomationSelectClientCertificate(
+    content::BrowserContext* profile,
+    const net::SSLCertRequestInfo& info,
+    std::unique_ptr<content::ClientCertificateDelegate>* delegate) {
+  auto found = ContextStates().find(profile);
+  const base::ListValue* certificates =
+      found != ContextStates().end() ? found->second.options.FindList("clientCertificates") : nullptr;
+  if (!certificates || info.is_proxy)
+    return false;
+  const url::Origin server = url::Origin::Create(GURL("https://" + info.host_and_port.ToString()));
+  for (const base::Value& entry : *certificates) {
+    const std::string* origin = entry.is_dict() ? entry.GetDict().FindString("origin") : nullptr;
+    if (!origin || !url::Origin::Create(GURL(*origin)).IsSameOriginWith(server))
+      continue;
+    auto [certificate, key] = ClientIdentity(entry.GetDict());
+    if (!certificate || !key)
+      continue;
+    (*delegate)->ContinueWithCertificate(std::move(certificate), std::move(key));
+    delegate->reset();
+    return true;
+  }
+  return false;
 }
 
 std::unique_ptr<content::LoginDelegate> CreateAutomationLoginDelegate(
     const net::AuthChallengeInfo& challenge,
     content::BrowserContext* profile,
+    content::WebContents* contents,
+    bool main_frame_navigation,
+    const GURL& url,
     bool first_attempt,
     content::LoginDelegate::LoginAuthRequiredCallback callback) {
   auto found = ContextStates().find(profile);
@@ -8670,8 +10694,12 @@ std::unique_ptr<content::LoginDelegate> CreateAutomationLoginDelegate(
     return nullptr;
   const base::DictValue* matching =
       MatchingHttpCredentials(found->second.credentials, challenge.challenger.GetURL());
-  if (!matching)
+  if (!matching) {
+    Automation* automation = contents ? Automation::FromWebContents(contents) : nullptr;
+    if (automation && main_frame_navigation && !challenge.is_proxy)
+      automation->UnansweredAuth(url);
     return nullptr;
+  }
   const base::DictValue& credentials = *matching;
   std::optional<net::AuthCredentials> answer;
   if (first_attempt) {

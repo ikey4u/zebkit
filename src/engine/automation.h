@@ -5,7 +5,11 @@
 #define ZEBKIT_ENGINE_AUTOMATION_H_
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
+#include "url/gurl.h"
 #include "v8/include/v8-forward.h"
 
 #include "content/public/browser/login_delegate.h"
@@ -14,12 +18,15 @@
 
 namespace net {
 class AuthChallengeInfo;
+class SSLCertRequestInfo;
 }  // namespace net
 
 namespace content {
 class BrowserContext;
+class ClientCertificateDelegate;
 class RenderFrame;
 class RenderFrameHost;
+class WebContents;
 }  // namespace content
 
 namespace zebkit {
@@ -42,8 +49,29 @@ void InstallAutomationHooks();
 std::unique_ptr<content::LoginDelegate> CreateAutomationLoginDelegate(
     const net::AuthChallengeInfo& challenge,
     content::BrowserContext* profile,
+    content::WebContents* contents,
+    bool main_frame_navigation,
+    const GURL& url,
     bool first_attempt,
     content::LoginDelegate::LoginAuthRequiredCallback callback);
+
+// The proxy Browser.newContext gave @profile, as Chrome's DevTools takes it
+// (Target.createBrowserContext's proxyServer, proxyBypassList); nullopt
+// for none.
+std::optional<std::pair<std::string, std::string>> AutomationProxyFor(
+    content::BrowserContext* profile);
+
+// A TLS client certificate request of @profile's, answered with the
+// certificate Browser.newContext's clientCertificates gives the server's
+// origin: true when it was (@delegate taken).
+bool AutomationSelectClientCertificate(
+    content::BrowserContext* profile,
+    const net::SSLCertRequestInfo& info,
+    std::unique_ptr<content::ClientCertificateDelegate>* delegate);
+
+// Whether automation drives @contents' input (a page of Playwright's): its
+// mouse events carry a drag the page starts (drag.cc).
+bool AutomationDrivesInput(content::WebContents* contents);
 
 // The browser's end of @frame's page calls (Playwright's exposeBinding),
 // bound by the frame's associated interfaces.

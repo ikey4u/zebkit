@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/barrier_closure.h"
 #include "base/base64.h"
 #include "build/build_config.h"
 #include "zebkit/engine/playwright/protocol_metainfo.h"
@@ -60,6 +61,7 @@
 #include "url/gurl.h"
 #include "zebkit/engine/automation_context.h"
 #include "zebkit/engine/automation_network.h"
+#include "zebkit/engine/automation_scripts.h"
 #include "zebkit/engine/automation_trace.h"
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/include/zebkit/automation.h"
@@ -99,8 +101,18 @@ std::optional<base::Value> Parse(const std::string& json) {
 // value.
 constexpr char kBindingsController[] =
     "if (!globalThis.__playwright__binding__controller__) {"
+    "  const hidden = new Map();"
+    // bindingsController.ts keeps the functions off the global object: each
+    // is taken from it the first time it is named.
+    "  const take = name => {"
+    "    if (!hidden.has(name) && typeof globalThis[name] === 'function') {"
+    "      hidden.set(name, globalThis[name]);"
+    "      try { delete globalThis[name]; } catch {}"
+    "    }"
+    "    return hidden.get(name) || globalThis[name];"
+    "  };"
     "  const controller = {"
-    "    callBinding: (name, ...args) => globalThis[name](...args),"
+    "    callBinding: (name, ...args) => take(name)(...args),"
     "    parseInitScriptArg: value => {"
     "      const parse = v => {"
     "        if (v === null || typeof v !== 'object') return v;"
@@ -111,7 +123,7 @@ constexpr char kBindingsController[] =
     "        if ('r' in v) return new RegExp(v.r.p, v.r.f);"
     "        if ('a' in v) return v.a.map(parse);"
     "        if ('o' in v) { const o = {}; for (const { k, v: item } of v.o) o[k] = parse(item); return o; }"
-    "        if ('fn' in v) { const name = v.fn; return (...args) => controller.callBinding(name, ...args); }"
+    "        if ('fn' in v) { const name = v.fn; take(name); return (...args) => controller.callBinding(name, ...args); }"
     "        return v;"
     "      };"
     "      return parse(value);"
@@ -750,6 +762,13 @@ class Connection {
     std::unique_ptr<HarRecorder> network;
     std::vector<std::string> groups;
     base::TimeTicks last_frame;
+    // Tracing's istanbul coverage (coverageRecorder.ts): merged by file, the
+    // stashes taken by their ids, the first stash's failure.
+    bool coverage = false;
+    std::string coverage_registration;
+    std::map<std::string, base::DictValue> istanbul;
+    std::set<std::string> stash_ids;
+    std::string stash_error;
   };
   std::map<std::string, Trace> traces_;
   struct TracedCall {
@@ -757,6 +776,7 @@ class Connection {
     std::string call_id;
     std::string page;
     bool snapshot_after = false;
+    bool coverage_after = false;
   };
   std::map<int, TracedCall> traced_calls_;
   const base::TimeTicks origin_ = base::TimeTicks::Now();
@@ -777,6 +797,27 @@ class Connection {
                   const base::DictValue& params);
   void TraceCommand(int id, const std::string& context, const std::string& method,
                     base::DictValue params);
+  // crBrowser.ts's startTracing() and stopTracing(): Chromium's own trace of
+  // a page, over its DevTools (Tracing.start, Tracing.end, IO.read).
+  void BrowserTracing(int id, const std::string& method, base::DictValue params);
+  void BrowserTracingMessage(base::DictValue message);
+  struct ChromiumTrace {
+    std::unique_ptr<CdpClient> client;
+    int start_reply = -1;
+    int start_id = -1;
+    int stop_reply = -1;
+    int read_id = -1;
+    std::string stream;
+    std::string data;
+  };
+  std::optional<ChromiumTrace> chromium_trace_;
+  // coverageRecorder.ts: install(), collectFromPage() of @views (all the
+  // context's pages when empty), uninstall().
+  void CoverageInstall(const std::string& context, base::OnceClosure done);
+  void CoverageTake(const std::string& context, std::vector<zebkit_view*> views, base::OnceClosure done);
+  void CoverageUninstall(const std::string& context, base::OnceClosure done);
+  void CoverageHarvest(const std::string& context, base::OnceClosure done);
+  std::vector<zebkit_view*> ContextViews(const std::string& context);
   void HarExport(int id, const std::string& har_id, const std::string& mode,
                  const std::string& parent);
   // page.consoleMessages(), pageErrors(), requests(): what the page has had,
@@ -865,7 +906,7 @@ void Connection::Received(const std::string& text) {
 
     // Frame.expect's log begins with the call's title.
     if (const std::string* title = metadata->FindString("title");
-        title && *method == "expect") {
+        title && (*method == "expect" || *method == "expectScreenshot")) {
       command_params.Set("expectTitle", *title);
     }
   }
@@ -2142,6 +2183,8 @@ void Connection::PageEvent(const std::string& page_guid,
       return;
     params.Remove("webSocketRoute");
     Event(guid, event.substr(sizeof("WebSocketRoute.") - 1), std::move(params));
+  } else if (event == "Page.locatorHandlerTriggered") {
+    Event(page_guid, "locatorHandlerTriggered", std::move(params));
   } else if (event == "Page.crash") {
     Event(page_guid, "crash", base::DictValue());
   } else if (event == "Page.close") {
@@ -2275,7 +2318,11 @@ void Connection::HarEvent(const std::string& page_guid,
                        event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
                        event == "Page.responseExtraInfo" || event == "Page.requestResourceType";
   const bool lifecycle = event == "Frame.loadstate";
-  if (!network && !lifecycle)
+  const bool websocket = event == "Page.webSocket" || event == "WebSocket.request" ||
+                         event == "WebSocket.response" || event == "WebSocket.frameSent" ||
+                         event == "WebSocket.frameReceived" || event == "WebSocket.socketError" ||
+                         event == "WebSocket.close";
+  if (!network && !lifecycle && !websocket)
     return;
   zebkit_view* view = zebkit_automation_page(page->id.c_str());
   for (auto& [har_id, har] : hars_) {
@@ -2299,7 +2346,10 @@ void Connection::HarEvent(const std::string& page_guid,
       continue;
     }
     const std::string* frame = params.FindString("frame");
-    const std::string frame_guid = frame ? Known("frame", page_guid, *frame) : std::string();
+    std::string frame_guid = frame ? Known("frame", page_guid, *frame) : std::string();
+    // A WebSocket's, of the page's main frame (harTracer.ts).
+    if (websocket && frame_guid.empty() && view)
+      frame_guid = Known("frame", page_guid, FrameIdOfMain(view));
     har.recorder->Record(event, params, page_guid, frame_guid);
     // Its content, kept as it ends, as harTracer.ts's barrier on the body.
     const std::string* request = params.FindString("request");
@@ -2488,6 +2538,7 @@ bool Connection::BeforeCall(int id,
   const bool snapshots = trace.options.FindBool("snapshotDom").value_or(false) && info && info->snapshot &&
                          !call.page.empty();
   call.snapshot_after = snapshots;
+  call.coverage_after = trace.coverage && info && info->snapshot && !call.page.empty();
   const std::string call_id = call.call_id;
   const std::string page = call.page;
   traced_calls_[id] = std::move(call);
@@ -2534,7 +2585,13 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
       },
       weak_factory_.GetWeakPtr(), Json(base::Value(std::move(message))));
   if (call.snapshot_after) {
-    CaptureTraceSnapshot(call.context, call.page, call.call_id, "after", std::move(send));
+    send = base::BindOnce(&Connection::CaptureTraceSnapshot, weak_factory_.GetWeakPtr(), call.context,
+                          call.page, call.call_id, "after", std::move(send));
+  }
+  // tracing.ts's _captureCoverage(): the page's counters after its action.
+  Object* page_object = call.coverage_after ? Find(call.page) : nullptr;
+  if (zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr) {
+    CoverageTake(call.context, {view}, std::move(send));
     return;
   }
   std::move(send).Run();
@@ -2800,6 +2857,9 @@ void Connection::TraceCommand(int id,
     har.Set("content", "attach");
     har.Set("resourcesPrefix", "resources/");
     trace.network = std::make_unique<HarRecorder>(har);
+    Object* traced = Find(context);
+    trace.coverage = params.FindBool("coverage").value_or(false) && traced &&
+                     traced->type == "BrowserContext";
     Reply(id, base::Value(base::DictValue()));
     return;
   }
@@ -2878,6 +2938,15 @@ void Connection::TraceCommand(int id,
     }
     base::DictValue answer;
     answer.Set("traceName", trace.name);
+    if (trace.coverage) {
+      CoverageInstall(context, base::BindOnce(
+                                   [](base::WeakPtr<Connection> self, int id, base::DictValue answer) {
+                                     if (self)
+                                       self->Reply(id, base::Value(std::move(answer)));
+                                   },
+                                   weak_factory_.GetWeakPtr(), id, std::move(answer)));
+      return;
+    }
     Reply(id, base::Value(std::move(answer)));
     return;
   }
@@ -2939,6 +3008,17 @@ void Connection::TraceCommand(int id,
       ReplyError(id, "Must stop trace file before stopping tracing");
       return;
     }
+    if (trace.coverage) {
+      trace.coverage = false;
+      CoverageUninstall(context, base::BindOnce(
+                                     [](base::WeakPtr<Connection> self, int id, std::string context,
+                                        std::string method, base::DictValue params) {
+                                       if (self)
+                                         self->TraceCommand(id, context, method, std::move(params));
+                                     },
+                                     weak_factory_.GetWeakPtr(), id, context, method, std::move(params)));
+      return;
+    }
     traces_.erase(found);
     Reply(id, base::Value(base::DictValue()));
     return;
@@ -2954,11 +3034,48 @@ void Connection::TraceCommand(int id,
     ReplyError(id, "Must start tracing before stopping");
     return;
   }
+  // tracing.ts's _takeCoverage(), before the chunk stops.
+  if (trace.coverage && mode != "discard" && !params.FindBool("coverageTaken").value_or(false)) {
+    params.Set("coverageTaken", true);
+    // flush(): the pages' counters, then the stashes of origins without one.
+    CoverageTake(context, {},
+                 base::BindOnce(
+                     [](base::WeakPtr<Connection> self, int id, std::string context, std::string method,
+                        base::DictValue params) {
+                       if (!self)
+                         return;
+                       self->CoverageHarvest(
+                           context, base::BindOnce(
+                                        [](base::WeakPtr<Connection> self, int id, std::string context,
+                                           std::string method, base::DictValue params) {
+                                          if (self)
+                                            self->TraceCommand(id, context, method, std::move(params));
+                                        },
+                                        self, id, context, method, std::move(params)));
+                     },
+                     weak_factory_.GetWeakPtr(), id, context, method, std::move(params)));
+    return;
+  }
   end_groups(trace);
   trace.recording = false;
   if (mode == "discard") {
+    trace.istanbul.clear();
     Reply(id, base::Value(base::DictValue()));
     return;
+  }
+  std::string coverage_error;
+  std::string coverage_json;
+  if (trace.coverage) {
+    coverage_error = trace.stash_error;
+    trace.stash_ids.clear();
+    if (!trace.istanbul.empty()) {
+      // sortedIstanbulCoverage(): by file.
+      base::DictValue sorted;
+      for (auto& [file, coverage] : trace.istanbul)
+        sorted.Set(file, std::move(coverage));
+      coverage_json = Json(base::Value(std::move(sorted)));
+    }
+    trace.istanbul.clear();
   }
   std::map<std::string, std::string> files = std::move(trace.chunk_files);
   trace.chunk_files.clear();
@@ -2983,6 +3100,8 @@ void Connection::TraceCommand(int id,
   for (const auto& [name, bytes] : trace.cross_files)
     files[name] = bytes;
   files["trace.network"] = std::move(network);
+  if (!coverage_json.empty())
+    files["trace.coverage"] = std::move(coverage_json);
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(
@@ -3016,9 +3135,15 @@ void Connection::TraceCommand(int id,
           std::move(files), mode == "archive"),
       base::BindOnce(
           [](base::WeakPtr<Connection> self, int id, std::string context, bool archive,
-             std::optional<base::FilePath> path) {
+             std::string coverage_error, std::optional<base::FilePath> path) {
             if (!self)
               return;
+            // The chunk is written either way; the coverage's failure is the
+            // answer (tracing.ts's stopChunk()).
+            if (!coverage_error.empty()) {
+              self->ReplyError(id, coverage_error);
+              return;
+            }
             if (!path) {
               self->ReplyError(id, "zebkit: the trace could not be written");
               return;
@@ -3047,7 +3172,433 @@ void Connection::TraceCommand(int id,
             }
             self->Reply(id, base::Value(std::move(answer)));
           },
-          weak_factory_.GetWeakPtr(), id, context, mode == "archive"));
+          weak_factory_.GetWeakPtr(), id, context, mode == "archive", std::move(coverage_error)));
+}
+
+void Connection::BrowserTracing(int id, const std::string& method, base::DictValue params) {
+  if (method == "startTracing") {
+    if (chromium_trace_) {
+      ReplyError(id, "Cannot start recording trace while already recording trace.");
+      return;
+    }
+    scoped_refptr<content::DevToolsAgentHost> host;
+    if (const std::string* page_guid = params.FindStringByDottedPath("page.guid")) {
+      Object* page = Find(*page_guid);
+      zebkit_view* view = page ? ViewOf(*page) : nullptr;
+      if (view && view->web_contents())
+        host = content::DevToolsAgentHost::GetOrCreateFor(view->web_contents());
+    } else {
+      host = content::DevToolsAgentHost::CreateForBrowser(nullptr, {});
+    }
+    if (!host) {
+      ReplyError(id, "Target page, context or browser has been closed");
+      return;
+    }
+    chromium_trace_.emplace();
+    chromium_trace_->client = std::make_unique<CdpClient>(
+        std::move(host),
+        base::BindRepeating(&Connection::BrowserTracingMessage, weak_factory_.GetWeakPtr()),
+        base::BindOnce(
+            [](base::WeakPtr<Connection> self) {
+              if (self && self->chromium_trace_) {
+                if (self->chromium_trace_->stop_reply >= 0)
+                  self->ReplyError(self->chromium_trace_->stop_reply, "Target closed");
+                self->chromium_trace_.reset();
+              }
+            },
+            weak_factory_.GetWeakPtr()));
+    if (!chromium_trace_->client->Attach()) {
+      chromium_trace_.reset();
+      ReplyError(id, "Target page, context or browser has been closed");
+      return;
+    }
+    std::vector<std::string> categories = {
+        "-*", "devtools.timeline", "v8.execute", "disabled-by-default-devtools.timeline",
+        "disabled-by-default-devtools.timeline.frame", "toplevel", "blink.console", "blink.user_timing",
+        "latencyInfo", "disabled-by-default-devtools.timeline.stack", "disabled-by-default-v8.cpu_profiler",
+        "disabled-by-default-v8.cpu_profiler.hires"};
+    if (const base::ListValue* given = params.FindList("categories")) {
+      categories.clear();
+      for (const base::Value& category : *given) {
+        if (category.is_string())
+          categories.push_back(category.GetString());
+      }
+    }
+    if (params.FindBool("screenshots").value_or(false))
+      categories.push_back("disabled-by-default-devtools.screenshot");
+    base::DictValue start;
+    start.Set("transferMode", "ReturnAsStream");
+    start.Set("categories", base::JoinString(categories, ","));
+    chromium_trace_->start_reply = id;
+    chromium_trace_->start_id = chromium_trace_->client->NextId();
+    chromium_trace_->client->Send("Tracing.start", std::move(start));
+    return;
+  }
+  if (!chromium_trace_ || chromium_trace_->stop_reply >= 0) {
+    ReplyError(id, "Tracing was not started.");
+    return;
+  }
+  chromium_trace_->stop_reply = id;
+  chromium_trace_->client->Send("Tracing.end", base::DictValue());
+}
+
+void Connection::BrowserTracingMessage(base::DictValue message) {
+  if (!chromium_trace_)
+    return;
+  ChromiumTrace& trace = *chromium_trace_;
+  const std::optional<int> id = message.FindInt("id");
+  if (id && *id == trace.start_id) {
+    const int reply = std::exchange(trace.start_reply, -1);
+    if (const std::string* error = message.FindStringByDottedPath("error.message")) {
+      const std::string text = *error;
+      base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, std::move(trace.client));
+      chromium_trace_.reset();
+      ReplyError(reply, text);
+      return;
+    }
+    Reply(reply, base::Value(base::DictValue()));
+    return;
+  }
+  const std::string* method = message.FindString("method");
+  auto read = [&]() {
+    base::DictValue params;
+    params.Set("handle", trace.stream);
+    trace.read_id = trace.client->NextId();
+    trace.client->Send("IO.read", std::move(params));
+  };
+  if (method && *method == "Tracing.tracingComplete") {
+    const std::string* stream = message.FindStringByDottedPath("params.stream");
+    if (!stream) {
+      const int reply = trace.stop_reply;
+      base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, std::move(trace.client));
+      chromium_trace_.reset();
+      ReplyError(reply, "zebkit: the trace has no stream");
+      return;
+    }
+    trace.stream = *stream;
+    read();
+    return;
+  }
+  if (!id || *id != trace.read_id)
+    return;
+  const std::string* data = message.FindStringByDottedPath("result.data");
+  if (data) {
+    if (message.FindBoolByDottedPath("result.base64Encoded").value_or(false)) {
+      std::string decoded;
+      if (base::Base64Decode(*data, &decoded))
+        trace.data += decoded;
+    } else {
+      trace.data += *data;
+    }
+  }
+  if (data && !message.FindBoolByDottedPath("result.eof").value_or(false)) {
+    read();
+    return;
+  }
+  base::DictValue close;
+  close.Set("handle", trace.stream);
+  trace.client->Send("IO.close", std::move(close));
+  const int reply = trace.stop_reply;
+  std::string bytes = std::move(trace.data);
+  // After this message's dispatch: the client goes with the trace.
+  base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, std::move(trace.client));
+  chromium_trace_.reset();
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(
+          [](std::string bytes) -> std::optional<base::FilePath> {
+            base::FilePath directory;
+            if (!base::CreateNewTempDirectory(FILE_PATH_LITERAL("zebkit-crtrace"), &directory))
+              return std::nullopt;
+            const base::FilePath path = directory.AppendASCII("trace.crtrace");
+            if (!base::WriteFile(path, bytes))
+              return std::nullopt;
+            return path;
+          },
+          std::move(bytes)),
+      base::BindOnce(
+          [](base::WeakPtr<Connection> self, int reply, std::optional<base::FilePath> path) {
+            if (!self)
+              return;
+            if (!path) {
+              self->ReplyError(reply, "zebkit: the trace could not be written");
+              return;
+            }
+            base::DictValue initializer;
+            initializer.Set("absolutePath", path->AsUTF8Unsafe());
+            Object artifact;
+            artifact.id = path->AsUTF8Unsafe();
+            artifact.data.Set("path", path->AsUTF8Unsafe());
+            base::DictValue answer;
+            answer.Set("artifact", Ref(self->Create(self->browser_, "Artifact", std::move(initializer),
+                                                    std::move(artifact))));
+            self->Reply(reply, base::Value(std::move(answer)));
+          },
+          weak_factory_.GetWeakPtr(), reply));
+}
+
+// ---- Tracing's coverage (coverageRecorder.ts) ---------------------------
+
+namespace {
+
+constexpr char kCoverageTake[] =
+    "window['__pwCoverageTake'] ? window['__pwCoverageTake']() : []";
+constexpr char kCoverageDispose[] = "window['__pwCoverageTake']?.dispose()";
+
+std::string CoverageSource(const std::string& session) {
+  return "(() => {\nnew ((" +
+         std::string(reinterpret_cast<const char*>(kCoverageScript), sizeof(kCoverageScript)) +
+         ").CoverageScript())(window, '__pwCoverageTake', " + Json(base::Value(session)) + ");\n})()";
+}
+
+// istanbulCoverage.ts's mergeIstanbulCoverage().
+void MergeIstanbul(std::map<std::string, base::DictValue>& into, const base::DictValue& data) {
+  for (const auto [file, value] : data) {
+    if (!value.is_dict())
+      continue;
+    const base::DictValue& delta = value.GetDict();
+    auto [found, made] = into.try_emplace(file);
+    base::DictValue& existing = found->second;
+    if (made) {
+      const std::string* path = delta.FindString("path");
+      existing.Set("path", path ? *path : file);
+      for (const char* key : {"statementMap", "fnMap", "branchMap", "s", "f", "b"})
+        existing.Set(key, base::DictValue());
+    }
+    const base::DictValue* statements = delta.FindDict("statementMap");
+    if (statements && existing.FindDict("statementMap")->empty()) {
+      existing.Set("statementMap", statements->Clone());
+      const base::DictValue* functions = delta.FindDict("fnMap");
+      existing.Set("fnMap", functions ? functions->Clone() : base::DictValue());
+      const base::DictValue* branches = delta.FindDict("branchMap");
+      existing.Set("branchMap", branches ? branches->Clone() : base::DictValue());
+      base::DictValue& s = *existing.FindDict("s");
+      for (const auto [key, unused] : *existing.FindDict("statementMap")) {
+        if (!s.Find(key))
+          s.Set(key, 0);
+      }
+      base::DictValue& f = *existing.FindDict("f");
+      for (const auto [key, unused] : *existing.FindDict("fnMap")) {
+        if (!f.Find(key))
+          f.Set(key, 0);
+      }
+      base::DictValue& b = *existing.FindDict("b");
+      for (const auto [key, branch] : *existing.FindDict("branchMap")) {
+        if (b.Find(key))
+          continue;
+        base::ListValue zeroes;
+        const base::ListValue* locations = branch.is_dict() ? branch.GetDict().FindList("locations") : nullptr;
+        for (size_t i = 0; locations && i < locations->size(); ++i)
+          zeroes.Append(0);
+        b.Set(key, std::move(zeroes));
+      }
+    }
+    for (const char* key : {"s", "f"}) {
+      const base::DictValue* counts = delta.FindDict(key);
+      if (!counts)
+        continue;
+      base::DictValue& to = *existing.FindDict(key);
+      for (const auto [name, count] : *counts) {
+        const double sum = to.FindDouble(name).value_or(0) + (count.is_int() || count.is_double() ? count.GetDouble() : 0);
+        to.Set(name, sum);
+      }
+    }
+    if (const base::DictValue* counts = delta.FindDict("b")) {
+      base::DictValue& to = *existing.FindDict("b");
+      for (const auto [name, list] : *counts) {
+        if (!list.is_list())
+          continue;
+        base::ListValue* branches = to.FindList(name);
+        if (!branches)
+          branches = to.Set(name, base::ListValue())->GetIfList();
+        for (size_t i = 0; i < list.GetList().size(); ++i) {
+          const base::Value& count = list.GetList()[i];
+          const double add = count.is_int() || count.is_double() ? count.GetDouble() : 0;
+          while (branches->size() <= i)
+            branches->Append(0);
+          const base::Value& had = (*branches)[i];
+          (*branches)[i] = base::Value((had.is_int() || had.is_double() ? had.GetDouble() : 0) + add);
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
+std::vector<zebkit_view*> Connection::ContextViews(const std::string& context) {
+  std::vector<zebkit_view*> views;
+  for (const auto& [view, page_guid] : pages_) {
+    Object* page = Find(page_guid);
+    if (page && page->context == context)
+      views.push_back(view);
+  }
+  return views;
+}
+
+void Connection::CoverageInstall(const std::string& context, base::OnceClosure done) {
+  auto found = traces_.find(context);
+  Object* object = Find(context);
+  if (found == traces_.end() || !object || !found->second.coverage_registration.empty()) {
+    std::move(done).Run();
+    return;
+  }
+  const std::string source = CoverageSource(context);
+  base::DictValue params;
+  params.Set("context", object->id);
+  params.Set("source", source);
+  std::vector<zebkit_view*> views = ContextViews(context);
+  Native(-1, nullptr, "BrowserContext.addInitScript", std::move(params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, std::string source,
+                std::vector<zebkit_view*> views, base::OnceClosure done, base::Value result) {
+               if (!self) {
+                 std::move(done).Run();
+                 return;
+               }
+               auto found = self->traces_.find(context);
+               const std::string* registration =
+                   result.is_dict() ? result.GetDict().FindString("registration") : nullptr;
+               if (found != self->traces_.end() && registration)
+                 found->second.coverage_registration = *registration;
+               // And in the documents there are.
+               auto once = base::BarrierClosure(views.size() + 1, std::move(done));
+               for (zebkit_view* view : self->ContextViews(context)) {
+                 if (std::find(views.begin(), views.end(), view) == views.end())
+                   continue;
+                 base::DictValue evaluate;
+                 evaluate.Set("expression", source);
+                 self->Native(-1, view, "Page.evaluateInFrames", std::move(evaluate),
+                              base::BindOnce([](base::RepeatingClosure once, base::Value) { once.Run(); },
+                                             once));
+               }
+               once.Run();
+             },
+             weak_factory_.GetWeakPtr(), context, source, views, std::move(done)));
+}
+
+void Connection::CoverageTake(const std::string& context,
+                              std::vector<zebkit_view*> views,
+                              base::OnceClosure done) {
+  if (views.empty())
+    views = ContextViews(context);
+  auto once = base::BarrierClosure(views.size(), std::move(done));
+  for (zebkit_view* view : views) {
+    base::DictValue evaluate;
+    evaluate.Set("expression", kCoverageTake);
+    Native(-1, view, "Page.evaluateInFrames", std::move(evaluate),
+           base::BindOnce(
+               [](base::WeakPtr<Connection> self, std::string context, base::RepeatingClosure once,
+                  base::Value result) {
+                 if (!self) {
+                   once.Run();
+                   return;
+                 }
+                 auto found = self->traces_.find(context);
+                 if (found != self->traces_.end() && result.is_dict()) {
+                   Trace& trace = found->second;
+                   if (const base::ListValue* errors = result.GetDict().FindList("errors")) {
+                     for (const base::Value& error : *errors) {
+                       if (!error.is_string())
+                         continue;
+                       std::string message = error.GetString().substr(0, error.GetString().find('\n'));
+                       if (message.starts_with("Error: "))
+                         message = message.substr(7);
+                       if (message.find("Failed to stash the coverage") != std::string::npos &&
+                           trace.stash_error.empty()) {
+                         trace.stash_error = message;
+                       }
+                     }
+                   }
+                   if (const base::ListValue* values = result.GetDict().FindList("values")) {
+                     for (const base::Value& chunks : *values) {
+                       if (!chunks.is_list())
+                         continue;
+                       for (const base::Value& json : chunks.GetList()) {
+                         std::optional<base::Value> chunk = json.is_string() ? Parse(json.GetString()) : std::nullopt;
+                         if (!chunk || !chunk->is_dict())
+                           continue;
+                         if (const std::string* chunk_id = chunk->GetDict().FindString("id")) {
+                           if (!trace.stash_ids.insert(*chunk_id).second)
+                             continue;
+                         }
+                         if (const base::DictValue* data = chunk->GetDict().FindDict("data"))
+                           MergeIstanbul(trace.istanbul, *data);
+                       }
+                     }
+                   }
+                 }
+                 once.Run();
+               },
+               weak_factory_.GetWeakPtr(), context, once));
+  }
+}
+
+void Connection::CoverageHarvest(const std::string& context, base::OnceClosure done) {
+  Object* object = Find(context);
+  if (!object) {
+    std::move(done).Run();
+    return;
+  }
+  base::DictValue params;
+  params.Set("context", object->id);
+  params.Set("expression", "((" +
+                               std::string(reinterpret_cast<const char*>(kCoverageScript),
+                                           sizeof(kCoverageScript)) +
+                               ").takeCoverageStashes())(window, " + Json(base::Value(context)) + ")");
+  Native(-1, nullptr, "BrowserContext.harvestOrigins", std::move(params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, base::OnceClosure done, base::Value result) {
+               if (self && result.is_dict()) {
+                 auto found = self->traces_.find(context);
+                 const base::ListValue* values = result.GetDict().FindList("values");
+                 if (found != self->traces_.end() && values) {
+                   Trace& trace = found->second;
+                   for (const base::Value& chunks : *values) {
+                     if (!chunks.is_list())
+                       continue;
+                     for (const base::Value& json : chunks.GetList()) {
+                       std::optional<base::Value> chunk = json.is_string() ? Parse(json.GetString()) : std::nullopt;
+                       if (!chunk || !chunk->is_dict())
+                         continue;
+                       if (const std::string* chunk_id = chunk->GetDict().FindString("id")) {
+                         if (!trace.stash_ids.insert(*chunk_id).second)
+                           continue;
+                       }
+                       if (const base::DictValue* data = chunk->GetDict().FindDict("data"))
+                         MergeIstanbul(trace.istanbul, *data);
+                     }
+                   }
+                 }
+               }
+               std::move(done).Run();
+             },
+             weak_factory_.GetWeakPtr(), context, std::move(done)));
+}
+
+void Connection::CoverageUninstall(const std::string& context, base::OnceClosure done) {
+  auto found = traces_.find(context);
+  Object* object = Find(context);
+  if (found == traces_.end()) {
+    std::move(done).Run();
+    return;
+  }
+  if (object && !found->second.coverage_registration.empty()) {
+    base::DictValue params;
+    params.Set("context", object->id);
+    params.Set("registration", found->second.coverage_registration);
+    Native(-1, nullptr, "BrowserContext.removeRegistration", std::move(params),
+           base::BindOnce([](base::Value) {}));
+  }
+  found->second.coverage_registration.clear();
+  std::vector<zebkit_view*> views = ContextViews(context);
+  auto once = base::BarrierClosure(views.size(), std::move(done));
+  for (zebkit_view* view : views) {
+    base::DictValue evaluate;
+    evaluate.Set("expression", kCoverageDispose);
+    Native(-1, view, "Page.evaluateInFrames", std::move(evaluate),
+           base::BindOnce([](base::RepeatingClosure once, base::Value) { once.Run(); }, once));
+  }
 }
 
 void Connection::CreateTempFiles(int id, base::DictValue params) {
@@ -3296,6 +3847,8 @@ void Connection::Command(int id,
         }
       }
       empty_reply();
+    } else if (method == "startTracing" || method == "stopTracing") {
+      BrowserTracing(id, method, std::move(params));
     } else if (method == "newBrowserCDPSession") {
       NewCDPSession(id, guid, content::DevToolsAgentHost::CreateForBrowser(nullptr, {}));
     } else if (method == "defaultUserAgentForTest") {
@@ -3501,8 +4054,8 @@ void Connection::Command(int id,
         base::DictValue answer;
         answer.Set("value", *path);
         Reply(id, base::Value(std::move(answer)));
-      } else if (method == "saveAsStream") {
-        // What a remote client saves: the file's bytes, read in chunks.
+      } else if (method == "saveAsStream" || method == "stream") {
+        // What a remote client saves or reads: the file's bytes, in chunks.
         base::ThreadPool::PostTaskAndReplyWithResult(
             FROM_HERE, {base::MayBlock()},
             base::BindOnce(
@@ -3736,13 +4289,43 @@ void Connection::Command(int id,
   const std::string page_guid = type == "Page" ? guid : object->page;
   std::string frame_guid;
   std::string native = type + "." + method;
+  // expect(locator).toHaveScreenshot()'s frame, as the native commands name it.
+  if (method == "expectScreenshot") {
+    if (const std::string* frame = params.FindStringByDottedPath("locator.frame.guid")) {
+      Object* frame_object = Find(*frame);
+      params.SetByDottedPath("locator.frame", frame_object ? frame_object->id : std::string());
+    }
+  }
   if (type == "Frame") {
     params.Set("frame", object->id);
     frame_guid = guid;
+    // WebMCP's input is an argument with no handles (frameDispatcher.ts's
+    // parseArgument()).
+    if (base::Value* input = params.Find("input"); method == "webmcpCallTool" && input && input->is_dict()) {
+      const base::Value* value = input->GetDict().Find("value");
+      params.Set("input", value ? Plain(*value) : base::Value());
+    }
   } else if (type == "ElementHandle" || type == "JSHandle") {
     params.Set("handle", object->id);
   } else if (type == "Route") {
     params.Set("route", object->id);
+    // harRouter.ts's redirect of a navigation (frames.ts's
+    // redirectNavigation()): the navigation goes on to the URL, as a
+    // redirect of it.
+    if (method == "redirectNavigationRequest") {
+      const std::string* url = params.FindString("url");
+      base::ListValue headers;
+      base::DictValue location;
+      location.Set("name", "location");
+      location.Set("value", url ? *url : std::string());
+      headers.Append(std::move(location));
+      params.Set("status", 302);
+      params.Set("headers", std::move(headers));
+      params.Set("body", "");
+      params.Set("isBase64", true);
+      params.Remove("url");
+      native = "Route.fulfill";
+    }
     if (const std::string* body = params.FindString("body"))
       params.Set("body", *body);
     if (method == "fulfill" && !params.FindBool("isBase64"))
@@ -3868,6 +4451,20 @@ void Connection::Command(int id,
       Reply(id, base::Value(base::DictValue()));
       return;
     }
+    // tracing.ts's onPageWillClose(): its coverage first.
+    auto traced = traces_.find(object->context);
+    if (traced != traces_.end() && traced->second.coverage && !params.FindBool("coverageTaken").value_or(false)) {
+      params.Set("coverageTaken", true);
+      CoverageTake(object->context, {closing},
+                   base::BindOnce(
+                       [](base::WeakPtr<Connection> self, int id, std::string guid, std::string method,
+                          base::DictValue params) {
+                         if (self)
+                           self->Command(id, guid, method, std::move(params));
+                       },
+                       weak_factory_.GetWeakPtr(), id, guid, method, std::move(params)));
+      return;
+    }
     close_replies_[guid].push_back(id);
     if (close_replies_[guid].size() == 1)
       zebkit_view_close(closing);
@@ -3950,7 +4547,7 @@ void Connection::Command(int id,
         params.Set("url", resolved.spec());
     }
   }
-  if (method == "setInputFiles") {
+  if (method == "setInputFiles" || method == "drop") {
     // A remote client's files, written to the engine's (createTempFiles).
     if (base::ListValue* streams = params.FindList("streams")) {
       base::ListValue paths;
@@ -4068,6 +4665,47 @@ void Connection::Command(int id,
                    details.Set("customErrorMessage", *error);
                  const base::ListValue* log = answer.FindList("log");
                  self->ReplyExpectFailed(id, std::move(details), log ? log->Clone() : base::ListValue());
+                 return;
+               }
+               if (method == "webmcpCallTool" && result.is_dict()) {
+                 const base::Value* value = result.GetDict().Find("result");
+                 base::DictValue answer;
+                 answer.Set("result", value ? Serialize(*value) : Serialize(base::Value()));
+                 self->Reply(id, base::Value(std::move(answer)));
+                 return;
+               }
+               // page.ts's expectScreenshot(): {actual} or nothing, else
+               // its error with the screenshots in the details.
+               if (method == "expectScreenshot" && result.is_dict()) {
+                 base::DictValue& answer = result.GetDict();
+                 if (!answer.FindBool("expectScreenshotFailed").value_or(false)) {
+                   base::DictValue reply;
+                   if (const std::string* actual = answer.FindString("actual"))
+                     reply.Set("actual", *actual);
+                   self->Reply(id, base::Value(std::move(reply)));
+                   return;
+                 }
+                 base::DictValue details;
+                 for (const char* key : {"actual", "previous", "diff"}) {
+                   if (const std::string* value = answer.FindString(key))
+                     details.Set(key, *value);
+                 }
+                 details.Set("timedOut", answer.FindBool("timedOut").value_or(false));
+                 if (const std::string* error = answer.FindString("errorMessage"))
+                   details.Set("customErrorMessage", *error);
+                 base::ListValue* log = answer.FindList("log");
+                 base::ListValue lines = log ? std::move(*log) : base::ListValue();
+                 // page.ts's details.log: the call's, compressed.
+                 std::vector<std::string> raw;
+                 for (const base::Value& line : lines) {
+                   if (line.is_string())
+                     raw.push_back(line.GetString());
+                 }
+                 base::ListValue compressed;
+                 for (const std::string& line : CompressCallLog(raw))
+                   compressed.Append(line);
+                 details.Set("log", std::move(compressed));
+                 self->ReplyExpectFailed(id, std::move(details), std::move(lines));
                  return;
                }
                if (method == "exposeBinding" || method == "addInitScript") {

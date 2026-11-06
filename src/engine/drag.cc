@@ -60,6 +60,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "zebkit/engine/automation.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
 
@@ -265,6 +266,8 @@ class DragState : public content::WebContentsUserData<DragState>,
     gfx::PointF point;
   };
   std::optional<Source> source;
+  // Automation drives the page's input (crDragDrop.ts's drags).
+  bool automated = false;
   // The drag over the page: the engine's run of the page's drag, or the
   // application's.
   Target target;
@@ -278,8 +281,12 @@ class DragState : public content::WebContentsUserData<DragState>,
              const gfx::Point& location) {
     zebkit_view* view = ViewOf(&GetWebContents());
     const bool offscreen = view && zebkit_view_is_offscreen(view);
-    if (!offscreen && !on_start)
-      return false;  // A window's: the system's drag and drop, as before.
+    // A window's: the system's drag and drop, as before; unless automation
+    // drives the page, whose mouse events carry the drag as an off-screen
+    // view's do.
+    automated = AutomationDrivesInput(&GetWebContents());
+    if (!offscreen && !on_start && !automated)
+      return false;
     if (source)
       return true;  // One at a time; the page is still in the last.
 
@@ -328,7 +335,7 @@ class DragState : public content::WebContentsUserData<DragState>,
       if (!source)
         return true;  // Ended in the call.
     }
-    if (!offscreen && !taken) {
+    if (!offscreen && !taken && !automated) {
       // A window's drag the application did not take: the system's.
       source.reset();
       StopObserving();
@@ -344,6 +351,14 @@ class DragState : public content::WebContentsUserData<DragState>,
       target.data = data;
       target.operations = static_cast<blink::DragOperationsMask>(operations);
       target.point = start;
+      if (automated) {
+        // As CDP's intercepted drag has it: without the source document's
+        // own marker.
+        target.data.custom_data.erase(u"chromium/x-drag-id");
+        // crDragDrop.ts: the drag enters where the mouse that started it is.
+        if (mouse)
+          Enter(*mouse, 0);
+      }
     }
     return true;
   }
@@ -595,7 +610,9 @@ class DragState : public content::WebContentsUserData<DragState>,
                         (event.code && std::string(event.code) == "Escape") ||
                         event.key_code == 0x1B;
     if (escape && event.type == ZEBKIT_KEY_DOWN) {
-      Leave();
+      // Input.cancelDragging's: the source told, no dragleave.
+      if (!automated)
+        Leave();
       EndSource(source->point, ZEBKIT_DRAG_NONE);
     }
     return true;

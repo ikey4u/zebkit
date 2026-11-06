@@ -20,7 +20,7 @@ function start(index, generation) {
   fs.mkdirSync(profile, { recursive: true });
   const log = fs.openSync(path.join(work, `engine-${index}.log`), 'a');
   const urlFile = path.join(work, `engine-${index}.url`);
-  const child = spawn(executable, ['--headless', '--no-sandbox', `--user-data-dir=${profile}`, `--playwright-port=${Number(base) + index}`],
+  const child = spawn(executable, ['--headless', '--no-sandbox', '--enable-features=WebMCP', `--user-data-dir=${profile}`, `--playwright-port=${Number(base) + index}`],
       { stdio: ['ignore', log, 'pipe'], detached: true });
   children.add(child);
   let said = '';

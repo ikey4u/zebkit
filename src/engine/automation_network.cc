@@ -1019,7 +1019,9 @@ class NetworkImpl : public Network,
     request.Set("request", id);
     Emit("Page.request", std::move(request));
     response.Set("request", id);
-    response.Set("fromServiceWorker", true);
+    // Unless the memory cache served it.
+    if (!response.Find("fromServiceWorker"))
+      response.Set("fromServiceWorker", true);
     Emit("Page.response", std::move(response));
     BodyStarted(id);
   }

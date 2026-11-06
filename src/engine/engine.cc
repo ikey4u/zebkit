@@ -947,6 +947,29 @@ void ConfigureNetworkDefaults(content::BrowserContext* context,
   // ("en-US,en;q=0.9"), not the list as it is.
   context_params->accept_language = net::HttpUtil::GenerateAcceptLanguageHeader(
       net::HttpUtil::ExpandLanguageList(AcceptLanguages()));
+  static constexpr auto kProxyAnnotation = net::DefineNetworkTrafficAnnotation(
+      "zebkit_application_proxy", R"(
+        semantics {
+          sender: "zebkit embedding application"
+          description: "Network traffic uses the proxy selected by the embedding application."
+          trigger: "The application configures a proxy through startup settings or switches."
+          data: "The requests the application or its pages send."
+          destination: OTHER
+        }
+        policy {
+          cookies_allowed: YES
+          setting: "The embedding application selects the proxy and cookie policy."
+          policy_exception_justification: "An embedding application's own network configuration."
+        })");
+  // An automation context's own (Browser.newContext's proxy).
+  if (std::optional<std::pair<std::string, std::string>> rules = AutomationProxyFor(context)) {
+    net::ProxyConfig proxy;
+    proxy.proxy_rules().ParseFromString(rules->first);
+    proxy.proxy_rules().bypass_rules.ParseFromString(rules->second);
+    context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(proxy, kProxyAnnotation);
+    context_params->proxy_config_client_receiver.reset();
+    return;
+  }
   const auto& command = *base::CommandLine::ForCurrentProcess();
   if (command.HasSwitch("no-proxy-server") || command.HasSwitch("proxy-server") ||
       command.HasSwitch("proxy-pac-url") || command.HasSwitch("proxy-auto-detect")) {
@@ -962,20 +985,6 @@ void ConfigureNetworkDefaults(content::BrowserContext* context,
         proxy.set_auto_detect(true);
       }
     }
-    static constexpr auto kProxyAnnotation = net::DefineNetworkTrafficAnnotation(
-        "zebkit_application_proxy", R"(
-          semantics {
-            sender: "zebkit embedding application"
-            description: "Network traffic uses the proxy selected by the embedding application."
-            trigger: "The application configures a proxy through startup settings or switches."
-            data: "The requests the application or its pages send."
-            destination: OTHER
-          }
-          policy {
-            cookies_allowed: YES
-            setting: "The embedding application selects the proxy and cookie policy."
-            policy_exception_justification: "An embedding application's own network configuration."
-          })");
     context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(proxy, kProxyAnnotation);
     context_params->proxy_config_client_receiver.reset();
   }
@@ -1063,6 +1072,9 @@ base::OnceClosure BrowserClient::SelectClientCertificate(
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,
     std::unique_ptr<content::ClientCertificateDelegate> delegate) {
+  // Browser.newContext's clientCertificates first.
+  if (AutomationSelectClientCertificate(browser_context, *cert_request_info, &delegate))
+    return base::OnceClosure();
   return HandleClientCertificate(web_contents, *cert_request_info, std::move(client_certs),
                                  std::move(delegate));
 }
@@ -1089,7 +1101,8 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
         std::move(auth_required_callback));
     std::unique_ptr<content::LoginDelegate> delegate =
         CreateAutomationLoginDelegate(
-            auth_info, browser_context, first_auth_attempt,
+            auth_info, browser_context, web_contents,
+            is_request_for_primary_main_frame_navigation, url, first_auth_attempt,
             base::BindOnce(
                 [](std::shared_ptr<content::LoginDelegate::LoginAuthRequiredCallback>
                        callback,

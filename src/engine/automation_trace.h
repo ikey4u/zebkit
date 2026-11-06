@@ -6,6 +6,8 @@
 #ifndef ZEBKIT_ENGINE_AUTOMATION_TRACE_H_
 #define ZEBKIT_ENGINE_AUTOMATION_TRACE_H_
 
+#include <math.h>
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -101,7 +103,20 @@ class HarRecorder {
     bool has_body = false;
     std::optional<std::string> body;
     bool fetch = false;
+    // A WebSocket's (harTracer.ts's _onWebSocket()): its frames, as
+    // {type, time, opcode, data}, and what its frames weighed.
+    bool websocket = false;
+    base::ListValue messages;
+    double transfer_size = -1;
+    double oldest_frame = INFINITY;
+    double newest_frame = -INFINITY;
   };
+  void RecordWebSocket(const std::string& event,
+                       const base::DictValue& params,
+                       const std::string& page_ref,
+                       const std::string& frame_ref);
+  base::DictValue WebSocketValue(const Entry& entry,
+                                 std::map<std::string, std::string>* files) const;
   struct Page {
     std::string ref;
     base::Time started;

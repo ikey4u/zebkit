@@ -13,6 +13,20 @@
 // previews[i] what Playwright shows of it, nodes[i] whether it is a node. An argument refers to the
 // agent's handles the same way.
 
+// The context's selector engines and test id attribute (dom.ts's
+// injectedScript()): the injected script made again when they change.
+let selectorOptions = '';
+function useSelectorOptions(given) {
+  const json = stringifyJson(given);
+  if (json === selectorOptions)
+    return;
+  selectorOptions = json;
+  options.customEngines = given.customEngines || [];
+  if (given.testIdAttributeName)
+    options.testIdAttributeName = given.testIdAttributeName;
+  injectedScript = undefined;
+}
+
 // Playwright's InjectedScript, made the first time a step needs it: an
 // evaluation in the page's world does not, and must work when the page has
 // broken what its constructor uses (Array.prototype.map, say).
@@ -211,6 +225,25 @@ const readers = {
 function scrollIntoView(element, attempt) {
   const alignments = [undefined, 'end', 'center', 'start'];
   const alignment = alignments[attempt % alignments.length];
+  // InspectorDOMAgent::scrollIntoViewIfNeeded(): an element with no box of
+  // its own (display: contents) is scrolled to as its first child in layout.
+  if (element.nodeType === 1 && !element.getClientRects().length &&
+      getComputedStyle(element).display === 'contents') {
+    for (let child = element.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 1 && (child.getClientRects().length || getComputedStyle(child).display === 'contents')) {
+        scrollIntoView(child, attempt);
+        return;
+      }
+      if (child.nodeType === 3 && child.data.trim()) {
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        const box = range.getBoundingClientRect();
+        if (alignment || box.top < 0 || box.left < 0 || box.bottom > innerHeight || box.right > innerWidth)
+          scrollBy({ left: box.left + box.width / 2 - innerWidth / 2, top: box.top + box.height / 2 - innerHeight / 2, behavior: 'instant' });
+        return;
+      }
+    }
+  }
   if (alignment) {
     element.scrollIntoView({ block: alignment, inline: alignment, behavior: 'instant' });
     return;
@@ -387,6 +420,38 @@ steps.pointerPrepare = arg => {
   interceptors.set(id, interceptor);
   return { point: rounded, interceptor: id, offset: frameOffset() };
   });
+};
+
+// dom.ts's _drop(): a DataTransfer with the files and the data, and the
+// drag events at the point; 'not-accepted' when dragover was not cancelled.
+steps.drop = arg => {
+  const element = query(arg, arg.strict)[0];
+  if (!element || !element.isConnected || element.nodeType !== 1)
+    return 'error:notconnected';
+  const dt = new DataTransfer();
+  for (const p of arg.payloads) {
+    const bytes = Uint8Array.from(atob(p.buffer), c => c.charCodeAt(0));
+    dt.items.add(new File([bytes], p.name, { type: p.mimeType, lastModified: p.lastModifiedMs }));
+  }
+  for (const entry of arg.data)
+    dt.setData(entry.mimeType, entry.value);
+  const makeEvent = type => new DragEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    clientX: arg.point.x,
+    clientY: arg.point.y,
+    dataTransfer: dt,
+  });
+  element.dispatchEvent(makeEvent('dragenter'));
+  const over = makeEvent('dragover');
+  element.dispatchEvent(over);
+  if (!over.defaultPrevented) {
+    element.dispatchEvent(makeEvent('dragleave'));
+    return 'not-accepted';
+  }
+  element.dispatchEvent(makeEvent('drop'));
+  return 'accepted';
 };
 
 steps.pointerFinish = arg => {
@@ -724,6 +789,22 @@ steps.ariaSnapshot = arg => {
   });
 };
 
+// page.ts's ariaSnapshotJSONForFrame(): one frame's snapshot, with the refs
+// of the iframes it shows, for the browser to stitch theirs in.
+steps.ariaSnapshotTree = arg => {
+  const options = { mode: arg.mode || 'default', depth: arg.depth, boxes: arg.boxes, doNotRenderActive: arg.doNotRenderActive };
+  return poll(arg.timeout, kPollWaits, say => {
+    const element = resolve(arg, say);
+    if (!element)
+      return undefined;
+    const snapshot = injected.ariaSnapshotJSON(element, options);
+    return { tree: { json: snapshot.json, iframeRefs: snapshot.iframeRefs, iframeDepths: snapshot.iframeDepths } };
+  });
+};
+
+// The stitched snapshot as the client gets it (frames.ts's ariaSnapshot()).
+steps.renderAria = arg => renderAriaSnapshotAsYaml(arg.json);
+
 // server/callLog.ts: repetitions as "N x", each line as the client prints it.
 function compressCallLog(log) {
   const lines = [];
@@ -932,7 +1013,17 @@ steps.consoleArgs = (arg, out) => {
   return handles;
 };
 
+// frames.ts's resolveSelector(): the element's own selector, or null.
+steps.generateSelector = arg => {
+  const element = query(arg, false)[0];
+  return element ? injected.generateSelectorSimple(element) : null;
+};
+
+// The options a step carries, alone (before a call that is not a step).
+steps.noop = () => true;
 steps.title = () => document.title;
+// A selector as Playwright's asLocator() writes it, for a call log.
+steps.locatorText = arg => asLocator('javascript', arg.selector);
 steps.content = () => injected.documentContent(false);
 steps.viewport = () => ({ width: innerWidth, height: innerHeight });
 steps.frameOffset = () => frameOffset();
@@ -1161,7 +1252,16 @@ return {
       const step = steps[name];
       if (!step)
         throw fatal(`zebkit: no step ${name}`);
-      const arg = argument(parseJson(argJson), handles, true);
+      const parsed = parseJson(argJson);
+      if (parsed.selectorOptions)
+        useSelectorOptions(parsed.selectorOptions);
+      // frames.ts's Frame.seq, the prefix of the frame's ARIA refs.
+      if (parsed.frameSeq !== undefined && parsed.frameSeq !== options.frameSeq) {
+        options.frameSeq = parsed.frameSeq;
+        if (injectedScript)
+          injectedScript._frameSeq = parsed.frameSeq;
+      }
+      const arg = argument(parsed, handles, true);
       return step(arg, out);
     });
   },

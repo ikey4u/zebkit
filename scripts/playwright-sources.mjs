@@ -12,6 +12,12 @@
 //   what page.clock installs in every document (server/clock.ts).
 // - websocket_mock_script.js: packages/injected/src/webSocketMock.ts, what
 //   routeWebSocket installs (webSocketRouteDispatcher.ts).
+// - webmcp_script.js: packages/injected/src/webMCP.ts, what Frame.webmcpTools
+//   and webmcpCallTool run in the frame (server/webmcp.ts).
+// - coverage_script.js: packages/injected/src/coverageScript.ts, what
+//   tracing's coverage installs in every document (coverageRecorder.ts).
+// - webauthn_script.js: packages/injected/src/webAuthn.ts, the virtual
+//   authenticator credentials.ts installs (server/credentials.ts).
 // - us_keyboard_layout.h: the US layout of usKeyboardLayout.ts, with the
 //   aliases and shifted keys input.ts's buildLayoutClosure() derives from
 //   it, as a C++ table.
@@ -99,6 +105,15 @@ const webSocketMockSource = await bundleInjected('webSocketMock.ts');
 // storageState()'s IndexedDB and OPFS (browserContext.ts runs it in a page of
 // each origin): module.exports.StorageScript().
 const storageSource = await bundleInjected('storageScript.ts');
+// Frame.webmcpTools and webmcpCallTool (server/webmcp.ts runs it in the
+// frame's utility world): module.exports.WebMCPScript().
+const webMCPSource = await bundleInjected('webMCP.ts');
+// Tracing's istanbul coverage (server/coverageRecorder.ts installs it in every
+// document): module.exports.CoverageScript(), takeCoverageStashes().
+const coverageSource = await bundleInjected('coverageScript.ts');
+// The context's virtual WebAuthn authenticator (server/credentials.ts installs it
+// in every document): module.exports.inject().
+const webAuthnSource = await bundleInjected('webAuthn.ts');
 
 const built = await esbuild.build({
   stdin: {
@@ -143,6 +158,12 @@ fs.writeFileSync(path.join(out, 'storage_script.js'),
     license.replace("injected script", "storage script (injected/src/storageScript.ts)") + storageSource);
 fs.writeFileSync(path.join(out, 'snapshotter_script.js'),
     license.replace("injected script", "DOM snapshot streamer (server/trace/recorder/snapshotterInjected.ts)") + snapshotterSource);
+fs.writeFileSync(path.join(out, 'webmcp_script.js'),
+    license.replace("injected script", "WebMCP script (injected/src/webMCP.ts)") + webMCPSource);
+fs.writeFileSync(path.join(out, 'webauthn_script.js'),
+    license.replace("injected script", "WebAuthn script (injected/src/webAuthn.ts)") + webAuthnSource);
+fs.writeFileSync(path.join(out, 'coverage_script.js'),
+    license.replace("injected script", "coverage script (injected/src/coverageScript.ts)") + coverageSource);
 fs.writeFileSync(path.join(out, 'websocket_mock_script.js'),
     license.replace("injected script", "WebSocket mock (injected/src/webSocketMock.ts)") + webSocketMockSource);
 

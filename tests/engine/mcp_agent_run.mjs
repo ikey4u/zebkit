@@ -95,8 +95,9 @@ const call = async (name, args) => {
   if (answer.isError) throw new Error(`${name}: ${answer.text}`);
   return answer;
 };
-/** The reference of the first line of an accessibility tree that matches. */
-const refOf = (tree, pattern) => tree.split('\n').find(line => pattern.test(line))?.match(/\[ref=(e\d+)\]/)?.[1];
+/** The reference of the first line of an accessibility tree that matches: e12, or
+ * f2e12 after a navigation (frames.ts numbers the main frame again). */
+const refOf = (tree, pattern) => tree.split('\n').find(line => pattern.test(line))?.match(/\[ref=((?:f\d+)?e\d+)\]/)?.[1];
 
 console.log('note this is a scripted run, not an outside agent: see the top of this file');
 

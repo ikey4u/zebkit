@@ -11,7 +11,13 @@ server/clock.ts installs it, as kClockScript.
 And the WebSocket mock (playwright/websocket_mock_script.js), installed as
 webSocketRouteDispatcher.ts installs it, as kWebSocketMockScript.
 
-    automation_scripts.py <injected_script.js> <automation_steps.js> <clock_script.js> <websocket_mock_script.js> <snapshotter_script.js> <out.h>
+And the WebMCP, coverage and WebAuthn scripts (playwright/webmcp_script.js,
+playwright/coverage_script.js, playwright/webauthn_script.js) as kWebMcpScript,
+kCoverageScript and kWebAuthnScript.
+
+    automation_scripts.py <injected_script.js> <automation_steps.js> <clock_script.js> <websocket_mock_script.js>
+        <snapshotter_script.js> <storage_script.js> <webmcp_script.js> <coverage_script.js>
+        <webauthn_script.js> <out.h>
 """
 
 import json
@@ -33,7 +39,14 @@ OPTIONS = {
 
 
 def main():
-    injected_path, steps_path, clock_path, mock_path, snapshotter_path, storage_path, out_path = sys.argv[1:8]
+    (injected_path, steps_path, clock_path, mock_path, snapshotter_path, storage_path, webmcp_path,
+     coverage_path, webauthn_path, out_path) = sys.argv[1:11]
+    with open(webmcp_path, encoding="utf-8") as f:
+        webmcp = f.read()
+    with open(coverage_path, encoding="utf-8") as f:
+        coverage = f.read()
+    with open(webauthn_path, encoding="utf-8") as f:
+        webauthn = f.read()
     with open(snapshotter_path, encoding="utf-8") as f:
         snapshotter = f.read()
     with open(storage_path, encoding="utf-8") as f:
@@ -82,6 +95,18 @@ def main():
                 "// constructed with the browser's name (browserContext.ts's storageState()).\n")
         f.write(array("kStorageScript",
                       "(() => {\nconst module = {};\n%s\n;\nreturn module.exports.StorageScript();\n})()" % storage))
+        f.write("\n// Playwright's WebMCP script: an expression whose value is its class,\n"
+                "// constructed with the frame's global (server/webmcp.ts).\n")
+        f.write(array("kWebMcpScript",
+                      "(() => {\nconst module = {};\n%s\n;\nreturn module.exports.WebMCPScript();\n})()" % webmcp))
+        f.write("\n// Playwright's coverage script: an expression whose value is its module's\n"
+                "// exports, CoverageScript() and takeCoverageStashes() (coverageRecorder.ts).\n")
+        f.write(array("kCoverageScript",
+                      "(() => {\nconst module = {};\n%s\n;\nreturn module.exports;\n})()" % coverage))
+        f.write("\n// Playwright's virtual WebAuthn authenticator, installed in a document\n"
+                "// (server/credentials.ts).\n")
+        f.write(array("kWebAuthnScript",
+                      "(() => {\nconst module = {};\n%s\n;\nmodule.exports.inject()(globalThis);\n})();\n" % webauthn))
         f.write("\n}  // namespace zebkit\n\n#endif  // ZEBKIT_ENGINE_AUTOMATION_SCRIPTS_H_\n")
 
 

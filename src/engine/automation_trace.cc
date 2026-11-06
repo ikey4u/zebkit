@@ -308,6 +308,10 @@ void HarRecorder::Record(const std::string& event,
                          const base::DictValue& params,
                          const std::string& page_ref,
                          const std::string& frame_ref) {
+  if (event == "Page.webSocket" || event.starts_with("WebSocket.")) {
+    RecordWebSocket(event, params, page_ref, frame_ref);
+    return;
+  }
   const std::string* id = params.FindString("request");
   if (!id)
     return;
@@ -354,6 +358,180 @@ void HarRecorder::Record(const std::string& event,
     if (const std::string* failure = params.FindString("failureText"))
       entry.failure = *failure;
   }
+}
+
+namespace {
+
+// network.ts's headersSize().
+double HeadersSize(const base::ListValue* headers) {
+  double size = 0;
+  if (!headers)
+    return size;
+  for (const base::Value& header : *headers) {
+    const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+    const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+    if (name && value)
+      size += static_cast<double>(name->size() + value->size() + 4);
+  }
+  return size;
+}
+
+}  // namespace
+
+void HarRecorder::RecordWebSocket(const std::string& event,
+                                  const base::DictValue& params,
+                                  const std::string& page_ref,
+                                  const std::string& frame_ref) {
+  const std::string* socket = params.FindString("socket");
+  if (!socket)
+    return;
+  const std::string id = "ws:" + *socket;
+  if (event == "Page.webSocket") {
+    const std::string* url = params.FindString("url");
+    if (!url || !Includes(*url) || !GURL(*url).is_valid())
+      return;
+    AddPage(page_ref);
+    Entry& entry = entries_[id];
+    entry.websocket = true;
+    entry.started = base::Time::Now();
+    entry.start = base::TimeTicks::Now();
+    entry.page_ref = page_ref;
+    entry.frame_ref = frame_ref;
+    entry.request.Set("url", *url);
+    entry.request.Set("method", "GET");
+    entry.request.Set("resourceType", "websocket");
+    order_.push_back(id);
+    return;
+  }
+  auto found = entries_.find(id);
+  if (found == entries_.end())
+    return;
+  Entry& entry = found->second;
+  const double now = base::Time::Now().InMillisecondsFSinceUnixEpoch();
+  auto frame_time = [&]() {
+    if (now < entry.oldest_frame)
+      entry.oldest_frame = now;
+    if (now > entry.newest_frame)
+      entry.newest_frame = now;
+  };
+  if (event == "WebSocket.request") {
+    if (const base::ListValue* headers = params.FindList("headers"))
+      entry.request.Set("headers", headers->Clone());
+  } else if (event == "WebSocket.response") {
+    entry.response = params.Clone();
+    const std::string* text = params.FindString("statusText");
+    const double size =
+        4 + 8 + 3 + static_cast<double>(text ? text->size() : 0) + HeadersSize(params.FindList("headers")) + 2;
+    entry.transfer_size = std::max(0.0, entry.transfer_size) + size;
+  } else if (event == "WebSocket.frameSent" || event == "WebSocket.frameReceived") {
+    const bool received = event == "WebSocket.frameReceived";
+    const int opcode = params.FindInt("opcode").value_or(1);
+    const std::string* data = params.FindString("data");
+    base::DictValue message;
+    message.Set("type", received ? "receive" : "send");
+    message.Set("time", now);
+    message.Set("opcode", opcode);
+    message.Set("data", data ? *data : std::string());
+    entry.messages.Append(std::move(message));
+    frame_time();
+    if (received) {
+      double length = 0;
+      if (data && opcode == 1) {
+        length = static_cast<double>(data->size());
+      } else if (data) {
+        std::string bytes;
+        length = base::Base64Decode(*data, &bytes) ? static_cast<double>(bytes.size()) : 0;
+      }
+      double header = 6;
+      if (length >= 65536)
+        header += 8;
+      else if (length > 125)
+        header += 2;
+      entry.transfer_size = std::max(0.0, entry.transfer_size) + header + length;
+    }
+  } else if (event == "WebSocket.socketError") {
+    if (const std::string* error = params.FindString("error"))
+      entry.failure = *error;
+  } else if (event == "WebSocket.close") {
+    entry.ended = base::TimeTicks::Now();
+  }
+}
+
+// harTracer.ts's entry of a WebSocket: its handshake, its frames embedded or
+// attached (a .jsonl of them), the time from its first frame to its last.
+base::DictValue HarRecorder::WebSocketValue(const Entry& entry,
+                                            std::map<std::string, std::string>* files) const {
+  const std::string* url_text = entry.request.FindString("url");
+  const std::string url = url_text ? *url_text : std::string();
+  const base::ListValue* request_headers = entry.request.FindList("headers");
+  base::DictValue request;
+  request.Set("method", "GET");
+  request.Set("url", url);
+  request.Set("httpVersion", "HTTP/1.1");
+  request.Set("cookies", base::ListValue());
+  request.Set("headers", request_headers ? request_headers->Clone() : base::ListValue());
+  request.Set("queryString", QueryString(GURL(url)));
+  request.Set("headersSize",
+              !minimal_ && request_headers
+                  ? 4 + 3 + static_cast<double>(GURL(url).path().size()) + 8 + HeadersSize(request_headers)
+                  : -1);
+  request.Set("bodySize", -1);
+  base::DictValue response;
+  const bool responded = !entry.response.empty();
+  response.Set("status", responded ? entry.response.FindInt("status").value_or(-1) : -1);
+  const std::string* status_text = entry.response.FindString("statusText");
+  response.Set("statusText", status_text ? *status_text : "");
+  response.Set("httpVersion", "HTTP/1.1");
+  response.Set("cookies", base::ListValue());
+  const base::ListValue* response_headers = entry.response.FindList("headers");
+  response.Set("headers", response_headers ? response_headers->Clone() : base::ListValue());
+  base::DictValue content;
+  content.Set("size", -1);
+  content.Set("mimeType", "x-unknown");
+  if (content_ == "attach" && !entry.messages.empty()) {
+    std::string lines;
+    for (const base::Value& message : entry.messages)
+      lines += base::WriteJson(message).value_or("{}") + "\n";
+    const std::string name = resources_prefix_ +
+                             base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(url + lines)))) +
+                             ".jsonl";
+    if (files)
+      (*files)[name] = lines;
+    content.Set("_file", file_ref_prefix_ + name);
+  }
+  response.Set("content", std::move(content));
+  response.Set("headersSize",
+               !minimal_ && responded
+                   ? 4 + 8 + 3 + static_cast<double>(status_text ? status_text->size() : 0) +
+                         HeadersSize(response_headers) + 2
+                   : -1);
+  response.Set("bodySize", -1);
+  response.Set("redirectURL", "");
+  if (!minimal_)
+    response.Set("_transferSize", entry.transfer_size);
+  if (!entry.failure.empty())
+    response.Set("_failureText", entry.failure);
+  base::DictValue har;
+  if (!minimal_ && !entry.page_ref.empty())
+    har.Set("pageref", entry.page_ref);
+  har.Set("startedDateTime", Iso8601(entry.started));
+  har.Set("time", entry.newest_frame >= entry.oldest_frame ? entry.newest_frame - entry.oldest_frame : -1);
+  har.Set("request", std::move(request));
+  har.Set("response", std::move(response));
+  har.Set("cache", base::DictValue());
+  base::DictValue timings;
+  timings.Set("send", -1);
+  timings.Set("wait", -1);
+  timings.Set("receive", -1);
+  har.Set("timings", std::move(timings));
+  if (!minimal_) {
+    har.Set("_resourceType", "websocket");
+    if (!entry.frame_ref.empty())
+      har.Set("_frameref", entry.frame_ref);
+  }
+  if (content_ == "embed" && !entry.messages.empty())
+    har.Set("_webSocketMessages", entry.messages.Clone());
+  return har;
 }
 
 void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictValue& response) {
@@ -443,6 +621,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
                                         const Entry& entry,
                                         const BodyFunc& body_func,
                                         std::map<std::string, std::string>* files) const {
+  if (entry.websocket)
+    return WebSocketValue(entry, files);
   const base::DictValue& given = entry.overrides ? *entry.overrides : entry.request;
   const std::string* url_text = given.FindString("url");
   if (!url_text)

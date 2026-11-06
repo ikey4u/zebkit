@@ -8,51 +8,25 @@
 # What a content-layer engine does not have (Chrome's WebUI and extensions), or
 # Playwright's own server, which a connected client does not have. Tests that
 # launch a browser get zebkit-run (scripts/playwright-suite.sh).
-library/chromium/connect-over-cdp.spec.ts | page has been discarded | it opens chrome://discards, Chrome's WebUI, which a content-layer engine does not have
 library/chromium/extensions.spec.ts | * | Chrome's extensions (a persistent context with --load-extension), which a content-layer engine does not have
 library/inspector/*.spec.ts | * | the recorder driven through the endpoint (BrowserContext.startRecording, page.pickLocator, the inspector's own page) is Playwright's server's; the CLI's codegen, which launches zebkit-run, runs
 library/debugger.spec.ts | * | page.pause() and the Debugger object need Playwright's own server (docs/AUTOMATION.md, section 5)
-library/trace-viewer*.spec.ts | * | launches Playwright's trace viewer in a browser of its own
 
 # Not implemented by the endpoint.
-library/browsercontext-proxy.spec.ts | * | newContext's proxy option is not implemented
-library/client-certificates.spec.ts | * | newContext's clientCertificates option is not implemented
-library/chromium/session.spec.ts | error:startJSCoverage | Page.startJSCoverage is not implemented
 library/chromium/chromium.spec.ts | WebUI navigation | the error's text for a refused WebUI page differs: a content-layer engine has no WebUI
-library/chromium/tracing.spec.ts | * | Browser.startTracing is not implemented over this protocol
-library/chromium/css-coverage.spec.ts | * | Page.startCSSCoverage is not implemented
-library/chromium/js-coverage.spec.ts | * | Page.startJSCoverage is not implemented
-library/coverage.spec.ts | * | coverage is not implemented
-library/selectors-register.spec.ts | * | BrowserContext.registerSelectorEngine is not implemented
-library/browsercontext-credentials.spec.ts | should fail|setHTTPCredentials | a page's 401 without matching credentials is the 401 response here; under Playwright's Fetch.continueWithAuth CancelAuth Chromium fails the navigation with net::ERR_INVALID_AUTH_CREDENTIALS (the test's failsOn401)
-library/browsercontext-webauthn.spec.ts | error:needs a page of the context | BrowserContext.credentials* need a page of the context here
-library/webmcp*.spec.ts | * | Frame.webmcpTools and webmcpCallTool are not implemented
-page/page-add-locator-handler.spec.ts | * | Page.registerLocatorHandler is not implemented
-page/expect-timeout.spec.ts | locator handler | Page.registerLocatorHandler is not implemented
-page/page-drop.spec.ts | * | Frame.drop is not implemented
-page/selectors-frame.spec.ts | survive | a frame detached while waited for fails with "Frame was detached"; frameSelectors.ts retries
 
 # Differ, each with its cause known; a file's entry says what its failures are.
+library/client-certificates.spec.ts | pass through to non-matching origin|should not intercept TLS|ignoreHTTPSErrors=false by default|rejects client certificate after it|tls errors during TLS 1.2|TLS renegotiation|support http2|connection errors when using http2|context APIRequestContext instance | the certificate goes to Chromium's own TLS (ContentBrowserClient::SelectClientCertificate); Playwright's server puts a TLS proxy of its own in between (socksClientCertificatesInterceptor.ts), with its own error pages, its own check of the server's certificate and HTTPS errors ignored in the browser
+library/webmcp-disabled.spec.ts | * | the suite's engines run with --enable-features=WebMCP for webmcp.spec.ts (a connected browser keeps its launch switches), as a Chrome server launched with it would fail it too
 library/browsercontext-locale.spec.ts | should format number$|should format date|isolated between contexts | number and date formats of locales the package's ICU data does not hold (English and CJK only, the size budget)
 page/workers.spec.ts | console | a worker's console message comes from its page's Log domain (the worker's own target is not attached): Blink's string, no arguments
-page/jshandle-to-string.spec.ts | sparse | a console message's text is Blink's string, not rendered from its arguments
-library/har-websocket.spec.ts | * | HAR has no WebSocket entries
-page/page-drag.spec.ts | Drag and drop > (should work @smoke|should send the right|should not send dragover|should work inside iframe|should cancel on escape|should respect the drop|should work with the helper|should work if the drag event|should work with locators) | the native drag does not fire the page's drag events through the endpoint's mouse commands
 page/page-network-sizes.spec.ts | * | header sizes follow the observed headers (docs/AUTOMATION.md, section 5)
-page/page-aria-snapshot-ai.spec.ts | iframe|frameset|frame snapshots | snapshots do not stitch the frames' documents
-page/page-add-init-script-callback.spec.ts | global | exposeBinding's noGlobal is not honoured: an exposed function is a property of the window
 page/frame-hierarchy.spec.ts | frame\.name | a frame's name does not fall back to its element's id as DOM's Page.frameNavigated does
-page/locator-frame.spec.ts | should wait for frame to go | an assertion through a frame locator whose <iframe> is replaced or removed stays on the frame it entered; frames.ts resolves the frames again at each poll
-page/locator-frame.spec.ts | survive frame reattach | a frame detached while waited for fails with "Frame was detached"; frameSelectors.ts retries
 page/locator-frame.spec.ts | should wait for frame$|throw on ambiguity | the call log and the strict error through a frame locator lack frameSelectors.ts's words
 page/locator-query.spec.ts | nested frameLocators|common frame prefix | a composite locator whose operands enter the same frame is not reduced to that frame as selectorParser.ts's common frame prefix does
-page/expect-boolean.spec.ts | with frameLocator 2 | an assertion through a frame locator whose <iframe> is replaced or removed stays on the frame it entered; frames.ts resolves the frames again at each poll
 page/page-click-scroll.spec.ts | scroll into view display:contents|scroll into view element in iframe | scrolling a display:contents element or into a frame differs from DOM.scrollIntoViewIfNeeded
-page/elementhandle-scroll-into-view.spec.ts | display:contents | scrolling a display:contents element differs from DOM.scrollIntoViewIfNeeded
-library/browsercontext-har.spec.ts | redirect | Route.redirectNavigationRequest is not implemented
 library/tracing.spec.ts | collect trace with resources|not collect snapshots|exclude internal pages|collect two traces|previous chunks|overwrite existing|multiple chunks|ignore iframes|network failures|include buffers | a trace's resources are incomplete (automation_trace.cc)
 library/tracing.spec.ts | correct title|aria snapshots|action screenshots|group/groupEnd|hide internal stack | the title and details of a trace's events are incomplete (automation_trace.cc)
-library/browsercontext-service-worker-policy.spec.ts | * | serviceWorkers: "block" is not implemented
 library/browsercontext-viewport-mobile.spec.ts | * | isMobile's meta viewport handling (new since this package: Emulation.setDeviceMetricsOverride)
 library/chromium/chromium.spec.ts | serviceWorker\(\), and fromServiceWorker|intercept service worker|intercept only serviceworker|main service worker request|service worker importScripts|service worker requests in HAR|network events, routing, and annotations for Service|setOffline|setExtraHTTPHeaders | a service worker's own requests do not go through the network proxy (its loader factories are the storage partition's, not a page's): no events, routes, HAR, offline or extra headers for them
 library/chromium/chromium.spec.ts | console messages from service worker|console.log from ServiceWorker start | a service worker's console messages are not reported (they come from its DevTools target's Runtime.consoleAPICalled, which the endpoint does not keep a session to)

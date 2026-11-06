@@ -237,6 +237,9 @@ action("automation_scripts") {
     "playwright/websocket_mock_script.js",
     "playwright/snapshotter_script.js",
     "playwright/storage_script.js",
+    "playwright/webmcp_script.js",
+    "playwright/coverage_script.js",
+    "playwright/webauthn_script.js",
   ]
   outputs = [ "$target_gen_dir/automation_scripts.h" ]
   args = [
@@ -246,6 +249,9 @@ action("automation_scripts") {
     rebase_path("playwright/websocket_mock_script.js", root_build_dir),
     rebase_path("playwright/snapshotter_script.js", root_build_dir),
     rebase_path("playwright/storage_script.js", root_build_dir),
+    rebase_path("playwright/webmcp_script.js", root_build_dir),
+    rebase_path("playwright/coverage_script.js", root_build_dir),
+    rebase_path("playwright/webauthn_script.js", root_build_dir),
     rebase_path("$target_gen_dir/automation_scripts.h", root_build_dir),
   ]
 }
@@ -326,12 +332,16 @@ _sources = [
   "app.h",
   "automation.cc",
   "automation.h",
+  "automation_compare.cc",
+  "automation_compare.h",
   "automation_context.cc",
   "automation_context.h",
   "automation_network.cc",
   "automation_network.h",
   "automation_trace.cc",
   "automation_trace.h",
+  "automation_webauthn.cc",
+  "automation_webauthn.h",
   "automation_renderer.cc",
   "automation_server.cc",
   "include/zebkit/automation.h",
