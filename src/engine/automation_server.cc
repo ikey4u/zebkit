@@ -877,6 +877,8 @@ class Connection {
     std::unique_ptr<HarRecorder> recorder;
   };
   std::map<std::string, Har> hars_;
+  void ServiceWorkerNetworkEvent(const std::string& context, const std::string& event,
+                                 base::DictValue params);
   void HarEvent(const std::string& page_guid, const std::string& event,
                 const base::DictValue& params);
 
@@ -937,7 +939,48 @@ class Connection {
                             base::OnceClosure then);
   void CaptureTracePhase(const std::string& context, const std::string& page,
                          const std::string& call_id, const std::string& phase,
-                         base::OnceClosure then);
+                         base::OnceClosure then, bool dom = true);
+  // Page.captureSnapshot's params for a phase of @page's; nullopt when there
+  // is nothing to take.
+  std::optional<base::DictValue> TraceSnapshotParams(const std::string& context, const std::string& page,
+                                                     const std::string& phase);
+  void RecordTraceSnapshots(const std::string& context, const std::string& page,
+                            const std::string& call_id, const std::string& phase, const base::Value& result);
+  // debugger.ts's Debugger of each context (by the context's guid): where
+  // it pauses, the call it holds, and the calls it streams.
+  struct DebugCall {
+    std::string id;
+    std::string title;
+    std::optional<base::DictValue> location;
+    std::string status = "running";
+    std::string error;
+    size_t sent_logs = 0;
+  };
+  struct DebugState {
+    std::string guid;
+    bool enabled = false;
+    bool next = false;
+    bool before_waiting = false;
+    bool api_calls = false;
+    std::optional<base::DictValue> location;
+    int paused = 0;
+    base::OnceClosure paused_run;
+    std::string paused_title;
+    base::DictValue paused_location;
+    std::map<int, DebugCall> ongoing;
+  };
+  std::map<std::string, DebugState> debuggers_;
+  // Whether the debugger holds the call (its @run kept for its resume).
+  bool DebuggerBeforeCall(int id, const std::string& guid, const std::string& method,
+                          const base::DictValue* metadata, base::OnceClosure& run);
+  void DebuggerAfterCall(int id, const std::string& error);
+  void DebuggerCommand(int id, const std::string& guid, const std::string& method, const base::DictValue& params);
+  void DebuggerApiCalls(DebugState& state, const std::vector<int>& ids);
+  void DebuggerPausedChanged(DebugState& state);
+  // Calls whose input takes the trace's "action" snapshot (dom.ts's
+  // before/input/after: at the input point, natively), and what it took.
+  std::set<int> action_snapshot_calls_;
+  std::map<int, base::Value> action_snapshots_;
   void TraceScreencastFrame(const std::string& context, const std::string& page);
   void TraceEvent(const std::string& page_guid, const std::string& event,
                   const base::DictValue& params);
@@ -1116,8 +1159,12 @@ void Connection::Received(const std::string& text) {
   }
   base::DictValue command_params = params ? std::move(*params) : base::DictValue();
   command_params.Set("abortId", "a" + base::NumberToString(id));
-  // A trace's log events come with the native answer.
-  if (!traces_.empty())
+  // A trace's log events come with the native answer, and the input's
+  // point (the trace's, an enabled debugger's).
+  bool streamed = false;
+  for (const auto& [context, state] : debuggers_)
+    streamed |= state.api_calls;
+  if (!traces_.empty() || streamed)
     command_params.Set("traceLog", true);
   // Since 1.60 or so the client's timeout travels in the call's metadata, not
   // in its parameters (channelOwner.ts); the native commands take "timeout".
@@ -1138,6 +1185,21 @@ void Connection::Received(const std::string& text) {
           self->Command(id, guid, method, std::move(params));
       },
       weak_factory_.GetWeakPtr(), id, *guid, *method, command_params.Clone());
+  if (!debuggers_.empty() &&
+      DebuggerBeforeCall(id, *guid, *method, dict.FindDict("metadata"), run)) {
+    // The trace's "before" is taken as the call starts: before its pause.
+    if (!traces_.empty()) {
+      base::DictValue traced = params ? command_params.Clone() : base::DictValue();
+      for (const char* key : {"abortId", "expectTitle", "traceLog", "timeout"})
+        traced.Remove(key);
+      if (params)
+        trace_orders_[id] = ParamsOrder(text);
+      base::OnceClosure nothing = base::DoNothing();
+      if (BeforeCall(id, *guid, *method, traced, dict.FindDict("metadata"), std::move(nothing)))
+        return;
+    }
+    return;
+  }
   if (!traces_.empty()) {
     base::DictValue traced = params ? command_params.Clone() : base::DictValue();
     traced.Remove("abortId");
@@ -1232,6 +1294,10 @@ void Connection::Native(int id,
           if (std::optional<base::Value> point = result->GetDict().Extract("__input");
               point && point->is_dict() && pending->id >= 0) {
             pending->connection->call_inputs_[pending->id] = std::move(point->GetDict());
+          }
+          if (std::optional<base::Value> snapshot = result->GetDict().Extract("__actionSnapshot");
+              snapshot && pending->id >= 0) {
+            pending->connection->action_snapshots_[pending->id] = std::move(*snapshot);
           }
         }
         std::move(pending->then).Run(result ? std::move(*result)
@@ -1338,6 +1404,9 @@ std::string Connection::RequestGuid(const std::string& page_guid,
     if (std::string frame_guid = Known("frame", page_guid, *frame); !frame_guid.empty())
       initializer.Set("frame", Ref(frame_guid));
   }
+  // A service worker's (crServiceWorker.ts): of the worker, of no frame.
+  if (Object* owner = Find(page_guid); owner && owner->type == "Worker")
+    initializer.Set("serviceWorker", Ref(page_guid));
   const std::string* url = request.FindString("url");
   initializer.Set("url", url ? *url : "");
   const std::string* type = request.FindString("resourceType");
@@ -1358,6 +1427,8 @@ std::string Connection::RequestGuid(const std::string& page_guid,
   object.id = key;
   object.page = page_guid;
   object.data = request.Clone();
+  if (initializer.Find("serviceWorker"))
+    object.data.Set("ofServiceWorker", true);
   Object* page = Find(page_guid);
   const std::string scope = page && !page->context.empty() ? page->context : page_guid;
   const std::string guid = Create(scope, "Request", std::move(initializer), std::move(object));
@@ -1398,6 +1469,8 @@ std::string Connection::ResponseGuid(const std::string& page_guid,
   object.id = request ? request->id : std::string();
   object.page = page_guid;
   object.data = response.Clone();
+  if (request && request->data.FindBool("ofServiceWorker").value_or(false))
+    object.data.Set("ofServiceWorker", true);
   if (request) {
     if (const base::ListValue* raw = request->data.FindList("rawResponseHeaders"))
       object.data.Set("rawHeaders", raw->Clone());
@@ -1651,6 +1724,8 @@ void Connection::NewContext(int id, base::DictValue params) {
                self->Find(tracing)->context = guid;
                self->Find(request)->context = guid;
                self->Find(request_tracing)->context = request;
+               self->Find(debugger)->context = guid;
+               self->debuggers_[guid].guid = debugger;
                // browserDispatcher.ts's: browser.contexts() has it.
                base::DictValue created;
                created.Set("context", Ref(guid));
@@ -1962,6 +2037,12 @@ void Connection::PageEvent(const std::string& page_guid,
   Object* page = Find(page_guid);
   if (!page)
     return;
+  if (event == "ServiceWorker.request" || event == "ServiceWorker.response" ||
+      event == "ServiceWorker.requestFinished" || event == "ServiceWorker.requestFailed" ||
+      event == "ServiceWorker.route") {
+    ServiceWorkerNetworkEvent(page->context, event, std::move(params));
+    return;
+  }
   if (!hars_.empty())
     HarEvent(page_guid, event, params);
   if (!traces_.empty())
@@ -2035,6 +2116,23 @@ void Connection::PageEvent(const std::string& page_guid,
         PageRecords& records = page_records_[page_guid];
         records.console_mark = records.console.size();
         records.errors_mark = records.errors.size();
+        // The documents before free their resources (DevTools' Network
+        // domain keeps the new document's): their bodies are gone.
+        const Object* frame_object = Find(frame);
+        const std::string* current = frame_object ? frame_object->data.FindString("navigationRequest") : nullptr;
+        const std::string keep = current ? *current : std::string();
+        for (const std::string& request : records.requests) {
+          // (A fulfilled response's body is the route's, kept.)
+          Object* request_object = request == keep ? nullptr : Find(request);
+          if (request_object && request_object->data.FindBool("routed").value_or(false))
+            continue;
+          const std::string* response = request_object ? request_object->data.FindString("response") : nullptr;
+          // (A redirect's has no body either way: network.ts says so first.)
+          Object* response_object = response ? Find(*response) : nullptr;
+          const int status = response_object ? response_object->data.FindInt("status").value_or(200) : 200;
+          if (response_object && (status < 300 || status > 399))
+            response_object->data.Set("navigatedAway", true);
+        }
       }
       // Its request, which waitForNavigation() answers with the response of.
       base::DictValue new_document;
@@ -2394,14 +2492,34 @@ void Connection::PageEvent(const std::string& page_guid,
     console.Set("type", type ? *type : "log");
     const std::string* text = params.FindString("text");
     console.Set("text", text ? *text : "");
-    console.Set("args", base::ListValue());
+    // Handles of the values (jsonValue() answers them; the worker keeps no
+    // handles of its own here).
+    base::ListValue args;
+    if (const base::ListValue* previews = params.FindList("previews")) {
+      const base::ListValue* values = params.FindList("values");
+      for (size_t i = 0; i < previews->size(); ++i) {
+        const std::string* preview =
+            (*previews)[i].is_dict() ? (*previews)[i].GetDict().FindString("preview") : nullptr;
+        base::DictValue initializer;
+        initializer.Set("preview", preview ? *preview : std::string());
+        Object object;
+        object.page = guid;
+        object.data.Set("swValue", values && i < values->size() ? (*values)[i].Clone() : base::Value());
+        args.Append(Ref(Create(guid, "JSHandle", std::move(initializer), std::move(object))));
+      }
+    }
+    console.Set("args", std::move(args));
     base::DictValue location;
     if (const base::DictValue* given = params.FindDict("location")) {
       const std::string* url = given->FindString("url");
       location.Set("url", url ? *url : "");
       location.Set("lineNumber", given->FindInt("lineNumber").value_or(0));
+      location.Set("columnNumber", given->FindInt("columnNumber").value_or(0));
+    } else {
+      location.Set("url", "");
+      location.Set("lineNumber", 0);
+      location.Set("columnNumber", 0);
     }
-    location.Set("columnNumber", 0);
     console.Set("location", std::move(location));
     console.Set("timestamp", base::Time::Now().InMillisecondsFSinceUnixEpoch());
     console.Set("worker", Ref(guid));
@@ -2559,6 +2677,307 @@ void Connection::CDPSessionClosed(const std::string& guid) {
   }
   Event(guid, "close", base::DictValue());
   Dispose(guid);
+}
+
+namespace {
+const ProtocolMethodInfo* MethodInfo(const std::string& name);
+}  // namespace
+
+// debugger.ts: the pause before a call (requestPause()'s next call, runTo()'s
+// location, page.pause()), and the calls streamed to an enabled debugger.
+bool Connection::DebuggerBeforeCall(int id,
+                                    const std::string& guid,
+                                    const std::string& method,
+                                    const base::DictValue* metadata,
+                                    base::OnceClosure& run) {
+  Object* object = Find(guid);
+  if (!object || object->type == "Debugger" || object->type == "Tracing" || object->type == "LocalUtils")
+    return false;
+  auto found = debuggers_.find(ContextOf(guid));
+  if (found == debuggers_.end())
+    return false;
+  DebugState& state = found->second;
+  const ProtocolMethodInfo* info = MethodInfo(object->type + "." + method);
+  if ((metadata && metadata->FindBool("internal").value_or(false)) || (info && info->internal))
+    return false;
+  // protocolFormatter.ts's title: the method's, as its metainfo names it.
+  std::string title;
+  if (const std::string* given = metadata ? metadata->FindString("title") : nullptr)
+    title = *given;
+  if (title.empty()) {
+    for (size_t i = 0; i < method.size(); ++i) {
+      const char c = method[i];
+      if (i == 0)
+        title += base::ToUpperASCII(c);
+      else if (base::IsAsciiUpper(c))
+        title += std::string(" ") + base::ToLowerASCII(c);
+      else
+        title += c;
+    }
+  }
+  DebugCall call;
+  const base::Value* given_id = ids_.contains(id) ? &ids_[id] : nullptr;
+  call.id = !given_id ? base::NumberToString(id)
+            : given_id->is_string() ? given_id->GetString()
+                                    : Json(*given_id);
+  call.title = title;
+  if (const base::DictValue* location = metadata ? metadata->FindDict("location") : nullptr)
+    call.location = location->Clone();
+  state.ongoing[id] = std::move(call);
+  if (state.api_calls)
+    DebuggerApiCalls(state, {id});
+  const bool pauses = method == "pause" || (info && info->snapshot);
+  const bool on_pause_call = state.enabled && object->type == "BrowserContext" && method == "pause";
+  // Inside an input action (after its waits) is the native side's; here
+  // before the call, as with pauseBeforeWaitingActions.
+  const bool before_action = state.next && pauses;
+  bool on_location = false;
+  if (state.location && metadata) {
+    const base::DictValue* where = metadata->FindDict("location");
+    const std::string* file = where ? where->FindString("file") : nullptr;
+    const std::string* want = state.location->FindString("file");
+    on_location = file && want && file->find(*want) != std::string::npos;
+    if (on_location) {
+      if (std::optional<int> line = state.location->FindInt("line"))
+        on_location = where->FindInt("line") == line;
+      if (std::optional<int> column = state.location->FindInt("column"))
+        on_location = on_location && where->FindInt("column") == column;
+    }
+  }
+  if (!(on_pause_call || before_action || on_location) || state.paused)
+    return false;
+  state.next = false;
+  state.location.reset();
+  state.paused = id;
+  state.paused_run = std::move(run);
+  state.paused_title = title;
+  base::DictValue location;
+  const base::DictValue* where = metadata ? metadata->FindDict("location") : nullptr;
+  const std::string* file = where ? where->FindString("file") : nullptr;
+  location.Set("file", file ? *file : std::string("<unknown>"));
+  if (std::optional<int> line = where ? where->FindInt("line") : std::nullopt)
+    location.Set("line", *line);
+  if (std::optional<int> column = where ? where->FindInt("column") : std::nullopt)
+    location.Set("column", *column);
+  state.paused_location = std::move(location);
+  DebuggerPausedChanged(state);
+  return true;
+}
+
+void Connection::DebuggerAfterCall(int id, const std::string& error) {
+  for (auto& [context, state] : debuggers_) {
+    auto call = state.ongoing.find(id);
+    if (call == state.ongoing.end())
+      continue;
+    call->second.status = error.empty() ? "success" : "error";
+    call->second.error = error;
+    if (state.api_calls)
+      DebuggerApiCalls(state, {id});
+    state.ongoing.erase(call);
+    return;
+  }
+}
+
+void Connection::DebuggerApiCalls(DebugState& state, const std::vector<int>& ids) {
+  base::ListValue updates;
+  for (int id : ids) {
+    auto found = state.ongoing.find(id);
+    if (found == state.ongoing.end())
+      continue;
+    DebugCall& call = found->second;
+    base::DictValue update;
+    update.Set("id", call.id);
+    update.Set("title", call.title);
+    if (call.location)
+      update.Set("location", call.location->Clone());
+    base::ListValue entries;
+    if (auto logged = call_logs_.find(id); logged != call_logs_.end()) {
+      for (size_t i = call.sent_logs; i < logged->second.size(); ++i) {
+        const base::Value& line = logged->second[i];
+        if (line.is_list() && line.GetList().size() == 2 && line.GetList()[1].is_string())
+          entries.Append(line.GetList()[1].GetString());
+      }
+      call.sent_logs = logged->second.size();
+    }
+    update.Set("newLogEntries", std::move(entries));
+    if (auto input = call_inputs_.find(id); input != call_inputs_.end())
+      update.Set("actionPoint", input->second.Clone());
+    update.Set("status", call.status);
+    if (!call.error.empty())
+      update.Set("error", call.error);
+    updates.Append(std::move(update));
+  }
+  if (updates.empty())
+    return;
+  base::DictValue event;
+  event.Set("apiCalls", std::move(updates));
+  Event(state.guid, "apiCallsUpdated", std::move(event));
+}
+
+void Connection::DebuggerPausedChanged(DebugState& state) {
+  base::DictValue event;
+  if (state.paused) {
+    base::DictValue details;
+    details.Set("location", state.paused_location.Clone());
+    details.Set("title", state.paused_title);
+    event.Set("pausedDetails", std::move(details));
+  }
+  Event(state.guid, "pausedStateChanged", std::move(event));
+}
+
+void Connection::DebuggerCommand(int id,
+                                 const std::string& guid,
+                                 const std::string& method,
+                                 const base::DictValue& params) {
+  Object* object = Find(guid);
+  auto found = object ? debuggers_.find(object->context) : debuggers_.end();
+  if (found == debuggers_.end()) {
+    Reply(id, base::Value(base::DictValue()));
+    return;
+  }
+  DebugState& state = found->second;
+  auto resume = [&]() {
+    base::OnceClosure run = std::move(state.paused_run);
+    state.paused = 0;
+    DebuggerPausedChanged(state);
+    if (run)
+      std::move(run).Run();
+  };
+  if (method == "requestPause") {
+    if (state.paused) {
+      ReplyError(id, "Debugger is already paused");
+      return;
+    }
+    if (!state.api_calls)
+      state.before_waiting = true;
+    state.enabled = true;
+    state.next = true;
+    state.location.reset();
+  } else if (method == "resume" || method == "next" || method == "runTo") {
+    if (!state.paused) {
+      ReplyError(id, "Debugger is not paused");
+      return;
+    }
+    if (method != "resume") {
+      if (!state.api_calls)
+        state.before_waiting = true;
+      state.enabled = true;
+      state.next = method == "next";
+      if (const base::DictValue* location = params.FindDict("location"))
+        state.location = location->Clone();
+    }
+    Reply(id, base::Value(base::DictValue()));
+    resume();
+    return;
+  } else if (method == "enable") {
+    if (!state.api_calls) {
+      state.api_calls = true;
+      state.before_waiting = false;
+      std::vector<int> ids;
+      for (const auto& [call, info] : state.ongoing)
+        ids.push_back(call);
+      DebuggerApiCalls(state, ids);
+    }
+  }
+  Reply(id, base::Value(base::DictValue()));
+}
+
+// A service worker's network (crServiceWorker.ts): the context's request,
+// response, requestFinished, requestFailed and route events, of no page; its
+// requests in the context's HARs (harTracer.ts: no page of theirs).
+void Connection::ServiceWorkerNetworkEvent(const std::string& context,
+                                           const std::string& event,
+                                           base::DictValue params) {
+  const std::string* id = params.FindString("worker");
+  const std::string worker = id ? Known("serviceworker", "", *id) : std::string();
+  if (worker.empty())
+    return;
+  params.Remove("worker");
+  const std::string as_page = "Page." + event.substr(sizeof("ServiceWorker.") - 1);
+  if (event != "ServiceWorker.route") {
+    for (auto& [har_id, har] : hars_) {
+      if (har.context != context || !har.page.empty())
+        continue;
+      har.recorder->Record(as_page, params, std::string(), std::string());
+      const std::string* request = params.FindString("request");
+      if (event != "ServiceWorker.requestFinished" || !request || !har.recorder->WantsBody(*request))
+        continue;
+      base::DictValue body;
+      body.Set("request", *request);
+      Native(-1, nullptr, "ServiceWorker.Response.body", std::move(body),
+             base::BindOnce(
+                 [](base::WeakPtr<Connection> self, std::string har_id, std::string request, base::Value result) {
+                   if (!self)
+                     return;
+                   auto found = self->hars_.find(har_id);
+                   if (found == self->hars_.end())
+                     return;
+                   const std::string* binary = result.is_dict() ? result.GetDict().FindString("binary") : nullptr;
+                   std::string decoded;
+                   if (binary && base::Base64Decode(*binary, &decoded))
+                     found->second.recorder->SetBody(request, std::move(decoded));
+                   else
+                     found->second.recorder->SetBody(request, std::nullopt);
+                 },
+                 weak_factory_.GetWeakPtr(), har_id, *request));
+    }
+  }
+  if (event == "ServiceWorker.request") {
+    const std::string request = RequestGuid(worker, params);
+    base::DictValue sent;
+    sent.Set("request", Ref(request));
+    Event(context, "request", std::move(sent));
+    return;
+  }
+  if (event == "ServiceWorker.route") {
+    const base::DictValue* request = params.FindDict("request");
+    const std::string* route = params.FindString("route");
+    if (!request || !route)
+      return;
+    const std::string request_guid = RequestGuid(worker, *request);
+    if (Object* routed = Find(request_guid))
+      routed->data.Set("routed", true);
+    base::DictValue initializer;
+    initializer.Set("request", Ref(request_guid));
+    Object object;
+    object.id = *route;
+    object.page = worker;
+    object.data.Set("ofServiceWorker", true);
+    const std::string guid = Create(context, "Route", std::move(initializer), std::move(object));
+    base::DictValue routed;
+    routed.Set("route", Ref(guid));
+    Event(context, "route", std::move(routed));
+    return;
+  }
+  const std::string* request_id = params.FindString("request");
+  const std::string request = request_id ? Known("request", worker, *request_id) : std::string();
+  if (request.empty())
+    return;
+  if (event == "ServiceWorker.response") {
+    const std::string response = ResponseGuid(worker, request, params);
+    base::DictValue received;
+    received.Set("response", Ref(response));
+    Event(context, "response", std::move(received));
+    AnswerRequestWaiters(request);
+    return;
+  }
+  if (Object* object = Find(request))
+    object->data.Set("ended", true);
+  AnswerRequestWaiters(request);
+  base::DictValue ended;
+  ended.Set("request", Ref(request));
+  ended.Set("responseEndTiming", params.FindDouble("responseEndTiming").value_or(-1.0));
+  if (event == "ServiceWorker.requestFinished") {
+    if (Object* object = Find(request)) {
+      if (const std::string* response = object->data.FindString("response"))
+        ended.Set("response", Ref(*response));
+    }
+    Event(context, "requestFinished", std::move(ended));
+  } else {
+    const std::string* failure = params.FindString("failureText");
+    ended.Set("failureText", failure ? *failure : "net::ERR_FAILED");
+    Event(context, "requestFailed", std::move(ended));
+  }
 }
 
 void Connection::HarEvent(const std::string& page_guid,
@@ -2813,6 +3232,8 @@ bool Connection::BeforeCall(int id,
                          info && info->snapshot && !call.page.empty();
   call.snapshot_after = snapshots;
   call.input = info && info->input;
+  if (snapshots && call.input && trace.options.FindBool("snapshotDom").value_or(false))
+    action_snapshot_calls_.insert(id);
   call.coverage_after = trace.coverage && info && info->snapshot && !call.page.empty();
   const std::string call_id = call.call_id;
   const std::string page = call.page;
@@ -2826,10 +3247,14 @@ bool Connection::BeforeCall(int id,
 }
 
 void Connection::Answered(int id, base::DictValue message, const std::string& error, base::Value result) {
+  if (!debuggers_.empty())
+    DebuggerAfterCall(id, error);
   auto found = traced_calls_.find(id);
   if (found == traced_calls_.end()) {
     call_logs_.erase(id);
     call_inputs_.erase(id);
+    action_snapshots_.erase(id);
+    action_snapshot_calls_.erase(id);
     send_.Run(Json(base::Value(std::move(message))));
     return;
   }
@@ -2843,6 +3268,7 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
   auto trace = traces_.find(call.context);
   if (trace == traces_.end() || !trace->second.recording) {
     call_inputs_.erase(id);
+    action_snapshots_.erase(id);
     send_.Run(Json(base::Value(std::move(message))));
     return;
   }
@@ -2902,12 +3328,19 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
       weak_factory_.GetWeakPtr(), Json(base::Value(std::move(message))));
   if (call.snapshot_after) {
     send = base::BindOnce(&Connection::CaptureTracePhase, weak_factory_.GetWeakPtr(), call.context,
-                          call.page, call.call_id, "after", std::move(send));
+                          call.page, call.call_id, "after", std::move(send), true);
     // An input's "action" phase is taken at its input in tracing.ts; here,
     // where the endpoint sees the action, once it has ended, before "after".
     if (call.input) {
+      // Taken at the input already, natively; else once the action ended.
+      auto taken = action_snapshots_.find(id);
+      const bool dom = taken == action_snapshots_.end();
+      if (!dom) {
+        RecordTraceSnapshots(call.context, call.page, call.call_id, "action", taken->second);
+        action_snapshots_.erase(taken);
+      }
       send = base::BindOnce(&Connection::CaptureTracePhase, weak_factory_.GetWeakPtr(), call.context,
-                            call.page, call.call_id, "action", std::move(send));
+                            call.page, call.call_id, "action", std::move(send), dom);
     }
   }
   // tracing.ts's _captureCoverage(): the page's counters after its action.
@@ -2925,7 +3358,8 @@ void Connection::CaptureTracePhase(const std::string& context,
                                    const std::string& page,
                                    const std::string& call_id,
                                    const std::string& phase,
-                                   base::OnceClosure then) {
+                                   base::OnceClosure then,
+                                   bool dom) {
   auto trace = traces_.find(context);
   Object* page_object = Find(page);
   zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
@@ -3015,7 +3449,7 @@ void Connection::CaptureTracePhase(const std::string& context,
         },
         weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(last));
   }
-  if (options.FindBool("snapshotDom").value_or(false)) {
+  if (dom && options.FindBool("snapshotDom").value_or(false)) {
     CaptureTraceSnapshot(context, page, call_id, phase, std::move(last));
     return;
   }
@@ -3029,11 +3463,39 @@ void Connection::CaptureTraceSnapshot(const std::string& context,
                                       base::OnceClosure then) {
   Object* page_object = Find(page);
   zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
-  auto trace = traces_.find(context);
-  if (!view || trace == traces_.end()) {
+  std::optional<base::DictValue> params = TraceSnapshotParams(context, page, phase);
+  if (!view || !params) {
     std::move(then).Run();
     return;
   }
+  // A page that cannot answer (a dialog open) holds no command for long: the
+  // snapshot is given up after a while, as snapshotter.ts's races do.
+  auto once = std::make_shared<base::OnceClosure>(std::move(then));
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
+        if (*once) std::move(*once).Run();
+      }, once),
+      base::Seconds(1));
+  then = base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
+    if (*once) std::move(*once).Run();
+  }, once);
+  Native(-1, view, "Page.captureSnapshot", std::move(*params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, std::string page,
+                std::string call_id, std::string phase, base::OnceClosure then, base::Value result) {
+               if (self)
+                 self->RecordTraceSnapshots(context, page, call_id, phase, result);
+               std::move(then).Run();
+             },
+             weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(then)));
+}
+
+std::optional<base::DictValue> Connection::TraceSnapshotParams(const std::string& context,
+                                                               const std::string& page,
+                                                               const std::string& phase) {
+  auto trace = traces_.find(context);
+  if (trace == traces_.end())
+    return std::nullopt;
   base::DictValue params;
   params.Set("streamer", "__playwright_snapshot_streamer_zebkit");
   // The first of a chunk starts the history again; the first of an action, its
@@ -3060,80 +3522,67 @@ void Connection::CaptureTraceSnapshot(const std::string& context,
       frames.Set(it->first.substr(prefix.size()), it->second);
     params.Set("frameGuids", std::move(frames));
   }
-  // A page that cannot answer (a dialog open) holds no command for long: the
-  // snapshot is given up after a while, as snapshotter.ts's races do.
-  auto once = std::make_shared<base::OnceClosure>(std::move(then));
-  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
-        if (*once) std::move(*once).Run();
-      }, once),
-      base::Seconds(1));
-  then = base::BindOnce([](std::shared_ptr<base::OnceClosure> once) {
-    if (*once) std::move(*once).Run();
-  }, once);
-  Native(-1, view, "Page.captureSnapshot", std::move(params),
-         base::BindOnce(
-             [](base::WeakPtr<Connection> self, std::string context, std::string page,
-                std::string call_id, std::string phase, base::OnceClosure then, base::Value result) {
-               if (!self) {
-                 std::move(then).Run();
-                 return;
-               }
+  return params;
+}
+
+void Connection::RecordTraceSnapshots(const std::string& context,
+                                      const std::string& page,
+                                      const std::string& call_id,
+                                      const std::string& phase,
+                                      const base::Value& result) {
+  Connection* self = this;
                auto trace = self->traces_.find(context);
-               const base::ListValue* snapshots =
-                   result.is_dict() ? result.GetDict().FindList("snapshots") : nullptr;
-               if (trace != self->traces_.end() && trace->second.recording && snapshots) {
-                 for (const base::Value& item : *snapshots) {
-                   const base::DictValue* data = item.GetDict().FindDict("data");
-                   const std::string* frame = item.GetDict().FindString("frame");
-                   if (!data || !frame)
-                     continue;
-                   base::DictValue snapshot;
-                   snapshot.Set("callId", call_id);
-                   snapshot.Set("phase", phase);
-                   snapshot.Set("pageId", page);
-                   snapshot.Set("frameId", self->Known("frame", page, *frame));
-                   for (const char* key : {"doctype", "html", "viewport", "wallTime", "collectionTime"}) {
-                     if (const base::Value* value = data->Find(key))
-                       snapshot.Set(key, value->Clone());
-                   }
-                   if (const std::string* url = data->FindString("url"))
-                     snapshot.Set("frameUrl", *url);
-                   snapshot.Set("timestamp", self->Monotonic());
-                   base::ListValue overrides;
-                   if (const base::ListValue* given = data->FindList("resourceOverrides")) {
-                     for (const base::Value& entry : *given) {
-                       const std::string* url = entry.GetDict().FindString("url");
-                       const base::Value* content = entry.GetDict().Find("content");
-                       if (!url || !content)
-                         continue;
-                       base::DictValue override_entry;
-                       override_entry.Set("url", *url);
-                       if (content->is_string()) {
-                         const std::string* type = entry.GetDict().FindString("contentType");
-                         const std::string ext = type && type->find("css") != std::string::npos ? "css" : "dat";
-                         const std::string name = "resources/" +
-                             base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(content->GetString())))) +
-                             "." + ext;
-                         trace->second.chunk_files[name] = content->GetString();
-                         override_entry.Set("file", name);
-                       } else {
-                         override_entry.Set("ref", content->Clone());
-                       }
-                       overrides.Append(std::move(override_entry));
-                     }
-                   }
-                   snapshot.Set("resourceOverrides", std::move(overrides));
-                   snapshot.Set("isMainFrame", item.GetDict().FindBool("isMainFrame").value_or(false));
-                   base::DictValue event;
-                   event.Set("type", "frame-snapshot");
-                   event.Set("snapshot", std::move(snapshot));
-                   self->TraceLine(trace->second, std::move(event));
-                 }
-               }
-               std::move(then).Run();
-             },
-             weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(then)));
+  const base::ListValue* snapshots =
+      result.is_dict() ? result.GetDict().FindList("snapshots") : nullptr;
+  if (trace != self->traces_.end() && trace->second.recording && snapshots) {
+    for (const base::Value& item : *snapshots) {
+      const base::DictValue* data = item.GetDict().FindDict("data");
+      const std::string* frame = item.GetDict().FindString("frame");
+      if (!data || !frame)
+        continue;
+      base::DictValue snapshot;
+      snapshot.Set("callId", call_id);
+      snapshot.Set("phase", phase);
+      snapshot.Set("pageId", page);
+      snapshot.Set("frameId", self->Known("frame", page, *frame));
+      for (const char* key : {"doctype", "html", "viewport", "wallTime", "collectionTime"}) {
+        if (const base::Value* value = data->Find(key))
+          snapshot.Set(key, value->Clone());
+      }
+      if (const std::string* url = data->FindString("url"))
+        snapshot.Set("frameUrl", *url);
+      snapshot.Set("timestamp", self->Monotonic());
+      base::ListValue overrides;
+      if (const base::ListValue* given = data->FindList("resourceOverrides")) {
+        for (const base::Value& entry : *given) {
+          const std::string* url = entry.GetDict().FindString("url");
+          const base::Value* content = entry.GetDict().Find("content");
+          if (!url || !content)
+            continue;
+          base::DictValue override_entry;
+          override_entry.Set("url", *url);
+          if (content->is_string()) {
+            const std::string* type = entry.GetDict().FindString("contentType");
+            const std::string ext = type && type->find("css") != std::string::npos ? "css" : "dat";
+            const std::string name = "resources/" +
+                base::ToLowerASCII(base::HexEncode(base::SHA1Hash(base::as_byte_span(content->GetString())))) +
+                "." + ext;
+            trace->second.chunk_files[name] = content->GetString();
+            override_entry.Set("file", name);
+          } else {
+            override_entry.Set("ref", content->Clone());
+          }
+          overrides.Append(std::move(override_entry));
+        }
+      }
+      snapshot.Set("resourceOverrides", std::move(overrides));
+      snapshot.Set("isMainFrame", item.GetDict().FindBool("isMainFrame").value_or(false));
+      base::DictValue event;
+      event.Set("type", "frame-snapshot");
+      event.Set("snapshot", std::move(snapshot));
+      self->TraceLine(trace->second, std::move(event));
+    }
+  }
 }
 
 void Connection::TraceScreencastFrame(const std::string& context, const std::string& page) {
@@ -4309,6 +4758,11 @@ void Connection::Command(int id,
     return;
   }
   if (type == "BrowserContext") {
+    // page.pause(): what holds it is the Debugger's pause, done when this runs.
+    if (method == "pause") {
+      empty_reply();
+      return;
+    }
     if (method == "newPage") {
       NewPage(id, guid);
       return;
@@ -4722,7 +5176,32 @@ void Connection::Command(int id,
                weak_factory_.GetWeakPtr(), id));
     return;
   }
-  if (!view) {
+  // A service worker's requests, responses and routes (crServiceWorker.ts):
+  // of no page, answered by the worker's own session.
+  const Object* owner = view ? nullptr : Find(object->page);
+  const bool of_service_worker =
+      !view && (type == "Route" || type == "Request" || type == "Response") &&
+      ((owner && owner->type == "Worker" && owner->data.FindBool("serviceWorker").value_or(false)) ||
+       object->data.FindBool("ofServiceWorker").value_or(false));
+  if (type == "Debugger") {
+    DebuggerCommand(id, guid, method, params);
+    return;
+  }
+  // A service worker's console argument: its value.
+  if (const base::Value* value = object->data.Find("swValue"); value && type == "JSHandle") {
+    if (method == "jsonValue") {
+      base::DictValue answer;
+      answer.Set("value", Serialize(*value));
+      Reply(id, base::Value(std::move(answer)));
+    } else if (method == "dispose") {
+      empty_reply();
+      Dispose(guid);
+    } else {
+      ReplyError(id, "zebkit: a service worker's console arguments are values; jsonValue() answers them");
+    }
+    return;
+  }
+  if (!view && !of_service_worker) {
     if (type == "Android" || type == "Electron" || type == "BrowserType" ||
         type == "Debugger" || type == "Playwright") {
       if (method == "launch" || method == "connectOverCDP")
@@ -4786,6 +5265,8 @@ void Connection::Command(int id,
       params.Set("body", fetched != fetched_.end() ? fetched->second : std::string());
       params.Set("isBase64", true);
     }
+    if (of_service_worker)
+      native = "ServiceWorker." + native;
   } else if (type == "Dialog") {
     params.Set("dialog", object->id);
   } else if (type == "BindingCall") {
@@ -4856,10 +5337,18 @@ void Connection::Command(int id,
     Reply(id, base::Value(RequestAnswer(*object, method)));
     return;
   } else if (type == "Response") {
+    if (method == "body" && object->data.FindBool("navigatedAway").value_or(false)) {
+      ReplyError(id,
+                 "Protocol error (Network.getResponseBody): No resource with given identifier found\n"
+                 "Response body is not available for a response that was navigated away from. Read "
+                 "response.body() before triggering any navigation.");
+      return;
+    }
     if (method == "body") {
       base::DictValue body;
       body.Set("request", object->id);
-      Native(id, view, "Response.body", std::move(body), std::move(reply_as_is));
+      Native(id, view, of_service_worker ? "ServiceWorker.Response.body" : "Response.body", std::move(body),
+             std::move(reply_as_is));
       return;
     }
     base::DictValue answer;
@@ -5054,6 +5543,14 @@ void Connection::Command(int id,
   const bool navigation = method == "goto" || method == "reload" ||
                           method == "goBack" || method == "goForward";
   const bool disposes = method == "dispose";
+  // dom.ts's "action" snapshot, at the input point: the native side takes it.
+  if (action_snapshot_calls_.erase(id)) {
+    Object* page_object = Find(page_guid);
+    if (std::optional<base::DictValue> snapshot =
+            page_object ? TraceSnapshotParams(page_object->context, page_guid, "action") : std::nullopt) {
+      params.Set("actionSnapshot", std::move(*snapshot));
+    }
+  }
   Native(id, view, native, std::move(params),
          base::BindOnce(
              [](base::WeakPtr<Connection> self, int id, std::string page_guid,

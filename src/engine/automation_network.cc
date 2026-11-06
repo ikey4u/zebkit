@@ -440,6 +440,8 @@ class Loader : public network::mojom::URLLoader,
   }
 
   void Start();
+  // Its next hop after a fulfilled redirect: routed, or on to the network.
+  void Reroute();
 
   const GURL& url() const { return request_.url; }
 
@@ -462,8 +464,17 @@ class Loader : public network::mojom::URLLoader,
       for (const base::Value& header : *headers) {
         const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
         const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
-        if (name && value)
+        // Not those of the connection and the cookie store (Host, Trailer,
+        // Cookie, ...), which the network sets itself: what DevTools' Fetch
+        // gives Chrome's network service keeps its own.
+        static constexpr std::string_view kNetworks[] = {
+            "host", "trailer", "cookie", "cookie2", "connection", "keep-alive", "te",
+            "transfer-encoding", "upgrade", "expect", "content-length"};
+        if (name && value &&
+            std::find(std::begin(kNetworks), std::end(kNetworks), base::ToLowerASCII(*name)) ==
+                std::end(kNetworks)) {
           request_.headers.SetHeader(*name, *value);
+        }
       }
     }
     if (const std::string* post = overrides.FindString("postData")) {
@@ -566,6 +577,27 @@ class Loader : public network::mojom::URLLoader,
     auto head = network::mojom::URLResponseHead::New();
     head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
         net::HttpUtil::AssembleRawHeaders(raw));
+    if (std::string location; head->headers->IsRedirect(&location)) {
+      const GURL new_url = request_.url.Resolve(location);
+      if (new_url.is_valid()) {
+        const net::RedirectInfo redirect = net::RedirectInfo::ComputeRedirectInfo(
+            request_.method, request_.url, request_.site_for_cookies,
+            request_.update_first_party_url_on_redirect
+                ? net::RedirectInfo::FirstPartyURLPolicy::UPDATE_URL_ON_REDIRECT
+                : net::RedirectInfo::FirstPartyURLPolicy::NEVER_CHANGE_URL,
+            request_.referrer_policy, request_.referrer.spec(), request_.request_initiator, status,
+            new_url, std::nullopt, false);
+        if (redirect.new_method != request_.method)
+          request_.request_body = nullptr;
+        request_.site_for_cookies = redirect.new_site_for_cookies;
+        request_.referrer = GURL(redirect.new_referrer);
+        request_.referrer_policy = redirect.new_referrer_policy;
+        head->mime_type = mime_type;
+        fulfilled_redirect_ = true;
+        OnReceiveRedirect(redirect, std::move(head));
+        return;
+      }
+    }
     std::string charset;
     head->headers->GetMimeTypeAndCharset(&head->mime_type, &charset);
     if (head->mime_type.empty())
@@ -622,6 +654,20 @@ class Loader : public network::mojom::URLLoader,
   // network::mojom::URLLoader
   void FollowRedirect(network::HttpRequestHeadersUpdateParams params,
                       const std::optional<GURL>& new_url) override {
+    // A redirect the client fulfilled: its next hop goes through routing
+    // again, as the redirect DevTools' Fetch.fulfillRequest issues does.
+    if (fulfilled_redirect_) {
+      fulfilled_redirect_ = false;
+      for (const std::string& name : params.removed_headers)
+        request_.headers.RemoveHeader(name);
+      request_.headers.MergeFrom(params.modified_headers);
+      if (new_url)
+        request_.url = *new_url;
+      target_loader_.reset();
+      client_receiver_.reset();
+      Reroute();
+      return;
+    }
     if (target_loader_)
       target_loader_->FollowRedirect(std::move(params), new_url);
   }
@@ -735,6 +781,8 @@ class Loader : public network::mojom::URLLoader,
   raw_ptr<network::mojom::URLLoaderFactory> target_;
   std::string redirected_from_;
   bool completed_ = false;
+  // A redirect of Route.fulfill's, which the client follows (FollowRedirect).
+  bool fulfilled_redirect_ = false;
   base::TimeTicks timing_start_ = base::TimeTicks::Now();
   base::Time wall_start_ = base::Time::Now();
   int64_t response_headers_size_ = 0;
@@ -812,6 +860,10 @@ class NetworkImpl : public Network,
     }
     return false;
   }
+
+  // Whether the page or its context routes anything (crNetworkManager.ts
+  // disables the cache then: Network.setCacheDisabled).
+  bool Routes() const { return !patterns_.empty() || !context_patterns_.empty(); }
 
   void Hold(const std::string& route, base::WeakPtr<Loader> loader) {
     routes_[route] = std::move(loader);
@@ -1031,11 +1083,15 @@ class NetworkImpl : public Network,
     if (worker_served_.size() > 2000)
       worker_served_.erase(worker_served_.begin());
     request.Set("request", id);
+    const bool navigation = request.FindBool("isNavigationRequest").value_or(false);
     Emit("Page.request", std::move(request));
     response.Set("request", id);
     // Unless the memory cache served it.
     if (!response.Find("fromServiceWorker"))
       response.Set("fromServiceWorker", true);
+    // A navigation's, which goto() answers with.
+    if (const std::string* url = response.FindString("url"); navigation && url)
+      KeepNavigationResponse(*url, response);
     Emit("Page.response", std::move(response));
     BodyStarted(id);
   }
@@ -1200,6 +1256,10 @@ void Loader::Start() {
     return;
   }
   network_->AddExtraHeaders(request_);
+  // Routed: no disk cache, as crNetworkManager.ts has it
+  // (Network.setCacheDisabled).
+  if (network_->Routes())
+    request_.load_flags |= net::LOAD_BYPASS_CACHE;
   if (request_.devtools_request_id) {
     network_->DevToolsRequestStarted(*request_.devtools_request_id, id_);
     devtools_type_ = base::ToLowerASCII(network_->DevToolsTypeOf(*request_.devtools_request_id));
@@ -1235,6 +1295,28 @@ void Loader::Start() {
   // of its own, which outlives the page's.
   target_->Clone(held_target_.BindNewPipeAndPassReceiver());
   target_ = held_target_.get();
+  const std::string route = network_->NextId("r");
+  network_->Hold(route, GetWeakPtr());
+  base::DictValue params;
+  params.Set("route", route);
+  params.Set("request", RequestValue());
+  network_->Emit("BrowserContext.route", std::move(params));
+}
+
+void Loader::Reroute() {
+  if (!network_) {
+    Continue({});
+    return;
+  }
+  network_->AddExtraHeaders(request_);
+  if (!network_->Intercepts(request_.url)) {
+    if (network_->offline()) {
+      Complete(net::ERR_INTERNET_DISCONNECTED);
+      return;
+    }
+    Continue({});
+    return;
+  }
   const std::string route = network_->NextId("r");
   network_->Hold(route, GetWeakPtr());
   base::DictValue params;
@@ -1445,6 +1527,17 @@ void ProxyFactory::CreateLoaderAndStart(
 std::string NetworkGlobToRegex(const std::string& glob) { return GlobToRegex(glob); }
 int NetworkErrorCode(const std::string& code) { return NetError(code); }
 const char* NetworkResourceType(const network::ResourceRequest& request) { return ResourceType(request); }
+bool NetworkPatternsMatch(const base::ListValue& patterns, const std::string& url) {
+  std::vector<std::unique_ptr<RE2>> compiled;
+  std::string error;
+  if (!NetworkImpl::Compile(patterns, &compiled, &error))
+    return false;
+  for (const auto& pattern : compiled) {
+    if (RE2::PartialMatch(url, *pattern))
+      return true;
+  }
+  return false;
+}
 
 Network* Network::For(content::WebContents* contents) {
   return NetworkImpl::FromWebContents(contents);

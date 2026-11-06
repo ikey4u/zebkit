@@ -37,6 +37,9 @@ void InterceptURLLoaderFactory(content::RenderFrameHost* frame,
 std::string NetworkGlobToRegex(const std::string& glob);
 int NetworkErrorCode(const std::string& code);
 const char* NetworkResourceType(const network::ResourceRequest& request);
+// Whether @url matches one of Page.setNetworkInterceptionPatterns'
+// patterns ([{glob}, {regexSource, regexFlags}]).
+bool NetworkPatternsMatch(const base::ListValue& patterns, const std::string& url);
 
 // What automation.cc does with a page's network.
 class Network {

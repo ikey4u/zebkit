@@ -148,6 +148,8 @@ function resolveForAction(arg, say, state) {
   }
   if (state.element !== element) {
     state.element = element;
+    // frameSelectors.ts's markTargets: the trace's snapshots show them.
+    injected.markTargetElements(new Set(elements));
     say(elements.length > 1
       ? `locator resolved to ${elements.length} elements. Proceeding with the first one: ${injected.previewNode(element)}`
       : `locator resolved to ${injected.previewNode(element)}`);

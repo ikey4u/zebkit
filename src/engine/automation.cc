@@ -76,6 +76,8 @@
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/browser/devtools/service_worker_devtools_agent_host.h"
+#include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -449,6 +451,8 @@ class Call {
     if (Flag("traceLog") && result.is_dict()) {
       if (const base::DictValue* point = params_.FindDict("__inputPoint"))
         result.GetDict().Set("__input", point->Clone());
+      if (const base::Value* snapshot = params_.Find("__actionSnapshot"))
+        result.GetDict().Set("__actionSnapshot", snapshot->Clone());
     }
     const std::string json = Json(result);
     if (func_)
@@ -808,6 +812,8 @@ void RestoreStorage(Call* call);
 
 // A profile's service workers as Playwright's Worker objects (below).
 void WatchServiceWorkers(content::BrowserContext* profile);
+void ServiceWorkerTargets_Watch(content::BrowserContext* profile);
+void UpdateServiceWorkers(content::BrowserContext* profile);
 bool ServiceWorkerWatch_Running(content::BrowserContext* profile);
 
 class Automation : public content::WebContentsObserver,
@@ -881,6 +887,7 @@ class Automation : public content::WebContentsObserver,
   void Started() {
     PopupHold::Install();
     WatchServiceWorkers(web_contents()->GetBrowserContext());
+    ServiceWorkerTargets_Watch(web_contents()->GetBrowserContext());
     MainFrame()->ForEachRenderFrameHost([this](content::RenderFrameHost* frame) {
       if (frame->IsRenderFrameLive())
         content::UpdateSubresourceLoaderFactories(frame);
@@ -1597,7 +1604,12 @@ class Automation : public content::WebContentsObserver,
       if (!frame || !node || !intercept_file_choosers_)
         return;
       base::DictValue event;
-      event.Set("fileChooser", "c" + base::NumberToString(++next_chooser_));
+      const std::string id = "c" + base::NumberToString(++next_chooser_);
+      // For FileChooser.setFiles (the C API's): DOM.setFileInputFiles on it.
+      devtools_choosers_[id] = *node;
+      if (devtools_choosers_.size() > 100)
+        devtools_choosers_.erase(devtools_choosers_.begin());
+      event.Set("fileChooser", id);
       event.Set("frame", FrameOfDevTools(*frame));
       event.Set("isMultiple", mode && *mode == "selectMultiple");
       event.Set("isDirectory", false);
@@ -1959,6 +1971,7 @@ class Automation : public content::WebContentsObserver,
     Context().offline = call->Flag("offline");
     for (Automation* page : InProfile(web_contents()->GetBrowserContext()))
       page->EmulateOffline(call->Flag("offline"));
+    UpdateServiceWorkers(web_contents()->GetBrowserContext());
     call->Done();
   }
 
@@ -1967,6 +1980,7 @@ class Automation : public content::WebContentsObserver,
     Context().extra_headers = headers ? headers->Clone() : base::ListValue();
     for (Automation* page : InProfile(web_contents()->GetBrowserContext()))
       page->ApplyExtraHeaders();
+    UpdateServiceWorkers(web_contents()->GetBrowserContext());
     call->Done();
   }
 
@@ -4599,6 +4613,20 @@ class Automation : public content::WebContentsObserver,
       point.Set("y", in_root.y());
       call->params().Set("__inputPoint", std::move(point));
     }
+    // The trace's "action" snapshot, here, before the input (dom.ts).
+    if (const base::DictValue* snapshot = call->params().FindDict("actionSnapshot")) {
+      auto* inner = new Call(
+          view_, "Page.captureSnapshot", snapshot->Clone(),
+          [](zebkit_view*, const char* json, const char*, void* data) {
+            std::unique_ptr<base::WeakPtr<Call>> outer(static_cast<base::WeakPtr<Call>*>(data));
+            std::optional<base::Value> taken = json ? Parse(json) : std::nullopt;
+            if (*outer && taken && taken->is_dict())
+              (*outer)->params().Set("__actionSnapshot", std::move(*taken));
+          },
+          new base::WeakPtr<Call>(call));
+      call->params().Remove("actionSnapshot");
+      CaptureSnapshot(inner);
+    }
     std::set<std::string> restore = pressed_modifiers_;
     if (const base::ListValue* list = call->params().FindList("modifiers")) {
       std::set<std::string> modifiers;
@@ -5862,6 +5890,30 @@ class Automation : public content::WebContentsObserver,
   // the page as the person's choice.
   void FileChooserSetFiles(Call* call) {
     auto found = file_choosers_.find(call->String("fileChooser"));
+    if (auto opened = devtools_choosers_.find(call->String("fileChooser"));
+        found == file_choosers_.end() && opened != devtools_choosers_.end() && view_) {
+      // One DevTools reported (Page.fileChooserOpened): its input's files,
+      // as crPage.ts sets them.
+      base::DictValue params;
+      params.Set("backendNodeId", opened->second);
+      base::ListValue files;
+      if (const base::ListValue* paths = call->params().FindList("localPaths"))
+        files = paths->Clone();
+      params.Set("files", std::move(files));
+      devtools_choosers_.erase(opened);
+      view_->Send("DOM.setFileInputFiles", std::move(params),
+                  base::BindOnce(
+                      [](base::WeakPtr<Call> call, const base::DictValue*, const std::string& error) {
+                        if (!call)
+                          return;
+                        if (!error.empty())
+                          call->Fail(error);
+                        else
+                          call->Done();
+                      },
+                      call->GetWeakPtr()));
+      return;
+    }
     if (found == file_choosers_.end()) {
       call->Fail("File chooser is already handled");
       return;
@@ -8980,6 +9032,7 @@ class Automation : public content::WebContentsObserver,
   bool report_closed_dialogs_ = false;
   bool intercept_file_choosers_ = false;
   std::map<std::string, FileChooser> file_choosers_;
+  std::map<std::string, int> devtools_choosers_;
   int next_chooser_ = 0;
 
   // The frames' lifecycles since their last navigation.
@@ -9029,9 +9082,8 @@ WEB_CONTENTS_USER_DATA_KEY_IMPL(Automation);
 
 // ---- Service workers ---------------------------------------------------
 
-// A profile's service workers (crServiceWorker.ts): BrowserContext's
-// serviceWorker as each starts running, its close as it stops, its console;
-// told through one of the profile's automated pages, as the context's events.
+// A profile's running service workers, for the requests of its pages that
+// one may answer (the workers themselves are ServiceWorkerTargets').
 class ServiceWorkerWatch : public content::ServiceWorkerContextObserver {
  public:
   static std::map<content::BrowserContext*, std::unique_ptr<ServiceWorkerWatch>>& All() {
@@ -9048,72 +9100,17 @@ class ServiceWorkerWatch : public content::ServiceWorkerContextObserver {
       context_->RemoveObserver(this);
   }
 
-  // The script of a running worker of the profile's, by its id ("sw12").
-  static std::optional<GURL> ScriptOf(content::BrowserContext* profile, const std::string& id) {
-    auto found = All().find(profile);
-    if (found == All().end())
-      return std::nullopt;
-    auto worker = found->second->running_.find(id);
-    if (worker == found->second->running_.end())
-      return std::nullopt;
-    return worker->second;
-  }
   bool Running() const { return !running_.empty(); }
-  static content::BrowserContext* ProfileOfWorker(const std::string& id) {
-    for (auto& [profile, watch] : All()) {
-      if (watch->running_.contains(id))
-        return profile;
-    }
-    return nullptr;
-  }
 
   // content::ServiceWorkerContextObserver
   void OnVersionStartedRunning(int64_t version_id,
                                const content::ServiceWorkerRunningInfo& info) override {
     const std::string id = "sw" + base::NumberToString(version_id);
     running_[id] = info.script_url;
-    base::DictValue params;
-    params.Set("worker", id);
-    params.Set("url", info.script_url.spec());
-    Tell("BrowserContext.serviceWorker", std::move(params));
   }
   void OnVersionStoppedRunning(int64_t version_id) override {
     const std::string id = "sw" + base::NumberToString(version_id);
-    if (!running_.erase(id))
-      return;
-    base::DictValue params;
-    params.Set("worker", id);
-    Tell("ServiceWorker.close", std::move(params));
-  }
-  void OnReportConsoleMessage(int64_t version_id,
-                              const GURL& scope,
-                              const content::ConsoleMessage& message) override {
-    const std::string id = "sw" + base::NumberToString(version_id);
-    if (!running_.contains(id))
-      return;
-    const char* type = "log";
-    switch (message.message_level) {
-      case blink::mojom::ConsoleMessageLevel::kVerbose:
-        type = "debug";
-        break;
-      case blink::mojom::ConsoleMessageLevel::kWarning:
-        type = "warning";
-        break;
-      case blink::mojom::ConsoleMessageLevel::kError:
-        type = "error";
-        break;
-      default:
-        break;
-    }
-    base::DictValue params;
-    params.Set("worker", id);
-    params.Set("type", type);
-    params.Set("text", base::UTF16ToUTF8(message.message));
-    base::DictValue location;
-    location.Set("url", message.source_url.spec());
-    location.Set("lineNumber", message.line_number);
-    params.Set("location", std::move(location));
-    Tell("ServiceWorker.console", std::move(params));
+    running_.erase(id);
   }
   void OnDestruct(content::ServiceWorkerContext* context) override {
     context_->RemoveObserver(this);
@@ -9124,12 +9121,6 @@ class ServiceWorkerWatch : public content::ServiceWorkerContextObserver {
   }
 
  private:
-  void Tell(const std::string& event, base::DictValue params) {
-    std::vector<Automation*> pages = Automation::InProfile(profile_);
-    if (!pages.empty())
-      pages.front()->Emit(event, std::move(params));
-  }
-
   raw_ptr<content::BrowserContext> profile_;
   raw_ptr<content::ServiceWorkerContext> context_;
   std::map<std::string, GURL> running_;
@@ -9150,67 +9141,782 @@ void WatchServiceWorkers(content::BrowserContext* profile) {
   ServiceWorkerWatch::All()[profile] = std::make_unique<ServiceWorkerWatch>(profile, context);
 }
 
-// A client of a service worker's DevTools target for one Runtime.evaluate.
-class ServiceWorkerEvaluation : public content::DevToolsAgentHostClient {
+// The context's service workers as crServiceWorker.ts has them: each one's
+// own DevTools target, auto-attached from a browser session and held until
+// its domains are on (Target.setAutoAttach's waitForDebuggerOnStart), so
+// that the worker is the context's before its script is fetched. Its
+// requests (crNetworkManager.ts on the worker's session: Network for the
+// events, Fetch for the context's routes), its console (Runtime), and
+// evaluation in it. Told through one of the profile's automated pages, as
+// the context's events (ServiceWorker.*, by the worker's id "sw<n>").
+class ServiceWorkerTargets : public content::DevToolsAgentHostClient,
+                             public content::ServiceWorkerDevToolsManager::Observer {
  public:
-  using Done = base::OnceCallback<void(base::Value result, std::string error)>;
-  static void Run(scoped_refptr<content::DevToolsAgentHost> host, std::string expression, Done done) {
-    auto* self = new ServiceWorkerEvaluation(std::move(host), std::move(done));
-    if (!self->host_->AttachClient(self)) {
-      std::move(self->done_).Run(base::Value(), "Target page, context or browser has been closed");
-      delete self;
+  using Reply = base::OnceCallback<void(const base::DictValue* result, const std::string& error)>;
+
+  static ServiceWorkerTargets& Get() {
+    static base::NoDestructor<ServiceWorkerTargets> targets;
+    return *targets;
+  }
+
+  // From a page's first automation of @profile on. Each worker's target as
+  // a browser session's auto-attach has it (BrowserAutoAttacher), without
+  // the browser session: that one forces a DevTools host for every frame,
+  // and the pages' own sessions then stop hearing of their WebSockets.
+  void Watch(content::BrowserContext* profile) {
+    profiles_.insert(profile->UniqueId());
+    if (!observing_) {
+      observing_ = true;
+      content::ServiceWorkerDevToolsManager::GetInstance()->AddObserver(this);
+    }
+    // Those running already (ReattachServiceWorkers()).
+    content::ServiceWorkerDevToolsAgentHost::List hosts;
+    content::ServiceWorkerDevToolsManager::GetInstance()->AddAllAgentHosts(&hosts);
+    for (const auto& host : hosts) {
+      if (host->GetBrowserContext() == profile && !workers_.contains(host->GetId()) &&
+          host->AttachClient(this)) {
+        Attached(host.get(), profile);
+      }
+    }
+  }
+
+  // content::ServiceWorkerDevToolsManager::Observer: held at its start until
+  // its domains are on (Runtime.runIfWaitingForDebugger).
+  void WorkerCreated(content::ServiceWorkerDevToolsAgentHost* host, bool* should_pause_on_start) override {
+    content::BrowserContext* profile = host->GetBrowserContext();
+    if (!profile || !AutomatedProfile(profile->UniqueId()) || workers_.contains(host->GetId()))
+      return;
+    if (!host->AttachClient(this))
+      return;
+    *should_pause_on_start = true;
+    Attached(host, profile);
+  }
+  void WorkerDestroyed(content::ServiceWorkerDevToolsAgentHost* host) override {
+    Detached(host->GetId());
+  }
+
+  // The context's routes, offline state or extra headers changed.
+  void ContextChanged(content::BrowserContext* profile) {
+    for (auto& [session, worker] : workers_) {
+      if (worker.profile == profile)
+        Apply(worker, false);
+    }
+  }
+
+  // Whether @id is a running worker's; its profile.
+  content::BrowserContext* ProfileOf(const std::string& id) {
+    Worker* worker = ById(id);
+    return worker ? worker->profile.get() : nullptr;
+  }
+
+  // Runtime.evaluate in the worker, by value.
+  void Evaluate(const std::string& id, const std::string& expression, Reply reply) {
+    Worker* worker = ById(id);
+    if (!worker) {
+      std::move(reply).Run(nullptr, kClosed);
       return;
     }
     base::DictValue params;
     params.Set("expression", expression);
     params.Set("returnByValue", true);
     params.Set("awaitPromise", true);
-    base::DictValue message;
-    message.Set("id", 1);
-    message.Set("method", "Runtime.evaluate");
-    message.Set("params", std::move(params));
-    const std::string json = Json(base::Value(std::move(message)));
-    self->host_->DispatchProtocolMessage(self, base::as_byte_span(json));
+    // Once its script has loaded (crServiceWorker.ts's workerScriptLoaded()):
+    // an evaluation while the script streams in brings the worker down.
+    if (!worker->script_loaded) {
+      worker->evaluations.emplace_back(std::move(params), std::move(reply));
+      return;
+    }
+    Send(worker->session, "Runtime.evaluate", std::move(params), std::move(reply));
   }
 
-  void DispatchProtocolMessage(content::DevToolsAgentHost*, base::span<const uint8_t> bytes) override {
+  // A route of a worker's request: Fetch's answer to it. False when it is
+  // not held (handled already, or its worker gone).
+  bool Route(const std::string& route, const std::string& how, const base::DictValue& given) {
+    auto found = routes_.find(route);
+    if (found == routes_.end())
+      return false;
+    const auto [session, paused] = found->second;
+    routes_.erase(found);
+    if (!workers_.contains(session))
+      return true;
+    base::DictValue params;
+    params.Set("requestId", paused);
+    if (how == "continue") {
+      if (const std::string* url = given.FindString("url"))
+        params.Set("url", *url);
+      if (const std::string* method = given.FindString("method"))
+        params.Set("method", *method);
+      if (const std::string* post = given.FindString("postData"))
+        params.Set("postData", *post);
+      if (const base::ListValue* headers = given.FindList("headers"))
+        params.Set("headers", headers->Clone());
+      Send(session, "Fetch.continueRequest", std::move(params), Reply());
+    } else if (how == "fulfill") {
+      params.Set("responseCode", given.FindInt("status").value_or(200));
+      base::ListValue headers;
+      if (const base::ListValue* list = given.FindList("headers"))
+        headers = list->Clone();
+      params.Set("responseHeaders", std::move(headers));
+      std::string body;
+      if (const std::string* text = given.FindString("body"))
+        body = given.FindBool("isBase64").value_or(false) ? *text : base::Base64Encode(*text);
+      params.Set("body", body);
+      Send(session, "Fetch.fulfillRequest", std::move(params), Reply());
+    } else {
+      params.Set("errorReason", ErrorReason(given.FindString("errorCode") ? *given.FindString("errorCode") : ""));
+      Send(session, "Fetch.failRequest", std::move(params), Reply());
+    }
+    return true;
+  }
+
+  // Response.body of a worker's request: Network.getResponseBody, as base64.
+  void Body(const std::string& request, Reply reply) {
+    auto found = bodies_.find(request);
+    if (found == bodies_.end() || !workers_.contains(found->second.first)) {
+      std::move(reply).Run(nullptr, "Response body is unavailable for redirect responses");
+      return;
+    }
+    base::DictValue params;
+    params.Set("requestId", found->second.second);
+    Send(found->second.first, "Network.getResponseBody", std::move(params), std::move(reply));
+  }
+
+  // content::DevToolsAgentHostClient
+  void DispatchProtocolMessage(content::DevToolsAgentHost* host, base::span<const uint8_t> bytes) override {
     std::optional<base::Value> message =
         base::JSONReader::Read(base::as_string_view(bytes), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
-    if (!message || !message->is_dict() || message->GetDict().FindInt("id") != 1)
+    if (!message || !message->is_dict())
       return;
     base::DictValue& dict = message->GetDict();
-    std::string error;
-    base::Value value;
-    if (const std::string* text = dict.FindStringByDottedPath("error.message")) {
-      error = *text;
-    } else if (const base::DictValue* details = dict.FindDictByDottedPath("result.exceptionDetails")) {
-      const std::string* description = details->FindStringByDottedPath("exception.description");
-      const std::string* text = details->FindString("text");
-      error = description ? *description : text ? *text : "Error";
-    } else if (base::Value* result = dict.FindByDottedPath("result.result.value")) {
-      value = std::move(*result);
+    if (std::optional<int> id = dict.FindInt("id")) {
+      auto found = replies_.find(*id);
+      if (found == replies_.end())
+        return;
+      Reply reply = std::move(found->second);
+      replies_.erase(found);
+      if (!reply)
+        return;
+      if (const std::string* error = dict.FindStringByDottedPath("error.message")) {
+        std::move(reply).Run(nullptr, *error);
+        return;
+      }
+      const base::DictValue* result = dict.FindDict("result");
+      base::DictValue empty;
+      std::move(reply).Run(result ? result : &empty, std::string());
+      return;
     }
-    Finish(std::move(value), std::move(error));
+    const std::string* method = dict.FindString("method");
+    base::DictValue* params = dict.FindDict("params");
+    auto found = workers_.find(host->GetId());
+    if (!method || !params || found == workers_.end())
+      return;
+    WorkerEvent(found->second, *method, *params);
   }
-  void AgentHostClosed(content::DevToolsAgentHost*) override {
-    host_ = nullptr;
-    Finish(base::Value(), "Target page, context or browser has been closed");
+  void AgentHostClosed(content::DevToolsAgentHost* host) override {
+    auto found = workers_.find(host->GetId());
+    if (found != workers_.end())
+      found->second.host = nullptr;
+    Detached(host->GetId());
   }
 
  private:
-  ServiceWorkerEvaluation(scoped_refptr<content::DevToolsAgentHost> host, Done done)
-      : host_(std::move(host)), done_(std::move(done)) {}
-  void Finish(base::Value value, std::string error) {
-    if (!done_)
-      return;
-    std::move(done_).Run(std::move(value), std::move(error));
-    if (host_)
-      host_->DetachClient(this);
-    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, this);
+  // A request of the worker's, from Network.requestWillBeSent on, and the
+  // Fetch interception that holds it (crNetworkManager.ts pairs them by
+  // networkId, in either order).
+  struct Request {
+    std::string id;  // the endpoint's: "s<n>", one per hop
+    double timestamp = 0;
+    double wall_time = 0;
+    bool emitted = false;
+    std::optional<base::DictValue> paused;
+  };
+  struct Worker {
+    std::string id;
+    std::string session;  // its DevTools host's id
+    scoped_refptr<content::DevToolsAgentHost> host;
+    raw_ptr<content::BrowserContext> profile;
+    bool intercepting = false;
+    std::string headers_applied;
+    std::optional<bool> offline_applied;
+    std::map<std::string, Request> requests;  // by DevTools' requestId
+    std::map<std::string, base::DictValue> paused;  // by networkId, before their request
+    bool script_loaded = false;
+    std::vector<std::pair<base::DictValue, Reply>> evaluations;  // until it is
+    std::map<int, base::DictValue> console;  // waiting for their values, in order
+    int console_next = 0;
+  };
+
+  friend class base::NoDestructor<ServiceWorkerTargets>;
+  ServiceWorkerTargets() = default;
+  ~ServiceWorkerTargets() override = default;
+
+  Worker* ById(const std::string& id) {
+    for (auto& [session, worker] : workers_) {
+      if (worker.id == id)
+        return &worker;
+    }
+    return nullptr;
   }
-  scoped_refptr<content::DevToolsAgentHost> host_;
-  Done done_;
+
+  void Send(const std::string& session, const std::string& method, base::DictValue params, Reply reply) {
+    auto worker = workers_.find(session);
+    if (worker == workers_.end() || !worker->second.host) {
+      if (reply)
+        std::move(reply).Run(nullptr, kClosed);
+      return;
+    }
+    const int id = ++next_id_;
+    replies_[id] = std::move(reply);
+    base::DictValue message;
+    message.Set("id", id);
+    message.Set("method", method);
+    message.Set("params", std::move(params));
+    const std::string json = Json(base::Value(std::move(message)));
+    scoped_refptr<content::DevToolsAgentHost> host = worker->second.host;
+    host->DispatchProtocolMessage(this, base::as_byte_span(json));
+  }
+
+  content::BrowserContext* AutomatedProfile(const std::string& unique_id) {
+    if (!profiles_.contains(unique_id))
+      return nullptr;
+    for (zebkit_view* view : zebkit_view::Views()) {
+      content::WebContents* contents = view->web_contents();
+      if (contents && contents->GetBrowserContext()->UniqueId() == unique_id)
+        return contents->GetBrowserContext();
+    }
+    return nullptr;
+  }
+
+  void Attached(content::ServiceWorkerDevToolsAgentHost* host, content::BrowserContext* profile) {
+    const std::string session = host->GetId();
+    Worker& worker = workers_[session];
+    worker.id = "sw" + base::NumberToString(++next_worker_);
+    worker.session = session;
+    worker.host = host;
+    worker.profile = profile;
+    {
+      base::DictValue told;
+      told.Set("worker", worker.id);
+      told.Set("url", host->GetURL().spec());
+      Tell(profile, "BrowserContext.serviceWorker", std::move(told));
+    }
+    // crServiceWorker.ts: its network unless the context blocks service
+    // workers, then Runtime, then on.
+    const std::string* policy = ContextStates()[profile].options.FindString("serviceWorkers");
+    if (!policy || *policy != "block") {
+      Send(session, "Network.enable", base::DictValue(), Reply());
+      Apply(worker, true);
+    }
+    Send(session, "Runtime.enable", base::DictValue(), Reply());
+    Send(session, "Runtime.runIfWaitingForDebugger", base::DictValue(), Reply());
+  }
+
+  void Detached(const std::string& session) {
+    auto found = workers_.find(session);
+    if (found == workers_.end())
+      return;
+    Worker worker = std::move(found->second);
+    workers_.erase(found);
+    if (worker.host)
+      worker.host->DetachClient(this);
+    for (auto& [evaluate, reply] : worker.evaluations)
+      std::move(reply).Run(nullptr, kClosed);
+    std::erase_if(routes_, [&](const auto& entry) { return entry.second.first == session; });
+    std::erase_if(bodies_, [&](const auto& entry) { return entry.second.first == session; });
+    base::DictValue told;
+    told.Set("worker", worker.id);
+    Tell(worker.profile, "ServiceWorker.close", std::move(told));
+  }
+
+  // The context's settings on the worker's session (crServiceWorker.ts's
+  // updateRequestInterception(), updateExtraHTTPHeaders(), updateOffline()).
+  void Apply(Worker& worker, bool first) {
+    const std::string* policy = ContextStates()[worker.profile].options.FindString("serviceWorkers");
+    if (policy && *policy == "block")
+      return;
+    const ContextState& state = ContextStates()[worker.profile];
+    const bool intercept = !Patterns(state).empty();
+    if (intercept != worker.intercepting) {
+      worker.intercepting = intercept;
+      if (intercept) {
+        base::DictValue params;
+        base::ListValue patterns;
+        base::DictValue all;
+        all.Set("urlPattern", "*");
+        patterns.Append(std::move(all));
+        params.Set("patterns", std::move(patterns));
+        Send(worker.session, "Fetch.enable", std::move(params), Reply());
+      } else {
+        Send(worker.session, "Fetch.disable", base::DictValue(), Reply());
+      }
+      base::DictValue cache;
+      cache.Set("cacheDisabled", intercept);
+      Send(worker.session, "Network.setCacheDisabled", std::move(cache), Reply());
+    }
+    base::DictValue headers;
+    for (const base::Value& header : state.extra_headers) {
+      const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
+      const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
+      if (name && value)
+        headers.Set(*name, *value);
+    }
+    const std::string headers_json = Json(base::Value(headers.Clone()));
+    if (headers_json != worker.headers_applied && (!first || !headers.empty())) {
+      worker.headers_applied = headers_json;
+      base::DictValue params;
+      params.Set("headers", std::move(headers));
+      Send(worker.session, "Network.setExtraHTTPHeaders", std::move(params), Reply());
+    }
+    if (worker.offline_applied != state.offline && (!first || state.offline)) {
+      worker.offline_applied = state.offline;
+      base::DictValue params;
+      params.Set("offline", state.offline);
+      params.Set("latency", 0);
+      params.Set("downloadThroughput", -1);
+      params.Set("uploadThroughput", -1);
+      Send(worker.session, "Network.emulateNetworkConditions", std::move(params), Reply());
+    }
+  }
+
+  static base::ListValue Patterns(const ContextState& state) {
+    for (const auto& [method, params] : state.replay) {
+      if (method == "Page.setNetworkInterceptionPatterns") {
+        if (const base::ListValue* patterns = params.FindList("patterns"))
+          return patterns->Clone();
+      }
+    }
+    return base::ListValue();
+  }
+
+  void Tell(content::BrowserContext* profile, const std::string& event, base::DictValue params) {
+    std::vector<Automation*> pages = Automation::InProfile(profile);
+    if (!pages.empty())
+      pages.front()->Emit(event, std::move(params));
+  }
+
+  // crNetworkManager.ts's errorReasons.
+  static std::string ErrorReason(const std::string& code) {
+    static const base::NoDestructor<std::map<std::string, std::string>> kReasons(
+        std::map<std::string, std::string>{
+            {"aborted", "Aborted"},
+            {"accessdenied", "AccessDenied"},
+            {"addressunreachable", "AddressUnreachable"},
+            {"blockedbyclient", "BlockedByClient"},
+            {"blockedbyresponse", "BlockedByResponse"},
+            {"connectionaborted", "ConnectionAborted"},
+            {"connectionclosed", "ConnectionClosed"},
+            {"connectionfailed", "ConnectionFailed"},
+            {"connectionrefused", "ConnectionRefused"},
+            {"connectionreset", "ConnectionReset"},
+            {"internetdisconnected", "InternetDisconnected"},
+            {"namenotresolved", "NameNotResolved"},
+            {"timedout", "TimedOut"},
+            {"failed", "Failed"},
+        });
+    auto found = kReasons->find(code);
+    return found == kReasons->end() ? "Failed" : found->second;
+  }
+
+  // DevTools' headers object as the protocol's list (several values of a
+  // name are on lines of their own).
+  static base::ListValue HeaderList(const base::DictValue* headers) {
+    base::ListValue list;
+    if (!headers)
+      return list;
+    for (const auto [name, value] : *headers) {
+      if (!value.is_string())
+        continue;
+      for (const std::string& line :
+           base::SplitString(value.GetString(), "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL)) {
+        base::DictValue header;
+        header.Set("name", name);
+        header.Set("value", line);
+        list.Append(std::move(header));
+      }
+    }
+    return list;
+  }
+
+  // crExecutionContext.ts's renderPreview().
+  static std::string Preview(const base::DictValue& object) {
+    const std::string* type = object.FindString("type");
+    if (type && *type == "undefined")
+      return "undefined";
+    if (const std::string* unserializable = object.FindString("unserializableValue"))
+      return *unserializable;
+    if (const base::Value* value = object.Find("value")) {
+      if (value->is_string())
+        return value->GetString();
+      if (value->is_none())
+        return "null";
+      if (value->is_bool())
+        return value->GetBool() ? "true" : "false";
+      if (value->is_int())
+        return base::NumberToString(value->GetInt());
+      if (value->is_double()) {
+        const double number = value->GetDouble();
+        if (number == static_cast<double>(static_cast<int64_t>(number)) && std::abs(number) < 1e15)
+          return base::NumberToString(static_cast<int64_t>(number));
+        return base::NumberToString(number);
+      }
+      return Json(*value);
+    }
+    const std::string* description = object.FindString("description");
+    return description ? *description : std::string();
+  }
+
+  void WorkerEvent(Worker& worker, const std::string& method, base::DictValue& params) {
+    if (method == "Inspector.workerScriptLoaded") {
+      worker.script_loaded = true;
+      // Started: a restart of the same version is not held again (nothing
+      // here would release it).
+      if (worker.host)
+        static_cast<content::ServiceWorkerDevToolsAgentHost*>(worker.host.get())->set_should_pause_on_start(false);
+      auto evaluations = std::move(worker.evaluations);
+      for (auto& [evaluate, reply] : evaluations)
+        Send(worker.session, "Runtime.evaluate", std::move(evaluate), std::move(reply));
+      return;
+    }
+    if (method == "Runtime.consoleAPICalled") {
+      base::DictValue told;
+      told.Set("worker", worker.id);
+      const std::string* type = params.FindString("type");
+      told.Set("type", type ? *type : "log");
+      std::vector<std::string> parts;
+      if (const base::ListValue* args = params.FindList("args")) {
+        for (const base::Value& arg : *args) {
+          if (arg.is_dict())
+            parts.push_back(Preview(arg.GetDict()));
+        }
+      }
+      told.Set("text", base::JoinString(parts, " "));
+      base::DictValue location;
+      if (const base::ListValue* frames = params.FindListByDottedPath("stackTrace.callFrames");
+          frames && !frames->empty() && frames->front().is_dict()) {
+        const base::DictValue& top = frames->front().GetDict();
+        const std::string* url = top.FindString("url");
+        location.Set("url", url ? *url : std::string());
+        location.Set("lineNumber", top.FindInt("lineNumber").value_or(0));
+        location.Set("columnNumber", top.FindInt("columnNumber").value_or(0));
+      }
+      told.Set("location", std::move(location));
+      if (std::optional<double> timestamp = params.FindDouble("timestamp"))
+        told.Set("timestamp", *timestamp);
+      // Its arguments' values (the client's handles of them answer
+      // jsonValue()), in the messages' order.
+      base::ListValue arguments;
+      std::string object_id;
+      if (const base::ListValue* args = params.FindList("args")) {
+        for (const base::Value& arg : *args) {
+          if (!arg.is_dict())
+            continue;
+          base::DictValue argument;
+          if (const std::string* id = arg.GetDict().FindString("objectId")) {
+            argument.Set("objectId", *id);
+            if (object_id.empty())
+              object_id = *id;
+          } else if (const std::string* unserializable = arg.GetDict().FindString("unserializableValue")) {
+            argument.Set("unserializableValue", *unserializable);
+          } else if (const base::Value* value = arg.GetDict().Find("value")) {
+            argument.Set("value", value->Clone());
+          }
+          base::DictValue preview;
+          preview.Set("preview", Preview(arg.GetDict()));
+          told.EnsureList("previews")->Append(std::move(preview));
+          arguments.Append(std::move(argument));
+        }
+      }
+      const int order = ++worker.console_next;
+      worker.console[order] = std::move(told);
+      if (object_id.empty()) {
+        ConsoleValues(worker.session, order, base::ListValue(), params.FindList("args"));
+        return;
+      }
+      base::DictValue call;
+      call.Set("objectId", object_id);
+      call.Set("functionDeclaration", "function(...a) { return a; }");
+      call.Set("arguments", std::move(arguments));
+      call.Set("returnByValue", true);
+      base::ListValue fallback = params.FindList("args") ? params.FindList("args")->Clone() : base::ListValue();
+      Send(worker.session, "Runtime.callFunctionOn", std::move(call),
+           base::BindOnce(
+               [](std::string session, int order, base::ListValue args, const base::DictValue* result,
+                  const std::string&) {
+                 const base::ListValue* values =
+                     result ? result->FindListByDottedPath("result.value") : nullptr;
+                 Get().ConsoleValues(session, order, values ? values->Clone() : base::ListValue(), &args);
+               },
+               worker.session, order, std::move(fallback)));
+    } else if (method == "Network.requestWillBeSent") {
+      RequestWillBeSent(worker, params);
+    } else if (method == "Fetch.requestPaused") {
+      const std::string* network_id = params.FindString("networkId");
+      if (network_id) {
+        auto found = worker.requests.find(*network_id);
+        if (found != worker.requests.end() && found->second.emitted && !found->second.paused) {
+          Paused(worker, found->second, params);
+          return;
+        }
+        worker.paused[*network_id] = params.Clone();
+        return;
+      }
+      // One the Network domain does not tell: on as it is.
+      base::DictValue go;
+      if (const std::string* id = params.FindString("requestId"))
+        go.Set("requestId", *id);
+      Send(worker.session, "Fetch.continueRequest", std::move(go), Reply());
+    } else if (method == "Network.responseReceived") {
+      const std::string* request_id = params.FindString("requestId");
+      auto found = request_id ? worker.requests.find(*request_id) : worker.requests.end();
+      if (found == worker.requests.end() || !found->second.emitted)
+        return;
+      if (const base::DictValue* response = params.FindDict("response"))
+        Responded(worker, found->second, *response);
+      bodies_[found->second.id] = {worker.session, *request_id};
+      if (bodies_.size() > 500)
+        bodies_.erase(bodies_.begin());
+    } else if (method == "Network.loadingFinished" || method == "Network.loadingFailed") {
+      const std::string* request_id = params.FindString("requestId");
+      auto found = request_id ? worker.requests.find(*request_id) : worker.requests.end();
+      if (found == worker.requests.end())
+        return;
+      Request request = std::move(found->second);
+      worker.requests.erase(found);
+      worker.paused.erase(*request_id);
+      if (!request.emitted)
+        return;
+      base::DictValue told;
+      told.Set("worker", worker.id);
+      told.Set("request", request.id);
+      if (method == "Network.loadingFinished") {
+        const double end = params.FindDouble("timestamp").value_or(request.timestamp);
+        told.Set("responseEndTiming", (end - request.timestamp) * 1000);
+        Tell(worker.profile, "ServiceWorker.requestFinished", std::move(told));
+      } else {
+        const std::string* text = params.FindString("errorText");
+        told.Set("failureText", text ? *text : std::string("net::ERR_FAILED"));
+        Tell(worker.profile, "ServiceWorker.requestFailed", std::move(told));
+      }
+    }
+  }
+
+  // A console message's values come (@values, else those of @args that
+  // have one): told with every message before it that has its values.
+  void ConsoleValues(const std::string& session, int order, base::ListValue values,
+                     const base::ListValue* args) {
+    auto found = workers_.find(session);
+    if (found == workers_.end())
+      return;
+    Worker& worker = found->second;
+    auto message = worker.console.find(order);
+    if (message == worker.console.end())
+      return;
+    if (values.empty() && args) {
+      for (const base::Value& arg : *args) {
+        const base::Value* value = arg.is_dict() ? arg.GetDict().Find("value") : nullptr;
+        values.Append(value ? value->Clone() : base::Value());
+      }
+    }
+    message->second.Set("values", std::move(values));
+    message->second.Set("ready", true);
+    while (!worker.console.empty() && worker.console.begin()->second.FindBool("ready").value_or(false)) {
+      base::DictValue told = std::move(worker.console.begin()->second);
+      worker.console.erase(worker.console.begin());
+      told.Remove("ready");
+      Tell(worker.profile, "ServiceWorker.console", std::move(told));
+    }
+  }
+
+  void RequestWillBeSent(Worker& worker, base::DictValue& params) {
+    const std::string* request_id = params.FindString("requestId");
+    const base::DictValue* request = params.FindDict("request");
+    if (!request_id || !request)
+      return;
+    std::string redirected_from;
+    auto existing = worker.requests.find(*request_id);
+    if (existing != worker.requests.end()) {
+      // A redirect: the hop before ends with its response.
+      if (const base::DictValue* response = params.FindDict("redirectResponse");
+          response && existing->second.emitted) {
+        Responded(worker, existing->second, *response);
+        base::DictValue told;
+        told.Set("worker", worker.id);
+        told.Set("request", existing->second.id);
+        told.Set("responseEndTiming", -1);
+        Tell(worker.profile, "ServiceWorker.requestFinished", std::move(told));
+        redirected_from = existing->second.id;
+      }
+      worker.requests.erase(existing);
+    }
+    Request& hop = worker.requests[*request_id];
+    hop.id = "s" + base::NumberToString(++next_request_);
+    hop.timestamp = params.FindDouble("timestamp").value_or(0);
+    hop.wall_time = params.FindDouble("wallTime").value_or(base::Time::Now().InSecondsFSinceUnixEpoch());
+    base::DictValue told;
+    told.Set("worker", worker.id);
+    told.Set("request", hop.id);
+    std::string url = request->FindString("url") ? *request->FindString("url") : std::string();
+    if (const std::string* fragment = request->FindString("urlFragment"))
+      url += *fragment;
+    told.Set("url", GURL(url).is_valid() ? GURL(url).GetWithoutRef().spec() : url);
+    const std::string* method = request->FindString("method");
+    told.Set("method", method ? *method : "GET");
+    told.Set("headers", HeaderList(request->FindDict("headers")));
+    const std::string* type = params.FindString("type");
+    told.Set("resourceType", type ? base::ToLowerASCII(*type) : std::string("other"));
+    told.Set("isNavigationRequest", false);
+    if (!redirected_from.empty())
+      told.Set("redirectedFrom", redirected_from);
+    if (const base::ListValue* entries = request->FindList("postDataEntries")) {
+      std::string body;
+      for (const base::Value& entry : *entries) {
+        const std::string* bytes = entry.is_dict() ? entry.GetDict().FindString("bytes") : nullptr;
+        std::string decoded;
+        if (bytes && base::Base64Decode(*bytes, &decoded))
+          body += decoded;
+      }
+      if (!body.empty())
+        told.Set("postData", base::Base64Encode(body));
+    } else if (const std::string* post = request->FindString("postData")) {
+      told.Set("postData", base::Base64Encode(*post));
+    }
+    hop.emitted = true;
+    Tell(worker.profile, "ServiceWorker.request", std::move(told));
+    // Held already by Fetch: routed now.
+    auto paused = worker.paused.find(*request_id);
+    if (paused != worker.paused.end()) {
+      base::DictValue event = std::move(paused->second);
+      worker.paused.erase(paused);
+      Paused(worker, hop, event);
+    }
+  }
+
+  void Paused(Worker& worker, Request& request, const base::DictValue& params) {
+    request.paused = params.Clone();
+    const std::string* paused = params.FindString("requestId");
+    const std::string* url = params.FindStringByDottedPath("request.url");
+    if (!paused)
+      return;
+    const base::ListValue patterns = Patterns(ContextStates()[worker.profile]);
+    if (!url || patterns.empty() || !NetworkPatternsMatch(patterns, *url)) {
+      base::DictValue go;
+      go.Set("requestId", *paused);
+      Send(worker.session, "Fetch.continueRequest", std::move(go), Reply());
+      return;
+    }
+    const std::string route = "swr" + base::NumberToString(++next_route_);
+    routes_[route] = {worker.session, *paused};
+    base::DictValue told;
+    told.Set("worker", worker.id);
+    told.Set("route", route);
+    base::DictValue held;
+    held.Set("request", request.id);
+    told.Set("request", std::move(held));
+    Tell(worker.profile, "ServiceWorker.route", std::move(told));
+  }
+
+  void Responded(Worker& worker, const Request& request, const base::DictValue& response) {
+    base::DictValue told;
+    told.Set("worker", worker.id);
+    told.Set("request", request.id);
+    const std::string* url = response.FindString("url");
+    told.Set("url", url ? GURL(*url).GetWithoutRef().spec() : std::string());
+    told.Set("status", response.FindInt("status").value_or(200));
+    const std::string* text = response.FindString("statusText");
+    told.Set("statusText", text ? *text : std::string());
+    told.Set("headers", HeaderList(response.FindDict("headers")));
+    const std::string* mime = response.FindString("mimeType");
+    told.Set("mimeType", mime ? *mime : std::string());
+    told.Set("fromServiceWorker", response.FindBool("fromServiceWorker").value_or(false));
+    base::DictValue timing;
+    if (const base::DictValue* given = response.FindDict("timing")) {
+      const double start = given->FindDouble("requestTime").value_or(request.timestamp);
+      timing.Set("startTime", (start - request.timestamp + request.wall_time) * 1000);
+      for (const auto& [to, from] :
+           {std::pair{"domainLookupStart", "dnsStart"}, {"domainLookupEnd", "dnsEnd"},
+            {"connectStart", "connectStart"}, {"secureConnectionStart", "sslStart"},
+            {"connectEnd", "connectEnd"}, {"requestStart", "sendStart"},
+            {"responseStart", "receiveHeadersEnd"}}) {
+        timing.Set(to, given->FindDouble(from).value_or(-1));
+      }
+    } else {
+      timing.Set("startTime", request.wall_time * 1000);
+      for (const char* key : {"domainLookupStart", "domainLookupEnd", "connectStart",
+                              "secureConnectionStart", "connectEnd", "requestStart", "responseStart"}) {
+        timing.Set(key, -1);
+      }
+    }
+    told.Set("timing", std::move(timing));
+    if (const std::string* address = response.FindString("remoteIPAddress")) {
+      std::string host = *address;
+      if (host.size() > 2 && host.front() == '[' && host.back() == ']')
+        host = host.substr(1, host.size() - 2);
+      told.Set("serverAddr", host);
+    }
+    if (std::optional<int> port = response.FindInt("remotePort"))
+      told.Set("serverPort", *port);
+    if (const std::string* protocol = response.FindString("protocol")) {
+      if (*protocol == "h2")
+        told.Set("httpVersion", "2.0");
+      else if (*protocol == "h3")
+        told.Set("httpVersion", "3.0");
+      else if (protocol->starts_with("http/"))
+        told.Set("httpVersion", protocol->substr(5));
+    }
+    Tell(worker.profile, "ServiceWorker.response", std::move(told));
+  }
+
+  bool observing_ = false;
+  std::set<std::string> profiles_;
+  std::map<std::string, Worker> workers_;  // by DevTools session
+  std::map<std::string, std::pair<std::string, std::string>> routes_;  // route: session, Fetch id
+  std::map<std::string, std::pair<std::string, std::string>> bodies_;  // request: session, Network id
+  std::map<int, Reply> replies_;
+  int next_id_ = 0;
+  int next_worker_ = 0;
+  int next_request_ = 0;
+  int next_route_ = 0;
 };
+
+void UpdateServiceWorkers(content::BrowserContext* profile) {
+  ServiceWorkerTargets::Get().ContextChanged(profile);
+}
+
+void ServiceWorkerTargets_Watch(content::BrowserContext* profile) {
+  if (profile)
+    ServiceWorkerTargets::Get().Watch(profile);
+}
+
+// ServiceWorker.Route.continue / fulfill / abort {route, ...}.
+void ServiceWorkerRoute(Call* call) {
+  const std::string how = call->Name().substr(call->Name().find('.') + 1);
+  if (!ServiceWorkerTargets::Get().Route(call->String("route"), how, call->params()))
+    call->Fail("Route is already handled!");
+  else
+    call->Done();
+}
+
+// ServiceWorker.Response.body {request}: {binary}.
+void ServiceWorkerBody(Call* call) {
+  ServiceWorkerTargets::Get().Body(
+      call->String("request"),
+      base::BindOnce(
+          [](base::WeakPtr<Call> call, const base::DictValue* result, const std::string& error) {
+            if (!call)
+              return;
+            if (!result) {
+              call->Fail(error);
+              return;
+            }
+            const std::string* body = result->FindString("body");
+            base::DictValue answer;
+            answer.Set("binary", !body ? std::string()
+                                 : result->FindBool("base64Encoded").value_or(false) ? *body
+                                                                                     : base::Base64Encode(*body));
+            call->Done(base::Value(std::move(answer)));
+          },
+          call->GetWeakPtr()));
+}
 
 // BrowserContext.restoreStorage {context, origins}: each origin's IndexedDB
 // and OPFS put back, as browserContext.ts's setStorageState() restores them in
@@ -9250,19 +9956,7 @@ void RestoreStorage(Call* call) {
 // ServiceWorker.evaluateExpression {worker, expression, isFunction, arg}.
 void ServiceWorkerEvaluate(Call* call) {
   const std::string id = call->String("worker");
-  content::BrowserContext* profile = ServiceWorkerWatch::ProfileOfWorker(id);
-  std::optional<GURL> script = profile ? ServiceWorkerWatch::ScriptOf(profile, id) : std::nullopt;
-  scoped_refptr<content::DevToolsAgentHost> host;
-  if (script) {
-    for (const auto& candidate : content::DevToolsAgentHost::GetOrCreateAll()) {
-      if (candidate->GetType() == content::DevToolsAgentHost::kTypeServiceWorker &&
-          candidate->GetURL() == *script && candidate->GetBrowserContext() == profile) {
-        host = candidate;
-        break;
-      }
-    }
-  }
-  if (!host) {
+  if (!ServiceWorkerTargets::Get().ProfileOf(id)) {
     call->Fail(kClosed);
     return;
   }
@@ -9277,17 +9971,24 @@ void ServiceWorkerEvaluate(Call* call) {
                 ? expression
                 : "(() => { const f = (" + expression + "); return typeof f === 'function' ? f(" + arg_json +
                       ") : f; })()";
-  ServiceWorkerEvaluation::Run(
-      host, source,
+  ServiceWorkerTargets::Get().Evaluate(
+      id, source,
       base::BindOnce(
-          [](base::WeakPtr<Call> call, base::Value value, std::string error) {
+          [](base::WeakPtr<Call> call, const base::DictValue* result, const std::string& error) {
             if (!call)
               return;
-            if (!error.empty()) {
+            if (!result) {
               call->Fail(error);
               return;
             }
-            call->Answer(std::move(value));
+            if (const base::DictValue* details = result->FindDict("exceptionDetails")) {
+              const std::string* description = details->FindStringByDottedPath("exception.description");
+              const std::string* text = details->FindString("text");
+              call->Fail(description ? *description : text ? *text : "Error");
+              return;
+            }
+            const base::Value* value = result->FindByDottedPath("result.value");
+            call->Answer(value ? value->Clone() : base::Value());
           },
           call->GetWeakPtr()));
 }
@@ -10495,6 +11196,8 @@ void ContextCommand(Call* call) {
                     [&](const auto& entry) { return entry.first == method; });
     }
     state.replay.emplace_back(method, params.Clone());
+    if (name == "setNetworkInterceptionPatterns")
+      UpdateServiceWorkers(profile);
   } else if (pages.empty() && !removal) {
     if (name == "setGeolocation") {
       if (const base::DictValue* given = params.FindDict("geolocation")) {
@@ -10507,9 +11210,11 @@ void ContextCommand(Call* call) {
       }
     } else if (name == "setOffline") {
       state.offline = params.FindBool("offline").value_or(false);
+      UpdateServiceWorkers(profile);
     } else if (name == "setExtraHTTPHeaders") {
       if (const base::ListValue* headers = params.FindList("headers"))
         state.extra_headers = headers->Clone();
+      UpdateServiceWorkers(profile);
     } else if (name == "setHTTPCredentials") {
       state.credentials = HttpCredentialsOf(params);
     } else if (name == "storageState") {
@@ -10659,6 +11364,10 @@ const std::map<std::string, GlobalHandler>& GlobalHandlers() {
           {"Browser.newContext", &NewContext},
           {"BrowserContext.newPage", &NewPage},
           {"ServiceWorker.evaluateExpression", &ServiceWorkerEvaluate},
+          {"ServiceWorker.Route.continue", &ServiceWorkerRoute},
+          {"ServiceWorker.Route.fulfill", &ServiceWorkerRoute},
+          {"ServiceWorker.Route.abort", &ServiceWorkerRoute},
+          {"ServiceWorker.Response.body", &ServiceWorkerBody},
           {"BrowserContext.restoreStorage", &RestoreStorage},
           {"BrowserContext.pages", &Pages},
           {"BrowserContext.close", &CloseContext},

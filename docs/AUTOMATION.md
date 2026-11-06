@@ -556,20 +556,33 @@ either:
   because the protocol's `Playwright` object has them; they launch nothing.
   `launch()`, `launchServer()` and `connectOverCDP()` answer that this
   engine is connected to, not launched.
-- **Service workers' own evaluation** (`ServiceWorker` objects): Playwright
-  gives them only on Chromium over CDP's targets; the agent runs in
-  dedicated workers.
-- **The recorder, the inspector and `page.pause()`**: Playwright's tools,
-  not the browser's; they need Playwright's own server.
+- **Service workers** are the context's as `crServiceWorker.ts` has them:
+  each worker's own DevTools target, attached as Chromium's browser
+  auto-attacher attaches it (`ServiceWorkerDevToolsManager`'s observer, held
+  at its start until its domains are on), but without a browser session,
+  which would force a DevTools host for every frame and silence the pages'
+  WebSocket events. Its requests are `crNetworkManager.ts`'s on that session
+  (Network for the events, Fetch for the context's routes, its offline state
+  and extra headers), in the context's HAR; its console comes from
+  `Runtime.consoleAPICalled` with the arguments' values; `evaluate()` waits
+  for `Inspector.workerScriptLoaded`, as the client does. Handles in a
+  service worker are not kept (`evaluate()` answers by value).
+- **The Debugger** (`context.debugger`, `page.pause()`) is `debugger.ts`'s at
+  the endpoint: the pause before a call (the next one, a location, a
+  `pause()`), and the calls streamed to an enabled debugger with their logs
+  and input points. The pause inside an input action, after its waits, is
+  not there: the native side's input has no pause.
+- **The recorder and the inspector**: Playwright's tools, not the browser's;
+  they need Playwright's own server.
 - **Request measurements** now use Chromium load timing for the start,
   DNS, connect, TLS, send, receive and completion phases. A phase unavailable
   for a reused connection or a synthetic response remains -1. Encoded body
   sizes come from network completion statistics; header sizes follow the
   observed HTTP header representation, rather than HTTP/2 or HTTP/3 framing.
   Upload streams without a known length report -1 for their body size.
-- **Protocol commands not implemented yet**, which fail with "no command" or
-  are listed as expected failures: a service worker's own requests (not
-  through the network proxy) and its console messages.
+- **Protocol commands not implemented yet** fail with "no command" or are
+  listed as expected failures, with their reasons
+  (`tests/playwright-suite/expected-failures.txt`).
 
 **Built since 2026-11-05**, each as the server file named does it:
 locator handlers (`page.ts`'s checkpoint before actions, their retries and
@@ -826,7 +839,14 @@ CDP in between:
   Since that run (on the files concerned, counted at the next full run): file choosers of an
   input out of the document or in a frame (`Page.fileChooserOpened`'s node, as `crPage.ts`;
   the "page closing" was the client refusing a FileChooser without its input), an action
-  whose input closed its page or frame.
+  whose input closed its page or frame. Then (2026-11-06, later): service workers over their
+  own DevTools targets (their requests, routes, HAR, offline, extra headers, console and
+  evaluation: `chromium.spec.ts`'s 19 and the 4 offline navigations' 3); a fulfilled redirect
+  is a redirect the client follows and routes again, as Fetch.fulfillRequest's (`routeFromHAR`'s
+  redirected navigations); route.continue() leaves the network's own headers (Host, Trailer,
+  Cookie) to the network; no disk cache while routing; a response's body is gone once its page
+  navigated away; the Debugger and `page.pause()`; the trace's "action" snapshot at the input
+  point, with the action's targets marked.
 
   **Not at parity: what is left, by cause** (the unexplained 181 and the 43 timeouts):
   - A service worker's own requests, events and console (19 in `chromium.spec.ts`, 4 in

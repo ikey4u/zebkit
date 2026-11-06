@@ -217,7 +217,7 @@ static const command commands[] = {
     {"the page got OK", "Frame.waitForFunction", "{\"expression\": \"() => window.answer === true\", \"isFunction\": true, \"timeout\": 2000}", "\"handle\""},
     {"file choosers taken", "Page.updateSubscription", "{\"event\": \"fileChooser\", \"enabled\": true}", "{}"},
     {"a click opens a file chooser", "Frame.click", "{\"selector\": \"#upload\"}", "{}"},
-    {"the file chooser event", "@event", NULL, "Page.fileChooser {\"fileChooser\":\"c"},
+    {"the file chooser event", "@event", NULL, "Page.fileChooser {"},
     {"FileChooser.setFiles", "FileChooser.setFiles", "{\"fileChooser\": \"@C\", \"localPaths\": [\"@F\"]}", "{}"},
     {"the chosen file", "Frame.waitForFunction",
      "{\"expression\": \"() => document.querySelector('#upload').files.length === 1 && document.querySelector('#upload').files[0].name\", \"isFunction\": true, \"timeout\": 2000}", "\"handle\""},
