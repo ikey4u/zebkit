@@ -2292,34 +2292,51 @@ void Connection::PageEvent(const std::string& page_guid,
     const bool multiple = params.FindBool("isMultiple").value_or(false);
     base::DictValue query;
     query.Set("frame", *frame_id);
-    query.Set("expression",
-              "() => { const e = document.activeElement; return e && e.type === 'file' ? e : "
-              "document.querySelector('input[type=file]'); }");
-    query.Set("isFunction", true);
+    // The input Blink names (crPage.ts's backendNodeId), else the one with
+    // focus or the document's first.
+    const std::optional<int> node = params.FindInt("backendNodeId");
+    if (node) {
+      query.Set("backendNodeId", *node);
+    } else {
+      query.Set("expression",
+                "() => { const e = document.activeElement; return e && e.type === 'file' ? e : "
+                "document.querySelector('input[type=file]'); }");
+      query.Set("isFunction", true);
+    }
     struct Chooser {
       base::WeakPtr<Connection> self;
       std::string page_guid, frame_guid, chooser;
       bool multiple;
+      bool native;
     };
-    auto* state = new Chooser{weak_factory_.GetWeakPtr(), page_guid, frame_guid, *chooser, multiple};
+    auto* state = new Chooser{weak_factory_.GetWeakPtr(), page_guid, frame_guid, *chooser, multiple, !node};
     zebkit_automation_call(
-        view, "Frame.evaluateExpressionHandle", Json(base::Value(std::move(query))).c_str(),
+        view, node ? "Frame.nodeHandle" : "Frame.evaluateExpressionHandle",
+        Json(base::Value(std::move(query))).c_str(),
         [](zebkit_view* view, const char* json, const char*, void* data) {
           std::unique_ptr<Chooser> state(static_cast<Chooser*>(data));
           // The native chooser itself is cancelled: the client gives the
-          // input its files (ElementHandle.setInputFiles).
-          base::DictValue cancel;
-          cancel.Set("fileChooser", state->chooser);
-          zebkit_automation_call(view, "FileChooser.setFiles",
-                                 Json(base::Value(std::move(cancel))).c_str(), nullptr,
-                                 nullptr);
+          // input its files (ElementHandle.setInputFiles). One Blink
+          // intercepted opened none.
+          if (state->native) {
+            base::DictValue cancel;
+            cancel.Set("fileChooser", state->chooser);
+            zebkit_automation_call(view, "FileChooser.setFiles",
+                                   Json(base::Value(std::move(cancel))).c_str(), nullptr,
+                                   nullptr);
+          }
           if (!state->self || !json)
             return;
           std::optional<base::Value> result = Parse(json);
-          base::Value* handle = result && result->is_dict() ? result->GetDict().Find("handle")
-                                                           : nullptr;
-          if (!handle)
+          base::Value* handle =
+              result && result->is_dict()
+                  ? result->GetDict().Find(state->native ? "handle" : "element")
+                  : nullptr;
+          // A chooser without its input (the protocol's FileChooser has one).
+          if (!handle || !handle->is_dict())
             return;
+          if (std::optional<bool> multiple = result->GetDict().FindBool("multiple"))
+            state->multiple = *multiple;
           base::Value element =
               state->self->Expose(state->page_guid, state->frame_guid, std::move(*handle));
           base::DictValue chosen;

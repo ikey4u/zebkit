@@ -1590,6 +1590,21 @@ class Automation : public content::WebContentsObserver,
       CoverageEvent(method, params);
       return;
     }
+    if (method == "Page.fileChooserOpened") {
+      const std::string* frame = params.FindString("frameId");
+      const std::optional<int> node = params.FindInt("backendNodeId");
+      const std::string* mode = params.FindString("mode");
+      if (!frame || !node || !intercept_file_choosers_)
+        return;
+      base::DictValue event;
+      event.Set("fileChooser", "c" + base::NumberToString(++next_chooser_));
+      event.Set("frame", FrameOfDevTools(*frame));
+      event.Set("isMultiple", mode && *mode == "selectMultiple");
+      event.Set("isDirectory", false);
+      event.Set("backendNodeId", *node);
+      Emit("Page.fileChooser", std::move(event));
+      return;
+    }
     if (method == "Runtime.consoleAPICalled") {
       ConsoleAPICalled(params);
       return;
@@ -2304,6 +2319,10 @@ class Automation : public content::WebContentsObserver,
     }
     content::RenderFrameHost* frame = Resolve(frame_ref);
     if (!frame) {
+      if (arg.FindBool("doneIfGone").value_or(false)) {
+        call->Done();
+        return;
+      }
       if (RetryThroughFrames(call))
         return;
       call->Fail(handles.empty() ? kFrameDetached : kDetached);
@@ -2401,6 +2420,10 @@ class Automation : public content::WebContentsObserver,
     if (!call || call->finished())
       return;
     if (status == AutomationStatus::kGone) {
+      if (arg.FindBool("doneIfGone").value_or(false)) {
+        call->Done();
+        return;
+      }
       // An assertion outlives a navigation, as frames.ts retries it.
       if (step == "expect" && handles.empty())
         frame_ref.follow = true;
@@ -4681,6 +4704,9 @@ class Automation : public content::WebContentsObserver,
     }
     base::DictValue finish;
     finish.Set("interceptor", interceptor);
+    // The input is in: a frame the action took away (it detached the frame)
+    // ends the action, as dom.ts's hit target check does.
+    finish.Set("doneIfGone", true);
     if (action.checked)
       finish.Set("checked", *action.checked);
     TargetStep(call.get(), target, "pointerFinish", std::move(finish),
@@ -5724,7 +5750,13 @@ class Automation : public content::WebContentsObserver,
     Emit("Page.close", {});
     std::vector<base::WeakPtr<Call>> calls = std::move(calls_);
     for (const base::WeakPtr<Call>& call : calls) {
-      if (call)
+      if (!call)
+        continue;
+      // An action whose input is in, which closed the page (window.close()
+      // from a click): done, as dom.ts's hit target check ends it.
+      if (watching_.contains(call.get()))
+        call->Done();
+      else
         call->Fail(kClosed);
     }
   }
@@ -5740,6 +5772,16 @@ class Automation : public content::WebContentsObserver,
       report_closed_dialogs_ = enabled;
     } else if (event == "fileChooser") {
       intercept_file_choosers_ = enabled;
+      // crPage.ts's Page.setInterceptFileChooserDialog: Blink names the
+      // input that opened the chooser (Page.fileChooserOpened), even one not
+      // in the document; a chooser it does not intercept (a frame of another
+      // process) still comes through TakeFileChooser().
+      // (Blink's page agent hears of choosers once enabled.)
+      if (enabled)
+        view_->Send("Page.enable", base::DictValue());
+      base::DictValue intercept;
+      intercept.Set("enabled", enabled);
+      view_->Send("Page.setInterceptFileChooserDialog", std::move(intercept));
     }
     // Other events (console, request, response, ...) are always sent.
     call->Done();
@@ -7480,6 +7522,29 @@ class Automation : public content::WebContentsObserver,
                     std::move(answer).Run(call.get(), std::move(value));
                 },
                 call->GetWeakPtr(), AsKey("element", "element")));
+  }
+
+  // Frame.nodeHandle {backendNodeId}: {element}, the frame's node DevTools
+  // names (crPage.ts's adoptBackendNodeId()), a node out of the document too.
+  void NodeHandle(Call* call) {
+    content::RenderFrameHost* frame = FrameOf(call);
+    if (!frame) {
+      call->Fail(kFrameDetached);
+      return;
+    }
+    const int node = static_cast<int>(call->Number("backendNodeId"));
+    base::DictValue owner;
+    owner.Set("$h", 0);
+    base::DictValue arg;
+    arg.Set("owner", std::move(owner));
+    RunStep(call, Follow(frame), AutomationWorld::kUtility, "chooserInput", std::move(arg),
+            {kDomNodeHandleBase - node},
+            base::BindOnce(
+                [](base::WeakPtr<Call> call, base::Value value) {
+                  if (call)
+                    call->Done(std::move(value));
+                },
+                call->GetWeakPtr()));
   }
 
   // Page.requestGC, as crPage.ts.
@@ -9632,6 +9697,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.webStorageRemoveItem", &A::WebStorage},
           {"Page.webStorageClear", &A::WebStorage},
           {"Frame.frameElement", &A::FrameElement},
+          {"Frame.nodeHandle", &A::NodeHandle},
           {"Frame.resolveSelector", &A::ResolveSelector},
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},

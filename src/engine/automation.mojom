@@ -70,7 +70,8 @@ interface AutomationAgent {
   // object whose {"$h": i} are @handles[i]. A step that asks for text to
   // be typed ({insertText}) has it committed into the focused element, as
   // an IME commits it, before the answer. A handle -1 - n is the element, in any
-  // tree of this frame's document, of its child n in the frame tree's order.
+  // tree of this frame's document, of its child n in the frame tree's order;
+  // one at or below -2^30 the node whose DOM node id is -2^30 less it.
   Step(AutomationWorld world, string step, string arg, array<int32> handles)
       => (AutomationStatus status, string result,
           array<AutomationHandle> handles);

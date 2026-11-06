@@ -4,6 +4,8 @@
 #ifndef ZEBKIT_ENGINE_AUTOMATION_H_
 #define ZEBKIT_ENGINE_AUTOMATION_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +32,10 @@ class WebContents;
 }  // namespace content
 
 namespace zebkit {
+
+// A Step's handle at or below this is the frame's node whose DOM node id
+// (DevTools' backendNodeId) is kDomNodeHandleBase - handle.
+inline constexpr int32_t kDomNodeHandleBase = -(1 << 30);
 
 // The renderer's agent for @render_frame (automation_renderer.cc); it
 // deletes itself with the frame.

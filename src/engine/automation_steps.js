@@ -529,7 +529,9 @@ steps.selectOption = arg => poll(arg.timeout, kActionWaits, async say => {
 // dom.ts's _setInputFiles(): the input checked, then given the files: their
 // contents here, paths by the agent (automation_renderer.cc).
 steps.setInputFiles = (arg, out) => poll(arg.timeout, kPollWaits, say => {
-  const element = resolve(arg, say);
+  // An input's own handle, one out of the document too (a file chooser's,
+  // as DOM.setFileInputFiles takes it).
+  const element = arg.scope && arg.selector === ':scope' ? arg.scope : resolve(arg, say);
   if (!element)
     return undefined;
   const input = injected.retarget(element, 'follow-label');
@@ -627,6 +629,14 @@ steps.webStorage = arg => {
 
 // Frame.frameElement, here in the parent: the agent has found the child's
 // element, in any tree of this document.
+// The input a file chooser is of (page.ts's _onFileChooserOpened()): it, and
+// whether it takes several files.
+steps.chooserInput = (arg, out) => {
+  if (!arg.owner)
+    throw fatal('Element is not attached to the DOM');
+  return { element: out(arg.owner), multiple: !!arg.owner.multiple };
+};
+
 steps.frameOwner = (arg, out) => {
   if (!arg.owner)
     throw fatal('Frame has been detached.');

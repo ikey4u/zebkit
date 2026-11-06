@@ -477,6 +477,26 @@ await check('a screenshot right after a change of the page has the change', asyn
   equal((await shot.screenshot()).equals(first), true);
   await shot.close();
 });
+await check('a file chooser of an input out of the document, and of one in a frame', async () => {
+  const chooser = await context.newPage();
+  // The input Blink names (Page.fileChooserOpened): a FileChooser without its
+  // element would be refused by the client, which then drops the connection.
+  const [detached] = await Promise.all([
+    chooser.waitForEvent('filechooser', { timeout: 5000 }),
+    chooser.evaluate(() => { const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.click(); }),
+  ]);
+  equal(detached.isMultiple(), true);
+  equal(await detached.element().evaluate(e => e.isConnected), false);
+  await chooser.setContent('<iframe srcdoc="<input type=file>"></iframe>');
+  const frame = chooser.frames()[1];
+  const [inFrame] = await Promise.all([
+    chooser.waitForEvent('filechooser', { timeout: 5000 }),
+    frame.click('input'),
+  ]);
+  equal(await (await inFrame.element().ownerFrame()) === frame, true);
+  equal(chooser.isClosed(), false);
+  await chooser.close();
+});
 await check('contexts closed and made again: profiles go, and addresses come back', async () => {
   for (let i = 0; i < 60; ++i) {
     const made = await browser.newContext();

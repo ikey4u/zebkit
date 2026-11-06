@@ -51,6 +51,7 @@
 #include "third_party/blink/public/web/web_script_source.h"
 #include "v8/include/v8.h"
 #include "zebkit/engine/automation.h"
+#include "third_party/blink/public/web/web_node.h"
 #include "zebkit/engine/automation.mojom.h"
 #include "zebkit/engine/automation_scripts.h"
 
@@ -1097,6 +1098,14 @@ class Agent : public content::RenderFrameObserver,
         v8::Array::New(isolate, static_cast<int>(handles.size()));
     for (size_t i = 0; i < handles.size(); ++i) {
       v8::Local<v8::Value> value = v8::Undefined(isolate);
+      // A node by its DOM node id (kDomNodeHandleBase).
+      if (handles[i] <= kDomNodeHandleBase) {
+        blink::WebNode node = blink::WebNode::FromDomNodeId(kDomNodeHandleBase - handles[i]);
+        if (!node.IsNull())
+          value = node.ToV8Value(isolate);
+        values->Set(context, static_cast<uint32_t>(i), value).Check();
+        continue;
+      }
       // -1 - n: the element of this frame's child n, as automation.mojom's Step says.
       if (handles[i] < 0) {
         blink::WebElement owner = ChildOwner(-1 - handles[i]);
