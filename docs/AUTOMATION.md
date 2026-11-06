@@ -823,6 +823,11 @@ CDP in between:
   `web-socket.spec.ts` timeouts are gone); waits and actions through a frame that went start
   over. 1067 skipped against Chrome's 1061.
 
+  Since that run (on the files concerned, counted at the next full run): file choosers of an
+  input out of the document or in a frame (`Page.fileChooserOpened`'s node, as `crPage.ts`;
+  the "page closing" was the client refusing a FileChooser without its input), an action
+  whose input closed its page or frame.
+
   **Not at parity: what is left, by cause** (the unexplained 181 and the 43 timeouts):
   - A service worker's own requests, events and console (19 in `chromium.spec.ts`, 4 in
     `browsercontext-service-worker-policy.spec.ts`): its loader factories are the storage
@@ -836,7 +841,7 @@ CDP in between:
   - Client certificates (10): the certificate goes to Chromium's own TLS; Playwright puts a TLS
     proxy of its own in between, with its own error pages and checks (listed for those).
   - Screenshots' pixels (8: WebGL, masks, a page navigating, fonts' wait message); extensions
-    (6, a content-layer engine has none); file choosers of detached inputs and iframes (5);
+    (6, a content-layer engine has none);
     routes (5: unsafe headers, the disk cache, `sec-fetch-*`); workers' console (5); HAR (5:
     a navigation redirected by `routeFromHAR` keeps the first URL); header sizes (4); locales'
     formats the ICU data does not hold (3, listed); tap's navigation (4).
