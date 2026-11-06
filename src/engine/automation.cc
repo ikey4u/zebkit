@@ -3974,6 +3974,11 @@ class Automation : public content::WebContentsObserver,
   // answer is FrameExpectResult's: matches, received, timedOut,
   // errorMessage.
   void Expect(Call* call) {
+    // frames.ts's expect() ends at its timeout with its result (timedOut),
+    // which the page's step gives: its answer comes before the call's own
+    // timeout does.
+    if (call->Remaining() > 0)
+      call->set_grace(1000);
     base::DictValue options = call->params().Clone();
     for (const char* key : {"selector", "timeout", "frame", "handle"})
       options.Remove(key);
