@@ -69,7 +69,7 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     icu_platform=MacOSX
     jobs="$(sysctl -n hw.ncpu)"
 else
-    jobs="$(nproc)"
+    jobs="${ZEBKIT_JOBS:-12}"
 fi
 (cd "$build/obj" &&
     ICU_DATA_FILTER_FILE="$filter" "$build/source/runConfigureICU" --enable-debug --disable-release \
@@ -79,6 +79,25 @@ fi
 
 dat="$(find "$build/obj/data/out/tmp" -name 'icudt*l.dat' | head -1)"
 [[ -n "$dat" ]] || die "no data file in $build/obj/data/out/tmp"
+
+# The last item of the data's table of contents has no length (ucmndata.cpp's
+# offsetTOCLookupFn), and V8's Temporal reads zoneinfo64.res with its length
+# (js-temporal-zoneinfo64.cc): when it is last, Temporal has no time zones.
+# Chromium's data has zu.res after it; without Zulu, an item of no other use
+# follows it (a copy of a small resource, under a name no locale has).
+items="$(LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -l "$dat" 2> /dev/null)"
+if [[ "$(tail -1 <<< "$items")" == zoneinfo64.res ]]; then
+    pad="$build/pad"
+    rm -rf "$pad" && mkdir -p "$pad"
+    # The filtered data's own dependencies are left as they are.
+    LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -d "$pad" \
+        -x res_index.res "$dat"
+    mv "$pad/res_index.res" "$pad/zzzz_after_zoneinfo64.res"
+    LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -s "$pad" \
+        -a zzzz_after_zoneinfo64.res "$dat"
+    [[ "$(LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -l "$dat" 2> /dev/null | tail -1)" \
+        != zoneinfo64.res ]] || die "zoneinfo64.res is still the data's last item"
+fi
 cp "$dat" "$out/icudtl.dat"
 echo "$want" > "$stamp"
 log "$(wc -c < "$out/icudtl.dat" | awk '{ printf "%.1f", $1 / 1048576 }') MiB: $out/icudtl.dat"
