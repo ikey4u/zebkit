@@ -343,6 +343,12 @@ void HarRecorder::Record(const std::string& event,
     entry.response = params.Clone();
   } else if (event == "Page.requestContinued") {
     entry.overrides = params.Clone();
+  } else if (event == "Page.requestRouteAborted") {
+    entry.aborted = true;
+  } else if (event == "Page.requestRouteFulfilled") {
+    entry.fulfilled = true;
+  } else if (event == "Page.requestRouteContinued") {
+    entry.continued = true;
   } else if (event == "Page.requestResourceType") {
     if (const std::string* type = params.FindString("resourceType"))
       entry.request.Set("resourceType", *type);
@@ -515,6 +521,8 @@ base::DictValue HarRecorder::WebSocketValue(const Entry& entry,
   if (!minimal_ && !entry.page_ref.empty())
     har.Set("pageref", entry.page_ref);
   har.Set("startedDateTime", Iso8601(entry.started));
+  if (!monotonic_origin_.is_null() && !entry.start.is_null())
+    har.Set("_monotonicTime", (entry.start - monotonic_origin_).InMillisecondsF());
   har.Set("time", entry.newest_frame >= entry.oldest_frame ? entry.newest_frame - entry.oldest_frame : -1);
   har.Set("request", std::move(request));
   har.Set("response", std::move(response));
@@ -772,6 +780,14 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   base::DictValue har;
   if (!minimal_ && !entry.page_ref.empty())
     har.Set("pageref", entry.page_ref);
+  if (!monotonic_origin_.is_null() && !entry.start.is_null())
+    har.Set("_monotonicTime", (entry.start - monotonic_origin_).InMillisecondsF());
+  if (entry.aborted)
+    har.Set("_wasAborted", true);
+  if (entry.fulfilled)
+    har.Set("_wasFulfilled", true);
+  if (entry.continued)
+    har.Set("_wasContinued", true);
   base::Time started = entry.started;
   const base::DictValue* timing = entry.response.FindDict("timing");
   if (timing) {

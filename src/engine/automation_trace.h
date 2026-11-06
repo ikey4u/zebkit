@@ -61,6 +61,9 @@ class HarRecorder {
   // postData}) and its answer ({url, status, statusText, headers, body}).
   void RecordFetch(const base::DictValue& request, const base::DictValue& response);
   void RecordOneFetch(const base::DictValue& request, const base::DictValue& response, bool with_body);
+  // A trace's network (trace.network): each entry's _monotonicTime on the
+  // trace's clock, which starts at @origin.
+  void set_monotonic_origin(base::TimeTicks origin) { monotonic_origin_ = origin; }
   // A response's body, once it has come (or nullopt when it will not).
   void SetBody(const std::string& request, std::optional<std::string> body);
   // Whether @request is recorded and its body is wanted.
@@ -103,6 +106,10 @@ class HarRecorder {
     bool has_body = false;
     std::optional<std::string> body;
     bool fetch = false;
+    // What a route did with it (harTracer.ts's _wasAborted and the others).
+    bool aborted = false;
+    bool fulfilled = false;
+    bool continued = false;
     // A WebSocket's (harTracer.ts's _onWebSocket()): its frames, as
     // {type, time, opcode, data}, and what its frames weighed.
     bool websocket = false;
@@ -130,6 +137,7 @@ class HarRecorder {
                              const BodyFunc& body,
                              std::map<std::string, std::string>* files) const;
 
+  base::TimeTicks monotonic_origin_;
   std::string content_ = "embed";
   // Before an attached content's name: traces' "resources/".
   std::string resources_prefix_;

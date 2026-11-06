@@ -179,6 +179,139 @@ base::Value Serialize(const base::Value& value) {
   return Serialize(value, &next);
 }
 
+// The order of a JSON text's object keys, which base::Value does not keep:
+// for a trace's params as the client wrote them (tracing.ts writes the
+// client's object).
+struct KeyOrder {
+  std::vector<std::pair<std::string, KeyOrder>> keys;
+  std::vector<KeyOrder> items;
+};
+
+namespace {
+
+void SkipSpace(std::string_view text, size_t& at) {
+  while (at < text.size() && (text[at] == ' ' || text[at] == '\n' || text[at] == '\r' || text[at] == '\t'))
+    ++at;
+}
+
+std::string ScanString(std::string_view text, size_t& at) {
+  // At the opening quote; the key's text as JSON has it, decoded enough to
+  // compare (escapes kept as base::Value would decode them).
+  const size_t start = at;
+  ++at;
+  while (at < text.size() && text[at] != '"') {
+    if (text[at] == '\\')
+      ++at;
+    ++at;
+  }
+  ++at;
+  std::optional<base::Value> decoded = base::JSONReader::Read(text.substr(start, at - start), base::JSON_PARSE_RFC);
+  return decoded && decoded->is_string() ? decoded->GetString() : std::string();
+}
+
+KeyOrder ScanValue(std::string_view text, size_t& at, int depth) {
+  KeyOrder order;
+  SkipSpace(text, at);
+  if (at >= text.size() || depth > 64)
+    return order;
+  if (text[at] == '{') {
+    ++at;
+    while (true) {
+      SkipSpace(text, at);
+      if (at >= text.size() || text[at] == '}') {
+        ++at;
+        break;
+      }
+      if (text[at] == ',') {
+        ++at;
+        continue;
+      }
+      if (text[at] != '"')
+        return order;
+      std::string key = ScanString(text, at);
+      SkipSpace(text, at);
+      if (at < text.size() && text[at] == ':')
+        ++at;
+      KeyOrder child = ScanValue(text, at, depth + 1);
+      order.keys.emplace_back(std::move(key), std::move(child));
+    }
+  } else if (text[at] == '[') {
+    ++at;
+    while (true) {
+      SkipSpace(text, at);
+      if (at >= text.size() || text[at] == ']') {
+        ++at;
+        break;
+      }
+      if (text[at] == ',') {
+        ++at;
+        continue;
+      }
+      order.items.push_back(ScanValue(text, at, depth + 1));
+    }
+  } else if (text[at] == '"') {
+    ScanString(text, at);
+  } else {
+    while (at < text.size() && text[at] != ',' && text[at] != '}' && text[at] != ']')
+      ++at;
+  }
+  return order;
+}
+
+// The "params" of a protocol message's text.
+KeyOrder ParamsOrder(std::string_view text) {
+  size_t at = 0;
+  KeyOrder message = ScanValue(text, at, 0);
+  for (auto& [key, child] : message.keys) {
+    if (key == "params")
+      return std::move(child);
+  }
+  return KeyOrder();
+}
+
+// @value as JSON, its objects' keys in @order's order first.
+void WriteOrdered(const base::Value& value, const KeyOrder* order, std::string* out) {
+  if (value.is_dict()) {
+    const base::DictValue& dict = value.GetDict();
+    std::set<std::string> written;
+    *out += "{";
+    bool first = true;
+    auto write = [&](const std::string& key, const base::Value& item, const KeyOrder* child) {
+      if (!first)
+        *out += ",";
+      first = false;
+      *out += base::WriteJson(base::Value(key)).value_or("\"\"") + ":";
+      WriteOrdered(item, child, out);
+      written.insert(key);
+    };
+    if (order) {
+      for (const auto& [key, child] : order->keys) {
+        if (const base::Value* item = dict.Find(key); item && !written.contains(key))
+          write(key, *item, &child);
+      }
+    }
+    for (const auto [key, item] : dict) {
+      if (!written.contains(key))
+        write(key, item, nullptr);
+    }
+    *out += "}";
+    return;
+  }
+  if (value.is_list()) {
+    *out += "[";
+    for (size_t i = 0; i < value.GetList().size(); ++i) {
+      if (i)
+        *out += ",";
+      WriteOrdered(value.GetList()[i], order && i < order->items.size() ? &order->items[i] : nullptr, out);
+    }
+    *out += "]";
+    return;
+  }
+  *out += base::WriteJson(value).value_or("null");
+}
+
+}  // namespace
+
 // Playwright has two serialized forms: the protocol's
 // (protocol/src/serializers.ts: {n: 1}, {s: "x"}, {b: true}) and the page's
 // (isomorphic/utilityScriptSerializers.ts, which the agent speaks: 1, "x",
@@ -777,8 +910,18 @@ class Connection {
     std::string page;
     bool snapshot_after = false;
     bool coverage_after = false;
+    // An input action: tracing.ts's "action" phase too.
+    bool input = false;
   };
   std::map<int, TracedCall> traced_calls_;
+  void TraceWaitInfo(const base::DictValue& message);
+  std::map<std::string, std::string> wait_calls_;
+  int next_wait_ = 0;
+  // The key order of traced calls' params, by id, until BeforeCall().
+  std::map<int, KeyOrder> trace_orders_;
+  // Traced calls' logs from their native answers, by id, until Answered().
+  std::map<int, base::ListValue> call_logs_;
+  std::map<int, base::DictValue> call_inputs_;
   const base::TimeTicks origin_ = base::TimeTicks::Now();
   double Monotonic() const { return (base::TimeTicks::Now() - origin_).InMillisecondsF(); }
   std::string ContextOf(const std::string& guid);
@@ -792,6 +935,9 @@ class Connection {
   void CaptureTraceSnapshot(const std::string& context, const std::string& page,
                             const std::string& call_id, const std::string& phase,
                             base::OnceClosure then);
+  void CaptureTracePhase(const std::string& context, const std::string& page,
+                         const std::string& call_id, const std::string& phase,
+                         base::OnceClosure then);
   void TraceScreencastFrame(const std::string& context, const std::string& page);
   void TraceEvent(const std::string& page_guid, const std::string& event,
                   const base::DictValue& params);
@@ -848,6 +994,76 @@ class Connection {
   base::WeakPtrFactory<Connection> weak_factory_{this};
 };
 
+// dispatcher.ts's _dispatchWaitInfo(): a client-side wait (waitForEvent,
+// waitForNavigation, ...) as an action of the trace, its log and its end.
+void Connection::TraceWaitInfo(const base::DictValue& message) {
+  if (traces_.empty())
+    return;
+  const std::string* guid = message.FindString("guid");
+  const base::DictValue* info = message.FindDict("params");
+  const base::DictValue* metadata = message.FindDict("metadata");
+  if (!guid || !info || (metadata && metadata->FindBool("internal").value_or(false)))
+    return;
+  const std::string* wait_id = info->FindString("waitId");
+  const std::string* phase = info->FindString("phase");
+  Object* object = Find(*guid);
+  if (!wait_id || !phase || !object)
+    return;
+  auto trace = traces_.find(ContextOf(*guid));
+  if (trace == traces_.end() || !trace->second.recording)
+    return;
+  if (*phase == "before") {
+    const base::Value* given = message.Find("id");
+    const std::string call_id =
+        (!given ? "wait@" + base::NumberToString(++next_wait_)
+                   : given->is_string() ? given->GetString()
+                   : given->is_int() ? base::NumberToString(given->GetInt())
+                                     : Json(*given));
+    wait_calls_[*wait_id] = call_id;
+    base::DictValue event;
+    event.Set("type", "before");
+    event.Set("callId", call_id);
+    event.Set("startTime", Monotonic());
+    if (const std::string* title = metadata ? metadata->FindString("title") : nullptr)
+      event.Set("title", *title);
+    event.Set("class", object->type);
+    event.Set("method", "__waitInfo__");
+    event.Set("params", info->Clone());
+    if (!trace->second.groups.empty())
+      event.Set("parentId", trace->second.groups.back());
+    TraceLine(trace->second, std::move(event));
+    return;
+  }
+  auto found = wait_calls_.find(*wait_id);
+  if (found == wait_calls_.end())
+    return;
+  if (*phase == "log") {
+    if (const std::string* line = info->FindString("message")) {
+      base::DictValue event;
+      event.Set("type", "log");
+      event.Set("callId", found->second);
+      event.Set("time", Monotonic());
+      event.Set("message", *line);
+      TraceLine(trace->second, std::move(event));
+    }
+    return;
+  }
+  if (*phase == "after") {
+    base::DictValue event;
+    event.Set("type", "after");
+    event.Set("callId", found->second);
+    event.Set("endTime", Monotonic());
+    if (const std::string* error = info->FindString("error")) {
+      base::DictValue failure;
+      failure.Set("name", "Error");
+      failure.Set("message", *error);
+      event.Set("error", std::move(failure));
+    }
+    wait_calls_.erase(found);
+    TraceLine(trace->second, std::move(event));
+  }
+}
+
 void Connection::Received(const std::string& text) {
   std::optional<base::Value> message = Parse(text);
   if (!message || !message->is_dict())
@@ -856,8 +1072,10 @@ void Connection::Received(const std::string& text) {
   const std::string* method_name = dict.FindString("method");
   // What the client waits for, for its own logs: never answered, as
   // Playwright's dispatchers do not.
-  if (method_name && *method_name == "__waitInfo__")
+  if (method_name && *method_name == "__waitInfo__") {
+    TraceWaitInfo(dict);
     return;
+  }
   // The client's id, any JSON value ("abcd@2" from Playwright 1.64), kept
   // for its answer.
   const int id = ++next_id_;
@@ -898,6 +1116,9 @@ void Connection::Received(const std::string& text) {
   }
   base::DictValue command_params = params ? std::move(*params) : base::DictValue();
   command_params.Set("abortId", "a" + base::NumberToString(id));
+  // A trace's log events come with the native answer.
+  if (!traces_.empty())
+    command_params.Set("traceLog", true);
   // Since 1.60 or so the client's timeout travels in the call's metadata, not
   // in its parameters (channelOwner.ts); the native commands take "timeout".
   if (const base::DictValue* metadata = dict.FindDict("metadata")) {
@@ -921,6 +1142,12 @@ void Connection::Received(const std::string& text) {
     base::DictValue traced = params ? command_params.Clone() : base::DictValue();
     traced.Remove("abortId");
     traced.Remove("expectTitle");
+    traced.Remove("traceLog");
+    // tracing.ts's params: the client's, in its order, the timeout added
+    // when there is one.
+    traced.Remove("timeout");
+    if (params)
+      trace_orders_[id] = ParamsOrder(text);
     if (BeforeCall(id, *guid, *method, traced, dict.FindDict("metadata"), std::move(run)))
       return;
     // Not traced: run was not taken.
@@ -997,6 +1224,16 @@ void Connection::Native(int id,
           return;
         }
         std::optional<base::Value> result = Parse(json ? json : "{}");
+        if (result && result->is_dict()) {
+          if (std::optional<base::Value> log = result->GetDict().Extract("__log");
+              log && log->is_list() && pending->id >= 0) {
+            pending->connection->call_logs_[pending->id] = std::move(log->GetList());
+          }
+          if (std::optional<base::Value> point = result->GetDict().Extract("__input");
+              point && point->is_dict() && pending->id >= 0) {
+            pending->connection->call_inputs_[pending->id] = std::move(point->GetDict());
+          }
+        }
         std::move(pending->then).Run(result ? std::move(*result)
                                             : base::Value(base::DictValue()));
       },
@@ -2316,7 +2553,9 @@ void Connection::HarEvent(const std::string& page_guid,
   const bool network = event == "Page.request" || event == "Page.response" ||
                        event == "Page.requestContinued" || event == "Page.requestFinished" ||
                        event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
-                       event == "Page.responseExtraInfo" || event == "Page.requestResourceType";
+                       event == "Page.responseExtraInfo" || event == "Page.requestResourceType" ||
+                       event == "Page.requestRouteAborted" || event == "Page.requestRouteFulfilled" ||
+                       event == "Page.requestRouteContinued";
   const bool lifecycle = event == "Frame.loadstate";
   const bool websocket = event == "Page.webSocket" || event == "WebSocket.request" ||
                          event == "WebSocket.response" || event == "WebSocket.frameSent" ||
@@ -2499,6 +2738,11 @@ bool Connection::BeforeCall(int id,
                             const base::DictValue& params,
                             const base::DictValue* metadata,
                             base::OnceClosure run) {
+  KeyOrder order;
+  if (auto found_order = trace_orders_.find(id); found_order != trace_orders_.end()) {
+    order = std::move(found_order->second);
+    trace_orders_.erase(found_order);
+  }
   Object* object = Find(guid);
   if (!object || object->type == "Tracing" || object->type == "LocalUtils")
     return false;
@@ -2517,7 +2761,9 @@ bool Connection::BeforeCall(int id,
                                 : given->is_string() ? given->GetString()
                                 : given->is_int() ? base::NumberToString(given->GetInt())
                                                   : Json(*given);
-  TracedCall call{context, "call@" + client_id, PageOf(guid)};
+  // dispatcher.ts's CallMetadata id is the client's own, which its stacks
+  // (trace.stacks) are keyed by.
+  TracedCall call{context, client_id, PageOf(guid)};
   base::DictValue event;
   event.Set("type", "before");
   event.Set("callId", call.call_id);
@@ -2528,22 +2774,34 @@ bool Connection::BeforeCall(int id,
   event.Set("method", method);
   base::Value traced_params = TraceValue(base::Value(params.Clone()));
   if (metadata) {
-    if (std::optional<double> timeout = metadata->FindDouble("timeout"))
+    if (std::optional<double> timeout = metadata->FindDouble("timeout"); timeout && *timeout)
       traced_params.GetDict().Set("timeout", *timeout);
   }
-  event.Set("params", std::move(traced_params));
+  constexpr char kParamsMark[] = "\u0001params\u0001";
+  event.Set("params", kParamsMark);
   if (!trace.groups.empty())
     event.Set("parentId", trace.groups.back());
-  TraceLine(trace, std::move(event));
-  const bool snapshots = trace.options.FindBool("snapshotDom").value_or(false) && info && info->snapshot &&
-                         !call.page.empty();
+  {
+    std::string line = Json(base::Value(std::move(event)));
+    std::string ordered;
+    WriteOrdered(traced_params, &order, &ordered);
+    const std::string mark = Json(base::Value(kParamsMark));
+    if (const size_t at = line.find(mark); at != std::string::npos)
+      line.replace(at, mark.size(), ordered);
+    trace.lines.push_back(std::move(line));
+  }
+  const bool snapshots = (trace.options.FindBool("snapshotDom").value_or(false) ||
+                          trace.options.FindBool("snapshotScreen").value_or(false) ||
+                          trace.options.FindBool("snapshotAria").value_or(false)) &&
+                         info && info->snapshot && !call.page.empty();
   call.snapshot_after = snapshots;
+  call.input = info && info->input;
   call.coverage_after = trace.coverage && info && info->snapshot && !call.page.empty();
   const std::string call_id = call.call_id;
   const std::string page = call.page;
   traced_calls_[id] = std::move(call);
   if (snapshots && (!info->input || info->auto_waiting)) {
-    CaptureTraceSnapshot(context, page, call_id, "before", std::move(run));
+    CaptureTracePhase(context, page, call_id, "before", std::move(run));
     return true;
   }
   std::move(run).Run();
@@ -2553,15 +2811,56 @@ bool Connection::BeforeCall(int id,
 void Connection::Answered(int id, base::DictValue message, const std::string& error, base::Value result) {
   auto found = traced_calls_.find(id);
   if (found == traced_calls_.end()) {
+    call_logs_.erase(id);
+    call_inputs_.erase(id);
     send_.Run(Json(base::Value(std::move(message))));
     return;
   }
   TracedCall call = std::move(found->second);
   traced_calls_.erase(found);
+  std::optional<base::ListValue> log;
+  if (auto logged = call_logs_.find(id); logged != call_logs_.end()) {
+    log = std::move(logged->second);
+    call_logs_.erase(logged);
+  }
   auto trace = traces_.find(call.context);
   if (trace == traces_.end() || !trace->second.recording) {
+    call_inputs_.erase(id);
     send_.Run(Json(base::Value(std::move(message))));
     return;
+  }
+  // tracing.ts's onCallLog(): the call's lines, as they were logged; a
+  // failure's from its message's call log.
+  const double origin_ms = (origin_ - base::TimeTicks()).InMillisecondsF();
+  auto log_event = [&](double time, const std::string& line) {
+    base::DictValue entry;
+    entry.Set("type", "log");
+    entry.Set("callId", call.call_id);
+    entry.Set("time", time);
+    entry.Set("message", line);
+    TraceLine(trace->second, std::move(entry));
+  };
+  if (auto input = call_inputs_.find(id); input != call_inputs_.end()) {
+    base::DictValue entry;
+    entry.Set("type", "input");
+    entry.Set("callId", call.call_id);
+    entry.Set("point", std::move(input->second));
+    call_inputs_.erase(input);
+    TraceLine(trace->second, std::move(entry));
+  }
+  if (log) {
+    for (const base::Value& line : *log) {
+      if (line.is_list() && line.GetList().size() == 2 && line.GetList()[1].is_string())
+        log_event(line.GetList()[0].GetDouble() - origin_ms, line.GetList()[1].GetString());
+    }
+  } else if (const size_t at = error.find("\nCall log:\n"); at != std::string::npos) {
+    for (const std::string& line : base::SplitString(error.substr(at + 11), "\n", base::KEEP_WHITESPACE,
+                                                      base::SPLIT_WANT_NONEMPTY)) {
+      std::string text = line;
+      if (text.starts_with("  - "))
+        text = text.substr(4);
+      log_event(Monotonic(), text);
+    }
   }
   base::DictValue event;
   event.Set("type", "after");
@@ -2585,8 +2884,14 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
       },
       weak_factory_.GetWeakPtr(), Json(base::Value(std::move(message))));
   if (call.snapshot_after) {
-    send = base::BindOnce(&Connection::CaptureTraceSnapshot, weak_factory_.GetWeakPtr(), call.context,
+    send = base::BindOnce(&Connection::CaptureTracePhase, weak_factory_.GetWeakPtr(), call.context,
                           call.page, call.call_id, "after", std::move(send));
+    // An input's "action" phase is taken at its input in tracing.ts; here,
+    // where the endpoint sees the action, once it has ended, before "after".
+    if (call.input) {
+      send = base::BindOnce(&Connection::CaptureTracePhase, weak_factory_.GetWeakPtr(), call.context,
+                            call.page, call.call_id, "action", std::move(send));
+    }
   }
   // tracing.ts's _captureCoverage(): the page's counters after its action.
   Object* page_object = call.coverage_after ? Find(call.page) : nullptr;
@@ -2595,6 +2900,109 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
     return;
   }
   std::move(send).Run();
+}
+
+// tracing.ts's _captureSnapshot(): the DOM's, the screen's and the ARIA
+// tree's of the page, as the trace's options ask, then @then.
+void Connection::CaptureTracePhase(const std::string& context,
+                                   const std::string& page,
+                                   const std::string& call_id,
+                                   const std::string& phase,
+                                   base::OnceClosure then) {
+  auto trace = traces_.find(context);
+  Object* page_object = Find(page);
+  zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
+  if (trace == traces_.end() || !view) {
+    std::move(then).Run();
+    return;
+  }
+  const base::DictValue& options = trace->second.options;
+  const bool screen = options.FindBool("snapshotScreen").value_or(false);
+  const bool aria = options.FindBool("snapshotAria").value_or(false);
+  base::OnceClosure last = std::move(then);
+  if (aria) {
+    last = base::BindOnce(
+        [](base::WeakPtr<Connection> self, std::string context, std::string page, std::string call_id,
+           std::string phase, base::OnceClosure then) {
+          Object* page_object = self ? self->Find(page) : nullptr;
+          zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
+          if (!view) {
+            std::move(then).Run();
+            return;
+          }
+          base::DictValue params;
+          params.Set("mode", "default");
+          params.Set("boxes", true);
+          self->Native(-1, view, "Frame.ariaSnapshotJSON", std::move(params),
+                       base::BindOnce(
+                           [](base::WeakPtr<Connection> self, std::string context, std::string page,
+                              std::string call_id, std::string phase, base::OnceClosure then, base::Value result) {
+                             const base::Value* snapshot =
+                                 result.is_dict() ? result.GetDict().Find("snapshot") : nullptr;
+                             auto trace = self ? self->traces_.find(context) : decltype(self->traces_)::iterator();
+                             if (self && snapshot && trace != self->traces_.end() && trace->second.recording) {
+                               const std::string file = "aria/" + call_id + "-" + phase + ".json";
+                               trace->second.chunk_files[file] = Json(*snapshot);
+                               base::DictValue event;
+                               event.Set("type", "aria-snapshot");
+                               event.Set("callId", call_id);
+                               event.Set("phase", phase);
+                               event.Set("pageId", page);
+                               event.Set("timestamp", self->Monotonic());
+                               event.Set("file", file);
+                               self->TraceLine(trace->second, std::move(event));
+                             }
+                             std::move(then).Run();
+                           },
+                           self, context, page, call_id, phase, std::move(then)));
+        },
+        weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(last));
+  }
+  if (screen) {
+    last = base::BindOnce(
+        [](base::WeakPtr<Connection> self, std::string context, std::string page, std::string call_id,
+           std::string phase, base::OnceClosure then) {
+          Object* page_object = self ? self->Find(page) : nullptr;
+          zebkit_view* view = page_object ? zebkit_automation_page(page_object->id.c_str()) : nullptr;
+          if (!view) {
+            std::move(then).Run();
+            return;
+          }
+          base::DictValue params;
+          params.Set("type", "png");
+          params.Set("scale", "css");
+          self->Native(-1, view, "Page.screenshot", std::move(params),
+                       base::BindOnce(
+                           [](base::WeakPtr<Connection> self, std::string context, std::string page,
+                              std::string call_id, std::string phase, base::OnceClosure then, base::Value result) {
+                             const std::string* binary =
+                                 result.is_dict() ? result.GetDict().FindString("binary") : nullptr;
+                             std::string bytes;
+                             auto trace = self ? self->traces_.find(context) : decltype(self->traces_)::iterator();
+                             if (self && binary && base::Base64Decode(*binary, &bytes) &&
+                                 trace != self->traces_.end() && trace->second.recording) {
+                               const std::string file = "screenshots/" + call_id + "-" + phase + ".png";
+                               trace->second.chunk_files[file] = std::move(bytes);
+                               base::DictValue event;
+                               event.Set("type", "screenshot");
+                               event.Set("callId", call_id);
+                               event.Set("phase", phase);
+                               event.Set("pageId", page);
+                               event.Set("timestamp", self->Monotonic());
+                               event.Set("file", file);
+                               self->TraceLine(trace->second, std::move(event));
+                             }
+                             std::move(then).Run();
+                           },
+                           self, context, page, call_id, phase, std::move(then)));
+        },
+        weak_factory_.GetWeakPtr(), context, page, call_id, phase, std::move(last));
+  }
+  if (options.FindBool("snapshotDom").value_or(false)) {
+    CaptureTraceSnapshot(context, page, call_id, phase, std::move(last));
+    return;
+  }
+  std::move(last).Run();
 }
 
 void Connection::CaptureTraceSnapshot(const std::string& context,
@@ -2619,7 +3027,22 @@ void Connection::CaptureTraceSnapshot(const std::string& context,
   } else if (phase == "before") {
     params.Set("reset", "targets");
   }
-  params.Set("removeNoScript", true);
+  // snapshotter.ts: <noscript> removed unless the context runs no script.
+  {
+    Object* context_object = Find(context);
+    const base::DictValue* options =
+        context_object ? context_object->data.FindDict("contextOptions") : nullptr;
+    params.Set("removeNoScript", !options || options->FindBool("javaScriptEnabled").value_or(true));
+  }
+  // _annotateFrameHierarchy(): each frame's element marked with the frame's
+  // guid, which its own snapshot names.
+  {
+    base::DictValue frames;
+    const std::string prefix = "frame:" + page + ":";
+    for (auto it = known_.lower_bound(prefix); it != known_.end() && it->first.starts_with(prefix); ++it)
+      frames.Set(it->first.substr(prefix.size()), it->second);
+    params.Set("frameGuids", std::move(frames));
+  }
   // A page that cannot answer (a dialog open) holds no command for long: the
   // snapshot is given up after a while, as snapshotter.ts's races do.
   auto once = std::make_shared<base::OnceClosure>(std::move(then));
@@ -2746,16 +3169,22 @@ void Connection::TraceEvent(const std::string& page_guid,
   if (found == traces_.end() || !found->second.recording)
     return;
   Trace& trace = found->second;
+  const bool websocket = event == "Page.webSocket" || event.starts_with("WebSocket.");
   if (event == "Page.request" || event == "Page.response" || event == "Page.requestFinished" ||
       event == "Page.requestFailed" || event == "Page.requestExtraInfo" ||
-      event == "Page.responseExtraInfo") {
+      event == "Page.responseExtraInfo" || event == "Page.requestContinued" ||
+      event == "Page.requestResourceType" || event == "Page.requestRouteAborted" ||
+      event == "Page.requestRouteFulfilled" || event == "Page.requestRouteContinued" || websocket) {
     // The network only with DOM snapshots (tracing.ts starts its HAR tracer
     // for snapshotDom).
     if (!trace.options.FindBool("snapshotDom").value_or(false))
       return;
     const std::string* frame = params.FindString("frame");
+    zebkit_view* frame_view = websocket && !frame ? zebkit_automation_page(page->id.c_str()) : nullptr;
     trace.network->Record(event, params, page_guid,
-                          frame ? Known("frame", page_guid, *frame) : std::string());
+                          frame ? Known("frame", page_guid, *frame)
+                          : frame_view ? Known("frame", page_guid, FrameIdOfMain(frame_view))
+                                       : std::string());
     const std::string* request = params.FindString("request");
     zebkit_view* view = zebkit_automation_page(page->id.c_str());
     if (event == "Page.requestFinished" && request && view && view->web_contents()) {
@@ -2857,6 +3286,7 @@ void Connection::TraceCommand(int id,
     har.Set("content", "attach");
     har.Set("resourcesPrefix", "resources/");
     trace.network = std::make_unique<HarRecorder>(har);
+    trace.network->set_monotonic_origin(origin_);
     Object* traced = Find(context);
     trace.coverage = params.FindBool("coverage").value_or(false) && traced &&
                      traced->type == "BrowserContext";
@@ -2892,6 +3322,7 @@ void Connection::TraceCommand(int id,
       har.Set("resourcesPrefix", "resources/");
       har.Set("omitScripts", !trace.options.FindBool("live").value_or(false));
       trace.network = std::make_unique<HarRecorder>(har);
+      trace.network->set_monotonic_origin(origin_);
     }
     trace.lines.clear();
     trace.chunk_files.clear();

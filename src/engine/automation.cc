@@ -411,8 +411,10 @@ class Call {
 
   // Lines repeat as Playwright's do; the error compresses them.
   void Log(const std::string& line) {
-    if (log_.size() < kMaxLogLines)
+    if (log_.size() < kMaxLogLines) {
       log_.push_back(line);
+      log_times_.push_back(base::TimeTicks::Now());
+    }
   }
   void Log(const base::ListValue* lines) {
     if (!lines)
@@ -432,6 +434,22 @@ class Call {
     }
     finished_ = true;
     timer_.Stop();
+    // A traced call's log, for the endpoint's trace (tracing.ts's log
+    // events): [[ms on the TimeTicks clock, line], ...].
+    if (Flag("traceLog") && result.is_dict() && !log_.empty()) {
+      base::ListValue lines;
+      for (size_t i = 0; i < log_.size(); ++i) {
+        base::ListValue line;
+        line.Append((log_times_[i] - base::TimeTicks()).InMillisecondsF());
+        line.Append(log_[i]);
+        lines.Append(std::move(line));
+      }
+      result.GetDict().Set("__log", std::move(lines));
+    }
+    if (Flag("traceLog") && result.is_dict()) {
+      if (const base::DictValue* point = params_.FindDict("__inputPoint"))
+        result.GetDict().Set("__input", point->Clone());
+    }
     const std::string json = Json(result);
     if (func_)
       func_(view_, json.c_str(), nullptr, data_);
@@ -560,6 +578,7 @@ class Call {
   base::TimeTicks deadline_;
   base::OneShotTimer timer_;
   std::vector<std::string> log_;
+  std::vector<base::TimeTicks> log_times_;
   bool finished_ = false;
   bool deferring_ = false;
   int grace_ms_ = 0;
@@ -4024,16 +4043,42 @@ class Automation : public content::WebContentsObserver,
   void CaptureSnapshot(Call* call) {
     const std::string streamer = call->String("streamer");
     const std::string reset = call->Has("reset") ? "\"" + call->String("reset") + "\"" : "undefined";
-    const std::string expression =
-        "(() => { const s = " + Json(base::Value(streamer)) + "; if (!window[s]) (" +
+    const std::string ensure =
+        "const s = " + Json(base::Value(streamer)) + "; if (!window[s]) (" +
         std::string(reinterpret_cast<const char*>(kSnapshotterScript), sizeof(kSnapshotterScript)) +
-        ")(s, " + (call->Flag("removeNoScript") ? "true" : "false") + "); return window[s].captureSnapshot(" +
-        reset + "); })()";
+        ")(s, " + (call->Flag("removeNoScript") ? "true" : "false") + ");";
+    const std::string expression = "(() => { " + ensure + " return window[s].captureSnapshot(" + reset + "); })()";
     std::vector<content::RenderFrameHost*> frames;
     MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
       if (frame->IsActive() && frame->IsRenderFrameLive())
         frames.push_back(frame);
     });
+    // snapshotter.ts's _annotateFrameHierarchy(): the frames' elements marked
+    // in their parents, before the parents' snapshots (the agent's calls keep
+    // their order).
+    if (const base::DictValue* guids = call->params().FindDict("frameGuids")) {
+      const std::string mark = "(owner, id) => { " + ensure + " window[s].markIframe(owner, id); }";
+      for (content::RenderFrameHost* frame : frames) {
+        content::RenderFrameHost* parent = frame->GetParent();
+        const std::string* guid = guids->FindString(FrameId(frame));
+        if (!parent || !guid || !parent->IsRenderFrameLive())
+          continue;
+        const std::vector<content::RenderFrameHost*> children = Children(parent);
+        const auto index = std::find(children.begin(), children.end(), frame);
+        if (index == children.end())
+          continue;
+        base::ListValue args;
+        base::DictValue owner;
+        owner.Set("$h", 0);
+        args.Append(std::move(owner));
+        args.Append(*guid);
+        Agent(parent)->Evaluate(AutomationWorld::kMain, mark, AutomationExpression::kFunction,
+                                Json(base::Value(std::move(args))), {-1 - static_cast<int>(index - children.begin())},
+                                true, true,
+                                base::BindOnce([](AutomationStatus, const std::string&,
+                                                  std::vector<AutomationHandlePtr>) {}));
+      }
+    }
     struct State {
       std::vector<base::Value> results;
       size_t left;
@@ -4517,6 +4562,15 @@ class Automation : public content::WebContentsObserver,
     // Navigations the input starts are waited for (waitForSignalsCreatedBy).
     watched_navigations_.erase(call.get());
     watching_.insert(call.get());
+    if (!action.drop)
+      call->Log("  performing " + action.name + " action");
+    // tracing.ts's input event: where the action points, in the page.
+    if (call->Flag("traceLog")) {
+      base::DictValue point;
+      point.Set("x", in_root.x());
+      point.Set("y", in_root.y());
+      call->params().Set("__inputPoint", std::move(point));
+    }
     std::set<std::string> restore = pressed_modifiers_;
     if (const base::ListValue* list = call->params().FindList("modifiers")) {
       std::set<std::string> modifiers;
@@ -4659,6 +4713,9 @@ class Automation : public content::WebContentsObserver,
         return;
       }
     }
+    // dom.ts's _performPointerAction(): what it says once the input is in.
+    call->Log(std::string("  ") + (call->Flag("trial") ? "trial " : "") + action.name + " action done");
+    call->Log("  waiting for scheduled navigations to finish");
     if (action.down_only) {
       DragTo(call.get());
       return;
@@ -4711,10 +4768,10 @@ class Automation : public content::WebContentsObserver,
     auto it = watched_navigations_.find(call);
     if (it == watched_navigations_.end() || call->Flag("noWaitAfter")) {
       watched_navigations_.erase(call);
+      call->Log("  navigations have finished");
       call->Done();
       return;
     }
-    call->Log("waiting for scheduled navigations to finish");
     navigation_waiters_.push_back({call->GetWeakPtr(), it->second, "commit",
                                    base::Value(),
                                    MainFrame()->GetFrameTreeNodeId(), true});

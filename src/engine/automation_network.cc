@@ -41,6 +41,7 @@
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
+#include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -612,6 +613,7 @@ class Loader : public network::mojom::URLLoader,
   }
 
   void Abort(int error) { Complete(error); }
+  const std::string& request_id() const { return id_; }
   void KeepFulfilled(std::string body);
   // Page.requestContinued: what route.continue() changed, for a HAR's
   // recordRequestOverrides.
@@ -949,6 +951,12 @@ class NetworkImpl : public Network,
     base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
       return gone;
+    // harTracer.ts's _wasContinued (route.continue(), not a fallback's).
+    if (!overrides.FindBool("isFallback").value_or(false)) {
+      base::DictValue route_event;
+      route_event.Set("request", loader->request_id());
+      Emit("Page.requestRouteContinued", std::move(route_event));
+    }
     loader->Continue(overrides);
     return true;
   }
@@ -959,6 +967,12 @@ class NetworkImpl : public Network,
     base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
       return gone;
+    // harTracer.ts's _wasFulfilled.
+    {
+      base::DictValue route_event;
+      route_event.Set("request", loader->request_id());
+      Emit("Page.requestRouteFulfilled", std::move(route_event));
+    }
     loader->Fulfill(response);
     return true;
   }
@@ -1094,6 +1108,12 @@ class NetworkImpl : public Network,
     base::WeakPtr<Loader> loader = Take(route, &gone);
     if (!loader)
       return gone;
+    // harTracer.ts's _wasAborted.
+    {
+      base::DictValue route_event;
+      route_event.Set("request", loader->request_id());
+      Emit("Page.requestRouteAborted", std::move(route_event));
+    }
     loader->Abort(NetError(error));
     return true;
   }
@@ -1169,6 +1189,11 @@ void Loader::Start() {
   // A data: URL is no request, as Playwright reports none for it
   // (crNetworkManager.ts).
   if (request_.url.SchemeIs(url::kDataScheme))
+    network_ = nullptr;
+  // A load from the cache alone (a font's first try, say), which goes to
+  // the network as a load of its own if the cache has nothing: Chrome's
+  // DevTools reports the one that loads.
+  if (request_.load_flags & net::LOAD_ONLY_FROM_CACHE)
     network_ = nullptr;
   if (!network_) {
     Continue({});

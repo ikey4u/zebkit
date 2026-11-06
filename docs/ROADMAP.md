@@ -286,6 +286,13 @@ in `examples/native-host` (Done table). What is left:
     `zebkit-run`; popups held as Chromium's DevTools holds them; `frameLocator()`; DevTools'
     network details; page errors as CDP gives them; service workers; CORS on fulfilled routes;
     WebSocket routes; IndexedDB in storage state; traces by the endpoint. Chrome: 4196 and 5.
+    2026-11-06 (engine with CFI): 3962 passed, 233 failed (52 listed, 43 timeouts, 181
+    unexplained): locator handlers, `toHaveScreenshot`, drop and the page's drags, custom selector
+    engines, JS/CSS/istanbul coverage, Chromium's own trace, the context's proxy and client
+    certificates, WebMCP, passkeys, HAR's WebSockets, ARIA snapshots across frames, traces as
+    `tracing.ts` writes them. Left: a service worker's own requests (23), the recorder and the
+    debugger (24), trace details (17), client certificates through Playwright's own TLS proxy
+    (10), and a long tail (section 7).
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.

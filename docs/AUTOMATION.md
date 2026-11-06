@@ -568,11 +568,31 @@ either:
   observed HTTP header representation, rather than HTTP/2 or HTTP/3 framing.
   Upload streams without a known length report -1 for their body size.
 - **Protocol commands not implemented yet**, which fail with "no command" or
-  are listed as expected failures: locator handlers, `Frame.drop`, custom
-  selector engines, JS and CSS coverage, the context's `proxy` and
-  `clientCertificates` options,
-  `Route.redirectNavigationRequest`, WebMCP; a service worker's own requests
-  (not through the network proxy) and its console messages.
+  are listed as expected failures: a service worker's own requests (not
+  through the network proxy) and its console messages.
+
+**Built since 2026-11-05**, each as the server file named does it:
+locator handlers (`page.ts`'s checkpoint before actions, their retries and
+assertions); `Page.expectScreenshot` of a page or a locator (`page.ts`, with `comparators.ts`'s
+pixelmatch in `automation_compare.cc`); `Frame.drop` (`dom.ts`'s `_drop()`);
+the page's drags carried by the endpoint's mouse and Escape (`drag.cc`);
+custom selector engines and `setTestIdAttribute` (`selectors.ts`, `dom.ts`'s
+`injectedScript()`, an engine of the page's world resolved there); JS and CSS
+coverage on the page's DevTools session (`crCoverage.ts`); tracing's istanbul
+coverage (`coverageRecorder.ts`, origins left without a page visited);
+Chromium's own trace (`Browser.startTracing`, `crBrowser.ts`); the
+context's `proxy` (`normalizeProxySettings()`, a network context of its own
+with Chrome's proxy rules and `<-loopback>`) and `clientCertificates` (PEM
+or PFX, given to the server's origin as Chromium's client certificate);
+WebMCP (`webmcp.ts`; the engine started with `--enable-features=WebMCP`);
+the virtual WebAuthn authenticator (`credentials.ts`, P-256 and ES256 in
+`automation_webauthn.cc`, passkeys in storage state); HAR's WebSocket entries
+(`harTracer.ts`); `Route.redirectNavigationRequest` as the navigation's
+redirect; ARIA snapshots with their iframes stitched in (`page.ts`'s
+`ariaSnapshotJSONForFrame()`); `serviceWorkers: "block"`; init scripts'
+callbacks off the global object (`bindingsController.ts`); a main frame's
+challenge no credentials answer fails as Chrome's login prompt makes it
+(`net::ERR_INVALID_AUTH_CREDENTIALS`).
 
 **Console messages** come as `crPage.ts` has them: `Runtime.consoleAPICalled`
 and `Log.entryAdded` of the page's DevTools session (a frame of another
@@ -767,6 +787,7 @@ CDP in between:
   | zebkit, 2026-11-01 | 3028 | 1167 | 1067 | 580 | 197 | 8 | 587 |
   | zebkit, 2026-11-02 | 3233 | 962 | 1067 | 574 | 121 | 9 | 388 |
   | zebkit, 2026-11-03 | 3566 | 512 | 1184 | 234 | 69 | 8 | 209 |
+  | zebkit, 2026-11-06 | 3962 | 233 | 1067 | 52 | 43 | 3 | 181 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by
@@ -789,29 +810,36 @@ CDP in between:
   aborted (the form-params parser that threw out of range is gone). The skipped tests rose by
   117 because tests that launched nothing before now launch and skip what they skip on Chrome.
 
-  **Not at parity: what is left, by cause** (the unexplained 209 and the 69 timeouts):
-  - HAR (12): the popup's extra entry, connection and security details as Playwright reads them,
-    entries served from the cache, API requests' redirects, `startHar` of an APIRequestContext.
-  - Third-party cookies (9): partitioned cookies and third-party saving and loading.
-  - `dispatchEvent` of device, drag and drop events (8); screenshots' pixels (8: WebGL, masks,
-    a page navigating, fonts' wait message); routes (7: `sec-fetch-*`, Cookie and Set-Cookie as
-    a route sees them, URLPattern options, the disk cache); `exposeFunction` with handles and
-    cycles (6); `beforeunload` (6); clock (6); `page.close()` interrupting calls (6).
-  - Timeouts: a service worker's own requests (12 in `chromium.spec.ts`), `Browser.startTracing`
-    (6), the debugger (6), extensions (5), workers' console (5), mobile viewport (4), the trace
-    viewer that launches a browser (4).
-  Since that run, on the files concerned (counted at the next full run): third-party cookies
-  (`zebkit-run` sends them, as Chrome does), console messages from CDP with their arguments,
-  exposed functions' serialized arguments and answers, `beforeunload` and `page.close()`
-  (pending calls and `request.response()` end with `TargetClosedError`), `dialogclosed` for
-  dialogs dismissed without a listener, a worker's uncaught exception as a page error;
-  `dispatchEvent`'s serialized `eventInit` (wheel, device and drag events, a DataTransfer's
-  handle); `waitForFunction` through navigations, a string evaluated at each try, its page side
-  stopped at the timeout; the context options `validateBrowserContextOptions()` refuses; the
-  `Origin` and `Referer` headers a route sees; `browser.contexts()`; a context's routes beside
-  its page's; the screen as `Emulation.setDeviceMetricsOverride` gives it (`window.screen`,
-  device media queries, a mobile screen's orientation) and touch as
-  `Emulation.setTouchEmulationEnabled` gives it; `tap()` refused without `hasTouch`.
+  What moved it (2026-11-06, engine with CFI): locator handlers; `toHaveScreenshot` with
+  pixelmatch; `Frame.drop` and the page's own drags carried by the endpoint's mouse; custom
+  selector engines and the test id attribute; JS, CSS and tracing's istanbul coverage;
+  `Browser.startTracing`; the context's `proxy` and `clientCertificates`; WebMCP; the virtual
+  WebAuthn authenticator; HAR's WebSocket entries; ARIA snapshots with their iframes and
+  frames numbered as `frames.ts` numbers them (`aria-ref=f<seq>e<n>`, `Frame.resolveSelector`);
+  `serviceWorkers: "block"`; traces as `tracing.ts` writes them: the client's call ids, which its
+  stacks are keyed by, params in the client's order, each call's log, `input` events, the
+  client's waits (`__waitInfo__`), screen and ARIA snapshots, frames marked for the DOM
+  snapshots, the network's `_monotonicTime` and route outcomes; WebSockets' events (the
+  `web-socket.spec.ts` timeouts are gone); waits and actions through a frame that went start
+  over. 1067 skipped against Chrome's 1061.
+
+  **Not at parity: what is left, by cause** (the unexplained 181 and the 43 timeouts):
+  - A service worker's own requests, events and console (19 in `chromium.spec.ts`, 4 in
+    `browsercontext-service-worker-policy.spec.ts`): its loader factories are the storage
+    partition's, which the network proxy does not see; Playwright reaches them over the worker's
+    own CDP target.
+  - The recorder and the debugger (14 in `recorder-api.spec.ts`, 10 in `debugger.spec.ts`,
+    listed or timing out): Playwright's server's own tools.
+  - Traces (14 in `trace-viewer.spec.ts`, 3 in `tracing.spec.ts`): the "action" snapshot is taken
+    once the action has ended (the endpoint does not see the input), scroll positions and blob
+    sources of the DOM snapshots, a group's location, context API requests' own trace.
+  - Client certificates (10): the certificate goes to Chromium's own TLS; Playwright puts a TLS
+    proxy of its own in between, with its own error pages and checks (listed for those).
+  - Screenshots' pixels (8: WebGL, masks, a page navigating, fonts' wait message); extensions
+    (6, a content-layer engine has none); file choosers of detached inputs and iframes (5);
+    routes (5: unsafe headers, the disk cache, `sec-fetch-*`); workers' console (5); HAR (5:
+    a navigation redirected by `routeFromHAR` keeps the first URL); header sizes (4); locales'
+    formats the ICU data does not hold (3, listed); tap's navigation (4).
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
