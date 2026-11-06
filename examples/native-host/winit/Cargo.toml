@@ -7,9 +7,9 @@ publish = false
 [workspace]
 
 [dependencies]
-zebkit = { path = "../../../rust/zebkit" }
+zebkit = { path = "../../../bindings/rust/zebkit" }
 winit = "0.30"
 softbuffer = "0.4"
 
 [build-dependencies]
-zebkit-build = { path = "../../../rust/zebkit-build" }
+zebkit-build = { path = "../../../bindings/rust/zebkit-build" }

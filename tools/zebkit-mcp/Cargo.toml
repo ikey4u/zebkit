@@ -11,7 +11,7 @@ build = "build.rs"
 [workspace]
 
 [dependencies]
-zebkit = { path = "../../rust/zebkit" }
+zebkit = { path = "../../bindings/rust/zebkit" }
 serde_json = "1"
 
 [profile.release]

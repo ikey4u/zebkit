@@ -178,7 +178,7 @@ fn engine(page_port: u16) {
             request.respond(200, "Content-Type: text/html", b"<video src='clip.webm' muted></video>");
         } else if request.url() == "rs://test/clip.webm" {
             let clip = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/engine/pages/media/clip.webm")
+                .join("../../../tests/engine/pages/media/clip.webm")
                 .canonicalize()
                 .unwrap_or_default();
             request.respond_file(&clip, "Content-Type: video/webm");

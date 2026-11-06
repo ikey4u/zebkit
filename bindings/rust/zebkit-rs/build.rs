@@ -59,7 +59,7 @@ fn main() {
     } else {
         "slim"
     };
-    let root = manifest.join("../..");
+    let root = manifest.join("../../..");
     let mut locals = Vec::new();
     if macos {
         locals.push(root.join("dist/release"));

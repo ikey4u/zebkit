@@ -17,7 +17,7 @@
 # The build is scripts/dist.sh release, which does nothing when it is up to
 # date. The version is the one in VERSION, which is also the version of the
 # crates in rust/. The archive is dist/release under one top directory. Its
-# SHA-256 is written into rust/zebkit-rs/engines.txt, where the crate's
+# SHA-256 is written into bindings/rust/zebkit-rs/engines.txt, where the crate's
 # build script looks it up, so an archive is published together with the
 # commit that names its checksum: build, commit, then publish.
 #
@@ -34,8 +34,8 @@ publish=0
 
 version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || die "VERSION does not hold a version: '$version'"
-crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ZEBKIT_ROOT/rust/Cargo.toml" | head -1)"
-[[ "$crate_version" == "$version" ]] || die "VERSION says $version but rust/Cargo.toml says $crate_version"
+crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ZEBKIT_ROOT/bindings/rust/Cargo.toml" | head -1)"
+[[ "$crate_version" == "$version" ]] || die "VERSION says $version but bindings/rust/Cargo.toml says $crate_version"
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) ;;
@@ -50,7 +50,7 @@ command -v xz > /dev/null || die "xz is missing; \"mise run r\" brings it (mise.
 [[ -d "$SDK_DIR/windows" ]] \
     || die "the Windows engine needs MSVC and the Windows SDK laid out first: scripts/windows-toolchain.sh (docs/WINDOWS.md)"
 
-engines="$ZEBKIT_ROOT/rust/zebkit-rs/engines.txt"
+engines="$ZEBKIT_ROOT/bindings/rust/zebkit-rs/engines.txt"
 
 # Packs $1, a release directory, as the archive for target $2, and records
 # its checksum: the one the crate will insist on for this version and target.
@@ -72,7 +72,7 @@ pack() {
         { grep -vE "^#|^$version $target " "$engines" 2>/dev/null || true; echo "$version $target $sum"; } | sort
     } > "$engines.new"
     mv "$engines.new" "$engines"
-    log "$archive ($(du -m "$archive" | cut -f1) MiB), sha256 $sum, recorded in rust/zebkit-rs/engines.txt"
+    log "$archive ($(du -m "$archive" | cut -f1) MiB), sha256 $sum, recorded in bindings/rust/zebkit-rs/engines.txt"
 }
 
 # Linux: dist/release.
@@ -106,7 +106,7 @@ pack "$windows" x86_64-pc-windows-msvc
 (( publish )) || exit 0
 command -v gh > /dev/null || die "publishing needs the GitHub CLI (gh); 'mise run r:github' provides it"
 gh auth status > /dev/null 2>&1 || die "gh is not logged in: run 'mise exec -- gh auth login' once, or set GH_TOKEN"
-[[ -z "$(git -C "$ZEBKIT_ROOT" status --porcelain)" ]] || die "commit rust/zebkit-rs/engines.txt and everything else first, then run this again: the release is made from a commit"
+[[ -z "$(git -C "$ZEBKIT_ROOT" status --porcelain)" ]] || die "commit bindings/rust/zebkit-rs/engines.txt and everything else first, then run this again: the release is made from a commit"
 tag="v$version"
 
 # Every archive of this version that is here and is the one engines.txt

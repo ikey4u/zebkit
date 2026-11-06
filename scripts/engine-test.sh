@@ -379,7 +379,7 @@ if [[ -n "$build_only" ]]; then
             rust_env+=(CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$work/rust-linker")
         fi
         mkdir -p "$bin/rust"
-        (cd "$ZEBKIT_ROOT/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
+        (cd "$ZEBKIT_ROOT/bindings/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
             cargo build -q -p zebkit --example hook_policies --example runtime_settings "${rust_options[@]}") \
             || die "the Rust hook program did not build"
         rust_exe=
@@ -508,9 +508,9 @@ if [[ -x "$bin/native-parent" ]]; then
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
             if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null; then
-                if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example native_parent); then
+                if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example native_parent); then
                     run native-parent-rust env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" LD_LIBRARY_PATH="$package" \
-                        "$ZEBKIT_ROOT/rust/target/debug/examples/native_parent" \
+                        "$ZEBKIT_ROOT/bindings/rust/target/debug/examples/native_parent" \
                         --no-sandbox --user-data-dir="$work/profile-native-parent-rust"
                 else
                     echo "FAIL the Rust native parent program did not build"; failed=1
@@ -899,9 +899,9 @@ if [[ -n "$prebuilt" ]]; then
     [[ -x "$bin/rust/runtime_settings" || -x "$bin/rust/runtime_settings.exe" ]] && rust_settings_program="$bin/rust/runtime_settings"
 elif command -v cargo > /dev/null; then
     log "building the Rust hook program"
-    if (cd "$ZEBKIT_ROOT/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies --example runtime_settings); then
-        rust_hook_program="$ZEBKIT_ROOT/rust/target/debug/examples/hook_policies"
-        rust_settings_program="$ZEBKIT_ROOT/rust/target/debug/examples/runtime_settings"
+    if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies --example runtime_settings); then
+        rust_hook_program="$ZEBKIT_ROOT/bindings/rust/target/debug/examples/hook_policies"
+        rust_settings_program="$ZEBKIT_ROOT/bindings/rust/target/debug/examples/runtime_settings"
     else
         echo "FAIL the Rust hook program did not build"; failed=1
     fi

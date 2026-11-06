@@ -12,8 +12,8 @@ below, `$PKG` is that directory.
 | `native-host/` | Toolkit-owned GTK, Qt, AppKit and winit windows with a web pane and native PDF pane; event-driven wakeup/pump integration, keyboard/IME and popup layers |
 | `offscreen-host/` | A page drawn off-screen in one process (`render.c`) and shown in another that links nothing of zebkit's (`show.c`): frames as IOSurfaces or shared memory passed over a socket, input sent back, the reference protocol in `protocol.h` (`docs/API.md`, "Off-screen views") |
 | `ffmpeg.cpp` | A library inside the engine: an MP3 decoded to WAV with the engine's FFmpeg, through `zebkit::vendor::ffmpeg`, with no FFmpeg of the program's own |
-| `../rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
-| `../rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust |
+| `../bindings/rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
+| `../bindings/rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust |
 | `electron-hello/` | Electron's hello world, which `scripts/electron-baseline.sh` measures zebkit against |
 
 For the C API, the programs in `tests/engine/` are examples too: `api.c`
@@ -43,7 +43,7 @@ c++ -std=c++17 examples/ffmpeg.cpp -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-
 ./ffmpeg-example examples/sample.mp3 out.wav
 
 # the Rust examples
-cd rust && ZEBKIT_DIR=$PKG cargo run --example window -- https://example.com/
+cd bindings/rust && ZEBKIT_DIR=$PKG cargo run --example window -- https://example.com/
 ```
 
 Where the machine cannot give Chromium's sandbox (containers, many build

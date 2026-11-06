@@ -113,7 +113,7 @@ in a profile is preferred to a patch wherever one exists.
 |---|---|
 | `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, off-screen views and their frames in another process (`tests/engine/offscreen.c`, `examples/offscreen-host`; `ENGINE_TEST_SHOTS=<dir>` keeps their pictures), dialogs, printing to PDF and drag and drop from the C API and over CDP (`tests/engine/page.c`, `cdp_page.py`), URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
 | `scripts/glibc-test.sh <profile>` | The C tests (libraries, services, PDF, the C API, `zebkit.*`, dialogs, popups, media capture, URL schemes) on glibc 2.17 and CentOS 7's libraries, every process of the engine included, without a container: CentOS 7 unpacked once into `out/blink/glibc-2.17/` |
-| `cd rust && cargo test` | The Rust crates against the real engine |
+| `cd bindings/rust && cargo test` | The Rust crates against the real engine |
 
 ## Measuring
 
@@ -134,7 +134,7 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 
 | Task | What it does |
 |---|---|
-| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release` and macOS in `dist/release-macos` (cross-built, `docs/MACOS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `rust/zebkit-rs/engines.txt` |
+| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release` and macOS in `dist/release-macos` (cross-built, `docs/MACOS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
 | `mise run r:github` | The same, then the GitHub release `v<version>` with both archives (`gh`, logged in; the tree committed) |
 | `mise run d` | `scripts/dist.sh debug`: the platform's development profile into `dist/debug`, with debug information |
 | `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
@@ -151,7 +151,7 @@ release is `mise r r` or `mise run r`.
 
 A release is one archive per system, `x86_64-unknown-linux-gnu` and
 `aarch64-apple-darwin`, both built on Linux, whose SHA-256 goes
-into `rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
+into `bindings/rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
 downloads; the crates and the engine share the version in `VERSION`. Build
 (`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).
 Crates download only from a release anyone can read, so the repository

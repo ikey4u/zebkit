@@ -563,7 +563,7 @@ It finds the engine in `$ZEBKIT_DIR`.
 
 `rust/` is the same for Rust: `zebkit-rs` declares the C API, and the
 `zebkit` crate is safe Rust over it, with closures for callbacks and the
-engine's thread enforced by the types (`rust/README.md`):
+engine's thread enforced by the types (`bindings/rust/README.md`):
 
 ```rust
 std::process::exit(zebkit::run(|| {

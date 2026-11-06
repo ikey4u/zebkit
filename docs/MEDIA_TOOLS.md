@@ -175,4 +175,4 @@ and C header compilation all passed. The macOS media-tools object also
 cross-compiled, and the integration test passes on a Mac (2026-10-31, `docs/MACOS.md`).
 
 A runnable Rust entry-point example is
-[`rust/zebkit/examples/media_tools.rs`](../rust/zebkit/examples/media_tools.rs).
+[`bindings/rust/zebkit/examples/media_tools.rs`](../bindings/rust/zebkit/examples/media_tools.rs).

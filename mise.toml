@@ -54,7 +54,7 @@ run = "scripts/example.sh ffmpeg"
 
 [tasks."example:rust:window"]
 description = "Run the Rust crate's window example against the built engine (pass a URL after --)"
-dir = "rust"
+dir = "bindings/rust"
 # Chromium's sandbox needs unprivileged user namespaces; where the system
 # gives none, the example runs without it.
 run = """
@@ -65,5 +65,5 @@ cargo run --example window -- $sandbox
 
 [tasks."example:rust:codecs"]
 description = "Run the Rust crate's codecs example: what the FFmpeg inside zebkit has"
-dir = "rust"
+dir = "bindings/rust"
 run = "cargo run --example codecs"

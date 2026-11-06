@@ -3,7 +3,7 @@ use zebkit::media_tools::{self, Completion};
 #[test]
 fn native_tools_without_engine_loop() {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/engine/pages/media/clip.mp4");
+        .join("../../../tests/engine/pages/media/clip.mp4");
     let source = source.to_str().unwrap();
     assert!(media_tools::probe(source).unwrap().contains("\"codec_name\":\"h264\""));
     assert!(media_tools::probe("bad\0path").is_err());
