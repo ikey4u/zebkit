@@ -961,10 +961,19 @@ steps.setContent = async arg => {
   document.write(arg.html);
   document.close();
   const ready = arg.waitUntil === 'domcontentloaded' ? ['interactive', 'complete'] : ['complete'];
-  if (arg.waitUntil !== 'commit' && !ready.includes(document.readyState)) {
+  // A document written over one that had loaded is "complete" at once
+  // here while its images and style sheets still load, which its load
+  // (Chrome's lifecycle "load", what frames.ts waits for) waits for.
+  const failed = new WeakSet();
+  const loading = () => arg.waitUntil !== 'domcontentloaded' &&
+      ([...document.images].some(image => !image.complete && image.loading !== 'lazy') ||
+       [...document.querySelectorAll('link[rel=stylesheet]')].some(link => !link.sheet && !link.disabled && !failed.has(link)));
+  if (arg.waitUntil !== 'commit' && (!ready.includes(document.readyState) || loading())) {
     await new Promise(resolve => {
-      const check = () => ready.includes(document.readyState) && resolve();
+      const check = () => ready.includes(document.readyState) && !loading() && resolve();
       document.addEventListener('readystatechange', check);
+      document.addEventListener('load', check, true);
+      document.addEventListener('error', event => { failed.add(event.target); check(); }, true);
       builtins.setTimeout(check, 0);
     });
   }
