@@ -46,7 +46,9 @@ Electron 45.2.1 (Chromium 156.0.8078.75), the latest stable release on npm
 when it was chosen, on Linux x86-64 (a 12-core Ryzen with SMT). Every
 measure, the median of 5 runs (7 for startup and layout) with the lowest and
 highest run, is in `docs/reports/electron-compare.md`; a result is within
-noise when those ranges overlap. Losses are shown as wins are.
+noise when those ranges overlap. Losses are shown as wins are. Startup and
+size were measured again on 2026-11-07, with the cold-start read-ahead
+below, 9 runs each.
 
 What was held the same: one harness (`tests/bench/equal/compare.py`) that
 does not know which engine it runs; one page set, served by the harness;
@@ -60,15 +62,24 @@ clock, the harness's, with the page's marks on it; every process counted,
 those an engine disowns too (the harness is a subreaper): CPU as utime and
 stime from `/proc`, memory as PSS plus swapped PSS; the engines taking turns,
 each first in every other pair; each pair started on a quiet machine (load
-under 4.5, no build or suite; none had to be discarded).
+under 4.5, no build or suite; none had to be discarded). A cold start is
+made without root: before each one the harness waits for the disk to do
+under 2 MB/s, then takes the engine's files out of the page cache with
+`posix_fadvise(POSIX_FADV_DONTNEED)` (its package, and every system file it
+mapped in an earlier run; pages another process maps stay) and checks with
+`mincore()` that none of the main binary is left (none was). It is not a
+reboot: system libraries other programs have mapped stay in the cache, for
+both. The machine's disk is a spinning one shared with other work, which
+is what makes cold starts slow here, and other work on it during a run
+slows it severalfold (one Electron run of 9 on 2026-11-07, 16.9 s).
 
 | | zebkit | Electron 45.2.1 | Less |
 |---|---:|---:|---|
 | Size as published, MiB (`.tar.xz`, `.zip`) | 179.6 (60.9, 81.5) | 273.4 (88.7, 117.6) | zebkit, 34% (31%, 31%) |
 | Size as an application ships it | 171.2 (59.4, 79.5) | 260.5 (87.1, 114.8) | zebkit, 34% (32%, 31%) |
-| Start, cold (files out of the cache), to first paint, ms | 7350 | 6470 | **Electron, 12%** (see below) |
-| Start, warm, to first paint, ms | 114 | 238 | zebkit, 52% |
-| Start, warm, CPU until the first frame, s | 0.22 | 0.47 | zebkit, 53% |
+| Start, cold (files out of the cache), to first paint, ms | 2279 | 6613 | zebkit, 66% (see below) |
+| Start, warm, to first paint, ms | 116 | 236 | zebkit, 51% |
+| Start, warm, CPU until the first frame, s | 0.21 | 0.46 | zebkit, 54% |
 | Memory, a blank page, MB | 179 | 250 | zebkit, 29% |
 | Processes, a page | 7 | 6 | **Electron**: zebkit runs storage in a process of its own, as Chrome does (below) |
 | Text layout, ms a layout | 8.1 | 7.6 | Electron, 6%, within noise |
@@ -85,9 +96,9 @@ under 4.5, no build or suite; none had to be discarded).
 | Five local pages and the PDF: CPU loading, s / at rest, % of a core / memory, MB | 3.0 / 5.6 / 1156 | 4.8 / 5.6 / 1572 | zebkit / level / zebkit |
 | Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 21.7 / 150 / 4756 | 25.2 / 161 / 5060 | zebkit, 14% / 6% / 6% |
 
-- **Wins**: size; warm startup; memory on every local page and on 8 of
-  the 10 sites; CPU while loading on every local page and 8 of the sites
-  (the other two within noise); the PDF viewer, which in Electron is an
+- **Wins**: size; cold and warm startup; memory on every local page and
+  on 8 of the 10 sites; CPU while loading on every local page and 8 of
+  the sites (the other two within noise); the PDF viewer, which in Electron is an
   extension with two renderers more; calls between the page and the host,
   level up to 64 KiB and faster from 1 MiB; JavaScript.
 - **Level since 2026-11-06**: the DOM workload (377 against 282 ms on
@@ -97,18 +108,49 @@ under 4.5, no build or suite; none had to be discarded).
   the size model kept off more of the code the profile has.
 - **Losses**: one process more a page; the memory of two sites, YouTube
   (684 against 583 MB) and The Verge (801 against 686, within noise),
-  where the advertising and the video decide; and the cold start, 7.4
-  against 6.5 s to the first paint. On 2026-11-02 the cold start was
-  zebkit's by 26% (4.6 against 6.2 s); in this run both engines took
-  longer to the page's request (zebkit 3.5 to 5.7 s, Electron 5.7 to
-  5.9), so it is the machine's disk at that hour as much as the build,
-  and is measured again against the `slim` of before.
+  where the advertising and the video decide. The cold start, lost on
+  2026-11-06 (7.4 against 6.5 s), is now zebkit's (below).
 - **At rest on the sites** (`docs/reports/electron-compare.md`): the ten
   summed, 150 against 161% of a core; zebkit less on 6. Reddit and Stack
   Overflow showed a different page in some run and are left out.
 
-What was done about the losses on 2026-11-02, each measured with the same
-harness before and after (the commits have the runs):
+What was done about the losses on 2026-11-02 and after, each measured with
+the same harness before and after (the commits have the runs):
+
+- **The cold start** (2026-11-07). Measured with the harness's own cold
+  start, three ways in turn on the same quiet machine, 7 to 9 runs each,
+  to first paint (lowest to highest): 0.1.0's package (2026-11-02) 4.33 s
+  (4.27-4.44), today's `slim` 5.43 (5.22-5.46), Electron 6.58
+  (6.45-6.96); in a second set 4.63 (4.43-4.84), 5.28 (5.05-5.51) and
+  6.50 (6.31-6.72). So it had regressed, 14 to 25%, and the 7.4 s of
+  2026-11-06 was that plus other work on the disk. Warm, nothing had
+  changed (120 against 121 ms). A cold start here is time spent waiting
+  for the disk: CPU 0.3 s in both. The browser and its first processes
+  fault the library in (major faults 1015 against 955, 108 against 100 MB
+  read), and what was in the cache after it, page by page, shows why:
+  26,400 pages of the library in 220 separate ranges against 24,400 in
+  181. `.text` grew from 121.5 to 139.0 MiB (CFI, LLVM's inliner on hot
+  code, all taken for speed); lld puts the code the PGO profile has first,
+  and that first 40 MiB is read almost whole, but the rest of what startup
+  runs is spread over the other 100 MiB, most of it code the profile
+  calls cold (`.text.unlikely`), so each range is a seek. Not the loader:
+  `LD_DEBUG=statistics` gives both about 2.3 million cycles and the same
+  relocations; nor TLS, ICU's data (the same 6.8 MB) or the request hooks
+  (warm unchanged). Reading the whole library front to back takes 0.9 s
+  on this disk, where faulting in two thirds of it took 4 s, so the
+  browser process now does that, on a thread of its own as startup goes
+  on (`engine.cc`, `PrefetchEngineFiles`), with its data files, as Chrome
+  pre-reads chrome.dll on Windows and its library on Android. Chromium's
+  `base::PreReadFile` would not do: on Linux it is `posix_fadvise()`,
+  which the kernel cuts to one readahead window. It reads only when the
+  library is not in the cache: 64 of its pages are looked at, and a warm
+  start reads nothing (`mincore()` over all of it had cost the warm start
+  35 ms). Same build with and without it, 7 runs each in turn: cold to
+  first paint 5.49 (5.19-5.55) to 2.42 s (2.27-2.54), warm 120.8
+  (117-130) and 121.8 ms (116-130), for 4 KiB. A cold start reads 170 MB
+  instead of 108 (the cache holds it, not the processes: PSS at the
+  first frame 185 MB, a warm start's 182). Linux only for now; macOS and
+  Windows start as before.
 
 - **Calls between the page and the host** (were 4 to 8 times slower):
   `zebkit.*` no longer goes as a `fetch()` to `zebkit://call` with its JSON

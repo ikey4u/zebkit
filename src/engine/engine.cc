@@ -74,9 +74,13 @@
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_LINUX)
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+
+#include <thread>
 
 #include "device/bluetooth/dbus/dbus_bluez_manager_wrapper_linux.h"
 #include "sandbox/linux/services/credentials.h"
@@ -366,6 +370,68 @@ void InitLogging(const base::CommandLine& command_line) {
   logging::SetLogItems(true /* Process ID */, true /* Thread ID */,
                        true /* Timestamp */, false /* Tick count */);
 }
+
+#if BUILDFLAG(IS_LINUX)
+// Started cold, the engine's files not in the page cache, the browser and
+// its first processes fault in about 100 MiB of the library's 159 in some
+// two hundred separate reads; on a disk that seeks that was 4.2 s to the
+// page's request, where reading the whole file front to back takes 0.9 s.
+// So the browser process reads its files into the cache on a thread of its
+// own while startup goes on, as Chrome pre-reads chrome.dll on Windows and
+// its library on Android. (base::PreReadFile is posix_fadvise() here, which
+// the kernel cuts to one readahead window.) 2026-11-07, cold to first
+// paint 5.3 to 2.4 s. Only when the library is not in the cache already: a
+// warm start looks at 64 of its pages and reads nothing (mincore() over all
+// of it cost the warm start 35 ms).
+bool InPageCache(int fd, size_t size) {
+  void* map = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+  if (map == MAP_FAILED)
+    return true;
+  const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  const size_t pages = (size + page - 1) / page;
+  bool cached = true;
+  for (size_t i = 0; cached && i < 64; ++i) {
+    unsigned char resident = 0;
+    char* at = static_cast<char*>(map) + (pages * i / 64) * page;
+    cached = mincore(at, page, &resident) == 0 && (resident & 1);
+  }
+  munmap(map, size);
+  return cached;
+}
+
+void ReadIntoPageCache(const base::FilePath& path) {
+  const int fd = open(path.value().c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return;
+  std::vector<char> buffer(1 << 20);
+  while (read(fd, buffer.data(), buffer.size()) > 0) {
+  }
+  close(fd);
+}
+
+void PrefetchEngineFiles(int argc, char** argv) {
+  if (HasSwitch(argc, argv, "type"))
+    return;
+  const base::FilePath directory = LibraryDirectory();
+  if (directory.empty())
+    return;
+  std::thread([directory] {
+    const base::FilePath library = directory.Append("libzebkit.so.1");
+    struct stat info;
+    const int fd = open(library.value().c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+      return;
+    const bool cached = fstat(fd, &info) != 0 || InPageCache(fd, static_cast<size_t>(info.st_size));
+    close(fd);
+    if (cached)
+      return;
+    for (const char* name : {"libzebkit.so.1", "icudtl.dat", "v8_context_snapshot.bin",
+                             "snapshot_blob.bin", "zebkit.pak"}) {
+      ReadIntoPageCache(directory.Append(name));
+    }
+  }).detach();
+}
+#endif  // BUILDFLAG(IS_LINUX)
 
 int RunContent(int argc, char** argv, MainDelegate* delegate) {
   content::ContentMainParams params(delegate);
@@ -1432,6 +1498,9 @@ int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
     if (!argv[i])
       return 1;
   }
+#if BUILDFLAG(IS_LINUX)
+  zebkit::PrefetchEngineFiles(argc, argv);
+#endif
   std::vector<std::string> args = zebkit::EngineArguments(argc, argv);
   if (!zebkit::PrepareCookieStorage(args))
     return 1;
@@ -1479,6 +1548,9 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
   }
   if (input.empty())
     input.emplace_back("zebkit");
+#if BUILDFLAG(IS_LINUX)
+  zebkit::PrefetchEngineFiles(argc, argv);
+#endif
   bool application_integration = false;
   std::string problem;
   if (!zebkit::ApplyStartupSettings(settings_json, &input, &application_integration, &problem))

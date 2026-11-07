@@ -1,6 +1,6 @@
 # zebkit and Electron 45.2.1, measured the same way
 
-`scripts/electron-compare.sh`, 2026-11-06, Linux x86-64: zebkit `slim` (Chromium 155.0.8059.84) and Electron 45.2.1, the latest stable release on npm, on one machine. Each cell is the median and, in parentheses, the lowest and highest run. A result is called within noise when those ranges overlap. `docs/SIZE_AND_SPEED.md` has what was held the same and what could not be.
+`scripts/electron-compare.sh`, 2026-11-06 (startup and size again on 2026-11-07, with the cold-start read-ahead), Linux x86-64: zebkit `slim` (Chromium 155.0.8059.84) and Electron 45.2.1, the latest stable release on npm, on one machine. Each cell is the median and, in parentheses, the lowest and highest run. A result is called within noise when those ranges overlap. `docs/SIZE_AND_SPEED.md` has what was held the same and what could not be.
 
 ## Size
 
@@ -8,7 +8,7 @@ MiB. As published is what each project hands out; as an application ships it is 
 
 | | zebkit | Electron | Smaller |
 |---|---:|---:|---|
-| As published, uncompressed | 179.6 | 273.4 | zebkit, 34% less |
+| As published, uncompressed | 179.7 | 273.4 | zebkit, 34% less |
 | As published, `.tar.xz` | 60.9 | 88.7 | zebkit, 31% less |
 | As published, `.zip` | 81.5 | 117.6 | zebkit, 31% less |
 | As an application ships it, uncompressed | 171.2 | 260.5 | zebkit, 34% less |
@@ -22,24 +22,24 @@ MiB. As published is what each project hands out; as an application ships it is 
 
 | Measure | zebkit | Electron | Fewer or faster |
 |---|---:|---:|---|
-| to the page's request, ms | 5678 (5463-5716) | 5923 (5724-6232) | zebkit, 4% less |
-| to first paint (FCP), ms | 7350 (7063-7442) | 6470 (6349-6809) | Electron, 12% less |
-| to a frame after load, ms | 7325 (6977-7380) | 6569 (6356-6848) | Electron, 10% less |
-| CPU until then, all processes, s | 0.32 (0.3-0.34) | 0.57 (0.55-0.61) | zebkit, 44% less |
+| to the page's request, ms | 2164 (1990-2248) | 5896 (5696-15570) | zebkit, 63% less |
+| to first paint (FCP), ms | 2279 (2090-2354) | 6613 (6304-16896) | zebkit, 66% less |
+| to a frame after load, ms | 2284 (2097-2358) | 6617 (6323-17267) | zebkit, 65% less |
+| CPU until then, all processes, s | 0.31 (0.28-0.33) | 0.6 (0.57-0.69) | zebkit, 48% less |
 
-Load before a run: 3.8 to 4.4. Runs: 7 of each.
+Load before a run: 4.0 to 4.9. Runs: 9 of each. The disk was quiet (under 2 MB/s) before every run; Electron's slowest (16.9 s, the others 6.3 to 6.7) is most likely other work on the shared disk during it.
 
 ### Startup, files in cache, profile kept
 
 | Measure | zebkit | Electron | Fewer or faster |
 |---|---:|---:|---|
-| to the page's request, ms | 52.1 (50.6-54.9) | 180 (168-215) | zebkit, 71% less |
-| to first paint (FCP), ms | 114 (111-117) | 238 (220-246) | zebkit, 52% less |
-| to a frame after load, ms | 113 (102-118) | 238 (218-249) | zebkit, 53% less |
-| CPU until then, all processes, s | 0.22 (0.19-0.24) | 0.47 (0.43-0.53) | zebkit, 53% less |
-| memory at that frame, MB | 178 (178-178) | 249 (246-250) | zebkit, 28% less |
+| to the page's request, ms | 52.9 (51.7-55.4) | 180 (170-188) | zebkit, 71% less |
+| to first paint (FCP), ms | 116 (114-124) | 236 (224-243) | zebkit, 51% less |
+| to a frame after load, ms | 116 (108-126) | 230 (223-242) | zebkit, 50% less |
+| CPU until then, all processes, s | 0.21 (0.2-0.23) | 0.46 (0.45-0.48) | zebkit, 54% less |
+| memory at that frame, MB | 180 (180-181) | 249 (247-251) | zebkit, 28% less |
 
-Load before a run: 3.8 to 4.2. Runs: 7 of each.
+Load before a run: 4.1 to 4.5. Runs: 9 of each.
 
 ### Text layout, a chapter
 
