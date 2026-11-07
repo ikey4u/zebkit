@@ -293,6 +293,12 @@ in `examples/native-host` (Done table). What is left:
     `tracing.ts` writes them. Left: a service worker's own requests (23), the recorder and the
     debugger (24), trace details (17), client certificates through Playwright's own TLS proxy
     (10), and a long tail (section 7).
+    2026-11-06, later: 4005 passed, 190 failed (44 listed, 25 timeouts, 146 unexplained):
+    service workers over their own DevTools targets (requests, routes, HAR, offline, console,
+    evaluation), fulfilled redirects followed and routed again (`routeFromHAR`), the Debugger
+    and `page.pause()`, the trace's "action" snapshot at the input point. Left: workers' own
+    targets, the recorder, trace details, client certificates' TLS proxy, CORS preflights
+    below the proxy, and a tail (section 7).
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.

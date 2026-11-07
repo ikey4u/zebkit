@@ -1172,6 +1172,11 @@ void Connection::Received(const std::string& text) {
     if (std::optional<double> timeout = metadata->FindDouble("timeout"))
       command_params.Set("timeout", *timeout);
 
+    // tracing.ts's group(): its location, else the call's.
+    if (const base::DictValue* location = metadata->FindDict("location");
+        location && *method == "tracingGroup" && !command_params.FindDict("location")) {
+      command_params.Set("location", location->Clone());
+    }
     // Frame.expect's log begins with the call's title.
     if (const std::string* title = metadata->FindString("title");
         title && (*method == "expect" || *method == "expectScreenshot")) {

@@ -801,6 +801,7 @@ CDP in between:
   | zebkit, 2026-11-02 | 3233 | 962 | 1067 | 574 | 121 | 9 | 388 |
   | zebkit, 2026-11-03 | 3566 | 512 | 1184 | 234 | 69 | 8 | 209 |
   | zebkit, 2026-11-06 | 3962 | 233 | 1067 | 52 | 43 | 3 | 181 |
+  | zebkit, 2026-11-06, later | 4005 | 190 | 1067 | 44 | 25 | 0 | 146 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by
@@ -848,23 +849,30 @@ CDP in between:
   navigated away; the Debugger and `page.pause()`; the trace's "action" snapshot at the input
   point, with the action's targets marked.
 
-  **Not at parity: what is left, by cause** (the unexplained 181 and the 43 timeouts):
-  - A service worker's own requests, events and console (19 in `chromium.spec.ts`, 4 in
-    `browsercontext-service-worker-policy.spec.ts`): its loader factories are the storage
-    partition's, which the network proxy does not see; Playwright reaches them over the worker's
-    own CDP target.
-  - The recorder and the debugger (14 in `recorder-api.spec.ts`, 10 in `debugger.spec.ts`,
-    listed or timing out): Playwright's server's own tools.
-  - Traces (14 in `trace-viewer.spec.ts`, 3 in `tracing.spec.ts`): the "action" snapshot is taken
-    once the action has ended (the endpoint does not see the input), scroll positions and blob
-    sources of the DOM snapshots, a group's location, context API requests' own trace.
-  - Client certificates (10): the certificate goes to Chromium's own TLS; Playwright puts a TLS
-    proxy of its own in between, with its own error pages and checks (listed for those).
-  - Screenshots' pixels (8: WebGL, masks, a page navigating, fonts' wait message); extensions
-    (6, a content-layer engine has none);
-    routes (5: unsafe headers, the disk cache, `sec-fetch-*`); workers' console (5); HAR (5:
-    a navigation redirected by `routeFromHAR` keeps the first URL); header sizes (4); locales'
-    formats the ICU data does not hold (3, listed); tap's navigation (4).
+  The later run (same day, after the service workers, the redirects, the Debugger and the
+  action snapshot; `tracing.group`'s location from the call fixed after it): 4005 passed, 190
+  failed. `browsercontext-csp.spec.ts` (3) and `oopif.spec.ts` (4) fail on this run and on a
+  build of the commit before it alike (a regression after the 3962 run, not yet found).
+
+  **Not at parity: what is left, by cause** (the unexplained 146 and the 25 timeouts):
+  - Workers' own targets (5 in `workers.spec.ts`): a dedicated worker's handles, its console
+    as the worker's event and its nested workers need the worker's DevTools session; the
+    view's session attaches pages only, and the agent's handles are not CDP objects.
+  - The recorder (14, listed): Playwright's server's `recorder.ts` and `recorder/*` (about
+    1,900 lines) with its injected script; not ported.
+  - Traces (about 15 in `trace-viewer.spec.ts`, 2 in `tracing.spec.ts`): scroll positions,
+    blob sources, `currentSrc`, synthetic shadow roots and charset metas of the DOM snapshots,
+    picking in iframes, a service worker's requests in the trace's network, context API
+    requests' own trace.
+  - Client certificates (10, 9 listed): Playwright's own TLS proxy (its error pages, its check
+    of the server's certificate, HTTPS errors ignored in the browser).
+  - Routes and requests (about 9): CORS preflights, which Chromium's Fetch interception sees
+    and Playwright fulfills, happen inside the network service below the proxy (not seen,
+    sent to the server); the Cookie header in a route's `allHeaders()`; URLPattern's
+    ignoreCase; FormData with a Blob; cross-origin redirect header propagation.
+  - Screenshots (8): WebGL (no GPU in the suite's engines), element masks, a page navigating,
+    fonts' wait message; header sizes (4, listed); extensions (6, a content-layer engine has
+    none); locales' formats (3, listed); tap (4); the Debugger's pause inside an input (1).
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's
