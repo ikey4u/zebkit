@@ -90,7 +90,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later): `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |
-| Version | `VERSION`: 0.1.0 |
+| Version | `VERSION`: 0.2.0 |
 
 ## Quick start
 
@@ -253,10 +253,10 @@ const hash = await zebkit.crypto.digest('SHA-256', 'abc');
 
 ```toml
 [dependencies]
-zebkit = "0.1.0"
+zebkit = "0.2.0"
 
 [build-dependencies]
-zebkit-build = "0.1.0"
+zebkit-build = "0.2.0"
 ```
 
 ```rust
