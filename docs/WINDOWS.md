@@ -61,8 +61,12 @@ and `zebkit-mcp.exe` with `+crt-static`, which links it through the Rust crate a
 calls `zebkit::win_startup()`. Each, with an 8 MiB main stack as `chrome.exe`'s, is its own
 renderer, GPU and utility processes, and runs sandboxed without a switch; `zebkit-helper.exe`
 is not used then. The suite's own builds of the C tools (`engine-test.sh`) leave the
-define out and run with `--no-sandbox`. `zebkit-mcp.exe` serves MCP over HTTP only
-(`--http`): standard input and output are not served on Windows yet.
+define out and run with `--no-sandbox`. `zebkit-mcp.exe` serves MCP over standard
+input and output as on Linux and macOS, and over `--http`: it keeps copies of the two
+handles, not inherited, as bytes, and the process's own standard output (and so the
+children's) is standard error from then on, its input `NUL`. `zebkit.dll`'s C runtime
+keeps the handle it had at load; the engine writes there only for a script's
+`console.log`, which zebkit-mcp sends to standard error.
 
 As Chromium's defaults: renderers at untrusted integrity, the GPU process at low,
 each in a job. The network service is not sandboxed: `kNetworkServiceSandbox` is

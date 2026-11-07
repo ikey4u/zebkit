@@ -72,11 +72,7 @@ pub fn check_version(version: &str) -> Result<(), RpcError> {
 /// request with a string or number id, or a notification.
 pub enum Message<'a> {
     Request { id: &'a Value, method: &'a str },
-    // Read by standard input's transport, which Windows does not have yet.
-    Notification {
-        #[cfg_attr(not(unix), allow(dead_code))]
-        method: &'a str,
-    },
+    Notification { method: &'a str },
     Response,
 }
 

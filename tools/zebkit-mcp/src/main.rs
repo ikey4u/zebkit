@@ -10,7 +10,6 @@ mod bounds;
 mod http;
 mod rpc;
 mod schema;
-#[cfg(unix)]
 mod stdio;
 mod tools;
 
@@ -374,7 +373,6 @@ fn main() {
         std::process::exit(code);
     }
     // Before anything could print or start a process.
-    #[cfg(unix)]
     let mut streams = {
         let args: Vec<String> = std::env::args().collect();
         let informational = args.iter().any(|arg| arg == "--help" || arg == "-h" || arg == "--version" || arg == "--list-tools");
@@ -460,7 +458,6 @@ fn main() {
                 Err(why) => return refuse_in_engine(&why),
             }
         }
-        #[cfg(unix)]
         if serve_stdio {
             let streams = streams.take().unwrap_or_else(|| fail("standard input and output were not kept"));
             std::thread::spawn(move || {
@@ -469,10 +466,6 @@ fn main() {
                 exit_soon();
                 zebkit::post(zebkit::quit);
             });
-        }
-        #[cfg(not(unix))]
-        if serve_stdio {
-            fail("standard input is not served on this system yet");
         }
     });
     remove_temporary();

@@ -7,7 +7,7 @@ what agents are given.
 
 It is written in Rust, over the `zebkit` crate: parsing untrusted JSON and HTTP
 next to the engine wants a memory-safe language, the crate already has the C API,
-and `std` gives the same sockets and paths on Linux, macOS and later Windows,
+and `std` gives the same sockets and paths on Linux, macOS and Windows,
 without an interpreter to install.
 
 ## Running it
@@ -17,7 +17,9 @@ ZEBKIT_DIR=<package> cargo build --release --manifest-path tools/zebkit-mcp/Carg
 ```
 
 The executable looks for the engine beside itself: copy it into the package, or
-beside the `zebkit` directory's contents.
+beside the `zebkit` directory's contents. Each release archive has it there already,
+built for its system; on Windows that `zebkit-mcp.exe` is its own sandboxed children
+(`docs/WINDOWS.md`). Standard input and output and HTTP are served on all three systems.
 
 An MCP client starts it and talks on standard input and output:
 
@@ -345,7 +347,7 @@ Plainly, what these bounds do not do:
 - **Uploads are by contents**, so the file's name reaches the page and its path does not, and a
   page sees them as in memory, up to 64 MiB. The engine's local paths are not used, on purpose.
 - **Cancelling** drops the answer; it does not stop the work.
-- **Windows:** the standard-input transport is Unix for now. The directory checks have not
+- **Windows:** the directory checks have not
   been looked at for that system's paths (alternate streams, device names, `\\?\`), and a
   file opened there can follow a last link: do not rely on them there yet.
 - **Device flow against real providers is untested**: the tests use a local provider. Google and

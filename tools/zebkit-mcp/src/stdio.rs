@@ -1,7 +1,7 @@
 //! MCP over standard input and output: one JSON-RPC message per line. Standard
 //! output is the protocol's alone, so the descriptor is taken away from
 //! everything else in the process and its children, which see standard error
-//! there instead.
+//! there instead. The same on Windows, with its handles.
 
 use crate::rpc::{self, Message};
 use serde_json::{json, Value};
@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 const MAX_LINE: u64 = 128 * 1024 * 1024;
 const MAX_IN_FLIGHT: usize = 64;
 
-/// The protocol's two descriptors, and what everyone else gets at 0 and 1.
-#[cfg(unix)]
+/// The protocol's two streams, and what everyone else gets in their place.
 pub struct Streams {
     pub input: std::fs::File,
     pub output: std::fs::File,
@@ -45,9 +44,52 @@ pub fn take_streams() -> Streams {
     }
 }
 
+/// Windows: the two handles, copied and not inherited by any child, read and
+/// written as bytes (no text mode: UTF-8 as it comes). The process's standard
+/// output is standard error from here on, and its input NUL, for what looks them
+/// up later: Rust's own printing, and the children the engine starts. (A C
+/// runtime's descriptors set up before, as in zebkit.dll, keep the old handles;
+/// the engine writes there only for a script's console.log, which ui.rs sends to
+/// standard error.)
+#[cfg(windows)]
+pub fn take_streams() -> Streams {
+    use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+    type Handle = *mut std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetStdHandle(which: u32, handle: Handle) -> i32;
+        fn GetCurrentProcess() -> Handle;
+        fn DuplicateHandle(source_process: Handle, source: Handle, target_process: Handle, target: *mut Handle, access: u32, inherit: i32, options: u32) -> i32;
+    }
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const DUPLICATE_SAME_ACCESS: u32 = 2;
+    let copy = |which: u32| -> Handle {
+        unsafe {
+            let handle = GetStdHandle(which);
+            let mut copied: Handle = std::ptr::null_mut();
+            let valid = !handle.is_null() && handle as isize != -1;
+            if !valid || DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &mut copied, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
+                panic!("zebkit-mcp: standard input and output are needed");
+            }
+            copied
+        }
+    };
+    let (input, output) = (copy(STD_INPUT_HANDLE), copy(STD_OUTPUT_HANDLE));
+    unsafe {
+        if let Ok(null) = std::fs::File::open("NUL") {
+            // Kept for the life of the process, as standard input is.
+            SetStdHandle(STD_INPUT_HANDLE, null.into_raw_handle() as Handle);
+        }
+        SetStdHandle(STD_OUTPUT_HANDLE, GetStdHandle(STD_ERROR_HANDLE));
+        Streams { input: std::fs::File::from_raw_handle(input as _), output: std::fs::File::from_raw_handle(output as _) }
+    }
+}
+
 /// Reads messages until standard input ends. Each request runs on a thread of
 /// its own; answers come back in the order they finish, by id.
-#[cfg(unix)]
 pub fn serve(streams: Streams) {
     let output = Arc::new(Mutex::new(streams.output));
     let initialized = Arc::new(AtomicBool::new(false));

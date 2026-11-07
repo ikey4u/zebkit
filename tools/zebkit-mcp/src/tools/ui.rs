@@ -26,7 +26,11 @@ fn with_script(function: impl FnOnce(&Script)) {
         slot.borrow_mut()
             .get_or_insert_with(|| {
                 let script = Script::new(&[]);
-                script.evaluate(&format!("globalThis.__bridge = {BRIDGE}; null"), |_| {});
+                // Standard output is the protocol's: the script's console writes to
+                // standard error, on Windows too, where the engine's own descriptor
+                // for standard output is still the protocol's.
+                let console = "globalThis.console = Object.freeze({...console, log: console.error, info: console.error, debug: console.error})";
+                script.evaluate(&format!("{console}; globalThis.__bridge = {BRIDGE}; null"), |_| {});
                 Rc::new(script)
             })
             .clone()
