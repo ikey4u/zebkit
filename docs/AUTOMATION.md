@@ -802,6 +802,7 @@ CDP in between:
   | zebkit, 2026-11-03 | 3566 | 512 | 1184 | 234 | 69 | 8 | 209 |
   | zebkit, 2026-11-06 | 3962 | 233 | 1067 | 52 | 43 | 3 | 181 |
   | zebkit, 2026-11-06, later | 4005 | 190 | 1067 | 44 | 25 | 0 | 146 |
+  | zebkit, 2026-11-07 | 4026 | 169 | 1067 | 44 | 22 | 0 | 125 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by
@@ -854,25 +855,36 @@ CDP in between:
   failed. `browsercontext-csp.spec.ts` (3) and `oopif.spec.ts` (4) fail on this run and on a
   build of the commit before it alike (a regression after the 3962 run, not yet found).
 
-  **Not at parity: what is left, by cause** (the unexplained 146 and the 25 timeouts):
-  - Workers' own targets (5 in `workers.spec.ts`): a dedicated worker's handles, its console
-    as the worker's event and its nested workers need the worker's DevTools session; the
-    view's session attaches pages only, and the agent's handles are not CDP objects.
+  The run of 2026-11-07 (engine at commit cacd9f9, with CFI on indirect calls too): 4026
+  passed, 169 failed. The csp and oopif regression of the run before was a race, not a
+  change: under load (the suite's engines run at ionice's idle class) the endpoint answered
+  `newPage` before the page's about:blank had committed, `goto` raced that commit, and
+  `Page.setBypassCSP` given to the initial empty document was lost; `newPage` now answers
+  once it has committed, as `crPage.ts` does. The oopif tests had passed only when the frame
+  shared its parent's process: other sites' frames are now sessions of their own (in contexts
+  of `Browser.newContext`), given the context's options before they run, as `crPage.ts`'s
+  FrameSession. Also: dedicated workers over their own sessions (`workers.spec.ts`'s console
+  with handles, `evaluateHandle`, close); CORS preflights of a page that routes answered below
+  the network service's CORS (the factory override DevTools' Fetch uses); the Cookie the
+  network will send in a route's headers; URLPattern routes; tap through the touch emulator
+  (patches/1079). After the run: `setContent` waits for the written document's images and
+  style sheets (`page-set-content.spec.ts:84`, `trace-viewer.spec.ts:1155`, 1206).
+
+  **Not at parity: what is left, by cause** (the unexplained 125 and the 22 timeouts):
   - The recorder (14, listed): Playwright's server's `recorder.ts` and `recorder/*` (about
     1,900 lines) with its injected script; not ported.
-  - Traces (about 15 in `trace-viewer.spec.ts`, 2 in `tracing.spec.ts`): scroll positions,
-    blob sources, `currentSrc`, synthetic shadow roots and charset metas of the DOM snapshots,
-    picking in iframes, a service worker's requests in the trace's network, context API
-    requests' own trace.
+  - Traces (about 12 in `trace-viewer.spec.ts`, 2 in `tracing.spec.ts`): scroll positions,
+    blob sources, synthetic shadow roots and charset metas of the DOM snapshots, picking in
+    iframes, a service worker's requests in the trace's network, `context.request`'s own
+    trace (the endpoint keys traces by context).
   - Client certificates (10, 9 listed): Playwright's own TLS proxy (its error pages, its check
     of the server's certificate, HTTPS errors ignored in the browser).
-  - Routes and requests (about 9): CORS preflights, which Chromium's Fetch interception sees
-    and Playwright fulfills, happen inside the network service below the proxy (not seen,
-    sent to the server); the Cookie header in a route's `allHeaders()`; URLPattern's
-    ignoreCase; FormData with a Blob; cross-origin redirect header propagation.
-  - Screenshots (8): WebGL (no GPU in the suite's engines), element masks, a page navigating,
-    fonts' wait message; header sizes (4, listed); extensions (6, a content-layer engine has
-    none); locales' formats (3, listed); tap (4); the Debugger's pause inside an input (1).
+  - Screenshots (6): element masks, fonts' wait message, a page navigating (fullPage).
+  - Routes and requests (about 5): FormData with a Blob (the body's blob is not read for the
+    route), headers across a cross-origin redirect, a favicon's abort, multipart form data.
+  - A worker nested in an iframe (`workers.spec.ts:399`), tap's trial run and a tap that
+    navigates (2), extensions (6, a content-layer engine has none), locales' formats (4,
+    listed), the Debugger's pause inside an input (1, listed), and a tail of one or two a file.
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

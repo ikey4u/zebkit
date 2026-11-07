@@ -301,6 +301,13 @@ in `examples/native-host` (Done table). What is left:
     and `page.pause()`, the trace's "action" snapshot at the input point. Left: workers' own
     targets, the recorder, trace details, client certificates' TLS proxy, CORS preflights
     below the proxy, and a tail (section 7).
+    2026-11-07: 4026 passed, 169 failed (44 listed, 22 timeouts, 125 unexplained): the csp and
+    oopif regression was a race under load (newPage answered before its about:blank had
+    committed; other sites' frames had no sessions of their own), fixed as `crPage.ts` does;
+    dedicated workers over their own sessions (console with handles, `evaluateHandle`); CORS
+    preflights of routed pages answered below the network's CORS; a route's Cookie; URLPattern
+    routes; tap through the touch emulator (patches/1079). Left: the recorder, trace details,
+    screenshots' masks and fonts, client certificates' TLS proxy, and a tail (section 7).
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
