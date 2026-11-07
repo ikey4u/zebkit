@@ -5,7 +5,11 @@
  * app.mjs is an ES module, with zebkit.* (docs/API.md): views to
  * make, the engine's services, timers and console. The program ends when
  * the script calls zebkit.quit(), or once nothing of it is pending and no
- * view is open, as Node ends. Its exit status is 1 when the module threw. */
+ * view is open, as Node ends. Its exit status is 1 when the module threw.
+ *
+ * Built with ZEBKIT_WIN_SANDBOX on Windows (and zebkit_sandbox.lib, as the
+ * release archive's is), it is the engine's sandboxed children too
+ * (<zebkit/win_sandbox.h>); without, it runs there only with --no-sandbox. */
 
 #ifdef _WIN32
 #include <windows.h>
@@ -19,6 +23,9 @@
 #include <string.h>
 
 #include <zebkit/zebkit.h>
+#if defined(_WIN32) && defined(ZEBKIT_WIN_SANDBOX)
+#include <zebkit/win_sandbox.h>
+#endif
 
 static const char *module_path;
 static int script_argc;
@@ -62,6 +69,11 @@ static char **windows_utf8_argv(int *argc) {
 #endif
 
 int main(int argc, char **argv) {
+#if defined(_WIN32) && defined(ZEBKIT_WIN_SANDBOX)
+    int child_code;
+    if (zebkit_win_startup(&child_code))
+        return child_code;
+#endif
 #ifdef _WIN32
     argv = windows_utf8_argv(&argc);
 #endif

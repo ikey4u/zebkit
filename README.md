@@ -106,6 +106,10 @@ and `include/`. Either unpack a release's archive
 mise run r      # dist/release (Linux), dist/release-macos (macOS), dist/release-windows; hours the first time
 ```
 
+Each archive also holds the tools, built for its system beside the library
+and ready to run from where it is unpacked: `zebkit-run`, `zebkit-js` and
+`zebkit-mcp` (`.exe` on Windows, sandboxed there too).
+
 On an Apple silicon Mac with full Xcode installed, `scripts/dist.sh release`
 builds the engine locally into `dist/release`. Then run
 `scripts/example.sh macos-basic` to build and launch the C embedding demo
@@ -385,7 +389,7 @@ separate program, with file access and origins denied until its operator grants
 them ([docs/MCP.md](docs/MCP.md)):
 
 ```sh
-ZEBKIT_DIR=<package> cargo build --release --manifest-path tools/zebkit-mcp/Cargo.toml
+ZEBKIT_DIR=<package> cargo build --release --manifest-path tools/zebkit-mcp/Cargo.toml   # or the archive's
 zebkit-mcp --allow-origin https://example.com --allow-write ~/agent-files   # on standard input and output
 zebkit-mcp --http 8931 --allow-origin '*'                                   # on 127.0.0.1, with a token
 ```
@@ -396,6 +400,7 @@ zebkit-mcp --http 8931 --allow-origin '*'                                   # on
 mise example:linux:basic    # examples/window.c: a browser window
 mise example:rust:window    # the same in Rust
 mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
+(cd examples/gpui-browser && cargo run --release)   # a tabbed browser in GPUI-KIT
 ```
 
 ## Benchmark

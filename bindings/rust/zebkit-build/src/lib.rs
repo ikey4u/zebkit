@@ -99,6 +99,12 @@ fn executable_directory() -> PathBuf {
         .unwrap_or_else(|| panic!("zebkit-build: unexpected OUT_DIR {}", out.display()))
 }
 
+/// One of the programs a release archive carries beside the engine.
+fn is_release_tool(name: &str) -> bool {
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    matches!(name, "zebkit-run" | "zebkit-js" | "zebkit-mcp")
+}
+
 /// Makes `destination` hold the files of `engine`, without `include/`.
 /// Files are hard links where the file system allows, copies otherwise, and
 /// are left alone when they are already the same. Symbolic links, which a
@@ -110,9 +116,11 @@ fn copy_engine(engine: &Path, destination: &Path) {
         let name = entry.file_name();
         let (from, to) = (entry.path(), destination.join(&name));
         // include/ is for compiling against the engine; a marker file of
-        // the download is nobody's business. What is inside a framework
-        // all stays, its headers too: it is signed as a whole.
-        if name == "include" || name.to_string_lossy().starts_with('.') {
+        // the download is nobody's business; the release's own programs
+        // (zebkit-run, zebkit-js, zebkit-mcp) are not the application's.
+        // What is inside a framework all stays, its headers too: it is
+        // signed as a whole.
+        if name == "include" || name.to_string_lossy().starts_with('.') || is_release_tool(&name.to_string_lossy()) {
             continue;
         }
         if let Ok(target) = fs::read_link(&from) {

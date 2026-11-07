@@ -2,6 +2,7 @@
 # Run the engine on glibc 2.17, the oldest it supports, as CentOS 7 has it.
 #
 #   scripts/glibc-test.sh <profile>
+#   scripts/glibc-test.sh --root    # only lay out glibc 2.17's root (below)
 #
 # Without a container: CentOS 7's own glibc, libraries and headers are
 # unpacked into out/blink/glibc-2.17/root (once; about 400 MB), the C tests
@@ -14,11 +15,14 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# --root: only lay out the root, which scripts/release.sh links the tools against.
 profile="${1:-}"
-require_profile "$profile"
 [[ "$(uname)" == Linux ]] || die "glibc is Linux's"
-package="${ZEBKIT_TEST_PACKAGE:-$OUT_DIR/$profile/package}"
-[[ -f "$package/libzebkit.so.1" ]] || die "no engine in $package; run scripts/package.sh $profile first"
+if [[ "$profile" != --root ]]; then
+    require_profile "$profile"
+    package="${ZEBKIT_TEST_PACKAGE:-$OUT_DIR/$profile/package}"
+    [[ -f "$package/libzebkit.so.1" ]] || die "no engine in $package; run scripts/package.sh $profile first"
+fi
 
 cache="$OUT_DIR/glibc-2.17"
 root="$cache/root"
@@ -105,6 +109,7 @@ fi
 patchelf="$cache/patchelf/patchelf-0.19.1.0.data/scripts/patchelf"
 loader="$root/usr/lib64/ld-2.17.so"
 [[ -x "$patchelf" && -f "$loader" ]] || die "$root is incomplete; remove it and run this again"
+[[ "$profile" == --root ]] && exit 0
 
 work="$(mktemp -d)"
 pids=()

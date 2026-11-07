@@ -367,6 +367,12 @@ fn quit_on_signals() {
 }
 
 fn main() {
+    // On Windows, built with +crt-static as the release is: this executable is the
+    // engine's sandboxed children too (docs/WINDOWS.md). First of all.
+    #[cfg(all(windows, target_feature = "crt-static"))]
+    if let Some(code) = zebkit::win_startup() {
+        std::process::exit(code);
+    }
     // Before anything could print or start a process.
     #[cfg(unix)]
     let mut streams = {

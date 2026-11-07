@@ -7,7 +7,8 @@
 #
 # A release has one archive for each system, all built here on Linux: the
 # Linux engine, and the macOS and Windows ones cross-built (docs/MACOS.md,
-# docs/WINDOWS.md). The
+# docs/WINDOWS.md). Each archive also holds zebkit-run, zebkit-js and
+# zebkit-mcp, built here from its package (build_tools below). The
 # checksums all go into engines.txt, and --publish uploads every archive of
 # this version that engines.txt names. Run again later, it adds what the
 # release does not have yet.
@@ -75,8 +76,99 @@ pack() {
     log "$archive ($(du -m "$archive" | cut -f1) MiB), sha256 $sum, recorded in bindings/rust/zebkit-rs/engines.txt"
 }
 
+# The tools README.md tells users to run, built against the release directory
+# $1 for system $2 and put into it beside the engine, so that they run from the
+# unpacked archive as they are: zebkit-run and zebkit-js (C), zebkit-mcp (Rust,
+# at --release with its lock file). Linux: a run path of $ORIGIN, glibc 2.17's
+# symbols at most (CentOS 7's, with Chromium's clang). macOS: of
+# @loader_path, to Zebkit.framework beside them. Windows: zebkit.dll is found
+# beside them, and they are the engine's sandboxed children (docs/WINDOWS.md).
+build_tools() {
+    local dist="$1" system="$2" exe="" rust_target tool cc link rust_linker rust_flags
+    local work="$OUT_DIR/release-tools"
+    mkdir -p "$work"
+    # Where the sources and crates were is nobody's business in a shipped program.
+    rust_flags="--remap-path-prefix=$ZEBKIT_ROOT=zebkit --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo"
+    case "$system" in
+        linux)
+            # CentOS 7's glibc 2.17 and libgcc: a newer glibc gives Rust's std
+            # versioned weak references (getrandom, GLIBC_2.25) that glibc 2.17's
+            # dynamic linker refuses.
+            local root="$OUT_DIR/glibc-2.17/root"
+            [[ -f "$root/.ready" ]] || "$ZEBKIT_ROOT/scripts/glibc-test.sh" --root
+            llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
+            cc=("$llvm_bin/clang" --target=x86_64-linux-gnu --sysroot="$root" --gcc-toolchain="$root/usr" -fuse-ld=lld)
+            link=(-L"$dist" -l:libzebkit.so.1 '-Wl,-rpath,$ORIGIN' -s)
+            rust_target=x86_64-unknown-linux-gnu
+            ;;
+        macos)
+            set_target_for_profile slim-macos
+            cc=("$llvm_bin/clang" --target=arm64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld)
+            link=(-F"$dist" -framework Zebkit -Wl,-rpath,@loader_path -Wl,-S -Wl,-x)
+            rust_target=aarch64-apple-darwin
+            ;;
+        windows)
+            set_target_for_profile slim-windows
+            cc=("$llvm_bin/clang" --target=x86_64-pc-windows-msvc -Xmicrosoft-windows-sys-root "$windows_sysroot"
+                -fms-runtime-lib=static -fuse-ld=lld -D_CRT_SECURE_NO_WARNINGS)
+            link=(-DZEBKIT_WIN_SANDBOX "$dist/zebkit.dll.lib" "$dist/zebkit_sandbox.lib" -Wl,/STACK:0x800000)
+            rust_target=x86_64-pc-windows-msvc
+            exe=.exe
+            [[ -f "$dist/zebkit_sandbox.lib" ]] || die "no zebkit_sandbox.lib in $dist for the tools"
+            ;;
+    esac
+    for tool in zebkit-run zebkit-js; do
+        log "building $tool for $system"
+        "${cc[@]}" -std=c11 -O2 -Wall -Werror -I"$dist/include" "$ZEBKIT_ROOT/tools/$tool/$tool.c" "${link[@]}" -o "$dist/$tool$exe" \
+            || die "$tool did not build for $system"
+    done
+
+    log "building zebkit-mcp for $system"
+    command -v cargo > /dev/null || die "zebkit-mcp needs cargo (Rust)"
+    rustup target list --installed 2> /dev/null | grep -qx "$rust_target" \
+        || die "zebkit-mcp needs Rust's $rust_target target: rustup target add $rust_target"
+    local rust_env=(ZEBKIT_DIR="$dist" ZEBKIT_MCP_SHIPPED=1 CARGO_TARGET_DIR="$work/target")
+    case "$system" in
+        windows)
+            rust_env+=(CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$llvm_bin/lld-link")
+            rust_flags+=" -C target-feature=+crt-static -C link-arg=/winsysroot:$windows_sysroot"
+            ;;
+        *)
+            # Named for what it runs: cargo links again when that changes.
+            local wrapper
+            wrapper="$(printf '#!/bin/sh\nexec %s "$@"\n' "$(printf '"%s" ' "${cc[@]}")")"
+            rust_linker="$work/linker-$system-$(sha256 <<< "$wrapper" | cut -c1-12)"
+            printf '%s\n' "$wrapper" > "$rust_linker"
+            chmod +x "$rust_linker"
+            local upper
+            upper="$(tr 'a-z-' 'A-Z_' <<< "$rust_target")"
+            rust_env+=("CARGO_TARGET_${upper}_LINKER=$rust_linker")
+            [[ "$system" == macos ]] && rust_env+=(SDKROOT="$macos_sdk" MACOSX_DEPLOYMENT_TARGET=13.0)
+            ;;
+    esac
+    (cd "$ZEBKIT_ROOT/tools/zebkit-mcp" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
+        cargo build -q --release --locked --target "$rust_target" -j "${ZEBKIT_JOBS:-12}") \
+        || die "zebkit-mcp did not build for $system"
+    cp "$work/target/$rust_target/release/zebkit-mcp$exe" "$dist/zebkit-mcp$exe"
+
+    for tool in zebkit-run zebkit-js zebkit-mcp; do
+        # This machine's paths stay here.
+        if grep -aqF -e "$ZEBKIT_ROOT" -e "$HOME/" "$dist/$tool$exe"; then
+            die "$tool for $system names a path of this machine's: $(grep -aoF -e "$ZEBKIT_ROOT" -e "$HOME/" "$dist/$tool$exe" | sort -u | paste -sd' ' -)"
+        fi
+        if [[ "$system" == linux ]]; then
+            local newest
+            newest="$(objdump -T "$dist/$tool" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+            [[ "$(printf '%s\n' 2.17 "$newest" | sort -V | tail -1)" == 2.17 ]] \
+                || die "$tool needs glibc $newest, newer than 2.17"
+        fi
+    done
+    log "tools for $system: $(cd "$dist" && du -ch zebkit-run$exe zebkit-js$exe zebkit-mcp$exe | tail -1 | cut -f1)"
+}
+
 # Linux: dist/release.
 "$ZEBKIT_ROOT/scripts/dist.sh" release
+build_tools "$ZEBKIT_ROOT/dist/release" linux
 pack "$ZEBKIT_ROOT/dist/release" x86_64-unknown-linux-gnu
 
 # macOS on Apple silicon, cross-built here: dist/release-macos.
@@ -87,6 +179,7 @@ macos="$ZEBKIT_ROOT/dist/release-macos"
 mkdir -p "$macos"
 find "$macos" -mindepth 1 -delete
 cp -a "$OUT_DIR/slim-macos/package/." "$macos/"
+build_tools "$macos" macos
 log "release build of zebkit for macOS arm64: $macos ($(du -sm "$macos" | cut -f1) MiB)"
 pack "$macos" aarch64-apple-darwin
 
@@ -100,6 +193,7 @@ windows="$ZEBKIT_ROOT/dist/release-windows"
 mkdir -p "$windows"
 find "$windows" -mindepth 1 -delete
 cp -a "$OUT_DIR/slim-windows/package/." "$windows/"
+build_tools "$windows" windows
 log "release build of zebkit for Windows x64: $windows ($(du -sm "$windows" | cut -f1) MiB)"
 pack "$windows" x86_64-pc-windows-msvc
 

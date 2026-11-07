@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
         libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
         libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
-        libxfixes3 libxkbcommon0 libxrandr2 \
+        libxfixes3 libxkbcommon0 libxrandr2 rustup \
     && rm -rf /var/lib/apt/lists/*
 
 # mise, which brings gh and xz at the versions mise.toml pins.
@@ -48,7 +48,9 @@ RUN curl -fsSL "https://github.com/jdx/mise/releases/download/$MISE_VERSION/mise
 ARG UID=1000
 RUN useradd --create-home --uid "$UID" builder
 USER builder
-ENV MISE_YES=1 PATH=/home/builder/.local/share/mise/shims:$PATH
+ENV MISE_YES=1 PATH=/home/builder/.local/share/mise/shims:/home/builder/.cargo/bin:$PATH
+# Rust with the cross-built systems' targets, for the archives' zebkit-mcp.
+RUN rustup default stable && rustup target add aarch64-apple-darwin x86_64-pc-windows-msvc
 RUN git config --global --add safe.directory "*" \
     && mkdir -p /home/builder/.local/share/mise
 

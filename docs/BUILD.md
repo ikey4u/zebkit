@@ -134,8 +134,8 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 
 | Task | What it does |
 |---|---|
-| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release` and macOS in `dist/release-macos` (cross-built, `docs/MACOS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
-| `mise run r:github` | The same, then the GitHub release `v<version>` with both archives (`gh`, logged in; the tree committed) |
+| `mise run r` | `scripts/release.sh`: the release packages with the tools, Linux in `dist/release`, macOS in `dist/release-macos` and Windows in `dist/release-windows` (cross-built, `docs/MACOS.md`, `docs/WINDOWS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
+| `mise run r:github` | The same, then the GitHub release `v<version>` with the archives (`gh`, logged in; the tree committed) |
 | `mise run d` | `scripts/dist.sh debug`: the platform's development profile into `dist/debug`, with debug information |
 | `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
 | `mise example:macos:basic` | Builds and runs the C embedding demo against the macOS framework |
@@ -149,13 +149,41 @@ release is `mise r r` or `mise run r`.
 
 ## Releases
 
-A release is one archive per system, `x86_64-unknown-linux-gnu` and
-`aarch64-apple-darwin`, both built on Linux, whose SHA-256 goes
+A release is one archive per system, `x86_64-unknown-linux-gnu`,
+`aarch64-apple-darwin` and `x86_64-pc-windows-msvc`, all built on Linux, whose SHA-256 goes
 into `bindings/rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
 downloads; the crates and the engine share the version in `VERSION`. Build
 (`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).
 Crates download only from a release anyone can read, so the repository
 has to be public for that.
+
+An archive, `zebkit-<version>-<target>.tar.xz`, unpacks to one directory
+`zebkit-<version>-<target>/`: the package (the engine, its helper and data,
+`include/`), and beside the engine the tools, built from that package by
+`release.sh`:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| the engine | `libzebkit.so.1`, `zebkit-helper`, data | `Zebkit.framework` (helper and data inside) | `zebkit.dll`, `zebkit.dll.lib`, `zebkit-helper.exe`, `zebkit_sandbox.lib`, data |
+| the tools | `zebkit-run`, `zebkit-js`, `zebkit-mcp` | the same | the same, `.exe` |
+| how a tool finds the engine | run path `$ORIGIN` | run path `@loader_path` (`@executable_path`) to the framework | beside it, as Windows finds DLLs |
+
+The tools run from the unpacked directory as they are, and can be moved
+only together with the engine. They are optimized and stripped;
+`zebkit-mcp` is built `--release --locked`. On Linux they are linked against CentOS 7's glibc
+2.17 (the root `scripts/glibc-test.sh --root` lays out), as Rust's std built
+against a newer glibc asks for versions (`getrandom`, `GLIBC_2.25`) that
+glibc 2.17's dynamic linker refuses even when weak; `release.sh` refuses a
+tool that needs a newer glibc or names a path of the build machine. On
+Windows they take part in Chromium's sandbox (`docs/WINDOWS.md`).
+`release.sh` needs cargo, with Rust's `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc` targets (`rustup target add`). The Rust crate's
+`zebkit-build` leaves the tools out of what it copies beside an
+application.
+
+The tools add to an archive, unpacked / as `.tar.xz` (0.2.0's engine,
+2026-11-07): Linux 1.1 / 0.4 MiB, macOS 0.9 / 0.35 MiB, Windows 4.8 / 1.0
+MiB (the C tools carry the sandbox's 1.2 MiB each there).
 
 ### In a container
 

@@ -15,7 +15,11 @@
  * them, a desktop pointer and no scrollbars when headless, ...), so that a page behaves as under Playwright's own
  * server; the switches given after them win. The scripts use it to load
  * pages in a package (scripts/bench.sh, scripts/engine-test.sh,
- * scripts/automation-bench.sh, scripts/playwright-suite.sh). */
+ * scripts/automation-bench.sh, scripts/playwright-suite.sh).
+ *
+ * Built with ZEBKIT_WIN_SANDBOX on Windows (and zebkit_sandbox.lib, as the
+ * release archive's is), it is the engine's sandboxed children too
+ * (<zebkit/win_sandbox.h>); without, it runs there only with --no-sandbox. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +27,9 @@
 
 #include <zebkit/automation.h>
 #include <zebkit/zebkit.h>
+#if defined(_WIN32) && defined(ZEBKIT_WIN_SANDBOX)
+#include <zebkit/win_sandbox.h>
+#endif
 
 static int url_count;
 static char **urls;
@@ -104,6 +111,11 @@ static const char *const playwright_headless_switches[] = {
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 int main(int argc, char **argv) {
+#if defined(_WIN32) && defined(ZEBKIT_WIN_SANDBOX)
+    int child_code;
+    if (zebkit_win_startup(&child_code))
+        return child_code;
+#endif
     char *found[64];
     int headless = 0;
     urls = found;

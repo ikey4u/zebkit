@@ -24,6 +24,7 @@ scripts/package.sh slim-windows
 | `zebkit.pak`, `icudtl.dat`, `snapshot_blob.bin` | resources, ICU's data, V8's snapshot |
 | `libEGL.dll`, `libGLESv2.dll` | ANGLE |
 | `vk_swiftshader.dll`, `vk_swiftshader_icd.json`, `vulkan-1.dll` | drawing without a GPU |
+| `zebkit-run.exe`, `zebkit-js.exe`, `zebkit-mcp.exe` | the tools, in the release archive only, sandboxed (below) |
 | `include/zebkit/` | the headers |
 
 The engine links the static C runtime, and its import table names only what
@@ -53,6 +54,15 @@ int main(int argc, char **argv) {
 This costs the executable 1.2 MiB. Without the call the engine does not start,
 and says what to do; `--no-sandbox` runs without a sandbox and logs a warning,
 with `zebkit-helper.exe` as the children.
+
+The release archive's tools do this: `zebkit-run.exe` and `zebkit-js.exe` are built
+with `ZEBKIT_WIN_SANDBOX` defined and `zebkit_sandbox.lib` linked (`scripts/release.sh`),
+and `zebkit-mcp.exe` with `+crt-static`, which links it through the Rust crate and
+calls `zebkit::win_startup()`. Each, with an 8 MiB main stack as `chrome.exe`'s, is its own
+renderer, GPU and utility processes, and runs sandboxed without a switch; `zebkit-helper.exe`
+is not used then. The suite's own builds of the C tools (`engine-test.sh`) leave the
+define out and run with `--no-sandbox`. `zebkit-mcp.exe` serves MCP over HTTP only
+(`--http`): standard input and output are not served on Windows yet.
 
 As Chromium's defaults: renderers at untrusted integrity, the GPU process at low,
 each in a job. The network service is not sandboxed: `kNetworkServiceSandbox` is
