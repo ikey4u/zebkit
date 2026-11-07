@@ -44,7 +44,7 @@ camera and microphone capture, and the device APIs.
 | Engine | Chromium 155's content layer as `libzebkit.so.1` and `zebkit-helper`, started by the application (`zebkit_main`) | 2026-10-20 |
 | Size | 214.8 MiB to 134.8 MiB with no web feature lost; then 157.3 MiB for speed | 2026-10-17 to 2026-10-21 |
 | Speed | Chromium's PGO profile, Blink's layout code at `-O2`, link-time optimization: text layout 13.2 to 8.7 ms (Chrome's own build: 6.8) | 2026-10-21 |
-| Libraries | 17 C libraries inside the engine exported under `zebkit_vendor_*`, 7,489 functions in Linux `slim`, found in the build | 2026-10-20, FreeType and LevelDB 2026-10-29, 2026-10-30 |
+| Libraries | 17 C libraries inside the engine exported under `zebkit_vendor_*`, about 7,490 functions on each of Linux, macOS and Windows (7,487 on all three; FreeType's BDF and synthesis on every system since `patches/1080`), found in the build | 2026-10-20, FreeType and LevelDB 2026-10-29, 2026-10-30 |
 | Services | Compression, cryptography, URLs, images, ICU's data, HTTP through the network stack | 2026-10-20 |
 | Bindings | Rust (`zebkit`, `zebkit-rs`, `zebkit-build`), Python (`ctypes`) | 2026-10-20 |
 | Page API | `zebkit.*` in pages the application grants, per origin and capability; calls over each frame's Mojo channel, bytes as they are, large ones in shared memory | 2026-10-20, 2026-10-21, 2026-11-02 |

@@ -37,8 +37,9 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.
-- **Chromium's libraries are yours.** 17 C libraries inside the engine,
-  7,489 functions in Linux slim, exported under `zebkit_vendor_*`: SQLite, LevelDB, BoringSSL,
+- **Chromium's libraries are yours.** 17 C libraries inside the engine, about
+  7,490 functions on each of Linux, macOS and Windows (7,487 on all three, the
+  rest each system's own), exported under `zebkit_vendor_*`: SQLite, LevelDB, BoringSSL,
   zlib, Zstandard, Brotli, ICU, HarfBuzz, libxml2, libwebp, libjpeg-turbo,
   FFmpeg, dav1d, Opus, libvpx, FreeType and PDFium. You do not ship them twice.
 - **PDF built in.** A full API on Chromium's PDFium: rendering and tiles,
@@ -315,17 +316,23 @@ view.on('close', () => zebkit.quit());
 ```
 
 ```js
-// zebkit-js todo.mjs: a window of native widgets
-const {h, signal, For, window} = zebkit.ui;
-const [todos, setTodos] = signal([]);
-const [draft, setDraft] = signal('');
+// zebkit-js examples/ui/todo.mjs: a window of native widgets, styled with
+// Tailwind's classes and kept up to date by signals (an excerpt)
+const {h, signal, computed, For, window} = zebkit.ui;
+const [tasks, setTasks] = signal([]);
+const done = computed(() => tasks().filter((t) => t.done).length);
 
-window({title: 'To do', width: 420, height: 440}, () =>
-  h('view', {class: 'flex-col gap-3 p-6 bg-gray-50'},
-    h('input', {placeholder: 'What needs doing?', value: draft, onInput: setDraft,
-                onSubmit: () => { setTodos((t) => [...t, draft()]); setDraft(''); }}),
-    h(For, {each: todos}, (todo) => h('text', {}, todo)),
-    h('text', {class: 'text-sm text-gray-500'}, () => `${todos().length} things`)));
+const Task = (task) =>
+  h('view', {class: 'flex-row items-center gap-3 p-3 rounded-xl bg-[#141a2e]'},
+    h('button', {class: 'w-8 h-8 p-0 rounded-full bg-[#7c5cff] text-white',
+                 onClick: () => toggle(task)}, task.done ? '✓' : ''),
+    h('text', {class: 'grow text-[#e6e8f2]'}, task.text));
+
+window({title: 'Today', width: 460, height: 680}, () =>
+  h('view', {class: 'flex-col gap-4 p-6 bg-[#0b1020]'},
+    h('text', {class: 'text-3xl font-bold text-white'}, 'Ship something great'),
+    h('text', {class: 'text-sm text-[#8a91aa]'}, () => `${done()} of ${tasks().length} done`),
+    h(For, {each: tasks}, Task)));
 ```
 
 ![examples/ui/todo.mjs](docs/images/zebkit-ui-todo.png)

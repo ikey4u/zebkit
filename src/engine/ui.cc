@@ -10,6 +10,7 @@
 
 #include <stdlib.h>
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -28,6 +29,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_types.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
@@ -183,6 +185,8 @@ struct UiTree::Node : public views::TextfieldController,
   std::optional<SkColor> background;
   std::optional<SkColor> border_color;
   int border_width = 0;
+  // Whether the script gave a padding, zero included.
+  bool padding_set = false;
   float radius = 0;
   gfx::Insets padding;
   int flex = 0;
@@ -397,6 +401,7 @@ std::string UiTree::Set(int id, const base::DictValue& props) {
           node->container->layout()->set_inside_border_insets(*insets);
         else
           node->padding = *insets;
+        node->padding_set = true;
         decoration = true;
       }
     } else if (key == "grow") {
@@ -422,8 +427,13 @@ std::string UiTree::Set(int id, const base::DictValue& props) {
       decoration = true;
     } else if (key == "color" && text) {
       if (std::optional<SkColor> color = ParseColor(*text)) {
-        if (node->type == "text")
-          static_cast<views::Label*>(view)->SetEnabledColor(*color);
+        if (node->type == "text") {
+          auto* label = static_cast<views::Label*>(view);
+          // The color asked for, not one Chromium picks for contrast
+          // against a background it assumes.
+          label->SetAutoColorReadabilityEnabled(false);
+          label->SetEnabledColor(*color);
+        }
         else if (node->type == "button")
           static_cast<views::MdTextButton*>(view)->SetEnabledTextColors(*color);
         else if (node->type == "input")
@@ -492,7 +502,44 @@ std::string UiTree::Set(int id, const base::DictValue& props) {
       return "unknown property \"" + key + "\" of a " + node->type;
     }
   }
-  if (decoration) {
+  if (decoration && node->type == "button") {
+    // A Material button paints its own background and stroke again on every
+    // change of state, so it is styled through its own setters: a background
+    // makes it a filled button of that color, none a bare text button.
+    auto* button = static_cast<Button*>(view);
+    if (node->background) {
+      button->SetStyle(ui::ButtonStyle::kDefault);
+      button->SetBgColorOverrideDeprecated(*node->background);
+      button->SetStrokeColorOverrideDeprecated(
+          node->border_width > 0 && node->border_color ? *node->border_color
+                                                       : *node->background);
+    } else {
+      // Nothing behind the label, and no stroke unless one is asked for.
+      button->SetStyle(ui::ButtonStyle::kText);
+      button->SetBgColorOverrideDeprecated(SK_ColorTRANSPARENT);
+      button->SetStrokeColorOverrideDeprecated(
+          node->border_width > 0 && node->border_color ? *node->border_color
+                                                       : SK_ColorTRANSPARENT);
+    }
+    if (node->radius > 0)
+      button->SetCornerRadius(node->radius);
+    button->SetCustomPadding(node->padding_set
+                                 ? std::optional<gfx::Insets>(node->padding)
+                                 : std::nullopt);
+  } else if (decoration && node->type == "input" && node->background) {
+    // A text field paints its own background: its color is set on it, and
+    // the border is a rounded one of that color unless one is asked for.
+    auto* field = static_cast<views::Textfield*>(view);
+    field->SetBackgroundColor(*node->background);
+    SkColor stroke = node->border_width > 0 && node->border_color
+                         ? *node->border_color
+                         : *node->background;
+    std::unique_ptr<views::Border> border = views::CreateRoundedRectBorder(
+        std::max(1, node->border_width), node->radius, stroke);
+    field->SetBorder(views::CreatePaddedBorder(
+        std::move(border),
+        node->padding.IsEmpty() ? gfx::Insets::VH(6, 10) : node->padding));
+  } else if (decoration) {
     view->SetBackground(
         node->background
             ? (node->radius > 0

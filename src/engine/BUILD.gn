@@ -114,6 +114,8 @@ action("vendor_sources") {
   inputs = [ "vendor/gen_vendor.py" ]
   deps = _vendored_libraries
   outputs = [ "$target_gen_dir/vendor/libraries.txt" ]
+  # The libraries' objects it read, so that it runs again when they change.
+  depfile = "$target_gen_dir/vendor/libraries.d"
   foreach(library, _vendored) {
     outputs += [
       "$target_gen_dir/vendor/$library.txt",
@@ -140,6 +142,8 @@ action("vendor_sources") {
            rebase_path(target_gen_dir, root_build_dir),
            "--stamp",
            rebase_path("$target_gen_dir/vendor/libraries.txt", root_build_dir),
+           "--depfile",
+           rebase_path(depfile, root_build_dir),
          ] + _vendored
 }
 

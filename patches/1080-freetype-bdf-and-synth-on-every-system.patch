@@ -1,0 +1,23 @@
+Vendor: FreeType's BDF and synthesis functions on every system.
+
+zebkit's package ships <freetype/ftbdf.h> and <freetype/ftsynth.h> on
+Linux, macOS and Windows, and exports FreeType's functions under
+zebkit_vendor_freetype_*. Chromium compiles ftbdf.c and ftsynth.c only for
+Linux, ChromeOS and Cast, so on macOS and Windows FT_Get_BDF_Charset_ID,
+FT_Get_BDF_Property and FT_GlyphSlot_Embolden, _Oblique, _Slant and
+_AdjustWeight were declared and not there: an application calling them
+failed to link. They are compiled everywhere but Android now.
+
+--- a/third_party/freetype/BUILD.gn
++++ b/third_party/freetype/BUILD.gn
+@@ -137,7 +137,9 @@
+     ]
+   }
+ 
+-  if (is_linux || is_chromeos || is_cast_android) {
++  # zebkit: on every system, as its <freetype/ftbdf.h> and
++  # <freetype/ftsynth.h> are on every system (zebkit_vendor_freetype_*).
++  if (!is_android || is_cast_android) {
+     # Needed for content_shell on Linux and Chromecast, since fontconfig
+     # requires FT_Get_BDF_Property.
+     sources += [ "src/src/base/ftbdf.c" ]

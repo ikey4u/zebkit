@@ -58,3 +58,4 @@
 1077-content-embedder-input-through-the-router.patch
 1078-cfi-icall-not-into-the-application.patch
 1079-content-embedder-touch-through-the-touch-emulator.patch
+1080-freetype-bdf-and-synth-on-every-system.patch

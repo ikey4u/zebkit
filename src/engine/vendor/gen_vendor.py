@@ -2,7 +2,7 @@
 """Expose the C libraries inside the engine to applications.
 
     gen_vendor.py [--target linux|mac|win] --src <chromium src> --clang <clang> --sysroot <dir>
-                  --nm <llvm-nm> --out <gen dir> --stamp <file> <library>...
+                  --nm <llvm-nm> --out <gen dir> --stamp <file> [--depfile <file>] <library>...
 
 Run by //zebkit/engine:vendor from the build directory, once the libraries
 are compiled. For each library named, it writes into <gen dir>:
@@ -391,10 +391,19 @@ def posix_dir(name):
     return name.rpartition("/")[0]
 
 
+# What the exports were made from, for the depfile: GN's deps of an action
+# only order it, so without these a library's changed or added objects would
+# leave the exports as they were.
+SCANNED = []
+
+
 def defined_functions(nm, objects_dirs, underscore):
     names = set()
     pattern = "*.obj" if TARGET == "win" else "*.o"
     objects = [str(p) for d in objects_dirs for p in pathlib.Path("obj", d).rglob(pattern)]
+    # A library's .ninja changes when it gains or loses a source.
+    SCANNED.extend(objects)
+    SCANNED.extend(str(p) for d in objects_dirs for p in pathlib.Path("obj", d).rglob("*.ninja"))
     for start in range(0, len(objects), 500):
         out = subprocess.run([nm, "--defined-only", "-g"] + objects[start:start + 500],
                              capture_output=True, text=True).stdout
@@ -635,6 +644,7 @@ def main():
     parser.add_argument("--nm", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--stamp", required=True)
+    parser.add_argument("--depfile")
     parser.add_argument("libraries", nargs="+")
     args = parser.parse_args()
     global TARGET
@@ -646,6 +656,9 @@ def main():
     for name in args.libraries:
         report.append(f"{name} {generate(name, LIBRARIES[name], args)}")
     pathlib.Path(args.stamp).write_text("\n".join(report) + "\n")
+    if args.depfile:
+        pathlib.Path(args.depfile).write_text(
+            args.stamp + ": " + " ".join(sorted(set(SCANNED))) + "\n")
 
 
 if __name__ == "__main__":
