@@ -799,7 +799,8 @@ with no CDP in between:
     31.5 to 17.8 ms.
   - The shared memory a copy of a frame goes to the browser in made in one
     call (`MADV_POPULATE_WRITE`, `patches/1082`) instead of 1000 page
-    faults: 4.5 to 1.8 ms.
+    faults: 4.5 to 1.8 ms. Only the GPU process's seccomp policy allows that
+    advice; the baseline policy, and the renderer's, are upstream's.
   - Frames on demand within a millisecond, and kept 100 ms after a command
     (a screenshot's emulation, undone after it, was otherwise drawn at 60 Hz
     and the next screenshot waited for it, 16 ms more one time in five).

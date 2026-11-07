@@ -5,28 +5,32 @@ Page.captureScreenshot asks) goes to the browser in shared memory made for
 it, which the copy of its pixels then fills one page fault at a time: 4 KiB
 a fault, 1000 for a 1280 by 800 picture, 4.3 ms of the GPU process's time
 for every screenshot. MADV_POPULATE_WRITE (Linux 5.14) makes the pages in one
-call, 1.3 ms; on an older kernel the call fails and the copy faults them in
-as before. The GPU process's sandbox (the baseline policy) allows that
-advice, which only makes pages the process may write anyway.
+call, 1.3 ms; on an older kernel, or where a sandbox refuses it (EPERM), the
+copy faults them in as before.
 
---- a/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
-+++ b/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
-@@ -242,11 +242,13 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
- 
-   if (sysno == __NR_madvise) {
-     // Only allow MADV_DONTNEED, MADV_WILLNEED, MADV_RANDOM, MADV_REMOVE,
--    // MADV_NORMAL, and MADV_FREE.
-+    // MADV_NORMAL, and MADV_FREE; zebkit: and MADV_POPULATE_WRITE (23),
-+    // which faults in pages the process may write anyway (a copy result's
-+    // shared memory in the GPU process).
-     const Arg<int> advice(2);
-     return If(AnyOf(advice == MADV_DONTNEED, advice == MADV_WILLNEED,
-                     advice == MADV_RANDOM, advice == MADV_REMOVE,
--                    advice == MADV_NORMAL
-+                    advice == MADV_NORMAL, advice == 23
- #if defined(MADV_FREE)
-                     // MADV_FREE was introduced in Linux 4.5 and started being
-                     // defined in glibc 2.24.
+Only the GPU process's seccomp policy (GpuProcessPolicy, which the
+ChromeOS GPU policies derive from) allows that advice, which only makes
+pages the process may write anyway; the baseline policy, and with it the
+renderer's and every other process's, is upstream's. The GPU process's
+broker has its own policy and does not make the call.
+
+--- a/sandbox/policy/linux/bpf_gpu_policy_linux.cc
++++ b/sandbox/policy/linux/bpf_gpu_policy_linux.cc
+@@ -110,6 +110,14 @@ ResultExpr GpuProcessPolicy::EvaluateSyscall(int sysno) const {
+       // TODO(crbug.com/442771181): Only nvidia drivers seems to use this. Maybe
+       // scope this allowance to only nvidia drivers.
+       return RestrictMemfdCreateWithExecMappings();
++    case __NR_madvise: {
++      // zebkit: MADV_POPULATE_WRITE (23, Linux 5.14), which makes at once the
++      // pages of a copy result's shared memory the process then writes
++      // (patches/1082); every other advice as the baseline policy has it.
++      const Arg<int> advice(2);
++      return If(advice == 23, Allow())
++          .Else(BPFBasePolicy::EvaluateSyscall(sysno));
++    }
+     default:
+       break;
+   }
 --- a/services/viz/public/cpp/compositing/bitmap_in_shared_memory_mojom_traits.cc
 +++ b/services/viz/public/cpp/compositing/bitmap_in_shared_memory_mojom_traits.cc
 @@ -8,6 +8,14 @@
@@ -44,15 +48,16 @@ advice, which only makes pages the process may write anyway.
  
  namespace {
  
-@@ -57,6 +65,13 @@ StructTraits<viz::mojom::BitmapInSharedMemoryDataView,
+@@ -57,6 +65,14 @@ StructTraits<viz::mojom::BitmapInSharedMemoryDataView,
        return std::nullopt;
      }
  
 +#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 +    // zebkit: the new region's pages made at once (Linux 5.14) rather than
 +    // one fault at a time as the copy below touches them: 1.3 instead of
-+    // 4.3 ms for a 1280 by 800 picture. Elsewhere, or refused, the copy
-+    // faults them in as before.
++    // 4.3 ms for a 1280 by 800 picture. Elsewhere, or refused (an older
++    // kernel, a sandbox that does not allow it), the copy faults them in as
++    // before.
 +    madvise(mapping.memory(), mapping.size(), MADV_POPULATE_WRITE);
 +#endif
      auto* src_pixels = static_cast<const uint8_t*>(sk_bitmap.getPixels());
