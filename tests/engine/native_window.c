@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 /* Native window queries and exports must never expose headless or off-thread
  * internals; an export answers once, after the call. */
 #include <zebkit/zebkit.h>
