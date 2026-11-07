@@ -65,12 +65,14 @@ const operations = {
   'allTextContents (200)': () => page.locator('.item').allTextContents(),
   'getByRole click': () => page.getByRole('button', { name: 'Go' }).click(),
   'screenshot': () => page.screenshot(),
+  'screenshot jpeg': () => page.screenshot({ type: 'jpeg' }),
+  'screenshot clip': () => page.screenshot({ clip: { x: 0, y: 0, width: 1280, height: 800 } }),
 };
 
 await page.goto(url);
 const results = {};
 for (const [name, operation] of Object.entries(operations)) {
-  const count = name === 'goto' || name === 'screenshot' ? Math.min(runs, 20) : runs;
+  const count = name === 'goto' || name.startsWith('screenshot') ? Math.min(runs, 20) : runs;
   for (let i = 0; i < 3; ++i)
     await operation();
   const times = [];

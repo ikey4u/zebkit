@@ -62,6 +62,64 @@ unsafe extern "C" fn on_done<F: FnOnce(Result<String, Error>)>(
     done(script_result(json, error));
 }
 
+/// A screenshot's pixels, unencoded (zebkit's own, beyond Playwright's
+/// API): `height` rows of `stride` bytes, 4 bytes a pixel, R, G, B, A, not
+/// premultiplied, the pixels of the PNG `Page.screenshot` gives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    pub stride: usize,
+    pub data: Vec<u8>,
+}
+
+/// `Page.screenshot` (or `ElementHandle.screenshot` with its "handle") on
+/// `view`'s page with `params` (the command's but type, quality and path),
+/// answered with the pixels instead of an encoded picture.
+pub fn screenshot_pixels<F: FnOnce(Result<Pixels, Error>) + 'static>(view: &View, method: &str, params: &str, done: F) {
+    let Some(raw) = view.raw() else {
+        done(Err(Error::new("the view is closed")));
+        return;
+    };
+    let data = Box::into_raw(Box::new(done));
+    unsafe {
+        sys::zebkit_automation_screenshot_pixels(
+            raw,
+            c_string(method).as_ptr(),
+            c_string(params).as_ptr(),
+            Some(on_pixels::<F>),
+            data.cast(),
+        )
+    }
+}
+
+unsafe extern "C" fn on_pixels<F: FnOnce(Result<Pixels, Error>)>(
+    _view: *mut sys::zebkit_view,
+    pixels: *const u8,
+    width: std::os::raw::c_int,
+    height: std::os::raw::c_int,
+    stride: std::os::raw::c_int,
+    error: *const c_char,
+    data: *mut c_void,
+) {
+    let done = Box::from_raw(data.cast::<F>());
+    if let Some(message) = crate::string_from(error) {
+        done(Err(Error::new(message)));
+        return;
+    }
+    if pixels.is_null() || width <= 0 || height <= 0 || stride < width * 4 {
+        done(Err(Error::new("no pixels")));
+        return;
+    }
+    let size = stride as usize * height as usize;
+    done(Ok(Pixels {
+        width: width as u32,
+        height: height as u32,
+        stride: stride as usize,
+        data: std::slice::from_raw_parts(pixels, size).to_vec(),
+    }));
+}
+
 type EventFunction = Box<dyn FnMut(&str, &str)>;
 
 thread_local! {
@@ -277,6 +335,19 @@ impl Page {
 
     pub fn screenshot<F: FnOnce(Result<String, Error>) + 'static>(&self, path: &str, done: F) {
         self.command("Page.screenshot", &format!("{{\"path\":{}}}", json_string(path)), done);
+    }
+
+    /// `Page.screenshot` with Playwright's options as a JSON object
+    /// (`{"type": "jpeg", "fullPage": true, ...}`); the result's "binary"
+    /// is the picture in base64, or it is written to "path".
+    pub fn screenshot_with<F: FnOnce(Result<String, Error>) + 'static>(&self, options: &str, done: F) {
+        self.command("Page.screenshot", options, done);
+    }
+
+    /// The screenshot's pixels, unencoded ([`Pixels`], RGBA), with
+    /// `Page.screenshot`'s options but type, quality and path.
+    pub fn screenshot_pixels<F: FnOnce(Result<Pixels, Error>) + 'static>(&self, options: &str, done: F) {
+        screenshot_pixels(&self.view, "Page.screenshot", options, done);
     }
 
     pub fn press<F: FnOnce(Result<String, Error>) + 'static>(&self, key: &str, done: F) {

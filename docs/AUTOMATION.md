@@ -223,6 +223,19 @@ void zebkit_automation_call(zebkit_view *view, const char *method,
                             const char *params, zebkit_automation_func func,
                             void *data);
 
+/* zebkit's own, beyond Playwright's API: Page.screenshot (or
+ * ElementHandle.screenshot with its "handle") answered with the pixels,
+ * unencoded: @height rows of @stride bytes, RGBA 8-bit, not premultiplied
+ * (the PNG's pixels), valid during @func. The command's options but type,
+ * quality and path. */
+typedef void (*zebkit_automation_pixels_func)(zebkit_view *view,
+    const unsigned char *pixels, int width, int height, int stride,
+    const char *error, void *data);
+void zebkit_automation_screenshot_pixels(zebkit_view *view, const char *method,
+                                         const char *params,
+                                         zebkit_automation_pixels_func func,
+                                         void *data);
+
 /* The page's events as Playwright's protocol names them. */
 void zebkit_automation_on_event(zebkit_view *view,
                                 zebkit_automation_event_func func, void *data);
@@ -260,6 +273,15 @@ every binding at once. Where zebkit differs from the protocol, and why:
 - **Bytes are base64** in JSON (`Page.screenshot`'s `binary`, `Page.pdf`,
   `Response.body`, `Route.fulfill`'s `body` with `isBase64`), and
   `Page.screenshot` also takes `path`, a file the engine writes.
+- **A screenshot's pixels, unencoded**: `zebkit_automation_screenshot_pixels()`
+  takes `Page.screenshot`'s options (clip, fullPage, scale, animations, caret,
+  mask, style, omitBackground, an element's with `ElementHandle.screenshot`)
+  and answers with the picture itself: RGBA, 8 bits a channel, not
+  premultiplied, rows of `stride` (`width * 4`) bytes, the same pixels the PNG
+  decodes to; no encoding, no base64. Python's `page.screenshot_pixels()`
+  (also of a `Locator` and an `ElementHandle`) gives `Pixels(width, height,
+  stride, data)`, Rust's `Page::screenshot_pixels()` a `Pixels`. It is
+  zebkit's, not Playwright's: Playwright's `screenshot()` is unchanged.
 - **Objects are ids, not guids**: frames `f<n>`, handles `h<n>`, requests
   `q<n>`, routes `r<n>`, dialogs `d<n>`, file choosers `c<n>`, downloads
   `w<n>`, binding calls `b<n>`, all in the events that create them.
@@ -275,7 +297,7 @@ Playwright's async API with its names: `Page`, `Frame`, `Locator` (with
 `page.touchscreen`, and `listen()` for the endpoint. Coroutines run on the
 engine's thread with `zebkit.automation.run()`; an `await` is a command in
 flight. Rust's is `zebkit::automation` (`Page`, `Frame`, `Locator`,
-`BrowserContext`, `listen`, and `call` for any command).
+`BrowserContext`, `listen`, `screenshot_pixels`, and `call` for any command).
 
 ## 4. The parts
 
@@ -436,12 +458,14 @@ too, not only the ones after it.
 
 Where a view has no display (`--headless`, an off-screen view), nothing
 needs frames at the display's 60 Hz. While a command is in flight on such a
-page, its compositor's begin frames come every 2 ms instead of every
+page, its compositor's begin frames come every millisecond instead of every
 16.7 ms (`ui::Compositor::SetDisplayVSyncParameters`), and go back to the
-display's rate when the last command answers; so a frame Playwright's
-stability check or an input's delivery waits for costs what it takes to
-make. Windowed views keep their display's rate. Section 6 has what it
-saves.
+display's rate 100 ms after the last command answers (so that the next one
+of a script, and the frames the last one left to make, such as a
+screenshot's emulation undone, do not wait for a 60 Hz tick); so a frame
+Playwright's stability check, an input's delivery or a screenshot waits for
+costs what it takes to make. Windowed views keep their display's rate.
+Section 6 has what it saves.
 
 ### 4.7 The rest
 
@@ -456,7 +480,7 @@ saves.
 | `grantPermissions`, `clearPermissions` | `patches/1037` lets the embedder answer for a permission at an origin; granted ones granted, the others denied, as CDP's `Browser.grantPermissions` |
 | `clock` | Playwright's clock (`injected/src/clock.ts`, `playwright/clock_script.js`) installed and driven as `server/clock.ts` does |
 | `emulateMedia` | the page's preferences: color scheme, reduced motion, contrast, forced colors |
-| `screenshot` | the view's surface (`RenderWidgetHostView::CopyFromSurface`), the viewport, a clip or an element's box |
+| `screenshot` | `Page.captureScreenshot` of the page's own DevTools session, as `crPage.ts` asks it (a clip in the document, beyond the viewport, the visual viewport's scale), so a fresh frame of the page's newest surface; the viewport of a page that emulates no viewport without a clip (the view's surface as it is); PNG at deflate level 1 with the Up filter (`optimizeForSpeed`); `zebkit-raw` for the pixels (`patches/1081`) |
 | `pdf` | `print.cc`, as `Page.printToPDF` prints |
 | `addInitScript` | `zebkit_view_add_script` |
 | `ariaSnapshot`, `expect` | the injected script's, YAML by Playwright's renderer and parser |
@@ -724,31 +748,70 @@ uploads, navigation response identity and response-body reads.
 ## 6. What it costs now
 
 `scripts/automation-bench.sh` (`docs/reports/automation-bench.md`), the
-page of section 1, 50 runs each (20 of `goto` and `screenshot`), headless,
-on one machine, 2026-10-27. Medians; the endpoint is Playwright's own client
-(playwright-core 1.64.1) connected to `zebkit_automation_listen()`, with no
-CDP in between:
+page of section 1, 50 runs each (20 of `goto` and of each screenshot),
+headless, on one machine, 2026-11-07. Medians; the endpoint is Playwright's
+own client (playwright-core 1.64.1) connected to `zebkit_automation_listen()`,
+with no CDP in between:
 
 | Operation | zebkit native | zebkit endpoint, Playwright's client | zebkit, Playwright over CDP | Chrome 156, Playwright over CDP | native vs over CDP |
 |---|---|---|---|---|---|
-| `evaluate(() => 1 + 1)` | 0.12 ms | 0.59 ms | 0.60 ms | 0.45 ms | 5.0x |
-| `locator.textContent()` | 0.22 ms | 0.65 ms | 1.10 ms | 0.90 ms | 5.0x |
-| `locator.isVisible()` | 0.20 ms | 0.69 ms | 0.74 ms | 0.66 ms | 3.7x |
-| `locator.count()` (200) | 0.24 ms | 0.77 ms | 0.78 ms | 0.76 ms | 3.3x |
-| `allTextContents()` (200) | 0.26 ms | 2.05 ms | 2.21 ms | 1.81 ms | 8.5x |
-| `locator.fill()` | 0.66 ms | 2.42 ms | 3.22 ms | 2.74 ms | 4.9x |
-| `locator.press('Enter')` | 0.40 ms | 0.82 ms | 3.18 ms | 2.34 ms | 8.0x |
-| `locator.click()` | 4.91 ms | 3.46 ms | 33.39 ms | 33.39 ms | 6.8x |
-| `getByRole().click()` | 3.19 ms | 3.46 ms | 33.32 ms | 33.35 ms | 10.4x |
-| `page.screenshot()` | 29.91 ms | 44.15 ms | 66.68 ms | 33.39 ms | 2.2x |
-| `page.goto()` (local), 2026-11-02 | 13.46 ms | 13.88 ms | 15.77 ms | 18.31 ms | 1.2x |
+| `evaluate(() => 1 + 1)` | 0.24 ms | 0.65 ms | 0.57 ms | 0.49 ms | 2.4x |
+| `locator.textContent()` | 0.23 ms | 0.70 ms | 1.12 ms | 0.81 ms | 4.9x |
+| `locator.isVisible()` | 0.48 ms | 0.86 ms | 0.76 ms | 0.62 ms | 1.6x |
+| `locator.count()` (200) | 0.23 ms | 0.71 ms | 0.93 ms | 0.64 ms | 4.0x |
+| `allTextContents()` (200) | 0.34 ms | 1.86 ms | 2.29 ms | 1.91 ms | 6.7x |
+| `locator.fill()` | 2.14 ms | 2.01 ms | 3.52 ms | 2.86 ms | 1.6x |
+| `locator.press('Enter')` | 0.59 ms | 0.98 ms | 3.36 ms | 2.64 ms | 5.7x |
+| `locator.click()` | 2.04 ms | 3.47 ms | 33.40 ms | 33.31 ms | 16.4x |
+| `getByRole().click()` | 3.01 ms | 3.65 ms | 33.39 ms | 33.30 ms | 11.1x |
+| `page.screenshot()` | 12.43 ms | 16.71 ms | 50.20 ms | 33.82 ms | 4.0x |
+| `page.screenshot({type: 'jpeg'})` | 13.88 ms | 14.43 ms | 49.57 ms | 32.89 ms | 3.6x |
+| `page.screenshot({clip})`, the viewport | 13.19 ms | 18.80 ms | 51.16 ms | 33.44 ms | 3.9x |
+| `zebkit_automation_screenshot_pixels()` | 9.27 ms | | | | |
+| `page.goto()` (local) | 11.15 ms | 12.98 ms | 11.15 ms | 18.24 ms | 1.0x |
 
 - **A click no longer waits for the display**: frames on demand (4.6) make
   the frames Playwright's stability check and the input's delivery wait for
-  at once, so a click takes 3 to 5 ms instead of the display's two frames
+  at once, so a click takes 2 to 3 ms instead of the display's two frames
   (33 ms at 60 Hz, which Playwright over CDP still pays on zebkit and on
-  Chrome alike). A click through the endpoint gets the same.
-- **Everything else that is not a navigation is 3.3 to 8.5 times faster**
+  Chrome alike). A click through the endpoint gets the same. Since
+  2026-11-07 a frame on demand comes within a millisecond (it was 2), and
+  the frames stay on demand 100 ms after a command: a click went from 4.9 to
+  2.0 ms. `fill` went from 0.7 to 2.1 ms in this benchmark for the same
+  reason: the frame its change asks for is made at once, and the next
+  `fill` comes in behind it (a 2 ms frame of this page's 200 items); it used
+  to be made after the command, at 60 Hz.
+- **A screenshot, 31.5 ms natively on 2026-11-02, is 12.4 ms**, where
+  Playwright with Chrome takes 33.8 ms. It already had frames on demand; a
+  native screenshot of the bench page, traced (`--trace-startup`), was:
+  messaging and the renderer's steps 3.5 ms, the frame of the page's new
+  surface 3.9 ms, the compositor's copy 2.1 ms, the copy put in shared
+  memory for the browser 4.5 ms, the PNG 15.9 ms (Chrome's own default,
+  `Page.captureScreenshot` without `optimizeForSpeed`: deflate's Balanced
+  level). Three changes:
+  - The PNG at deflate level 1 with the Up filter (`optimizeForSpeed`, what
+    Chromium encodes screencasts with): 15.9 to 4.2 ms in the engine
+    (Skia's conversion of the pixels is most of it; the deflate alone is 1.9
+    against 13.5 ms), 40,319 to 59,084 bytes for this page (+47%). fdeflate's
+    Fast is as fast (1.6 ms, 60,441 bytes) and Fastest faster (0.6 ms,
+    72,491 bytes), neither worth a patch. Only the bytes change: the same
+    pixels. JPEG and WebP take their own encoders as before (JPEG 4.1 ms).
+    31.5 to 17.8 ms.
+  - The shared memory a copy of a frame goes to the browser in made in one
+    call (`MADV_POPULATE_WRITE`, `patches/1082`) instead of 1000 page
+    faults: 4.5 to 1.8 ms.
+  - Frames on demand within a millisecond, and kept 100 ms after a command
+    (a screenshot's emulation, undone after it, was otherwise drawn at 60 Hz
+    and the next screenshot waited for it, 16 ms more one time in five).
+  What is left: the page's frame 3.8 ms, the compositor's copy and its shared
+  memory 3.7 ms, the PNG 4.2 ms, the steps 3 ms. The pixels with no
+  encoding (`zebkit_automation_screenshot_pixels()`, `patches/1081`) take
+  9.3 ms. Taking the viewport without a clip (no emulation) was tried and
+  saved nothing. Over CDP zebkit does what Chrome does (Playwright's
+  `Page.captureScreenshot`, Chromium's own handler, frames at 60 Hz, the
+  Balanced PNG), and still takes a frame more than Chrome there (50 against
+  34 ms).
+- **Everything else that is not a navigation is 1.6 to 6.7 times faster**
   natively: one renderer call where Playwright makes several round trips,
   no JSON between processes.
 - **The endpoint sits between the two**: Playwright's client still runs in
@@ -756,8 +819,9 @@ CDP in between:
   native; for commands that are round trips (press, textContent, fill) it
   is 1.3 to 3.9 times faster than Playwright over CDP, and the same for
   single-round-trip ones (evaluate, count). A screenshot through the
-  endpoint costs a base64 PNG in JSON over the socket (44 ms against 30 ms
-  natively).
+  endpoint costs a base64 PNG in JSON over the socket and Playwright's
+  client (16.7 ms against 12.4 ms natively, twice as fast as Chrome's
+  33.8).
 - **`goto` answers at the load event, as Chromium's lifecycle does**: it
   waited for `DidFinishLoad` until 2026-11-02, which Blink sends only after
   it has laid the page out once more after the load event (`Document::

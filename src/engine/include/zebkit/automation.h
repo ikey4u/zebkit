@@ -44,6 +44,25 @@ ZEBKIT_API void zebkit_automation_call(zebkit_view *view, const char *method, co
                                        zebkit_automation_func func, void *data);
 
 /*
+ * zebkit's own, beyond Playwright's API: a screenshot's pixels, unencoded.
+ * @method is "Page.screenshot", or "ElementHandle.screenshot" with the
+ * element's "handle" in @params; @params are those of the command
+ * (clip, fullPage, scale, animations, caret, mask, maskColor, style,
+ * omitBackground, timeout), but not type, quality or path. The picture is
+ * the one the command's PNG has: @func gets @height rows of @stride bytes,
+ * 4 bytes a pixel, R, G, B, A in that order, 8 bits each, not
+ * premultiplied (RGBA8888, straight alpha; @stride is @width * 4). The
+ * pixels are the engine's, for the time of the call to @func only (copy
+ * them to keep them). NULL with @error on failure.
+ *
+ *   zebkit_automation_screenshot_pixels(view, "Page.screenshot", "{\"fullPage\": true}", got, NULL);
+ */
+typedef void (*zebkit_automation_pixels_func)(zebkit_view *view, const unsigned char *pixels, int width,
+                                              int height, int stride, const char *error, void *data);
+ZEBKIT_API void zebkit_automation_screenshot_pixels(zebkit_view *view, const char *method, const char *params,
+                                                    zebkit_automation_pixels_func func, void *data);
+
+/*
  * Events of @view's page, as Playwright's protocol has them: @event is
  * "Frame.navigated", "Frame.loadstate", "Page.frameAttached",
  * "Page.frameDetached", "BrowserContext.console", "BrowserContext.dialog",

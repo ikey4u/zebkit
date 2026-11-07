@@ -1329,6 +1329,27 @@ RGBA frame export), see [MEDIA_TOOLS.md](MEDIA_TOOLS.md). These synchronous
 C/Rust/Python functions use the built-in FFmpeg without an external executable
 or engine loop. The lower-level vendor API remains available.
 
+### A screenshot's pixels
+
+Playwright's commands run natively through `<zebkit/automation.h>`
+([AUTOMATION.md](AUTOMATION.md)); `Page.screenshot` answers with a PNG,
+JPEG or WebP in base64. When the application wants the pixels themselves,
+`zebkit_automation_screenshot_pixels(view, "Page.screenshot", params, func,
+data)` takes the same options (`clip`, `fullPage`, `scale`, `animations`,
+`caret`, `mask`, `maskColor`, `style`, `omitBackground`, `timeout`; not
+`type`, `quality` or `path`) and calls `func(view, pixels, width, height,
+stride, error, data)` with the picture unencoded: `height` rows of `stride`
+(= `width * 4`) bytes, each pixel R, G, B, A, 8 bits each, not
+premultiplied: the pixels the PNG decodes to. They are the engine's for the
+call only. `"ElementHandle.screenshot"` with the element's `"handle"` takes
+an element's. Python: `await page.screenshot_pixels(full_page=True)` (also
+`locator.screenshot_pixels()`, `element.screenshot_pixels()`) returns
+`Pixels(width, height, stride, data)`; Rust:
+`Page::screenshot_pixels(options_json, done)` and
+`automation::screenshot_pixels(view, method, params, done)` give a
+`Pixels { width, height, stride, data }`. This is zebkit's own, not
+Playwright's API, which is unchanged.
+
 ## Switches that are not an application's
 
 `--use-fake-device-for-media-stream` and `--use-fake-ui-for-media-stream` are

@@ -9,6 +9,7 @@ tracing, the Playwright endpoint.
 Exit 0 when every check passes.
 """
 
+import math
 import os
 import re
 import sys
@@ -107,6 +108,36 @@ async def test(base):
 
     png = await page.screenshot()
     check(png[:8] == b"\x89PNG\r\n\x1a\n", "screenshot()")
+    jpeg = await page.screenshot(type="jpeg", quality=60)
+    check(jpeg[:3] == b"\xff\xd8\xff", "screenshot(type='jpeg')")
+    # zebkit's own: the pixels, which are the PNG's; the viewport taken
+    # without a clip is the same picture as with the viewport's clip, also
+    # scrolled.
+    # Two pictures, each of a frame of its own: a page that changed in
+    # between (a frame still to come of what came before) is taken again.
+    for attempt in range(3):
+        width, height, rgba = zebkit.image_decode(await page.screenshot())
+        pixels = await page.screenshot_pixels()
+        differ = [i for i in range(0, min(len(rgba), len(pixels.data)), 4) if rgba[i:i + 4] != pixels.data[i:i + 4]]
+        if (pixels.width, pixels.height) == (width, height) and not differ:
+            break
+    check((pixels.width, pixels.height, pixels.stride) == (1280, 800, 1280 * 4) and pixels.data == rgba,
+          "screenshot_pixels() are the PNG's",
+          (pixels.width, pixels.height, width, height, attempt, len(differ),
+           differ and divmod(differ[0] // 4, width)[::-1]))
+    for scroll in (0, 120):
+        await page.evaluate("(y) => { document.body.style.minHeight = '3000px'; scrollTo(0, y); }", scroll)
+        whole = await page.screenshot_pixels()
+        clipped = await page.screenshot_pixels(clip={"x": 0, "y": 0, "width": 1280, "height": 800})
+        check(whole == clipped, "the viewport with no clip is the clipped one's picture, scrolled by %d" % scroll)
+    await page.evaluate("() => { document.body.style.minHeight = ''; scrollTo(0, 0); }")
+    element = await page.locator("#go").screenshot_pixels()
+    box = await page.locator("#go").bounding_box()
+    # The box's enclosing pixels, as screenshotter.ts takes an element's.
+    enclosing = (math.ceil(box["x"] + box["width"]) - math.floor(box["x"]),
+                 math.ceil(box["y"] + box["height"]) - math.floor(box["y"]))
+    check((element.width, element.height) == enclosing,
+          "Locator.screenshot_pixels() is the element's", ((element.width, element.height), box))
 
     workers = []
     page.on("worker", workers.append)

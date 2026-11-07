@@ -1,0 +1,113 @@
+Speed: Page.captureScreenshot of format "zebkit-raw", the picture unencoded.
+
+zebkit's native screenshots (<zebkit/automation.h>,
+zebkit_automation_screenshot_pixels()) give an application the pixels
+themselves, with Page.captureScreenshot's clip, full page, scale and
+emulation as they are. The picture of such a capture is not encoded: it is
+kept, the data answered is its key, and the engine takes it with
+content::protocol::TakeZebkitRawScreenshot(). A 1280 by 800 PNG took 13 ms
+to encode; nothing is copied for it but the bitmap's reference.
+
+--- a/content/browser/devtools/protocol/page_handler.cc
++++ b/content/browser/devtools/protocol/page_handler.cc
+@@ -5,6 +5,7 @@
+ #include "content/browser/devtools/protocol/page_handler.h"
+ 
+ #include <algorithm>
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <sstream>
+@@ -17,6 +18,7 @@
+ #include "base/location.h"
+ #include "base/memory/ref_counted.h"
+ #include "base/memory/ref_counted_memory.h"
++#include "base/no_destructor.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "base/process/process_handle.h"
+ #include "base/strings/strcat.h"
+@@ -24,6 +26,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/to_string.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/synchronization/lock.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/task/thread_pool.h"
+@@ -131,11 +134,35 @@ std::optional<std::vector<uint8_t>> EncodeBitmapAsWebp(int quality,
+   return gfx::WebpCodec::Encode(bitmap, quality);
+ }
+ 
++// zebkit: the pictures of format "zebkit-raw" until they are taken.
++struct ZebkitRawScreenshots {
++  base::Lock lock;
++  int next = 0;
++  std::map<std::string, SkBitmap> kept;
++};
++
++ZebkitRawScreenshots& GetZebkitRawScreenshots() {
++  static base::NoDestructor<ZebkitRawScreenshots> screenshots;
++  return *screenshots;
++}
++
++std::optional<std::vector<uint8_t>> KeepBitmapForZebkit(
++    const SkBitmap& bitmap) {
++  ZebkitRawScreenshots& screenshots = GetZebkitRawScreenshots();
++  base::AutoLock hold(screenshots.lock);
++  const std::string key = base::NumberToString(++screenshots.next);
++  screenshots.kept[key] = bitmap;
++  return std::vector<uint8_t>(key.begin(), key.end());
++}
++
+ std::variant<protocol::Response, BitmapEncoder>
+ GetEncoder(const std::string& format, int quality, bool optimize_for_speed) {
+   if (quality < 0 || quality > 100) {
+     quality = kDefaultScreenshotQuality;
+   }
++  if (format == "zebkit-raw") {
++    return base::BindRepeating(&KeepBitmapForZebkit);
++  }
+ 
+   if (format == protocol::Page::CaptureScreenshot::FormatEnum::Png) {
+     return base::BindRepeating(optimize_for_speed ? EncodeBitmapAsPngFast
+@@ -1925,6 +1952,18 @@ void PageHandler::ScreencastFrameEncoded(
+                              std::move(page_metadata), session_id_);
+ }
+ 
++SkBitmap TakeZebkitRawScreenshot(const std::string& key) {
++  ZebkitRawScreenshots& screenshots = GetZebkitRawScreenshots();
++  base::AutoLock hold(screenshots.lock);
++  auto found = screenshots.kept.find(key);
++  if (found == screenshots.kept.end()) {
++    return SkBitmap();
++  }
++  SkBitmap bitmap = std::move(found->second);
++  screenshots.kept.erase(found);
++  return bitmap;
++}
++
+ void PageHandler::ScreenshotCaptured(
+     std::unique_ptr<PendingScreenshotRequest> request,
+     const gfx::Image& image) {
+--- a/content/browser/devtools/protocol/page_handler.h
++++ b/content/browser/devtools/protocol/page_handler.h
+@@ -25,6 +25,7 @@
+ #include "content/browser/devtools/protocol/page.h"
+ #include "content/browser/preloading/prerender/prerender_final_status.h"
+ #include "content/browser/renderer_host/render_widget_host_impl.h"
++#include "content/common/content_export.h"
+ #include "content/public/browser/download_manager.h"
+ #include "content/public/browser/javascript_dialog_manager.h"
+ #include "content/public/browser/render_widget_host.h"
+@@ -60,6 +61,11 @@ class BrowserHandler;
+ class EmulationHandler;
+ class MediaRecorder;
+ 
++// zebkit: the picture of a Page.captureScreenshot of format "zebkit-raw",
++// whose data is @key: kept unencoded for the engine's native screenshots,
++// and taken once (an empty bitmap for a key of none).
++CONTENT_EXPORT SkBitmap TakeZebkitRawScreenshot(const std::string& key);
++
+ class PageHandler : public DevToolsDomainHandler,
+                     public Page::Backend,
+                     public RenderWidgetHostObserver,

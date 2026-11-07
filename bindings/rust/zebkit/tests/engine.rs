@@ -489,6 +489,29 @@ fn authentication_host() {
 /// <zebkit/page.h>: a confirm() answered by the application, the page
 /// printed to PDF; then the view closes.
 fn page(view: View) {
+    // zebkit::automation's pixels: those of the PNG Page.screenshot writes.
+    let shots = zebkit::automation::Page::new(view.clone());
+    let png_path = std::env::temp_dir().join(format!("zebkit-rust-shot-{}.png", std::process::id()));
+    let path_text = png_path.to_string_lossy().into_owned();
+    let pixels_page = shots.clone();
+    shots.screenshot(&path_text, move |written| {
+        let png = std::fs::read(&png_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&png_path);
+        pixels_page.screenshot_pixels("{}", move |pixels| {
+            let decoded = services::decode_image(&png);
+            let same = matches!((&pixels, &decoded), (Ok(p), Ok(i))
+                if p.width == i.width && p.height == i.height && p.stride == p.width as usize * 4 && p.data == i.rgba);
+            check(
+                written.is_ok() && same,
+                "automation: the screenshot's pixels are the PNG's",
+                (pixels.as_ref().map(|p| (p.width, p.height, p.stride)), decoded.as_ref().map(|i| (i.width, i.height))),
+            );
+            page_dialogs(view);
+        });
+    });
+}
+
+fn page_dialogs(view: View) {
     {
         let answering = view.clone();
         view.on_dialog(move |dialog| {

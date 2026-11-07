@@ -28,7 +28,7 @@ import re
 from . import _VIEW, Error, View, _P, _S, _V, _alive, _declare, _guard, _view_on_close, post
 
 __all__ = ["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle", "Route", "Request",
-           "Response", "Dialog", "FileChooser", "Download", "BrowserContext", "Worker", "Tracing", "expect", "run",
+           "Response", "Dialog", "FileChooser", "Download", "BrowserContext", "Worker", "Tracing", "Pixels", "expect", "run",
            "new_context", "listen", "TimeoutError", "commands"]
 
 _DONE = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
@@ -40,6 +40,8 @@ _page_view = _declare("zebkit_automation_page", _V, _S)
 _LISTEN = ctypes.CFUNCTYPE(None, _S, _S, _P)
 _listen = _declare("zebkit_automation_listen", None, ctypes.c_int, _LISTEN, _P)
 _free = _declare("zebkit_free", None, _P)
+_PIXELS = ctypes.CFUNCTYPE(None, _V, _P, ctypes.c_int, ctypes.c_int, ctypes.c_int, _S, _P)
+_screenshot_pixels = _declare("zebkit_automation_screenshot_pixels", None, _V, _S, _S, _PIXELS, _P)
 
 
 class TimeoutError(Error):  # noqa: A001
@@ -151,6 +153,61 @@ def _command(view, method, params=None):
     clean = {k: v for k, v in (params or {}).items() if v is not None}
     _call(view._check() if view is not None else None, method.encode(), json.dumps(clean).encode(), callback, None)
     return future
+
+
+class Pixels(tuple):
+    """A screenshot's pixels, unencoded (zebkit's own, not Playwright's):
+    @height rows of @stride bytes, 4 bytes a pixel, R, G, B, A, not
+    premultiplied (the pixels of the PNG page.screenshot() gives)."""
+
+    __slots__ = ()
+
+    def __new__(cls, width, height, stride, data):
+        return tuple.__new__(cls, (width, height, stride, data))
+
+    width = property(lambda self: self[0])
+    height = property(lambda self: self[1])
+    stride = property(lambda self: self[2])
+    data = property(lambda self: self[3])
+
+
+def _pixels(view, method, params):
+    future = Future()
+
+    def done(handle, pixels, width, height, stride, error, data):
+        _alive.discard(callback)
+        if error is not None:
+            message = error.decode()
+            future.set_error((TimeoutError if message.startswith("Timeout ") else Error)(message))
+        else:
+            future.set_result(Pixels(width, height, stride, ctypes.string_at(pixels, stride * height)))
+
+    callback = _PIXELS(_guard(done))
+    _alive.add(callback)
+    clean = {k: v for k, v in (params or {}).items() if v is not None}
+    _screenshot_pixels(view._check(), method.encode(), json.dumps(clean).encode(), callback, None)
+    return future
+
+
+# Page.screenshot()'s options, as the protocol names them.
+def _screenshot_options(options):
+    names = {"full_page": "fullPage", "omit_background": "omitBackground", "mask_color": "maskColor"}
+    result = {}
+    for key, value in options.items():
+        if value is None or key == "path":
+            continue
+        if key == "timeout":
+            value = float(value)
+        if key == "mask":
+            value = [{"selector": locator._selector} for locator in value]
+        result[names.get(key, key)] = value
+    return result
+
+
+def _write(path, data):
+    if path:
+        pathlib.Path(path).write_bytes(data)
+    return data
 
 
 def _handle_of(value):
@@ -553,12 +610,16 @@ class Page(Frame):
         answer = await _command(self._view, "Page.goForward", {"waitUntil": wait_until, "timeout": _ms(timeout)})
         return Response(answer["response"]) if answer.get("response") else None
 
-    async def screenshot(self, path=None, clip=None, full_page=None):
-        answer = await _command(self._view, "Page.screenshot", {"clip": clip})
-        data = base64.b64decode(answer["binary"])
-        if path:
-            pathlib.Path(path).write_bytes(data)
-        return data
+    async def screenshot(self, path=None, **options):
+        """Playwright's options: type, quality, full_page, clip, omit_background,
+        animations, caret, scale, mask (locators), mask_color, style, timeout."""
+        answer = await _command(self._view, "Page.screenshot", _screenshot_options(options))
+        return _write(path, base64.b64decode(answer["binary"]))
+
+    async def screenshot_pixels(self, **options):
+        """zebkit's own: the screenshot's pixels unencoded, as Pixels (RGBA);
+        screenshot()'s options but type, quality and path."""
+        return await _pixels(self._view, "Page.screenshot", _screenshot_options(options))
 
     async def pdf(self, path=None, **options):
         answer = await _command(self._view, "Page.pdf", options)
@@ -880,10 +941,17 @@ class Locator(_Selectors):
         finally:
             await element.dispose()
 
-    async def screenshot(self, path=None, timeout=None):
+    async def screenshot(self, path=None, timeout=None, **options):
         element = await self.element_handle(timeout=timeout)
         try:
-            return await element.screenshot(path=path)
+            return await element.screenshot(path=path, timeout=timeout, **options)
+        finally:
+            await element.dispose()
+
+    async def screenshot_pixels(self, timeout=None, **options):
+        element = await self.element_handle(timeout=timeout)
+        try:
+            return await element.screenshot_pixels(timeout=timeout, **options)
         finally:
             await element.dispose()
 
@@ -1038,12 +1106,14 @@ class ElementHandle(JSHandle):
     async def bounding_box(self):
         return (await self._act("boundingBox")).get("value")
 
-    async def screenshot(self, path=None):
-        answer = await self._act("screenshot")
-        data = base64.b64decode(answer["binary"])
-        if path:
-            pathlib.Path(path).write_bytes(data)
-        return data
+    async def screenshot(self, path=None, **options):
+        answer = await self._act("screenshot", **_screenshot_options(options))
+        return _write(path, base64.b64decode(answer["binary"]))
+
+    async def screenshot_pixels(self, **options):
+        params = _screenshot_options(options)
+        params["handle"] = self._id
+        return await _pixels(self._frame.page._view, "ElementHandle.screenshot", params)
 
     async def query_selector(self, selector):
         return _make_handle(self._frame, (await self._act("querySelector", selector=selector)).get("element"))

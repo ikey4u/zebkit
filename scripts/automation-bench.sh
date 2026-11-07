@@ -102,7 +102,7 @@ if check:
     sys.exit(1 if slower else 0)
 columns = [native] + ([endpoint] if endpoint else []) + [cdp] + ([chrome] if chrome else [])
 lines = ["# Playwright's commands: native, zebkit's endpoint and over CDP", "",
-         f"`scripts/automation-bench.sh`, {runs} runs of each (20 of `goto` and `screenshot`) after three to warm up,",
+         f"`scripts/automation-bench.sh`, {runs} runs of each (20 of `goto` and of each screenshot) after three to warm up,",
          f"headless, tests/bench/automation/index.html served locally. Playwright is playwright-core {core} in Node.js.",
          "Medians in milliseconds; p90 in parentheses.", "",
          "| Operation | " + " | ".join(c["engine"] + (f" ({c['version']})" if c.get("version") else "") for c in columns) + " | native vs over CDP |",

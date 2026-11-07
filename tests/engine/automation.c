@@ -12,7 +12,9 @@
  * - keyboard and mouse: trusted keys, modifiers, text inserted, a click at
  *   a point;
  * - errors: strict mode, a timeout with its call log, an unknown key, a
- *   command that does not exist; Page.screenshot.
+ *   command that does not exist; Page.screenshot, PNG and JPEG;
+ * - zebkit_automation_screenshot_pixels(): the PNG's pixels, unencoded,
+ *   and a screenshot taken at once after a change of the page has it;
  * - handles: an ElementHandle queried and acted on, JSHandle properties
  *   and values, an evaluation given a handle, evalOnSelector;
  * - frames: a button in an <iframe> clicked through a frame locator;
@@ -45,6 +47,7 @@
 
 #include <zebkit/automation.h>
 #include <zebkit/offscreen.h>
+#include <zebkit/services.h>
 
 static int failures, checks;
 
@@ -174,6 +177,10 @@ static const command commands[] = {
     {"Page.screenshot", "Page.screenshot", NULL, "\"binary\":\"iVBORw0KGgo"},
     {"a command that does not exist", "Frame.nothing", NULL, "!zebkit: no command Frame.nothing"},
     {"back to the page", "Frame.goto", "{\"url\": \"%s/automation.html\"}", "\"status\":200"},
+    {"a JPEG screenshot", "Page.screenshot", "{\"type\": \"jpeg\", \"quality\": 50}", "\"binary\":\"/9j/"},
+    {"the pixels are the PNG's", "@pixels", NULL, NULL},
+    {"no type for the pixels", "@pixels-type", NULL, "!zebkit: options.type, quality and path are not for the pixels"},
+    {"a screenshot at once after a change has it", "@fresh", NULL, NULL},
     {"querySelector gives a handle", "Frame.querySelector", "{\"selector\": \"#go\"}", "button id=\\\"go\\\""},
     {"ElementHandle.textContent", "ElementHandle.textContent", "{\"handle\": \"@H\"}", "{\"value\":\"Go\"}"},
     {"ElementHandle.click", "ElementHandle.click", "{\"handle\": \"@H\"}", "{}"},
@@ -348,6 +355,131 @@ static void wait_event(void *data) {
     zebkit_post_delayed_task(wait_event, NULL, 20);
 }
 
+/* ---- zebkit_automation_screenshot_pixels() --------------------------------- */
+
+static int unbase64(const char *in, size_t length, uint8_t *out) {
+    static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint32_t bits = 0;
+    int have = 0, used = 0;
+    for (size_t i = 0; i < length && in[i] != '=' && in[i] != '"'; ++i) {
+        const char *at = strchr(digits, in[i]);
+        if (!at || !in[i])
+            continue;
+        bits = (bits << 6) | (uint32_t)(at - digits);
+        have += 6;
+        if (have >= 8) {
+            have -= 8;
+            out[used++] = (uint8_t)(bits >> have);
+        }
+    }
+    return used;
+}
+
+static const command *pixels_command;
+static uint8_t *png_rgba;
+static int png_width, png_height;
+
+static void pixels_compared(zebkit_view *v, const unsigned char *pixels, int width, int height, int stride,
+                            const char *error, void *data) {
+    (void)v, (void)data;
+    int same = pixels && png_rgba && width == png_width && height == png_height && stride == width * 4 &&
+               memcmp(pixels, png_rgba, (size_t)stride * height) == 0;
+    check(same, pixels_command->what, "%dx%d stride %d against the PNG's %dx%d%s%s", width, height, stride,
+          png_width, png_height, error ? ": " : "", error ? error : "");
+    zebkit_free(png_rgba);
+    png_rgba = NULL;
+    zebkit_post_task(run_next, NULL);
+}
+
+static void png_taken(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    const char *at = json ? strstr(json, "\"binary\":\"") : NULL;
+    if (!at) {
+        check(0, pixels_command->what, "no PNG: %s", error ? error : json);
+        zebkit_post_task(run_next, NULL);
+        return;
+    }
+    at += strlen("\"binary\":\"");
+    const size_t length = strcspn(at, "\"");
+    uint8_t *png = malloc(length);
+    const int size = unbase64(at, length, png);
+    char *decode_error = NULL;
+    png_rgba = zebkit_image_decode(png, (size_t)size, &png_width, &png_height, &decode_error);
+    free(png);
+    if (!png_rgba) {
+        check(0, pixels_command->what, "the PNG does not decode: %s", decode_error ? decode_error : "");
+        zebkit_free(decode_error);
+        zebkit_post_task(run_next, NULL);
+        return;
+    }
+    zebkit_automation_screenshot_pixels(view, "Page.screenshot", "{}", pixels_compared, NULL);
+}
+
+static void pixels_refused(zebkit_view *v, const unsigned char *pixels, int width, int height, int stride,
+                           const char *error, void *data) {
+    (void)v, (void)width, (void)height, (void)stride, (void)data;
+    check(!pixels && error && strstr(error, pixels_command->expect + 1), pixels_command->what, "%s",
+          error ? error : "pixels");
+    zebkit_post_task(run_next, NULL);
+}
+
+/* "@fresh": a square at the top left made red, green, blue; each time the
+ * pixels taken as soon as the page has the change show it. */
+static int fresh_step;
+static const char *fresh_colors[] = {"rgb(255, 0, 0)", "rgb(0, 255, 0)", "rgb(0, 0, 255)"};
+static const uint8_t fresh_rgb[][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
+static void fresh_next(void);
+
+static void fresh_taken(zebkit_view *v, const unsigned char *pixels, int width, int height, int stride,
+                        const char *error, void *data) {
+    (void)v, (void)width, (void)height, (void)data;
+    const uint8_t *want = fresh_rgb[fresh_step];
+    const unsigned char *at = pixels ? pixels + 10 * stride + 10 * 4 : NULL;
+    const int ok = at && at[0] == want[0] && at[1] == want[1] && at[2] == want[2] && at[3] == 255;
+    if (!ok || fresh_step == 2) {
+        check(ok, pixels_command->what, "%s: got %d,%d,%d%s%s", fresh_colors[fresh_step], at ? at[0] : -1,
+              at ? at[1] : -1, at ? at[2] : -1, error ? ": " : "", error ? error : "");
+        zebkit_post_task(run_next, NULL);
+        return;
+    }
+    ++fresh_step;
+    fresh_next();
+}
+
+static void fresh_changed(zebkit_view *v, const char *json, const char *error, void *data) {
+    (void)v, (void)data;
+    if (!json) {
+        check(0, pixels_command->what, "%s", error);
+        zebkit_post_task(run_next, NULL);
+        return;
+    }
+    /* At once: no frame waited for in between. */
+    zebkit_automation_screenshot_pixels(view, "Page.screenshot", "{}", fresh_taken, NULL);
+}
+
+static void fresh_next(void) {
+    char params[1024];
+    snprintf(params, sizeof(params),
+             "{\"expression\": \"() => { let s = document.getElementById('zebkit-fresh'); if (!s) { s = "
+             "document.createElement('div'); s.id = 'zebkit-fresh'; s.style.cssText = 'position: fixed; left: 0; "
+             "top: 0; width: 40px; height: 40px; z-index: 99999'; document.body.append(s); } s.style.background = "
+             "'%s'; }\", \"isFunction\": true}",
+             fresh_colors[fresh_step]);
+    zebkit_automation_call(view, "Frame.evaluateExpression", params, fresh_changed, NULL);
+}
+
+static void pixels_check(const command *c) {
+    pixels_command = c;
+    if (strcmp(c->method, "@pixels") == 0) {
+        zebkit_automation_call(view, "Page.screenshot", "{}", png_taken, NULL);
+    } else if (strcmp(c->method, "@pixels-type") == 0) {
+        zebkit_automation_screenshot_pixels(view, "Page.screenshot", "{\"type\": \"png\"}", pixels_refused, NULL);
+    } else {
+        fresh_step = 0;
+        fresh_next();
+    }
+}
+
 /* @key's value in @json, a string ("handle": "h3") or NULL. */
 static int find_string(const char *json, const char *key, char *out, size_t size) {
     char pattern[64];
@@ -412,6 +544,10 @@ static void run_next(void *data) {
         return;
     }
     const command *c = &commands[current++];
+    if (strncmp(c->method, "@pixels", 7) == 0 || strcmp(c->method, "@fresh") == 0) {
+        pixels_check(c);
+        return;
+    }
     if (strcmp(c->method, "@event") == 0) {
         event_wanted = c;
         event_until = now_us() + 3000000;
@@ -458,6 +594,10 @@ static const timed timings[] = {
      "{\"expression\": \"() => [...document.querySelectorAll('.item')].map(e => e.textContent)\", \"isFunction\": true}"},
     {"getByRole click", "Frame.click", "{\"selector\": \"internal:role=button[name=\\\"Go\\\"i]\", \"strict\": true}"},
     {"screenshot", "Page.screenshot", NULL},
+    {"screenshot jpeg", "Page.screenshot", "{\"type\": \"jpeg\"}"},
+    {"screenshot clip", "Page.screenshot", "{\"clip\": {\"x\": 0, \"y\": 0, \"width\": 1280, \"height\": 800}}"},
+    /* zebkit_automation_screenshot_pixels(): no Playwright counterpart. */
+    {"screenshot pixels", "@pixels", NULL},
 };
 static const int timing_count = sizeof(timings) / sizeof(timings[0]);
 static int bench_runs = 50, bench_index, bench_run;
@@ -474,7 +614,7 @@ static void bench_next(void *data);
 
 static void bench_answered(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)json, (void)data;
-    const int runs = strcmp(timings[bench_index].name, "goto") == 0 || strcmp(timings[bench_index].name, "screenshot") == 0
+    const int runs = strcmp(timings[bench_index].name, "goto") == 0 || strncmp(timings[bench_index].name, "screenshot", 10) == 0
                          ? (bench_runs < 20 ? bench_runs : 20)
                          : bench_runs;
     if (error) {
@@ -494,6 +634,12 @@ static void bench_answered(zebkit_view *v, const char *json, const char *error, 
     zebkit_post_task(bench_next, NULL);
 }
 
+static void bench_pixels(zebkit_view *v, const unsigned char *pixels, int width, int height, int stride,
+                         const char *error, void *data) {
+    (void)pixels, (void)width, (void)height, (void)stride;
+    bench_answered(v, NULL, error, data);
+}
+
 static void bench_next(void *data) {
     (void)data;
     if (bench_index >= timing_count) {
@@ -504,7 +650,10 @@ static void bench_next(void *data) {
     char params[1024];
     snprintf(params, sizeof(params), timings[bench_index].params ? timings[bench_index].params : "{}", bench_page);
     bench_start = now_us();
-    zebkit_automation_call(view, timings[bench_index].method, params, bench_answered, NULL);
+    if (strcmp(timings[bench_index].method, "@pixels") == 0)
+        zebkit_automation_screenshot_pixels(view, "Page.screenshot", params, bench_pixels, NULL);
+    else
+        zebkit_automation_call(view, timings[bench_index].method, params, bench_answered, NULL);
 }
 
 static void bench_loaded(zebkit_view *v, const char *json, const char *error, void *data) {

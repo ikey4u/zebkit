@@ -3,48 +3,60 @@
   "engine": "zebkit native",
   "results": {
    "goto": {
-    "median": 13.46,
-    "p90": 16.23
+    "median": 11.15,
+    "p90": 12.4
    },
    "evaluate 1+1": {
-    "median": 0.14,
-    "p90": 0.17
+    "median": 0.24,
+    "p90": 0.29
    },
    "locator.textContent": {
-    "median": 0.26,
-    "p90": 0.36
+    "median": 0.23,
+    "p90": 0.33
    },
    "locator.click": {
-    "median": 4.91,
-    "p90": 5.1
+    "median": 2.04,
+    "p90": 3.08
    },
    "locator.fill": {
-    "median": 0.69,
-    "p90": 2.88
+    "median": 2.14,
+    "p90": 2.3
    },
    "locator.press Enter": {
-    "median": 0.42,
-    "p90": 0.53
+    "median": 0.59,
+    "p90": 0.93
    },
    "locator.isVisible": {
-    "median": 0.23,
-    "p90": 0.26
+    "median": 0.48,
+    "p90": 0.51
    },
    "locator.count (200)": {
-    "median": 0.27,
-    "p90": 0.3
+    "median": 0.23,
+    "p90": 0.27
    },
    "allTextContents (200)": {
     "median": 0.34,
-    "p90": 0.36
+    "p90": 0.37
    },
    "getByRole click": {
-    "median": 3.21,
-    "p90": 5.83
+    "median": 3.01,
+    "p90": 3.09
    },
    "screenshot": {
-    "median": 41.46,
-    "p90": 47.49
+    "median": 12.43,
+    "p90": 14.5
+   },
+   "screenshot jpeg": {
+    "median": 13.88,
+    "p90": 20.05
+   },
+   "screenshot clip": {
+    "median": 13.19,
+    "p90": 17.43
+   },
+   "screenshot pixels": {
+    "median": 9.27,
+    "p90": 15.89
    }
   }
  },
@@ -53,48 +65,56 @@
   "version": "155.0.8059.84",
   "results": {
    "goto": {
-    "median": 13.88,
-    "p90": 17.31
+    "median": 12.98,
+    "p90": 13.67
    },
    "evaluate 1+1": {
-    "median": 0.59,
-    "p90": 0.67
+    "median": 0.65,
+    "p90": 0.75
    },
    "locator.textContent": {
-    "median": 0.67,
-    "p90": 0.78
+    "median": 0.7,
+    "p90": 0.82
    },
    "locator.click": {
-    "median": 3.43,
-    "p90": 3.82
+    "median": 3.47,
+    "p90": 4.04
    },
    "locator.fill": {
-    "median": 2.55,
-    "p90": 2.85
+    "median": 2.01,
+    "p90": 2.57
    },
    "locator.press Enter": {
-    "median": 0.86,
-    "p90": 1.27
+    "median": 0.98,
+    "p90": 1.48
    },
    "locator.isVisible": {
-    "median": 0.68,
-    "p90": 1.06
+    "median": 0.86,
+    "p90": 0.97
    },
    "locator.count (200)": {
-    "median": 0.69,
-    "p90": 0.88
+    "median": 0.71,
+    "p90": 1.2
    },
    "allTextContents (200)": {
-    "median": 1.84,
-    "p90": 2.33
+    "median": 1.86,
+    "p90": 2.46
    },
    "getByRole click": {
-    "median": 3.69,
-    "p90": 6.11
+    "median": 3.65,
+    "p90": 4.63
    },
    "screenshot": {
-    "median": 52.44,
-    "p90": 54.89
+    "median": 16.71,
+    "p90": 17.63
+   },
+   "screenshot jpeg": {
+    "median": 14.43,
+    "p90": 17.01
+   },
+   "screenshot clip": {
+    "median": 18.8,
+    "p90": 27.57
    }
   }
  },
@@ -103,48 +123,56 @@
   "version": "155.0.8059.84",
   "results": {
    "goto": {
-    "median": 15.77,
-    "p90": 20.69
+    "median": 11.15,
+    "p90": 13.75
    },
    "evaluate 1+1": {
-    "median": 0.65,
-    "p90": 0.85
+    "median": 0.57,
+    "p90": 0.69
    },
    "locator.textContent": {
-    "median": 1.02,
-    "p90": 1.39
+    "median": 1.12,
+    "p90": 1.31
    },
    "locator.click": {
-    "median": 33.3,
-    "p90": 34.09
+    "median": 33.4,
+    "p90": 34.05
    },
    "locator.fill": {
-    "median": 3.73,
-    "p90": 6.05
+    "median": 3.52,
+    "p90": 5.02
    },
    "locator.press Enter": {
-    "median": 3.41,
-    "p90": 3.92
+    "median": 3.36,
+    "p90": 5.17
    },
    "locator.isVisible": {
     "median": 0.76,
-    "p90": 0.86
+    "p90": 1.2
    },
    "locator.count (200)": {
-    "median": 0.8,
-    "p90": 0.95
+    "median": 0.93,
+    "p90": 1.54
    },
    "allTextContents (200)": {
-    "median": 2.33,
-    "p90": 3.38
+    "median": 2.29,
+    "p90": 3.32
    },
    "getByRole click": {
-    "median": 33.31,
-    "p90": 34.17
+    "median": 33.39,
+    "p90": 34.44
    },
    "screenshot": {
-    "median": 66.71,
-    "p90": 67.93
+    "median": 50.2,
+    "p90": 53.87
+   },
+   "screenshot jpeg": {
+    "median": 49.57,
+    "p90": 52.72
+   },
+   "screenshot clip": {
+    "median": 51.16,
+    "p90": 53.69
    }
   }
  },
@@ -153,48 +181,56 @@
   "version": "156.0.8078.4",
   "results": {
    "goto": {
-    "median": 18.31,
-    "p90": 20.86
+    "median": 18.24,
+    "p90": 21.4
    },
    "evaluate 1+1": {
-    "median": 0.47,
-    "p90": 0.58
+    "median": 0.49,
+    "p90": 0.6
    },
    "locator.textContent": {
-    "median": 0.94,
-    "p90": 1.17
+    "median": 0.81,
+    "p90": 1.08
    },
    "locator.click": {
-    "median": 33.29,
-    "p90": 34.04
+    "median": 33.31,
+    "p90": 34.34
    },
    "locator.fill": {
-    "median": 2.68,
-    "p90": 4.65
+    "median": 2.86,
+    "p90": 5.43
    },
    "locator.press Enter": {
-    "median": 2.28,
-    "p90": 2.72
+    "median": 2.64,
+    "p90": 2.96
    },
    "locator.isVisible": {
     "median": 0.62,
-    "p90": 0.72
+    "p90": 0.78
    },
    "locator.count (200)": {
-    "median": 0.69,
-    "p90": 1.25
+    "median": 0.64,
+    "p90": 0.72
    },
    "allTextContents (200)": {
-    "median": 2.04,
-    "p90": 2.53
+    "median": 1.91,
+    "p90": 3.29
    },
    "getByRole click": {
-    "median": 33.27,
-    "p90": 34.33
+    "median": 33.3,
+    "p90": 34.15
    },
    "screenshot": {
-    "median": 33.6,
-    "p90": 37.3
+    "median": 33.82,
+    "p90": 47.16
+   },
+   "screenshot jpeg": {
+    "median": 32.89,
+    "p90": 39.62
+   },
+   "screenshot clip": {
+    "median": 33.44,
+    "p90": 51.21
    }
   }
  }

@@ -439,13 +439,15 @@ The same Playwright commands three ways, headless, medians
 
 | | zebkit's API, in-process | Your Playwright scripts, connected to zebkit | Playwright with Chrome 156 |
 |---|---:|---:|---:|
-| `locator.click()` | 4.9 ms | **3.4 ms** | 33.3 ms |
-| `locator.fill()` | **0.69 ms** | 2.6 ms | 2.7 ms |
-| `locator.press('Enter')` | **0.42 ms** | 0.86 ms | 2.3 ms |
-| `locator.textContent()` | **0.26 ms** | 0.67 ms | 0.94 ms |
-| `allTextContents()` of 200 | **0.34 ms** | 1.8 ms | 2.0 ms |
-| `page.goto()` | **13.5 ms** | 13.9 ms | 18.3 ms |
-| `page.screenshot()` | **31.5 ms** | | 33.6 ms |
+| `locator.click()` | **2.0 ms** | 3.5 ms | 33.3 ms |
+| `locator.fill()` | 2.1 ms | **2.0 ms** | 2.9 ms |
+| `locator.press('Enter')` | **0.59 ms** | 0.98 ms | 2.6 ms |
+| `locator.textContent()` | **0.23 ms** | 0.70 ms | 0.81 ms |
+| `allTextContents()` of 200 | **0.34 ms** | 1.9 ms | 1.9 ms |
+| `page.goto()` | **11.2 ms** | 13.0 ms | 18.2 ms |
+| `page.screenshot()` | **12.4 ms** | 16.7 ms | 33.8 ms |
+| `page.screenshot({type: 'jpeg'})` | **13.9 ms** | 14.4 ms | 32.9 ms |
+| the screenshot's pixels, unencoded | **9.3 ms** | | |
 
 - **zebkit's API, in-process**: your program calls the command through
   `<zebkit/automation.h>`, Python's `zebkit.automation` or Rust's
@@ -459,9 +461,15 @@ The same Playwright commands three ways, headless, medians
   several round trips over CDP, no JSON between processes, no Node.js process
   (Playwright's alone reached 175 MiB); and the frames a click's checks wait for
   are made at once instead of at 60 Hz on a page without a display.
-- **A screenshot is not much faster**: its time is a fresh frame (about 17 ms at
-  60 Hz) and encoding a 1280 by 800 PNG, which are the same work whichever way
-  it is asked for; only the messaging is saved.
+- **A screenshot is 2.7 times faster**: the fresh frame it takes is made at
+  once instead of at the next 60 Hz tick, the PNG is deflated at level 1 with
+  the Up filter (2 ms where Chrome's default level takes 13, for 59 KB
+  instead of 40 KB on this page), and the picture's shared memory is made in
+  one call instead of a page fault at a time. What is left of the 12 ms is the
+  page's frame (4 ms), copying the picture out of the compositor (4 ms) and
+  encoding it (4 ms). The pixels themselves, with no encoding
+  (`zebkit_automation_screenshot_pixels()`, zebkit's own), take 9 ms. Over CDP
+  zebkit does what Chrome does: frames at 60 Hz, Chrome's PNG.
 
 ## Reference
 

@@ -69,6 +69,8 @@
 #include "build/build_config.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkImageInfo.h"
 #include "content/public/browser/console_message.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/service_worker_running_info.h"
@@ -153,6 +155,12 @@
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/playwright/us_keyboard_layout.h"
 #include "zebkit/engine/view.h"
+
+// patches/1081: the picture of a Page.captureScreenshot of format
+// "zebkit-raw", by the key its data is.
+namespace content::protocol {
+SkBitmap TakeZebkitRawScreenshot(const std::string& key);
+}  // namespace content::protocol
 
 namespace zebkit {
 
@@ -519,6 +527,23 @@ class Call {
     const std::string json = Json(result);
     if (func_)
       func_(view_, json.c_str(), nullptr, data_);
+    else if (pixels_func_)
+      pixels_func_(view_, nullptr, 0, 0, 0, "zebkit: no pixels", data_);
+    Release();
+  }
+
+  // zebkit_automation_screenshot_pixels()'s: the answer is pixels, not JSON.
+  void set_pixels_func(zebkit_automation_pixels_func func) { pixels_func_ = func; }
+  bool WantsPixels() const { return pixels_func_ != nullptr; }
+  // @pixels, RGBA 8-bit unpremultiplied, rows of @stride bytes, for the
+  // function's call only.
+  void DonePixels(const uint8_t* pixels, int width, int height, int stride) {
+    if (finished_)
+      return;
+    finished_ = true;
+    timer_.Stop();
+    if (pixels_func_)
+      pixels_func_(view_, pixels, width, height, stride, nullptr, data_);
     Release();
   }
 
@@ -548,6 +573,8 @@ class Call {
     }
     if (func_)
       func_(view_, nullptr, text.c_str(), data_);
+    else if (pixels_func_)
+      pixels_func_(view_, nullptr, 0, 0, 0, text.c_str(), data_);
     Release();
   }
 
@@ -637,6 +664,7 @@ class Call {
   std::string method_;
   base::DictValue params_;
   zebkit_automation_func func_;
+  zebkit_automation_pixels_func pixels_func_ = nullptr;
   raw_ptr<void> data_;
   // A call that waits for long logs a line every half second at most.
   static constexpr size_t kMaxLogLines = 2000;
@@ -2221,7 +2249,7 @@ class Automation : public content::WebContentsObserver,
       return;
     host->compositor()->SetDisplayVSyncParameters(
         base::TimeTicks::Now(),
-        fast ? base::Milliseconds(2) : base::Hertz(60));
+        fast ? base::Milliseconds(1) : base::Hertz(60));
 #endif
   }
 
@@ -2243,8 +2271,10 @@ class Automation : public content::WebContentsObserver,
   static const std::map<std::string, Handler>& Handlers();
 
   void Run(Call* call, Handler handler) {
-    if (active_calls_++ == 0)
+    if (active_calls_++ == 0) {
+      slow_frames_timer_.Stop();
       FastFrames(true);
+    }
     if (tracing_ && call->method().rfind("Tracing.", 0) != 0 && !call->Flag("internalCall"))
       traced_[call] = tracing_->Before(call->method(), call->params());
     std::erase_if(calls_,
@@ -2267,8 +2297,14 @@ class Automation : public content::WebContentsObserver,
       }
       traced_.erase(traced);
     }
-    if (--active_calls_ == 0)
-      FastFrames(false);
+    // The display's rate again a little after the last command: one that
+    // comes at once (a script's next) finds the frames still on demand, and
+    // the frames the last one left the page to make (a screenshot's
+    // emulation undone) are not made at 60 Hz under it.
+    if (--active_calls_ == 0) {
+      slow_frames_timer_.Start(FROM_HERE, base::Milliseconds(100),
+                               base::BindOnce(&Automation::FastFrames, base::Unretained(this), false));
+    }
   }
 
   void SetEventHandler(zebkit_automation_event_func func, void* data) {
@@ -7236,6 +7272,11 @@ class Automation : public content::WebContentsObserver,
   // Page.screenshot, ElementHandle.screenshot: as screenshotter.ts, over
   // Page.captureScreenshot (formats, clips beyond the view, scales).
   void Screenshot(Call* call) {
+    // zebkit_automation_screenshot_pixels(): the pixels, in no format.
+    if (call->WantsPixels() && (call->Has("type") || call->Has("quality") || call->Has("path"))) {
+      call->Fail("zebkit: options.type, quality and path are not for the pixels");
+      return;
+    }
     // screenshotter.ts's validateScreenshotOptions().
     const std::string type = call->String("type");
     if (!type.empty() && type != "png" && type != "jpeg" && type != "webp") {
@@ -7692,7 +7733,7 @@ class Automation : public content::WebContentsObserver,
             base::Milliseconds(20));
         return;
       }
-      RestoreScreenshot(call, std::string(), "zebkit: no metrics of the page");
+      RestoreScreenshot(call, std::string(), SkBitmap(), "zebkit: no metrics of the page");
       return;
     }
     const base::DictValue& m = metrics.GetDict();
@@ -7754,17 +7795,24 @@ class Automation : public content::WebContentsObserver,
                             std::ceil(view.height() / visual_scale - 1e-3));
     }
     if (document.width() <= 0 || document.height() <= 0) {
-      RestoreScreenshot(call, std::string(),
+      RestoreScreenshot(call, std::string(), SkBitmap(),
                         "Clipped area is either empty or outside the resulting image");
       return;
     }
-    const std::string type = call->String("type").empty() ? "png" : call->String("type");
+    const bool pixels = call->WantsPixels();
+    const std::string type = pixels ? "zebkit-raw" : call->String("type").empty() ? "png" : call->String("type");
     base::DictValue params;
     params.Set("format", type);
     // jpeg 80 and webp 100 (lossless) unless given, as screenshotter.ts.
-    if (type != "png")
+    if (type == "jpeg" || type == "webp")
       params.Set("quality", call->Has("quality") ? static_cast<int>(call->Number("quality"))
                                                  : type == "jpeg" ? 80 : 100);
+    // A PNG at deflate level 1 with the Up filter (Chromium's PNG for
+    // screencasts): 4 ms where Chrome's Page.captureScreenshot default
+    // takes 16 for a 1280 by 800 page, about half as many bytes again
+    // (docs/AUTOMATION.md, 6). The same pixels.
+    if (type == "png")
+      params.Set("optimizeForSpeed", true);
     params.Set("captureBeyondViewport", !fits);
     base::DictValue region;
     region.Set("x", document.x());
@@ -7791,23 +7839,31 @@ class Automation : public content::WebContentsObserver,
         base::BindOnce(
             [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
                base::WeakPtr<zebkit_view> view, bool transparent, bool beyond,
-               std::optional<gfx::RectF> clip, const base::DictValue* result,
+               std::optional<gfx::RectF> clip, bool pixels, const base::DictValue* result,
                const std::string& error) {
               // Also when the call has timed out: the page keeps no override.
               if (transparent && view) {
                 view->Send("Emulation.setDefaultBackgroundColorOverride",
                            base::DictValue());
               }
-              if (!self || !call)
-                return;
               // crPage.ts: capturing beyond the viewport resets Chromium's
               // touch emulation, which goes back.
-              if (beyond && view && self->TouchEmulated()) {
+              if (beyond && view && self && self->TouchEmulated()) {
                 base::DictValue touch;
                 touch.Set("enabled", true);
                 view->Send("Emulation.setTouchEmulationEnabled", std::move(touch));
               }
               const std::string* data = result ? result->FindString("data") : nullptr;
+              // The pixels kept for "zebkit-raw" are taken at once, whether
+              // the call is still there or not.
+              SkBitmap bitmap;
+              if (data && pixels) {
+                std::string key;
+                if (base::Base64Decode(*data, &key))
+                  bitmap = content::protocol::TakeZebkitRawScreenshot(key);
+              }
+              if (!self || !call)
+                return;
               // Between two documents of a navigation the page's target takes
               // no capture: again once the next has committed, as Chrome's
               // capture waits for a frame of the page.
@@ -7818,17 +7874,22 @@ class Automation : public content::WebContentsObserver,
                     base::Milliseconds(30));
                 return;
               }
+              if (pixels && data && bitmap.drawsNothing()) {
+                self->RestoreScreenshot(call, std::string(), SkBitmap(), "zebkit: no picture");
+                return;
+              }
               self->RestoreScreenshot(
-                  call, data ? *data : std::string(),
+                  call, data && !pixels ? *data : std::string(), std::move(bitmap),
                   data ? std::string()
                        : (error.empty() ? std::string("zebkit: no picture") : error));
             },
             weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent, !fits,
-            clip));
+            clip, pixels));
   }
 
-  // The page as it was, then the answer: @base64 or @error.
-  void RestoreScreenshot(base::WeakPtr<Call> call, std::string base64, std::string error) {
+  // The page as it was, then the answer: @base64 (@bitmap for the pixels)
+  // or @error.
+  void RestoreScreenshot(base::WeakPtr<Call> call, std::string base64, SkBitmap bitmap, std::string error) {
     if (!call)
       return;
     // The masks in frames, undone in each frame.
@@ -7843,12 +7904,16 @@ class Automation : public content::WebContentsObserver,
     RunStep(call.get(), Follow(MainFrame()), AutomationWorld::kUtility,
             "restoreScreenshot", {}, {},
             base::BindOnce(
-                [](base::WeakPtr<Call> call, std::string base64, std::string error,
+                [](base::WeakPtr<Call> call, std::string base64, SkBitmap bitmap, std::string error,
                    base::Value) {
                   if (!call)
                     return;
                   if (!error.empty()) {
                     call->Fail(error);
+                    return;
+                  }
+                  if (call->WantsPixels()) {
+                    DeliverPixels(call, bitmap);
                     return;
                   }
                   std::string bytes;
@@ -7858,7 +7923,28 @@ class Automation : public content::WebContentsObserver,
                   }
                   Deliver(call, std::vector<uint8_t>(bytes.begin(), bytes.end()));
                 },
-                call, std::move(base64), std::move(error)));
+                call, std::move(base64), std::move(bitmap), std::move(error)));
+  }
+
+  // zebkit_automation_screenshot_pixels()'s answer: the picture (Skia's N32,
+  // premultiplied) as RGBA unpremultiplied, the PNG's pixels.
+  static void DeliverPixels(base::WeakPtr<Call> call, const SkBitmap& bitmap) {
+    const SkImageInfo info = SkImageInfo::Make(bitmap.width(), bitmap.height(), kRGBA_8888_SkColorType,
+                                               kUnpremul_SkAlphaType);
+    // Kept for the next (the engine's thread's only): memory already made
+    // costs no page faults, a millisecond for 1280 by 800; a picture over
+    // 16 MiB gets its own.
+    static base::NoDestructor<std::vector<uint8_t>> kept;
+    std::vector<uint8_t> own;
+    const size_t size = info.computeMinByteSize();
+    std::vector<uint8_t>& pixels = size <= 16u << 20 ? *kept : own;
+    pixels.resize(size);
+    if (bitmap.drawsNothing() || pixels.empty() ||
+        !bitmap.readPixels(info, pixels.data(), info.minRowBytes(), 0, 0)) {
+      call->Fail("zebkit: no picture");
+      return;
+    }
+    call->DonePixels(pixels.data(), info.width(), info.height(), static_cast<int>(info.minRowBytes()));
   }
 
   // The picture to the client or to "path".
@@ -9801,6 +9887,7 @@ class Automation : public content::WebContentsObserver,
   std::map<std::string, content::GlobalRenderFrameHostId> web_sockets_;
   std::string media_type_;
   int active_calls_ = 0;
+  base::OneShotTimer slow_frames_timer_;
   mojo::AssociatedReceiverSet<mojom::AutomationHost,
                               content::GlobalRenderFrameHostId>
       hosts_;
@@ -12422,6 +12509,39 @@ void zebkit_automation_call(zebkit_view* view,
   auto* call = new zebkit::Call(view, name, std::move(parsed->GetDict()), func,
                                 data);
   automation->Run(call, handler->second);
+}
+
+void zebkit_automation_screenshot_pixels(zebkit_view* view,
+                                         const char* method,
+                                         const char* params,
+                                         zebkit_automation_pixels_func func,
+                                         void* data) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  using zebkit::Automation;
+  auto fail = [&](const std::string& error) {
+    if (func)
+      func(view, nullptr, 0, 0, 0, error.c_str(), data);
+  };
+  const std::string name = method ? method : "";
+  if (name != "Page.screenshot" && name != "ElementHandle.screenshot") {
+    fail("zebkit: the pixels are of Page.screenshot or ElementHandle.screenshot, not " + name);
+    return;
+  }
+  std::optional<base::Value> parsed = base::JSONReader::Read(
+      params && *params ? params : "{}", base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict()) {
+    fail("params: expected a JSON object");
+    return;
+  }
+  Automation* automation = view ? Automation::For(view) : nullptr;
+  if (!automation) {
+    fail(zebkit::kClosed);
+    return;
+  }
+  // Deletes itself once answered.
+  auto* call = new zebkit::Call(view, name, std::move(parsed->GetDict()), nullptr, data);
+  call->set_pixels_func(func);
+  automation->Run(call, Automation::Handlers().at(name));
 }
 
 void zebkit_automation_on_event(zebkit_view* view,

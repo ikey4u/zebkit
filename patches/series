@@ -59,3 +59,5 @@
 1078-cfi-icall-not-into-the-application.patch
 1079-content-embedder-touch-through-the-touch-emulator.patch
 1080-freetype-bdf-and-synth-on-every-system.patch
+1081-devtools-screenshot-unencoded-for-the-embedder.patch
+1082-copy-results-in-shared-memory-populated-at-once.patch

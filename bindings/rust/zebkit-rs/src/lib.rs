@@ -99,6 +99,15 @@ pub type zebkit_authentication_func =
 pub type zebkit_title_func = unsafe extern "C" fn(view: *mut zebkit_view, title: *const c_char, data: *mut c_void);
 pub type zebkit_automation_func =
     unsafe extern "C" fn(view: *mut zebkit_view, json: *const c_char, error: *const c_char, data: *mut c_void);
+pub type zebkit_automation_pixels_func = unsafe extern "C" fn(
+    view: *mut zebkit_view,
+    pixels: *const u8,
+    width: c_int,
+    height: c_int,
+    stride: c_int,
+    error: *const c_char,
+    data: *mut c_void,
+);
 pub type zebkit_automation_listen_func =
     unsafe extern "C" fn(url: *const c_char, error: *const c_char, data: *mut c_void);
 pub type zebkit_automation_event_func =
@@ -1264,6 +1273,13 @@ extern "C" {
         method: *const c_char,
         params: *const c_char,
         func: Option<zebkit_automation_func>,
+        data: *mut c_void,
+    );
+    pub fn zebkit_automation_screenshot_pixels(
+        view: *mut zebkit_view,
+        method: *const c_char,
+        params: *const c_char,
+        func: Option<zebkit_automation_pixels_func>,
         data: *mut c_void,
     );
     pub fn zebkit_automation_on_event(view: *mut zebkit_view, func: Option<zebkit_automation_event_func>, data: *mut c_void);
