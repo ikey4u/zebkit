@@ -238,6 +238,7 @@ HarRecorder::HarRecorder(const base::DictValue& options) {
   if (const std::string* prefix = options.FindString("resourcesPrefix"))
     resources_prefix_ = *prefix;
   omit_scripts_ = options.FindBool("omitScripts").value_or(false);
+  record_overrides_ = options.FindBool("recordRequestOverrides").value_or(true);
   // harRecorder.ts: with harPath and resourcesDir, a content's _file is its
   // path from the HAR's folder; the archive keeps it by its own name, which
   // the client unpacks into resourcesDir.
@@ -307,7 +308,8 @@ void HarRecorder::PageLoadState(const std::string& page_ref,
 void HarRecorder::Record(const std::string& event,
                          const base::DictValue& params,
                          const std::string& page_ref,
-                         const std::string& frame_ref) {
+                         const std::string& frame_ref,
+                         const std::string& worker_ref) {
   if (event == "Page.webSocket" || event.starts_with("WebSocket.")) {
     RecordWebSocket(event, params, page_ref, frame_ref);
     return;
@@ -324,6 +326,7 @@ void HarRecorder::Record(const std::string& event,
     entry.started = base::Time::Now();
     entry.start = base::TimeTicks::Now();
     entry.page_ref = page_ref;
+    entry.worker_ref = worker_ref;
     const std::string* frame = params.FindString("frame");
     entry.frame_ref = !frame_ref.empty() ? frame_ref : frame ? *frame : std::string();
     entry.request = params.Clone();
@@ -542,7 +545,9 @@ base::DictValue HarRecorder::WebSocketValue(const Entry& entry,
   return har;
 }
 
-void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictValue& response) {
+void HarRecorder::RecordFetch(const base::DictValue& request,
+                              const base::DictValue& response,
+                              const std::string& api_ref) {
   const std::string* url = request.FindString("url");
   if (!url || !Includes(*url))
     return;
@@ -578,17 +583,21 @@ void HarRecorder::RecordFetch(const base::DictValue& request, const base::DictVa
         single.Remove("hops");
         hop_response.Merge(std::move(single));
       }
-      RecordOneFetch(hop_request, hop_response, last);
+      RecordOneFetch(hop_request, hop_response, last, api_ref);
     }
     return;
   }
-  RecordOneFetch(request, response, true);
+  RecordOneFetch(request, response, true, api_ref);
 }
 
-void HarRecorder::RecordOneFetch(const base::DictValue& request, const base::DictValue& response, bool with_body) {
+void HarRecorder::RecordOneFetch(const base::DictValue& request,
+                                 const base::DictValue& response,
+                                 bool with_body,
+                                 const std::string& api_ref) {
   const std::string id = "fetch" + base::NumberToString(++next_fetch_);
   Entry& entry = entries_[id];
   entry.fetch = true;
+  entry.api_ref = api_ref;
   entry.started = base::Time::Now();
   entry.start = entry.ended = base::TimeTicks::Now();
   entry.request = request.Clone();
@@ -631,7 +640,8 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
                                         std::map<std::string, std::string>* files) const {
   if (entry.websocket)
     return WebSocketValue(entry, files);
-  const base::DictValue& given = entry.overrides ? *entry.overrides : entry.request;
+  const base::DictValue* overrides = record_overrides_ && entry.overrides ? &*entry.overrides : nullptr;
+  const base::DictValue& given = overrides ? *overrides : entry.request;
   const std::string* url_text = given.FindString("url");
   if (!url_text)
     url_text = entry.request.FindString("url");
@@ -642,7 +652,7 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   // The network's own headers when it said them (harTracer.ts's
   // internalRawRequestHeaders), else what the page sent.
   const base::ListValue* request_headers =
-      entry.raw_request_headers && !entry.overrides ? &*entry.raw_request_headers : given.FindList("headers");
+      entry.raw_request_headers && !overrides ? &*entry.raw_request_headers : given.FindList("headers");
   if (!request_headers)
     request_headers = entry.request.FindList("headers");
   const bool responded = !entry.response.empty();
@@ -668,7 +678,7 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   // The page's own Cookie, not a route's override (harTracer.ts records the
   // overrides apart).
   const base::ListValue* cookie_headers =
-      entry.overrides ? entry.request.FindList("headers") : request_headers;
+      overrides ? entry.request.FindList("headers") : request_headers;
   if (!minimal_ && cookie_headers) {
     for (const base::Value& header : *cookie_headers) {
       const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
@@ -780,6 +790,10 @@ base::DictValue HarRecorder::EntryValue(const std::string& id,
   base::DictValue har;
   if (!minimal_ && !entry.page_ref.empty())
     har.Set("pageref", entry.page_ref);
+  if (!entry.worker_ref.empty())
+    har.Set("_serviceWorkerRef", entry.worker_ref);
+  if (!entry.api_ref.empty())
+    har.Set("_apiRequestRef", entry.api_ref);
   if (!monotonic_origin_.is_null() && !entry.start.is_null())
     har.Set("_monotonicTime", (entry.start - monotonic_origin_).InMillisecondsF());
   if (entry.aborted)

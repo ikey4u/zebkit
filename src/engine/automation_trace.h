@@ -50,7 +50,8 @@ class HarRecorder {
   void Record(const std::string& event,
               const base::DictValue& params,
               const std::string& page_ref = std::string(),
-              const std::string& frame_ref = std::string());
+              const std::string& frame_ref = std::string(),
+              const std::string& worker_ref = std::string());
   // A page to record (log.pages), and its lifecycle: "domcontentloaded" or
   // "load", with its title then.
   void AddPage(const std::string& page_ref);
@@ -59,8 +60,14 @@ class HarRecorder {
                      const std::string& title);
   // An APIRequestContext.fetch exchange: its request ({url, method, headers,
   // postData}) and its answer ({url, status, statusText, headers, body}).
-  void RecordFetch(const base::DictValue& request, const base::DictValue& response);
-  void RecordOneFetch(const base::DictValue& request, const base::DictValue& response, bool with_body);
+  // @api_ref: the APIRequestContext's, for a trace (_apiRequestRef).
+  void RecordFetch(const base::DictValue& request,
+                   const base::DictValue& response,
+                   const std::string& api_ref = std::string());
+  void RecordOneFetch(const base::DictValue& request,
+                      const base::DictValue& response,
+                      bool with_body,
+                      const std::string& api_ref);
   // A trace's network (trace.network): each entry's _monotonicTime on the
   // trace's clock, which starts at @origin.
   void set_monotonic_origin(base::TimeTicks origin) { monotonic_origin_ = origin; }
@@ -95,6 +102,9 @@ class HarRecorder {
     base::TimeTicks ended;
     std::string page_ref;
     std::string frame_ref;
+    // The service worker's whose request it is (harTracer.ts's _serviceWorkerRef).
+    std::string worker_ref;
+    std::string api_ref;
     base::DictValue request;
     base::DictValue response;
     base::DictValue finished_params;
@@ -142,6 +152,9 @@ class HarRecorder {
   // Before an attached content's name: traces' "resources/".
   std::string resources_prefix_;
   bool omit_scripts_ = false;
+  // harTracer.ts's recordRequestOverrides: a HAR's (harRecorder.ts) has what
+  // route.continue() changed; a trace's has the request as the page made it.
+  bool record_overrides_ = true;
   std::string file_ref_prefix_;
   bool minimal_ = false;
   std::string url_glob_;

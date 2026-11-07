@@ -126,12 +126,18 @@ async function poll(timeout, waits, attempt) {
   }
 }
 
-function query(arg, strict) {
+// @mark: the elements marked for the trace before a strict mode violation
+// throws, as frameSelectors.ts marks them ('all' or 'first').
+function query(arg, strict, mark) {
   const parsed = injected.parseSelector(arg.selector);
   const root = arg.scope || document;
   if (arg.scope && !arg.scope.isConnected)
     throw fatal('Element is not attached to the DOM');
   const elements = injected.querySelectorAll(parsed, root);
+  if (mark === 'all')
+    injected.markTargetElements(new Set(elements));
+  else if (mark === 'first')
+    injected.markTargetElements(new Set(elements.length ? [elements[0]] : []));
   if (strict && elements.length > 1)
     throw injected.strictModeViolationError(parsed, elements);
   return elements;
@@ -140,7 +146,7 @@ function query(arg, strict) {
 // The element an action acts on, as frames.ts resolves it once and then
 // retries the action on it: "locator resolved to" when it is found anew.
 function resolveForAction(arg, say, state) {
-  const elements = query(arg, arg.strict);
+  const elements = query(arg, arg.strict, 'all');
   const element = elements[0];
   if (!element) {
     state.element = undefined;
@@ -148,8 +154,6 @@ function resolveForAction(arg, say, state) {
   }
   if (state.element !== element) {
     state.element = element;
-    // frameSelectors.ts's markTargets: the trace's snapshots show them.
-    injected.markTargetElements(new Set(elements));
     say(elements.length > 1
       ? `locator resolved to ${elements.length} elements. Proceeding with the first one: ${injected.previewNode(element)}`
       : `locator resolved to ${injected.previewNode(element)}`);
@@ -170,9 +174,11 @@ function actionTry(arg, say, state, wait) {
     say(`  waiting ${wait}ms`);
 }
 
-// The element a command acts on, with the log line Playwright writes.
-function resolve(arg, say) {
-  const elements = query(arg, arg.strict);
+// The element a command acts on, with the log line Playwright writes; the
+// elements marked for the trace's snapshots as frameSelectors.ts's
+// markTargets ('all', or 'first' for @first's reads).
+function resolve(arg, say, first) {
+  const elements = query(arg, arg.strict, first ? 'first' : 'all');
   const element = elements[0];
   if (!element) {
     say(`waiting for ${arg.selector}`);
@@ -239,9 +245,12 @@ function scrollIntoView(element, attempt) {
       if (child.nodeType === 3 && child.data.trim()) {
         const range = document.createRange();
         range.selectNodeContents(child);
-        const box = range.getBoundingClientRect();
-        if (alignment || box.top < 0 || box.left < 0 || box.bottom > innerHeight || box.right > innerWidth)
+        if (alignment) {
+          const box = range.getBoundingClientRect();
           scrollBy({ left: box.left + box.width / 2 - innerWidth / 2, top: box.top + box.height / 2 - innerHeight / 2, behavior: 'instant' });
+        } else {
+          scrollRectIntoViewIfNeeded(element, () => range.getBoundingClientRect());
+        }
         return;
       }
     }
@@ -250,10 +259,82 @@ function scrollIntoView(element, attempt) {
     element.scrollIntoView({ block: alignment, inline: alignment, behavior: 'instant' });
     return;
   }
-  const rect = element.getBoundingClientRect();
-  const inside = rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
-  if (!inside)
-    element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  // (An element of display: contents has its children's boxes, not its own.)
+  scrollRectIntoViewIfNeeded(element, () => {
+    const rects = [...element.getClientRects()];
+    if (!rects.length)
+      return element.getBoundingClientRect();
+    const left = Math.min(...rects.map(r => r.left)), top = Math.min(...rects.map(r => r.top));
+    const right = Math.max(...rects.map(r => r.right)), bottom = Math.max(...rects.map(r => r.bottom));
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  });
+  // Through the frames above, as ScrollRectToVisible goes on in the frames'
+  // owners: the element's frame brought into view in its parents.
+  if (window.parent !== window && element.getClientRects().length)
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+}
+
+// scroll_into_view_util.cc's ScrollRectToVisible() with CenterIfNeeded on
+// both axes, as DOM.scrollIntoViewIfNeeded asks it: each box that scrolls,
+// from the element's out to the viewport, scrolled at once, and only as it
+// needs (a rect it shows is left; one it hides is centred; one it shows in
+// part is brought to the closest edge). @rectOf: the rect, now.
+function scrollRectIntoViewIfNeeded(element, rectOf) {
+  const parentOf = node => node.parentElement || (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null);
+  const delta = (start, size, visibleStart, visibleSize) => {
+    const end = start + size;
+    const visibleEnd = visibleStart + visibleSize;
+    const shown = Math.min(end, visibleEnd) - Math.max(start, visibleStart);
+    if (shown >= size - 0.01)
+      return 0;
+    if (shown <= 0)
+      return start + size / 2 - (visibleStart + visibleSize / 2);
+    if ((end > visibleEnd && size < visibleSize) || (end < visibleEnd && size > visibleSize))
+      return end - visibleEnd;
+    return start - visibleStart;
+  };
+  let clip = null;
+  const current = () => {
+    const rect = rectOf();
+    let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom;
+    if (clip) {
+      left = Math.max(left, clip.left);
+      top = Math.max(top, clip.top);
+      right = Math.min(right, clip.right);
+      bottom = Math.min(bottom, clip.bottom);
+      if (right < left || bottom < top)
+        ({ left, top, right, bottom } = rect);
+    }
+    return { left, top, width: right - left, height: bottom - top };
+  };
+  const root = document.scrollingElement || document.documentElement;
+  for (let node = parentOf(element); node && node !== root && node !== document.body; node = parentOf(node)) {
+    const style = getComputedStyle(node);
+    const scrolls = value => value === 'auto' || value === 'scroll' || value === 'hidden';
+    if ((scrolls(style.overflowX) && node.scrollWidth > node.clientWidth) ||
+        (scrolls(style.overflowY) && node.scrollHeight > node.clientHeight)) {
+      const box = node.getBoundingClientRect();
+      const visibleLeft = box.left + node.clientLeft;
+      const visibleTop = box.top + node.clientTop;
+      const rect = current();
+      const dx = scrolls(style.overflowX) ? delta(rect.left, rect.width, visibleLeft, node.clientWidth) : 0;
+      const dy = scrolls(style.overflowY) ? delta(rect.top, rect.height, visibleTop, node.clientHeight) : 0;
+      if (dx || dy)
+        node.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+      clip = { left: visibleLeft, top: visibleTop, right: visibleLeft + node.clientWidth, bottom: visibleTop + node.clientHeight };
+    }
+    if (style.position === 'fixed')
+      return;
+  }
+  const rect = current();
+  // The viewport's size without its scrollbars (the scrolling element's
+  // client size: the body's in quirks mode, as CSSOM View says).
+  const width = root.clientWidth || innerWidth;
+  const height = root.clientHeight || innerHeight;
+  const dx = delta(rect.left, rect.width, 0, width);
+  const dy = delta(rect.top, rect.height, 0, height);
+  if (dx || dy)
+    scrollBy({ left: dx, top: dy, behavior: 'instant' });
 }
 
 // dom.ts's _clickablePoint(): the middle of the element's first box with
@@ -266,7 +347,7 @@ function clickablePoint(element) {
     const left = Math.max(rect.left, 0), top = Math.max(rect.top, 0);
     const right = Math.min(rect.right, innerWidth), bottom = Math.min(rect.bottom, innerHeight);
     if ((right - left) * (bottom - top) > 0.99)
-      return { x: (left + right) / 2, y: (top + bottom) / 2 };
+      return { x: (left + right) / 2, y: (top + bottom) / 2, box: { x: left, y: top, width: right - left, height: bottom - top } };
   }
   return 'error:notinviewport';
 }
@@ -277,7 +358,8 @@ function offsetPoint(element, position) {
   if (!rect.width && !rect.height)
     return 'error:notvisible';
   const border = injected.getElementBorderWidth(element);
-  return { x: rect.x + border.left + position.x, y: rect.y + border.top + position.y };
+  return { x: rect.x + border.left + position.x, y: rect.y + border.top + position.y,
+           box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
 }
 
 const roundPoint = point => ({ x: Math.floor(point.x * 100) / 100, y: Math.floor(point.y * 100) / 100 });
@@ -325,7 +407,7 @@ steps.isVisible = arg => {
 };
 
 steps.read = arg => poll(arg.timeout, kPollWaits, say => {
-  const element = resolve(arg, say);
+  const element = resolve(arg, say, true);
   if (!element)
     return undefined;
   return { value: readers[arg.what](element, arg) };
@@ -420,7 +502,7 @@ steps.pointerPrepare = arg => {
   }
   const id = nextInterceptor++;
   interceptors.set(id, interceptor);
-  return { point: rounded, interceptor: id, offset: frameOffset() };
+  return { point: rounded, box: point.box, interceptor: id, offset: frameOffset() };
   });
 };
 
@@ -751,6 +833,14 @@ steps.prepareScreenshot = async arg => {
   }
   return {};
 };
+// screenshotter.ts's _maskElements() in a frame of the page's: @selector's
+// elements masked here, until restoreScreenshot.
+steps.maskElements = arg => {
+  const elements = injected.querySelectorAll(injected.parseSelector(arg.selector), document);
+  injected.addMaskedElements(elements, arg.color);
+  screenshotUndo.push(() => injected.hideHighlight());
+  return {};
+};
 steps.restoreScreenshot = () => {
   const undo = screenshotUndo;
   screenshotUndo = [];
@@ -886,7 +976,7 @@ steps.expect = async arg => {
   const selector = arg.selector ?? (options.expression === 'to.match.aria' ? 'body' : ':root');
   let last;
   const once = async say => {
-    const elements = query({ selector, scope: arg.scope }, !isArray);
+    const elements = query({ selector, scope: arg.scope }, !isArray, 'all');
     if (!elements.length) {
       let matches = options.isNot, received;
       let missing = false;
@@ -964,15 +1054,25 @@ steps.setContent = async arg => {
   // A document written over one that had loaded is "complete" at once
   // here while its images and style sheets still load, which its load
   // (Chrome's lifecycle "load", what frames.ts waits for) waits for.
+  // Its frames too: a frame's load comes after its own frames'.
   const failed = new WeakSet();
+  const loadedFrames = new WeakSet();
+  const frameLoading = frame => frame.loading !== 'lazy' && !loadedFrames.has(frame) &&
+      (frame.hasAttribute('srcdoc') || !!frame.getAttribute('src')) &&
+      !(frame.contentDocument && frame.contentDocument.URL !== 'about:blank' && frame.contentDocument.readyState === 'complete');
   const loading = () => arg.waitUntil !== 'domcontentloaded' &&
       ([...document.images].some(image => !image.complete && image.loading !== 'lazy') ||
-       [...document.querySelectorAll('link[rel=stylesheet]')].some(link => !link.sheet && !link.disabled && !failed.has(link)));
+       [...document.querySelectorAll('link[rel=stylesheet]')].some(link => !link.sheet && !link.disabled && !failed.has(link)) ||
+       [...document.querySelectorAll('iframe, frame')].some(frameLoading));
   if (arg.waitUntil !== 'commit' && (!ready.includes(document.readyState) || loading())) {
     await new Promise(resolve => {
       const check = () => ready.includes(document.readyState) && !loading() && resolve();
       document.addEventListener('readystatechange', check);
-      document.addEventListener('load', check, true);
+      document.addEventListener('load', event => {
+        if (event.target instanceof HTMLIFrameElement || event.target instanceof HTMLFrameElement)
+          loadedFrames.add(event.target);
+        check();
+      }, true);
       document.addEventListener('error', event => { failed.add(event.target); check(); }, true);
       builtins.setTimeout(check, 0);
     });

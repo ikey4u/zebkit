@@ -703,6 +703,9 @@ class Connection {
                      Object object = Object()) {
     std::string lower = type;
     lower[0] = static_cast<char>(tolower(lower[0]));
+    // fetch.ts's guid, which a trace's _apiRequestRef shows.
+    if (type == "APIRequestContext")
+      lower = "request-context";
     const std::string guid = lower + "@" + base::NumberToString(++next_guid_);
     object.type = type;
     objects_[guid] = std::move(object);
@@ -901,6 +904,10 @@ class Connection {
     // stashes taken by their ids, the first stash's failure.
     bool coverage = false;
     std::string coverage_registration;
+    // snapshotter.ts's init script: the DOM snapshots' streamer in each
+    // document from its start (the page's own ShadowRoot, its style sheets'
+    // changes), from the first chunk with snapshots.
+    std::string snapshotter_registration;
     std::map<std::string, base::DictValue> istanbul;
     std::set<std::string> stash_ids;
     std::string stash_error;
@@ -1005,6 +1012,8 @@ class Connection {
   void CoverageInstall(const std::string& context, base::OnceClosure done);
   void CoverageTake(const std::string& context, std::vector<zebkit_view*> views, base::OnceClosure done);
   void CoverageUninstall(const std::string& context, base::OnceClosure done);
+  void SnapshotterInstall(const std::string& context, base::OnceClosure done);
+  void SnapshotterUninstall(const std::string& context);
   void CoverageHarvest(const std::string& context, base::OnceClosure done);
   std::vector<zebkit_view*> ContextViews(const std::string& context);
   void HarExport(int id, const std::string& har_id, const std::string& mode,
@@ -2835,8 +2844,11 @@ void Connection::DebuggerApiCalls(DebugState& state, const std::vector<int>& ids
       call.sent_logs = logged->second.size();
     }
     update.Set("newLogEntries", std::move(entries));
-    if (auto input = call_inputs_.find(id); input != call_inputs_.end())
-      update.Set("actionPoint", input->second.Clone());
+    if (auto input = call_inputs_.find(id); input != call_inputs_.end()) {
+      base::DictValue point = input->second.Clone();
+      point.Remove("box");
+      update.Set("actionPoint", std::move(point));
+    }
     update.Set("status", call.status);
     if (!call.error.empty())
       update.Set("error", call.error);
@@ -2933,7 +2945,7 @@ void Connection::ServiceWorkerNetworkEvent(const std::string& context,
     for (auto& [har_id, har] : hars_) {
       if (har.context != context || !har.page.empty())
         continue;
-      har.recorder->Record(as_page, params, std::string(), std::string());
+      har.recorder->Record(as_page, params, std::string(), std::string(), worker);
       const std::string* request = params.FindString("request");
       if (event != "ServiceWorker.requestFinished" || !request || !har.recorder->WantsBody(*request))
         continue;
@@ -2955,6 +2967,32 @@ void Connection::ServiceWorkerNetworkEvent(const std::string& context,
                      found->second.recorder->SetBody(request, std::nullopt);
                  },
                  weak_factory_.GetWeakPtr(), har_id, *request));
+    }
+    // And in the context's trace, the worker's own (tracing.ts's HAR tracer).
+    auto trace = traces_.find(context);
+    if (trace != traces_.end() && trace->second.recording &&
+        trace->second.options.FindBool("snapshotDom").value_or(false)) {
+      trace->second.network->Record(as_page, params, std::string(), std::string(), worker);
+      const std::string* request = params.FindString("request");
+      if (event == "ServiceWorker.requestFinished" && request && trace->second.network->WantsBody(*request)) {
+        base::DictValue body;
+        body.Set("request", *request);
+        Native(-1, nullptr, "ServiceWorker.Response.body", std::move(body),
+               base::BindOnce(
+                   [](base::WeakPtr<Connection> self, std::string context, std::string request, base::Value result) {
+                     auto trace = self ? self->traces_.find(context) : decltype(self->traces_)::iterator();
+                     if (!self || trace == self->traces_.end() || !trace->second.network)
+                       return;
+                     const std::string* binary =
+                         result.is_dict() ? result.GetDict().FindString("binary") : nullptr;
+                     std::string decoded;
+                     if (binary && base::Base64Decode(*binary, &decoded))
+                       trace->second.network->SetBody(request, std::move(decoded));
+                     else
+                       trace->second.network->SetBody(request, std::nullopt);
+                   },
+                   weak_factory_.GetWeakPtr(), context, *request));
+      }
     }
   }
   if (event == "ServiceWorker.request") {
@@ -3322,7 +3360,11 @@ void Connection::Answered(int id, base::DictValue message, const std::string& er
     base::DictValue entry;
     entry.Set("type", "input");
     entry.Set("callId", call.call_id);
+    // The element's box beside the point (tracing.ts's input event).
+    std::optional<base::Value> box = input->second.Extract("box");
     entry.Set("point", std::move(input->second));
+    if (box)
+      entry.Set("box", std::move(*box));
     call_inputs_.erase(input);
     TraceLine(trace->second, std::move(entry));
   }
@@ -3560,6 +3602,10 @@ std::optional<base::DictValue> Connection::TraceSnapshotParams(const std::string
   return params;
 }
 
+namespace {
+constexpr char kRawHtml[] = "__zebkit_snapshot_html__";
+}  // namespace
+
 void Connection::RecordTraceSnapshots(const std::string& context,
                                       const std::string& page,
                                       const std::string& call_id,
@@ -3580,7 +3626,12 @@ void Connection::RecordTraceSnapshots(const std::string& context,
       snapshot.Set("phase", phase);
       snapshot.Set("pageId", page);
       snapshot.Set("frameId", self->Known("frame", page, *frame));
-      for (const char* key : {"doctype", "html", "viewport", "wallTime", "collectionTime"}) {
+      // The html is its JSON as the page wrote it (its attributes' order), put
+      // into the line as it is.
+      const std::string* html = data->FindString("html");
+      if (html)
+        snapshot.Set("html", kRawHtml);
+      for (const char* key : {"doctype", "viewport", "wallTime", "collectionTime"}) {
         if (const base::Value* value = data->Find(key))
           snapshot.Set(key, value->Clone());
       }
@@ -3615,7 +3666,11 @@ void Connection::RecordTraceSnapshots(const std::string& context,
       base::DictValue event;
       event.Set("type", "frame-snapshot");
       event.Set("snapshot", std::move(snapshot));
-      self->TraceLine(trace->second, std::move(event));
+      std::string line = Json(base::Value(std::move(event)));
+      const std::string placeholder = std::string("\"") + kRawHtml + "\"";
+      if (const size_t at = line.find(placeholder); html && at != std::string::npos)
+        line.replace(at, placeholder.size(), *html);
+      trace->second.lines.push_back(std::move(line));
     }
   }
 }
@@ -3822,6 +3877,7 @@ void Connection::TraceCommand(int id,
       har.Set("content", "attach");
       har.Set("resourcesPrefix", "resources/");
       har.Set("omitScripts", !trace.options.FindBool("live").value_or(false));
+      har.Set("recordRequestOverrides", false);
       trace.network = std::make_unique<HarRecorder>(har);
       trace.network->set_monotonic_origin(origin_);
     }
@@ -3870,16 +3926,25 @@ void Connection::TraceCommand(int id,
     }
     base::DictValue answer;
     answer.Set("traceName", trace.name);
+    base::OnceClosure reply = base::BindOnce(
+        [](base::WeakPtr<Connection> self, int id, base::DictValue answer) {
+          if (self)
+            self->Reply(id, base::Value(std::move(answer)));
+        },
+        weak_factory_.GetWeakPtr(), id, std::move(answer));
     if (trace.coverage) {
-      CoverageInstall(context, base::BindOnce(
-                                   [](base::WeakPtr<Connection> self, int id, base::DictValue answer) {
-                                     if (self)
-                                       self->Reply(id, base::Value(std::move(answer)));
-                                   },
-                                   weak_factory_.GetWeakPtr(), id, std::move(answer)));
+      reply = base::BindOnce(
+          [](base::WeakPtr<Connection> self, std::string context, base::OnceClosure reply) {
+            if (self)
+              self->CoverageInstall(context, std::move(reply));
+          },
+          weak_factory_.GetWeakPtr(), context, std::move(reply));
+    }
+    if (trace.options.FindBool("snapshotDom").value_or(false)) {
+      SnapshotterInstall(context, std::move(reply));
       return;
     }
-    Reply(id, base::Value(std::move(answer)));
+    std::move(reply).Run();
     return;
   }
   if (method == "tracingGroup") {
@@ -3951,6 +4016,7 @@ void Connection::TraceCommand(int id,
                                      weak_factory_.GetWeakPtr(), id, context, method, std::move(params)));
       return;
     }
+    SnapshotterUninstall(context);
     traces_.erase(found);
     Reply(id, base::Value(base::DictValue()));
     return;
@@ -4508,6 +4574,67 @@ void Connection::CoverageHarvest(const std::string& context, base::OnceClosure d
              weak_factory_.GetWeakPtr(), context, std::move(done)));
 }
 
+void Connection::SnapshotterInstall(const std::string& context, base::OnceClosure done) {
+  auto found = traces_.find(context);
+  Object* object = Find(context);
+  if (found == traces_.end() || !object || object->type != "BrowserContext" ||
+      !found->second.snapshotter_registration.empty()) {
+    std::move(done).Run();
+    return;
+  }
+  const base::DictValue* options = object->data.FindDict("contextOptions");
+  const bool javascript = !options || options->FindBool("javaScriptEnabled").value_or(true);
+  const std::string source =
+      "(" + std::string(reinterpret_cast<const char*>(kSnapshotterScript), sizeof(kSnapshotterScript)) +
+      ")(\"__playwright_snapshot_streamer_zebkit\", " + (javascript ? "true" : "false") + ");";
+  base::DictValue params;
+  params.Set("context", object->id);
+  params.Set("source", source);
+  std::vector<zebkit_view*> views = ContextViews(context);
+  Native(-1, nullptr, "BrowserContext.addInitScript", std::move(params),
+         base::BindOnce(
+             [](base::WeakPtr<Connection> self, std::string context, std::string source,
+                std::vector<zebkit_view*> views, base::OnceClosure done, base::Value result) {
+               if (!self) {
+                 std::move(done).Run();
+                 return;
+               }
+               auto found = self->traces_.find(context);
+               const std::string* registration =
+                   result.is_dict() ? result.GetDict().FindString("registration") : nullptr;
+               if (found != self->traces_.end() && registration)
+                 found->second.snapshotter_registration = *registration;
+               // And in the documents there are (safeNonStallingEvaluateInAllFrames).
+               auto once = base::BarrierClosure(views.size() + 1, std::move(done));
+               for (zebkit_view* view : self->ContextViews(context)) {
+                 if (std::find(views.begin(), views.end(), view) == views.end())
+                   continue;
+                 base::DictValue evaluate;
+                 evaluate.Set("expression", source);
+                 self->Native(-1, view, "Page.evaluateInFrames", std::move(evaluate),
+                              base::BindOnce([](base::RepeatingClosure once, base::Value) { once.Run(); },
+                                             once));
+               }
+               once.Run();
+             },
+             weak_factory_.GetWeakPtr(), context, source, views, std::move(done)));
+}
+
+void Connection::SnapshotterUninstall(const std::string& context) {
+  auto found = traces_.find(context);
+  Object* object = Find(context);
+  if (found == traces_.end() || found->second.snapshotter_registration.empty())
+    return;
+  if (object) {
+    base::DictValue params;
+    params.Set("context", object->id);
+    params.Set("registration", found->second.snapshotter_registration);
+    Native(-1, nullptr, "BrowserContext.removeRegistration", std::move(params),
+           base::BindOnce([](base::Value) {}));
+  }
+  found->second.snapshotter_registration.clear();
+}
+
 void Connection::CoverageUninstall(const std::string& context, base::OnceClosure done) {
   auto found = traces_.find(context);
   Object* object = Find(context);
@@ -4908,6 +5035,14 @@ void Connection::Command(int id,
                      if ((!own_guid.empty() && har.context == own_guid) ||
                          (own_guid.empty() && har.context == context_guid))
                        har.recorder->RecordFetch(har_request, *response);
+                   }
+                   // Its own Tracing's network (tracing.ts's HAR tracer of the
+                   // APIRequestContext), not its context's.
+                   if (auto trace = self->traces_.find(own_guid.empty() ? context_guid : own_guid);
+                       trace != self->traces_.end() && trace->second.recording && trace->second.network &&
+                       trace->second.options.FindBool("snapshotDom").value_or(false)) {
+                     trace->second.network->RecordFetch(har_request, *response,
+                                                        own_guid.empty() ? context_guid : own_guid);
                    }
                    const int status = response->FindInt("status").value_or(0);
                    if (fail_on_status && (status < 200 || status >= 400)) {

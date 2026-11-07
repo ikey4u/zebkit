@@ -32,6 +32,7 @@
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/cookie_options.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "content/browser/devtools/request_body_collector.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/browser_thread.h"
@@ -466,6 +467,7 @@ class Loader : public network::mojom::URLLoader,
       request_.method = *method;
     if (const base::ListValue* headers = overrides.FindList("headers")) {
       request_.headers.Clear();
+      continued_headers_.emplace();
       for (const base::Value& header : *headers) {
         const std::string* name = header.is_dict() ? header.GetDict().FindString("name") : nullptr;
         const std::string* value = header.is_dict() ? header.GetDict().FindString("value") : nullptr;
@@ -479,6 +481,7 @@ class Loader : public network::mojom::URLLoader,
             std::find(std::begin(kNetworks), std::end(kNetworks), base::ToLowerASCII(*name)) ==
                 std::end(kNetworks)) {
           request_.headers.SetHeader(*name, *value);
+          continued_headers_->SetHeader(*name, *value);
         }
       }
     }
@@ -677,6 +680,19 @@ class Loader : public network::mojom::URLLoader,
       Reroute();
       return;
     }
+    // route.continue()'s headers again on each hop, which Chromium does not
+    // keep across a redirect (crNetworkManager.ts applies them itself): an
+    // Authorization a cross-origin hop would drop, say.
+    if (continued_headers_) {
+      for (net::HttpRequestHeaders::Iterator it(*continued_headers_); it.GetNext();) {
+        if (redirect_drops_body_ && base::StartsWith(it.name(), "content-", base::CompareCase::INSENSITIVE_ASCII))
+          continue;
+        std::erase_if(params.removed_headers, [&](const std::string& removed) {
+          return base::EqualsCaseInsensitiveASCII(removed, it.name());
+        });
+        params.modified_headers.SetHeader(it.name(), it.value());
+      }
+    }
     if (target_loader_)
       target_loader_->FollowRedirect(std::move(params), new_url);
   }
@@ -752,7 +768,10 @@ class Loader : public network::mojom::URLLoader,
     if (!redirected_from_.empty())
       value.Set("redirectedFrom", redirected_from_);
     // The body the page gave, as base64 (the protocol's binary).
-    if (request_.request_body) {
+    if (collected_body_) {
+      if (!collected_body_->empty())
+        value.Set("postData", base::Base64Encode(*collected_body_));
+    } else if (request_.request_body) {
       std::string body;
       for (const auto& element : *request_.request_body->elements()) {
         if (element.type() != network::DataElement::Tag::kBytes)
@@ -787,6 +806,14 @@ class Loader : public network::mojom::URLLoader,
   std::string original_url_;
   // The page's DevTools session's type for it, lower case, if it said one.
   std::string devtools_type_;
+  // A body with a blob's part (a FormData's): read whole before the request
+  // is reported, as DevTools' interceptor reads it for Fetch.requestPaused
+  // (request_body_collector.cc).
+  std::optional<std::string> collected_body_;
+  // The headers route.continue() gave, for the redirects' hops.
+  std::optional<net::HttpRequestHeaders> continued_headers_;
+  bool redirect_drops_body_ = false;
+  std::unique_ptr<content::RequestBodyCollector> body_collector_;
   std::string frame_;
   // FetchCookies()'s Cookie header, reported, never sent from here.
   std::string cookie_;
@@ -1276,6 +1303,36 @@ void Loader::Start() {
     Continue({});
     return;
   }
+  if (!collected_body_ && request_.request_body &&
+      std::ranges::any_of(*request_.request_body->elements(), [](const network::DataElement& element) {
+        return element.type() == network::DataElement::Tag::kDataPipe;
+      })) {
+    body_collector_ = content::RequestBodyCollector::Collect(
+        *request_.request_body,
+        base::BindOnce(
+            [](base::WeakPtr<Loader> self, std::vector<content::RequestBodyCollector::BodyEntry> bodies) {
+              if (!self)
+                return;
+              std::string body;
+              for (const auto& entry : bodies) {
+                if (entry.has_value())
+                  body.append(entry->begin(), entry->end());
+              }
+              self->collected_body_ = std::move(body);
+              // (Collect() may answer before it returns.)
+              base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE, base::BindOnce(
+                                 [](base::WeakPtr<Loader> self) {
+                                   if (self) {
+                                     self->body_collector_.reset();
+                                     self->Start();
+                                   }
+                                 },
+                                 self));
+            },
+            weak_factory_.GetWeakPtr()));
+    return;
+  }
   network_->AddExtraHeaders(request_);
   // Routed: no disk cache, as crNetworkManager.ts has it
   // (Network.setCacheDisabled).
@@ -1287,6 +1344,13 @@ void Loader::Start() {
     // DevTools says "other" where the network knows better (a document).
     if (devtools_type_ == "other" || devtools_type_ == "document")
       devtools_type_.clear();
+  }
+  // frames.ts's requestStarted(): with interception on, a favicon's is
+  // aborted, and not reported, to keep it off the network.
+  if (network_->Routes() && request_.url.spec().ends_with("/favicon.ico")) {
+    network_ = nullptr;
+    Complete(net::ERR_ABORTED);
+    return;
   }
   network_->Emit("Page.request", RequestValue());
   if (network_->blank_documents()) {
@@ -1509,6 +1573,8 @@ void Loader::OnReceiveRedirect(const net::RedirectInfo& redirect,
     redirected_from_ = id_;
     id_ = network_->NextId("q");
     request_.url = redirect.new_url;
+    // A body the redirect drops (a POST become GET) takes its headers along.
+    redirect_drops_body_ = redirect.new_method != request_.method;
     request_.method = redirect.new_method;
     timing_start_ = base::TimeTicks::Now();
     wall_start_ = base::Time::Now();

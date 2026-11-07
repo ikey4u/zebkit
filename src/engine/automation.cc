@@ -77,6 +77,8 @@
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_agent_host.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
@@ -1812,7 +1814,11 @@ class Automation : public content::WebContentsObserver,
       const base::DictValue* response = params.FindDict("response");
       auto sent = devtools_requests_.find(*request);
       const bool from_memory = memory_cached_.erase(*request) > 0;
-      if (response && (from_memory || response->FindBool("fromServiceWorker").value_or(false)) &&
+      // A blob: URL's, which Blink reads without the network (crNetworkManager.ts
+      // reports it as any other, data: URLs apart).
+      const std::string* response_url = response ? response->FindString("url") : nullptr;
+      const bool from_blob = response_url && response_url->starts_with("blob:");
+      if (response && (from_memory || from_blob || response->FindBool("fromServiceWorker").value_or(false)) &&
           sent != devtools_requests_.end() && !network->SawDevToolsRequest(*request)) {
         const base::DictValue& will = sent->second;
         base::DictValue value;
@@ -1840,7 +1846,7 @@ class Automation : public content::WebContentsObserver,
                                 "secureConnectionStart", "requestStart", "responseStart"})
           timing.Set(key, -1);
         answer.Set("timing", std::move(timing));
-        if (from_memory)
+        if (from_memory || from_blob)
           answer.Set("fromServiceWorker", false);
         network->ServedByWorker(*request, std::move(value), std::move(answer));
         worker_served_.insert(*request);
@@ -2359,7 +2365,17 @@ class Automation : public content::WebContentsObserver,
   base::DictValue FrameValue(content::RenderFrameHost* frame) {
     base::DictValue value;
     value.Set("frame", FrameId(frame));
-    value.Set("name", frame->GetFrameName());
+    // inspector_page_agent.cc's: a frame without a name has its element's id,
+    // when its element is in the same process.
+    std::string name = frame->GetFrameName();
+    if (content::RenderFrameHost* parent = frame->GetParent();
+        name.empty() && parent && parent->GetProcess() == frame->GetProcess()) {
+      if (std::optional<std::string> id =
+              static_cast<content::RenderFrameHostImpl*>(frame)->frame_tree_node()->html_id()) {
+        name = *id;
+      }
+    }
+    value.Set("name", name);
     value.Set("url", frame->GetLastCommittedURL().spec());
     if (content::RenderFrameHost* parent = frame->GetParent())
       value.Set("parentFrame", FrameId(parent));
@@ -3171,7 +3187,8 @@ class Automation : public content::WebContentsObserver,
     const bool expecting = name == "expect" ||
                            (name == "waitForSelector" && (state == "hidden" || state == "detached"));
     if (name == "querySelector" || name == "querySelectorAll" || name == "queryCount" ||
-        name == "evalOnSelector" || name == "evalOnSelectorAll" || expecting) {
+        name == "evalOnSelector" || name == "evalOnSelectorAll" || expecting ||
+        call->Flag("__noFrameWait")) {
       TargetStep(call.get(), frame_target, "query", {},
                  base::BindOnce(
                      [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, Target target,
@@ -4264,7 +4281,10 @@ class Automation : public content::WebContentsObserver,
         "const s = " + Json(base::Value(streamer)) + "; if (!window[s]) (" +
         std::string(reinterpret_cast<const char*>(kSnapshotterScript), sizeof(kSnapshotterScript)) +
         ")(s, " + (call->Flag("removeNoScript") ? "true" : "false") + ");";
-    const std::string expression = "(() => { " + ensure + " return window[s].captureSnapshot(" + reset + "); })()";
+    // The html as its JSON: an element's attributes are an object, whose
+    // order (the attributes' own) a dictionary here would not keep.
+    const std::string expression = "(() => { " + ensure + " const r = window[s].captureSnapshot(" + reset +
+                                   "); if (r) r.html = JSON.stringify(r.html); return r; })()";
     std::vector<content::RenderFrameHost*> frames;
     MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
       if (frame->IsActive() && frame->IsRenderFrameLive())
@@ -4681,6 +4701,14 @@ class Automation : public content::WebContentsObserver,
     const base::DictValue* point = prepared.GetDict().FindDict("point");
     const gfx::PointF where(point ? point->FindDouble("x").value_or(0) : 0,
                             point ? point->FindDouble("y").value_or(0) : 0);
+    // tracing.ts's input event's box: the element's, in the frame, until the
+    // frame's offset in the page is known.
+    if (const base::DictValue* box = prepared.GetDict().FindDict("box"); box && call->Flag("traceLog")) {
+      base::DictValue in_frame = box->Clone();
+      in_frame.Set("pointX", where.x());
+      in_frame.Set("pointY", where.y());
+      call->params().Set("__inputBox", std::move(in_frame));
+    }
     const int interceptor =
         prepared.GetDict().FindInt("interceptor").value_or(0);
     ToRoot(target.frame, where,
@@ -4786,6 +4814,17 @@ class Automation : public content::WebContentsObserver,
       base::DictValue point;
       point.Set("x", in_root.x());
       point.Set("y", in_root.y());
+      mouse_in_root_ = in_root;
+      if (const base::DictValue* box = call->params().FindDict("__inputBox")) {
+        const double dx = in_root.x() - box->FindDouble("pointX").value_or(in_root.x());
+        const double dy = in_root.y() - box->FindDouble("pointY").value_or(in_root.y());
+        base::DictValue in_page;
+        in_page.Set("x", box->FindDouble("x").value_or(0) + dx);
+        in_page.Set("y", box->FindDouble("y").value_or(0) + dy);
+        in_page.Set("width", box->FindDouble("width").value_or(0));
+        in_page.Set("height", box->FindDouble("height").value_or(0));
+        point.Set("box", std::move(in_page));
+      }
       call->params().Set("__inputPoint", std::move(point));
     }
     // The trace's "action" snapshot, here, before the input (dom.ts).
@@ -6674,8 +6713,22 @@ class Automation : public content::WebContentsObserver,
             weak_factory_.GetWeakPtr(), point, std::move(done)));
   }
 
+  // tracing.ts's input event of a mouse command: where the mouse goes, or
+  // is (input.ts's _currentPoint()).
+  void TraceMousePoint(Call* call, std::optional<gfx::PointF> to) {
+    if (to)
+      mouse_in_root_ = *to;
+    if (!call->Flag("traceLog"))
+      return;
+    base::DictValue point;
+    point.Set("x", mouse_in_root_.x());
+    point.Set("y", mouse_in_root_.y());
+    call->params().Set("__inputPoint", std::move(point));
+  }
+
   void MouseMoveCommand(Call* call) {
     const gfx::PointF to(call->Number("x"), call->Number("y"));
+    TraceMousePoint(call, to);
     AtPoint(to, base::BindOnce(
                     [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
                        gfx::PointF to, content::RenderWidgetHost* widget,
@@ -6697,12 +6750,14 @@ class Automation : public content::WebContentsObserver,
   }
 
   void MouseDownCommand(Call* call) {
+    TraceMousePoint(call, std::nullopt);
     MouseDownIn(Widget(), ButtonOf(call->String("button")),
                 static_cast<int>(call->Number("clickCount", 1)));
     WhenAcked(Type::kMouseDown, InputDone(call));
   }
 
   void MouseUpCommand(Call* call) {
+    TraceMousePoint(call, std::nullopt);
     MouseUpIn(Widget(), ButtonOf(call->String("button")),
               static_cast<int>(call->Number("clickCount", 1)));
     WhenAcked(Type::kMouseUp, InputDone(call));
@@ -6710,6 +6765,7 @@ class Automation : public content::WebContentsObserver,
 
   void MouseClickCommand(Call* call) {
     const gfx::PointF to(call->Number("x"), call->Number("y"));
+    TraceMousePoint(call, to);
     AtPoint(to, base::BindOnce(
                     [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
                        gfx::PointF to, content::RenderWidgetHost* widget,
@@ -6736,6 +6792,7 @@ class Automation : public content::WebContentsObserver,
   }
 
   void MouseWheelCommand(Call* call) {
+    TraceMousePoint(call, std::nullopt);
     content::RenderWidgetHost* widget = Widget();
     if (!widget) {
       call->Fail(kClosed);
@@ -7208,6 +7265,26 @@ class Automation : public content::WebContentsObserver,
         return;
       }
     }
+    // screenshotter.ts's queue: a page's screenshots one at a time (each
+    // one's styles and masks are undone before the next's).
+    if (screenshot_current_ && screenshot_current_.get() != call && !screenshot_current_->finished()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call) {
+                if (self && call && !call->finished())
+                  self->Screenshot(call.get());
+              },
+              weak_factory_.GetWeakPtr(), call->GetWeakPtr()),
+          base::Milliseconds(5));
+      return;
+    }
+    screenshot_current_ = call->GetWeakPtr();
+    // screenshotter.ts's log.
+    call->Log(call->OnHandle() ? "taking element screenshot" : "taking page screenshot");
+    if (call->String("animations") == "disabled")
+      call->Log("  disabled all CSS animations");
+    call->Log("waiting for fonts to load...");
     ScreenshotStyled(call, base::BindOnce(&Automation::ScreenshotPrepared,
                                           weak_factory_.GetWeakPtr(),
                                           call->GetWeakPtr()));
@@ -7446,12 +7523,18 @@ class Automation : public content::WebContentsObserver,
       if (const std::string* value = call->params().FindString(key))
         arg.Set(key, *value);
     }
+    // Those in frames are masked in their frames, once the page's are.
+    std::vector<std::string> in_frames;
     if (const base::ListValue* mask = call->params().FindList("mask")) {
       base::ListValue selectors;
       for (const base::Value& item : *mask) {
         const std::string* selector =
             item.is_dict() ? item.GetDict().FindString("selector") : nullptr;
-        if (selector)
+        if (!selector)
+          continue;
+        if (selector->find(kEnterFrame) != std::string::npos)
+          in_frames.push_back(*selector);
+        else
           selectors.Append(*selector);
       }
       arg.Set("mask", std::move(selectors));
@@ -7459,8 +7542,61 @@ class Automation : public content::WebContentsObserver,
     RunStep(call, Follow(MainFrame()), AutomationWorld::kUtility,
             "prepareScreenshot", std::move(arg), {},
             base::BindOnce(
-                [](base::OnceClosure next, base::Value) { std::move(next).Run(); },
-                std::move(next)));
+                [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                   std::vector<std::string> in_frames, base::OnceClosure next, base::Value) {
+                  if (!self || !call)
+                    return;
+                  call->Log("fonts loaded");
+                  self->MaskInFrames(call, std::move(in_frames), std::move(next));
+                },
+                weak_factory_.GetWeakPtr(), call->GetWeakPtr(), std::move(in_frames), std::move(next)));
+  }
+
+  // A mask's selector through frames: its frames entered as a query enters
+  // them (no wait), then its elements masked in the last one.
+  void MaskInFrames(base::WeakPtr<Call> call, std::vector<std::string> selectors, base::OnceClosure next) {
+    if (!call)
+      return;
+    if (selectors.empty()) {
+      call->params().Remove("__noFrameWait");
+      std::move(next).Run();
+      return;
+    }
+    const std::string selector = selectors.back();
+    selectors.pop_back();
+    std::vector<std::string> chunks;
+    size_t start = 0;
+    for (size_t at; (at = selector.find(kEnterFrame, start)) != std::string::npos;) {
+      chunks.push_back(selector.substr(start, at - start));
+      start = at + sizeof(kEnterFrame) - 1;
+    }
+    Target target;
+    target.frame = Follow(MainFrame());
+    target.selector = selector.substr(start);
+    call->params().Set("__noFrameWait", true);
+    masked_in_frames_ = true;
+    EnterFrames(
+        call, std::move(target), std::move(chunks), 0,
+        base::BindOnce(
+            [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::vector<std::string> selectors,
+               std::string color, base::OnceClosure next, Target target) {
+              if (!self || !call)
+                return;
+              base::DictValue arg;
+              arg.Set("selector", target.selector);
+              arg.Set("color", color);
+              self->RunStep(call.get(), target.frame, AutomationWorld::kUtility, "maskElements", std::move(arg), {},
+                            base::BindOnce(
+                                [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
+                                   std::vector<std::string> selectors, base::OnceClosure next, base::Value) {
+                                  if (self)
+                                    self->MaskInFrames(call, std::move(selectors), std::move(next));
+                                },
+                                self, call, std::move(selectors), std::move(next)));
+            },
+            weak_factory_.GetWeakPtr(), call, std::move(selectors),
+            call->params().FindString("maskColor") ? *call->params().FindString("maskColor") : std::string("#F0F"),
+            std::move(next)));
   }
 
   void ScreenshotPrepared(base::WeakPtr<Call> call) {
@@ -7545,6 +7681,14 @@ class Automation : public content::WebContentsObserver,
     if (!call)
       return;
     if (!metrics.is_dict()) {
+      // A document that went meanwhile (a navigation): measured again in the
+      // next, as waitForFunctionValueInUtility() polls.
+      if (!call->Expired()) {
+        base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+            FROM_HERE, base::BindOnce(&Automation::ScreenshotWithMetrics, weak_factory_.GetWeakPtr(), call, clip),
+            base::Milliseconds(20));
+        return;
+      }
       RestoreScreenshot(call, std::string(), "zebkit: no metrics of the page");
       return;
     }
@@ -7684,6 +7828,15 @@ class Automation : public content::WebContentsObserver,
   void RestoreScreenshot(base::WeakPtr<Call> call, std::string base64, std::string error) {
     if (!call)
       return;
+    // The masks in frames, undone in each frame.
+    if (masked_in_frames_) {
+      masked_in_frames_ = false;
+      MainFrame()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+        if (frame != MainFrame() && frame->IsRenderFrameLive())
+          RunStep(call.get(), Follow(frame), AutomationWorld::kUtility, "restoreScreenshot", {}, {},
+                  base::BindOnce([](base::Value) {}));
+      });
+    }
     RunStep(call.get(), Follow(MainFrame()), AutomationWorld::kUtility,
             "restoreScreenshot", {}, {},
             base::BindOnce(
@@ -9575,6 +9728,12 @@ class Automation : public content::WebContentsObserver,
   int next_handle_ = 0;
   std::vector<std::string> exposed_;
   std::map<std::string, std::string> init_scripts_;
+  // Where the mouse is in the page, for traces' input events.
+  gfx::PointF mouse_in_root_;
+  // A screenshot masked elements of frames other than the main one.
+  bool masked_in_frames_ = false;
+  // The screenshot being taken; others wait for it.
+  base::WeakPtr<Call> screenshot_current_;
   std::map<std::string, std::string> binding_registrations_;
   bool clock_installed_ = false;
   std::unique_ptr<TraceRecorder> tracing_;
