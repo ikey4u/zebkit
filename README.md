@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-<p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux and macOS today, Windows next. Add it in a few lines.</p>
+<p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux, macOS and Windows. Add it in a few lines.</p>
 
 ## Introduction
 
@@ -13,16 +13,16 @@ it adds a zebkit view; where it needs a PDF, media, compression or crypto,
 it calls zebkit's API: in C, or through the bindings for Rust, Python and
 JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 
-<p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; Linux and macOS today, Windows planned"></p>
+<p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; on Linux, macOS and Windows"></p>
 
 - **Integrate it, don't build on it.** Electron is a base: an application
   is built inside it, on its runtime, its windows and its packaging.
   zebkit is a part: an application adds it, as it adds SQLite, and keeps
   its process, its toolkit and its way of shipping. It runs inside the
   application's own event loop (`zebkit_init()`, `zebkit_pump()`), and draws
-  in the application's windows, as frames you draw or, on X11 and macOS, in a
-  child of a window you give it (`examples/native-host`); Win32 is next
-  (`docs/ROADMAP.md`, "The library").
+  in the application's windows, as frames you draw or in a child of a window
+  you give it, an X11 window, an `NSView` or an `HWND` (`examples/native-host`),
+  and gives back the window a page is in for the system's dialogs.
 - **Take what you need.** Web views, in a window or off-screen with their
   frames handed to you; a full PDF API; saving what a page plays; your own
   URL schemes; native UI from JavaScript; Playwright's API and CDP for
@@ -31,9 +31,9 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   client hints, `window.chrome`, popups blocked without a click, and
   nothing of a debugger attached (`docs/API.md` has what still differs,
   Google's sign-in among it).
-- **Lighter than Electron.** 38% smaller, and real web pages cost 21% less
-  CPU and 17% less memory than in the latest Electron
-  ([Benchmark](#benchmark)).
+- **Lighter than Electron.** Against the latest Electron, 45.2.1: 34% smaller,
+  a cold start in 2.3 s against 6.6, a page in 29% less memory, and the DOM, text
+  layout and JavaScript level ([Benchmark](#benchmark)).
 - **No Node.** No second JavaScript runtime and no IPC through one. The
   application is native code, or JavaScript run by `zebkit-js` on the
   engine's V8.
@@ -53,9 +53,10 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **Media, saved as it plays.** Whatever a page plays, a file, MSE/DASH or
   HLS, written to MP4 or WebM as it was sent, without re-encoding and
   without a second download (`<zebkit/media.h>`).
-- **Bytes as they are.** A page's calls to the application go over a
-  scheme of the engine's own, through Mojo's data pipes: no base64, no JSON
-  around binary data, many calls under way at once.
+- **Bytes as they are.** A page's calls to the application go over its
+  frame's own Mojo channel, large ones through shared memory: no base64, the
+  page's JSON handed on as it was written, as fast as Electron's IPC for small
+  calls and faster for large ones.
 - **The window around a page, from JavaScript.** `zebkit.ui` draws
   windows, prompts and dialogs with Chromium's views toolkit: signals,
   JSX, Tailwind classes, and automation for tests and agents. Rich UI is
@@ -74,10 +75,10 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   Playwright's API or over CDP, Chromium's own DevTools server, headless or
   windowed.
 - **Customise it from your code.** Native hooks decide what the engine
-  does: new windows and popups, dialogs, drag and drop, your own URL
-  schemes, what a page may call, scripts before the page's own.
-  *Planned:* hooks at every point where Chromium decides, permissions,
-  navigation, network requests, certificates, downloads and more
+  does, in C, Rust, Python and JavaScript: permissions, navigation, popups,
+  dialogs, downloads, certificates and client certificates, sign-in, network
+  requests and responses at every stage, settings at run time, your own URL
+  schemes, what a page may call, scripts before the page's own
   (`docs/ROADMAP_HOOKS.md`).
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
@@ -87,7 +88,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | | |
 |---|---|
 | Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
-| Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later): `libzebkit.so.1` and `zebkit-helper` |
+| Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later), X11 and (`--ozone-platform=wayland`) Wayland: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |
 | Version | `VERSION`: 0.2.0 |
@@ -101,7 +102,7 @@ and `include/`. Either unpack a release's archive
 (`zebkit-<version>-<target>.tar.xz` from GitHub's releases), or build one:
 
 ```sh
-mise run r      # dist/release (Linux) and dist/release-macos (macOS); hours the first time
+mise run r      # dist/release (Linux), dist/release-macos (macOS), dist/release-windows; hours the first time
 ```
 
 On an Apple silicon Mac with full Xcode installed, `scripts/dist.sh release`
@@ -195,8 +196,13 @@ int main(int argc, char **argv) {
 ```sh
 cc app.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o app   # Linux
 cc app.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o app   # macOS
+clang-cl /MT app.c /I%PKG%\include %PKG%\zebkit.dll.lib %PKG%\zebkit_sandbox.lib   # Windows
 ./app --remote-debugging-port=9222     # with CDP for Puppeteer and Playwright
 ```
+
+On Windows the executable takes part in Chromium's sandbox: it links
+`zebkit_sandbox.lib` and calls `zebkit_win_startup()` first in `main()`
+(`docs/WINDOWS.md`).
 
 Without unprivileged user namespaces the engine refuses to start and says why: install its
 helper, or in a container of its own add `--no-sandbox` (`docs/SANDBOX.md`).
@@ -387,41 +393,33 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
 
 ## Benchmark
 
-Every comparison is with the latest stable Electron, 44.9 (Chromium 152).
-A comparison of whole applications, the same one on both, is still to be
-made (`docs/ROADMAP.md`).
+Against the latest stable Electron, 45.2.1 (Chromium 156), measured the same way:
+one harness, the same pages, two thin hosts that do the same thing, every process
+counted, medians of 5 to 11 runs taking turns, Linux x86-64, 2026-11-06 and 07
+(`scripts/electron-compare.sh`, `docs/reports/electron-compare.md`).
 
-| | zebkit `slim`, 2026-10-27 | Electron 44.9, trimmed | zebkit is |
-|---|---:|---:|---:|
-| Uncompressed | **158.7 MiB** | 255.7 MiB | 38% smaller |
-| `.tar.xz` | **54.3 MiB** | 85.3 MiB | 36% smaller |
-| `.zip` | **72.3 MiB** | 112.6 MiB | 36% smaller |
-| Text layout (a chapter of a book) | 10.9 ms | **9.2 ms** | 18% slower |
-| A web page: CPU in its first 30 s, on average | **4.6 s** | 5.5 s | 16% less |
-| A web page: memory, on average | **416 MB** | 498 MB | 16% less |
+| | zebkit 0.2.0 | Electron 45.2.1 | |
+|---|---:|---:|---|
+| As an application ships it, uncompressed / `.tar.xz` | **171.2 / 59.4 MiB** | 260.5 / 87.1 MiB | 34% smaller |
+| Start, cold, to first paint | **2.3 s** | 6.6 s | 66% less |
+| Start, warm, to first paint | **116 ms** | 236 ms | 51% less |
+| Memory, a blank page | **179 MB** | 250 MB | 29% less |
+| A call from the page to the host and back, 1 MiB / 16 MiB | **3.3 / 58 ms** | 4.3 / 66 ms | 23% / 12% less |
+| DOM, 20,000 elements made and laid out | 280 ms | 278 ms | level |
+| JavaScript and DOM, ten workloads | 1139 ms | 1193 ms | level |
+| Text layout, a chapter of a book | 8.1 ms | 7.6 ms | level, within noise |
+| A 756-page PDF in each one's viewer: CPU / memory | **0.75 s / 261 MB** | 1.6 s / 399 MB | 53% / 35% less |
+| Ten popular sites: CPU loading / memory | **21.7 s / 4756 MB** | 25.2 s / 5060 MB | 14% / 6% less |
+| Processes, a page | 7 | **6** | one more: storage sandboxed in its own, as Chrome |
 
-- **Size.** Electron as shipped is 283.3 MiB; "trimmed" is a hello world
-  with its locales and extras removed, the fairest baseline we could make
-  (`examples/electron-hello`). zebkit keeps the whole web platform that
-  applications use: HTML, CSS, JavaScript with every JIT tier,
-  WebAssembly, WebGL, media with H.264 and AAC, HTTP/3.
-- **Text layout.** A chapter of a book in columns, laid out again as its
-  window is resized (`scripts/layout-bench.sh`). Both engines lay out the
-  same lines; zebkit's code runs slower for being compiled for size.
-  Compiled for speed (`slim-speed`) it is within 4% of Google's own build
-  of Chromium 155, which is itself 8% behind Electron's Chromium 152, at
-  a cost of 19% in size; the release stays `slim`
-  (`docs/SIZE_AND_SPEED.md`).
-- **Web pages.** Eleven popular sites (Wikipedia, YouTube, Amazon, The New
-  York Times, GitHub and others) and three local pages, each loaded for
-  10 s and shown for 20 s more, each alone in a freshly started engine in
-  a 1280 by 800 window, the median of 3 runs, CPU and memory of every
-  process (the averages above are over the 14). A simple page takes
-  172 MB, two thirds of it the engine's own code, which every further
-  page shares. zebkit costs less CPU on 12 of the 14 and less memory on
-  all 14; on BBC News and Stack Overflow the CPU is level. Reddit, the
-  fifteenth, showed zebkit a reCAPTCHA in place of the page and is left
-  out (`docs/reports/web-bench.md`, `scripts/web-bench.sh`).
+- **Size.** zebkit keeps the whole web platform applications use: HTML, CSS,
+  JavaScript with every JIT tier, WebAssembly, WebGL, media with H.264 and AAC,
+  HTTP/3, PDF.
+- **Speed.** Chrome's own profile-guided optimization reaches Blink because
+  zebkit is built with CFI as Chrome is; every speed change is kept only when it
+  gains more than it costs in size (`docs/SIZE_AND_SPEED.md`).
+- **Where Electron is ahead**: one process fewer a page, and memory on two of the
+  ten sites, YouTube and The Verge, where advertising and video decide.
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
 Playwright's commands, natively and through Playwright over CDP, headless,
@@ -429,12 +427,16 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 
 | | zebkit, native | zebkit, Playwright's client to its endpoint | Chrome 156, Playwright over CDP |
 |---|---:|---:|---:|
-| `locator.click()` | **4.9 ms** | 3.5 ms | 33.4 ms |
-| `locator.fill()` | **0.66 ms** | 2.4 ms | 2.7 ms |
-| `locator.press('Enter')` | **0.40 ms** | 0.82 ms | 2.3 ms |
-| `locator.textContent()` | **0.22 ms** | 0.65 ms | 0.90 ms |
-| `allTextContents()` of 200 | **0.26 ms** | 2.1 ms | 1.8 ms |
-| `page.screenshot()` | **29.9 ms** | 44.2 ms | 33.4 ms |
+| `locator.click()` | **4.9 ms** | 3.4 ms | 33.3 ms |
+| `locator.fill()` | **0.69 ms** | 2.6 ms | 2.7 ms |
+| `locator.press('Enter')` | **0.42 ms** | 0.86 ms | 2.3 ms |
+| `locator.textContent()` | **0.26 ms** | 0.67 ms | 0.94 ms |
+| `allTextContents()` of 200 | **0.34 ms** | 1.8 ms | 2.0 ms |
+| `page.goto()` | **13.5 ms** | 13.9 ms | 18.3 ms |
+| `page.screenshot()` | **31.5 ms** | | 33.6 ms |
+
+Playwright's own test suite (v1.64.1) against the endpoint passes 4,046 of its
+tests, Chrome 4,196 (`docs/AUTOMATION.md`, section 7).
 
 - **One call in the renderer** where Playwright's server makes several
   round trips over CDP, and no JSON between processes; no Node.js process
@@ -456,10 +458,13 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 | [docs/MCP.md](docs/MCP.md) | `tools/zebkit-mcp`: the engine as MCP tools for agents, its bounds, what is weak |
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
+| [docs/WINDOWS.md](docs/WINDOWS.md) | The Windows DLL, its sandbox, cross-building on Linux, the state of the port |
+| [docs/SANDBOX.md](docs/SANDBOX.md) | The sandbox on each system, and running without one |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
 | [docs/ROADMAP_HOOKS.md](docs/ROADMAP_HOOKS.md) | Hooks: how an application decides what the engine does, from native code |
 | [docs/UI.md](docs/UI.md) | `zebkit.ui`: the engine's own small UI, what it is for and what it is not |
 | [bindings/rust/README.md](bindings/rust/README.md) | The Rust crates |
+| `docs/releases/` | Each release: what is in it, what was tested, what is missing |
 | `docs/reports/` | Size reports, regenerated by the scripts |
 
 ### Repository
@@ -467,11 +472,11 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 | Path | What it holds |
 |---|---|
 | `upstream.lock` | The Chromium release built, the pinned depot_tools, the Electron release measured against |
-| `profiles/` | Build flavours as GN arguments: `slim.gn` (the product), `slim-macos.gn`, `baseline.gn` (Chromium's defaults) |
+| `profiles/` | Build flavours as GN arguments: `slim.gn` (the product), `slim-macos.gn`, `slim-windows.gn`, `baseline.gn` (Chromium's defaults) |
 | `patches/` | Changes to Chromium, applied in the order of `patches/series` |
 | `src/engine/` | zebkit's own code, linked into Chromium as `//zebkit/engine`: the library, its C API and headers |
 | `src/ffmpeg/` | zebkit's FFmpeg configuration, from `scripts/ffmpeg-config.sh` |
-| `rust/`, `bindings/python/` | The Rust crates and the Python binding |
+| `bindings/rust/`, `bindings/python/` | The Rust crates and the Python binding |
 | `tools/` | `zebkit-run` (open pages, serve CDP or Playwright's endpoint), `zebkit-js` (applications in JavaScript) and `zebkit-mcp` (the engine as MCP tools) |
 | `tests/` | Programs that test every layer of the API against a package; speed workloads |
 | `examples/` | A browser window in C, `zebkit.ui`, a library inside the engine, the Electron baseline |
