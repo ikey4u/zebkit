@@ -227,6 +227,8 @@ class _NativeWindowInfo(ctypes.Structure):
 
 
 _view_get_native_window = _declare("zebkit_view_get_native_window", _B, _V, ctypes.POINTER(_NativeWindowInfo))
+_NATIVE_WINDOW_EXPORT = ctypes.CFUNCTYPE(None, _P, _S)
+_view_export_native_window = _declare("zebkit_view_export_native_window", _B, _V, _NATIVE_WINDOW_EXPORT, _P)
 _view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
 _view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _P)
 _view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED, _P)
@@ -741,6 +743,19 @@ class View:
         if not _view_get_native_window(self._check(), ctypes.byref(info)):
             return None
         return {"kind": {1: "x11", 2: "win32", 3: "appkit"}[info.kind], "handle": info.handle}
+
+    def export_native_window(self, function):
+        """function(handle) once, later: "x11:<XID>" or "wayland:<handle>" for
+        the system's portals to parent a dialog to, or None when there is none
+        (always on Windows and macOS, where native_window() is the handle)."""
+        def done(data, handle):
+            _alive.discard(callback)
+            function(handle.decode() if handle else None)
+        callback = _NATIVE_WINDOW_EXPORT(_guard(done))
+        _alive.add(callback)
+        if not _view_export_native_window(self._check(), callback, None):
+            _alive.discard(callback)
+            function(None)
 
     def detach_native(self):
         """Back to its own window; False when it was in none of the application's."""

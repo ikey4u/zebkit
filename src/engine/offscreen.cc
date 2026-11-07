@@ -90,6 +90,9 @@
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "ui/base/cursor/cursor.h"
+#if BUILDFLAG(IS_LINUX)
+#include "ui/linux/linux_ui_delegate.h"
+#endif
 #include "ui/display/display.h"
 #include "ui/display/headless/headless_screen_manager.h"
 #include "ui/display/headless/headless_screen_util.h"
@@ -1842,6 +1845,16 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
   if (!zebkit_is_headless()) {
     LOG(ERROR) << "zebkit: off-screen views are for a process without "
                   "windows on Windows (--headless)";
+    return nullptr;
+  }
+#elif BUILDFLAG(IS_LINUX)
+  // Their root's stub platform window is X11's and headless's so far: on
+  // Wayland making one crashes, so it is refused until that is done.
+  auto* linux_ui = ui::LinuxUiDelegate::GetInstance();
+  if (!zebkit_is_headless() && linux_ui &&
+      linux_ui->GetBackend() == ui::LinuxUiBackend::kWayland) {
+    LOG(ERROR) << "zebkit: off-screen views are not done on Wayland yet: "
+                  "use X11 (the default) or --headless";
     return nullptr;
   }
 #endif

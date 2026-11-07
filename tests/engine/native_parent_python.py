@@ -107,6 +107,12 @@ def _again():
         state["again"] = True
         view.attach_native(host, 0, 0, 400, 300)
         check(view.native_window() == {"kind": "x11", "handle": host}, "native_window: reports containing host")
+        view.export_native_window(lambda handle: state.__setitem__("exported", handle))
+    if "exported" not in state:
+        return False
+    if not state.get("export_checked"):
+        state["export_checked"] = True
+        check(state["exported"] == "x11:%#x" % host, "export_native_window: the portal's x11:<XID> of the host", state["exported"])
     return attached_and_drawn()
 
 

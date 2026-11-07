@@ -533,6 +533,31 @@ if [[ -x "$bin/native-parent" ]]; then
         log "native-parent: skipped (no Xvfb)"
     fi
 fi
+# Wayland: a headless wlroots compositor of its own (labwc, no GPU), with an
+# empty configuration so that nothing of the user's starts in it.
+if [[ -x "$bin/native-window" && "$ZEBKIT_HOST" == linux ]] && command -v labwc > /dev/null; then
+    wayland_run="$work/wayland-run"
+    mkdir -p "$wayland_run" "$work/wayland-config" && chmod 700 "$wayland_run"
+    env -i HOME="$work" PATH=/usr/bin:/bin XDG_RUNTIME_DIR="$wayland_run" XDG_CONFIG_HOME="$work/wayland-config" \
+        WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1 WLR_LIBINPUT_NO_DEVICES=1 \
+        labwc -C "$work/wayland-config" > "$work/labwc.log" 2>&1 &
+    labwc=$!
+    pids+=("$labwc")
+    for _ in $(seq 50); do [[ -S "$wayland_run/wayland-0" ]] && break; sleep 0.1; done
+    if [[ -S "$wayland_run/wayland-0" ]]; then
+        run native-window-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
+            ZEBKIT_TEST_NATIVE_WINDOW_WAYLAND=1 "$bin/native-window" --no-sandbox --ozone-platform=wayland \
+            --user-data-dir="$work/profile-native-window-wayland"
+        run native-window-javascript-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
+            "$bin/tools/zebkit-js" --no-sandbox --ozone-platform=wayland \
+            --user-data-dir="$work/profile-native-window-js-wayland" "$tests/script/native_window.mjs" wayland
+    else
+        echo "FAIL labwc did not start"; failed=1
+    fi
+    kill "$labwc" 2>/dev/null || true
+else
+    log "native-window-wayland: skipped (no labwc)"
+fi
 # Windows on the screen, and the keyboard for a moment: only when asked, on a person's Mac.
 if [[ "$ZEBKIT_HOST" == macos ]]; then
     run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]/profile/profile-gpu}"

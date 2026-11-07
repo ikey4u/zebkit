@@ -34,7 +34,10 @@
  * a display, such as an application's helper process that renders pages for it
  * (examples/offscreen-host). No window of the system's is made for them, nor for
  * what their pages open. On Windows they are for a process started with
- * --headless, and zebkit_view_new_offscreen() returns NULL elsewhere.
+ * --headless, and zebkit_view_new_offscreen() returns NULL elsewhere. On a
+ * Linux process whose windows are Wayland's (--ozone-platform=wayland; X11 is
+ * the default) they are not done yet, and it returns NULL there too, except
+ * under --headless.
  *
  * Threads, strings and ownership are <zebkit/zebkit.h>'s: everything is
  * for the engine's thread, and so are the callbacks, except

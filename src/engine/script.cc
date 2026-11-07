@@ -24,6 +24,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
@@ -311,6 +312,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
     get title() { return native.viewTitle(this.#id); }
     get windowOpenInfo() { return JSON.parse(native.viewWindowOpenInfo(this.#id)); }
     get nativeWindow() { return native.viewNativeWindow(this.#id); }
+    exportNativeWindow() { return native.viewExportNativeWindow(this.#id); }
     evaluate(script) { return native.viewEvaluate(this.#id, String(script)); }
     setUserAgentOverride(options) { return native.viewUserAgentOverride(this.#id, JSON.stringify(options)); }
     grant(origin, allow, filesRoot) {
@@ -623,6 +625,7 @@ struct zebkit_script {
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewExportNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void UiCommit(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -761,6 +764,7 @@ void zebkit_script::Install() {
   SetMethod(native, "setViewFactory", &SetViewFactory);
   SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
   SetMethod(native, "viewNativeWindow", &ViewNativeWindow);
+  SetMethod(native, "viewExportNativeWindow", &ViewExportNativeWindow);
   SetMethod(native, "viewOn", &ViewOn);
   SetMethod(native, "viewPermission", &ViewPermission);
   SetMethod(native, "permissionRequest", &PermissionRequest);
@@ -1921,6 +1925,29 @@ void zebkit_script::ViewEvaluate(
           hook->script->SettleJson(hook->id, json, error);
       },
       hook);
+}
+
+// A promise of the window's handle for the system's portals, or null.
+void zebkit_script::ViewExportNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  ViewEntry* entry = self->FindView(info);
+  if (!entry)
+    return;
+  v8::Local<v8::Promise> promise;
+  const int id = self->NewPromise(&promise);
+  info.GetReturnValue().Set(promise);
+  auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
+  auto settle = [](void* data, const char* handle) {
+    std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
+    if (!hook->script)
+      return;
+    std::string json = "null";
+    if (handle)
+      base::JSONWriter::Write(base::Value(handle), &json);
+    hook->script->SettleJson(hook->id, json.c_str(), nullptr);
+  };
+  if (!zebkit_view_export_native_window(entry->view, settle, hook))
+    settle(hook, nullptr);
 }
 
 void zebkit_script::ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {

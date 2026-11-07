@@ -13,12 +13,17 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "content/public/browser/web_contents.h"
 #include "zebkit/engine/window.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
+#if BUILDFLAG(IS_LINUX)
+#include "ui/aura/window_tree_host.h"
+#include "ui/linux/linux_ui_delegate.h"
+#endif
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
@@ -635,6 +640,34 @@ zebkit_native_window NativeWindowForView(zebkit_view* view) {
               : zebkit_native_window{};
 #else
   return {};
+#endif
+}
+
+void ExportNativeWindowForView(zebkit_view* view,
+                               base::OnceCallback<void(std::string)> done) {
+#if BUILDFLAG(IS_LINUX)
+  // An X11 page answers with its top-level window, the attached ones' too;
+  // anything else (Wayland) asks the platform, which exports the toplevel
+  // through xdg-foreign, as Chrome's portal file dialogs ask it.
+  const zebkit_native_window window = NativeWindowForView(view);
+  if (window.kind == ZEBKIT_NATIVE_WINDOW_X11) {
+    std::move(done).Run(base::StringPrintf(
+        "x11:%#x", static_cast<unsigned>(window.handle)));
+    return;
+  }
+  auto* widget = views::Widget::GetTopLevelWidgetForNativeView(
+      view->web_contents()->GetNativeView());
+  auto* delegate = ui::LinuxUiDelegate::GetInstance();
+  if (!widget || !widget->GetNativeWindow() || !delegate) {
+    std::move(done).Run(std::string());
+    return;
+  }
+  delegate->ExportWindowHandle(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget(),
+      std::move(done));
+#else
+  // Windows has no portals: zebkit_view_get_native_window() is its handle.
+  std::move(done).Run(std::string());
 #endif
 }
 

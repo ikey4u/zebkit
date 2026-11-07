@@ -218,6 +218,7 @@ reference:
 | `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
 | `zebkit_view_attach_native`, `_detach_native` | A view's window inside a window of the application's: an X11 window id, or an `NSView*` on macOS; `_set_bounds`, `_set_visible`, `_resize` and `_focus` then act there. Refused, naming off-screen views, on Wayland and under `--headless` |
 | `zebkit_view_get_native_window` | Borrow the system window containing the page: platform kind plus X11 ID, HWND or NSWindow*. After attachment, the top-level window containing the host. False and NONE/0 for headless/off-screen/Wayland or invalid calls; engine thread only. Never destroy/release the handle; query again after attach/detach |
+| `zebkit_view_export_native_window` | The window as the system's portals name a parent window, asked for asynchronously: `"x11:<XID>"` or `"wayland:<handle>"` (xdg-foreign), so that a portal's dialog is the window's own; the callback once, after the call, NULL when there is none (always on Windows and macOS) |
 | `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
 | `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
 | `zebkit_view_on_window_open` | A window a page opens, to the application as a view still linked to its opener (a site's sign-in popup); off-screen when its opener is |
@@ -1355,9 +1356,26 @@ unavailable. Host JavaScript's `view.nativeWindow` returns the same fields,
 with the handle as a BigInt (convert explicitly when serializing JSON), or
 `null`. This trusted-host API is not exposed through a page bridge.
 
-Headless and off-screen views return no system window. Wayland requires an
-asynchronously exported parent token rather than an X11 ID; that export is
-not yet implemented. A C query returns false and clears a supplied output to
+Headless and off-screen views return no system window, and neither does
+Wayland, which has no global window ids.
+
+`zebkit_view_export_native_window(view, callback, data)` names the window as
+the XDG Desktop Portal's `parent_window` does, so that a portal's dialog (a
+file chooser, a screen share) is the window's own: `"x11:<XID>"` of the same
+top-level window, or on Wayland `"wayland:<handle>"`, the toplevel exported
+through xdg-foreign, as Chrome's own portal dialogs ask for it. Wayland answers
+asynchronously, so the callback runs once, on the engine thread, after the call
+returns, also when the request is dropped; its string is the callback's to copy,
+and NULL means there is none (headless, off-screen, a compositor without
+xdg-foreign, the view closed; always on Windows and macOS, whose handle is the
+one above). Rust has `View::export_native_window(|handle| ...)`, Python
+`View.export_native_window(function)`, host JavaScript a promise,
+`await view.exportNativeWindow()`.
+
+zebkit's windows on Linux are X11's unless the application passes
+`--ozone-platform=wayland`. On Wayland, off-screen views beside windows are not
+done yet: `zebkit_view_new_offscreen()` returns NULL there (under `--headless`
+they work). A C query returns false and clears a supplied output to
 NONE/0 when unavailable, for a NULL view or on the wrong thread. A NULL output
 is rejected. A stale, already-freed C view pointer remains invalid, as with the
 other C view APIs. Python and JavaScript keep their normal closed-view checks.

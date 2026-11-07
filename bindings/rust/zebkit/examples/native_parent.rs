@@ -59,6 +59,15 @@ fn main() {
             attached.attach_native(host as usize, 10, 10, 300, 200).expect("attach_native");
             assert_eq!(attached.native_window(), Some(zebkit::NativeWindow::X11(host as usize)));
             println!("ok   native_window: containing host window");
+            attached.export_native_window(move |handle| {
+                let expected = format!("x11:{:#x}", host);
+                let ok = handle.as_deref() == Some(expected.as_str());
+                println!("{} export_native_window: the portal's x11:<XID> of the host ({handle:?})",
+                         if ok { "ok  " } else { "FAIL" });
+                if !ok {
+                    std::process::exit(1);
+                }
+            });
             fn wait(tries: u32, what: &'static str, done: impl Fn() -> bool + 'static, then: impl FnOnce() + 'static) {
                 if done() {
                     println!("ok   {what}");

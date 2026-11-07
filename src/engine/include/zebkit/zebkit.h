@@ -332,6 +332,20 @@ typedef struct {
 } zebkit_native_window;
 ZEBKIT_API bool zebkit_view_get_native_window(zebkit_view *view, zebkit_native_window *window);
 
+/* The page's window as the system's portals name a parent window (XDG Desktop
+ * Portal's parent_window): "x11:<XID>" or, on Wayland, "wayland:<handle>"
+ * exported through xdg-foreign, so that a portal's dialog (a file chooser, a
+ * screen share) is the window's own. Wayland exports it asynchronously: the
+ * callback runs once, on the engine thread, after this returns, with the
+ * handle, or NULL when there is none (headless, off-screen, a compositor
+ * without xdg-foreign, the view closed meanwhile; on Windows and macOS always,
+ * where zebkit_view_get_native_window() is the handle). The string is the
+ * callback's to copy. A handle stays valid while its window is open. False,
+ * and no callback, for a NULL view or callback or on another thread. */
+typedef void (*zebkit_native_window_export_func)(void *data, const char *handle);
+ZEBKIT_API bool zebkit_view_export_native_window(zebkit_view *view, zebkit_native_window_export_func callback,
+                                                 void *data);
+
 /* The title of the view's window; NULL for the page's, which it is by default. */
 ZEBKIT_API void zebkit_view_set_title(zebkit_view *view, const char *title);
 

@@ -119,9 +119,16 @@ in `examples/native-host` (Done table). What is left:
   Rust and host JavaScript, headless, off-screen, the wrong thread and glibc
   2.17; Windows 10 (`win_native_parent`, with the sandbox and without); macOS
   on an Apple M4 (`native_parent_mac`).
-  Not done: Wayland, whose dialogs are parented by an exported token
-  (xdg-foreign), asked for asynchronously. The other way, an application's
-  handle as a view's parent, is done.
+  For the system's portals, `zebkit_view_export_native_window()` gives the
+  window as a portal names its parent, `"x11:<XID>"` or on Wayland
+  `"wayland:<handle>"` through xdg-foreign (Chromium's own export), checked on
+  Wayland in a headless labwc. The other way, an application's handle as a
+  view's parent, is done.
+- **Wayland** (`--ozone-platform=wayland`; X11 is the default): windows and the
+  portal export run in a headless labwc (2026-11-07). Not done: off-screen
+  views beside Wayland windows (refused, `zebkit_view_new_offscreen()` returns
+  NULL: their root's stub platform window crashed there), attaching to an
+  application's window, input methods; not run with a person or a GPU.
 - **A real input method in X11 windows.** None: see `docs/ARCHITECTURE.md`.
 - **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
   Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root
@@ -153,8 +160,9 @@ in `examples/native-host` (Done table). What is left:
   screen, with its scale and sRGB, is its own per widget (patches/1053, 1074). On
   macOS it is a view in no window with the same screen, per view rather than per
   process. Not done: Windows, which still needs
-  `--headless`; Wayland has not been run, nor GPU compositing of such a root on
-  Linux (no machine for either here); a window's own input on macOS in the test.
+  `--headless`; Wayland, where making such a root crashed in a headless labwc
+  (2026-11-07), so `zebkit_view_new_offscreen()` refuses there; GPU compositing
+  of such a root on Linux (no GPU here); a window's own input on macOS in the test.
 - **Independent scale: Linux foundation implemented.** Separate headless
   displays and root hosts preserve each view's DPR, CSS layout and frame
   pixels, including fractional scales. Pixel/DIP space reservation prevents

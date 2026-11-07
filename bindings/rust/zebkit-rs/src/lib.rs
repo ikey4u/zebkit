@@ -37,6 +37,7 @@ pub type zebkit_navigation_action = c_int;
 pub const ZEBKIT_NAVIGATION_CONTINUE: zebkit_navigation_action = 0;
 pub const ZEBKIT_NAVIGATION_CANCEL: zebkit_navigation_action = 1;
 pub const ZEBKIT_NAVIGATION_REDIRECT: zebkit_navigation_action = 2;
+pub type zebkit_native_window_export_func = unsafe extern "C" fn(*mut c_void, *const c_char);
 pub type zebkit_navigation_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_navigation_request, *const c_char, *mut c_void);
 pub type zebkit_navigation_result_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 pub type zebkit_window_open_event_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
@@ -421,6 +422,7 @@ extern "C" {
     pub fn zebkit_view_attach_native(view: *mut zebkit_view, native_parent: usize, x: c_int, y: c_int, width: c_int, height: c_int, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_detach_native(view: *mut zebkit_view) -> bool;
     pub fn zebkit_view_get_native_window(view: *mut zebkit_view, window: *mut zebkit_native_window) -> bool;
+    pub fn zebkit_view_export_native_window(view: *mut zebkit_view, callback: Option<zebkit_native_window_export_func>, data: *mut c_void) -> bool;
     pub fn zebkit_view_set_bounds(view: *mut zebkit_view, x: c_int, y: c_int, width: c_int, height: c_int);
     pub fn zebkit_view_set_visible(view: *mut zebkit_view, visible: bool);
     pub fn zebkit_view_add_script(view: *mut zebkit_view, source: *const c_char);

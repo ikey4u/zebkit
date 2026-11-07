@@ -453,6 +453,24 @@ impl View {
         if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "the window cannot be attached") }) }
     }
 
+    /// The page's window as the system's portals name a parent window,
+    /// `"x11:<XID>"` or `"wayland:<handle>"` (exported through xdg-foreign),
+    /// for a portal's dialog to be the window's own. `done` runs once, later,
+    /// on the engine's thread: `None` when there is none (headless,
+    /// off-screen, no xdg-foreign, the view closed; always on Windows and
+    /// macOS, where [`View::native_window`] is the handle).
+    pub fn export_native_window<F: FnOnce(Option<String>) + 'static>(&self, done: F) {
+        let Some(raw) = self.raw() else {
+            done(None);
+            return;
+        };
+        let data = Box::into_raw(Box::new(done));
+        if !unsafe { sys::zebkit_view_export_native_window(raw, Some(on_native_window_export::<F>), data.cast()) } {
+            let done = unsafe { Box::from_raw(data) };
+            done(None);
+        }
+    }
+
     /// Borrow the containing system window, or None when no supported window
     /// exists (headless, off-screen, Wayland or a closed view).
     pub fn native_window(&self) -> Option<NativeWindow> {
@@ -1034,6 +1052,11 @@ unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
     } else {
         done(Ok(std::slice::from_raw_parts(png, size).to_vec()));
     }
+}
+
+unsafe extern "C" fn on_native_window_export<F: FnOnce(Option<String>)>(data: *mut c_void, handle: *const c_char) {
+    let done = Box::from_raw(data.cast::<F>());
+    done(string_from(handle));
 }
 
 unsafe extern "C" fn on_new_window(_view: *mut sys::zebkit_view, url: *const c_char, data: *mut c_void) {

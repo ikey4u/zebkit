@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/run_loop.h"
@@ -481,6 +482,10 @@ bool FocusAttachedNative(zebkit_view* view);
 bool DetachViewNative(zebkit_view* view);
 // Borrowed containing system window, including a native parent after attach.
 zebkit_native_window NativeWindowForView(zebkit_view* view);
+// Its handle for the system's portals ("x11:..." or "wayland:..."), or "" when
+// there is none; @done may run before this returns.
+void ExportNativeWindowForView(zebkit_view* view,
+                               base::OnceCallback<void(std::string)> done);
 // The view is closing, and its window with it.
 void ForgetAttachedNative(zebkit_view* view);
 

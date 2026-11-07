@@ -26,6 +26,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/json/json_reader.h"
@@ -47,6 +48,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "zebkit/engine/profile.h"
 #include "zebkit/engine/window.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "net/http/http_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -1452,6 +1454,30 @@ bool zebkit_view_get_native_window(zebkit_view* view, zebkit_native_window* wind
   if (result.kind == ZEBKIT_NATIVE_WINDOW_NONE || !result.handle)
     return false;
   *window = result;
+  return true;
+}
+
+bool zebkit_view_export_native_window(zebkit_view* view,
+                                      zebkit_native_window_export_func callback,
+                                      void* data) {
+  if (!callback || !view ||
+      !content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
+    return false;
+  // Once, after this returns, on this thread, also when the platform drops
+  // the request (a window closed before the compositor answered).
+  auto done = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+      base::BindPostTaskToCurrentDefault(base::BindOnce(
+          [](zebkit_native_window_export_func callback, void* data,
+             std::string handle) {
+            callback(data, handle.empty() ? nullptr : handle.c_str());
+          },
+          callback, data)),
+      std::string());
+  if (!view->web_contents() || view->offscreen_view_ || zebkit_is_headless()) {
+    std::move(done).Run(std::string());
+    return true;
+  }
+  zebkit::ExportNativeWindowForView(view, std::move(done));
   return true;
 }
 

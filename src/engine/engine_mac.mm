@@ -390,6 +390,12 @@ void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
     it->second.view.frame = Frame(it->second.view.superview, bounds);
 }
 
+void ExportNativeWindowForView(zebkit_view* view,
+                               base::OnceCallback<void(std::string)> done) {
+  // macOS has no portals: zebkit_view_get_native_window() is its handle.
+  std::move(done).Run(std::string());
+}
+
 zebkit_native_window NativeWindowForView(zebkit_view* view) {
   NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
   NSWindow* window = page.window;

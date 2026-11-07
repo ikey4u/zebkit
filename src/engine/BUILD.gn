@@ -561,6 +561,8 @@ if (is_mac) {
 if (is_linux) {
   # The refusal to start without a sandbox (engine.cc).
   _deps += [
+    # A window's handle for the system's portals (attach.cc).
+    "//ui/linux:linux_ui",
     "//ui/linux:linux_ui_factory",
     "//sandbox/linux:sandbox_services",
     "//sandbox/policy",
