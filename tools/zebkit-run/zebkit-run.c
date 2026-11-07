@@ -87,6 +87,8 @@ static const char *const playwright_switches[] = {
     "--allow-pre-commit-input",
     "--force-color-profile=srgb",
     "--export-tagged-pdf",
+    /* chromium.ts's: WebGL on SwiftShader where the GPU is not usable. */
+    "--enable-unsafe-swiftshader",
     /* Chrome's default, which zebkit's is not: third-party cookies sent. */
     "--zebkit-allow-third-party-cookies",
     "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,PaintHolding,"
