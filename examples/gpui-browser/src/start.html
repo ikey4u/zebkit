@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>New Tab</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --card: #ffffff; --text: #18181b; --muted: #71717a; --line: #e4e4e7;
+    --accent: #2563eb; --accent-soft: #eff6ff; --log: #f4f4f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f12; --card: #18181c; --text: #f4f4f5; --muted: #a1a1aa; --line: #2a2a30;
+      --accent: #60a5fa; --accent-soft: #172033; --log: #1f1f24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+    display: flex; justify-content: center;
+  }
+  main { width: min(760px, 100% - 48px); padding: 56px 0 40px; }
+  h1 { font-size: 34px; letter-spacing: -0.02em; margin: 0 0 4px; font-weight: 650; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  form { display: flex; gap: 8px; margin-bottom: 28px; }
+  input[type=search] {
+    flex: 1; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); font: inherit; outline: none;
+  }
+  input[type=search]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 26px 0 10px; font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  a.tile, button {
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--line); color: var(--text); text-decoration: none;
+    font: inherit; text-align: left; cursor: pointer; transition: border-color .15s, transform .15s;
+  }
+  a.tile:hover, button:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .tile b, button b { font-weight: 600; }
+  .tile small, button small { color: var(--muted); font-size: 12.5px; }
+  #log {
+    margin-top: 14px; padding: 10px 14px; border-radius: 10px; background: var(--log); color: var(--muted);
+    font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; min-height: 2.4em; white-space: pre-wrap;
+  }
+  footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>zebkit <span>×</span> GPUI-KIT</h1>
+  <p class="sub">Chromium's engine in a GPUI window: tabs, toolbar and dialogs are GPUI-KIT components.</p>
+  <form action="https://duckduckgo.com/" target="_self">
+    <input type="search" name="q" placeholder="Search the web" autocomplete="off">
+  </form>
+
+  <h2>Go somewhere</h2>
+  <div class="tiles">
+    <a class="tile" href="https://en.wikipedia.org/wiki/Zebra"><b>Wikipedia</b><small>A long article</small></a>
+    <a class="tile" href="https://arxiv.org/pdf/1706.03762"><b>A PDF</b><small>In Chromium's viewer</small></a>
+    <a class="tile" href="https://gpui-kit.com" target="_blank"><b>gpui-kit.com</b><small>Opens in a new tab</small></a>
+    <a class="tile" href="https://example.com"><b>example.com</b><small>The smallest page</small></a>
+  </div>
+
+  <h2>The engine asks, the application answers</h2>
+  <div class="tiles">
+    <button onclick="log('alert', alert('Hello from the page!'))"><b>alert()</b><small>A GPUI dialog</small></button>
+    <button onclick="log('confirm', confirm('Do you like zebras?'))"><b>confirm()</b><small>OK or Cancel</small></button>
+    <button onclick="log('prompt', prompt('What should we call you?', 'Zebra'))"><b>prompt()</b><small>With a GPUI input</small></button>
+    <button onclick="Notification.requestPermission().then(r => log('notifications', r))"><b>Notifications</b><small>A permission request</small></button>
+    <button onclick="navigator.geolocation.getCurrentPosition(p => log('location', 'granted'), e => log('location', e.message))"><b>Location</b><small>Another permission</small></button>
+    <button onclick="window.open('https://example.com/', '_blank')"><b>window.open()</b><small>A popup becomes a tab</small></button>
+    <button onclick="download()"><b>Download</b><small>Asked where to save</small></button>
+    <button onclick="location.href = 'https://httpbin.org/basic-auth/zebkit/zebkit'"><b>Sign in</b><small>HTTP auth: zebkit / zebkit</small></button>
+    <button onclick="document.getElementById('file').click()"><b>Choose a file</b><small>The system's file dialog</small></button>
+  </div>
+  <input id="file" type="file" hidden onchange="log('file', this.files.length ? this.files[0].name : 'none')">
+  <div id="log">Answers appear here.</div>
+
+  <footer>Shortcuts: Ctrl+L address bar · Ctrl+T new tab · Ctrl+W close · Ctrl+Tab next tab · Ctrl+R reload · Ctrl+F find</footer>
+</main>
+<script>
+  function log(what, value) {
+    const line = what + ': ' + (value === undefined ? 'done' : JSON.stringify(value));
+    const box = document.getElementById('log');
+    box.textContent = box.textContent === 'Answers appear here.' ? line : line + '\n' + box.textContent;
+  }
+  function download() {
+    const blob = new Blob(['Downloaded from a page in zebkit.\n'], { type: 'text/plain' });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'zebkit-hello.txt' });
+    a.click();
+    log('download', 'started');
+  }
+</script>
+</body>
+</html>
