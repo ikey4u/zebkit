@@ -2329,8 +2329,12 @@ void Connection::PageEvent(const std::string& page_guid,
     const std::string request_guid = RequestGuid(page_guid, *request);
     // Its headers are all known now (crNetworkManager.ts: a routed request's
     // raw headers are its own).
-    if (Object* routed = Find(request_guid))
+    if (Object* routed = Find(request_guid)) {
       routed->data.Set("routed", true);
+      // With the cookies the network will send (InterceptionJob's).
+      if (const base::ListValue* headers = request->FindList("headers"))
+        routed->data.Set("rawHeaders", headers->Clone());
+    }
     base::DictValue initializer;
     initializer.Set("request", Ref(request_guid));
     Object object;

@@ -27,6 +27,9 @@
 #include "base/barrier_closure.h"
 #include "base/strings/string_split.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_access_result.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "net/cookies/cookie_util.h"
 #include "net/cookies/cookie_options.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "content/public/browser/browser_context.h"
@@ -38,6 +41,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
@@ -60,6 +64,7 @@
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "url/url_constants.h"
@@ -526,6 +531,10 @@ class Loader : public network::mojom::URLLoader,
                  }, GetWeakPtr(), response.Clone()));
   }
   void StoreCookies(std::vector<std::string> lines, base::OnceClosure then);
+  // The cookies the network will send with it, for a route's request, as
+  // DevTools' interception has them (InterceptionJob::FetchCookies()).
+  void FetchCookies(base::OnceClosure then);
+  void EmitRoute(const std::string& route);
 
   void FulfillNow(const base::DictValue& response) {
     const int status = response.FindInt("status").value_or(200);
@@ -721,6 +730,12 @@ class Loader : public network::mojom::URLLoader,
       origin.Set("value", request_.request_initiator->Serialize());
       headers.Append(std::move(origin));
     }
+    if (!cookie_.empty() && !request_.headers.HasHeader("Cookie")) {
+      base::DictValue cookie;
+      cookie.Set("name", "Cookie");
+      cookie.Set("value", cookie_);
+      headers.Append(std::move(cookie));
+    }
     // And the Referer it sends (the policy applied already, by Blink).
     if (request_.referrer.is_valid() && !request_.headers.HasHeader("Referer")) {
       base::DictValue referer;
@@ -773,6 +788,8 @@ class Loader : public network::mojom::URLLoader,
   // The page's DevTools session's type for it, lower case, if it said one.
   std::string devtools_type_;
   std::string frame_;
+  // FetchCookies()'s Cookie header, reported, never sent from here.
+  std::string cookie_;
   bool navigation_;
   int32_t request_id_;
   uint32_t options_;
@@ -913,6 +930,10 @@ class NetworkImpl : public Network,
         source = *regex;
         const std::string* flags = pattern.GetDict().FindString("regexFlags");
         options.set_case_sensitive(!flags || flags->find('i') == std::string::npos);
+      } else if (pattern.GetDict().FindDict("urlPattern")) {
+        // urlMatch.ts's deserializeURLPattern() where the server has no
+        // URLPattern: every URL, which the client matches again.
+        source = "";
       } else {
         continue;
       }
@@ -1297,10 +1318,48 @@ void Loader::Start() {
   target_ = held_target_.get();
   const std::string route = network_->NextId("r");
   network_->Hold(route, GetWeakPtr());
+  FetchCookies(base::BindOnce(&Loader::EmitRoute, GetWeakPtr(), route));
+}
+
+
+void Loader::EmitRoute(const std::string& route) {
+  if (!network_)
+    return;
   base::DictValue params;
   params.Set("route", route);
   params.Set("request", RequestValue());
   network_->Emit("BrowserContext.route", std::move(params));
+}
+
+void Loader::FetchCookies(base::OnceClosure then) {
+  content::WebContents* contents = network_ ? &network_->GetWebContents() : nullptr;
+  network::mojom::CookieManager* manager =
+      contents ? contents->GetBrowserContext()->GetDefaultStoragePartition()->GetCookieManagerForBrowserProcess()
+               : nullptr;
+  const bool credentials =
+      request_.credentials_mode == network::mojom::CredentialsMode::kInclude ||
+      (request_.credentials_mode == network::mojom::CredentialsMode::kSameOrigin &&
+       (!request_.request_initiator || request_.request_initiator->IsSameOriginWith(request_.url)));
+  if (!manager || !credentials || request_.headers.HasHeader("Cookie")) {
+    std::move(then).Run();
+    return;
+  }
+  net::CookieOptions options = net::CookieOptions::MakeAllInclusive();
+  options.set_do_not_update_access_time();
+  manager->GetCookieList(
+      request_.url, options, net::CookiePartitionKeyCollection(),
+      base::BindOnce(
+          [](base::WeakPtr<Loader> self, base::OnceClosure then,
+             const net::CookieAccessResultList& cookies, const net::CookieAccessResultList&) {
+            if (!self)
+              return;
+            net::CookieList list;
+            for (const auto& cookie : cookies)
+              list.push_back(cookie.cookie);
+            self->cookie_ = net::CanonicalCookie::BuildCookieLine(list);
+            std::move(then).Run();
+          },
+          GetWeakPtr(), std::move(then)));
 }
 
 void Loader::Reroute() {
@@ -1546,6 +1605,122 @@ Network* Network::For(content::WebContents* contents) {
 void Network::Create(content::WebContents* contents, EventFunc emit) {
   NetworkImpl::CreateForWebContents(contents);
   NetworkImpl::FromWebContents(contents)->SetEmit(std::move(emit));
+}
+
+namespace {
+
+// A preflight's answer, held until the network service lets it go.
+class AnsweredLoader : public network::mojom::URLLoader {
+ public:
+  void FollowRedirect(network::HttpRequestHeadersUpdateParams, const std::optional<GURL>&) override {}
+  void SetPriority(net::RequestPriority, int32_t) override {}
+};
+
+// The network service's own requests of a page's factory, its CORS
+// preflights among them (kURLLoadOptionAsCorsPreflight), as Chromium's
+// DevTools has them through the factory's override.
+class PreflightFactory : public network::mojom::URLLoaderFactory {
+ public:
+  PreflightFactory(base::WeakPtr<NetworkImpl> network,
+                   mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+                   mojo::PendingRemote<network::mojom::URLLoaderFactory> target)
+      : network_(std::move(network)), target_(std::move(target)) {
+    receivers_.Add(this, std::move(receiver));
+    receivers_.set_disconnect_handler(base::BindRepeating(
+        &PreflightFactory::Disconnected, base::Unretained(this)));
+    target_.set_disconnect_handler(
+        base::BindOnce(&PreflightFactory::Gone, base::Unretained(this)));
+  }
+
+  void CreateLoaderAndStart(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      int32_t request_id,
+      uint32_t options,
+      const network::ResourceRequest& request,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+      const net::MutableNetworkTrafficAnnotationTag& annotation) override {
+    if (!(options & network::mojom::kURLLoadOptionAsCorsPreflight) || !network_ ||
+        !network_->Routes()) {
+      target_->CreateLoaderAndStart(std::move(loader), request_id, options, request,
+                                    std::move(client), annotation);
+      return;
+    }
+    // crNetworkManager.ts: "If interception is enabled, we accept all CORS
+    // options, assuming that this was intended when setting route."
+    auto header = [&](const char* name) {
+      return request.headers.GetHeader(name).value_or(std::string());
+    };
+    std::string origin = header("Origin");
+    if (origin.empty())
+      origin = request.request_initiator ? request.request_initiator->Serialize() : "*";
+    std::string method = header("Access-Control-Request-Method");
+    std::string raw = "HTTP/1.1 204 No Content\nAccess-Control-Allow-Origin: " + origin +
+                      "\nAccess-Control-Allow-Methods: " +
+                      (method.empty() ? std::string("GET, POST, OPTIONS, DELETE") : method) +
+                      "\nAccess-Control-Allow-Credentials: true\n";
+    const std::string allowed = header("Access-Control-Request-Headers");
+    if (!allowed.empty())
+      raw += "Access-Control-Allow-Headers: " + allowed + "\n";
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(raw));
+    head->request_time = head->response_time = base::Time::Now();
+    mojo::ScopedDataPipeProducerHandle producer;
+    mojo::ScopedDataPipeConsumerHandle consumer;
+    if (mojo::CreateDataPipe(nullptr, producer, consumer) != MOJO_RESULT_OK) {
+      target_->CreateLoaderAndStart(std::move(loader), request_id, options, request,
+                                    std::move(client), annotation);
+      return;
+    }
+    producer.reset();
+    mojo::Remote<network::mojom::URLLoaderClient> answer(std::move(client));
+    answer->OnReceiveResponse(std::move(head), std::move(consumer), std::nullopt);
+    answer->OnComplete(network::URLLoaderCompletionStatus(net::OK));
+    mojo::MakeSelfOwnedReceiver(std::make_unique<AnsweredLoader>(), std::move(loader));
+  }
+
+  void Clone(mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver) override {
+    receivers_.Add(this, std::move(receiver));
+  }
+
+ private:
+  void Disconnected() {
+    if (receivers_.empty())
+      Gone();
+  }
+  void Gone() { delete this; }
+
+  base::WeakPtr<NetworkImpl> network_;
+  mojo::Remote<network::mojom::URLLoaderFactory> target_;
+  mojo::ReceiverSet<network::mojom::URLLoaderFactory> receivers_;
+};
+
+}  // namespace
+
+void InterceptCorsPreflights(content::RenderFrameHost* frame,
+                             network::mojom::URLLoaderFactoryOverridePtr* factory_override) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!frame || !factory_override)
+    return;
+  content::WebContents* contents = content::WebContents::FromRenderFrameHost(frame);
+  NetworkImpl* network = contents ? NetworkImpl::FromWebContents(contents) : nullptr;
+  if (!network)
+    return;
+  mojo::PendingRemote<network::mojom::URLLoaderFactory> overriding;
+  auto receiver = overriding.InitWithNewPipeAndPassReceiver();
+  if (*factory_override) {
+    // Another's override first, nearer the network.
+    new PreflightFactory(network->GetWeakPtr(), std::move(receiver),
+                         std::move((*factory_override)->overriding_factory));
+    (*factory_override)->overriding_factory = std::move(overriding);
+    return;
+  }
+  mojo::PendingRemote<network::mojom::URLLoaderFactory> target;
+  auto overridden = target.InitWithNewPipeAndPassReceiver();
+  // Deletes itself when the network service's end and its clones go.
+  new PreflightFactory(network->GetWeakPtr(), std::move(receiver), std::move(target));
+  *factory_override = network::mojom::URLLoaderFactoryOverride::New(
+      std::move(overriding), std::move(overridden), /*skip_cors_enabled_scheme_check=*/false);
 }
 
 void InterceptURLLoaderFactory(content::RenderFrameHost* frame,

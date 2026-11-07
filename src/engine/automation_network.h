@@ -13,6 +13,7 @@
 
 #include "base/functional/callback.h"
 #include "base/values.h"
+#include "services/network/public/mojom/network_context.mojom-forward.h"
 
 namespace content {
 class RenderFrameHost;
@@ -31,6 +32,12 @@ namespace zebkit {
 // zebkit's when the page has automation.
 void InterceptURLLoaderFactory(content::RenderFrameHost* frame,
                                network::URLLoaderFactoryBuilder& builder);
+
+// Below the network service's CORS (as Chromium's DevTools Fetch interception,
+// through @factory_override): a page that routes has its CORS preflights
+// answered, as crNetworkManager.ts fulfills them, instead of sent.
+void InterceptCorsPreflights(content::RenderFrameHost* frame,
+                             network::mojom::URLLoaderFactoryOverridePtr* factory_override);
 
 // Shared with the network hook (network_hooks.cc): Playwright's glob as a regular
 // expression, its error names as net errors, its resource types.

@@ -1155,6 +1155,12 @@ void BrowserClient::WillCreateURLLoaderFactory(
       type == URLLoaderFactoryType::kWorkerSubResource) {
     InterceptURLLoaderFactory(frame, factory_builder);
   }
+  // Below the network's CORS, as DevTools' Fetch: the preflights of a page
+  // that routes.
+  if (type == URLLoaderFactoryType::kDocumentSubResource ||
+      type == URLLoaderFactoryType::kWorkerSubResource) {
+    InterceptCorsPreflights(frame, factory_override);
+  }
 }
 
 bool BrowserClient::WillInterceptWebSocket(content::RenderFrameHost* frame) {
