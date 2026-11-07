@@ -80,6 +80,34 @@ def other_work():
     return sorted(found)
 
 
+def disk_mb_s(path, seconds=2.0):
+    """What the disk under path read and wrote, MB/s over a few seconds: a cold start reads the
+    engine from it, and other work on the same disk (a build, a copy) slowed both engines threefold."""
+    if MACOS:
+        return 0.0
+    device = os.stat(path).st_dev
+    name = f"{os.major(device)}:{os.minor(device)}"
+
+    def sectors():
+        for line in open("/proc/diskstats"):
+            f = line.split()
+            if f"{f[0]}:{f[1]}" == name:
+                return int(f[5]) + int(f[9])
+        return 0
+    before = sectors()
+    time.sleep(seconds)
+    return round((sectors() - before) * 512 / 1e6 / seconds, 1)
+
+
+def wait_disk_quiet(path, limit=600, quiet=2.0):
+    """Waits, at most limit seconds, for the disk to do less than quiet MB/s; the last rate."""
+    deadline = time.time() + limit
+    while True:
+        rate = disk_mb_s(path)
+        if rate < quiet or time.time() > deadline:
+            return rate
+
+
 def wait_quiet(limit):
     """Waits for a quiet machine, at most limit seconds; False if it was not."""
     deadline = time.time() + limit
@@ -512,10 +540,12 @@ class Bench:
         return self.start_up(engine, keep_profile=True)
 
     def cold(self, engine, i):
+        disk = wait_disk_quiet(self.main_file(engine))
         self.evict(engine)
         share = self.resident(self.main_file(engine))
         out = self.start_up(engine, keep_profile=False)
         out["resident_before"] = round(share, 3)
+        out["disk_mb_s_before"] = disk
         return out
 
     def layout(self, engine, i):
@@ -660,19 +690,16 @@ def report(args):
     kept = [r for r in rows if not r.get("discarded") and "error" not in r]
     discarded = sum(1 for r in rows if r.get("discarded"))
     errors = [r for r in rows if "error" in r and not r.get("discarded")]
-    # Only the last clean run of a series counts, should one have been repeated.
+    # Only the last clean run of a series counts, should one have been repeated
+    # or run again later: from the first pair of its first run on.
     last = {}
     for r in kept:
-        last[r["series"]] = max(last.get(r["series"], 0), r["at"])
-    groups = {}
-    for r in kept:
-        groups.setdefault(r["series"], {}).setdefault(r["engine"], []).append(r)
+        if r.get("run") == 0 and r.get("first"):
+            last[r["series"]] = max(last.get(r["series"], 0), r["at"])
     latest = {}
-    for series, engines in groups.items():
-        latest[series] = {}
-        for engine, runs in engines.items():
-            top = max(x.get("attempt", 0) for x in runs)
-            latest[series][engine] = runs
+    for r in kept:
+        if r["at"] >= last.get(r["series"], 0):
+            latest.setdefault(r["series"], {}).setdefault(r["engine"], []).append(r)
     lines = meta["intro"][:]
     wire = {}
     def table(title, series, measures):
