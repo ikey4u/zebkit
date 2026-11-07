@@ -287,7 +287,9 @@ void zebkit_view::SendTargetCommand(const std::string& target, const std::string
 void zebkit_view::InitializeProtocolTarget(const std::string& target) {
   if (!protocol_sessions_.contains(target) || protocol_initializing_.contains(target)) return;
   const size_t applied = protocol_scripts_applied_[target];
-  const bool user_agent = protocol_user_agent_ &&
+  // A worker has no documents: none of the scripts, nor the user agent.
+  const bool worker_target = protocol_worker_targets_.contains(target);
+  const bool user_agent = !worker_target && protocol_user_agent_ &&
       protocol_user_agent_applied_[target] != protocol_user_agent_revision_;
   if (applied >= protocol_script_sources_.size() && !user_agent) {
     if (protocol_hold_start_) return;  // ReleaseStart()
@@ -314,7 +316,7 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
   protocol_scripts_applied_[target] = count;
   const bool frame_target = protocol_frame_targets_.contains(target);
   auto skipped = [&](size_t index) {
-    return protocol_removed_scripts_.contains(index) ||
+    return worker_target || protocol_removed_scripts_.contains(index) ||
            (frame_target && !protocol_all_frame_scripts_.contains(index));
   };
   size_t scripts = 0;
@@ -595,9 +597,37 @@ void zebkit_view::InstallBridge() {
                            ", configurable: true});\n", kBridgeScript}));
 }
 
-void zebkit_view::AddScript(const std::string& source, Reply reply) {
+void zebkit_view::AddScript(const std::string& source, Reply reply, bool all_frames) {
+  if (all_frames) {
+    protocol_all_frame_scripts_.insert(protocol_script_sources_.size());
+    AttachFrames();
+  }
   Send("Page.enable", base::DictValue());
   SendScript(source, std::move(reply));
+}
+
+void zebkit_view::AttachFrames() {
+  if (protocol_attach_frames_ || !EnsureSession()) return;
+  protocol_attach_frames_ = true;
+  std::vector<std::string> targets;
+  for (const auto& [target, session] : protocol_sessions_) targets.push_back(target);
+  auto weak = GetWeakPtr();
+  for (const auto& target : targets) {
+    if (!weak) return;
+    AttachFrameTargets(target);
+  }
+}
+
+void zebkit_view::SendToSession(const std::string& session, const std::string& method,
+                                base::DictValue params, Reply reply) {
+  std::string target;
+  for (const auto& [id, value] : protocol_sessions_)
+    if (value == session) target = id;
+  if (target.empty()) {
+    if (reply) std::move(reply).Run(nullptr, "the session is gone");
+    return;
+  }
+  SendTargetCommand(target, method, std::move(params), std::move(reply));
 }
 
 // A prerender attached before a later script or user agent change.
@@ -618,16 +648,7 @@ void zebkit_view::AddWorldScript(const std::string& world, const std::string& so
       main_frame_only ? "if (window === window.top) {\n" + source + "\n}" : source;
   if (!main_frame_only) {
     protocol_all_frame_scripts_.insert(protocol_script_sources_.size());
-    if (!protocol_attach_frames_ && EnsureSession()) {
-      protocol_attach_frames_ = true;
-      std::vector<std::string> targets;
-      for (const auto& [target, session] : protocol_sessions_) targets.push_back(target);
-      auto weak = GetWeakPtr();
-      for (const auto& target : targets) {
-        if (!weak) return;
-        AttachFrameTargets(target);
-      }
-    }
+    AttachFrames();
   }
   Send("Page.enable", base::DictValue());
   SendScript(script, Reply(), world);
@@ -643,6 +664,12 @@ void zebkit_view::AttachFrameTargets(const std::string& target) {
   frames.Set("type", "iframe");
   frames.Set("exclude", false);
   filter.Append(std::move(frames));
+  // Dedicated workers too, as crPage.ts attaches them (their console, their
+  // handles); a worker's own session attaches its nested workers.
+  base::DictValue workers;
+  workers.Set("type", "worker");
+  workers.Set("exclude", false);
+  filter.Append(std::move(workers));
   base::DictValue rest;
   rest.Set("exclude", true);
   filter.Append(std::move(rest));
@@ -812,7 +839,8 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
   if (const auto* method = reply.FindString("method")) {
     const auto* params = reply.FindDict("params");
     if (!params) return;
-    if (protocol_events_) protocol_events_.Run(*method, *params);
+    const std::string* from = reply.FindString("sessionId");
+    const std::string event_session = from ? *from : std::string();
     if (*method == "Target.attachedToTarget") {
       const auto* session = params->FindString("sessionId");
       const auto* info = params->FindDict("targetInfo");
@@ -821,10 +849,20 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
         protocol_sessions_[*target] = *session;
         const auto* type = info->FindString("type");
         if (type && *type == "iframe") protocol_frame_targets_.insert(*target);
+        if (type && *type == "worker") protocol_worker_targets_.insert(*target);
+        // The handler's commands to the new target (SendToSession) go before
+        // it is released below, as crPage.ts initializes a frame's session.
+        auto weak = GetWeakPtr();
+        if (protocol_events_) protocol_events_.Run(*method, *params, event_session);
+        if (!weak) return;
+        if (!protocol_sessions_.contains(*target)) return;
         if (protocol_attach_frames_) AttachFrameTargets(*target);
         InitializeProtocolTarget(*target);
+        return;
       }
-    } else if (*method == "Target.detachedFromTarget") {
+    }
+    if (protocol_events_) protocol_events_.Run(*method, *params, event_session);
+    if (*method == "Target.detachedFromTarget") {
       const auto* session = params->FindString("sessionId");
       if (!session) return;
       std::string target;
@@ -834,6 +872,7 @@ void zebkit_view::DispatchProtocolMessage(content::DevToolsAgentHost* host,
       if (target.empty()) return;
       protocol_ready_targets_.erase(target);
       protocol_frame_targets_.erase(target);
+      protocol_worker_targets_.erase(target);
       protocol_initializing_.erase(target);
       protocol_scripts_applied_.erase(target);
       protocol_script_ids_.erase(target);
@@ -885,6 +924,7 @@ void zebkit_view::AgentHostClosed(content::DevToolsAgentHost* agent_host) {
   devtools_ = nullptr;
   protocol_sessions_.clear();
   protocol_frame_targets_.clear();
+  protocol_worker_targets_.clear();
   protocol_ready_targets_.clear();
   protocol_initializing_.clear();
   protocol_scripts_applied_.clear();

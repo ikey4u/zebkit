@@ -1783,20 +1783,38 @@ void Connection::NewPage(int id, const std::string& context_guid) {
                  return;
                }
                const std::string page_id = *page;
-               self->Native(id, view, "Page.frames", base::DictValue(),
-                            base::BindOnce(
-                                [](base::WeakPtr<Connection> self, int id,
-                                   std::string context_guid, std::string page_id,
-                                   base::Value frames) {
-                                  if (!self)
-                                    return;
-                                  const std::string guid =
-                                      self->AdoptPage(context_guid, page_id, frames);
-                                  base::DictValue answer;
-                                  answer.Set("page", Ref(guid));
-                                  self->Reply(id, base::Value(std::move(answer)));
-                                },
-                                self, id, context_guid, page_id));
+               // crPage.ts answers newPage once its about:blank has committed
+               // (_firstNonInitialNavigationCommittedPromise): a navigation
+               // started before would race it, and the settings given to the
+               // initial empty document (Page.setBypassCSP) be lost with it.
+               self->Native(
+                   id, view, "Page.waitForInitialNavigation", base::DictValue(),
+                   base::BindOnce(
+                       [](base::WeakPtr<Connection> self, int id, std::string context_guid,
+                          std::string page_id, base::Value) {
+                         if (!self)
+                           return;
+                         zebkit_view* view = zebkit_automation_page(page_id.c_str());
+                         if (!view) {
+                           self->ReplyError(id, "zebkit: no page");
+                           return;
+                         }
+                         self->Native(id, view, "Page.frames", base::DictValue(),
+                                      base::BindOnce(
+                                          [](base::WeakPtr<Connection> self, int id,
+                                             std::string context_guid, std::string page_id,
+                                             base::Value frames) {
+                                            if (!self)
+                                              return;
+                                            const std::string guid =
+                                                self->AdoptPage(context_guid, page_id, frames);
+                                            base::DictValue answer;
+                                            answer.Set("page", Ref(guid));
+                                            self->Reply(id, base::Value(std::move(answer)));
+                                          },
+                                          self, id, context_guid, page_id));
+                       },
+                       self, id, context_guid, page_id));
              },
              weak_factory_.GetWeakPtr(), id, context_guid));
 }
@@ -2192,9 +2210,17 @@ void Connection::PageEvent(const std::string& page_guid,
     console.Set("type", type ? *type : "log");
     const std::string* text = params.FindString("text");
     console.Set("text", text ? *text : "");
-    // The arguments' handles, of the message's frame.
+    // The arguments' handles, of the message's frame, or of its worker
+    // (crPage.ts's worker console: the page's message, of the worker).
     const std::string* frame_id = params.FindString("frame");
-    const std::string frame_guid = frame_id ? Known("frame", page_guid, *frame_id) : std::string();
+    std::string frame_guid = frame_id ? Known("frame", page_guid, *frame_id) : std::string();
+    if (const std::string* worker = params.FindString("worker")) {
+      const std::string worker_guid = Known("worker", page_guid, *worker);
+      if (!worker_guid.empty()) {
+        console.Set("worker", Ref(worker_guid));
+        frame_guid = worker_guid;
+      }
+    }
     base::Value* args = params.Find("args");
     console.Set("args", args && args->is_list() ? Expose(page_guid, frame_guid, std::move(*args))
                                                 : base::Value(base::ListValue()));
@@ -5317,6 +5343,24 @@ void Connection::Command(int id,
     }
   } else if (type == "WebSocketRoute") {
     params.Set("webSocketRoute", object->id);
+  } else if (type == "Worker" && method == "evaluateExpressionHandle") {
+    // Its handles are the worker's own (CDP's objects in its session),
+    // scoped to it as crPage.ts's worker execution context.
+    params.Set("worker", object->id);
+    if (!ToNativeArgs(params)) {
+      ReplyError(id, "arg.handles: no object with guid");
+      return;
+    }
+    Native(id, view, "Worker.evaluateExpressionHandle", std::move(params),
+           base::BindOnce(
+               [](base::WeakPtr<Connection> self, int id, std::string page, std::string worker,
+                  base::Value result) {
+                 if (!self)
+                   return;
+                 self->Reply(id, self->Expose(page, worker, std::move(result)));
+               },
+               weak_factory_.GetWeakPtr(), id, object->page, guid));
+    return;
   } else if (type == "Worker") {
     params.Set("worker", object->id);
     if (base::Value* arg = params.Find("arg"); arg && arg->is_dict()) {

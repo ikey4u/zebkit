@@ -154,8 +154,17 @@ struct zebkit_view : public content::WebContentsObserver,
   // for (zebkit.*, zebkit_view_add_script()) are in place.
   void LoadUrl(const GURL& url);
 
-  // A script for every new document, before the page's own.
-  void AddScript(const std::string& source, Reply reply = Reply());
+  // A script for every new document, before the page's own; with
+  // @all_frames in other sites' frames too (their own targets), as
+  // Playwright's init scripts are in each frame's session (crPage.ts).
+  void AddScript(const std::string& source, Reply reply = Reply(), bool all_frames = false);
+  // Other sites' frames attached as targets of their own from now on, each
+  // held until what its attachment event's handler sends it has been sent.
+  void AttachFrames();
+  // A DevTools command to the session @session (a frame's, from its
+  // Target.attachedToTarget), at once.
+  void SendToSession(const std::string& session, const std::string& method,
+                     base::DictValue params, Reply reply = Reply());
   // The same in a world of its own name ("" for the page's), in every frame,
   // those of other sites' processes too, or only in the main frame.
   void AddWorldScript(const std::string& world, const std::string& source,
@@ -338,9 +347,11 @@ struct zebkit_view : public content::WebContentsObserver,
   void HoldStart();
   void ReleaseStart();
 
-  // Automation's use of the view's own DevTools session's events.
-  void SetProtocolEvents(
-      base::RepeatingCallback<void(const std::string& method, const base::DictValue& params)> events) {
+  // Automation's use of the view's own DevTools session's events; @session
+  // is the session the event came on ("" for the tab's).
+  using ProtocolEvents = base::RepeatingCallback<void(
+      const std::string& method, const base::DictValue& params, const std::string& session)>;
+  void SetProtocolEvents(ProtocolEvents events) {
     protocol_events_ = std::move(events);
   }
 
@@ -390,6 +401,7 @@ struct zebkit_view : public content::WebContentsObserver,
   std::map<size_t, std::string> protocol_script_worlds_;
   std::set<size_t> protocol_all_frame_scripts_;
   std::set<std::string> protocol_frame_targets_;
+  std::set<std::string> protocol_worker_targets_;
   bool protocol_attach_frames_ = false;
   std::set<size_t> protocol_removed_scripts_;
   std::map<std::string, std::map<size_t, std::string>> protocol_script_ids_;
@@ -406,8 +418,7 @@ struct zebkit_view : public content::WebContentsObserver,
   bool protocol_flush_before_run_ = false;
   // The events of the view's own DevTools session, for automation's use
   // (Network's request types and the network's raw headers).
-  base::RepeatingCallback<void(const std::string& method, const base::DictValue& params)>
-      protocol_events_;
+  ProtocolEvents protocol_events_;
   bool bridge_installed_ = false;
   // Until the browser has the scripts for new documents (zebkit.*, and the
   // application's), a load waits: a document committed first would be

@@ -210,6 +210,66 @@ constexpr char kDetached[] = "Element is not attached to the DOM";
 constexpr char kInputDropped[] =
     "The browser dropped the input: the page's widget did not take input";
 constexpr char kDisposed[] = "JSHandle is disposed";
+
+// An evaluation in a dedicated worker over its own DevTools session
+// (Runtime.callFunctionOn), with Playwright's serialized values as the
+// agent has them (utilityScriptSerializers.ts): (isFunction, hasThis,
+// byValue, arg, ...handles), the expression in place of __EXPRESSION__ (no
+// eval, which a worker's CSP may refuse). Its `this` is the handle's object.
+constexpr char kWorkerEvaluate[] = R"JS(
+async function (isFunction, hasThis, byValue, arg, ...handles) {
+  const parse = (v, refs = new Map()) => {
+    if (v === null || typeof v !== 'object') return v;
+    if ('h' in v) return handles[v.h];
+    if ('ref' in v) return refs.get(v.ref);
+    if ('v' in v) return ({ undefined: undefined, null: null, NaN: NaN, Infinity: Infinity,
+                            '-Infinity': -Infinity, '-0': -0 })[v.v];
+    if ('d' in v) return new Date(v.d);
+    if ('u' in v) return new URL(v.u);
+    if ('bi' in v) return BigInt(v.bi);
+    if ('r' in v) return new RegExp(v.r.p, v.r.f);
+    if ('e' in v) { const e = new Error(v.e.m); e.name = v.e.n; e.stack = v.e.s; return e; }
+    if ('a' in v) { const a = []; refs.set(v.id, a); for (const x of v.a) a.push(parse(x, refs)); return a; }
+    if ('o' in v) { const o = {}; refs.set(v.id, o); for (const { k, v: x } of v.o) o[k] = parse(x, refs); return o; }
+    return undefined;
+  };
+  const serialize = (v, seen = new Map()) => {
+    if (typeof v === 'symbol' || typeof v === 'function') return undefined;
+    if (v === undefined) return { v: 'undefined' };
+    if (v === null) return { v: 'null' };
+    if (typeof v === 'number') {
+      if (Number.isNaN(v)) return { v: 'NaN' };
+      if (v === Infinity) return { v: 'Infinity' };
+      if (v === -Infinity) return { v: '-Infinity' };
+      if (Object.is(v, -0)) return { v: '-0' };
+      return v;
+    }
+    if (typeof v === 'bigint') return { bi: v.toString() };
+    if (typeof v !== 'object') return v;
+    if (seen.has(v)) return { ref: seen.get(v) };
+    if (v instanceof Date) return { d: v.toJSON() };
+    if (v instanceof URL) return { u: v.href };
+    if (v instanceof RegExp) return { r: { p: v.source, f: v.flags } };
+    if (v instanceof Error) return { e: { n: v.name, m: v.message, s: v.stack } };
+    const id = seen.size + 1;
+    seen.set(v, id);
+    if (Array.isArray(v)) return { a: v.map(x => serialize(x, seen)), id };
+    const o = [];
+    for (const k of Object.keys(v)) {
+      let x;
+      try { x = v[k]; } catch { continue; }
+      if (k === 'toJSON' && typeof x === 'function') continue;
+      o.push({ k, v: serialize(x, seen) });
+    }
+    return { o, id };
+  };
+  const value = parse(arg);
+  const f = await (__EXPRESSION__);
+  const result = isFunction !== false && typeof f === 'function'
+      ? await (hasThis ? f(this, value) : f(value)) : f;
+  return byValue ? serialize(result) : result;
+}
+)JS";
 // The binding Playwright's WebSocket mock reports through.
 constexpr char kWebSocketBinding[] = "__pwWebSocketBinding";
 // credentials.ts's binding, answered here.
@@ -821,6 +881,25 @@ class Automation : public content::WebContentsObserver,
                    public mojom::AutomationHost,
                    public content::RenderWidgetHost::InputEventObserver,
                    public content::RenderWidgetHostObserver {
+ private:
+  // Dedicated workers' own DevTools sessions (crPage.ts's _workerSessions),
+  // by session; each matched with its worker of workers_ by URL, in order.
+  struct DevToolsWorker {
+    std::string target;
+    std::string url;
+    std::string id;  // of workers_, once matched
+    int context = 0;
+    bool script_loaded = false;
+    std::vector<base::OnceClosure> waiting;  // for its script
+    std::vector<base::DictValue> console;    // until it is matched
+  };
+  // Handles of the workers' objects: CDP's remote objects.
+  struct CdpHandle {
+    std::string session;
+    std::string object;  // objectId; none for a primitive
+    base::Value value;   // a primitive's, in the agent's serialized form
+  };
+
  public:
   ~Automation() override {
     for (content::RenderWidgetHost* widget : observed_) {
@@ -853,12 +932,61 @@ class Automation : public content::WebContentsObserver,
     if (!view_ || (!offline && !emulated_offline_))
       return;
     emulated_offline_ = offline;
+    view_->Send("Network.emulateNetworkConditions", NetworkConditions());
+    for (const std::string& session : frame_sessions_)
+      view_->SendToSession(session, "Network.emulateNetworkConditions", NetworkConditions());
+  }
+
+  base::DictValue NetworkConditions() const {
     base::DictValue params;
-    params.Set("offline", offline);
+    params.Set("offline", emulated_offline_);
     params.Set("latency", 0);
     params.Set("downloadThroughput", -1);
     params.Set("uploadThroughput", -1);
-    view_->Send("Network.emulateNetworkConditions", std::move(params));
+    return params;
+  }
+
+  // What crPage.ts's FrameSession sends an other site's frame's session for
+  // the context's options before the frame runs; the rest (the viewport,
+  // media, geolocation, headers) is the page's and reaches its frames.
+  void InitializeFrameSession(const std::string& session) {
+    frame_sessions_.insert(session);
+    const base::DictValue& options = ContextStates()[web_contents()->GetBrowserContext()].options;
+    auto send = [&](const char* method, base::DictValue params) {
+      view_->SendToSession(session, method, std::move(params));
+    };
+    if (options.FindBool("bypassCSP").value_or(false)) {
+      base::DictValue params;
+      params.Set("enabled", true);
+      send("Page.setBypassCSP", std::move(params));
+    }
+    if (options.FindBool("ignoreHTTPSErrors").value_or(false)) {
+      base::DictValue params;
+      params.Set("ignore", true);
+      send("Security.setIgnoreCertificateErrors", std::move(params));
+    }
+    if (options.FindBool("hasTouch").value_or(false)) {
+      base::DictValue params;
+      params.Set("enabled", true);
+      send("Emulation.setTouchEmulationEnabled", std::move(params));
+    }
+    if (options.FindBool("javaScriptEnabled") == false) {
+      base::DictValue params;
+      params.Set("value", true);
+      send("Emulation.setScriptExecutionDisabled", std::move(params));
+    }
+    if (const std::string* locale = options.FindString("locale")) {
+      base::DictValue params;
+      params.Set("locale", *locale);
+      send("Emulation.setLocaleOverride", std::move(params));
+    }
+    if (const std::string* timezone = options.FindString("timezoneId")) {
+      base::DictValue params;
+      params.Set("timezoneId", *timezone);
+      send("Emulation.setTimezoneOverride", std::move(params));
+    }
+    if (emulated_offline_)
+      send("Network.emulateNetworkConditions", NetworkConditions());
   }
 
   static Automation* For(zebkit_view* view) {
@@ -907,6 +1035,12 @@ class Automation : public content::WebContentsObserver,
       return;
     view_->SetProtocolEvents(base::BindRepeating(&Automation::DevToolsEvent,
                                                  weak_factory_.GetWeakPtr()));
+    // Other sites' frames as sessions of their own, as crPage.ts has them,
+    // in a context of Browser.newContext's (the endpoint's), not on the
+    // native API's own pages: there an attached frame's geolocation was
+    // never answered (tests/engine/permission_hooks.py's frame denial).
+    if (!ContextStates()[web_contents()->GetBrowserContext()].options.empty())
+      view_->AttachFrames();
     view_->Send("Network.enable", base::DictValue());
     // The page's uncaught exceptions as crPage.ts has them (Runtime.exceptionThrown):
     // the thrown value's description, name and stack.
@@ -1449,6 +1583,16 @@ class Automation : public content::WebContentsObserver,
         return;
       }
     }
+    // A worker with a session of its own has its console there, with its
+    // arguments (WorkerSessionEvent()).
+    if (source && *source == "worker" && !devtools_workers_.empty()) {
+      const std::string* worker = entry->FindString("workerId");
+      if (!worker)
+        return;
+      for (const auto& [session, known] : devtools_workers_)
+        if (known.target == *worker)
+          return;
+    }
     const std::string* text = entry->FindString("text");
     const std::string* url = entry->FindString("url");
     base::DictValue message;
@@ -1564,7 +1708,28 @@ class Automation : public content::WebContentsObserver,
     ConsoleReady(next_console_, base::ListValue());
   }
 
-  void DevToolsEvent(const std::string& method, const base::DictValue& params) {
+  void DevToolsEvent(const std::string& method, const base::DictValue& params,
+                     const std::string& session) {
+    if (method == "Target.attachedToTarget") {
+      const std::string* attached = params.FindString("sessionId");
+      const std::string* type = params.FindStringByDottedPath("targetInfo.type");
+      if (attached && type && *type == "iframe")
+        InitializeFrameSession(*attached);
+      else if (attached && type && *type == "worker")
+        WorkerAttached(*attached, params);
+      return;
+    }
+    if (method == "Target.detachedFromTarget") {
+      if (const std::string* detached = params.FindString("sessionId")) {
+        frame_sessions_.erase(*detached);
+        WorkerDetached(*detached);
+      }
+      return;
+    }
+    if (auto worker = devtools_workers_.find(session); worker != devtools_workers_.end()) {
+      WorkerSessionEvent(worker->second, session, method, params);
+      return;
+    }
     if (method == "Runtime.exceptionThrown") {
       ExceptionThrown(params);
       return;
@@ -1845,7 +2010,9 @@ class Automation : public content::WebContentsObserver,
       base::DictValue language;
       language.Set("userAgent", agent ? *agent : content::GetContentClientForTesting()->browser()->GetUserAgent());
       language.Set("acceptLanguage", *locale);
-      view_->Send("Emulation.setUserAgentOverride", std::move(language));
+      // Kept by the view for its frames' targets too (crPage.ts's
+      // _updateUserAgent in each FrameSession).
+      view_->SetUserAgentOverride(std::move(language));
     }
     // A context's of Browser.newContext (not the native API's own pages).
     if (!options.empty() && !options.FindBool("noDefaultViewport").value_or(false)) {
@@ -3371,6 +3538,8 @@ class Automation : public content::WebContentsObserver,
   void Evaluate(Call* call) {
     content::RenderFrameHost* frame = nullptr;
     std::optional<int32_t> first;
+    if (call->OnHandle() && CdpHandleCall(call))
+      return;
     if (call->OnHandle()) {
       const HandleRef* handle = FindHandle(call->String("handle"));
       frame = handle ? content::RenderFrameHost::FromID(handle->frame) : nullptr;
@@ -3536,6 +3705,8 @@ class Automation : public content::WebContentsObserver,
   void GetPropertyList(Call* call) { Properties(call, std::string()); }
 
   void Properties(Call* call, const std::string& name) {
+    if (CdpHandleCall(call))
+      return;
     const HandleRef* handle = FindHandle(call->String("handle"));
     content::RenderFrameHost* frame =
         handle ? content::RenderFrameHost::FromID(handle->frame) : nullptr;
@@ -3577,6 +3748,8 @@ class Automation : public content::WebContentsObserver,
   }
 
   void JsonValue(Call* call) {
+    if (CdpHandleCall(call))
+      return;
     const HandleRef* handle = FindHandle(call->String("handle"));
     content::RenderFrameHost* frame =
         handle ? content::RenderFrameHost::FromID(handle->frame) : nullptr;
@@ -3589,6 +3762,8 @@ class Automation : public content::WebContentsObserver,
   }
 
   void DisposeCommand(Call* call) {
+    if (CdpHandleCall(call))
+      return;
     Dispose(call->String("handle"));
     call->Done();
   }
@@ -7469,7 +7644,8 @@ class Automation : public content::WebContentsObserver,
         base::BindOnce(
             [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call,
                base::WeakPtr<zebkit_view> view, bool transparent, bool beyond,
-               const base::DictValue* result, const std::string& error) {
+               std::optional<gfx::RectF> clip, const base::DictValue* result,
+               const std::string& error) {
               // Also when the call has timed out: the page keeps no override.
               if (transparent && view) {
                 view->Send("Emulation.setDefaultBackgroundColorOverride",
@@ -7485,12 +7661,23 @@ class Automation : public content::WebContentsObserver,
                 view->Send("Emulation.setTouchEmulationEnabled", std::move(touch));
               }
               const std::string* data = result ? result->FindString("data") : nullptr;
+              // Between two documents of a navigation the page's target takes
+              // no capture: again once the next has committed, as Chrome's
+              // capture waits for a frame of the page.
+              if (!data && error.find("Not attached to an active page") != std::string::npos) {
+                base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+                    FROM_HERE,
+                    base::BindOnce(&Automation::ScreenshotWithMetrics, self, call, clip),
+                    base::Milliseconds(30));
+                return;
+              }
               self->RestoreScreenshot(
                   call, data ? *data : std::string(),
                   data ? std::string()
                        : (error.empty() ? std::string("zebkit: no picture") : error));
             },
-            weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent, !fits));
+            weak_factory_.GetWeakPtr(), call, call->view()->GetWeakPtr(), transparent, !fits,
+            clip));
   }
 
   // The page as it was, then the answer: @base64 or @error.
@@ -7676,7 +7863,7 @@ class Automation : public content::WebContentsObserver,
           }
           self->init_scripts_[id] = *native_id;
           call->Done(RegistrationResult(id, "script"));
-        }, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), id));
+        }, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), id), /*all_frames=*/true);
   }
 
   void RemoveRegistration(Call* call) {
@@ -8097,6 +8284,7 @@ class Automation : public content::WebContentsObserver,
     params.Set("url", url);
     params.Set("frame", FrameId(frame));
     Emit("Page.worker", std::move(params));
+    MatchWorkers();
   }
 
   void WorkerEnded(int32_t worker) override {
@@ -8109,9 +8297,416 @@ class Automation : public content::WebContentsObserver,
                            "." + base::NumberToString(worker);
     if (!workers_.erase(id))
       return;
+    // Its handles answer that it is gone (crPage.ts's execution context).
+    for (auto& [session, devtools] : devtools_workers_) {
+      if (devtools.id != id)
+        continue;
+      for (auto& [handle, object] : cdp_handles_)
+        if (object.session == session)
+          object.session.clear();
+      devtools.id = "-";
+    }
     base::DictValue params;
     params.Set("worker", id);
     Emit("Worker.close", std::move(params));
+  }
+
+  // ---- Workers' own DevTools sessions (crPage.ts) -----------------------
+
+  void WorkerAttached(const std::string& session, const base::DictValue& params) {
+    DevToolsWorker& worker = devtools_workers_[session];
+    const std::string* target = params.FindStringByDottedPath("targetInfo.targetId");
+    const std::string* url = params.FindStringByDottedPath("targetInfo.url");
+    worker.target = target ? *target : std::string();
+    worker.url = url ? *url : std::string();
+    // Before it runs (the view releases it after this).
+    view_->SendToSession(session, "Runtime.enable", base::DictValue());
+    MatchWorkers();
+  }
+
+  void WorkerDetached(const std::string& session) {
+    if (!devtools_workers_.erase(session))
+      return;
+    for (auto& [handle, object] : cdp_handles_)
+      if (object.session == session)
+        object.session.clear();
+  }
+
+  // Each session with the worker the renderer told of with its URL, in the
+  // order they came.
+  void MatchWorkers() {
+    std::set<std::string> matched;
+    for (const auto& [session, worker] : devtools_workers_)
+      if (!worker.id.empty())
+        matched.insert(worker.id);
+    std::vector<std::string> flush;
+    for (auto& [session, worker] : devtools_workers_) {
+      if (!worker.id.empty())
+        continue;
+      for (const auto& [id, ref] : workers_) {
+        if (ref.url == worker.url && !matched.contains(id)) {
+          worker.id = id;
+          matched.insert(id);
+          flush.push_back(session);
+          break;
+        }
+      }
+    }
+    for (const std::string& session : flush) {
+      auto found = devtools_workers_.find(session);
+      if (found == devtools_workers_.end())
+        continue;
+      std::vector<base::DictValue> messages = std::move(found->second.console);
+      for (base::DictValue& message : messages)
+        WorkerConsole(found->second.id, std::move(message));
+    }
+  }
+
+  DevToolsWorker* DevToolsWorkerOf(const std::string& id, std::string* session) {
+    for (auto& [key, worker] : devtools_workers_) {
+      if (worker.id == id) {
+        *session = key;
+        return &worker;
+      }
+    }
+    return nullptr;
+  }
+
+  void WorkerSessionEvent(DevToolsWorker& worker, const std::string& session,
+                          const std::string& method, const base::DictValue& params) {
+    if (method == "Inspector.workerScriptLoaded" || method == "Runtime.executionContextCreated") {
+      if (method == "Inspector.workerScriptLoaded")
+        worker.script_loaded = true;
+      else
+        worker.context = params.FindIntByDottedPath("context.id").value_or(worker.context);
+      if (worker.script_loaded && worker.context) {
+        std::vector<base::OnceClosure> waiting = std::move(worker.waiting);
+        for (base::OnceClosure& run : waiting)
+          std::move(run).Run();
+      }
+      return;
+    }
+    if (method != "Runtime.consoleAPICalled")
+      return;
+    const std::string* type = params.FindString("type");
+    base::DictValue message;
+    message.Set("type", type ? *type : std::string("log"));
+    std::vector<std::string> previews;
+    base::ListValue args;
+    if (const base::ListValue* given = params.FindList("args")) {
+      for (const base::Value& arg : *given) {
+        if (!arg.is_dict())
+          continue;
+        previews.push_back(RenderPreview(arg.GetDict()));
+        args.Append(NewCdpHandle(session, arg.GetDict()));
+      }
+    }
+    message.Set("text", base::JoinString(previews, " "));
+    message.Set("args", std::move(args));
+    base::DictValue location;
+    const base::ListValue* frames = params.FindListByDottedPath("stackTrace.callFrames");
+    const base::DictValue* top =
+        frames && !frames->empty() && frames->front().is_dict() ? &frames->front().GetDict() : nullptr;
+    const std::string* url = top ? top->FindString("url") : nullptr;
+    location.Set("url", url ? *url : std::string());
+    location.Set("lineNumber", top ? top->FindInt("lineNumber").value_or(0) : 0);
+    location.Set("columnNumber", top ? top->FindInt("columnNumber").value_or(0) : 0);
+    message.Set("location", std::move(location));
+    if (worker.id.empty()) {
+      worker.console.push_back(std::move(message));
+      return;
+    }
+    WorkerConsole(worker.id, std::move(message));
+  }
+
+  // The worker's console message: its page's, of the worker, in order with
+  // the page's own.
+  void WorkerConsole(const std::string& id, base::DictValue message) {
+    auto ref = workers_.find(id);
+    content::RenderFrameHost* frame =
+        ref == workers_.end() ? nullptr : content::RenderFrameHost::FromID(ref->second.frame);
+    message.Set("frame", FrameId(frame ? frame : MainFrame()));
+    message.Set("worker", id);
+    base::ListValue args = message.Extract("args")
+                               .and_then([](base::Value value) -> std::optional<base::ListValue> {
+                                 if (!value.is_list())
+                                   return std::nullopt;
+                                 return std::move(value.GetList());
+                               })
+                               .value_or(base::ListValue());
+    console_queue_[++next_console_] = std::move(message);
+    ConsoleReady(next_console_, std::move(args));
+  }
+
+  // A remote object of a worker's session as the handle the server is given.
+  base::DictValue NewCdpHandle(const std::string& session, const base::DictValue& remote) {
+    const std::string id = "w" + base::NumberToString(++next_cdp_handle_);
+    CdpHandle handle;
+    handle.session = session;
+    if (const std::string* object = remote.FindString("objectId")) {
+      handle.object = *object;
+    } else {
+      const std::string* type = remote.FindString("type");
+      const std::string* unserializable = remote.FindString("unserializableValue");
+      const base::Value* value = remote.Find("value");
+      base::DictValue special;
+      if (type && *type == "undefined") {
+        special.Set("v", "undefined");
+        handle.value = base::Value(std::move(special));
+      } else if (unserializable && unserializable->ends_with("n")) {
+        special.Set("bi", unserializable->substr(0, unserializable->size() - 1));
+        handle.value = base::Value(std::move(special));
+      } else if (unserializable) {
+        special.Set("v", *unserializable);
+        handle.value = base::Value(std::move(special));
+      } else if (!value || value->is_none()) {
+        special.Set("v", "null");
+        handle.value = base::Value(std::move(special));
+      } else {
+        handle.value = value->Clone();
+      }
+    }
+    cdp_handles_[id] = std::move(handle);
+    base::DictValue exposed;
+    exposed.Set("handle", id);
+    exposed.Set("preview", RenderPreview(remote));
+    return exposed;
+  }
+
+  // kWorkerEvaluate in the worker of @session, on @object or in its context.
+  void WorkerFunction(Call* call, const std::string& session, const std::string& object,
+                      const std::string& expression, std::optional<bool> is_function,
+                      bool by_value, base::Value arg, base::ListValue handles,
+                      base::OnceCallback<void(Call*, const base::DictValue&)> then) {
+    auto found = devtools_workers_.find(session);
+    if (found == devtools_workers_.end()) {
+      call->Fail(kClosed);
+      return;
+    }
+    DevToolsWorker& worker = found->second;
+    // Once its script has loaded (crPage.ts's workerScriptLoaded()).
+    if (object.empty() && !(worker.script_loaded && worker.context)) {
+      worker.waiting.push_back(base::BindOnce(
+          [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::string session,
+             std::string expression, std::optional<bool> is_function, bool by_value,
+             base::Value arg, base::ListValue handles,
+             base::OnceCallback<void(Call*, const base::DictValue&)> then) {
+            if (self && call)
+              self->WorkerFunction(call.get(), session, std::string(), expression, is_function,
+                                   by_value, std::move(arg), std::move(handles), std::move(then));
+          },
+          weak_factory_.GetWeakPtr(), call->GetWeakPtr(), session, expression, is_function,
+          by_value, std::move(arg), std::move(handles), std::move(then)));
+      return;
+    }
+    std::string declaration = kWorkerEvaluate;
+    const size_t at = declaration.find("__EXPRESSION__");
+    declaration.replace(at, strlen("__EXPRESSION__"), "\n" + expression + "\n");
+    base::ListValue arguments;
+    auto plain = [&](base::Value value) {
+      base::DictValue argument;
+      argument.Set("value", std::move(value));
+      arguments.Append(std::move(argument));
+    };
+    plain(is_function ? base::Value(*is_function) : base::Value());
+    plain(base::Value(!object.empty()));
+    plain(base::Value(by_value));
+    plain(std::move(arg));
+    for (base::Value& handle : handles)
+      arguments.Append(std::move(handle));
+    base::DictValue command;
+    command.Set("functionDeclaration", declaration);
+    command.Set("arguments", std::move(arguments));
+    if (!object.empty())
+      command.Set("objectId", object);
+    else
+      command.Set("executionContextId", worker.context);
+    command.Set("returnByValue", by_value);
+    command.Set("awaitPromise", true);
+    view_->SendToSession(
+        session, "Runtime.callFunctionOn", std::move(command),
+        base::BindOnce(
+            [](base::WeakPtr<Call> call, base::OnceCallback<void(Call*, const base::DictValue&)> then,
+               const base::DictValue* result, const std::string& error) {
+              if (!call)
+                return;
+              if (!result) {
+                call->Fail(kClosed);
+                return;
+              }
+              if (const base::DictValue* details = result->FindDict("exceptionDetails")) {
+                const std::string* description = details->FindStringByDottedPath("exception.description");
+                const std::string* text = details->FindString("text");
+                call->Fail(description ? *description : text ? *text : "Error");
+                return;
+              }
+              const base::DictValue* remote = result->FindDict("result");
+              const base::DictValue none;
+              std::move(then).Run(call.get(), remote ? *remote : none);
+            },
+            call->GetWeakPtr(), std::move(then)));
+  }
+
+  // The arguments' handles of a call on a worker's: CDP's {objectId}, or
+  // the value of a primitive's.
+  bool WorkerArgHandles(Call* call, const std::string& session, base::ListValue* handles) {
+    if (const base::ListValue* given = call->params().FindList("argHandles")) {
+      for (const base::Value& id : *given) {
+        auto handle = id.is_string() ? cdp_handles_.find(id.GetString()) : cdp_handles_.end();
+        if (handle == cdp_handles_.end() || handle->second.session != session) {
+          call->Fail(handle == cdp_handles_.end() || !handle->second.session.empty()
+                         ? "JSHandles can be evaluated only in the context they were created!"
+                         : kClosed);
+          return false;
+        }
+        base::DictValue argument;
+        if (handle->second.object.empty())
+          argument.Set("value", base::Value());
+        else
+          argument.Set("objectId", handle->second.object);
+        handles->Append(std::move(argument));
+      }
+    }
+    return true;
+  }
+
+  // Worker.evaluateExpressionHandle: the worker's object as a handle.
+  void WorkerEvaluateHandle(Call* call) {
+    std::string session;
+    if (!DevToolsWorkerOf(call->String("worker"), &session)) {
+      call->Fail(kClosed);
+      return;
+    }
+    base::ListValue handles;
+    if (!WorkerArgHandles(call, session, &handles))
+      return;
+    const base::Value* arg = call->params().Find("arg");
+    WorkerFunction(call, session, std::string(), call->String("expression"),
+                   call->params().FindBool("isFunction"), false, arg ? arg->Clone() : base::Value(),
+                   std::move(handles),
+                   base::BindOnce(
+                       [](base::WeakPtr<Automation> self, std::string session, Call* call,
+                          const base::DictValue& remote) {
+                         if (!self)
+                           return;
+                         base::DictValue answer;
+                         answer.Set("handle", self->NewCdpHandle(session, remote));
+                         call->Done(base::Value(std::move(answer)));
+                       },
+                       weak_factory_.GetWeakPtr(), session));
+  }
+
+  // A JSHandle of a worker's (getProperty, getPropertyList, jsonValue,
+  // evaluateExpression(Handle) on it, dispose): false if it is not one.
+  bool CdpHandleCall(Call* call) {
+    auto found = cdp_handles_.find(call->String("handle"));
+    if (found == cdp_handles_.end())
+      return false;
+    const std::string name = call->Name();
+    if (name == "dispose") {
+      if (!found->second.session.empty() && !found->second.object.empty()) {
+        base::DictValue release;
+        release.Set("objectId", found->second.object);
+        view_->SendToSession(found->second.session, "Runtime.releaseObject", std::move(release));
+      }
+      cdp_handles_.erase(found);
+      call->Done();
+      return true;
+    }
+    const CdpHandle& handle = found->second;
+    if (handle.session.empty()) {
+      call->Fail(kClosed);
+      return true;
+    }
+    const std::string session = handle.session;
+    if (handle.object.empty()) {
+      // A primitive's: its value, and none of its properties.
+      if (name == "jsonValue") {
+        call->Answer(handle.value.Clone());
+      } else if (name == "getPropertyList") {
+        base::DictValue answer;
+        answer.Set("properties", base::ListValue());
+        call->Done(base::Value(std::move(answer)));
+      } else if (name == "getProperty") {
+        base::DictValue undefined;
+        undefined.Set("type", "undefined");
+        base::DictValue answer;
+        answer.Set("handle", NewCdpHandle(session, undefined));
+        call->Done(base::Value(std::move(answer)));
+      } else {
+        call->Fail("zebkit: a worker's primitive handle; evaluate with its value");
+      }
+      return true;
+    }
+    const std::string object = handle.object;
+    auto as_handle = base::BindOnce(
+        [](base::WeakPtr<Automation> self, std::string session, Call* call,
+           const base::DictValue& remote) {
+          if (!self)
+            return;
+          base::DictValue answer;
+          answer.Set("handle", self->NewCdpHandle(session, remote));
+          call->Done(base::Value(std::move(answer)));
+        },
+        weak_factory_.GetWeakPtr(), session);
+    auto as_value = base::BindOnce([](Call* call, const base::DictValue& remote) {
+      const base::Value* value = remote.Find("value");
+      call->Answer(value ? value->Clone() : base::Value());
+    });
+    if (name == "getProperty") {
+      WorkerFunction(call, session, object, "(o, name) => o[name]", true, false,
+                     base::Value(call->String("name")), base::ListValue(), std::move(as_handle));
+    } else if (name == "jsonValue") {
+      WorkerFunction(call, session, object, "o => o", true, true, base::Value(), base::ListValue(),
+                     std::move(as_value));
+    } else if (name == "evaluateExpression" || name == "evaluateExpressionHandle") {
+      base::ListValue handles;
+      if (!WorkerArgHandles(call, session, &handles))
+        return true;
+      const base::Value* arg = call->params().Find("arg");
+      const bool by_value = name == "evaluateExpression";
+      WorkerFunction(call, session, object, call->String("expression"),
+                     call->params().FindBool("isFunction"), by_value,
+                     arg ? arg->Clone() : base::Value(), std::move(handles),
+                     by_value ? std::move(as_value) : std::move(as_handle));
+    } else if (name == "getPropertyList") {
+      base::DictValue params;
+      params.Set("objectId", object);
+      params.Set("ownProperties", true);
+      view_->SendToSession(
+          session, "Runtime.getProperties", std::move(params),
+          base::BindOnce(
+              [](base::WeakPtr<Automation> self, base::WeakPtr<Call> call, std::string session,
+                 const base::DictValue* result, const std::string& error) {
+                if (!self || !call)
+                  return;
+                if (!result) {
+                  call->Fail(kClosed);
+                  return;
+                }
+                base::ListValue properties;
+                if (const base::ListValue* list = result->FindList("result")) {
+                  for (const base::Value& item : *list) {
+                    const base::DictValue* property = item.is_dict() ? &item.GetDict() : nullptr;
+                    const base::DictValue* value = property ? property->FindDict("value") : nullptr;
+                    const std::string* key = property ? property->FindString("name") : nullptr;
+                    if (!value || !key || !property->FindBool("enumerable").value_or(false))
+                      continue;
+                    base::DictValue entry;
+                    entry.Set("name", *key);
+                    entry.Set("value", self->NewCdpHandle(session, *value));
+                    properties.Append(std::move(entry));
+                  }
+                }
+                base::DictValue answer;
+                answer.Set("properties", std::move(properties));
+                call->Done(base::Value(std::move(answer)));
+              },
+              weak_factory_.GetWeakPtr(), call->GetWeakPtr(), session));
+    } else {
+      call->Fail("zebkit: not on a worker's handle: " + name);
+    }
+    return true;
   }
 
   // Page.workers (zebkit's: Playwright's client keeps them from events).
@@ -8917,7 +9512,25 @@ class Automation : public content::WebContentsObserver,
       media_type_ = media;
       ApplyMediaType();
     }
-    InContext(call, &ContextEmulateMedia);
+    if (frame_sessions_.empty()) {
+      InContext(call, &ContextEmulateMedia);
+      return;
+    }
+    // Other sites' frames have the page's preferences by their own process:
+    // answered once each frame's renderer has had them (crPage.ts waits for
+    // each FrameSession's Emulation.setEmulatedMedia).
+    ContextEmulateMedia(web_contents(), call->params(), base::DoNothing());
+    auto done = base::BarrierClosure(
+        frame_sessions_.size(),
+        base::BindOnce([](base::WeakPtr<Call> call) { if (call) call->Done(); }, call->GetWeakPtr()));
+    for (const std::string& session : frame_sessions_) {
+      base::DictValue params;
+      params.Set("expression", "0");
+      view_->SendToSession(session, "Runtime.evaluate", std::move(params),
+                           base::BindOnce([](base::RepeatingClosure done, const base::DictValue*,
+                                             const std::string&) { done.Run(); },
+                                          done));
+    }
   }
 
   void ApplyMediaType() {
@@ -8971,6 +9584,8 @@ class Automation : public content::WebContentsObserver,
   std::unique_ptr<VideoRecorder> video_;
   bool web_socket_mock_ = false;
   bool emulated_offline_ = false;
+  // The sessions of other sites' frames (crPage.ts's FrameSessions).
+  std::set<std::string> frame_sessions_;
   // Runtime.exceptionThrown comes from the page's DevTools session.
   bool runtime_exceptions_ = false;
   // The viewport's emulation waiting for the page's view.
@@ -9017,6 +9632,9 @@ class Automation : public content::WebContentsObserver,
     std::string url;
   };
   std::map<std::string, WorkerRef> workers_;
+  std::map<std::string, DevToolsWorker> devtools_workers_;
+  std::map<std::string, CdpHandle> cdp_handles_;
+  uint64_t next_cdp_handle_ = 0;
   std::map<std::string, content::GlobalRenderFrameHostId> web_sockets_;
   std::string media_type_;
   int active_calls_ = 0;
@@ -10403,6 +11021,7 @@ const std::map<std::string, Automation::Handler>& Automation::Handlers() {
           {"Page.exposeBinding", &A::ExposeBinding},
           {"Page.workers", &A::Workers},
           {"Worker.evaluateExpression", &A::WorkerEvaluate},
+          {"Worker.evaluateExpressionHandle", &A::WorkerEvaluateHandle},
           {"Page.setWebSocketInterceptionPatterns", &A::SetWebSocketPatterns},
           {"BrowserContext.setWebSocketInterceptionPatterns", &A::SetWebSocketPatterns},
           {"WebSocketRoute.connect", &A::WebSocketCommand},
