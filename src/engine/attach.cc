@@ -592,4 +592,50 @@ void ForgetAttachedNative(zebkit_view* view) {}
 
 #endif  // defined(ZEBKIT_X11), BUILDFLAG(IS_WIN)
 
+zebkit_native_window NativeWindowForView(zebkit_view* view) {
+  // Follow the page's actual native view: its original Widget can be hidden
+  // after AttachView has moved the contents into another zebkit window.
+  auto* widget = views::Widget::GetTopLevelWidgetForNativeView(
+      view->web_contents()->GetNativeView());
+  if (!widget)
+    return {};
+#if defined(ZEBKIT_X11)
+  if (!X11ExtensionOf(widget))
+    return {};
+  auto window = static_cast<x11::Window>(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  for (const auto& [owner, attached] : Natives().attached) {
+    if (attached.window == window) {
+      window = attached.parent;
+      break;
+    }
+  }
+  // The top-level window, as GA_ROOT on Windows and the NSWindow on macOS: a
+  // dialog is transient for that, not for the child an application attached
+  // the page to. Its child of the root window, before any reparenting by the
+  // window manager is looked through (_NET_WM frames are not the client's).
+  auto* connection = x11::Connection::Get();
+  const x11::Atom wm_state = connection->GetAtom("WM_STATE");
+  for (int depth = 0; depth < 64; ++depth) {
+    // Stop at the client window a window manager manages, the one with
+    // WM_STATE; its frame, the next window up, is the manager's.
+    uint32_t state = 0;
+    if (connection->GetPropertyAs(window, wm_state, &state))
+      break;
+    auto tree = connection->QueryTree({window}).Sync();
+    if (!tree || tree->parent == tree->root || tree->parent == x11::Window::None)
+      break;
+    window = tree->parent;
+  }
+  return {ZEBKIT_NATIVE_WINDOW_X11, static_cast<uintptr_t>(window)};
+#elif BUILDFLAG(IS_WIN)
+  HWND window = widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget();
+  HWND root = ::GetAncestor(window, GA_ROOT);
+  return root ? zebkit_native_window{ZEBKIT_NATIVE_WINDOW_WIN32, reinterpret_cast<uintptr_t>(root)}
+              : zebkit_native_window{};
+#else
+  return {};
+#endif
+}
+
 }  // namespace zebkit

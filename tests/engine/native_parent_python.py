@@ -96,6 +96,8 @@ def _detached():
     if state.get("detached") is None:
         state["detached"] = view.detach_native()
         check(state["detached"], "detach_native returned true")
+        native = view.native_window()
+        check(native and native["kind"] == "x11" and native["handle"] != host, "native_window: detaching restores own window")
     return not children()
 
 
@@ -104,6 +106,7 @@ def _again():
     if state.get("again") is None:
         state["again"] = True
         view.attach_native(host, 0, 0, 400, 300)
+        check(view.native_window() == {"kind": "x11", "handle": host}, "native_window: reports containing host")
     return attached_and_drawn()
 
 

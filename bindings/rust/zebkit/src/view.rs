@@ -97,6 +97,18 @@ impl PermissionRequest {
     }
 }
 
+/// A borrowed system window containing a view's page. No ownership transfers.
+/// Requery after attaching/detaching. Never destroy or release this handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeWindow {
+    /// X11 window ID.
+    X11(usize),
+    /// Windows HWND.
+    Win32(usize),
+    /// AppKit NSWindow* (not the NSView* used for attaching).
+    AppKit(usize),
+}
+
 /// A decision for one stage of a navigation. Redirect starts a GET in the same frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationAction<'a> { Continue, Cancel, Redirect(&'a str) }
@@ -439,6 +451,20 @@ impl View {
         let mut error = std::ptr::null_mut();
         let ok = unsafe { sys::zebkit_view_attach_native(raw, native_parent, x, y, width, height, &mut error) };
         if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "the window cannot be attached") }) }
+    }
+
+    /// Borrow the containing system window, or None when no supported window
+    /// exists (headless, off-screen, Wayland or a closed view).
+    pub fn native_window(&self) -> Option<NativeWindow> {
+        let raw = self.raw()?;
+        let mut info = sys::zebkit_native_window::default();
+        if !unsafe { sys::zebkit_view_get_native_window(raw, &mut info) } { return None; }
+        match info.kind {
+            sys::ZEBKIT_NATIVE_WINDOW_X11 => Some(NativeWindow::X11(info.handle)),
+            sys::ZEBKIT_NATIVE_WINDOW_WIN32 => Some(NativeWindow::Win32(info.handle)),
+            sys::ZEBKIT_NATIVE_WINDOW_APPKIT => Some(NativeWindow::AppKit(info.handle)),
+            _ => None,
+        }
     }
 
     /// Makes the view its own window again; false when it was in none of the

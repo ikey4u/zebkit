@@ -224,6 +224,7 @@ if [[ "$ZEBKIT_TARGET" == windows ]]; then
 fi
 if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
     build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
+    build_against_package "$package" "$bin/native-window" "$tests/native_window.c" -- -pthread
     build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -DMIXED_X11 -lX11 -ldl
     build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
 fi
@@ -490,6 +491,9 @@ for log_mode in none file; do
     run "startup-settings-python-$log_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         ZEBKIT_TEST_LOG_MODE="$log_mode" python3 "$tests/startup_settings_python.py"
 done
+if [[ -x "$bin/native-window" ]]; then
+    run native-window "$bin/native-window" --no-sandbox --headless --user-data-dir="$work/profile-native-window"
+fi
 if [[ -x "$bin/native-parent" ]]; then
     run native-parent-refused "$bin/native-parent" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
     if command -v Xvfb > /dev/null; then
@@ -504,6 +508,10 @@ if [[ -x "$bin/native-parent" ]]; then
                 --no-sandbox --user-data-dir="$work/profile-mixed-views"
             run mixed-views-scaled env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" MIXED_SCALED=2 "$bin/mixed-views" \
                 --force-device-scale-factor=2 --no-sandbox --user-data-dir="$work/profile-mixed-scaled"
+            run native-window-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_TEST_NATIVE_WINDOW_X11=1 \
+                "$bin/native-window" --no-sandbox --user-data-dir="$work/profile-native-window-x11"
+            run native-window-javascript env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/tools/zebkit-js" \
+                --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
@@ -925,6 +933,8 @@ run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit
 run user-agent-bindings python3 "$tests/user_agent_bindings.py" "$bin/tools/zebkit-js"
 run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
 ! selected window-open-javascript || grep -q '^ok JavaScript original popup adoption' "$work/window-open-javascript.log" || { echo "FAIL window-open script did not finish"; failed=1; }
+run native-window-javascript-headless "$bin/tools/zebkit-js" --no-sandbox --headless \
+    --user-data-dir="$work/profile-native-window-js-headless" "$tests/script/native_window.mjs" none
 run script "$bin/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \
     "http://127.0.0.1:$port" "$work/script-files"
 # It ends by itself once idle; ending before its last line is a failure.

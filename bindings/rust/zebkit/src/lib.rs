@@ -80,7 +80,7 @@ pub fn win_startup() -> Option<i32> {
     unsafe { zebkit_rs::zebkit_win_startup(&mut code) }.then_some(code)
 }
 
-pub use view::{Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
+pub use view::{NativeWindow, Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.
 pub use zebkit_rs as sys;

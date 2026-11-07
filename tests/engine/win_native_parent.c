@@ -174,6 +174,10 @@ int main(int argc, char **argv) {
     check(!zebkit_view_attach_native(view, (uintptr_t)window, 0, 0, 0, 100, &error) && error, "empty bounds: refused");
     zebkit_free(error), error = NULL;
     check(zebkit_view_attach_native(view, (uintptr_t)window, 40, 30, 600, 400, &error), "attached in the application's window");
+    zebkit_native_window native = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
+    check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_WIN32 &&
+          native.handle == (uintptr_t)window, "native window: host HWND");
+
     for (int i = 0; i < 3000 && !state; ++i)
         spin(5);
     check(state == 1, "the page loads");
@@ -214,6 +218,9 @@ int main(int argc, char **argv) {
 
     /* Detached: its own window again, input still works. */
     check(zebkit_view_detach_native(view), "zebkit_view_detach_native()");
+    check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_WIN32 &&
+          native.handle == (uintptr_t)child, "native window: own HWND after detaching");
+
     spin(500);
     check(GetParent(child) == NULL && !(GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD), "its own window again");
     check(IsWindowVisible(child), "shown");

@@ -309,6 +309,29 @@ ZEBKIT_API bool zebkit_view_attach_native(zebkit_view *view, uintptr_t native_pa
 /* Makes the view its own window again, shown. False when it is in no window of the application's. */
 ZEBKIT_API bool zebkit_view_detach_native(zebkit_view *view);
 
+/* Borrowed system window containing the page, for parenting native dialogs.
+ * X11: window id; Windows: HWND; AppKit: NSWindow* (not the NSView* used by
+ * attach_native). Always the top-level window: for an attached page, the one
+ * containing the application's parent (on X11, the client window the window
+ * manager manages, not its frame).
+ * No ownership transfers: do not destroy/release the handle. Query again after
+ * attaching/detaching; it is invalid once that window closes. UI thread only.
+ * False with NONE/0 for NULL/closed views, off-screen/headless views, Wayland
+ * (which requires asynchronous exported parent tokens), or the wrong thread.
+ * A NULL output is rejected. This never exposes Chromium's internal pointers.
+ */
+typedef enum {
+    ZEBKIT_NATIVE_WINDOW_NONE = 0,
+    ZEBKIT_NATIVE_WINDOW_X11 = 1,
+    ZEBKIT_NATIVE_WINDOW_WIN32 = 2,
+    ZEBKIT_NATIVE_WINDOW_APPKIT = 3
+} zebkit_native_window_kind;
+typedef struct {
+    zebkit_native_window_kind kind;
+    uintptr_t handle;
+} zebkit_native_window;
+ZEBKIT_API bool zebkit_view_get_native_window(zebkit_view *view, zebkit_native_window *window);
+
 /* The title of the view's window; NULL for the page's, which it is by default. */
 ZEBKIT_API void zebkit_view_set_title(zebkit_view *view, const char *title);
 

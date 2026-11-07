@@ -241,6 +241,11 @@ static void step(void *data) {
         zebkit_free(error), error = NULL;
         check(!zebkit_view_detach_native(view), "nothing to detach yet", NULL);
         check(zebkit_view_attach_native(view, (uintptr_t)(__bridge void *)container, 40, 30, 400, 300, &error), "attached on the host's NSView", error);
+        zebkit_native_window native = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
+        check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_APPKIT &&
+              native.handle == (uintptr_t)(__bridge void *)host,
+              "native window: NSWindow of the host, not its NSView", NULL);
+
         zebkit_free(error), error = NULL;
         next = 1;
         break;

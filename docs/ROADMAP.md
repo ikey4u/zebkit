@@ -108,9 +108,20 @@ in `examples/native-host` (Done table). What is left:
   chooser, background sync and accept-language delegates, the protocol handler
   registry's delegate. Left out: test services, DevTools front-end windows, the
   "Inspect Element" menu, crash reporter setup, metrics and variations prefs.
-- **A window's native handle** given to the application, so that it can parent
-  the system's dialogs to it (file dialogs through the XDG portal need it). The
-  other way, an application's handle as a view's parent, is done.
+- **A window's native handle: implemented** (2026-11-07).
+  `zebkit_view_get_native_window()` borrows the top-level system window that
+  contains a page, with its kind (an X11 window, an `HWND`, an `NSWindow*`), so
+  that an application can parent the system's dialogs to it; also Rust's
+  `View::native_window()`, Python's `View.native_window()` and host JavaScript's
+  `view.nativeWindow` (the handle a BigInt). A page attached to an application's
+  window reports the top-level window containing it, also when it is attached
+  to a panel inside that window. Checked 2026-11-07: Linux X11 in C, Python,
+  Rust and host JavaScript, headless, off-screen, the wrong thread and glibc
+  2.17; Windows 10 (`win_native_parent`, with the sandbox and without); macOS
+  on an Apple M4 (`native_parent_mac`).
+  Not done: Wayland, whose dialogs are parented by an exported token
+  (xdg-foreign), asked for asynchronously. The other way, an application's
+  handle as a view's parent, is done.
 - **A real input method in X11 windows.** None: see `docs/ARCHITECTURE.md`.
 - **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
   Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root

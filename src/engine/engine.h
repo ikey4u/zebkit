@@ -479,6 +479,8 @@ bool SetAttachedNativeVisible(zebkit_view* view, bool visible);
 bool FocusAttachedNative(zebkit_view* view);
 // To its own window again.
 bool DetachViewNative(zebkit_view* view);
+// Borrowed containing system window, including a native parent after attach.
+zebkit_native_window NativeWindowForView(zebkit_view* view);
 // The view is closing, and its window with it.
 void ForgetAttachedNative(zebkit_view* view);
 

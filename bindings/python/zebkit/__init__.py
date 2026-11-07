@@ -220,6 +220,13 @@ _client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, 
 _client_certificate_choose = _declare("zebkit_client_certificate_choose", _B, _P, ctypes.c_size_t, _P)
 _view_attach_native = _declare("zebkit_view_attach_native", _B, _V, ctypes.c_size_t, _I, _I, _I, _I, _EP)
 _view_detach_native = _declare("zebkit_view_detach_native", _B, _V)
+
+
+class _NativeWindowInfo(ctypes.Structure):
+    _fields_ = [("kind", _I), ("handle", ctypes.c_size_t)]
+
+
+_view_get_native_window = _declare("zebkit_view_get_native_window", _B, _V, ctypes.POINTER(_NativeWindowInfo))
 _view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
 _view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _P)
 _view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED, _P)
@@ -723,6 +730,17 @@ class View:
         error = ctypes.c_void_p()
         if not _view_attach_native(self._check(), parent, x, y, width, height, ctypes.byref(error)):
             _raise(error, "the window cannot be attached")
+
+    def native_window(self):
+        """Borrowed containing system window as {kind, handle}, or None.
+
+        kind is x11, win32 or appkit; appkit means NSWindow*, not NSView*.
+        Requery after attach/detach. Never destroy or release this handle.
+        """
+        info = _NativeWindowInfo()
+        if not _view_get_native_window(self._check(), ctypes.byref(info)):
+            return None
+        return {"kind": {1: "x11", 2: "win32", 3: "appkit"}[info.kind], "handle": info.handle}
 
     def detach_native(self):
         """Back to its own window; False when it was in none of the application's."""

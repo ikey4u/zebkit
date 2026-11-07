@@ -1441,6 +1441,20 @@ bool zebkit_view_attach_native(zebkit_view* view,
   return false;
 }
 
+bool zebkit_view_get_native_window(zebkit_view* view, zebkit_native_window* window) {
+  if (!window)
+    return false;
+  *window = {};
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !view || !view->web_contents() || view->offscreen_view_ || zebkit_is_headless())
+    return false;
+  const auto result = zebkit::NativeWindowForView(view);
+  if (result.kind == ZEBKIT_NATIVE_WINDOW_NONE || !result.handle)
+    return false;
+  *window = result;
+  return true;
+}
+
 bool zebkit_view_detach_native(zebkit_view* view) {
   return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) && view &&
          zebkit::DetachViewNative(view);

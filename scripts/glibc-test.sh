@@ -128,6 +128,7 @@ for name in vendor services pdf bridge page popup scheme media mode hooks certif
     build "$name" "$tests/$name.c"
 done
 build api "$tests/api.c" -pthread
+build native-window "$tests/native_window.c" -pthread
 "$clang" -std=c11 -O1 -Wall -Werror --sysroot="$root" --gcc-toolchain="$root/usr" -fuse-ld=lld \
     -I"$work/package/include" "$tests/late_load.c" -ldl -pthread -o "$work/late-load"
 "$patchelf" --set-interpreter "$loader" "$work/late-load"
@@ -186,6 +187,7 @@ ZEBKIT_TEST_BASE="$base" ZEBKIT_TEST_FILES="$work/page-files" run page "$work/pa
 finished page
 run hooks "$work/hooks" "${engine_switches[@]}"
 run offscreen-scale "$work/offscreen_scale" "${engine_switches[@]}"
+run native-window "$work/native-window" "${engine_switches[@]}"
 # The Python TLS server uses the host runtime; only its C child gets CentOS libc.
 log "certificate-c"
 if ! limited 180 python3 "$tests/certificate_c.py" "$work/certificate" \

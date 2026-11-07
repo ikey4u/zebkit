@@ -420,6 +420,7 @@ extern "C" {
     );
     pub fn zebkit_view_attach_native(view: *mut zebkit_view, native_parent: usize, x: c_int, y: c_int, width: c_int, height: c_int, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_detach_native(view: *mut zebkit_view) -> bool;
+    pub fn zebkit_view_get_native_window(view: *mut zebkit_view, window: *mut zebkit_native_window) -> bool;
     pub fn zebkit_view_set_bounds(view: *mut zebkit_view, x: c_int, y: c_int, width: c_int, height: c_int);
     pub fn zebkit_view_set_visible(view: *mut zebkit_view, visible: bool);
     pub fn zebkit_view_add_script(view: *mut zebkit_view, source: *const c_char);
@@ -1411,3 +1412,15 @@ extern "C" {
         error: *mut *mut c_char) -> c_int;
 }
 
+
+/// Borrowed system window; see zebkit_view_get_native_window.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct zebkit_native_window {
+    pub kind: c_int,
+    pub handle: usize,
+}
+pub const ZEBKIT_NATIVE_WINDOW_NONE: c_int = 0;
+pub const ZEBKIT_NATIVE_WINDOW_X11: c_int = 1;
+pub const ZEBKIT_NATIVE_WINDOW_WIN32: c_int = 2;
+pub const ZEBKIT_NATIVE_WINDOW_APPKIT: c_int = 3;

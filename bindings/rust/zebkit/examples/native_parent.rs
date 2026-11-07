@@ -57,6 +57,8 @@ fn main() {
             let refused = attached.attach_native(0x7fff_fff0, 0, 0, 100, 100);
             println!("{} a window that is not there: refused", if refused.is_err() { "ok  " } else { "FAIL" });
             attached.attach_native(host as usize, 10, 10, 300, 200).expect("attach_native");
+            assert_eq!(attached.native_window(), Some(zebkit::NativeWindow::X11(host as usize)));
+            println!("ok   native_window: containing host window");
             fn wait(tries: u32, what: &'static str, done: impl Fn() -> bool + 'static, then: impl FnOnce() + 'static) {
                 if done() {
                     println!("ok   {what}");

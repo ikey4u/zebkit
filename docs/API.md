@@ -217,6 +217,7 @@ reference:
 | `zebkit_view_resize`, `_set_size_limits`, `_set_title`, `_focus` | Its window: size, smallest size and whether it may be resized (Electron's `minWidth`, `minHeight`, `resizable`), title, raising |
 | `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
 | `zebkit_view_attach_native`, `_detach_native` | A view's window inside a window of the application's: an X11 window id, or an `NSView*` on macOS; `_set_bounds`, `_set_visible`, `_resize` and `_focus` then act there. Refused, naming off-screen views, on Wayland and under `--headless` |
+| `zebkit_view_get_native_window` | Borrow the system window containing the page: platform kind plus X11 ID, HWND or NSWindow*. After attachment, the top-level window containing the host. False and NONE/0 for headless/off-screen/Wayland or invalid calls; engine thread only. Never destroy/release the handle; query again after attach/detach |
 | `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
 | `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
 | `zebkit_view_on_window_open` | A window a page opens, to the application as a view still linked to its opener (a site's sign-in popup); off-screen when its opener is |
@@ -1333,3 +1334,30 @@ or engine loop. The lower-level vendor API remains available.
 Chromium's test switches: with them a page gets a fake camera and microphone with no
 permission asked. `--isolated-context-origins` gives the origins it lists Chromium's
 Isolated Context. An application should not pass on any of them from outside.
+
+
+### Borrowing a view's system window
+
+`zebkit_view_get_native_window(view, &window)` returns a borrowed
+`zebkit_native_window {kind, handle}`. AppKit's handle is an `NSWindow*`,
+not the `NSView*` accepted by `zebkit_view_attach_native`. Windows returns
+an HWND; X11 returns a window ID. It is always a top-level window, the one a
+dialog can be made transient for: after attachment, the top-level window that
+contains the application's parent (on X11 the client window its window manager
+manages, not the manager's frame). The handle is not owned or retained and becomes invalid when its
+window closes. Do not destroy or release it; query again after attachment or
+detachment. Calls must run on the engine thread.
+
+Rust exposes `View::native_window() -> Option<NativeWindow>` with `X11`,
+`Win32` and `AppKit` variants. Python's `View.native_window()` returns a dict
+with `kind` (`x11`, `win32`, `appkit`) and integer `handle`, or `None` when
+unavailable. Host JavaScript's `view.nativeWindow` returns the same fields,
+with the handle as a BigInt (convert explicitly when serializing JSON), or
+`null`. This trusted-host API is not exposed through a page bridge.
+
+Headless and off-screen views return no system window. Wayland requires an
+asynchronously exported parent token rather than an X11 ID; that export is
+not yet implemented. A C query returns false and clears a supplied output to
+NONE/0 when unavailable, for a NULL view or on the wrong thread. A NULL output
+is rejected. A stale, already-freed C view pointer remains invalid, as with the
+other C view APIs. Python and JavaScript keep their normal closed-view checks.

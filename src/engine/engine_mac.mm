@@ -390,6 +390,14 @@ void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
     it->second.view.frame = Frame(it->second.view.superview, bounds);
 }
 
+zebkit_native_window NativeWindowForView(zebkit_view* view) {
+  NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
+  NSWindow* window = page.window;
+  return window ? zebkit_native_window{ZEBKIT_NATIVE_WINDOW_APPKIT,
+                                      reinterpret_cast<uintptr_t>((__bridge void*)window)}
+                : zebkit_native_window{};
+}
+
 bool AttachViewNative(zebkit_view* view,
                       uintptr_t native_parent,
                       const gfx::Rect& bounds,

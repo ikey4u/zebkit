@@ -310,6 +310,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
     get url() { return native.viewUrl(this.#id); }
     get title() { return native.viewTitle(this.#id); }
     get windowOpenInfo() { return JSON.parse(native.viewWindowOpenInfo(this.#id)); }
+    get nativeWindow() { return native.viewNativeWindow(this.#id); }
     evaluate(script) { return native.viewEvaluate(this.#id, String(script)); }
     setUserAgentOverride(options) { return native.viewUserAgentOverride(this.#id, JSON.stringify(options)); }
     grant(origin, allow, filesRoot) {
@@ -621,6 +622,7 @@ struct zebkit_script {
   static void ViewAction(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void UiCommit(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -758,6 +760,7 @@ void zebkit_script::Install() {
   SetMethod(native, "viewNew", &ViewNew);
   SetMethod(native, "setViewFactory", &SetViewFactory);
   SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
+  SetMethod(native, "viewNativeWindow", &ViewNativeWindow);
   SetMethod(native, "viewOn", &ViewOn);
   SetMethod(native, "viewPermission", &ViewPermission);
   SetMethod(native, "permissionRequest", &PermissionRequest);
@@ -1918,6 +1921,25 @@ void zebkit_script::ViewEvaluate(
           hook->script->SettleJson(hook->id, json, error);
       },
       hook);
+}
+
+void zebkit_script::ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  auto* self = From(info);
+  auto* entry = self->FindView(info);
+  if (!entry)
+    return;
+  zebkit_native_window window{};
+  if (!zebkit_view_get_native_window(entry->view, &window)) {
+    info.GetReturnValue().SetNull();
+    return;
+  }
+  const char* kind = window.kind == ZEBKIT_NATIVE_WINDOW_X11 ? "x11"
+                      : window.kind == ZEBKIT_NATIVE_WINDOW_WIN32 ? "win32" : "appkit";
+  auto value = v8::Object::New(self->isolate());
+  std::ignore = value->Set(self->context(), String8(self->isolate(), "kind"), String8(self->isolate(), kind));
+  std::ignore = value->Set(self->context(), String8(self->isolate(), "handle"),
+                         v8::BigInt::NewFromUnsigned(self->isolate(), window.handle));
+  info.GetReturnValue().Set(value);
 }
 
 void zebkit_script::ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info) {
