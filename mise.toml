@@ -2,6 +2,8 @@
 #
 #   mise run r                release build for this machine  -> dist/release, and its archive
 #   mise run r:github         the same, published as a GitHub release
+#   mise run r:crate          the Rust crates to crates.io (CARGO_REGISTRY_TOKEN)
+#   mise run r:python         the Python binding to PyPI (UV_PUBLISH_TOKEN or PYPI_TOKEN)
 #   mise run d                debug build for this machine    -> dist/debug
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
 #   mise example:macos:basic  build and run examples/window.c on macOS
@@ -23,6 +25,8 @@
 [tools]
 gh = "2.102.0"
 "conda:xz-tools" = "5.8.3"
+# uv, for r:python only: builds the Python package and uploads it.
+uv = "0.13.7"
 
 [tasks.r]
 description = "Build the release zebkit for Linux (dist/release) and macOS (dist/release-macos, cross-built), and the archives the Rust crates download"
@@ -31,6 +35,14 @@ run = "scripts/release.sh"
 [tasks."r:github"]
 description = "Build the release and publish it as the GitHub release v<VERSION>"
 run = "scripts/release.sh --publish"
+
+[tasks."r:crate"]
+description = "Publish the Rust crates (zebkit-rs, zebkit-build, zebkit) at VERSION to crates.io; the token in CARGO_REGISTRY_TOKEN (--dry-run to check only)"
+run = "scripts/publish-crates.sh"
+
+[tasks."r:python"]
+description = "Publish the Python binding at VERSION to PyPI as zebkit; the token in UV_PUBLISH_TOKEN or PYPI_TOKEN (--dry-run to check only)"
+run = "scripts/publish-python.sh"
 
 [tasks."bench:web"]
 description = "What web pages cost in zebkit against Electron; --check fails on a regression past tests/bench/web/limits.json (pass --sites for the well-known sites)"
