@@ -803,6 +803,7 @@ CDP in between:
   | zebkit, 2026-11-06 | 3962 | 233 | 1067 | 52 | 43 | 3 | 181 |
   | zebkit, 2026-11-06, later | 4005 | 190 | 1067 | 44 | 25 | 0 | 146 |
   | zebkit, 2026-11-07 | 4026 | 169 | 1067 | 44 | 22 | 0 | 125 |
+  | zebkit, 2026-11-07, later | 4046 | 149 | 1067 | 43 | 26 | 0 | 106 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by
@@ -870,21 +871,50 @@ CDP in between:
   (patches/1079). After the run: `setContent` waits for the written document's images and
   style sheets (`page-set-content.spec.ts:84`, `trace-viewer.spec.ts:1155`, 1206).
 
-  **Not at parity: what is left, by cause** (the unexplained 125 and the 22 timeouts):
+  The later run of 2026-11-07 (engine at commit 2038231): 4046 passed, 149 failed. Traces:
+  the DOM snapshots' streamer is the context's init script from the first chunk with
+  snapshots (as `snapshotter.ts`), so it holds the page's own `ShadowRoot` and hears the
+  marked targets; a snapshot's html goes into the trace as the page's JSON (a dictionary had
+  sorted the attributes: a charset meta's `content` before its `http-equiv`); targets marked
+  as `frameSelectors.ts` marks them (reads the first element; assertions and actions all,
+  before a strict mode violation); blob: loads reported from DevTools' Network; a service
+  worker's requests in the trace's network (`_serviceWorkerRef`); `context.request`'s own
+  trace (`_apiRequestRef`); the request as the page made it, not as `route.continue()`
+  changed it; the input event's box and `page.mouse`'s points; an unnamed frame named by its
+  element's id (DevTools'). Pages: `setContent` waits for the written frames' loads;
+  `scrollIntoViewIfNeeded` scrolls every box that scrolls (`ScrollRectToVisible` with
+  CenterIfNeeded), not the viewport alone; a frame of another site attached as its own target
+  is resumed after its navigation's DevTools throttle exists (it never committed before:
+  such a page never loaded in a context of `Browser.newContext`). Routes: a body with a
+  blob's part read whole before it is reported (`RequestBodyCollector`, as DevTools'
+  interceptor), a favicon aborted unreported while routing, `route.continue()`'s headers on
+  each redirect hop. Screenshots: one at a time per page, masks in frames, the fonts' log.
+  Since that run (on the files concerned): a trial run's input goes into the blocking hit
+  target interceptor, as `dom.ts` performs it (`tap.spec.ts:42`); Playwright's init scripts
+  do not run in the document there is (`page-add-init-script-callback.spec.ts:32`, 50; its
+  :103, a child frame's callback, fails since: its count had matched with the main frame's
+  two runs, and the child frame's callback does not come).
+
+  **Not at parity: what is left, by cause** (the unexplained 106 and the 26 timeouts):
   - The recorder (14, listed): Playwright's server's `recorder.ts` and `recorder/*` (about
     1,900 lines) with its injected script; not ported.
-  - Traces (about 12 in `trace-viewer.spec.ts`, 2 in `tracing.spec.ts`): scroll positions,
-    blob sources, synthetic shadow roots and charset metas of the DOM snapshots, picking in
-    iframes, a service worker's requests in the trace's network, `context.request`'s own
-    trace (the endpoint keys traces by context).
   - Client certificates (10, 9 listed): Playwright's own TLS proxy (its error pages, its check
     of the server's certificate, HTTPS errors ignored in the browser).
-  - Screenshots (6): element masks, fonts' wait message, a page navigating (fullPage).
-  - Routes and requests (about 5): FormData with a Blob (the body's blob is not read for the
-    route), headers across a cross-origin redirect, a favicon's abort, multipart form data.
-  - A worker nested in an iframe (`workers.spec.ts:399`), tap's trial run and a tap that
-    navigates (2), extensions (6, a content-layer engine has none), locales' formats (4,
-    listed), the Debugger's pause inside an input (1, listed), and a tail of one or two a file.
+  - Frames (about 15): `frameLocator()` composites and hidden iframes
+    (`locator-any-frame.spec.ts`, 3), cross-frame element handles (`frame-evaluate.spec.ts`,
+    3), transformed and scrolled iframes' clicks (`page-click.spec.ts:1048`, 1130,
+    `page-click-scroll.spec.ts:97`), display: contents scrolled into view (2), a worker
+    nested in an iframe (`workers.spec.ts:399`), a child frame's init script callback.
+  - Traces (4): the aria view's action box (the "action" phase's screenshot and ARIA snapshot
+    are taken after the action, not at its input point), multiple chunks, trace paths via the
+    viewer's stdin, console events not flushed.
+  - Screenshots (2): full-page screenshots while the page navigates (timeouts).
+  - Assertions when the page closes or the signal aborts (`expect-misc.spec.ts`, 2,
+    `expect-timeout.spec.ts`, 2); a main world whose `Map` is gone
+    (`locator-misc-2.spec.ts:180`: the main world's injected script starts after the page's
+    script).
+  - Extensions (6, a content-layer engine has none), locales' formats (4, listed), the
+    Debugger's pause inside an input (1, listed), and a tail of one or two a file.
   The endpoint is not at parity with Playwright's server, and this counts how far.
 - **The benchmark** (`scripts/automation-bench.sh`) runs section 1's
   operations four ways: native, Playwright's client through zebkit's

@@ -157,7 +157,10 @@ struct zebkit_view : public content::WebContentsObserver,
   // A script for every new document, before the page's own; with
   // @all_frames in other sites' frames too (their own targets), as
   // Playwright's init scripts are in each frame's session (crPage.ts).
-  void AddScript(const std::string& source, Reply reply = Reply(), bool all_frames = false);
+  // @run_immediately: in the document there is too (Page.addScriptToEvaluate-
+  // OnNewDocument's runImmediately); Playwright's init scripts are not.
+  void AddScript(const std::string& source, Reply reply = Reply(), bool all_frames = false,
+                 bool run_immediately = true);
   // Other sites' frames attached as targets of their own from now on, each
   // held until what its attachment event's handler sends it has been sent.
   void AttachFrames();
@@ -378,7 +381,7 @@ struct zebkit_view : public content::WebContentsObserver,
   void RemoveProtocolScript(size_t index, Reply reply);
   void RefreshOtherProtocolTargets(const std::string& current);
   void SendScript(const std::string& source, Reply reply = Reply(),
-                  const std::string& world = std::string());
+                  const std::string& world = std::string(), bool run_immediately = true);
   // Other sites' frames as targets of their own, for scripts in all frames.
   void AttachFrameTargets(const std::string& target);
   void InstallBridge();

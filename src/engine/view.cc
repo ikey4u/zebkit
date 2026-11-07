@@ -610,13 +610,14 @@ void zebkit_view::InstallBridge() {
                            ", configurable: true});\n", kBridgeScript}));
 }
 
-void zebkit_view::AddScript(const std::string& source, Reply reply, bool all_frames) {
+void zebkit_view::AddScript(const std::string& source, Reply reply, bool all_frames,
+                            bool run_immediately) {
   if (all_frames) {
     protocol_all_frame_scripts_.insert(protocol_script_sources_.size());
     AttachFrames();
   }
   Send("Page.enable", base::DictValue());
-  SendScript(source, std::move(reply));
+  SendScript(source, std::move(reply), std::string(), run_immediately);
 }
 
 void zebkit_view::AttachFrames() {
@@ -690,7 +691,8 @@ void zebkit_view::AttachFrameTargets(const std::string& target) {
   SendTargetCommand(target, "Target.setAutoAttach", std::move(params));
 }
 
-void zebkit_view::SendScript(const std::string& source, Reply reply, const std::string& world) {
+void zebkit_view::SendScript(const std::string& source, Reply reply, const std::string& world,
+                             bool run_immediately) {
   const size_t index = protocol_script_sources_.size();
   protocol_script_sources_.push_back(source);
   if (!world.empty()) protocol_script_worlds_[index] = world;
@@ -698,7 +700,7 @@ void zebkit_view::SendScript(const std::string& source, Reply reply, const std::
       ? content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId() : "";
   base::DictValue script;
   script.Set("source", source);
-  script.Set("runImmediately", true);
+  script.Set("runImmediately", run_immediately);
   if (!world.empty()) script.Set("worldName", world);
   ++scripts_pending_;
   // Answered, or failed when the page goes, either way once.

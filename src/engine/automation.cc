@@ -4761,7 +4761,10 @@ class Automation : public content::WebContentsObserver,
       call->Fail(kFrameDetached);
       return;
     }
-    if (call->Flag("trial")) {
+    // A trial run's input goes too, into the hit target interceptor that
+    // blocks the page's events (dom.ts performs the action either way); a
+    // drop's has nothing to send.
+    if (call->Flag("trial") && action.drop) {
       PointerSend(call, action, std::move(target), interceptor, widget,
                   in_widget, in_root);
       return;
@@ -4800,7 +4803,7 @@ class Automation : public content::WebContentsObserver,
     auto finish = base::BindOnce(&Automation::PointerDone,
                                  weak_factory_.GetWeakPtr(), call, action,
                                  target, interceptor);
-    if (call->Flag("trial")) {
+    if (call->Flag("trial") && action.drop) {
       std::move(finish).Run();
       return;
     }
@@ -8016,7 +8019,8 @@ class Automation : public content::WebContentsObserver,
           }
           self->init_scripts_[id] = *native_id;
           call->Done(RegistrationResult(id, "script"));
-        }, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), id), /*all_frames=*/true);
+        }, weak_factory_.GetWeakPtr(), call->GetWeakPtr(), id), /*all_frames=*/true,
+        /*run_immediately=*/false);
   }
 
   void RemoveRegistration(Call* call) {

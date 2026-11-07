@@ -308,6 +308,13 @@ in `examples/native-host` (Done table). What is left:
     preflights of routed pages answered below the network's CORS; a route's Cookie; URLPattern
     routes; tap through the touch emulator (patches/1079). Left: the recorder, trace details,
     screenshots' masks and fonts, client certificates' TLS proxy, and a tail (section 7).
+    2026-11-07, later: 4046 passed, 149 failed (43 listed, 26 timeouts, 106 unexplained):
+    traces' DOM snapshots as `snapshotter.ts` takes them (its init script, the attributes'
+    order, marked targets), blob and service worker requests and `context.request`'s own
+    trace; other sites' frames that never committed in new contexts; routed FormData blobs,
+    favicons and redirect headers; screenshots one at a time with masks in frames. Left: the
+    recorder, client certificates' TLS proxy, frames' tail, four trace details, and a tail
+    (section 7).
     `Disposable.dispose` now removes binding/script registrations and context
     replay entries. Request timing and encoded sizes use Chromium network
     measurements; compressed responses and POST uploads pass client tests.
