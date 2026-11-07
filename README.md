@@ -422,12 +422,12 @@ counted, medians of 5 to 11 runs taking turns, Linux x86-64, 2026-11-06 and 07
   ten sites, YouTube and The Verge, where advertising and video decide.
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
-Playwright's commands, natively and through Playwright over CDP, headless,
-medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
+The same Playwright commands three ways, headless, medians
+(`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 
-| | zebkit, native | zebkit, Playwright's client to its endpoint | Chrome 156, Playwright over CDP |
+| | zebkit's API, in-process | Your Playwright scripts, connected to zebkit | Playwright with Chrome 156 |
 |---|---:|---:|---:|
-| `locator.click()` | **4.9 ms** | 3.4 ms | 33.3 ms |
+| `locator.click()` | 4.9 ms | **3.4 ms** | 33.3 ms |
 | `locator.fill()` | **0.69 ms** | 2.6 ms | 2.7 ms |
 | `locator.press('Enter')` | **0.42 ms** | 0.86 ms | 2.3 ms |
 | `locator.textContent()` | **0.26 ms** | 0.67 ms | 0.94 ms |
@@ -435,15 +435,21 @@ medians (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 | `page.goto()` | **13.5 ms** | 13.9 ms | 18.3 ms |
 | `page.screenshot()` | **31.5 ms** | | 33.6 ms |
 
-Playwright's own test suite (v1.64.1) against the endpoint passes 4,046 of its
-tests, Chrome 4,196 (`docs/AUTOMATION.md`, section 7).
-
-- **One call in the renderer** where Playwright's server makes several
-  round trips over CDP, and no JSON between processes; no Node.js process
-  (Playwright's alone reached 175 MiB).
-- **A click without waiting for the display**: the frames Playwright's
-  checks wait for are made at once while a command is in flight on a page
-  without a display, instead of at 60 Hz.
+- **zebkit's API, in-process**: your program calls the command through
+  `<zebkit/automation.h>`, Python's `zebkit.automation` or Rust's
+  `zebkit::automation`; it runs inside the engine, with no Node.js and no protocol.
+- **Your Playwright scripts, connected to zebkit**: Playwright's own Node.js
+  client, unchanged, with `chromium.connect()` to zebkit's endpoint; its test
+  suite (v1.64.1) passes 4,046 of its tests there, Chrome 4,196
+  (`docs/AUTOMATION.md`, section 7).
+- **Playwright with Chrome**: Playwright as usual, over CDP.
+- **Why it is faster**: one call in the renderer where Playwright's server makes
+  several round trips over CDP, no JSON between processes, no Node.js process
+  (Playwright's alone reached 175 MiB); and the frames a click's checks wait for
+  are made at once instead of at 60 Hz on a page without a display.
+- **A screenshot is not much faster**: its time is a fresh frame (about 17 ms at
+  60 Hz) and encoding a 1280 by 800 PNG, which are the same work whichever way
+  it is asked for; only the messaging is saved.
 
 ## Reference
 
