@@ -18,6 +18,7 @@
 #include <zebkit/vendor/freetype.h>
 #include <zebkit/vendor/leveldb.h>
 #include FT_OUTLINE_H
+#include FT_MODULE_H
 #include <zebkit/vendor/harfbuzz.h>
 #include <zebkit/vendor/icu.h>
 #include <zebkit/vendor/libjpeg.h>
@@ -227,6 +228,129 @@ static void test_images(void) {
     hb_buffer_destroy(buffer);
 }
 
+/* The application's own functions, called by the libraries: allocators,
+ * destroy callbacks, font and unicode functions, a stream. With CFI on
+ * indirect calls (profiles/slim-match.gn), a check on such a call would
+ * fail, as these are not in the engine (patches/1078). */
+static int app_calls;
+
+static voidpf app_zalloc(voidpf opaque, uInt items, uInt size) {
+    (void)opaque;
+    ++app_calls;
+    return calloc(items, size);
+}
+
+static void app_zfree(voidpf opaque, voidpf address) {
+    (void)opaque;
+    ++app_calls;
+    free(address);
+}
+
+static void app_destroy(void *data) {
+    ++*(int *)data;
+}
+
+static hb_bool_t app_nominal_glyph(hb_font_t *font, void *data, hb_codepoint_t unicode,
+                                   hb_codepoint_t *glyph, void *user_data) {
+    (void)font, (void)data, (void)user_data;
+    ++app_calls;
+    *glyph = unicode;
+    return 1;
+}
+
+static hb_position_t app_advance(hb_font_t *font, void *data, hb_codepoint_t glyph, void *user_data) {
+    (void)font, (void)data, (void)glyph, (void)user_data;
+    ++app_calls;
+    return 1000;
+}
+
+static hb_unicode_general_category_t app_category(hb_unicode_funcs_t *funcs, hb_codepoint_t unicode,
+                                                  void *user_data) {
+    (void)funcs, (void)unicode, (void)user_data;
+    ++app_calls;
+    return HB_UNICODE_GENERAL_CATEGORY_LOWERCASE_LETTER;
+}
+
+static void *app_ft_alloc(FT_Memory memory, long size) {
+    (void)memory;
+    ++app_calls;
+    return malloc((size_t)size);
+}
+
+static void app_ft_free(FT_Memory memory, void *block) {
+    (void)memory;
+    free(block);
+}
+
+static void *app_ft_realloc(FT_Memory memory, long cur_size, long new_size, void *block) {
+    (void)memory, (void)cur_size;
+    return realloc(block, (size_t)new_size);
+}
+
+static void test_callbacks(void) {
+    unsigned char packed[512], unpacked[512];
+    z_stream deflater = {0}, inflater = {0};
+    deflater.zalloc = inflater.zalloc = app_zalloc;
+    deflater.zfree = inflater.zfree = app_zfree;
+    app_calls = 0;
+    int ok = deflateInit(&deflater, 9) == Z_OK;
+    deflater.next_in = (Bytef *)text, deflater.avail_in = sizeof(text);
+    deflater.next_out = packed, deflater.avail_out = sizeof(packed);
+    ok = ok && deflate(&deflater, Z_FINISH) == Z_STREAM_END && deflateEnd(&deflater) == Z_OK;
+    ok = ok && inflateInit(&inflater) == Z_OK;
+    inflater.next_in = packed, inflater.avail_in = sizeof(packed) - deflater.avail_out;
+    inflater.next_out = unpacked, inflater.avail_out = sizeof(unpacked);
+    ok = ok && inflate(&inflater, Z_FINISH) == Z_STREAM_END && inflateEnd(&inflater) == Z_OK &&
+         memcmp(unpacked, text, sizeof(text)) == 0;
+    check(ok && app_calls >= 4, "zlib: the application's zalloc and zfree", NULL);
+
+    int destroyed = 0;
+    hb_blob_t *blob = hb_blob_create(text, sizeof(text), HB_MEMORY_MODE_READONLY, &destroyed, app_destroy);
+    hb_blob_destroy(blob);
+    check(destroyed == 1, "harfbuzz: a blob's destroy callback", NULL);
+
+    app_calls = 0;
+    destroyed = 0;
+    hb_font_funcs_t *funcs = hb_font_funcs_create();
+    hb_font_funcs_set_nominal_glyph_func(funcs, app_nominal_glyph, &destroyed, app_destroy);
+    hb_font_funcs_set_glyph_h_advance_func(funcs, app_advance, NULL, NULL);
+    // A face of no font at all: the empty face's font could not be changed.
+    hb_blob_t *nothing = hb_blob_create(text, sizeof(text), HB_MEMORY_MODE_READONLY, NULL, NULL);
+    hb_face_t *face = hb_face_create(nothing, 0);
+    hb_font_t *font = hb_font_create(face);
+    hb_font_set_funcs(font, funcs, &destroyed, app_destroy);
+    hb_unicode_funcs_t *unicode = hb_unicode_funcs_create(hb_unicode_funcs_get_default());
+    hb_unicode_funcs_set_general_category_func(unicode, app_category, &destroyed, app_destroy);
+    hb_buffer_t *buffer = hb_buffer_create();
+    hb_buffer_set_unicode_funcs(buffer, unicode);
+    hb_buffer_add_utf8(buffer, "zebkit", -1, 0, -1);
+    hb_buffer_guess_segment_properties(buffer);
+    hb_shape(font, buffer, NULL, 0);
+    unsigned int count = 0;
+    hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(buffer, &count);
+    char detail[64];
+    snprintf(detail, sizeof(detail), "%u glyphs, advance %d, %d calls", count, count ? positions[0].x_advance : 0,
+             app_calls);
+    ok = count == 6 && positions[0].x_advance == 1000 && app_calls >= 12;
+    hb_buffer_destroy(buffer);
+    hb_unicode_funcs_destroy(unicode);
+    hb_font_destroy(font);
+    hb_face_destroy(face);
+    hb_blob_destroy(nothing);
+    hb_font_funcs_destroy(funcs);
+    check(ok && destroyed == 3, "harfbuzz: the application's font, unicode and destroy functions", detail);
+
+    app_calls = 0;
+    struct FT_MemoryRec_ memory = {NULL, app_ft_alloc, app_ft_free, app_ft_realloc};
+    FT_Library library = NULL;
+    ok = FT_New_Library(&memory, &library) == 0;
+    if (ok) {
+        FT_Add_Default_Modules(library);
+        FT_Done_Library(library);
+    }
+    check(ok && app_calls > 0, "freetype: the application's memory functions", NULL);
+}
+
 /* A one-page PDF with "Hello zebkit" on it, its cross-reference table
  * left for PDFium to rebuild. */
 static const char pdf[] =
@@ -434,6 +558,7 @@ int main(int argc, char **argv) {
     test_images();
     test_freetype(argc > 1 ? argv[1] : NULL);
     test_pdfium();
+    test_callbacks();
     printf("%d of %d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

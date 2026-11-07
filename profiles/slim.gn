@@ -22,18 +22,21 @@ use_relative_vtables_abi = true
 # before 2.36 does not (patches/1005-pack-relative-relocations.patch).
 zebkit_pack_relocations = true
 
-# Control Flow Integrity on virtual calls, as official Linux Chrome builds
-# have it. Not for its checks: Chrome's PGO profile (chrome_pgo_phase) was
-# recorded from a CFI build, and the checks are part of each function's
-# control flow, so without them the profile's hashes do not match and
-# Blink's hottest layout functions got no profile at all. With them,
-# 2026-11-03: the DOM 19% faster (346 to 280 ms), text layout 6%, the long
-# document 6%, for 3.1 MB (+1.8% of the package). Calls through function
-# pointers stay unchecked (use_cfi_icall): they reach the application's
-# callbacks, outside the library. macOS and Windows have no CFI in Chrome
-# and no CFI profile; their profiles turn it off.
+# Control Flow Integrity on virtual and indirect calls, as official Linux
+# Chrome builds have it. Not for its checks: Chrome's PGO profile
+# (chrome_pgo_phase) was recorded from a CFI build, and the checks are part
+# of each function's control flow, so without them the profile's hashes do
+# not match and the function gets no profile at all (Blink's hottest layout
+# functions among them). On virtual calls, 2026-11-03: the DOM 19% faster
+# (346 to 280 ms), text layout 6%, the long document 6%, for 3.1 MB (+1.8%
+# of the package). On indirect calls too, 2026-11-06: the DOM's first
+# layout 5%, the DOM again and again 2.5%, for 2.1 MB (+1.15%). The calls
+# that can reach the application's functions stay unchecked: the C API's
+# callbacks, and those the exported libraries (<zebkit/vendor/*.h>) are
+# given (patches/1078). macOS and Windows have no CFI in Chrome and no CFI
+# profile; their profiles turn it off.
 is_cfi = true
-use_cfi_icall = false
+use_cfi_icall = true
 
 # Services of a desktop session the content layer can use and zebkit does
 # not: printers through CUPS, Kerberos sign-on, GNOME's settings, GTK's
@@ -111,11 +114,14 @@ use_on_device_model_service = false
 # (patches/1008-ml-size-inliner-for-linux.patch).
 use_ml_inliner = true
 # Except where the code is hot in the PGO profile: there LLVM's own inliner
-# decides, as on high-end Android (patches/1075). Cold is below the top 90%
-# of the profile's counts. DOM 9% faster (style 19%, bindings 21%), text
-# layout 4%, for 9.7 MB (+5.7% of the package); the model everywhere else
-# keeps the rest as small as before.
-zebkit_ml_inliner_cold_cutoff = 900000
+# decides, as on high-end Android (patches/1075). Cold is below the top
+# 99.9% of the profile's counts. At 90%, 2026-11-02: DOM 9% faster (style
+# 19%, bindings 21%), text layout 4%, for 9.7 MB (+5.7% of the package).
+# At 99.9% once the profile matched (CFI above), 2026-11-06: the DOM's
+# first layout 6%, the DOM again and again 10%, the long document 6%, text
+# layout 2%, for 3.8 MB more (+2.1%); 99% gained less, no model at all no
+# more for twice the size. The model everywhere else keeps the rest small.
+zebkit_ml_inliner_cold_cutoff = 999000
 
 # -Oz in place of -Os for code off the hot path: the browser process's
 # logic, networking, services, device access, the shell's window toolkit,
@@ -165,12 +171,12 @@ zebkit_min_size_patterns = [
 # page goes through. With the model, laying out 20,000 lines of text took a
 # third longer; without it there, as long as before, for 2.4 MiB. Blink's
 # platform library, ICU and HarfBuzz showed no difference.
-# The code that lays out and shapes text at -O2: at -Os Blink laid out
-# text about twice as slowly as Chrome's own build of the same version.
+# The code that lays out text at -O2: at -Os Blink laid out text about
+# twice as slowly as Chrome's own build of the same version. (HarfBuzz,
+# third_party/harfbuzz, is at -O3 by Chromium's own choice.)
 zebkit_max_speed_patterns = [
   "//third_party/blink/renderer/core/*",
   "//third_party/blink/renderer/platform/*",
-  "//third_party/harfbuzz-ng/*",
   # PNG encoding (Skia's encoder in Rust, and its deflate and checksums):
   # at opt-level s a 1280 by 800 screenshot took 68 ms to encode, a frame
   # more than Chrome for every page.screenshot and Page.captureScreenshot.

@@ -1,0 +1,134 @@
+Speed: CFI on indirect calls, but not on those to the application.
+
+Chrome's PGO profile is recorded from a build with CFI on virtual and
+indirect calls; the checks are branches in each function's control flow,
+so a function whose checks are missing gets no profile. Indirect calls are
+checked against the functions of the LTO unit, and a library calls
+functions of the application's: the C API's callbacks, and what an
+application gives the libraries the engine exports. Those call sites, and
+only those, are left unchecked: a list of zebkit's own, beside Chromium's
+tools/cfi/ignores.txt, so that changing it rebuilds only the builds that
+check indirect calls.
+
+diff --git a/build/config/sanitizers/BUILD.gn b/build/config/sanitizers/BUILD.gn
+index 1354d18e31..2bbf5b4660 100644
+--- a/build/config/sanitizers/BUILD.gn
++++ b/build/config/sanitizers/BUILD.gn
+@@ -429,7 +429,11 @@ config("cfi_flags") {
+     }
+ 
+     if (use_cfi_icall) {
+-      cflags += [ "-fsanitize=cfi-icall" ]
++      cflags += [
++        "-fsanitize=cfi-icall",
++        "-fsanitize-ignorelist=" +
++            rebase_path("//tools/cfi/zebkit_icall_ignores.txt", root_build_dir),
++      ]
+       # TODO(crbug.com/40266913): Add cflags += [
+       # "-fsanitize-cfi-icall-experimental-normalize-integers" ]
+       # TODO(crbug.com/40266913): Add rustflags += [
+--- /dev/null
++++ b/tools/cfi/zebkit_icall_ignores.txt
+@@ -0,0 +1,102 @@
++#!special-case-list-v2
++
++# zebkit: the calls through function pointers that can reach the
++# application's functions, which CFI does not know (build/config/sanitizers,
++# with use_cfi_icall; ignores.txt is Chromium's and stays as it is).
++#
++# The engine is a library. Its own code calls the application's callbacks,
++# the function pointers of the C API, and the libraries it exports
++# (<zebkit/vendor/*.h>) call the ones an application gives them:
++# allocators, streams, destroy and font functions, comparators. None is in
++# the engine's LTO unit, so a check on such a call would always fail.
++#
++# Chrome's PGO profile is recorded with these checks, and a function whose
++# checks are missing gets no profile: what is listed is as narrow as the
++# library allows. Where an application's function can be called from almost
++# anywhere in a library (an error handler, an allocator, a stream), the
++# library is listed whole, as it was without the checks.
++#
++# base::BindOnce of a function pointer is already left unchecked by
++# Chromium's fun:*FunctorTraits*, std::function's by its libc++ entries.
++
++[cfi-icall]
++
++# The engine's own code: zebkit's C API, its callbacks and hooks.
++src:*zebkit/engine/*
++src:*zebkit/ffmpeg/*
++
++# ICU: common/ is in Chromium's list. In i18n/, a regular expression's
++# callbacks, an application's UCharIterator and UReplaceable, and the
++# opener udat_registerOpener() installs.
++fun:*RegexMatcher*findProgressInterrupt*
++fun:*RegexMatcher*IncrementTime*
++fun:*RuleBasedCollator*compare*UCharIterator*
++fun:udat_open*
++src:*third_party/icu/source/i18n/uitercollationiterator.cpp
++src:*third_party/icu/source/i18n/utrans.cpp
++
++# HarfBuzz: destroy callbacks, an application's font, unicode, draw and
++# paint functions, its table and table-tag functions, buffer messages.
++# Shaping itself (hb-ot-*) keeps its checks.
++src:*third_party/harfbuzz/src/src/hb-blob.cc
++src:*third_party/harfbuzz/src/src/hb-blob.hh
++src:*third_party/harfbuzz/src/src/hb-object.hh
++src:*third_party/harfbuzz/src/src/hb-draw.cc
++src:*third_party/harfbuzz/src/src/hb-draw.hh
++src:*third_party/harfbuzz/src/src/hb-paint.cc
++src:*third_party/harfbuzz/src/src/hb-paint.hh
++src:*third_party/harfbuzz/src/src/hb-face.hh
++src:*third_party/harfbuzz/src/src/hb-font.hh
++src:*third_party/harfbuzz/src/src/hb-unicode.cc
++src:*third_party/harfbuzz/src/src/hb-unicode.hh
++fun:hb_face_create_for_tables
++fun:hb_face_destroy
++fun:hb_face_set_get_table_tags_func
++fun:hb_face_get_table_tags
++fun:hb_font_destroy
++fun:hb_font_set_funcs
++fun:hb_font_set_funcs_data
++fun:hb_font_funcs_destroy
++fun:hb_font_funcs_set_*_func
++fun:*_hb_font_funcs_set_middle*
++fun:*_hb_font_funcs_set_draw_glyph_func*
++fun:*trampoline*
++fun:*hb_font_draw_glyph_closure_destroy*
++fun:*hb_font_paint_glyph_closure_destroy*
++fun:hb_buffer_set_message_func
++fun:*hb_buffer_t*message_impl*
++
++# FreeType: base/ holds the application's memory, streams, outline
++# functions, finalizers and modules; then a debug hook as the interpreter,
++# and the spans of direct rendering.
++src:*third_party/freetype/src/src/base/*
++src:*third_party/freetype/src/src/gzip/*
++src:*third_party/freetype/src/builds/unix/*
++fun:TT_Run_Context
++fun:gray_sweep_direct
++
++# zlib: an application's zalloc and zfree, and inflateBack's in and out.
++fun:*deflateInit2_
++fun:*deflateEnd
++fun:*deflateCopy
++fun:*inflateInit2_
++fun:*inflateReset2
++fun:*inflateEnd
++fun:*inflateCopy
++fun:updatewindow
++src:*third_party/zlib/infback.c
++
++# Whole libraries, whose application functions are called throughout.
++src:*third_party/zstd/*
++src:*third_party/brotli/*
++src:*third_party/boringssl/*
++src:*third_party/sqlite/*
++src:*third_party/leveldatabase/*
++src:*third_party/libxml/*
++src:*third_party/libwebp/*
++src:*third_party/libjpeg_turbo/*
++src:*third_party/ffmpeg/*
++src:*third_party/dav1d/*
++src:*third_party/opus/*
++src:*third_party/libvpx/*
++src:*third_party/pdfium/*

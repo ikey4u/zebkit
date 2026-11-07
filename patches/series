@@ -56,3 +56,4 @@
 1075-ml-size-inliner-only-where-cold.patch
 1076-max-speed-for-code-asking-chromium-s-optimize.patch
 1077-content-embedder-input-through-the-router.patch
+1078-cfi-icall-not-into-the-application.patch

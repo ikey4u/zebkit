@@ -150,6 +150,52 @@ harness before and after (the commits have the runs):
   of the package). What is left to Chrome (280 against 252 ms on the DOM,
   8.1 against 7.6 on text layout) is mostly size optimisation and the
   checks on indirect calls Chrome's profile also has.
+- **The profile's match, 2026-11-06.** Which functions get Chrome's profile
+  was counted per file (each compiled to IR with the profile-mismatch
+  warnings on, against `slim-chrome`): CFI on indirect calls gave back 7
+  to 9 functions a file in the DOM and layout code (`element.cc` 692 to
+  700 of Chrome's 701), sized deallocation and zeroed locals (both off in
+  Chromium's size configuration) the last one or two. The DOM page runs
+  again and again at Chrome's speed once matched, but the first layout of
+  a fresh page did not. What still differed was the link: the size model
+  inlined wherever the profile called a caller cold, and with the profile
+  now matched, more of the first run's code than before counts as cold.
+  Measured with the same objects linked each way, medians of 11
+  alternating runs on a quiet machine, against Google's Chrome 155:
+
+  | Step, each against the build before it in the same runs | before | after | Chrome 155 |
+  |---|---:|---:|---:|
+  | **CFI on indirect calls** (+2,093,077 bytes, +1.15% of the package) | | | |
+  | DOM, first layout of a fresh page, ms | 243 | 230 | |
+  | DOM, the same again and again, ms a round | 177.7 | 173.2 | |
+  | Long document, longest task, ms | 199 | 198 | |
+  | Text layout, CPU ms a layout | 10.98 | 11.28 | |
+  | **The size model only below 99.9%** (+3,846,144 bytes, +2.08%) | | | |
+  | DOM, first layout of a fresh page, ms | 236 | 222 | 204 |
+  | DOM, the same again and again, ms a round | 179.1 | 161.2 | 174.6 |
+  | Long document, longest task, ms | 204 | 191 | 188 |
+  | Text layout, CPU ms a layout | 11.13 | 10.93 | 10.40 |
+
+  Both were taken: each gains more on the DOM (5% and 3%; 6% and 10%) than
+  it costs in size (1.15%; 2.08%), and the second the long document 6%.
+  Text layout moved within noise. Not taken: sized deallocation
+  with zeroed locals (+1.2%, no difference beyond noise), the size model's
+  cutoff at 99% (+1.2%, less gain), no model at the link at all (+4.2%,
+  no more gain than 99.9%). CFI on indirect calls cannot check a call to
+  a function of the application's, which is outside the library, so
+  `patches/1078` leaves exactly those calls unchecked: zebkit's own C API,
+  the exported libraries' allocators, streams, destroy, font and unicode
+  functions, and whole libraries where an application's function can be
+  called from anywhere (an error handler, an allocator). A first draft
+  that left `base/functional`, HarfBuzz and ICU out whole cost Mojo's and
+  HarfBuzz's shaping code their profile (functions with one in
+  `interface_endpoint_client.cc` 76 to 70, `hb-ot-layout.cc` 147 to 136;
+  an application's font functions still cost `hb-font.cc` its own: 43 to
+  16); Chromium's own list already leaves
+  ICU's common code and `base::BindOnce` of a function pointer unchecked.
+  `tests/engine/vendor.c` calls the libraries with an application's
+  allocators, destroy, font and unicode functions, which a missing entry
+  would stop with a trap.
 - **Moving to Chromium 156** would take Electron's version: about 14 ms
   of the long document's first layout, nothing on the DOM or text layout.
   It is a new pin, the 76 patches carried over and every platform built
