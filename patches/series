@@ -57,3 +57,4 @@
 1076-max-speed-for-code-asking-chromium-s-optimize.patch
 1077-content-embedder-input-through-the-router.patch
 1078-cfi-icall-not-into-the-application.patch
+1079-content-embedder-touch-through-the-touch-emulator.patch

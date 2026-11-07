@@ -1,0 +1,38 @@
+Content: an embedder's touch events through the touch emulator, as DevTools'.
+
+zebkit's automation sends a tap as a touch started and ended
+(content::ForwardTouchEvent, patches/1038). Forwarded to the widget's
+input router, the touches reached the page but no gesture was made of
+them where the view has no gesture recognizer of its own (headless and
+off-screen views): no tap, so no mouse events and no click. DevTools'
+Input.dispatchTouchEvent injects its touches through the widget's
+TouchEmulator in kInjectingTouchEvents mode, whose gesture provider makes
+the taps; this does the same.
+
+--- a/content/browser/zebkit_automation.cc
++++ b/content/browser/zebkit_automation.cc
+@@ -8,6 +8,7 @@
+ #include "base/time/time.h"
+ #include "components/input/render_input_router.h"
+ #include "components/input/render_widget_host_input_event_router.h"
++#include "content/browser/renderer_host/input/touch_emulator_impl.h"
+ #include "content/browser/renderer_host/render_frame_host_impl.h"
+ #include "content/browser/renderer_host/render_widget_host_impl.h"
+ #include "content/browser/renderer_host/render_widget_host_view_base.h"
+@@ -52,9 +53,13 @@
+ 
+ void ForwardTouchEvent(RenderWidgetHost* widget,
+                        const blink::WebTouchEvent& event) {
+-  RenderWidgetHostImpl::From(widget)
+-      ->GetRenderInputRouter()
+-      ->ForwardTouchEventWithLatencyInfo(event, ui::LatencyInfo());
++  // As DevTools' Input.dispatchTouchEvent: through the touch emulator, whose
++  // gesture provider makes the taps of the touches and the clicks of those.
++  RenderWidgetHostImpl* host = RenderWidgetHostImpl::From(widget);
++  TouchEmulatorImpl* emulator = host->GetTouchEmulator(/*create_if_necessary=*/true);
++  emulator->Enable(input::TouchEmulator::Mode::kInjectingTouchEvents,
++                   ui::GestureProviderConfigType::CURRENT_PLATFORM);
++  emulator->InjectTouchEvent(event, host->GetView(), base::OnceClosure());
+ }
+ 
+ void SetGeolocationOverride(WebContents* contents,
