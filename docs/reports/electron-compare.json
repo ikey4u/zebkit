@@ -3,306 +3,306 @@
   "electron": "45.2.1",
   "zebkit_chromium": "155.0.8059.84",
   "size": {
-   "package_bytes": 178379841,
-   "package_xz": 60484256,
-   "package_zip": 81238863,
-   "shipped_bytes": 169526886,
-   "shipped_xz": 59130580,
-   "shipped_zip": 79134323,
+   "package_bytes": 188361622,
+   "package_xz": 63810560,
+   "package_zip": 85465655,
+   "shipped_bytes": 179515374,
+   "shipped_xz": 62292504,
+   "shipped_zip": 83362676,
    "electron_package_bytes": 286672562,
    "electron_package_xz": 93033668,
    "electron_package_zip": 123294647,
    "electron_shipped_bytes": 273161888,
-   "electron_shipped_xz": 91281504,
+   "electron_shipped_xz": 91281512,
    "electron_shipped_zip": 120355379
   }
  },
  "results": {
   "cold.request_ms": {
    "zebkit": [
-    3464.3,
-    3190.0,
-    3770.1
+    5677.9,
+    5463.2,
+    5715.5
    ],
    "electron": [
-    5651.1,
-    5403.8,
-    5794.5
+    5923.2,
+    5723.5,
+    6231.7
    ],
-   "verdict": "zebkit, 39% less"
+   "verdict": "zebkit, 4% less"
   },
   "cold.fcp_ms": {
    "zebkit": [
-    4618.8,
-    4386.8,
-    4934.3
+    7350.2,
+    7062.6,
+    7442.1
    ],
    "electron": [
-    6243.0,
-    5889.3,
-    6343.2
+    6470.4,
+    6349.0,
+    6808.8
    ],
-   "verdict": "zebkit, 26% less"
+   "verdict": "Electron, 12% less"
   },
   "cold.frame_ms": {
    "zebkit": [
-    4604.5,
-    4346.7,
-    4892.7
+    7324.7,
+    6976.7,
+    7380.0
    ],
    "electron": [
-    6282.4,
-    5902.3,
-    6368.9
+    6569.0,
+    6355.5,
+    6847.5
    ],
-   "verdict": "zebkit, 27% less"
+   "verdict": "Electron, 10% less"
   },
   "cold.cpu_s": {
    "zebkit": [
-    0.31,
-    0.29,
-    0.32
+    0.32,
+    0.3,
+    0.34
    ],
    "electron": [
-    0.58,
-    0.56,
-    0.62
+    0.57,
+    0.55,
+    0.61
    ],
-   "verdict": "zebkit, 47% less"
+   "verdict": "zebkit, 44% less"
   },
   "warm.request_ms": {
    "zebkit": [
-    53.7,
-    51.8,
-    55.5
+    52.1,
+    50.6,
+    54.9
    ],
    "electron": [
-    176.9,
-    171.7,
-    184.4
+    180.5,
+    168.3,
+    214.9
    ],
-   "verdict": "zebkit, 70% less"
+   "verdict": "zebkit, 71% less"
   },
   "warm.fcp_ms": {
    "zebkit": [
-    117.4,
-    114.8,
-    121.3
+    114.1,
+    111.4,
+    117.4
    ],
    "electron": [
-    231.7,
-    222.4,
-    237.1
+    237.5,
+    219.7,
+    246.5
    ],
-   "verdict": "zebkit, 49% less"
+   "verdict": "zebkit, 52% less"
   },
   "warm.frame_ms": {
    "zebkit": [
-    115.8,
-    109.6,
-    124.0
+    112.9,
+    101.5,
+    118.0
    ],
    "electron": [
-    229.5,
-    226.2,
-    239.1
+    238.2,
+    217.5,
+    249.4
    ],
-   "verdict": "zebkit, 50% less"
+   "verdict": "zebkit, 53% less"
   },
   "warm.cpu_s": {
    "zebkit": [
     0.22,
-    0.2,
-    0.23
+    0.19,
+    0.24
    ],
    "electron": [
-    0.45,
-    0.45,
-    0.48
+    0.47,
+    0.43,
+    0.53
    ],
-   "verdict": "zebkit, 51% less"
+   "verdict": "zebkit, 53% less"
   },
   "warm.pss_mb": {
    "zebkit": [
-    169.2,
-    169.0,
-    169.7
+    178.3,
+    178.2,
+    178.4
    ],
    "electron": [
-    239.2,
-    237.7,
-    240.0
+    249.2,
+    246.0,
+    249.7
    ],
-   "verdict": "zebkit, 29% less"
+   "verdict": "zebkit, 28% less"
   },
   "layout.layout_ms": {
    "zebkit": [
-    8.6,
-    8.2,
-    8.9
+    8.1,
+    7.5,
+    9.0
    ],
    "electron": [
-    7.8,
-    7.2,
-    8.0
+    7.6,
+    7.1,
+    8.4
    ],
-   "verdict": "Electron, 9% less"
+   "verdict": "Electron, 6% less, within noise"
   },
   "layout.layout_cpu_ms": {
    "zebkit": [
-    12.062,
-    11.592,
-    12.276
+    10.931,
+    10.352,
+    11.996
    ],
    "electron": [
-    10.557,
-    10.308,
-    10.815
+    10.296,
+    9.882,
+    11.622
    ],
-   "verdict": "Electron, 12% less"
+   "verdict": "Electron, 6% less, within noise"
   },
   "js.all": {
    "zebkit": [
-    1278.0,
-    1196.0,
-    1508.0
+    1139.0,
+    1105.0,
+    1422.0
    ],
    "electron": [
-    1166.0,
-    1154.0,
-    1297.0
+    1193.0,
+    1122.0,
+    1393.0
    ],
-   "verdict": "Electron, 9% less, within noise"
+   "verdict": "zebkit, 5% less, within noise"
   },
   "js.loop": {
    "zebkit": [
-    38.0,
-    38.0,
-    188.0
+    41.0,
+    37.0,
+    199.0
    ],
    "electron": [
-    39.0,
     38.0,
-    162.0
+    37.0,
+    183.0
    ],
-   "verdict": "zebkit, 3% less, within noise"
+   "verdict": "Electron, 7% less, within noise"
   },
   "js.objects": {
    "zebkit": [
-    91.0,
-    87.0,
-    132.0
+    92.0,
+    85.0,
+    125.0
    ],
    "electron": [
-    92.0,
-    89.0,
-    104.0
+    88.0,
+    86.0,
+    132.0
    ],
-   "verdict": "zebkit, 1% less, within noise"
+   "verdict": "Electron, 4% less, within noise"
   },
   "js.strings": {
    "zebkit": [
-    26.0,
-    26.0,
+    25.0,
+    24.0,
     28.0
    ],
    "electron": [
     26.0,
-    26.0,
-    27.0
+    25.0,
+    30.0
    ],
-   "verdict": "level"
+   "verdict": "zebkit, 4% less, within noise"
   },
   "js.json": {
    "zebkit": [
-    201.0,
-    196.0,
-    208.0
+    178.0,
+    174.0,
+    217.0
    ],
    "electron": [
-    209.0,
-    204.0,
-    247.0
+    210.0,
+    202.0,
+    233.0
    ],
-   "verdict": "zebkit, 4% less, within noise"
+   "verdict": "zebkit, 15% less, within noise"
   },
   "js.regex": {
    "zebkit": [
-    234.0,
-    227.0,
-    237.0
+    230.0,
+    220.0,
+    246.0
    ],
    "electron": [
-    221.0,
-    214.0,
-    223.0
+    224.0,
+    212.0,
+    243.0
    ],
-   "verdict": "Electron, 6% less"
+   "verdict": "Electron, 3% less, within noise"
   },
   "js.sort": {
    "zebkit": [
-    87.0,
-    84.0,
-    89.0
+    91.0,
+    82.0,
+    106.0
    ],
    "electron": [
+    99.0,
     91.0,
-    86.0,
-    111.0
+    116.0
    ],
-   "verdict": "zebkit, 4% less, within noise"
+   "verdict": "zebkit, 8% less, within noise"
   },
   "js.parse": {
    "zebkit": [
-    44.0,
-    42.0,
-    45.0
+    39.0,
+    37.0,
+    51.0
    ],
    "electron": [
-    45.0,
-    43.0,
-    50.0
+    54.0,
+    41.0,
+    62.0
    ],
-   "verdict": "zebkit, 2% less, within noise"
+   "verdict": "zebkit, 28% less, within noise"
   },
   "js.gc": {
    "zebkit": [
-    122.0,
+    89.0,
     75.0,
-    138.0
+    149.0
    ],
    "electron": [
-    93.0,
-    79.0,
-    127.0
-   ],
-   "verdict": "Electron, 24% less, within noise"
-  },
-  "js.jit": {
-   "zebkit": [
-    59.0,
-    58.0,
-    63.0
-   ],
-   "electron": [
-    58.0,
-    55.0,
-    67.0
+    87.0,
+    80.0,
+    90.0
    ],
    "verdict": "Electron, 2% less, within noise"
   },
-  "js.dom": {
+  "js.jit": {
    "zebkit": [
-    377.0,
-    340.0,
-    403.0
+    56.0,
+    52.0,
+    61.0
    ],
    "electron": [
-    282.0,
-    255.0,
-    284.0
+    59.0,
+    55.0,
+    72.0
    ],
-   "verdict": "Electron, 25% less"
+   "verdict": "zebkit, 5% less, within noise"
+  },
+  "js.dom": {
+   "zebkit": [
+    280.0,
+    270.0,
+    322.0
+   ],
+   "electron": [
+    278.0,
+    261.0,
+    296.0
+   ],
+   "verdict": "Electron, 1% less, within noise"
   },
   "calls.64B_ms": {
    "zebkit": [
@@ -332,65 +332,65 @@
   },
   "calls.1MiB_ms": {
    "zebkit": [
-    3.4,
     3.3,
-    3.5
+    3.2,
+    3.6
    ],
    "electron": [
-    4.4,
     4.3,
-    4.5
+    4.2,
+    4.4
    ],
    "verdict": "zebkit, 23% less"
   },
   "calls.16MiB_ms": {
    "zebkit": [
-    55.6,
-    54.6,
-    57.8
+    58.1,
+    52.2,
+    60.9
    ],
    "electron": [
-    71.3,
-    70,
-    72.1
+    66.3,
+    65.9,
+    75.1
    ],
-   "verdict": "zebkit, 22% less"
+   "verdict": "zebkit, 12% less"
   },
   "document.first_frame_ms": {
    "zebkit": [
-    196,
-    190,
-    201
+    171,
+    166,
+    195
    ],
    "electron": [
-    159,
-    157,
-    170
+    170,
+    168,
+    184
    ],
-   "verdict": "Electron, 19% less"
+   "verdict": "Electron, 1% less, within noise"
   },
   "document.longest_task_ms": {
    "zebkit": [
-    209,
-    208,
-    215
+    189,
+    178,
+    210
    ],
    "electron": [
-    176,
-    174,
-    184
+    184,
+    181,
+    197
    ],
-   "verdict": "Electron, 16% less"
+   "verdict": "Electron, 3% less, within noise"
   },
   "document.frame_p50_ms": {
    "zebkit": [
     16.7,
-    16.6,
-    16.8
+    16.7,
+    16.7
    ],
    "electron": [
     16.7,
-    16.7,
+    16.6,
     16.7
    ],
    "verdict": "level"
@@ -398,67 +398,67 @@
   "document.frame_p95_ms": {
    "zebkit": [
     17.3,
-    17.2,
-    17.5
-   ],
-   "electron": [
     17.3,
-    17.2,
-    17.4
-   ],
-   "verdict": "level"
-  },
-  "document.frame_max_ms": {
-   "zebkit": [
-    17.6,
-    17.6,
-    33.9
+    17.3
    ],
    "electron": [
-    17.7,
-    17.7,
-    21.2
+    17.4,
+    17.3,
+    17.4
    ],
    "verdict": "zebkit, 1% less, within noise"
   },
-  "document.total_cpu_s": {
+  "document.frame_max_ms": {
    "zebkit": [
-    3.45,
-    3.4,
-    3.52
+    17.7,
+    17.6,
+    38
    ],
    "electron": [
-    4.27,
-    3.96,
-    4.39
+    18.1,
+    17.8,
+    29.2
    ],
-   "verdict": "zebkit, 19% less"
+   "verdict": "zebkit, 2% less, within noise"
+  },
+  "document.total_cpu_s": {
+   "zebkit": [
+    3.46,
+    3.42,
+    3.59
+   ],
+   "electron": [
+    4.33,
+    4.06,
+    4.51
+   ],
+   "verdict": "zebkit, 20% less"
   },
   "document.pss_mb": {
    "zebkit": [
-    247.5,
-    247.3,
-    248.1
+    260.2,
+    259.9,
+    260.3
    ],
    "electron": [
-    322.3,
-    321.3,
-    323.3
+    332.7,
+    329.6,
+    333.9
    ],
-   "verdict": "zebkit, 23% less"
+   "verdict": "zebkit, 22% less"
   },
   "page:blank.load_cpu_s": {
    "zebkit": [
-    0.25,
     0.23,
+    0.22,
     0.26
    ],
    "electron": [
-    0.5,
     0.49,
+    0.48,
     0.51
    ],
-   "verdict": "zebkit, 50% less"
+   "verdict": "zebkit, 53% less"
   },
   "page:blank.rest_cpu_pct": {
    "zebkit": [
@@ -469,7 +469,7 @@
    "electron": [
     0.0,
     0.0,
-    0.1
+    0.05
    ],
    "verdict": "level"
   },
@@ -488,16 +488,16 @@
   },
   "page:blank.pss_mb": {
    "zebkit": [
-    167.3,
-    167.2,
-    167.3
+    179.0,
+    178.8,
+    179.3
    ],
    "electron": [
-    239.2,
-    239.1,
-    239.8
+    250.5,
+    249.8,
+    251.0
    ],
-   "verdict": "zebkit, 30% less"
+   "verdict": "zebkit, 29% less"
   },
   "page:blank.processes": {
    "zebkit": [
@@ -527,16 +527,16 @@
   },
   "page:static.load_cpu_s": {
    "zebkit": [
-    0.27,
-    0.27,
+    0.26,
+    0.25,
     0.28
    ],
    "electron": [
-    0.51,
+    0.54,
     0.5,
-    0.53
+    0.54
    ],
-   "verdict": "zebkit, 47% less"
+   "verdict": "zebkit, 52% less"
   },
   "page:static.rest_cpu_pct": {
    "zebkit": [
@@ -545,11 +545,11 @@
     0.0
    ],
    "electron": [
-    0.05,
     0.0,
-    0.1
+    0.0,
+    0.0
    ],
-   "verdict": "zebkit, 100% less, within noise"
+   "verdict": "level"
   },
   "page:static.x_rest_cpu_pct": {
    "zebkit": [
@@ -566,16 +566,16 @@
   },
   "page:static.pss_mb": {
    "zebkit": [
-    173.2,
-    173.0,
-    173.5
+    184.8,
+    184.7,
+    185.4
    ],
    "electron": [
-    245.4,
-    244.7,
-    246.8
+    256.8,
+    254.5,
+    257.3
    ],
-   "verdict": "zebkit, 29% less"
+   "verdict": "zebkit, 28% less"
   },
   "page:static.processes": {
    "zebkit": [
@@ -605,55 +605,55 @@
   },
   "page:animation.load_cpu_s": {
    "zebkit": [
-    0.75,
+    0.74,
     0.71,
-    0.87
+    0.84
    ],
    "electron": [
-    1.01,
-    0.93,
-    1.03
+    0.97,
+    0.96,
+    1.02
    ],
-   "verdict": "zebkit, 26% less"
+   "verdict": "zebkit, 24% less"
   },
   "page:animation.rest_cpu_pct": {
    "zebkit": [
-    5.75,
+    5.06,
     4.91,
-    6.59
+    6.1
    ],
    "electron": [
-    4.81,
-    4.21,
-    5.25
+    5.0,
+    4.76,
+    6.15
    ],
-   "verdict": "Electron, 16% less, within noise"
+   "verdict": "Electron, 1% less, within noise"
   },
   "page:animation.x_rest_cpu_pct": {
    "zebkit": [
-    0.35,
     0.3,
-    0.5
+    0.2,
+    0.45
    ],
    "electron": [
     0.3,
-    0.25,
-    0.3
+    0.3,
+    0.45
    ],
-   "verdict": "Electron, 14% less, within noise"
+   "verdict": "level"
   },
   "page:animation.pss_mb": {
    "zebkit": [
-    179.7,
-    179.7,
-    180.0
+    192.2,
+    192.0,
+    192.4
    ],
    "electron": [
-    249.6,
-    248.3,
-    250.6
+    259.5,
+    257.9,
+    260.7
    ],
-   "verdict": "zebkit, 28% less"
+   "verdict": "zebkit, 26% less"
   },
   "page:animation.processes": {
    "zebkit": [
@@ -683,29 +683,29 @@
   },
   "page:heavy.load_cpu_s": {
    "zebkit": [
-    1.04,
-    1.02,
-    1.08
+    1.0,
+    0.96,
+    1.03
    ],
    "electron": [
-    1.28,
     1.25,
-    1.43
+    1.22,
+    1.35
    ],
-   "verdict": "zebkit, 19% less"
+   "verdict": "zebkit, 20% less"
   },
   "page:heavy.rest_cpu_pct": {
    "zebkit": [
     0.59,
     0.5,
-    0.69
+    0.6
    ],
    "electron": [
-    0.5,
-    0.5,
-    0.64
+    0.64,
+    0.55,
+    0.74
    ],
-   "verdict": "Electron, 15% less, within noise"
+   "verdict": "zebkit, 8% less, within noise"
   },
   "page:heavy.x_rest_cpu_pct": {
    "zebkit": [
@@ -714,24 +714,24 @@
     0.0
    ],
    "electron": [
-    0.05,
     0.0,
-    0.05
+    0.0,
+    0.0
    ],
-   "verdict": "zebkit, 100% less, within noise"
+   "verdict": "level"
   },
   "page:heavy.pss_mb": {
    "zebkit": [
-    324.2,
-    324.1,
-    326.7
+    338.6,
+    338.3,
+    339.0
    ],
    "electron": [
-    396.2,
-    373.6,
-    397.7
+    405.6,
+    404.9,
+    406.8
    ],
-   "verdict": "zebkit, 18% less"
+   "verdict": "zebkit, 17% less"
   },
   "page:heavy.processes": {
    "zebkit": [
@@ -761,16 +761,16 @@
   },
   "page:long-pdf.load_cpu_s": {
    "zebkit": [
-    0.73,
-    0.7,
-    0.75
+    0.75,
+    0.71,
+    0.76
    ],
    "electron": [
-    1.62,
-    1.59,
-    1.65
+    1.6,
+    1.6,
+    1.66
    ],
-   "verdict": "zebkit, 55% less"
+   "verdict": "zebkit, 53% less"
   },
   "page:long-pdf.rest_cpu_pct": {
    "zebkit": [
@@ -781,7 +781,7 @@
    "electron": [
     0.0,
     0.0,
-    0.05
+    0.1
    ],
    "verdict": "level"
   },
@@ -800,16 +800,16 @@
   },
   "page:long-pdf.pss_mb": {
    "zebkit": [
-    248.1,
-    247.6,
-    248.3
+    261.0,
+    260.9,
+    261.4
    ],
    "electron": [
-    389.5,
-    388.6,
-    393.1
+    399.3,
+    398.0,
+    401.5
    ],
-   "verdict": "zebkit, 36% less"
+   "verdict": "zebkit, 35% less"
   },
   "page:long-pdf.processes": {
    "zebkit": [
@@ -840,14 +840,14 @@
   "page:totals": {
    "totals": {
     "zebkit": {
-     "load_cpu_s": 3.04,
-     "rest_cpu_pct": 6.34,
-     "pss_mb": 1092.5
+     "load_cpu_s": 2.98,
+     "rest_cpu_pct": 5.6499999999999995,
+     "pss_mb": 1155.6
     },
     "electron": {
-     "load_cpu_s": 4.92,
-     "rest_cpu_pct": 5.359999999999999,
-     "pss_mb": 1519.9
+     "load_cpu_s": 4.85,
+     "rest_cpu_pct": 5.64,
+     "pss_mb": 1571.7
     }
    },
    "zebkit_wins": {
@@ -859,55 +859,55 @@
   },
   "site:en.wikipedia.org/wiki/Charles_Darwin.load_cpu_s": {
    "zebkit": [
-    1.08,
-    1.01,
-    1.13
+    1.18,
+    1.09,
+    1.25
    ],
    "electron": [
-    1.28,
-    1.23,
-    1.36
+    1.47,
+    1.42,
+    1.67
    ],
-   "verdict": "zebkit, 16% less"
+   "verdict": "zebkit, 20% less"
   },
   "site:en.wikipedia.org/wiki/Charles_Darwin.rest_cpu_pct": {
    "zebkit": [
-    0.05,
-    0.0,
-    0.1
+    2.63,
+    2.53,
+    2.73
    ],
    "electron": [
-    0.0,
-    0.0,
-    0.05
+    2.58,
+    2.43,
+    3.17
    ],
-   "verdict": "Electron, 100% less, within noise"
+   "verdict": "Electron, 2% less, within noise"
   },
   "site:en.wikipedia.org/wiki/Charles_Darwin.x_rest_cpu_pct": {
    "zebkit": [
-    0.0,
-    0.0,
-    0.0
+    0.15,
+    0.1,
+    0.2
    ],
    "electron": [
-    0.0,
-    0.0,
-    0.0
+    0.15,
+    0.1,
+    0.2
    ],
    "verdict": "level"
   },
   "site:en.wikipedia.org/wiki/Charles_Darwin.pss_mb": {
    "zebkit": [
-    279.9,
-    277.8,
-    281.9
+    295.4,
+    294.8,
+    296.1
    ],
    "electron": [
-    336.4,
-    335.0,
-    338.6
+    349.5,
+    347.3,
+    377.9
    ],
-   "verdict": "zebkit, 17% less"
+   "verdict": "zebkit, 15% less"
   },
   "site:en.wikipedia.org/wiki/Charles_Darwin.processes": {
    "zebkit": [
@@ -937,35 +937,35 @@
   },
   "site:www.google.com/.load_cpu_s": {
    "zebkit": [
-    1.26,
-    1.25,
-    1.31
+    1.22,
+    1.13,
+    1.33
    ],
    "electron": [
-    1.51,
-    1.42,
-    1.58
+    1.48,
+    1.45,
+    1.5
    ],
-   "verdict": "zebkit, 17% less"
+   "verdict": "zebkit, 18% less"
   },
   "site:www.google.com/.rest_cpu_pct": {
    "zebkit": [
-    0.4,
-    0.35,
-    0.45
+    0.3,
+    0.2,
+    0.4
    ],
    "electron": [
     0.4,
-    0.35,
+    0.3,
     0.45
    ],
-   "verdict": "level"
+   "verdict": "zebkit, 25% less, within noise"
   },
   "site:www.google.com/.x_rest_cpu_pct": {
    "zebkit": [
     0.0,
     0.0,
-    0.05
+    0.0
    ],
    "electron": [
     0.0,
@@ -976,16 +976,16 @@
   },
   "site:www.google.com/.pss_mb": {
    "zebkit": [
-    245.1,
-    243.7,
-    246.8
+    264.2,
+    260.8,
+    264.6
    ],
    "electron": [
-    309.3,
-    307.6,
-    312.2
+    319.2,
+    316.6,
+    322.6
    ],
-   "verdict": "zebkit, 21% less"
+   "verdict": "zebkit, 17% less"
   },
   "site:www.google.com/.processes": {
    "zebkit": [
@@ -1015,29 +1015,29 @@
   },
   "site:www.youtube.com/.load_cpu_s": {
    "zebkit": [
-    3.48,
-    3.09,
-    3.57
+    4.75,
+    1.39,
+    4.82
    ],
    "electron": [
-    5.2,
-    4.77,
-    5.46
+    4.58,
+    2.21,
+    6.98
    ],
-   "verdict": "zebkit, 33% less"
+   "verdict": "Electron, 4% less, within noise"
   },
   "site:www.youtube.com/.rest_cpu_pct": {
    "zebkit": [
-    1.54,
-    0.84,
-    4.71
+    1.98,
+    1.49,
+    17.75
    ],
    "electron": [
-    3.27,
-    1.98,
-    5.35
+    13.88,
+    2.53,
+    25.62
    ],
-   "verdict": "zebkit, 53% less, within noise"
+   "verdict": "zebkit, 86% less, within noise"
   },
   "site:www.youtube.com/.x_rest_cpu_pct": {
    "zebkit": [
@@ -1048,22 +1048,22 @@
    "electron": [
     0.0,
     0.0,
-    0.0
+    0.05
    ],
    "verdict": "level"
   },
   "site:www.youtube.com/.pss_mb": {
    "zebkit": [
-    484.3,
-    467.9,
-    489.5
+    683.6,
+    677.8,
+    689.5
    ],
    "electron": [
-    548.4,
-    535.9,
-    553.4
+    582.6,
+    560.2,
+    590.8
    ],
-   "verdict": "zebkit, 12% less"
+   "verdict": "Electron, 15% less"
   },
   "site:www.youtube.com/.processes": {
    "zebkit": [
@@ -1072,11 +1072,11 @@
     9
    ],
    "electron": [
-    8,
-    8,
-    8
+    7,
+    7,
+    7
    ],
-   "verdict": "Electron, 11% less"
+   "verdict": "Electron, 22% less"
   },
   "site:www.youtube.com/.renderers": {
    "zebkit": [
@@ -1085,43 +1085,43 @@
     2
    ],
    "electron": [
-    2,
-    2,
-    2
+    1,
+    1,
+    1
    ],
-   "verdict": "level"
+   "verdict": "Electron, 50% less"
   },
   "site:github.com/torvalds/linux.load_cpu_s": {
    "zebkit": [
-    2.73,
-    2.25,
-    2.96
+    2.56,
+    0.55,
+    2.58
    ],
    "electron": [
-    2.96,
-    2.84,
-    3.0
+    2.83,
+    2.7,
+    3.51
    ],
-   "verdict": "zebkit, 8% less, within noise"
+   "verdict": "zebkit, 10% less"
   },
   "site:github.com/torvalds/linux.rest_cpu_pct": {
    "zebkit": [
-    0.05,
-    0.05,
-    2.18
+    0.15,
+    0.0,
+    9.96
    ],
    "electron": [
-    0.15,
-    0.05,
-    0.2
+    0.25,
+    0.1,
+    0.3
    ],
-   "verdict": "zebkit, 67% less, within noise"
+   "verdict": "zebkit, 40% less, within noise"
   },
   "site:github.com/torvalds/linux.x_rest_cpu_pct": {
    "zebkit": [
     0.0,
     0.0,
-    0.0
+    0.15
    ],
    "electron": [
     0.0,
@@ -1132,16 +1132,16 @@
   },
   "site:github.com/torvalds/linux.pss_mb": {
    "zebkit": [
-    332.2,
-    323.5,
-    333.7
+    337.3,
+    328.1,
+    342.3
    ],
    "electron": [
-    392.3,
-    385.7,
-    397.4
+    401.8,
+    398.4,
+    419.1
    ],
-   "verdict": "zebkit, 15% less"
+   "verdict": "zebkit, 16% less"
   },
   "site:github.com/torvalds/linux.processes": {
    "zebkit": [
@@ -1171,68 +1171,68 @@
   },
   "site:www.amazon.com/.load_cpu_s": {
    "zebkit": [
-    0.92,
-    0.39,
-    1.18
+    0.83,
+    0.56,
+    2.66
    ],
    "electron": [
-    1.21,
-    0.75,
-    1.84
+    0.78,
+    0.74,
+    1.56
    ],
-   "verdict": "zebkit, 24% less, within noise"
+   "verdict": "Electron, 6% less, within noise"
   },
   "site:www.amazon.com/.rest_cpu_pct": {
    "zebkit": [
-    35.67,
-    34.73,
-    36.87
+    40.84,
+    27.21,
+    41.69
    ],
    "electron": [
-    46.36,
-    45.44,
-    47.66
+    49.5,
+    39.67,
+    52.51
    ],
-   "verdict": "zebkit, 23% less"
+   "verdict": "zebkit, 17% less, within noise"
   },
   "site:www.amazon.com/.x_rest_cpu_pct": {
    "zebkit": [
-    0.64,
-    0.59,
-    0.69
+    0.54,
+    0.45,
+    0.59
    ],
    "electron": [
-    0.59,
-    0.59,
-    0.64
+    0.55,
+    0.5,
+    0.59
    ],
-   "verdict": "Electron, 8% less, within noise"
+   "verdict": "zebkit, 2% less, within noise"
   },
   "site:www.amazon.com/.pss_mb": {
    "zebkit": [
-    472.4,
-    456.0,
-    484.3
+    524.8,
+    467.8,
+    538.7
    ],
    "electron": [
-    528.5,
-    516.0,
-    534.4
+    578.4,
+    548.5,
+    584.0
    ],
-   "verdict": "zebkit, 11% less"
+   "verdict": "zebkit, 9% less"
   },
   "site:www.amazon.com/.processes": {
    "zebkit": [
-    9,
-    9,
-    9
-   ],
-   "electron": [
     8,
     8,
     8
    ],
-   "verdict": "Electron, 11% less"
+   "electron": [
+    7,
+    7,
+    7
+   ],
+   "verdict": "Electron, 12% less"
   },
   "site:www.amazon.com/.renderers": {
    "zebkit": [
@@ -1249,29 +1249,29 @@
   },
   "site:www.reddit.com/r/programming/.load_cpu_s": {
    "zebkit": [
-    1.49,
-    1.28,
-    1.51
+    1.4,
+    0.2,
+    1.59
    ],
    "electron": [
-    2.72,
-    1.11,
-    3.23
+    2.8,
+    0.57,
+    3.02
    ],
-   "verdict": "zebkit, 45% less, within noise"
+   "verdict": "zebkit, 50% less, within noise"
   },
   "site:www.reddit.com/r/programming/.rest_cpu_pct": {
    "zebkit": [
-    0.74,
-    0.69,
-    1.83
+    1.04,
+    0.84,
+    6.4
    ],
    "electron": [
-    27.21,
-    10.6,
-    34.49
+    12.59,
+    8.38,
+    29.55
    ],
-   "verdict": "zebkit, 97% less"
+   "verdict": "zebkit, 92% less"
   },
   "site:www.reddit.com/r/programming/.x_rest_cpu_pct": {
    "zebkit": [
@@ -1280,7 +1280,7 @@
     0.0
    ],
    "electron": [
-    0.3,
+    0.05,
     0.0,
     0.35
    ],
@@ -1288,16 +1288,16 @@
   },
   "site:www.reddit.com/r/programming/.pss_mb": {
    "zebkit": [
-    334.1,
-    331.6,
-    346.4
+    351.9,
+    349.0,
+    352.9
    ],
    "electron": [
-    603.3,
-    527.8,
-    617.9
+    529.8,
+    494.2,
+    610.7
    ],
-   "verdict": "zebkit, 45% less"
+   "verdict": "zebkit, 34% less"
   },
   "site:www.reddit.com/r/programming/.processes": {
    "zebkit": [
@@ -1306,11 +1306,11 @@
     8
    ],
    "electron": [
-    8,
-    8,
+    7,
+    7,
     8
    ],
-   "verdict": "level"
+   "verdict": "Electron, 12% less, within noise"
   },
   "site:www.reddit.com/r/programming/.renderers": {
    "zebkit": [
@@ -1320,62 +1320,62 @@
    ],
    "electron": [
     2,
-    2,
+    1,
     2
    ],
    "verdict": "level"
   },
   "site:www.nytimes.com/.load_cpu_s": {
    "zebkit": [
-    4.26,
-    3.87,
-    5.75
+    3.51,
+    0.31,
+    3.77
    ],
    "electron": [
-    5.42,
-    0.6,
-    7.07
+    5.36,
+    0.61,
+    6.23
    ],
-   "verdict": "zebkit, 21% less, within noise"
+   "verdict": "zebkit, 35% less, within noise"
   },
   "site:www.nytimes.com/.rest_cpu_pct": {
    "zebkit": [
-    47.84,
-    39.97,
-    48.65
+    47.91,
+    46.66,
+    58.18
    ],
    "electron": [
-    39.22,
-    36.9,
-    62.71
+    46.02,
+    36.43,
+    62.87
    ],
-   "verdict": "Electron, 18% less, within noise"
+   "verdict": "Electron, 4% less, within noise"
   },
   "site:www.nytimes.com/.x_rest_cpu_pct": {
    "zebkit": [
-    0.25,
     0.2,
+    0.15,
     0.25
    ],
    "electron": [
     0.1,
     0.05,
-    0.2
+    0.15
    ],
-   "verdict": "Electron, 60% less, within noise"
+   "verdict": "Electron, 50% less, within noise"
   },
   "site:www.nytimes.com/.pss_mb": {
    "zebkit": [
-    809.3,
-    805.6,
-    828.0
+    811.5,
+    779.0,
+    826.2
    ],
    "electron": [
-    869.2,
-    854.9,
-    933.1
+    930.8,
+    858.9,
+    1007.2
    ],
-   "verdict": "zebkit, 7% less"
+   "verdict": "zebkit, 13% less"
   },
   "site:www.nytimes.com/.processes": {
    "zebkit": [
@@ -1384,11 +1384,11 @@
     21
    ],
    "electron": [
-    21,
-    21,
-    26
+    24,
+    22,
+    30
    ],
-   "verdict": "level"
+   "verdict": "zebkit, 12% less"
   },
   "site:www.nytimes.com/.renderers": {
    "zebkit": [
@@ -1397,193 +1397,193 @@
     14
    ],
    "electron": [
-    15,
-    15,
-    20
+    18,
+    16,
+    24
    ],
-   "verdict": "zebkit, 7% less"
+   "verdict": "zebkit, 22% less"
   },
   "site:www.bbc.com/news.load_cpu_s": {
    "zebkit": [
-    1.95,
     1.91,
-    2.11
+    0.85,
+    2.09
    ],
    "electron": [
-    2.0,
-    1.96,
-    2.21
+    2.18,
+    1.97,
+    2.41
    ],
-   "verdict": "zebkit, 3% less, within noise"
+   "verdict": "zebkit, 12% less, within noise"
   },
   "site:www.bbc.com/news.rest_cpu_pct": {
    "zebkit": [
-    21.5,
-    19.82,
-    22.54
+    19.48,
+    14.82,
+    20.66
    ],
    "electron": [
-    20.07,
-    15.71,
-    23.88
+    19.03,
+    15.26,
+    20.37
    ],
-   "verdict": "Electron, 7% less, within noise"
+   "verdict": "Electron, 2% less, within noise"
   },
   "site:www.bbc.com/news.x_rest_cpu_pct": {
    "zebkit": [
     0.05,
     0.0,
-    0.05
+    0.1
    ],
    "electron": [
-    0.05,
+    0.0,
     0.0,
     0.05
    ],
-   "verdict": "level"
+   "verdict": "Electron, 100% less, within noise"
   },
   "site:www.bbc.com/news.pss_mb": {
    "zebkit": [
-    515.3,
-    486.9,
-    535.0
+    473.9,
+    416.8,
+    501.0
    ],
    "electron": [
-    552.3,
-    492.1,
-    603.9
+    536.3,
+    503.5,
+    576.6
    ],
-   "verdict": "zebkit, 7% less, within noise"
+   "verdict": "zebkit, 12% less"
   },
   "site:www.bbc.com/news.processes": {
    "zebkit": [
-    15,
-    14,
-    16
-   ],
-   "electron": [
-    13,
-    9,
+    12,
+    10,
     15
    ],
-   "verdict": "Electron, 13% less, within noise"
+   "electron": [
+    11,
+    10,
+    13
+   ],
+   "verdict": "Electron, 8% less, within noise"
   },
   "site:www.bbc.com/news.renderers": {
    "zebkit": [
-    9,
-    8,
-    10
+    6,
+    4,
+    9
    ],
    "electron": [
-    8,
-    4,
-    10
+    6,
+    5,
+    8
    ],
-   "verdict": "Electron, 11% less, within noise"
+   "verdict": "level"
   },
   "site:www.theverge.com/.load_cpu_s": {
    "zebkit": [
-    3.44,
-    2.64,
-    3.84
+    3.42,
+    2.96,
+    3.86
    ],
    "electron": [
-    3.73,
-    0.44,
-    4.05
+    3.67,
+    0.45,
+    3.8
    ],
-   "verdict": "zebkit, 8% less, within noise"
+   "verdict": "zebkit, 7% less, within noise"
   },
   "site:www.theverge.com/.rest_cpu_pct": {
    "zebkit": [
-    36.46,
-    32.19,
-    45.47
+    37.0,
+    32.62,
+    40.93
    ],
    "electron": [
-    34.45,
-    24.12,
-    50.28
+    28.91,
+    17.73,
+    37.13
    ],
-   "verdict": "Electron, 6% less, within noise"
+   "verdict": "Electron, 22% less, within noise"
   },
   "site:www.theverge.com/.x_rest_cpu_pct": {
    "zebkit": [
+    0.1,
     0.05,
-    0.0,
-    0.05
+    0.15
    ],
    "electron": [
     0.0,
     0.0,
-    0.1
+    0.05
    ],
    "verdict": "Electron, 100% less, within noise"
   },
   "site:www.theverge.com/.pss_mb": {
    "zebkit": [
-    761.6,
-    752.0,
-    847.6
+    801.4,
+    755.0,
+    833.0
    ],
    "electron": [
-    836.4,
-    761.5,
-    859.5
+    685.7,
+    610.8,
+    816.1
    ],
-   "verdict": "zebkit, 9% less, within noise"
+   "verdict": "Electron, 14% less, within noise"
   },
   "site:www.theverge.com/.processes": {
    "zebkit": [
     16,
-    15,
-    18
+    14,
+    17
    ],
    "electron": [
-    25,
     23,
-    27
+    22,
+    24
    ],
-   "verdict": "zebkit, 36% less"
+   "verdict": "zebkit, 30% less"
   },
   "site:www.theverge.com/.renderers": {
    "zebkit": [
-    9,
+    10,
     8,
     11
    ],
    "electron": [
-    20,
     18,
-    20
+    16,
+    19
    ],
-   "verdict": "zebkit, 55% less"
+   "verdict": "zebkit, 44% less"
   },
   "site:stackoverflow.com/questions/11227809.load_cpu_s": {
    "zebkit": [
-    1.27,
-    0.46,
-    1.54
+    1.29,
+    0.23,
+    1.62
    ],
    "electron": [
-    1.83,
-    1.17,
-    2.0
+    1.69,
+    1.24,
+    2.11
    ],
-   "verdict": "zebkit, 31% less, within noise"
+   "verdict": "zebkit, 24% less, within noise"
   },
   "site:stackoverflow.com/questions/11227809.rest_cpu_pct": {
    "zebkit": [
-    39.67,
-    36.03,
-    44.96
+    34.76,
+    33.6,
+    41.16
    ],
    "electron": [
-    25.21,
-    24.63,
-    44.93
+    23.29,
+    20.92,
+    25.83
    ],
-   "verdict": "Electron, 36% less, within noise"
+   "verdict": "Electron, 33% less"
   },
   "site:stackoverflow.com/questions/11227809.x_rest_cpu_pct": {
    "zebkit": [
@@ -1600,68 +1600,68 @@
   },
   "site:stackoverflow.com/questions/11227809.pss_mb": {
    "zebkit": [
-    688.8,
-    391.7,
-    718.4
+    400.6,
+    346.6,
+    714.2
    ],
    "electron": [
-    606.1,
-    557.6,
-    804.2
+    565.6,
+    545.3,
+    590.3
    ],
-   "verdict": "Electron, 12% less, within noise"
+   "verdict": "zebkit, 29% less, within noise"
   },
   "site:stackoverflow.com/questions/11227809.processes": {
    "zebkit": [
-    20,
-    8,
-    20
+    7,
+    7,
+    18
    ],
    "electron": [
     7,
     7,
-    19
+    16
    ],
-   "verdict": "Electron, 65% less, within noise"
+   "verdict": "level"
   },
   "site:stackoverflow.com/questions/11227809.renderers": {
    "zebkit": [
-    14,
-    2,
-    14
+    1,
+    1,
+    12
    ],
    "electron": [
     2,
     2,
-    14
+    11
    ],
-   "verdict": "Electron, 86% less, within noise"
+   "verdict": "zebkit, 50% less, within noise"
   },
   "site:www.apple.com/.load_cpu_s": {
    "zebkit": [
-    1.3,
-    1.24,
-    1.32
+    1.62,
+    1.56,
+    1.65
    ],
    "electron": [
-    1.49,
-    1.45,
-    1.53
+    1.8,
+    1.8,
+    1.82
    ],
-   "verdict": "zebkit, 13% less"
+   "verdict": "zebkit, 10% less"
   },
   "site:www.apple.com/.rest_cpu_pct": {
    "zebkit": [
-    0.05,
+    0.0,
     0.0,
     0.1
    ],
    "electron": [
-    0.05,
-    0.05,
-    0.1
+    0.1,
+    0.0,
+    0.15
    ],
-   "verdict": "level"
+   "verdict": "zebkit, 100% less, within noise"
   },
   "site:www.apple.com/.x_rest_cpu_pct": {
    "zebkit": [
@@ -1678,16 +1678,16 @@
   },
   "site:www.apple.com/.pss_mb": {
    "zebkit": [
-    304.5,
-    294.9,
-    311.5
+    322.9,
+    321.0,
+    330.3
    ],
    "electron": [
-    347.2,
-    345.2,
-    358.1
+    362.9,
+    359.4,
+    366.1
    ],
-   "verdict": "zebkit, 12% less"
+   "verdict": "zebkit, 11% less"
   },
   "site:www.apple.com/.processes": {
    "zebkit": [
@@ -1717,27 +1717,27 @@
   },
   "site:developer.mozilla.org/en-US/docs/Web/JavaScript.load_cpu_s": {
    "zebkit": [
-    0.76,
-    0.74,
-    0.78
+    0.72,
+    0.7,
+    0.82
    ],
    "electron": [
-    1.0,
-    0.92,
-    1.05
+    1.01,
+    0.97,
+    1.02
    ],
-   "verdict": "zebkit, 24% less"
+   "verdict": "zebkit, 29% less"
   },
   "site:developer.mozilla.org/en-US/docs/Web/JavaScript.rest_cpu_pct": {
    "zebkit": [
     0.0,
     0.0,
-    0.0
+    0.1
    ],
    "electron": [
     0.05,
     0.0,
-    0.2
+    0.05
    ],
    "verdict": "zebkit, 100% less, within noise"
   },
@@ -1756,16 +1756,16 @@
   },
   "site:developer.mozilla.org/en-US/docs/Web/JavaScript.pss_mb": {
    "zebkit": [
-    225.7,
-    225.5,
-    226.4
+    241.5,
+    238.6,
+    243.6
    ],
    "electron": [
-    301.3,
-    299.1,
-    302.9
+    312.8,
+    309.5,
+    313.9
    ],
-   "verdict": "zebkit, 25% less"
+   "verdict": "zebkit, 23% less"
   },
   "site:developer.mozilla.org/en-US/docs/Web/JavaScript.processes": {
    "zebkit": [
@@ -1796,20 +1796,20 @@
   "site:totals": {
    "totals": {
     "zebkit": {
-     "load_cpu_s": 21.18,
-     "rest_cpu_pct": 143.56,
-     "pss_mb": 4430.3
+     "load_cpu_s": 21.72,
+     "rest_cpu_pct": 150.29,
+     "pss_mb": 4756.5
     },
     "electron": {
-     "load_cpu_s": 25.8,
-     "rest_cpu_pct": 144.02,
-     "pss_mb": 5021.3
+     "load_cpu_s": 25.16,
+     "rest_cpu_pct": 160.72,
+     "pss_mb": 5060.0
     }
    },
    "zebkit_wins": {
-    "load_cpu_s": 10,
-    "rest_cpu_pct": 4,
-    "pss_mb": 10
+    "load_cpu_s": 8,
+    "rest_cpu_pct": 6,
+    "pss_mb": 8
    },
    "pages": 10
   }

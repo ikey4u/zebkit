@@ -118,7 +118,9 @@ in `examples/native-host` (Done table). What is left:
   on standard error each time. Without any of them the engine refuses to start, saying
   what to do, instead of Chromium's fatal message. Left: the helper has not been run from
   this package, as the build machine has no root.
-- **Text layout at Chrome's speed.** A chapter of a book takes 4.4 ms of
+- **Text layout at Chrome's speed.** Level with Electron 45.2.1 within
+  noise since 2026-11-06 (8.1 against 7.6 ms, `docs/SIZE_AND_SPEED.md`).
+  Before: a chapter of a book took 4.4 ms of
   CPU to lay out in zebkit `slim` and 3.5 ms in Electron 44.9
   (`scripts/layout-bench.sh`, `docs/SIZE_AND_SPEED.md`). Taken apart on
   2026-10-27: the engines do the same work; `slim`'s code runs slower
@@ -367,14 +369,19 @@ in `examples/native-host` (Done table). What is left:
   the same pages, two thin hosts, every process counted. zebkit wins size,
   startup, memory, CPU while loading and, since 2026-11-02, calls between
   the page and its host (level to 64 KiB, a fifth faster from 1 MiB, over
-  each frame's Mojo channel); it loses the DOM workload (25%), text layout
-  (9%) and the long document's first layout (16 to 19%), which is how the
-  code is compiled, and runs one process more (storage, as Chrome).
+  each frame's Mojo channel); since 2026-11-06 the DOM workload (280
+  against 278 ms), the long document and text layout are level within
+  noise. It runs one process more (storage, as Chrome), and lost the cold
+  start in the run of 2026-11-06 (7.4 against 6.5 s, both slower than on
+  2026-11-02; measured again).
   - **Done 2026-11-02: calls between the page and the host** as fast as
     Electron's IPC, and faster for large ones.
-  - **TODO: the DOM and layout gap**, what the size rule lets the build
-    close: initial-exec thread-locals measured on the DOM, Chrome's
-    compiler settings for more of Blink one directory at a time.
+  - **Done 2026-11-06: the DOM and layout gap**: Chrome's PGO profile
+    matched (CFI on virtual and indirect calls, `patches/1078` keeping the
+    checks off the application's functions) and the size model kept to
+    what the profile calls cold below 99.9%, for 5.1% of the package.
+    Chrome 155 itself is still faster on a fresh page's first DOM layout
+    (204 against 222 ms).
   - **TODO: a headless capture one frame later than Chrome's** over CDP
     (`Page.captureScreenshot`, JPEG too).
   - **TODO: what is left of the conditions below**: one real application
