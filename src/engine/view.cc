@@ -305,6 +305,19 @@ void zebkit_view::InitializeProtocolTarget(const std::string& target) {
       if (weak) MaybeRunDeferredLoad();
       return;
     }
+    // A frame's target attaches inside its navigation's start, as a
+    // prerender's does (below): resumed once the navigation's DevTools
+    // throttle is there, or its commit waits for good.
+    if (protocol_frame_targets_.contains(target)) {
+      FlushTargetCommands(target);
+      if (!weak) return;
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
+          base::BindOnce([](base::WeakPtr<zebkit_view> view, std::string target) {
+            if (view && view->protocol_sessions_.contains(target))
+              view->SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
+          }, weak, target));
+      return;
+    }
     SendTargetCommand(target, "Runtime.runIfWaitingForDebugger", base::DictValue());
     if (!weak) return;
     FlushTargetCommands(target);
