@@ -419,7 +419,8 @@ bool DrawAnnotation(FPDF_PAGE page,
   CFX_DIBitmap::ScopedPremultiplier premultiplier(pixels);
 #endif
   std::unique_ptr<CFX_RenderDevice> device =
-      CFX_RenderDevice::CreateForBitmap(pixels, /*rgb_byte_order=*/true);
+      CFX_RenderDevice::CreateForBitmap(pixels, /*backdrop_bitmap=*/nullptr,
+                                        /*rgb_byte_order=*/true);
   if (!device)
     return false;
   const CFX_Matrix to_device(matrix[0], matrix[1], matrix[2], matrix[3],

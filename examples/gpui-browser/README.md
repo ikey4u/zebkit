@@ -3,7 +3,7 @@
 A tabbed browser whose window, tabs, toolbar, menus, dialogs and
 notifications are [GPUI-KIT](https://github.com/longbridge/gpui-kit)
 components (GPUI, Zed's GPU UI framework, with GPUI Component), and whose
-pages are zebkit's: Chromium 155 inside the application's process and its
+pages are zebkit's: Chromium 157 inside the application's process and its
 event loop.
 
 ![The browser, a Wikipedia page in a tab](../../docs/images/gpui-browser.png)

@@ -34,7 +34,7 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/blink/public/web/web_plugin_params.h"
-#include "third_party/blink/public/web/web_plugin_script_forbidden_scope.h"
+#include "third_party/blink/public/web/web_script_forbidden_scope.h"
 #include "v8/include/v8.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/pdf_viewer_script.h"
@@ -196,7 +196,7 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
 
   void Flush() {
     if (receive_.IsEmpty() || !PluginContainer() ||
-        blink::WebPluginScriptForbiddenScope::IsForbidden()) {
+        blink::WebScriptForbiddenScope::IsForbidden()) {
       return;
     }
     if (!PluginContainer()->GetDocument().IsActive()) {

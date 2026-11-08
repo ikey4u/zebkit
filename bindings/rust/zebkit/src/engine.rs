@@ -272,7 +272,7 @@ pub fn version() -> String {
     unsafe { string_from(sys::zebkit_version()) }.unwrap_or_default()
 }
 
-/// The engine's, as in `"Chromium 155.0.8059.84"`.
+/// The engine's, as in `"Chromium 157.0.8103.38"`.
 pub fn engine_version() -> String {
     unsafe { string_from(sys::zebkit_engine_version()) }.unwrap_or_default()
 }

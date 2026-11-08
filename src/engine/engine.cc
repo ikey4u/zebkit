@@ -964,7 +964,7 @@ bool BrowserClient::CanCreateWindow(
 }
 
 // The product CDP names in /json/version and Browser.getVersion, as
-// Chrome names it ("Chrome/155.0.8059.84"): tools read it to know what they
+// Chrome names it ("Chrome/157.0.8103.38"): tools read it to know what they
 // drive.
 std::string BrowserClient::GetProduct() {
   return std::string(version_info::GetProductNameAndVersionForUserAgent());
@@ -1155,8 +1155,13 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     content::GuestPageHolder* guest_page_holder,
     content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
+  // A proxy's challenge that must not ask anyone (Chromium 157 brings these
+  // here; before, the network service cancelled them): no one is asked.
+  if (do_not_prompt_for_login)
+    return nullptr;
   if (auto delegate = CreateHttpAuthDelegate(auth_info, web_contents, url,
           is_request_for_primary_main_frame_navigation, is_request_for_navigation,
           first_auth_attempt, auth_required_callback)) return delegate;

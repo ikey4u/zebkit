@@ -46,7 +46,7 @@ extern "C" {
 /* zebkit's version, as in "0.1.0". */
 ZEBKIT_API const char *zebkit_version(void);
 
-/* The engine's, as in "Chromium 155.0.8059.84". */
+/* The engine's, as in "Chromium 157.0.8103.38". */
 ZEBKIT_API const char *zebkit_engine_version(void);
 
 /* Frees a string or buffer the engine returned. NULL is ignored. */

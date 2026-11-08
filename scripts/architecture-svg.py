@@ -89,7 +89,7 @@ for i, (a, b) in enumerate(apis):
     rect(x, top + 64, 137, 52, "chip", 8)
     text(x + 12, top + 86, a, "ink", 13, 700, family=MONO)
     text(x + 12, top + 104, b, "muted", 11)
-text(44, top + 144, "Chromium 155, built as a library", "ink", 13, 700)
+text(44, top + 144, "Chromium 157, built as a library", "ink", 13, 700)
 parts = ["content layer", "Blink", "V8 + JIT", "Skia", "compositor", "network stack",
          "DevTools / CDP", "PDFium", "FFmpeg", "ICU", "SQLite", "BoringSSL"]
 for i, p in enumerate(parts):

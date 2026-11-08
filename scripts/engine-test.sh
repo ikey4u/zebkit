@@ -62,6 +62,8 @@
 #   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/automation_python.py: the same through zebkit.automation,
 #   Playwright's async API for Python.
+# - tests/engine/html_in_canvas.py: HTML drawn into a canvas (drawElementImage(),
+#   Chromium 157) in a view's pixels where it is drawn, and its input there.
 # - tests/engine/playwright_connect.mjs: Playwright's own client (Node.js,
 #   playwright-core $PLAYWRIGHT_CORE_VERSION) connected to zebkit's
 #   Playwright endpoint (zebkit_automation_listen, no CDP); skipped when
@@ -686,6 +688,7 @@ run user-agent-native env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/binding
     python3 "$tests/user_agent_native.py"
 run offscreen-scale "$bin/offscreen-scale" "${engine_switches[@]}"
 run automation-python env ZEBKIT_DIR="$package" python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
+run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 pw_node=(node)
 command -v mise > /dev/null && pw_node=(mise exec node@24 -- node)
 engine_test_node_ready=false

@@ -203,6 +203,10 @@ source_set("pdf") {
     "//third_party/boringssl",
     "//third_party/libxml",
     "//third_party/pdfium",
+
+    # PDFium's headers include FreeType's; since Chromium 157 PDFium no
+    # longer passes it on.
+    "//third_party/pdfium:freetype_common",
   ]
 }
 

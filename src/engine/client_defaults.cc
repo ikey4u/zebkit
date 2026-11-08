@@ -351,6 +351,7 @@ class ThrottleProvider : public blink::URLLoaderThrottleProvider {
           base::BindRepeating(
               [](const blink::LocalFrameToken& token,
                  const scoped_refptr<base::SequencedTaskRunner> task_runner,
+                 network::mojom::RequestDestination destination,
                  const std::optional<url::Origin>& initiator,
                  const url::Origin& idp_origin,
                  blink::mojom::IdpSigninStatus status) {

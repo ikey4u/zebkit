@@ -27,7 +27,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   frames handed to you; a full PDF API; saving what a page plays; your own
   URL schemes; native UI from JavaScript; Playwright's API and CDP for
   agents. Use one, or all.
-- **The real Chrome engine.** Pages see Chromium 155: its user agent and
+- **The real Chrome engine.** Pages see Chromium 157: its user agent and
   client hints, `window.chrome`, popups blocked without a click, and
   nothing of a debugger attached (`docs/API.md` has what still differs,
   Google's sign-in among it).
@@ -88,7 +88,7 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 
 | | |
 |---|---|
-| Engine | Chromium 155.0.8059.84 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
+| Engine | Chromium 157.0.8103.38 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
 | Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later), X11 and (`--ozone-platform=wayland`) Wayland: `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |

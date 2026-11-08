@@ -1251,7 +1251,7 @@ void Connection::Initialize(int id) {
   const std::string android = Create("", "Android", base::DictValue());
   const std::string electron = Create("", "Electron", base::DictValue());
   base::DictValue browser;
-  // Playwright's browser.version(): the number ("155.0.8059.84").
+  // Playwright's browser.version(): the number ("157.0.8103.38").
   browser.Set("version", std::string(version_info::GetVersionNumber()));
   browser.Set("name", "chromium");
   browser.Set("browserName", "chromium");
