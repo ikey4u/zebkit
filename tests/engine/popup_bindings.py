@@ -67,7 +67,8 @@ try:
     child.on_close(lambda: closed.append(True))
     child.close()
     wait(lambda: bool(closed), 'adopted child closes')
-    assert evaluate(parent, 'window.child.closed') is True
+    # The opener's process hears of it a moment later, as in Chrome.
+    wait(lambda: evaluate(parent, 'window.child.closed') is True, 'the opener sees the child closed')
     try: child.window_open_info
     except zebkit.Error: pass
     else: raise AssertionError('closed child metadata must reject access')

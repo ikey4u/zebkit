@@ -370,6 +370,7 @@ class Offscreen : public content::WebContentsObserver,
   void PopupShown(content::RenderWidgetHost* popup, const gfx::Rect& screen);
   void CursorChanged(const ui::Cursor& cursor);
   bool Owns(content::RenderWidgetHost* widget);
+  bool IsPopup(content::RenderWidgetHost* widget) const { return widget && widget == popup_; }
 
   zebkit_frame_buffers buffers() const { return buffers_; }
   double fps() const { return fps_; }
@@ -892,14 +893,16 @@ void OnPopupShown(content::WebContents* contents,
 // the view's scale, larger than the view, and sRGB, so that frames are the same
 // bytes on every system (the display's own would be Display P3 on a Mac). Each time
 // the system's changes, so that a change of its scale reaches no view. Under
-// --headless on Linux each view has a display that is all of this.
+// --headless on Linux each view has a display that is all of this, but a popup
+// widget's window takes the scale of the screen's first display, not its view's:
+// the popup's page, laid out at its view's scale, would be cut to a corner.
 void OnScreenInfos(content::RenderWidgetHost* widget, display::ScreenInfos* infos) {
   if (!infos || infos->screen_infos.empty()) return;
-#if BUILDFLAG(IS_LINUX)
-  if (zebkit_is_headless()) return;
-#endif
   for (const auto& [view, offscreen] : Offscreen::All()) {
     if (!offscreen->Owns(widget)) continue;
+#if BUILDFLAG(IS_LINUX)
+    if (zebkit_is_headless() && !offscreen->IsPopup(widget)) return;
+#endif
     auto& current = infos->mutable_current();
     current.device_scale_factor = offscreen->scale();
     gfx::Size screen_size = offscreen->size();

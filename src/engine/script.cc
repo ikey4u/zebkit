@@ -178,6 +178,9 @@ constexpr char kBootstrap[] = R"js((function (native) {
     back() { native.viewBack(this.#id); }
     forward() { native.viewForward(this.#id); }
     resize(width, height) { native.viewResize(this.#id, width, height); }
+    // Focus to the view, as when a person clicks it: a page goes fullscreen
+    // only from a view with focus (zebkit_view_focus).
+    focus() { native.viewFocus(this.#id); }
     setSettings(settings) { return native.viewSettings(this.#id, JSON.stringify(settings)); }
     get settings() { return JSON.parse(native.viewGetSettings(this.#id)); }
     setRuntimeSettings(settings) { return native.viewRuntimeSettings(this.#id, JSON.stringify(settings)); }
@@ -619,7 +622,7 @@ struct zebkit_script {
   static void NetworkStreamCall(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
-  enum class Action { kLoad, kReload, kBack, kForward, kResize, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kRuntimeSettings, kGetRuntimeSettings, kWindowOpenInfo };
+  enum class Action { kLoad, kReload, kBack, kForward, kResize, kFocus, kClose, kUrl, kTitle, kPopupPolicy, kSettings, kGetSettings, kRuntimeSettings, kGetRuntimeSettings, kWindowOpenInfo };
   template <Action action>
   static void ViewAction(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewEvaluate(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -793,6 +796,7 @@ void zebkit_script::Install() {
   SetMethod(native, "viewBack", &ViewAction<Action::kBack>);
   SetMethod(native, "viewForward", &ViewAction<Action::kForward>);
   SetMethod(native, "viewResize", &ViewAction<Action::kResize>);
+  SetMethod(native, "viewFocus", &ViewAction<Action::kFocus>);
   SetMethod(native, "viewPopupPolicy", &ViewAction<Action::kPopupPolicy>);
   SetMethod(native, "viewSettings", &ViewAction<Action::kSettings>);
   SetMethod(native, "viewGetSettings", &ViewAction<Action::kGetSettings>);
@@ -1847,6 +1851,9 @@ void zebkit_script::ViewAction(
         zebkit_view_resize(view, info[1].As<v8::Number>()->Value(),
                            info[2].As<v8::Number>()->Value());
       }
+      break;
+    case Action::kFocus:
+      zebkit_view_focus(view);
       break;
     case Action::kClose:
       zebkit_view_close(view);

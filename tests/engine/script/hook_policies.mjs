@@ -286,6 +286,8 @@ async function fullscreen() {
   await openPage();
   const told = [];
   view.onFullscreen(event => told.push(event));
+  // Since Chromium 157 only a view with focus goes fullscreen.
+  view.focus();
   rejects(() => view.setFullscreenPolicy('sometimes'), 'policy');
   if (mode === 'fullscreen-deny') {
     view.setFullscreenPolicy('deny');

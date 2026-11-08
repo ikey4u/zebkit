@@ -7,6 +7,7 @@ below, `$PKG` is that directory.
 | Example | What it shows |
 |---|---|
 | `window.c` | A small browser window: a page with a back button, a forward button and an address box above it, the bar a script in the page that calls the program through `zebkit.app`. One file for Linux and macOS |
+| `html-in-canvas.html` | HTML in canvas, new in Chromium 157: a form drawn turned into a 2D canvas, with its reflection, that is still a form where it is drawn (its field types, its button submits); open it with `window.c` or any view |
 | `ui/todo.mjs` | An application in JavaScript with native widgets: `zebkit.ui`, Chromium's views driven by signals, no web page (`docs/API.md`, "Native interface") |
 | `pdf-plugin/` | A plugin of the PDF library's hooks, in C (`plugin.c`) and in JavaScript (`plugin.mjs`): a kind of annotation with its own appearance, an undo history from the operations hooks are told of, text for pages without any |
 | `gpui-browser/` | A tabbed browser in GPUI-KIT (Rust): GPUI's window, tabs, toolbar and dialogs; the engine in GPUI's loop, its pages native children of GPUI's window; the engine's questions (dialogs, permissions, downloads, sign-in) answered with GPUI-KIT dialogs |

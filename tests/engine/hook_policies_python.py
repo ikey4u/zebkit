@@ -444,6 +444,8 @@ def fullscreen(mode):
     view, state = opened(BASE + '/page')
     told = []
     view.on_fullscreen(guarded(told.append))
+    # Since Chromium 157 only a view with focus goes fullscreen.
+    view.focus()
     try:
         view.set_fullscreen_policy('sometimes')
     except ValueError:
@@ -1007,6 +1009,7 @@ def two_views(mode):
     assert ev(first, "fetch('/held').then(() => 'passed', () => 'failed')") == 'failed'
     assert ev(second, "fetch('/held').then(() => 'passed', () => 'failed')") == 'passed'
     full = "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)"
+    second.focus()
     assert ev(first, full) == 'TypeError' and ev(second, full) == 'in'
     first.close()
     second.close()

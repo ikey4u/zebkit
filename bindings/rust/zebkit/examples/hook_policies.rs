@@ -362,6 +362,8 @@ fn fullscreen(run: &Run) {
     let told = log();
     let sink = told.clone();
     run.view.on_fullscreen(move |json| sink.borrow_mut().push(json.to_string()));
+    // Since Chromium 157 only a view with focus goes fullscreen.
+    run.view.focus();
     if run.is("fullscreen-deny") {
         assert!(run.view.set_fullscreen_policy(FullscreenPolicy::Deny));
         assert_eq!(ev(&run.view, FULL), "\"TypeError\"");

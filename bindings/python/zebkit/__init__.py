@@ -140,6 +140,7 @@ _view_reload = _declare("zebkit_view_reload", None, _V)
 _view_go_back = _declare("zebkit_view_go_back", None, _V)
 _view_go_forward = _declare("zebkit_view_go_forward", None, _V)
 _view_resize = _declare("zebkit_view_resize", None, _V, _I, _I)
+_view_focus = _declare("zebkit_view_focus", None, _V)
 _AUTHENTICATION = ctypes.CFUNCTYPE(None, _V, _S, _P)
 _view_on_authentication = _declare("zebkit_view_on_authentication", _B, _V, _AUTHENTICATION, _P)
 _view_authentication_action = _declare("zebkit_view_authentication_action", _B, _V, _S)
@@ -760,6 +761,11 @@ class View:
     def detach_native(self):
         """Back to its own window; False when it was in none of the application's."""
         return _view_detach_native(self._check())
+
+    def focus(self):
+        """Focus to the view, as when a person clicks it; a page goes
+        fullscreen only from a view with focus."""
+        _view_focus(self._check())
 
     def set_bounds(self, x, y, width, height):
         """Where an attached view is in its parent."""

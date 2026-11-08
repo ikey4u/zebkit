@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!--
+  HTML in canvas (Chromium 157, https://github.com/WICG/html-in-canvas): a
+  form drawn into a 2D canvas, turned and with its reflection, that stays a
+  form. Type into its field and press its button where they are drawn; the
+  canvas draws them again as they change.
+
+    ./window file://$PWD/examples/html-in-canvas.html     (examples/window.c)
+-->
+<html>
+<meta charset="utf-8">
+<title>HTML in canvas</title>
+<style>
+  body { margin: 0; height: 100vh; display: grid; place-items: center;
+         background: #0b1020; font: 15px system-ui, sans-serif; }
+  canvas { width: 640px; height: 420px; }
+  #card { width: 300px; padding: 20px; border-radius: 14px; background: #f4f5fb;
+          color: #141a2e; box-sizing: border-box; }
+  #card h1 { margin: 0 0 12px; font-size: 20px; }
+  #card input { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit;
+                border: 1px solid #b8bdd6; border-radius: 8px; }
+  #card button { margin-top: 10px; padding: 8px 16px; font: inherit; color: white;
+                 background: #7c5cff; border: 0; border-radius: 8px; }
+  #card p { margin: 10px 0 0; color: #5a6080; min-height: 1.2em; }
+</style>
+<canvas id=canvas width=640 height=420 content=drawable>
+  <form drawable id=card>
+    <h1>Drawn, and still a form</h1>
+    <input id=who placeholder="Your name" autocomplete=off>
+    <button>Say hello</button>
+    <p id=out></p>
+  </form>
+</canvas>
+<script>
+  const context = canvas.getContext('2d');
+  let angle = -0.08;
+
+  canvas.addEventListener('paint', () => {
+    context.reset();
+    // The card, turned a little about its middle: its field and button are
+    // where they are drawn, for the mouse and for the keyboard's caret.
+    context.translate(320, 150);
+    context.rotate(angle);
+    context.drawElementImage(card, -150, -100);
+    // Its reflection, below it: only pixels, the element is drawn once more.
+    context.setTransform(1, 0, 0, -0.45, 0, 0);
+    context.translate(320, -690);
+    context.rotate(angle);
+    context.globalAlpha = 0.25;
+    context.drawElementImage(card, -150, -100, {preserveElementGeometry: true});
+  });
+
+  card.addEventListener('submit', (event) => {
+    event.preventDefault();
+    out.textContent = who.value ? `Hello, ${who.value}.` : 'A name first.';
+    angle = -angle;
+    canvas.requestPaint();
+  });
+  // Typing changes the card: draw it again.
+  who.addEventListener('input', () => canvas.requestPaint());
+</script>
+</html>

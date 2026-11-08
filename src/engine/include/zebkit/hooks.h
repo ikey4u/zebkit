@@ -412,7 +412,9 @@ ZEBKIT_API void zebkit_view_on_context_menu(zebkit_view*, zebkit_context_menu_fu
 
 /* Whether a page may go fullscreen; allowed by default. Denying leaves fullscreen if
  * the page is in it. A popup takes its opener's policy until it has its own, and is
- * denied once that opener has closed. Told asynchronously: entered.
+ * denied once that opener has closed. Told asynchronously: entered. As in Chrome,
+ * a page goes fullscreen only from a user gesture in a view with focus
+ * (zebkit_view_focus(), or a person's click).
  */
 typedef enum zebkit_fullscreen_policy {
     ZEBKIT_FULLSCREEN_ALLOW = 0,

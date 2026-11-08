@@ -456,6 +456,9 @@ static void menu(void) {
 static void fullscreen(void) {
     open_page();
     zebkit_view_on_fullscreen(view, note, NULL);
+    /* Since Chromium 157 only a view with focus goes fullscreen, as when a
+       person clicks the page. */
+    zebkit_view_focus(view);
     CHECK(!zebkit_view_set_fullscreen_policy(view, (zebkit_fullscreen_policy)7));
     if (IS("fullscreen-deny")) {
         CHECK(zebkit_view_set_fullscreen_policy(view, ZEBKIT_FULLSCREEN_DENY));

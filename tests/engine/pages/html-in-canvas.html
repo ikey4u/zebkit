@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<title>HTML in canvas</title>
+<style>
+  body { margin: 0; background: #fff; }
+  #canvas { display: block; width: 300px; height: 200px; background: rgb(128, 128, 128); }
+  #card { width: 120px; height: 80px; margin: 0; padding: 0; background: rgb(0, 160, 0); }
+  #go { display: block; width: 120px; height: 80px; margin: 0; border: 0; padding: 0;
+        background: rgb(0, 160, 0); color: rgb(0, 160, 0); font: 10px sans-serif; }
+</style>
+<!-- A button drawn into a 2D canvas by drawElementImage(): it stays a button,
+     its clicks reach it where it is drawn (tests/engine/html_in_canvas.py). -->
+<canvas id=canvas width=300 height=200 content=drawable>
+  <div drawable id=card><button id=go>Go</button></div>
+</canvas>
+<script>
+  window.clicks = 0;
+  window.painted = 0;
+  go.addEventListener('click', () => { window.clicks++; });
+  canvas.addEventListener('paint', () => {
+    const context = canvas.getContext('2d');
+    context.reset();
+    context.drawElementImage(card, 60, 50);
+    window.painted++;
+  });
+  canvas.requestPaint();
+</script>
+</html>
