@@ -2,7 +2,8 @@ Windows: the slim profile's build, without Dawn.
 
 Chrome always has Dawn on Windows; the slim profile has none (patches/0013 did
 the same for macOS). gpu_init.cc and the D3D backing factory named its context
-provider without the build flag the other platforms have. And WebNN's ONNX
+provider without the build flag the other platforms have, as do, since 157,
+gpu_init_win.cc and GpuInit2 (gpu_init_2.cc), which share its Windows code. And WebNN's ONNX
 Runtime back end, which is Windows' alone, uses fp16 without depending on it,
 so its include path is not there unless another back end brings it.
 
@@ -73,3 +74,56 @@ so its include path is not there unless another back end brings it.
        "//third_party/windows_app_sdk_headers",
      ]
  
+--- a/gpu/ipc/service/gpu_init_2.cc
++++ b/gpu/ipc/service/gpu_init_2.cc
+@@ -712,7 +712,11 @@ bool GpuInit2::InitializeAndStartSandbox(
+   }
+ 
+ #if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(SKIA_USE_DAWN)
+   gpu_init_internal::InitializeDirectComposition(dawn_context_provider_.get());
++#else
++  gpu_init_internal::InitializeDirectComposition(nullptr);
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+   InitializePlatformOverlaySettings(&gpu_info_, gpu_feature_info_);
+--- a/gpu/ipc/service/gpu_init_win.cc
++++ b/gpu/ipc/service/gpu_init_win.cc
+@@ -48,8 +48,11 @@ bool PreloadDLLs(const base::CommandLine* command_line,
+   // - DefaultForceFallbackAdapter() covers Graphite/Dawn using
+   //   SwiftShader via --skia-graphite-dawn-backend=swiftshader.
+   if (features::IsSwiftShaderAllowed(command_line) ||
+-      gpu_preferences.use_webgpu_adapter == WebGPUAdapterName::kSwiftShader ||
+-      DawnContextProvider::DefaultForceFallbackAdapter()) {
++      gpu_preferences.use_webgpu_adapter == WebGPUAdapterName::kSwiftShader
++#if BUILDFLAG(SKIA_USE_DAWN)
++      || DawnContextProvider::DefaultForceFallbackAdapter()
++#endif
++  ) {
+     TRACE_EVENT("gpu,startup", "Load vk_swiftshader.dll");
+     base::LoadNativeLibrary(module_path.Append(L"vk_swiftshader.dll"), nullptr);
+   }
+@@ -80,10 +83,10 @@ void InitializeDirectComposition(DawnContextProvider* dawn_context_provider) {
+   Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device;
+   Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue;
+   gl::SolidColorPoolFactory solid_color_factory;
++#if BUILDFLAG(SKIA_USE_DAWN)
+   if (dawn_context_provider) {
+     d3d11_device = dawn_context_provider->GetD3D11Device();
+     d3d12_command_queue = dawn_context_provider->GetD3D12CommandQueue();
+-#if BUILDFLAG(SKIA_USE_DAWN)
+     // When Skia is on Graphite-D3D12, use Dawn (the same `wgpu::Device`
+     // and `ID3D12CommandQueue` Skia is using) to fill solid-color
+     // overlays.
+@@ -92,8 +95,9 @@ void InitializeDirectComposition(DawnContextProvider* dawn_context_provider) {
+       solid_color_factory = CreateDawnTextureSolidColorPoolFactory(
+           dawn_context_provider->GetDevice(), d3d12_command_queue);
+     }
++  } else
+ #endif  // BUILDFLAG(SKIA_USE_DAWN)
+-  } else {
++  {
+     d3d11_device = gl::QueryD3D11DeviceObjectFromANGLE();
+   }
+   if (!solid_color_factory) {

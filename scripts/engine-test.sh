@@ -64,6 +64,8 @@
 #   Playwright's async API for Python.
 # - tests/engine/html_in_canvas.py: HTML drawn into a canvas (drawElementImage(),
 #   Chromium 157) in a view's pixels where it is drawn, and its input there.
+# - tests/engine/system_locale.py: the page's locale the system's (LANG, on
+#   Linux), and en-US where it has none.
 # - tests/engine/playwright_connect.mjs: Playwright's own client (Node.js,
 #   playwright-core $PLAYWRIGHT_CORE_VERSION) connected to zebkit's
 #   Playwright endpoint (zebkit_automation_listen, no CDP); skipped when
@@ -695,6 +697,13 @@ run user-agent-native env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/binding
 run offscreen-scale "$bin/offscreen-scale" "${engine_switches[@]}"
 run automation-python env ZEBKIT_DIR="$package" python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
+if [[ "$ZEBKIT_HOST" == linux ]]; then
+    # LANG is the system's locale on Linux only; macOS and Windows have the user's settings.
+    run system-locale env ZEBKIT_DIR="$package" LANG=ja_JP.UTF-8 LC_ALL=ja_JP.UTF-8 \
+        python3 -I "$tests/system_locale.py" ja-JP "${engine_switches[@]/profile/profile-locale-ja}"
+    run system-locale-none env ZEBKIT_DIR="$package" LANG=C LC_ALL=C \
+        python3 -I "$tests/system_locale.py" en-US "${engine_switches[@]/profile/profile-locale-c}"
+fi
 pw_node=(node)
 command -v mise > /dev/null && pw_node=(mise exec node@24 -- node)
 engine_test_node_ready=false

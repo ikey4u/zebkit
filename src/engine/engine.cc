@@ -55,7 +55,6 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/i18n/rtl.h"
 #include "base/logging.h"
 #include "base/logging/logging_settings.h"
 #include "base/json/json_writer.h"
@@ -698,12 +697,8 @@ void ContentClient::AddPlugins(std::vector<content::WebPluginInfo>* plugins) {
 }
 
 void RendererClient::RenderThreadStarted() {
-#if BUILDFLAG(IS_WIN)
-  // ICU found the system's locale, base's copy of it still says en-US until told
-  // (Chrome tells it in l10n_util): a cleared Emulation.setLocaleOverride goes to
-  // that copy (LocaleController).
-  base::i18n::SetICUDefaultLocale(base::i18n::GetConfiguredLocale());
-#endif
+  // The page's locale is the system's, from base's first default ICU locale
+  // (patches/1083), as Chrome's from l10n_util.
   RegisterSchemesInRenderer();
 }
 

@@ -1,0 +1,69 @@
+The system's locale as base's first default ICU locale, not en-US.
+
+Chromium 157 keeps the default ICU locale in base
+(base/i18n/icubridge/default_icu_locale.cc), which, the first time anything
+asks, sets ICU's default to en-US until the embedder says otherwise; only
+callers holding its pass key may, and Chrome says so in every process from
+l10n_util, which needs Chrome's locale packs. zebkit has none of those, and
+pages (Intl, navigator.language, Accept-Language) were in en-US on every
+system, where 155 followed ICU's (LANG and LC_* on Linux, the user's locale
+on macOS and Windows). Starting from ICU's own default restores that; en-US
+stays the default where the system has none (C, POSIX). A cleared
+Emulation.setLocaleOverride returns to it too (LocaleController).
+
+ICU's initialization (icu_util.cc) checked that the default is en-US when it
+first asks for it, which with the system's as the first default it is not on
+most systems; it now only makes that first call.
+
+diff --git a/base/i18n/icu_util.cc b/base/i18n/icu_util.cc
+index ebcbcaade9..c712459d92 100644
+--- a/base/i18n/icu_util.cc
++++ b/base/i18n/icu_util.cc
+@@ -375,13 +375,9 @@ bool DoCommonInitialization() {
+                << u_errorName(status);
+   }
+ 
+-  // This is supposed to be the first time `GetDefaultIcuLocale()` is called and
+-  // therefore, its initial "en-US" locale should be returned here.
+-  if (GetDefaultIcuLocale() != GetKnownLanguageTag("en-US")) {
+-    LOG(FATAL) << "ICU has been initialized but the default locale is not "
+-                  "en-US. The current default locale is: "
+-               << GetDefaultIcuLocale();
+-  }
++  // The first call of `GetDefaultIcuLocale()`, which sets the initial default:
++  // the system's locale, en-US without one (default_icu_locale.cc).
++  GetDefaultIcuLocale();
+ 
+   InitializeIcuTimeZone();
+   utrace_setLevel(UTRACE_VERBOSE);
+diff --git a/base/i18n/icubridge/default_icu_locale.cc b/base/i18n/icubridge/default_icu_locale.cc
+index 72d0c39326..4135ecb898 100644
+--- a/base/i18n/icubridge/default_icu_locale.cc
++++ b/base/i18n/icubridge/default_icu_locale.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "base/i18n/icubridge/default_icu_locale.h"
+ 
++#include <string_view>
++
+ #include "base/check.h"
+ #include "base/i18n/icu4c_tag_converter.h"  // nogncheck
+ #include "base/i18n/language_tag.h"
+@@ -25,8 +27,15 @@ namespace {
+ 
+ ThreadSafeLocaleHolder& GetLocaleHolder() {
+   static base::NoDestructor<ThreadSafeLocaleHolder> holder([]() {
+-    // The "en-US" locale here is used as the initial default so this is never
+-    // in a uninitialized state.
++    // The system's locale, as ICU found it, is the initial default; "en-US"
++    // when it has none, so that this is never in a uninitialized state.
++    const icu::Locale& system = icu::Locale::getDefault();
++    const std::string_view language(system.getLanguage());
++    if (!system.isBogus() && !language.empty() && language != "c" &&
++        language != "posix" && language != "und" &&
++        std::string_view(system.getVariant()) != "POSIX") {
++      return IcuLocaleConverter::GetInstance().ToLanguageTag(system);
++    }
+     UErrorCode error_code = U_ZERO_ERROR;
+     icu::Locale::setDefault(icu::Locale::getUS(), error_code);
+     CHECK(U_SUCCESS(error_code));
