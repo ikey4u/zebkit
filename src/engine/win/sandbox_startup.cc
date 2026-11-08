@@ -55,6 +55,9 @@ namespace logging::internal {
 void init_rust_logging() noexcept {
   StubReached("zebkit_sandbox.lib: init_rust_logging reached\n");
 }
+void update_rust_log_level(std::int32_t) noexcept {
+  StubReached("zebkit_sandbox.lib: update_rust_log_level reached\n");
+}
 }  // namespace logging::internal
 namespace serde_json_lenient {
 bool decode_json(::rust::Slice<const ::std::uint8_t>,
