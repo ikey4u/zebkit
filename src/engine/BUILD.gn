@@ -399,6 +399,8 @@ _sources = [
   "speech_delegate.cc",
   "speech_delegate.h",
   "window.cc",
+  "appearance.cc",
+  "appearance.h",
   "window_api.cc",
   "window_options.cc",
   "window_options.h",

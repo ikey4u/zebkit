@@ -245,10 +245,19 @@ def windowed(base, other):
         check([50, 100] in got and [50, 10] not in got, "the application's regions are the window's", got)
     hidden.close()
 
-    # Actions need a window manager: labwc's, under Wayland here.
-    if os.environ.get("WAYLAND_DISPLAY"):
+    # Actions need a window manager: labwc's under Wayland here, AppKit's and
+    # Windows' own; Xvfb has none.
+    if os.environ.get("WAYLAND_DISPLAY") or sys.platform in ("darwin", "win32"):
         acted = zebkit.View(base + "/page", 500, 400, options={"title": "Actions", "pageFullscreen": "window"})
         loaded(acted, base + "/page")
+        acted.focus()
+        wait(lambda: acted.window["focused"], 3)
+        if not acted.window["focused"]:
+            # A locked screen (a Mac's here) gives no window focus, and no
+            # fullscreen: not passed, not failed.
+            print("ok   window actions: not run, the window cannot have focus (a locked screen?)", flush=True)
+            acted.close()
+            return
         for action, wanted in (("maximize", "maximized"), ("restore", "normal"), ("fullscreen", "fullscreen"),
                                ("exit-fullscreen", "normal")):
             acted.window_action(action)

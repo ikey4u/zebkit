@@ -285,6 +285,55 @@ follows them. FreeType's macro header names use package-qualified paths,
 so `#include FT_OUTLINE_H` works with the package's include directory alone.
 The shipped configuration headers match the engine's build.
 
+## The window: `<zebkit/window.h>`
+
+A view's window made with options before the system's window exists, its
+frame, state, actions, events and the regions it is dragged from. The design
+and its reasons are `docs/SYSTEM_INTEGRATION.md`, section 7; `examples/custom-titlebar/`
+is a page in the title bar.
+
+| C | Python | Rust | host JavaScript |
+|---|---|---|---|
+| `zebkit_view_new_with_options(context, url, options_json, &error)` | `View(url, w, h, options={...})` | `View::new_with_options(url, json)` | `new zebkit.View(url, {width, height, window: {...}})` |
+| `zebkit_view_get_window(view)` | `view.window` | `view.window()` | `view.window` |
+| `zebkit_view_set_window(view, json, &error)` | `view.set_window({...})` | `view.set_window(json)` | `view.setWindow({...})` |
+| `zebkit_view_window_action(view, action, &error)` | `view.window_action(name)` | `view.window_action(name)` | `view.windowAction(name)` |
+| `zebkit_view_on_window_state(view, func, data)` | `view.on_window_state(fn)` | `view.on_window_state(fn)` | `view.on('window-state', fn)` |
+| `zebkit_view_set_drag_regions(view, json, &error)` | `view.set_drag_regions([...])` | `view.set_drag_regions(json)` | `view.setDragRegions([...])` |
+| `zebkit_view_set_popup_window_options(view, json, &error)` | `view.set_popup_window_options({...})` | `view.set_popup_window_options(Some(json))` | `view.setPopupWindowOptions({...})` |
+| `zebkit_get_capabilities()` | `zebkit.capabilities()` | `zebkit::capabilities()` | `zebkit.capabilities()` |
+
+The options, all optional; those marked *creation* are fixed once the window
+is made, and changing them later fails with `requires-recreate`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `width`, `height` *creation* | the engine's size | the content area, in DIPs |
+| `frame` *creation* | `"system"` | `"system"`; `"overlay"`: the page from the window's top with the window's buttons over it, as an installed web app's Window Controls Overlay (`navigator.windowControlsOverlay`, `env(titlebar-area-x/-y/-width/-height)`, `@media (display-mode: window-controls-overlay)`); `"none"`: no title bar and no buttons, resize edges kept |
+| `fallback` *creation* | `"error"` | `"system"`: where the system cannot give the frame, its own frame; the state says which |
+| `show` *creation* | `true` | `false`: made hidden and not activated, until the `show` action |
+| `minWidth`, `minHeight`, `resizable` | none, `true` | as `zebkit_view_set_size_limits()` |
+| `x`, `y` | the system's place | the window's top left on the screen; refused on Wayland, where the compositor places windows |
+| `title` | the page's | the window's title; `null` for the page's again |
+| `controls` | the system's | `{height, color, symbolColor}`: the title bar area's height in an overlay, and the colours of the buttons the engine draws on Windows and Linux (macOS draws its own; its taller title bars are the system's unified toolbar styles) |
+| `background` | the toolkit's | `"#rrggbb"`: the window before the page's first frame, and under a transparent page |
+| `appearance` | `"system"` | `"light"`, `"dark"`: the frame's look, not the page's `prefers-color-scheme` |
+| `pageFullscreen` | `"content"` | `"window"`: a page's `requestFullscreen()` makes the window fullscreen, as in Chrome |
+| `dragRegions` | none | `{source: "css", origins: [...]}`: the page's `app-region: drag` and `no-drag`, while its main frame is of one of those origins (iframes never count, a document of another origin has none); `{source: "host"}`: `zebkit_view_set_drag_regions()` |
+
+The state, from `zebkit_view_get_window()` and with every event: `revision`,
+`owner` (`engine`; `view` or `application` for a view in another's window,
+whose actions are refused; `none` without a window), `state` (`normal`,
+`minimized`, `maximized`, `fullscreen`), `pageFullscreen`, `visible`,
+`focused`, `bounds` (screen DIPs, with the frame), `content`, `scale`,
+`frame` `{requested, effective}`, `titlebarArea` (what the page has as
+`env(titlebar-area-*)`), `controls` (the buttons' rectangles over the page,
+content DIPs), `capabilities`, `options` `{explicit}`. An action's `true`
+means asked; the state event says what the system did. A press in a drag
+region is the system's drag (snapping, the system menu on Windows, moving
+on Wayland from the press itself); a double click there does what the
+system's title bar does.
+
 ## Runtime view preferences
 
 `<zebkit/hooks.h>` has `zebkit_view_set_settings(view, json, &error)` and

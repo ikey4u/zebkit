@@ -62,6 +62,8 @@
 #   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/automation_python.py: the same through zebkit.automation,
 #   Playwright's async API for Python.
+# - tests/engine/appearance.py: pages following the system's colour scheme (appearance.follow),
+#   on Linux through a fake XDG portal (fake_portal.py).
 # - tests/engine/window_frame.py: <zebkit/window.h>: options before the window, frames,
 #   the title bar area the page sees, drag regions against real clicks, state and events.
 # - tests/engine/system_holes.py: File System Access through the file chooser hook
@@ -526,6 +528,8 @@ if [[ -x "$bin/native-parent" ]]; then
                 "$bin/native-window" --no-sandbox --user-data-dir="$work/profile-native-window-x11"
             run native-window-javascript env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/tools/zebkit-js" \
                 --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
+            run menu-state-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/menu_state.py" --no-sandbox --user-data-dir="$work/profile-menu-x11"
             run window-frame-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 python3 -I "$tests/window_frame.py" --no-sandbox --user-data-dir="$work/profile-window-frame-x11"
             run system-holes-window env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
@@ -597,6 +601,11 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent"
         finished native-parent "the attached view's test"
         run gpu-status-window python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" --no-sandbox --user-data-dir="$work/profile-gpu-window"
+        # <zebkit/window.h> in AppKit windows, the system's actions included.
+        run window-frame-mac env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" \
+            --no-sandbox --user-data-dir="$work/profile-window-frame-mac"
+        run system-holes-mac env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" \
+            --no-sandbox --user-data-dir="$work/profile-holes-mac"
         # The AppKit host, its application and run loop its own: the panes' picture.
         run native-host-appkit "$bin/native-host-appkit" --no-sandbox --user-data-dir="$work/profile-appkit" \
             --url="data:text/html,<body style='background:%2312a456'>" --pdf="$ZEBKIT_ROOT/examples/native-host/sample.pdf" \
@@ -634,6 +643,11 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
         run win-webauthn python3 "$tests/win_webauthn.py" "$webauthn_host" --no-sandbox
         run win-native-parent "$bin/win-native-parent" --no-sandbox --user-data-dir="$work/profile-win-native-parent"
+        # <zebkit/window.h> in Win32 windows, the system's actions included.
+        run window-frame-win env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" \
+            --no-sandbox --user-data-dir="$work/profile-window-frame-win"
+        run system-holes-win env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" \
+            --no-sandbox --user-data-dir="$work/profile-holes-win"
         finished win-native-parent "the attached view's test"
         run win-native-parent-sandbox "$package/win-native-parent-sandbox" --user-data-dir="$work/profile-win-native-parent-sandbox"
         finished win-native-parent-sandbox "the attached view's test, in the sandbox"
@@ -717,6 +731,19 @@ run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.p
 # What reached the system without the application's decision: File System Access,
 # protocol handlers, pointer and keyboard lock (docs/SYSTEM_INTEGRATION.md, phase 2).
 run system-holes env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" "${engine_switches[@]/profile/profile-holes}"
+# The menu's items' state by id (docs/SYSTEM_INTEGRATION.md, 8).
+run menu-state env ZEBKIT_DIR="$package" python3 -I "$tests/menu_state.py" "${engine_switches[@]/profile/profile-menu}"
+# Accessibility trees when an assistive technology asks (macOS: AXManualAccessibility).
+run accessibility env ZEBKIT_DIR="$package" python3 -I "$tests/accessibility.py" "${engine_switches[@]/profile/profile-a11y}"
+# Pages following the system's appearance: a fake XDG portal on a private bus (Linux).
+if [[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && python3 -c "import dbus.mainloop.glib" 2> /dev/null; then
+    run appearance-follow env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/appearance.py" follow \
+        "${engine_switches[@]/profile/profile-appearance}"
+    run appearance-fixed env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/appearance.py" fixed \
+        "${engine_switches[@]/profile/profile-appearance-fixed}"
+else
+    log "appearance: skipped (no dbus-run-session or dbus-python)"
+fi
 # A view's window made with options (<zebkit/window.h>): without a window here,
 # with one under Xvfb and labwc below.
 run window-frame env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" "${engine_switches[@]/profile/profile-window-frame}"

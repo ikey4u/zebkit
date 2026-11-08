@@ -193,8 +193,9 @@ class NativePlatform : public WindowPlatform {
   }
 
   void ResizeContents(Window* window, const gfx::Size& content_size) override {
-    windows_[window].window.contentView.frame =
-        NSMakeRect(0, 0, content_size.width(), content_size.height());
+    // The window's content area that size, its frame around it: the content
+    // view's frame alone left the window as it was.
+    [windows_[window].window setContentSize:NSMakeSize(content_size.width(), content_size.height())];
   }
 
   void SetTitle(Window* window, const std::u16string& title) override {

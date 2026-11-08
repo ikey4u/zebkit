@@ -9,6 +9,12 @@
 #include "content/public/browser/native_event_processor_mac.h"
 #include "content/public/browser/native_event_processor_observer_mac.h"
 
+#include <memory>
+
+#include "content/public/browser/browser_accessibility_state.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
+#include "ui/accessibility/ax_mode.h"
+
 @interface ZebkitApplication () <NativeEventProcessor>
 @end
 
@@ -17,6 +23,37 @@
       _observers;
 
   BOOL _handlingSendEvent;
+  // The pages' accessibility trees, while an assistive technology asks for
+  // them (docs/SYSTEM_INTEGRATION.md, 11), as Chrome's application has them.
+  std::unique_ptr<content::ScopedAccessibilityMode> _completeAccessibility;
+  std::unique_ptr<content::ScopedAccessibilityMode> _basicAccessibility;
+}
+
+// VoiceOver sets AXEnhancedUserInterface; other clients, and Electron's
+// applications, AXManualAccessibility: the complete tree while it is set.
+- (void)accessibilitySetValue:(id)value forAttribute:(NSString*)attribute {
+  if ([attribute isEqualToString:@"AXEnhancedUserInterface"] ||
+      [attribute isEqualToString:@"AXManualAccessibility"]) {
+    if ([value boolValue] && !_completeAccessibility) {
+      _completeAccessibility =
+          content::BrowserAccessibilityState::GetInstance()->CreateScopedModeForProcess(ui::kAXModeComplete);
+    } else if (![value boolValue]) {
+      _completeAccessibility.reset();
+    }
+    if ([attribute isEqualToString:@"AXManualAccessibility"])
+      return;
+  }
+  [super accessibilitySetValue:value forAttribute:attribute];
+}
+
+// Voice Control and the like only read: the basic tree once they do, as Apple
+// recommends and Chrome does.
+- (NSAccessibilityRole)accessibilityRole {
+  if (!_basicAccessibility && !_completeAccessibility) {
+    _basicAccessibility = content::BrowserAccessibilityState::GetInstance()->CreateScopedModeForProcess(
+        ui::kAXModeBasic | ui::AXMode::kNativeAPIs);
+  }
+  return [super accessibilityRole];
 }
 
 - (BOOL)isHandlingSendEvent {

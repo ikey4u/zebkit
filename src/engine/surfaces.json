@@ -458,7 +458,7 @@
     },
     "WebPreferencesNeedUpdateForColorRelatedStateChanges": {
      "surface": "appearance.color-scheme",
-     "zebkit": false
+     "zebkit": true
     }
    },
    "plumbing": [
@@ -1434,12 +1434,15 @@
   },
   {
    "id": "appearance.color-scheme",
-   "status": "partial",
-   "default": "light; per view in the settings",
+   "status": "done",
+   "default": "light, as before; the system's and its changes with appearance.follow; per view by the settings",
    "control": [
-    "configure"
+    "configure",
+    "observe"
    ],
-   "tests": []
+   "tests": [
+    "tests/engine/appearance.py"
+   ]
   },
   {
    "id": "appearance.reduced-motion",
@@ -1460,10 +1463,14 @@
   },
   {
    "id": "accessibility.platform",
-   "status": "gap",
-   "default": "content's detection",
-   "control": [],
-   "tests": [],
+   "status": "partial",
+   "default": "the trees when an assistive technology asks: VoiceOver's and AXManualAccessibility on macOS, content's detection elsewhere; told in the environment",
+   "control": [
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/accessibility.py"
+   ],
    "zebkit_only": true
   },
   {

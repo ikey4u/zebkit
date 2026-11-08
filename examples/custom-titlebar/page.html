@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!--
+  A title bar of the page's own, with the window's buttons over it: Window
+  Controls Overlay (<zebkit/window.h>, frame "overlay"). The page lays out
+  around the buttons with env(titlebar-area-*), drags the window from its
+  bar (app-region: drag) and keeps its tabs and search field usable
+  (app-region: no-drag). The same page works as an installed web app's in
+  Chrome, and with Electron's titleBarOverlay.
+-->
+<html>
+<meta charset="utf-8">
+<title>Custom title bar</title>
+<style>
+  :root { color-scheme: dark; font: 13px system-ui, sans-serif; }
+  body { margin: 0; background: #1b1d2a; color: #e6e8f2; }
+  #bar {
+    position: fixed; left: env(titlebar-area-x, 0); top: env(titlebar-area-y, 0);
+    width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, 40px);
+    display: flex; align-items: center; gap: 6px; padding: 0 10px; box-sizing: border-box;
+    background: #252838; app-region: drag;
+  }
+  .tab, #search { app-region: no-drag; }
+  .tab { padding: 5px 12px; border-radius: 6px; background: #313549; cursor: default; }
+  .tab.on { background: #4b5170; }
+  #search { margin-left: auto; width: 180px; padding: 5px 8px; border: 0; border-radius: 6px;
+            background: #313549; color: inherit; font: inherit; }
+  main { padding: calc(env(titlebar-area-height, 40px) + 24px) 24px 24px; }
+  code { color: #a9b6ff; }
+</style>
+<div id=bar>
+  <span class="tab on">Inbox</span><span class=tab>Drafts</span><span class=tab>Sent</span>
+  <input id=search placeholder="Search">
+</div>
+<main>
+  <h1>A page in the title bar</h1>
+  <p>Drag the window from the bar; the tabs and the search field are the page's.</p>
+  <p id=geometry></p>
+</main>
+<script>
+  const overlay = navigator.windowControlsOverlay;
+  const show = () => {
+    const rect = overlay.getTitlebarAreaRect();
+    geometry.innerHTML = overlay.visible
+        ? `Title bar area: <code>${rect.x}, ${rect.y}, ${rect.width} by ${rect.height}</code>`
+        : 'No overlay: the window has the system\'s title bar.';
+  };
+  overlay.addEventListener('geometrychange', show);
+  show();
+  for (const tab of document.querySelectorAll('.tab'))
+    tab.onclick = () => document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t === tab));
+</script>
+</html>

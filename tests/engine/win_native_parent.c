@@ -192,7 +192,10 @@ int main(int argc, char **argv) {
     foreground(window);
     /* (40,30) is where the view starts in the client area. */
     check(GetForegroundWindow() == window, "the application's window is the foreground one");
-    click(window, 40 + 60, 30 + 60);
+    /* The parent's pixels at the display's scale: the page's (60, 60). */
+    const double scale = atof(ask("devicePixelRatio"));
+    const int at = (int)(60 * (scale > 0 ? scale : 1) + 0.5);
+    click(window, 40 + at, 30 + at);
     printf("after the click: %s\n", ask("JSON.stringify(log)"));
     check(strstr(answer, "click\\\",60,60,true") != NULL, "a real click reaches the page where it was, trusted");
     check(strstr(ask("document.activeElement.id"), "i") != NULL, "the click focused the page's field");
@@ -210,7 +213,8 @@ int main(int argc, char **argv) {
     spin(800);
     GetClientRect(child, &box);
     check(box.right == 500 && box.bottom == 300, "zebkit_view_set_bounds()");
-    check(!strcmp(ask("innerWidth+'x'+innerHeight"), "\"500x300\""), "the page has the new size");
+    check(!strcmp(ask("Math.round(innerWidth*devicePixelRatio)+'x'+Math.round(innerHeight*devicePixelRatio)"),
+                  "\"500x300\""), "the page has the new size, in the parent's pixels");
 
     /* A click in the application's own part stays the application's. */
     click(window, 5, 5);

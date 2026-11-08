@@ -94,7 +94,9 @@ ZEBKIT_API int zebkit_init(int argc, char **argv);
  * userAgent (string), headless/sandbox (boolean), gpu (auto/disabled/software),
  * logging: {destination: stderr/file/none, path: absolute file path, level: 0..3},
  * cookies: {storage: os/file, keyDirectory: absolute path, thirdParty: boolean},
- * applicationIntegration (boolean; opt into zebkit's macOS delegate/menu/Dock).
+ * applicationIntegration (boolean; opt into zebkit's macOS delegate/menu/Dock),
+ * appearance: {follow: boolean}: pages take the system's colour scheme and
+ * contrast, and their changes (default false: light, as before).
  * Unknown keys and malformed values fail before startup or file IO. error,
  * when provided, is NULL on success or a message to free with zebkit_free().
  */
@@ -174,6 +176,19 @@ ZEBKIT_API void zebkit_post_delayed_task(zebkit_task_func func, void *data, uint
 /* Whether views are without windows: no display, or --headless. */
 ZEBKIT_API bool zebkit_is_headless(void);
 
+/*
+ * What the system says of how things should look, as JSON: {"colorScheme":
+ * "light" | "dark", "contrast": "no-preference" | "more" | "less" | "custom",
+ * "forcedColors", "reducedTransparency", "invertedColors", "locale",
+ * "following"} (pages follow the system with the startup setting
+ * appearance.follow). Caller frees. NULL off the engine's thread.
+ * zebkit_on_environment_changed() tells changes; NULL stops. The JSON is the
+ * engine's, for the call. The engine never changes the system's settings.
+ */
+ZEBKIT_API char *zebkit_get_environment(void);
+typedef void (*zebkit_environment_func)(const char *json, void *data);
+ZEBKIT_API void zebkit_on_environment_changed(zebkit_environment_func func, void *data);
+
 /* ---- The application ------------------------------------------------- */
 
 typedef void (*zebkit_menu_func)(const char *id, void *data);
@@ -200,6 +215,17 @@ typedef void (*zebkit_menu_func)(const char *id, void *data);
  * does not take them. On the engine's thread; again to change it.
  */
 ZEBKIT_API bool zebkit_app_set_menu(const char *json, zebkit_menu_func func, void *data, char **error);
+
+/*
+ * The menu's items also take "enabled" (default true), "checked" (default
+ * false) and "radioGroup" (one checked item in a group). Their state changes
+ * without a new menu: zebkit_app_update_menu_item(@id, {"enabled",
+ * "checked", "title"}) on every item with @id; checking one of a group
+ * unchecks the others. A disabled item is not chosen, nor its key taken.
+ * zebkit_app_get_menu() is the menu with its state, as JSON (free it).
+ */
+ZEBKIT_API bool zebkit_app_update_menu_item(const char *id, const char *json, char **error);
+ZEBKIT_API char *zebkit_app_get_menu(void);
 
 typedef void (*zebkit_paths_func)(const char *paths_json, void *data);
 

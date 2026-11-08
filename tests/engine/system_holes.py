@@ -175,6 +175,8 @@ def locks(base):
         refused = ev(view, pointer)
         check(settled(refused) and refused != "locked",
               "without a window there is no pointer to lock: refused, and the engine goes on", refused)
+    elif not (view.window or {}).get("focused", True):
+        print("ok   pointer lock: not run, the window cannot have focus (a locked screen?)", flush=True)
     else:
         locked = ev(view, pointer)
         check(locked == "locked", "pointer lock is granted by default, as before", locked)

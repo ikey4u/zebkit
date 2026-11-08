@@ -16,6 +16,7 @@
 #include "net/ssl/client_cert_store_win.h"
 #endif
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/appearance.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include <signal.h>
@@ -865,15 +866,36 @@ void BrowserClient::OverrideWebPreferences(content::WebContents* contents,
                                            content::SiteInstance& main_frame_site,
                                            blink::web_pref::WebPreferences* prefs) {
   const auto& command = *base::CommandLine::ForCurrentProcess();
-  prefs->preferred_color_scheme = command.HasSwitch(switches::kForceDarkMode)
-                                      ? blink::mojom::PreferredColorScheme::kDark
-                                      : blink::mojom::PreferredColorScheme::kLight;
-  const bool high_contrast = command.HasSwitch(switches::kForceHighContrast);
-  prefs->in_forced_colors = high_contrast;
-  prefs->preferred_contrast = high_contrast
-                                  ? blink::mojom::PreferredContrast::kMore
-                                  : blink::mojom::PreferredContrast::kNoPreference;
+  if (FollowsSystemAppearance() && !command.HasSwitch(switches::kForceDarkMode) &&
+      !command.HasSwitch(switches::kForceHighContrast)) {
+    // The system's, as Chrome takes them (appearance.cc).
+    ApplySystemAppearance(prefs);
+  } else {
+    prefs->preferred_color_scheme = command.HasSwitch(switches::kForceDarkMode)
+                                        ? blink::mojom::PreferredColorScheme::kDark
+                                        : blink::mojom::PreferredColorScheme::kLight;
+    const bool high_contrast = command.HasSwitch(switches::kForceHighContrast);
+    prefs->in_forced_colors = high_contrast;
+    prefs->preferred_contrast = high_contrast
+                                    ? blink::mojom::PreferredContrast::kMore
+                                    : blink::mojom::PreferredContrast::kNoPreference;
+  }
   ApplyViewSettings(contents, prefs);
+}
+
+// The system's theme changed: whether the pages' preferences are now others.
+bool BrowserClient::WebPreferencesNeedUpdateForColorRelatedStateChanges(
+    content::WebContents& web_contents,
+    const content::SiteInstance& main_frame_site) const {
+  if (!FollowsSystemAppearance())
+    return false;
+  const blink::web_pref::WebPreferences& current = web_contents.GetOrCreateWebPreferences();
+  blink::web_pref::WebPreferences wanted = current;
+  ApplySystemAppearance(&wanted);
+  ApplyViewSettings(&web_contents, &wanted);
+  return wanted.preferred_color_scheme != current.preferred_color_scheme ||
+         wanted.preferred_contrast != current.preferred_contrast ||
+         wanted.in_forced_colors != current.in_forced_colors;
 }
 
 bool BrowserClient::CanCreateWindow(
@@ -1354,12 +1376,15 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   SetUpViews();
 #endif
   InitializePlatforms();
+  if (FollowsSystemAppearance())
+    StartSystemAppearance();
   net::NetModule::SetResourceProvider(&NetResourceProvider);
   StartCdpFromCommandLine();
   return 0;
 }
 
 void BrowserMainParts::PostMainMessageLoopRun() {
+  StopSystemAppearance();
   CdpStop();
   StopNetworkQuality();
   StopNavigationHooks();

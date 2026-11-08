@@ -228,10 +228,10 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `appearance.color-scheme` | light unless `--force-dark-mode`; per view `colorScheme` and `contrast` in `zebkit_view_set_settings`; the system's theme is not followed, nor its changes (`engine.cc`, `OverrideWebPreferences`; no `NativeTheme` use) | partial |
+| `appearance.color-scheme` | light by default, as before; with the startup setting `appearance.follow` the system's colour scheme, contrast and forced colours and their changes (`NativeTheme`, on Linux the XDG portal's `color-scheme`, `appearance.cc`); per view `colorScheme` and `contrast` in `zebkit_view_set_settings` still win; `zebkit_get_environment()` and `zebkit_on_environment_changed()` | done |
 | `appearance.reduced-motion`, forced colours | through automation's media emulation only | partial |
 | `locale` | the system's, from Chromium 157 on (`patches/1083`); `Accept-Language` from it | done (157 branch) |
-| `accessibility.platform` | content's defaults: the tree is built when an assistive technology is detected, and with `--force-renderer-accessibility`; on macOS zebkit's `NSApplication` lacks Chrome's `accessibilitySetValue:forAttribute:` override that turns it on for VoiceOver-like clients; no test reads AT-SPI, NSAccessibility or UI Automation | gap (unverified on macOS, untested everywhere) |
+| `accessibility.platform` | the trees when an assistive technology asks: on macOS VoiceOver's `AXEnhancedUserInterface`, `AXManualAccessibility` and a read of the application's role (`application_mac.mm`, as Chrome's), elsewhere content's detection; the environment's `accessibility` says which; no client reads AT-SPI, NSAccessibility or UI Automation on the test machines | partial: the trees' reading is not tested |
 
 ### 5.8 Files, other programs, network
 

@@ -355,6 +355,9 @@ constexpr char kBootstrap[] = R"js((function (native) {
     quit: () => native.quit(),
     // What this build can do on this system and display (<zebkit/window.h>).
     capabilities: () => native.capabilities(),
+    // What the system says of how things should look; its changes to fn.
+    environment: () => native.environment(),
+    onEnvironmentChanged: (fn) => native.onEnvironmentChanged(typeof fn === 'function' ? fn : null),
     View,
     setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
     get engineSettings() { return JSON.parse(native.engineSettings()); },
@@ -625,6 +628,9 @@ struct zebkit_script {
   static void ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void Environment(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void OnEnvironmentChanged(const v8::FunctionCallbackInfo<v8::Value>& info);
+  v8::Global<v8::Function> environment_function_;
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -725,6 +731,9 @@ zebkit_script::zebkit_script(std::vector<std::string> args)
 }
 
 zebkit_script::~zebkit_script() {
+  // The engine's function for the environment holds this script.
+  if (!environment_function_.IsEmpty())
+    zebkit_on_environment_changed(nullptr, nullptr);
   // Its views stay, and must not wait on a handler that is gone: a pending
   // navigation would stall until its deadline. A setter can close a view.
   std::vector<base::WeakPtr<zebkit_view>> kept;
@@ -784,6 +793,8 @@ void zebkit_script::Install() {
   SetMethod(native, "viewNew", &ViewNew);
   SetMethod(native, "viewWindow", &ViewWindow);
   SetMethod(native, "capabilities", &Capabilities);
+  SetMethod(native, "environment", &Environment);
+  SetMethod(native, "onEnvironmentChanged", &OnEnvironmentChanged);
   SetMethod(native, "setViewFactory", &SetViewFactory);
   SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
   SetMethod(native, "viewNativeWindow", &ViewNativeWindow);
@@ -1151,6 +1162,38 @@ void zebkit_script::ViewWindow(const v8::FunctionCallbackInfo<v8::Value>& info) 
     isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "window call refused")));
   zebkit_free(error);
   info.GetReturnValue().Set(ok);
+}
+
+void zebkit_script::Environment(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  char* json = zebkit_get_environment();
+  v8::Local<v8::Value> value = v8::Null(isolate);
+  if (json) {
+    v8::Local<v8::Value> parsed;
+    if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+  }
+  zebkit_free(json);
+  info.GetReturnValue().Set(value);
+}
+
+void zebkit_script::OnEnvironmentChanged(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  if (!info[0]->IsFunction()) {
+    self->environment_function_.Reset();
+    zebkit_on_environment_changed(nullptr, nullptr);
+    return;
+  }
+  self->environment_function_.Reset(info.GetIsolate(), info[0].As<v8::Function>());
+  zebkit_on_environment_changed(
+      [](const char* json, void* data) {
+        auto* script = static_cast<zebkit_script*>(data);
+        if (script->environment_function_.IsEmpty()) return;
+        Scope scope(script);
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(script->context(), String8(script->isolate(), json)).ToLocal(&value))
+          script->CallFunction(script->environment_function_.Get(script->isolate()), {value});
+      },
+      self);
 }
 
 void zebkit_script::Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info) {

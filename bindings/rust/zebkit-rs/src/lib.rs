@@ -280,6 +280,8 @@ extern "C" {
     pub fn zebkit_view_set_drag_regions(view: *mut zebkit_view, regions_json: *const c_char, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_set_popup_window_options(view: *mut zebkit_view, options_json: *const c_char, error: *mut *mut c_char) -> bool;
     pub fn zebkit_get_capabilities() -> *mut c_char;
+    pub fn zebkit_get_environment() -> *mut c_char;
+    pub fn zebkit_on_environment_changed(func: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>, data: *mut c_void);
     pub fn zebkit_view_set_navigation_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
     pub fn zebkit_view_set_navigation_fail_closed(view: *mut zebkit_view, fail_closed: bool) -> bool;
     pub fn zebkit_navigation_request_info(request: *mut zebkit_navigation_request) -> *mut c_char;

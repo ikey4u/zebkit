@@ -41,7 +41,7 @@ __all__ = [
     "Pdf", "RENDER_ANNOTATIONS", "RENDER_FORMS", "RENDER_LCD_TEXT", "RENDER_GRAYSCALE", "RENDER_PRINTING",
     "RENDER_NO_SMOOTHING", "Request", "scheme_register", "scheme_handle",
     "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
-    "app_set_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
+    "app_set_menu", "app_update_menu_item", "app_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -170,6 +170,10 @@ _view_on_window_state = _declare("zebkit_view_on_window_state", None, _V, _WINDO
 _view_set_drag_regions = _declare("zebkit_view_set_drag_regions", _B, _V, _S, ctypes.POINTER(_P))
 _view_set_popup_window_options = _declare("zebkit_view_set_popup_window_options", _B, _V, _S, ctypes.POINTER(_P))
 _get_capabilities = _declare("zebkit_get_capabilities", _P)
+_ENVIRONMENT = ctypes.CFUNCTYPE(None, _S, _P)
+_get_environment = _declare("zebkit_get_environment", _P)
+_on_environment_changed = _declare("zebkit_on_environment_changed", None, _ENVIRONMENT, _P)
+_environment_callback = None
 
 _view_set_settings = _declare("zebkit_view_set_settings", _B, _V, _S, ctypes.POINTER(_P))
 _view_get_settings = _declare("zebkit_view_get_settings", _P, _V)
@@ -580,6 +584,24 @@ def version():
 
 def engine_version():
     return _engine_version().decode()
+
+
+def environment():
+    """What the system says of how things should look: colorScheme, contrast,
+    forcedColors, locale, accessibility, following."""
+    value = _string(_get_environment())
+    return json.loads(value) if value else None
+
+
+def on_environment_changed(function):
+    """function(dict) on each change of environment(); None stops."""
+    global _environment_callback
+    if function is None:
+        _environment_callback = None
+        _on_environment_changed(_ENVIRONMENT(), None)
+        return
+    _environment_callback = _ENVIRONMENT(_guard(lambda payload, d: function(json.loads(payload.decode()))))
+    _on_environment_changed(_environment_callback, None)
 
 
 def capabilities():
@@ -1726,6 +1748,8 @@ _MENU = ctypes.CFUNCTYPE(None, ctypes.c_char_p, _P)
 _PATHS = ctypes.CFUNCTYPE(None, ctypes.c_char_p, _P)
 _APP = ctypes.CFUNCTYPE(None, _P)
 _app_set_menu = _declare("zebkit_app_set_menu", _B, _S, _MENU, _P, _EP)
+_app_update_menu_item = _declare("zebkit_app_update_menu_item", _B, _S, _S, _EP)
+_app_get_menu = _declare("zebkit_app_get_menu", _P)
 _app_on_open_files = _declare("zebkit_app_on_open_files", None, _PATHS, _P)
 _app_on_reopen = _declare("zebkit_app_on_reopen", None, _APP, _P)
 _app_on_quit_request = _declare("zebkit_app_on_quit_request", None, _APP, _P)
@@ -1745,6 +1769,20 @@ def app_set_menu(menu, function):
     if not _app_set_menu(text.encode(), callback, None, ctypes.byref(error)):
         _raise(error, "the menu was refused")
     _app_callbacks["menu"] = callback
+
+
+def app_update_menu_item(item_id, **state):
+    """Changes the menu item item_id without a new menu: enabled, checked,
+    title; checking one of a radioGroup unchecks the others."""
+    error = ctypes.c_void_p()
+    if not _app_update_menu_item(item_id.encode(), json.dumps(state).encode(), ctypes.byref(error)):
+        _raise(error, "the menu item was not changed")
+
+
+def app_menu():
+    """The menu with its items' state."""
+    value = _string(_app_get_menu())
+    return json.loads(value) if value else []
 
 
 def app_on_open_files(function):

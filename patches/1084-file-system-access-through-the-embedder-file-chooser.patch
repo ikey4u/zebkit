@@ -7,11 +7,12 @@ content's own FileSystemChooser straight to the system's dialog. zebkit
 decides file choosers in the application's hook (zebkit_view_on_file_chooser),
 and File System Access opened the system's picker around it: the delegate
 method, its listener adaptor and the branch that uses it are no longer
-Android's only. A delegate that returns false (the default) changes nothing.
+Android's only (the file types as UTF-16 from a FilePath, wide on
+Windows). A delegate that returns false (the default) changes nothing.
 docs/SYSTEM_INTEGRATION.md, section 9.
 
 diff --git a/content/browser/file_system_access/file_system_access_manager_impl.cc b/content/browser/file_system_access/file_system_access_manager_impl.cc
-index 81de939313..74436ab9c5 100644
+index 81de939313..180f9d4558 100644
 --- a/content/browser/file_system_access/file_system_access_manager_impl.cc
 +++ b/content/browser/file_system_access/file_system_access_manager_impl.cc
 @@ -85,12 +85,10 @@
@@ -53,6 +54,15 @@ index 81de939313..74436ab9c5 100644
    WebContentsDelegate* delegate = web_contents->GetDelegate();
    if (delegate && delegate->UseFileChooserForFileSystemAccess()) {
      blink::mojom::FileChooserParams params;
+@@ -323,7 +318,7 @@ void ShowFilePickerOnUIThread(
+     params.default_file_name = options.default_path();
+     for (const auto& ext_list : options.file_type_info().extensions) {
+       for (const auto& ext : ext_list) {
+-        params.accept_types.push_back(u"." + base::UTF8ToUTF16(ext));
++        params.accept_types.push_back(u"." + base::FilePath(ext).AsUTF16Unsafe());
+       }
+     }
+     params.open_writable = true;
 @@ -332,7 +327,6 @@ void ShowFilePickerOnUIThread(
      delegate->RunFileChooser(rfh, std::move(listener), params);
      return;

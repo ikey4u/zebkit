@@ -29,8 +29,15 @@ struct MenuItem {
   std::string key;   // "o", "=", "f5"; with the command key
   int modifiers = 0;
   bool separator = false;
+  // State that changes without a new menu (zebkit_app_update_menu_item()).
+  bool enabled = true;
+  bool checked = false;
+  std::string radio_group;  // one checked of the items in a group
   std::vector<MenuItem> items;  // a submenu
 };
+
+// Whether the item @id is enabled; true for an id of no item.
+bool MenuItemEnabled(const std::string& id);
 
 // The menu zebkit_app_set_menu() was given; empty before.
 const std::vector<MenuItem>& AppMenu();

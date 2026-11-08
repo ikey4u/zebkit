@@ -92,7 +92,7 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
     return Fail(error, "Startup settings must be a JSON object");
   const auto& settings = parsed->GetDict();
   if (!Fields(settings, {"profileDirectory", "proxy", "userAgent", "headless",
-                         "sandbox", "gpu", "logging", "cookies", "applicationIntegration"}, error))
+                         "sandbox", "gpu", "logging", "cookies", "applicationIntegration", "appearance"}, error))
     return false;
   std::vector<std::string> result = *args;
   if (!StringSwitch(settings, "profileDirectory", "user-data-dir", true, &result, error) ||
@@ -184,6 +184,20 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
     if (!app->is_bool())
       return Fail(error, "applicationIntegration: expected a boolean");
     integration = app->GetBool();
+  }
+  if (const base::Value* appearance = settings.Find("appearance")) {
+    const base::DictValue* dict = appearance->GetIfDict();
+    if (!dict)
+      return Fail(error, "appearance: expected an object");
+    for (auto [key, value] : *dict)
+      if (key != "follow")
+        return Fail(error, "appearance: unknown key " + key);
+    if (const base::Value* follow = dict->Find("follow")) {
+      if (!follow->is_bool())
+        return Fail(error, "appearance.follow: expected a boolean");
+      Switch(&result, "zebkit-follow-system-appearance",
+             follow->GetBool() ? std::make_optional(std::string()) : std::nullopt);
+    }
   }
   *application_integration = integration;
   *args = std::move(result);

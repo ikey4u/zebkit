@@ -132,6 +132,12 @@ pub(crate) unsafe fn take_bytes(data: *mut u8, size: usize) -> Vec<u8> {
     copy
 }
 
+/// What the system says of how things should look, as JSON: `colorScheme`,
+/// `contrast`, `forcedColors`, `locale`, `accessibility`, `following`.
+pub fn environment() -> Option<String> {
+    unsafe { take_string(sys::zebkit_get_environment()) }
+}
+
 /// What this build can do on this system and display, as JSON (`<zebkit/window.h>`).
 pub fn capabilities() -> Option<String> {
     unsafe { take_string(sys::zebkit_get_capabilities()) }

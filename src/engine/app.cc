@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -79,6 +80,10 @@ std::optional<std::vector<MenuItem>> ParseItems(const base::ListValue& list,
     }
     if (const std::string* key = dict.FindString("key"))
       item.key = *key;
+    item.enabled = dict.FindBool("enabled").value_or(true);
+    item.checked = dict.FindBool("checked").value_or(false);
+    if (const std::string* group = dict.FindString("radioGroup"))
+      item.radio_group = *group;
     if (const base::ListValue* modifiers = dict.FindList("modifiers")) {
       for (const base::Value& modifier : *modifiers) {
         const std::string* name = modifier.GetIfString();
@@ -151,7 +156,8 @@ std::string Find(const std::vector<MenuItem>& items,
                  ui::KeyboardCode code,
                  int modifiers) {
   for (const MenuItem& item : items) {
-    if (!item.id.empty() && !item.key.empty() && KeyCode(item.key) == code &&
+    // A disabled item's key is not the menu's: the page gets it.
+    if (!item.id.empty() && !item.key.empty() && item.enabled && KeyCode(item.key) == code &&
         item.modifiers == modifiers) {
       return item.id;
     }
@@ -161,10 +167,69 @@ std::string Find(const std::vector<MenuItem>& items,
   return std::string();
 }
 
+// Every item with @id, wherever it is.
+void ForEachWithId(std::vector<MenuItem>& items, const std::string& id,
+                   const std::function<void(MenuItem&)>& function) {
+  for (MenuItem& item : items) {
+    if (item.id == id)
+      function(item);
+    ForEachWithId(item.items, id, function);
+  }
+}
+
+void UncheckGroup(std::vector<MenuItem>& items, const std::string& group, const std::string& except) {
+  for (MenuItem& item : items) {
+    if (item.radio_group == group && item.id != except)
+      item.checked = false;
+    UncheckGroup(item.items, group, except);
+  }
+}
+
+base::ListValue ItemsValue(const std::vector<MenuItem>& items) {
+  base::ListValue list;
+  for (const MenuItem& item : items) {
+    base::DictValue value;
+    if (item.separator) {
+      value.Set("separator", true);
+      list.Append(std::move(value));
+      continue;
+    }
+    if (!item.title.empty()) value.Set("title", item.title);
+    if (!item.id.empty()) value.Set("id", item.id);
+    if (!item.role.empty()) value.Set("role", item.role);
+    if (!item.key.empty()) value.Set("key", item.key);
+    value.Set("enabled", item.enabled);
+    value.Set("checked", item.checked);
+    if (!item.radio_group.empty()) value.Set("radioGroup", item.radio_group);
+    if (!item.items.empty()) value.Set("items", ItemsValue(item.items));
+    list.Append(std::move(value));
+  }
+  return list;
+}
+
+bool AnyEnabled(const std::vector<MenuItem>& items, const std::string& id, bool* found) {
+  for (const MenuItem& item : items) {
+    if (item.id == id) {
+      *found = true;
+      if (item.enabled)
+        return true;
+    }
+    if (AnyEnabled(item.items, id, found))
+      return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 const std::vector<MenuItem>& AppMenu() {
   return TheApp().menu;
+}
+
+bool MenuItemEnabled(const std::string& id) {
+  bool found = false;
+  const bool enabled = AnyEnabled(TheApp().menu, id, &found);
+  return enabled || !found;
 }
 
 void RunMenuItem(const std::string& id) {
@@ -252,6 +317,54 @@ bool zebkit_app_set_menu(const char* json,
   zebkit::SetUpMenuBar();
 #endif
   return true;
+}
+
+bool zebkit_app_update_menu_item(const char* id, const char* json, char** error) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto fail = [&](const char* message) {
+    if (error)
+      *error = strdup(message);
+    return false;
+  };
+  if (error)
+    *error = nullptr;
+  if (!id || !*id)
+    return fail("a menu item's id");
+  std::optional<base::Value> parsed = base::JSONReader::Read(json ? json : "", base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict())
+    return fail("the item's state is not a JSON object");
+  const base::DictValue& state = parsed->GetDict();
+  for (auto [key, value] : state) {
+    if (key != "enabled" && key != "checked" && key != "title")
+      return fail("an item's enabled, checked and title change");
+    if ((key == "title" && !value.is_string()) || (key != "title" && !value.is_bool()))
+      return fail("enabled and checked are booleans, title a string");
+  }
+  zebkit::App& app = zebkit::TheApp();
+  bool found = false;
+  std::string group;
+  zebkit::ForEachWithId(app.menu, id, [&](zebkit::MenuItem& item) {
+    found = true;
+    if (auto enabled = state.FindBool("enabled")) item.enabled = *enabled;
+    if (auto checked = state.FindBool("checked")) {
+      item.checked = *checked;
+      if (*checked && !item.radio_group.empty()) group = item.radio_group;
+    }
+    if (const std::string* title = state.FindString("title")) item.title = *title;
+  });
+  if (!found)
+    return fail("no menu item has that id");
+  if (!group.empty())
+    zebkit::UncheckGroup(app.menu, group, id);
+#if BUILDFLAG(IS_MAC)
+  zebkit::SetUpMenuBar();
+#endif
+  return true;
+}
+
+char* zebkit_app_get_menu(void) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  return strdup(base::WriteJson(zebkit::ItemsValue(zebkit::TheApp().menu)).value_or("[]").c_str());
 }
 
 void zebkit_app_on_open_files(zebkit_paths_func func, void* data) {

@@ -42,6 +42,10 @@
 - (void)menuItem:(NSMenuItem*)item {
   zebkit::RunMenuItem(base::SysNSStringToUTF8(item.representedObject));
 }
+// The application's own items as zebkit_app_update_menu_item() left them.
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+  return zebkit::MenuItemEnabled(base::SysNSStringToUTF8(item.representedObject));
+}
 @end
 
 // What the system asks of the application (app.h).
@@ -219,6 +223,7 @@ void AddItems(NSMenu* menu, const std::vector<MenuItem>& items) {
       entry.action = @selector(menuItem:);
       entry.representedObject = base::SysUTF8ToNSString(item.id);
     }
+    entry.state = item.checked ? NSControlStateValueOn : NSControlStateValueOff;
     if (!item.key.empty()) {
       NSEventModifierFlags mask = NSEventModifierFlagCommand;
       if (item.modifiers & kMenuShift)
