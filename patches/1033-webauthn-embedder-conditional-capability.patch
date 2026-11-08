@@ -6,36 +6,9 @@ those calls would silently wait for an autofill surface that does not exist.
 Retain Chrome's default and allow the library's WebAuthenticationDelegate to
 report its actual UI capability, preserving the virtual authenticator tests.
 
---- a/content/public/browser/web_authentication_delegate.h
-+++ b/content/public/browser/web_authentication_delegate.h
-@@ -84,6 +84,10 @@
-   // requests originating from |render_frame_host|. If false then requests to
-   // create or get assertions will be immediately rejected.
-   virtual bool SupportsResidentKeys(RenderFrameHost* render_frame_host);
-+
-+  // Whether the embedder has a passkey autofill/upgrade surface. Chrome's
-+  // existing behavior remains the default; library hosts can report false.
-+  virtual bool SupportsConditionalMediation(RenderFrameHost* render_frame_host);
- 
-   // Returns whether |web_contents| is the active tab in the focused window. We
-   // do not want to allow authenticatorMakeCredential operations to be triggered
---- a/content/public/browser/web_authentication_delegate.cc
-+++ b/content/public/browser/web_authentication_delegate.cc
-@@ -73,6 +73,11 @@
-   return false;
- }
- 
-+bool WebAuthenticationDelegate::SupportsConditionalMediation(
-+    RenderFrameHost* render_frame_host) {
-+  return true;
-+}
-+
- bool WebAuthenticationDelegate::IsFocused(WebContents* web_contents) {
-   return true;
- }
 --- a/content/browser/webauth/authenticator_common_impl.cc
 +++ b/content/browser/webauth/authenticator_common_impl.cc
-@@ -2187,7 +2187,9 @@
+@@ -2213,7 +2213,9 @@ void AuthenticatorCommonImpl::GetClientCapabilities(
    barrier_callback.Run(
        MakeCapability(client_capabilities::kRelatedOrigins, true));
    barrier_callback.Run(
@@ -46,7 +19,7 @@ report its actual UI capability, preserving the virtual authenticator tests.
  
    IsHybridTransportSupported(
        base::BindOnce(&MakeCapability, client_capabilities::kHybridTransport)
-@@ -2319,6 +2321,11 @@
+@@ -2345,6 +2347,11 @@ void AuthenticatorCommonImpl::
          blink::mojom::Authenticator::IsConditionalMediationAvailableCallback
              callback,
          std::optional<bool> is_uvpaa_override) {
@@ -58,3 +31,30 @@ report its actual UI capability, preserving the virtual authenticator tests.
    if (is_uvpaa_override.has_value()) {
      std::move(callback).Run(*is_uvpaa_override);
      return;
+--- a/content/public/browser/web_authentication_delegate.cc
++++ b/content/public/browser/web_authentication_delegate.cc
+@@ -73,6 +73,11 @@ bool WebAuthenticationDelegate::SupportsResidentKeys(
+   return false;
+ }
+ 
++bool WebAuthenticationDelegate::SupportsConditionalMediation(
++    RenderFrameHost* render_frame_host) {
++  return true;
++}
++
+ bool WebAuthenticationDelegate::IsFocused(WebContents* web_contents) {
+   return true;
+ }
+--- a/content/public/browser/web_authentication_delegate.h
++++ b/content/public/browser/web_authentication_delegate.h
+@@ -85,6 +85,10 @@ class CONTENT_EXPORT WebAuthenticationDelegate {
+   // create or get assertions will be immediately rejected.
+   virtual bool SupportsResidentKeys(RenderFrameHost* render_frame_host);
+ 
++  // Whether the embedder has a passkey autofill/upgrade surface. Chrome's
++  // existing behavior remains the default; library hosts can report false.
++  virtual bool SupportsConditionalMediation(RenderFrameHost* render_frame_host);
++
+   // Returns whether |web_contents| is the active tab in the focused window. We
+   // do not want to allow authenticatorMakeCredential operations to be triggered
+   // by background tabs.

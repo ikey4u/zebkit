@@ -15,9 +15,9 @@ WebInputElement::SetFilesFromPaths.
 +#include <vector>
 +
  #include "build/build_config.h"
- #include "third_party/blink/public/common/webid/email_verification_state.h"
  #include "third_party/blink/public/platform/web_common.h"
-@@ -70,6 +72,10 @@
+ #include "third_party/blink/public/web/web_form_control_element.h"
+@@ -69,6 +71,10 @@ class BLINK_EXPORT WebInputElement final : public WebFormControlElement {
                    bool send_events = false,
                    WebAutofillState = WebAutofillState::kNotFilled);
    bool IsValidValue(const WebString&) const;
@@ -30,7 +30,7 @@ WebInputElement::SetFilesFromPaths.
  
 --- a/third_party/blink/renderer/core/exported/web_input_element.cc
 +++ b/third_party/blink/renderer/core/exported/web_input_element.cc
-@@ -68,6 +68,13 @@
+@@ -68,6 +68,13 @@ bool WebInputElement::IsValidValue(const WebString& value) const {
    return ConstUnwrap<HTMLInputElement>()->IsValidValue(value);
  }
  

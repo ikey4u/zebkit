@@ -3,9 +3,49 @@ Expose the outermost DevTools client for flattened child sessions.
 Keep embedder-owned tab/page sessions distinct from external clients so
 default JavaScript dialogs are not held by the embedder's own inspection.
 
+--- a/content/browser/devtools/devtools_session.cc
++++ b/content/browser/devtools/devtools_session.cc
+@@ -487,6 +487,10 @@ content::DevToolsAgentHostClient* DevToolsSession::GetClient() {
+   return client_;
+ }
+ 
++content::DevToolsAgentHostClient* DevToolsSession::GetRootClient() {
++  return GetRootSession()->GetClient();
++}
++
+ void DevToolsSession::DispatchToAgent(const PendingMessage& message) {
+   DCHECK(!browser_only_);
+   // We send all messages on the IO channel for workers so that messages like
+--- a/content/browser/devtools/devtools_session.h
++++ b/content/browser/devtools/devtools_session.h
+@@ -98,6 +98,7 @@ class DevToolsSession : public protocol::FrontendChannel,
+   // content::DevToolsAgentHostClientChannel implementation.
+   content::DevToolsAgentHost* GetAgentHost() override;
+   content::DevToolsAgentHostClient* GetClient() override;
++  content::DevToolsAgentHostClient* GetRootClient() override;
+ 
+   DevToolsSession* GetRootSession();
+ 
+--- a/content/public/browser/devtools_agent_host_client.cc
++++ b/content/public/browser/devtools_agent_host_client.cc
+@@ -3,9 +3,14 @@
+ // found in the LICENSE file.
+ 
+ #include "content/public/browser/devtools_agent_host_client.h"
++#include "content/public/browser/devtools_agent_host_client_channel.h"
+ 
+ namespace content {
+ 
++DevToolsAgentHostClient* DevToolsAgentHostClientChannel::GetRootClient() {
++  return GetClient();
++}
++
+ bool DevToolsAgentHostClient::MayAttachToRenderFrameHost(
+     RenderFrameHost* render_frame_host) {
+   return true;
 --- a/content/public/browser/devtools_agent_host_client_channel.h
 +++ b/content/public/browser/devtools_agent_host_client_channel.h
-@@ -37,6 +37,11 @@
+@@ -37,6 +37,11 @@ class CONTENT_EXPORT DevToolsAgentHostClientChannel {
    // The client to which the messages will be dispatched.
    virtual DevToolsAgentHostClient* GetClient() = 0;
  
@@ -17,42 +57,3 @@ default JavaScript dialogs are not held by the embedder's own inspection.
    virtual ~DevToolsAgentHostClientChannel() = default;
  };
  
---- a/content/public/browser/devtools_agent_host_client.cc
-+++ b/content/public/browser/devtools_agent_host_client.cc
-@@ -3,8 +3,13 @@
- // found in the LICENSE file.
- 
- #include "content/public/browser/devtools_agent_host_client.h"
-+#include "content/public/browser/devtools_agent_host_client_channel.h"
- 
- namespace content {
-+
-+DevToolsAgentHostClient* DevToolsAgentHostClientChannel::GetRootClient() {
-+  return GetClient();
-+}
- 
- bool DevToolsAgentHostClient::MayAttachToRenderFrameHost(
-     RenderFrameHost* render_frame_host) {
---- a/content/browser/devtools/devtools_session.h
-+++ b/content/browser/devtools/devtools_session.h
-@@ -98,6 +98,7 @@
-   // content::DevToolsAgentHostClientChannel implementation.
-   content::DevToolsAgentHost* GetAgentHost() override;
-   content::DevToolsAgentHostClient* GetClient() override;
-+  content::DevToolsAgentHostClient* GetRootClient() override;
- 
-   DevToolsSession* GetRootSession();
- 
---- a/content/browser/devtools/devtools_session.cc
-+++ b/content/browser/devtools/devtools_session.cc
-@@ -479,6 +479,10 @@
- 
- content::DevToolsAgentHostClient* DevToolsSession::GetClient() {
-   return client_;
-+}
-+
-+content::DevToolsAgentHostClient* DevToolsSession::GetRootClient() {
-+  return GetRootSession()->GetClient();
- }
- 
- void DevToolsSession::DispatchToAgent(const PendingMessage& message) {

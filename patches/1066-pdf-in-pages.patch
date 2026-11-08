@@ -22,7 +22,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
 
 --- a/content/browser/renderer_host/navigation_request.cc
 +++ b/content/browser/renderer_host/navigation_request.cc
-@@ -5196,6 +5196,20 @@
+@@ -5248,6 +5248,20 @@ void NavigationRequest::OnResponseStarted(
          response_head_->headers->response_code() != net::HTTP_RESET_CONTENT &&
          !ShouldRenderFallbackContentForResponse(*response_head_->headers)));
  
@@ -45,7 +45,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
      error_navigation_trigger_ =
 --- a/content/browser/renderer_host/navigation_request.h
 +++ b/content/browser/renderer_host/navigation_request.h
-@@ -3454,7 +3454,7 @@
+@@ -3516,7 +3516,7 @@ class CONTENT_EXPORT NavigationRequest
    // The embedder-imposed isolation policy that applies to this navigation.
    // As an example, this is used to specify that the navigation is for a PDF
    // or another MimeHandler.
@@ -56,7 +56,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    // fenced frame root. That is to say, the navigation is caused by a `src`
 --- a/content/browser/security/cpsp/child_process_security_policy_impl.cc
 +++ b/content/browser/security/cpsp/child_process_security_policy_impl.cc
-@@ -2534,8 +2534,11 @@
+@@ -2574,8 +2574,11 @@ bool ChildProcessSecurityPolicyImpl::IsAccessAllowedForPdfProcess(
      case AccessType::kCanCommitNewOrigin:
      case AccessType::kHostsOrigin:
        return true;
@@ -71,7 +71,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  
 --- a/pdf/BUILD.gn
 +++ b/pdf/BUILD.gn
-@@ -409,6 +409,7 @@
+@@ -409,6 +409,7 @@ if (enable_pdf) {
      visibility = [
        ":*",
        "//components/pdf/renderer",
@@ -81,7 +81,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
      sources = [
 --- a/pdf/loader/url_loader.cc
 +++ b/pdf/loader/url_loader.cc
-@@ -140,6 +140,12 @@
+@@ -140,6 +140,12 @@ void UrlLoader::Open(const UrlRequest& request, OpenCallback callback) {
    blink_loader_->LoadAsynchronously(blink_request, this);
  }
  
@@ -94,7 +94,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  // Modeled on `ppapi::proxy::URLLoaderResource::ReadResponseBody()`.
  void UrlLoader::ReadResponseBody(base::span<uint8_t> buffer,
                                   base::OnceCallback<void(int)> callback) {
-@@ -209,6 +215,10 @@
+@@ -213,6 +219,10 @@ void UrlLoader::DidDownloadData(uint64_t data_length) {
  
  // Modeled on `content::PepperURLLoaderHost::DidReceiveData()`.
  void UrlLoader::DidReceiveData(base::span<const char> data) {
@@ -105,7 +105,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    DCHECK_EQ(state_, LoadingState::kStreamingData);
  
    // It's surprisingly difficult to guarantee that this is always >0.
-@@ -219,7 +229,8 @@
+@@ -223,7 +233,8 @@ void UrlLoader::DidReceiveData(base::span<const char> data) {
    buffer_.insert(buffer_.end(), data.begin(), data.end());
  
    // Defer loading if the buffer is too full.
@@ -115,7 +115,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
      deferring_loading_ = true;
      blink_loader_->SetDefersLoading(true);
    }
-@@ -229,6 +240,9 @@
+@@ -233,6 +244,9 @@ void UrlLoader::DidReceiveData(base::span<const char> data) {
  
  // Modeled on `content::PepperURLLoaderHost::DidFinishLoading()`.
  void UrlLoader::DidFinishLoading() {
@@ -125,7 +125,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    DCHECK_EQ(state_, LoadingState::kStreamingData);
  
    SetLoadComplete(Result::kSuccess);
-@@ -237,6 +251,9 @@
+@@ -241,6 +255,9 @@ void UrlLoader::DidFinishLoading() {
  
  // Modeled on `content::PepperURLLoaderHost::DidFail()`.
  void UrlLoader::DidFail(const blink::WebURLError& error) {
@@ -137,7 +137,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
        << static_cast<int>(state_);
 --- a/pdf/loader/url_loader.h
 +++ b/pdf/loader/url_loader.h
-@@ -131,6 +131,12 @@
+@@ -131,6 +131,12 @@ class UrlLoader final : public blink::WebAssociatedURLLoaderClient {
  
    // Mimic `pp::URLLoader`:
    void Open(const UrlRequest& request, OpenCallback callback);
@@ -150,7 +150,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    void ReadResponseBody(base::span<uint8_t> buffer,
                          base::OnceCallback<void(int)> callback);
    void Close();
-@@ -196,6 +202,8 @@
+@@ -196,6 +202,8 @@ class UrlLoader final : public blink::WebAssociatedURLLoaderClient {
  
    base::OnceCallback<void(int)> read_callback_;
    base::raw_span<uint8_t> client_buffer_;
@@ -161,7 +161,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  }  // namespace chrome_pdf
 --- a/pdf/pdf_view_web_plugin.cc
 +++ b/pdf/pdf_view_web_plugin.cc
-@@ -568,6 +568,7 @@
+@@ -569,6 +569,7 @@ bool PdfViewWebPlugin::InitializeCommon() {
    // Allow the plugin to handle find requests.
    client_->UsePluginAsFindHandler();
  
@@ -169,7 +169,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    std::optional<ParsedParams> params = ParseWebPluginParams(initial_params_);
  
    // The contents of `initial_params_` are no longer needed.
-@@ -622,8 +623,10 @@
+@@ -626,8 +627,10 @@ bool PdfViewWebPlugin::InitializeCommon() {
    }
  
    last_progress_sent_ = 0;
@@ -182,7 +182,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    url_ = params->original_url;
  
    metrics_handler_ = std::make_unique<MetricsHandler>();
-@@ -859,13 +862,43 @@
+@@ -863,13 +866,43 @@ blink::WebInputEventResult PdfViewWebPlugin::HandleInputEvent(
  }
  
  void PdfViewWebPlugin::DidReceiveResponse(
@@ -204,26 +204,26 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
 +    manual_loader_->DidReceiveData(data);
 +  }
 +}
- 
--void PdfViewWebPlugin::DidReceiveData(base::span<const char> data) {}
++
 +void PdfViewWebPlugin::DidFinishLoading() {
 +  if (manual_loader_) {
 +    manual_loader_->DidFinishLoading();
 +  }
 +}
  
--void PdfViewWebPlugin::DidFinishLoading() {}
+-void PdfViewWebPlugin::DidReceiveData(base::span<const char> data) {}
 +void PdfViewWebPlugin::DidFailLoading(const blink::WebURLError& error) {
 +  if (manual_loader_) {
 +    manual_loader_->DidFail(error);
 +  }
 +}
  
--void PdfViewWebPlugin::DidFailLoading(const blink::WebURLError& error) {}
+-void PdfViewWebPlugin::DidFinishLoading() {}
 +int PdfViewWebPlugin::LoadedPageCount() const {
 +  return engine_ ? engine_->LoadedPageCount() : 0;
 +}
-+
+ 
+-void PdfViewWebPlugin::DidFailLoading(const blink::WebURLError& error) {}
 +int PdfViewWebPlugin::PaintedPageCount() const {
 +  return engine_ ? engine_->PaintedPageCount() : 0;
 +}
@@ -232,7 +232,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    return true;
 --- a/pdf/pdf_view_web_plugin.h
 +++ b/pdf/pdf_view_web_plugin.h
-@@ -281,6 +281,11 @@
+@@ -281,6 +281,11 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
    PdfViewWebPlugin(const PdfViewWebPlugin& other) = delete;
    PdfViewWebPlugin& operator=(const PdfViewWebPlugin& other) = delete;
  
@@ -244,7 +244,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    // blink::WebPlugin:
    bool Initialize(blink::WebPluginContainer* container) override;
    void Destroy() override;
-@@ -573,6 +578,10 @@
+@@ -573,6 +578,10 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
        uint32_t block_size);
  
   private:
@@ -257,7 +257,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    using LoadUrlCallback =
 --- a/pdf/pdfium/pdfium_engine.cc
 +++ b/pdf/pdfium/pdfium_engine.cc
-@@ -4016,7 +4016,16 @@
+@@ -4065,7 +4065,16 @@ std::optional<size_t> PDFiumEngine::GetAdjacentPageIndexForTwoUpView(
    return adjacent_page_index;
  }
  
@@ -284,7 +284,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  #include "base/containers/span.h"
  #include "base/functional/callback.h"
  #include "base/functional/callback_helpers.h"
-@@ -696,6 +697,10 @@
+@@ -699,6 +700,10 @@ class PDFiumEngine : public DocumentLoader::Client,
      return find_results_;
    }
  
@@ -295,7 +295,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
   private:
    // This is a base class for shared functions and data needed for change
    // invalidators. Subclasses are used to detect the difference in change rects
-@@ -997,6 +1002,7 @@
+@@ -1000,6 +1005,7 @@ class PDFiumEngine : public DocumentLoader::Client,
    // Starts a progressive paint operation given a rectangle in screen
    // coordinates. Returns the index in `progressive_paints_`.
    size_t StartPaint(uint32_t page_index, const gfx::Rect& dirty);
@@ -305,7 +305,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    // paint is done, or false if it needs to be continued.
 --- a/pdf/pdfium/pdfium_page.h
 +++ b/pdf/pdfium/pdfium_page.h
-@@ -96,6 +96,7 @@
+@@ -97,6 +97,7 @@ class PDFiumPage {
    // Unloads the PDFium data for this page from memory. Returns true if the
    // unload happened, or false if an unload preventer blocked it.
    bool Unload();
@@ -315,7 +315,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    FPDF_PAGE GetPage();
 --- a/third_party/blink/renderer/core/frame/local_frame.cc
 +++ b/third_party/blink/renderer/core/frame/local_frame.cc
-@@ -2586,7 +2586,13 @@
+@@ -2582,7 +2582,13 @@ LocalFrame::MaybeGetBackgroundResourceFetchAssets() {
  }
  
  WebPluginContainerImpl* LocalFrame::GetWebPluginContainer(Node* node) const {
@@ -332,7 +332,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
    if (!node) {
 --- a/third_party/blink/renderer/core/html/html_plugin_element.cc
 +++ b/third_party/blink/renderer/core/html/html_plugin_element.cc
-@@ -654,6 +654,12 @@
+@@ -667,6 +667,12 @@ HTMLPlugInElement::ObjectContentType HTMLPlugInElement::GetObjectContentType()
    PluginData* plugin_data = GetDocument().GetFrame()->GetPluginData();
    bool plugin_supports_mime_type =
        plugin_data && plugin_data->SupportsMimeType(mime_type);
@@ -360,7 +360,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
  #include "third_party/blink/renderer/core/dom/raw_data_document_parser.h"
  #include "third_party/blink/renderer/core/events/before_unload_event.h"
  #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
-@@ -99,12 +104,68 @@
+@@ -99,12 +104,68 @@ void PluginDocumentParser::CreateDocumentStructure() {
    if (!frame->GetSettings() || !frame->Loader().AllowPlugins())
      return;
  
@@ -431,7 +431,7 @@ small viewer (src/engine/pdf_viewer.js) in the place of Chrome's extension.
                                 CSSPrimitiveValue::UnitType::kPercentage);
 --- a/ui/base/resource/resource_bundle.cc
 +++ b/ui/base/resource/resource_bundle.cc
-@@ -1293,6 +1293,11 @@
+@@ -1294,6 +1294,11 @@ std::u16string ResourceBundle::GetLocalizedStringImpl(int resource_id) const {
        break;
      }
    }

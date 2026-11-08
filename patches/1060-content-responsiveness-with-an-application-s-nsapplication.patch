@@ -8,11 +8,12 @@ watcher then goes without native events' timing, and nothing else depends on it.
 
 --- a/content/browser/scheduler/responsiveness/native_event_observer_mac.mm
 +++ b/content/browser/scheduler/responsiveness/native_event_observer_mac.mm
-@@ -11,13 +11,17 @@
+@@ -11,15 +11,17 @@
  namespace content::responsiveness {
  
  void BrowserUINativeEventObserver::RegisterObserver() {
--  DCHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)]);
+-  CHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)],
+-        base::NotFatalUntil::M160);
 +  // zebkit: NSApp may be the embedding application's.
 +  if (![NSApp conformsToProtocol:@protocol(NativeEventProcessor)])
 +    return;
@@ -21,7 +22,8 @@ watcher then goes without native events' timing, and nothing else depends on it.
    [processor addNativeEventProcessorObserver:this];
  }
  void BrowserUINativeEventObserver::UnregisterObserver() {
--  DCHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)]);
+-  CHECK([NSApp conformsToProtocol:@protocol(NativeEventProcessor)],
+-        base::NotFatalUntil::M160);
 +  // zebkit: NSApp may be the embedding application's.
 +  if (![NSApp conformsToProtocol:@protocol(NativeEventProcessor)])
 +    return;

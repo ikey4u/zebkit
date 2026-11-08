@@ -8,122 +8,9 @@ Revision ordering lives in the actual scope-aware permission override table,
 not a second embedder copy. Public bridge functions preserve encapsulation.
 Shell document requests can be taken asynchronously without changing defaults.
 
---- a/services/device/geolocation/geolocation_impl.cc
-+++ b/services/device/geolocation/geolocation_impl.cc
-@@ -181,7 +181,14 @@
-   } else {
-     has_precise_permission_ =
-         (permission_level == mojom::GeolocationPermissionLevel::kPrecise);
--    StartListeningForUpdates();
-+    // A synthetic position remains authoritative across permission changes.
-+    // Starting a real provider here clears the cached override just after a
-+    // pending request has been granted and bound its geolocation receiver.
-+    if (position_override_) {
-+      OnLocationUpdate(*position_override_);
-+    } else {
-+      StartListeningForUpdates();
-+    }
-   }
- }
- 
---- a/content/public/browser/BUILD.gn
-+++ b/content/public/browser/BUILD.gn
-@@ -175,6 +175,7 @@
-     "download_request_utils.h",
-     "download_utils.h",
-     "editable_level.h",
-+    "embedder_permission_hooks.h",
-     "embedder_widget_hooks.h",
-     "error_navigation_trigger.h",
-     "eye_dropper.h",
---- /dev/null
-+++ b/content/public/browser/embedder_permission_hooks.h
-@@ -0,0 +1,46 @@
-+// Embedder permission policy, sharing Chromium's override and subscription path.
-+#ifndef CONTENT_PUBLIC_BROWSER_EMBEDDER_PERMISSION_HOOKS_H_
-+#define CONTENT_PUBLIC_BROWSER_EMBEDDER_PERMISSION_HOOKS_H_
-+#include <cstdint>
-+#include <optional>
-+#include <vector>
-+#include "base/functional/callback.h"
-+#include "content/common/content_export.h"
-+#include "content/public/browser/permission_result.h"
-+#include "third_party/blink/public/common/permissions/permission_utils.h"
-+#include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
-+#include "url/origin.h"
-+namespace content {
-+class BrowserContext;
-+class RenderFrameHost;
-+// UI thread only. The status hook must be side-effect free. nullopt leaves
-+// the decision to Chromium. A prompt override delegates an actual request.
-+using EmbedderPermissionStatusHook = base::RepeatingCallback<
-+    std::optional<blink::mojom::PermissionStatus>(RenderFrameHost*, blink::PermissionType,
-+                                                const url::Origin&, const url::Origin&)>;
-+// A committed CDP/context override operation. Empty type means all types;
-+// empty origins mean the whole context. The final argument is false before
-+// mutation (for deadlines), true after it commits; both precede subscriptions.
-+using EmbedderPermissionChangedHook = base::RepeatingCallback<void(
-+    BrowserContext*, const std::optional<url::Origin>&,
-+    const std::optional<url::Origin>&, std::optional<blink::PermissionType>, bool committed)>;
-+CONTENT_EXPORT uint64_t NextEmbedderPermissionRevision();
-+CONTENT_EXPORT uint64_t GetEmbedderContextPermissionRevision(
-+    BrowserContext*, const url::Origin&, const url::Origin&, blink::PermissionType);
-+CONTENT_EXPORT PermissionResult CreateEmbedderPermissionResult(
-+    blink::PermissionType, blink::mojom::PermissionStatus, bool for_query = false);
-+CONTENT_EXPORT void SetEmbedderPermissionHooks(EmbedderPermissionStatusHook status,
-+                                               EmbedderPermissionChangedHook changed);
-+// Snapshot subscriptions, run one embedder state mutation, then report changes.
-+CONTENT_EXPORT void UpdateEmbedderPermissionState(BrowserContext*, base::OnceClosure update);
-+// Raw policy decision; use CreateEmbedderPermissionResult(..., true) for query exposure.
-+CONTENT_EXPORT std::optional<blink::mojom::PermissionStatus> GetEmbedderContextPermissionOverride(
-+    BrowserContext*, const url::Origin&, const url::Origin&, blink::PermissionType);
-+// Add grants to the exact origin/global scope, using the actual override table.
-+CONTENT_EXPORT void GrantEmbedderContextPermissions(
-+    BrowserContext*, const std::optional<url::Origin>& origin,
-+    const std::vector<blink::PermissionType>& permissions,
-+    base::OnceCallback<void(bool)> done);
-+CONTENT_EXPORT void ResetEmbedderContextPermissions(BrowserContext*, base::OnceClosure done);
-+}  // namespace content
-+#endif
---- a/content/browser/permissions/permission_controller_impl.h
-+++ b/content/browser/permissions/permission_controller_impl.h
-@@ -11,6 +11,7 @@
- #include "base/containers/id_map.h"
- #include "base/functional/callback_forward.h"
- #include "base/memory/raw_ptr.h"
-+#include "base/memory/weak_ptr.h"
- #include "base/types/optional_ref.h"
- #include "content/browser/permissions/permission_overrides.h"
- #include "content/common/content_export.h"
-@@ -51,6 +52,17 @@
-       BrowserContext* browser_context);
- 
-   enum class OverrideStatus { kOverrideNotSet, kOverrideSet };
-+
-+  // Embedder-facing bridge implementations, preserving subscription updates.
-+  void UpdateEmbedderState(base::OnceClosure update);
-+  uint64_t GetEmbedderContextRevision(const url::Origin&, const url::Origin&, PermissionType);
-+  std::optional<PermissionStatus> GetExactEmbedderContextOverride(
-+      base::optional_ref<const url::Origin>, base::optional_ref<const url::Origin>, PermissionType);
-+
-+  std::optional<PermissionStatus> GetEmbedderContextOverride(
-+      const url::Origin& requesting, const url::Origin& embedding,
-+      PermissionType type);
-+
- 
-   // Sets status for |permissions| to GRANTED for |requesting_origin| and
-   // |embedding_origin|, and DENIED for all others. Null |requesting_origin| and
-@@ -223,6 +235,7 @@
-   SubscriptionId::Generator subscription_id_generator_;
- 
-   raw_ptr<BrowserContext> browser_context_;
-+  base::WeakPtrFactory<PermissionControllerImpl> weak_factory_{this};
- };
- 
- }  // namespace content
 --- a/content/browser/permissions/permission_controller_impl.cc
 +++ b/content/browser/permissions/permission_controller_impl.cc
-@@ -4,21 +4,26 @@
+@@ -4,23 +4,28 @@
  
  #include "content/browser/permissions/permission_controller_impl.h"
  
@@ -136,12 +23,14 @@ Shell document requests can be taken asynchronously without changing defaults.
  #include "base/barrier_closure.h"
 +#include "base/feature_list.h"
  #include "base/functional/bind.h"
+ #include "base/memory/weak_ptr.h"
 +#include "base/no_destructor.h"
  #include "base/types/optional_ref.h"
  #include "components/content_settings/core/common/content_settings.h"
  #include "components/content_settings/core/common/content_settings_types.h"
 +#include "components/content_settings/core/common/features.h"
  #include "content/browser/permissions/permission_service_context.h"
+ #include "content/browser/permissions/permission_subscription_impl.h"
  #include "content/browser/permissions/permission_util.h"
  #include "content/browser/renderer_host/render_frame_host_impl.h"
  #include "content/public/browser/browser_context.h"
@@ -150,11 +39,10 @@ Shell document requests can be taken asynchronously without changing defaults.
  #include "content/public/browser/permission_controller.h"
  #include "content/public/browser/permission_controller_delegate.h"
  #include "content/public/browser/permission_descriptor_util.h"
-@@ -40,6 +45,31 @@
- namespace content {
+@@ -43,6 +48,31 @@ namespace content {
  
  namespace {
-+
+ 
 +struct EmbedderHooks {
 +  EmbedderPermissionStatusHook status;
 +  EmbedderPermissionChangedHook changed;
@@ -179,10 +67,11 @@ Shell document requests can be taken asynchronously without changing defaults.
 +        requesting ? std::make_optional(*requesting) : std::nullopt,
 +        embedding ? std::make_optional(*embedding) : std::nullopt, type, committed);
 +}
- 
++
  std::optional<blink::scheduler::WebSchedulerTrackedFeature>
  PermissionToSchedulingFeature(PermissionType permission_name) {
-@@ -283,9 +313,20 @@
+   switch (permission_name) {
+@@ -285,9 +315,20 @@ std::vector<OverrideResult> OverridePermissions(
    for (const auto& permission : description.permissions) {
      PermissionType type =
          blink::PermissionDescriptorToPermissionType(permission);
@@ -206,11 +95,10 @@ Shell document requests can be taken asynchronously without changing defaults.
      if (!override_status) {
        permissions_without_overrides.push_back(permission.Clone());
      }
-@@ -329,6 +370,87 @@
- }
+@@ -332,6 +373,87 @@ void UpdateRenderFrameHostPostPermissionRequest(
  
  }  // namespace
-+
+ 
 +uint64_t NextEmbedderPermissionRevision() { return PermissionOverrides::NextRevision(); }
 +uint64_t GetEmbedderContextPermissionRevision(BrowserContext* context,
 +    const url::Origin& requesting, const url::Origin& embedding, PermissionType type) {
@@ -291,10 +179,11 @@ Shell document requests can be taken asynchronously without changing defaults.
 +    const url::Origin& requesting, const url::Origin& embedding, PermissionType type) {
 +  return permission_overrides_.GetRawStatus(requesting, embedding, type);
 +}
- 
++
  PermissionControllerImpl::PermissionControllerImpl(
      BrowserContext* browser_context)
-@@ -440,8 +562,10 @@
+     : browser_context_(browser_context) {}
+@@ -461,8 +583,10 @@ void PermissionControllerImpl::SetPermissionOverride(
    const auto old_statuses =
        GetSubscriptionsStatuses(requesting_origin_url, embedding_origin_url);
  
@@ -305,7 +194,7 @@ Shell document requests can be taken asynchronously without changing defaults.
    NotifyChangedSubscriptions(old_statuses);
    UpdateCookieManagerContentSettings(
        permission,
-@@ -478,8 +602,10 @@
+@@ -499,8 +623,10 @@ void PermissionControllerImpl::GrantPermissionOverrides(
    const auto old_statuses =
        GetSubscriptionsStatuses(requesting_origin_url, embedding_origin_url);
  
@@ -316,7 +205,7 @@ Shell document requests can be taken asynchronously without changing defaults.
    // If any statuses changed because they lose overrides or the new overrides
    // modify their previous state (overridden or not), subscribers must be
    // notified manually.
-@@ -493,7 +619,9 @@
+@@ -514,7 +640,9 @@ void PermissionControllerImpl::GrantPermissionOverrides(
  void PermissionControllerImpl::ResetPermissionOverrides(
      base::OnceClosure callback) {
    const auto old_statuses = GetSubscriptionsStatuses();
@@ -326,7 +215,7 @@ Shell document requests can be taken asynchronously without changing defaults.
  
    // If any statuses changed because they lost their overrides, the subscribers
    // must be notified manually.
-@@ -636,6 +764,12 @@
+@@ -657,6 +785,12 @@ PermissionControllerImpl::GetPermissionResultForCurrentDocumentInternal(
      bool should_include_device_status) {
    auto permission_type =
        blink::PermissionDescriptorToPermissionType(permission_descriptor);
@@ -339,7 +228,7 @@ Shell document requests can be taken asynchronously without changing defaults.
    std::optional<PermissionResult> permission_result = permission_overrides_.Get(
        render_frame_host->GetLastCommittedOrigin(),
        render_frame_host->GetMainFrame()->GetLastCommittedOrigin(),
-@@ -760,6 +894,11 @@
+@@ -781,6 +915,11 @@ PermissionControllerImpl::GetPermissionResultForEmbeddedRequester(
      return PermissionResult(PermissionStatus::DENIED);
    }
  
@@ -351,11 +240,10 @@ Shell document requests can be taken asynchronously without changing defaults.
    std::optional<PermissionResult> permission_result = permission_overrides_.Get(
        requesting_origin,
        render_frame_host->GetMainFrame()->GetLastCommittedOrigin(),
-@@ -824,6 +963,14 @@
-   // DCHECK() above should be enough.
-   if (!subscription) {
+@@ -844,6 +983,14 @@ void PermissionControllerImpl::PermissionResultChange(
+     callback.Run(result);
      return;
-+  }
+   }
 +  if (auto* frame = RenderFrameHost::FromID(subscription->render_process_id, subscription->render_frame_id)) {
 +    const auto type = blink::PermissionDescriptorToPermissionType(subscription->permission_descriptor);
 +    if (EmbedderStatus(frame, type, url::Origin::Create(subscription->requesting_origin),
@@ -363,53 +251,30 @@ Shell document requests can be taken asynchronously without changing defaults.
 +      callback.Run(GetSubscriptionCurrentResult(*subscription));
 +      return;
 +    }
-   }
++  }
    std::optional<PermissionResult> permission_result = permission_overrides_.Get(
        url::Origin::Create(subscription->requesting_origin),
---- a/content/browser/permissions/permission_overrides.h
-+++ b/content/browser/permissions/permission_overrides.h
-@@ -5,6 +5,7 @@
- #ifndef CONTENT_BROWSER_PERMISSIONS_PERMISSION_OVERRIDES_H_
- #define CONTENT_BROWSER_PERMISSIONS_PERMISSION_OVERRIDES_H_
+       url::Origin::Create(subscription->embedding_origin),
+--- a/content/browser/permissions/permission_controller_impl.h
++++ b/content/browser/permissions/permission_controller_impl.h
+@@ -61,6 +61,17 @@ class CONTENT_EXPORT PermissionControllerImpl : public PermissionController {
  
-+#include <cstdint>
- #include <optional>
- #include <variant>
- #include <vector>
-@@ -27,6 +28,17 @@
- // Maintains permission overrides for each origin.
- class CONTENT_EXPORT PermissionOverrides {
-  public:
-+  // Logical ordering shared with per-document embedder policy. GetRevision
-+  // follows exactly the same scope/fallback rules as Get; reset invalidates
-+  // older native policies without copying this table into the embedder.
-+  static uint64_t NextRevision();
-+  uint64_t GetRevision(const url::Origin&, const url::Origin&, blink::PermissionType) const;
-+  std::optional<blink::mojom::PermissionStatus> GetRawStatus(
-+      const url::Origin&, const url::Origin&, blink::PermissionType) const;
-+  std::optional<blink::mojom::PermissionStatus> GetExactStatus(
-+      base::optional_ref<const url::Origin>, base::optional_ref<const url::Origin>,
-+      blink::PermissionType) const;
+   enum class OverrideStatus { kOverrideNotSet, kOverrideSet };
+ 
++  // Embedder-facing bridge implementations, preserving subscription updates.
++  void UpdateEmbedderState(base::OnceClosure update);
++  uint64_t GetEmbedderContextRevision(const url::Origin&, const url::Origin&, PermissionType);
++  std::optional<PermissionStatus> GetExactEmbedderContextOverride(
++      base::optional_ref<const url::Origin>, base::optional_ref<const url::Origin>, PermissionType);
 +
-   PermissionOverrides();
-   ~PermissionOverrides();
-   PermissionOverrides(PermissionOverrides&& other);
-@@ -119,7 +131,14 @@
-       const url::Origin& embedding_origin,
-       blink::PermissionType permission) const;
- 
--  base::flat_map<PermissionKey, blink::mojom::PermissionStatus> overrides_;
-+  struct OverrideValue {
-+    blink::mojom::PermissionStatus status = blink::mojom::PermissionStatus::ASK;
-+    uint64_t revision = 0;
-+  };
-+  const OverrideValue* FindValue(const url::Origin&, const url::Origin&, blink::PermissionType) const;
-+  base::flat_map<PermissionKey, OverrideValue> overrides_;
-+  uint64_t reset_revision_;
++  std::optional<PermissionStatus> GetEmbedderContextOverride(
++      const url::Origin& requesting, const url::Origin& embedding,
++      PermissionType type);
 +
- };
- 
- }  // namespace content
++
+   // Sets status for |permissions| to GRANTED for |requesting_origin| and
+   // |embedding_origin|, and DENIED for all others. Null |requesting_origin| and
+   // |embedding_origin| grants permissions globally for context.
 --- a/content/browser/permissions/permission_overrides.cc
 +++ b/content/browser/permissions/permission_overrides.cc
 @@ -5,6 +5,7 @@
@@ -420,7 +285,7 @@ Shell document requests can be taken asynchronously without changing defaults.
  #include <optional>
  #include <utility>
  
-@@ -80,7 +81,14 @@
+@@ -80,7 +81,14 @@ PermissionOverrides::PermissionKey::PermissionKey(PermissionKey&&) = default;
  PermissionOverrides::PermissionKey&
  PermissionOverrides::PermissionKey::operator=(PermissionKey&& other) = default;
  
@@ -436,7 +301,7 @@ Shell document requests can be taken asynchronously without changing defaults.
  PermissionOverrides::~PermissionOverrides() = default;
  PermissionOverrides::PermissionOverrides(PermissionOverrides&& other) = default;
  PermissionOverrides& PermissionOverrides::operator=(
-@@ -95,8 +103,8 @@
+@@ -95,8 +103,8 @@ void PermissionOverrides::Set(
    // GEOLOCATION_APPROXIMATE.
    CHECK_NE(permission, blink::PermissionType::GEOLOCATION_APPROXIMATE);
  
@@ -447,7 +312,7 @@ Shell document requests can be taken asynchronously without changing defaults.
  
    // Special override status - MIDI_SYSEX is stronger than MIDI, meaning that
    // granting MIDI_SYSEX implies granting MIDI, while denying MIDI implies
-@@ -104,25 +112,44 @@
+@@ -104,25 +112,44 @@ void PermissionOverrides::Set(
    if (permission == blink::PermissionType::MIDI &&
        status != PermissionStatus::GRANTED) {
      overrides_[PermissionKey(requesting_origin, embedding_origin,
@@ -457,11 +322,10 @@ Shell document requests can be taken asynchronously without changing defaults.
               status == PermissionStatus::GRANTED) {
      overrides_[PermissionKey(requesting_origin, embedding_origin,
 -                             blink::PermissionType::MIDI)] = status;
--  }
 +                             blink::PermissionType::MIDI)] = value;
-+  }
-+}
-+
+   }
+ }
+ 
 +const PermissionOverrides::OverrideValue* PermissionOverrides::FindValue(
 +    const url::Origin& requesting, const url::Origin& embedding, blink::PermissionType type) const {
 +  if (type == blink::PermissionType::GEOLOCATION_APPROXIMATE) type = blink::PermissionType::GEOLOCATION;
@@ -484,8 +348,8 @@ Shell document requests can be taken asynchronously without changing defaults.
 +  if (type == blink::PermissionType::GEOLOCATION_APPROXIMATE) type = blink::PermissionType::GEOLOCATION;
 +  const auto* value = base::FindOrNull(overrides_, PermissionKey(requesting, embedding, type));
 +  return value ? std::make_optional(value->status) : std::nullopt;
- }
- 
++}
++
  std::optional<blink::mojom::PermissionStatus> PermissionOverrides::GetStatus(
      const url::Origin& requesting_origin,
      const url::Origin& embedding_origin,
@@ -502,7 +366,7 @@ Shell document requests can be taken asynchronously without changing defaults.
  
    if (!status) {
      return std::nullopt;
-@@ -178,7 +205,7 @@
+@@ -178,7 +205,7 @@ PermissionOverrides::CreateContentSettingsForType(
      }
  
      std::optional<ContentSetting> setting;
@@ -511,3 +375,107 @@ Shell document requests can be taken asynchronously without changing defaults.
        case blink::mojom::PermissionStatus::GRANTED:
          setting = ContentSetting::CONTENT_SETTING_ALLOW;
          break;
+--- a/content/browser/permissions/permission_overrides.h
++++ b/content/browser/permissions/permission_overrides.h
+@@ -5,6 +5,7 @@
+ #ifndef CONTENT_BROWSER_PERMISSIONS_PERMISSION_OVERRIDES_H_
+ #define CONTENT_BROWSER_PERMISSIONS_PERMISSION_OVERRIDES_H_
+ 
++#include <cstdint>
+ #include <optional>
+ #include <variant>
+ #include <vector>
+@@ -27,6 +28,17 @@ namespace content {
+ // Maintains permission overrides for each origin.
+ class CONTENT_EXPORT PermissionOverrides {
+  public:
++  // Logical ordering shared with per-document embedder policy. GetRevision
++  // follows exactly the same scope/fallback rules as Get; reset invalidates
++  // older native policies without copying this table into the embedder.
++  static uint64_t NextRevision();
++  uint64_t GetRevision(const url::Origin&, const url::Origin&, blink::PermissionType) const;
++  std::optional<blink::mojom::PermissionStatus> GetRawStatus(
++      const url::Origin&, const url::Origin&, blink::PermissionType) const;
++  std::optional<blink::mojom::PermissionStatus> GetExactStatus(
++      base::optional_ref<const url::Origin>, base::optional_ref<const url::Origin>,
++      blink::PermissionType) const;
++
+   PermissionOverrides();
+   ~PermissionOverrides();
+   PermissionOverrides(PermissionOverrides&& other);
+@@ -119,7 +131,14 @@ class CONTENT_EXPORT PermissionOverrides {
+       const url::Origin& embedding_origin,
+       blink::PermissionType permission) const;
+ 
+-  base::flat_map<PermissionKey, blink::mojom::PermissionStatus> overrides_;
++  struct OverrideValue {
++    blink::mojom::PermissionStatus status = blink::mojom::PermissionStatus::ASK;
++    uint64_t revision = 0;
++  };
++  const OverrideValue* FindValue(const url::Origin&, const url::Origin&, blink::PermissionType) const;
++  base::flat_map<PermissionKey, OverrideValue> overrides_;
++  uint64_t reset_revision_;
++
+ };
+ 
+ }  // namespace content
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -176,6 +176,7 @@ source_set("browser_sources") {
+     "download_request_utils.h",
+     "download_utils.h",
+     "editable_level.h",
++    "embedder_permission_hooks.h",
+     "embedder_widget_hooks.h",
+     "error_navigation_trigger.h",
+     "eye_dropper.h",
+new file mode 100644
+--- /dev/null
++++ b/content/public/browser/embedder_permission_hooks.h
+@@ -0,0 +1,46 @@
++// Embedder permission policy, sharing Chromium's override and subscription path.
++#ifndef CONTENT_PUBLIC_BROWSER_EMBEDDER_PERMISSION_HOOKS_H_
++#define CONTENT_PUBLIC_BROWSER_EMBEDDER_PERMISSION_HOOKS_H_
++#include <cstdint>
++#include <optional>
++#include <vector>
++#include "base/functional/callback.h"
++#include "content/common/content_export.h"
++#include "content/public/browser/permission_result.h"
++#include "third_party/blink/public/common/permissions/permission_utils.h"
++#include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
++#include "url/origin.h"
++namespace content {
++class BrowserContext;
++class RenderFrameHost;
++// UI thread only. The status hook must be side-effect free. nullopt leaves
++// the decision to Chromium. A prompt override delegates an actual request.
++using EmbedderPermissionStatusHook = base::RepeatingCallback<
++    std::optional<blink::mojom::PermissionStatus>(RenderFrameHost*, blink::PermissionType,
++                                                const url::Origin&, const url::Origin&)>;
++// A committed CDP/context override operation. Empty type means all types;
++// empty origins mean the whole context. The final argument is false before
++// mutation (for deadlines), true after it commits; both precede subscriptions.
++using EmbedderPermissionChangedHook = base::RepeatingCallback<void(
++    BrowserContext*, const std::optional<url::Origin>&,
++    const std::optional<url::Origin>&, std::optional<blink::PermissionType>, bool committed)>;
++CONTENT_EXPORT uint64_t NextEmbedderPermissionRevision();
++CONTENT_EXPORT uint64_t GetEmbedderContextPermissionRevision(
++    BrowserContext*, const url::Origin&, const url::Origin&, blink::PermissionType);
++CONTENT_EXPORT PermissionResult CreateEmbedderPermissionResult(
++    blink::PermissionType, blink::mojom::PermissionStatus, bool for_query = false);
++CONTENT_EXPORT void SetEmbedderPermissionHooks(EmbedderPermissionStatusHook status,
++                                               EmbedderPermissionChangedHook changed);
++// Snapshot subscriptions, run one embedder state mutation, then report changes.
++CONTENT_EXPORT void UpdateEmbedderPermissionState(BrowserContext*, base::OnceClosure update);
++// Raw policy decision; use CreateEmbedderPermissionResult(..., true) for query exposure.
++CONTENT_EXPORT std::optional<blink::mojom::PermissionStatus> GetEmbedderContextPermissionOverride(
++    BrowserContext*, const url::Origin&, const url::Origin&, blink::PermissionType);
++// Add grants to the exact origin/global scope, using the actual override table.
++CONTENT_EXPORT void GrantEmbedderContextPermissions(
++    BrowserContext*, const std::optional<url::Origin>& origin,
++    const std::vector<blink::PermissionType>& permissions,
++    base::OnceCallback<void(bool)> done);
++CONTENT_EXPORT void ResetEmbedderContextPermissions(BrowserContext*, base::OnceClosure done);
++}  // namespace content
++#endif

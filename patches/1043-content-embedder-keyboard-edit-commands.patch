@@ -3,41 +3,9 @@ Off-screen input: forward native key-binding commands with one keyboard event.
 The embedder can use AppKit key bindings without sending duplicate keydown
 events. Chromium runs commands only if the page accepts the key event.
 
---- a/content/public/browser/embedder_widget_hooks.h
-+++ b/content/public/browser/embedder_widget_hooks.h
-@@ -5,7 +5,12 @@
- #ifndef CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
- #define CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
- 
-+#include <string>
-+#include <vector>
-+
- #include "content/common/content_export.h"
-+
-+namespace input { struct NativeWebKeyboardEvent; }
- 
- class SkBitmap;
- 
-@@ -53,6 +58,16 @@
-                        const gfx::Point& location) = nullptr;
- };
- 
-+// Editing commands resolved by the host's native key bindings (AppKit).
-+struct EmbedderEditCommand {
-+  std::string name;
-+  std::string value;
-+};
-+CONTENT_EXPORT void ForwardEmbedderKeyboardEventWithCommands(
-+    RenderWidgetHost* widget,
-+    const input::NativeWebKeyboardEvent& event,
-+    const std::vector<EmbedderEditCommand>& commands);
-+
- CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
- CONTENT_EXPORT const EmbedderWidgetHooks& GetEmbedderWidgetHooks();
- 
 --- a/content/browser/renderer_host/render_widget_host_impl.cc
 +++ b/content/browser/renderer_host/render_widget_host_impl.cc
-@@ -4565,6 +4565,17 @@
+@@ -4737,6 +4737,17 @@ namespace {
  EmbedderWidgetHooks g_embedder_widget_hooks;
  }  // namespace
  
@@ -55,3 +23,36 @@ events. Chromium runs commands only if the page accepts the key event.
  void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks) {
    g_embedder_widget_hooks = hooks;
  }
+--- a/content/public/browser/embedder_widget_hooks.h
++++ b/content/public/browser/embedder_widget_hooks.h
+@@ -5,8 +5,13 @@
+ #ifndef CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
+ #define CONTENT_PUBLIC_BROWSER_EMBEDDER_WIDGET_HOOKS_H_
+ 
++#include <string>
++#include <vector>
++
+ #include "content/common/content_export.h"
+ 
++namespace input { struct NativeWebKeyboardEvent; }
++
+ class SkBitmap;
+ 
+ namespace gfx {
+@@ -53,6 +58,16 @@ struct EmbedderWidgetHooks {
+                        const gfx::Point& location) = nullptr;
+ };
+ 
++// Editing commands resolved by the host's native key bindings (AppKit).
++struct EmbedderEditCommand {
++  std::string name;
++  std::string value;
++};
++CONTENT_EXPORT void ForwardEmbedderKeyboardEventWithCommands(
++    RenderWidgetHost* widget,
++    const input::NativeWebKeyboardEvent& event,
++    const std::vector<EmbedderEditCommand>& commands);
++
+ CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
+ CONTENT_EXPORT const EmbedderWidgetHooks& GetEmbedderWidgetHooks();
+ 

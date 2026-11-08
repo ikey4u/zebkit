@@ -24,7 +24,7 @@ nothing for a tap, and costs nothing more.
 
 --- a/media/base/BUILD.gn
 +++ b/media/base/BUILD.gn
-@@ -181,6 +181,7 @@
+@@ -180,6 +180,7 @@ source_set("base") {
      "demuxer_memory_limit.h",
      "demuxer_stream.cc",
      "demuxer_stream.h",
@@ -34,7 +34,7 @@ nothing for a tap, and costs nothing more.
      "djb2.h",
 --- a/media/base/decoder_buffer_queue.h
 +++ b/media/base/decoder_buffer_queue.h
-@@ -65,6 +65,14 @@
+@@ -71,6 +71,14 @@ class MEDIA_EXPORT DecoderBufferQueue {
    // Returns the number of buffers in the queue.
    size_t queue_size() const { return queue_.size(); }
  
@@ -60,7 +60,7 @@ nothing for a tap, and costs nothing more.
  namespace media {
  
  DemuxerHost::~DemuxerHost() = default;
-@@ -16,4 +18,20 @@
+@@ -16,4 +18,20 @@ Demuxer::~Demuxer() = default;
  // Do nothing by default.
  void Demuxer::DisableCanChangeType() {}
  
@@ -91,7 +91,7 @@ nothing for a tap, and costs nothing more.
  #include "media/base/eme_constants.h"
  #include "media/base/media_export.h"
  #include "media/base/media_resource.h"
-@@ -181,6 +182,12 @@
+@@ -181,6 +182,12 @@ class MEDIA_EXPORT Demuxer : public MediaResource {
  
    // Allow canChangeType to be disabled.
    virtual void DisableCanChangeType();
@@ -104,6 +104,7 @@ nothing for a tap, and costs nothing more.
  };
  
  }  // namespace media
+new file mode 100644
 --- /dev/null
 +++ b/media/base/demuxer_tap.h
 @@ -0,0 +1,60 @@
@@ -169,7 +170,7 @@ nothing for a tap, and costs nothing more.
 +#endif  // MEDIA_BASE_DEMUXER_TAP_H_
 --- a/media/filters/chunk_demuxer.cc
 +++ b/media/filters/chunk_demuxer.cc
-@@ -135,6 +135,11 @@
+@@ -135,6 +135,11 @@ bool ChunkDemuxerStream::Append(const StreamParser::BufferQueue& buffers) {
    base::AutoLock auto_lock(lock_);
    DCHECK_NE(state_, SHUTDOWN);
    stream_->Append(buffers);
@@ -181,7 +182,7 @@ nothing for a tap, and costs nothing more.
  
    if (read_cb_)
      CompletePendingReadIfPossible_Locked();
-@@ -142,6 +147,45 @@
+@@ -142,6 +147,45 @@ bool ChunkDemuxerStream::Append(const StreamParser::BufferQueue& buffers) {
    return true;
  }
  
@@ -227,7 +228,7 @@ nothing for a tap, and costs nothing more.
  void ChunkDemuxerStream::Remove(base::TimeDelta start,
                                  base::TimeDelta end,
                                  base::TimeDelta duration) {
-@@ -509,6 +553,24 @@
+@@ -509,6 +553,24 @@ void ChunkDemuxer::Stop() {
    Shutdown();
  }
  
@@ -252,7 +253,7 @@ nothing for a tap, and costs nothing more.
  void ChunkDemuxer::Seek(base::TimeDelta time, PipelineStatusCallback cb) {
    DVLOG(1) << "Seek(" << time.InSecondsF() << ")";
    DCHECK(time >= base::TimeDelta());
-@@ -1365,6 +1427,17 @@
+@@ -1365,6 +1427,17 @@ void ChunkDemuxer::Shutdown() {
  
    ChangeState_Locked(SHUTDOWN);
  
@@ -270,7 +271,7 @@ nothing for a tap, and costs nothing more.
    if (seek_cb_)
      RunSeekCB_Locked(PIPELINE_ERROR_ABORT);
  }
-@@ -1525,6 +1598,9 @@
+@@ -1525,6 +1598,9 @@ ChunkDemuxerStream* ChunkDemuxer::CreateDemuxerStream(
    track_id_to_demux_stream_map_[media_track_id] = stream.get();
    id_to_streams_map_[source_id].push_back(stream.get());
    stream->SetEnabled(owning_vector->empty(), base::TimeDelta());
@@ -282,7 +283,7 @@ nothing for a tap, and costs nothing more.
  }
 --- a/media/filters/chunk_demuxer.h
 +++ b/media/filters/chunk_demuxer.h
-@@ -146,6 +146,11 @@
+@@ -146,6 +146,11 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
  
    MediaTrack::Id media_track_id() const { return media_track_id_; }
  
@@ -294,7 +295,7 @@ nothing for a tap, and costs nothing more.
    // Allows tests to verify invocations of Append().
    using AppendObserverCB = base::RepeatingCallback<void(const BufferQueue*)>;
    void set_append_observer_for_testing(AppendObserverCB append_observer_cb) {
-@@ -176,6 +181,9 @@
+@@ -176,6 +181,9 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
    std::pair<SourceBufferStreamStatus, DemuxerStream::DecoderBufferVector>
    GetPendingBuffers_Locked() EXCLUSIVE_LOCKS_REQUIRED(lock_);
  
@@ -304,7 +305,7 @@ nothing for a tap, and costs nothing more.
    // Specifies the type of the stream.
    const Type type_;
  
-@@ -198,6 +206,10 @@
+@@ -198,6 +206,10 @@ class MEDIA_EXPORT ChunkDemuxerStream : public DemuxerStream {
    State state_ GUARDED_BY(lock_);
    ReadCB read_cb_ GUARDED_BY(lock_);
    bool is_enabled_ GUARDED_BY(lock_);
@@ -315,7 +316,7 @@ nothing for a tap, and costs nothing more.
  };
  
  // Demuxer implementation that allows chunks of media data to be passed
-@@ -232,6 +244,7 @@
+@@ -232,6 +244,7 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
  
    void Initialize(DemuxerHost* host, PipelineStatusCallback init_cb) override;
    void Stop() override;
@@ -323,7 +324,7 @@ nothing for a tap, and costs nothing more.
    void Seek(base::TimeDelta time, PipelineStatusCallback cb) override;
    bool IsSeekable() const override;
    base::Time GetTimelineOffset() const override;
-@@ -544,6 +557,9 @@
+@@ -544,6 +557,9 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
    State state_ = WAITING_FOR_INIT;
    bool cancel_next_seek_ = false;
  
@@ -335,7 +336,7 @@ nothing for a tap, and costs nothing more.
    // system_health.memory_desktop/browse:media:youtubetv:2019`.
 --- a/media/filters/demuxer_manager.h
 +++ b/media/filters/demuxer_manager.h
-@@ -108,6 +108,8 @@
+@@ -108,6 +108,8 @@ class MEDIA_EXPORT DemuxerManager {
    // Methods that help manage demuxers
    std::optional<double> GetDemuxerDuration();
    std::optional<DemuxerType> GetDemuxerType() const;
@@ -346,7 +347,7 @@ nothing for a tap, and costs nothing more.
    void DisableDemuxerCanChangeType();
 --- a/media/filters/ffmpeg_demuxer.cc
 +++ b/media/filters/ffmpeg_demuxer.cc
-@@ -619,10 +619,62 @@
+@@ -618,6 +618,15 @@ void FFmpegDemuxerStream::EnqueuePacket(ScopedAVPacket packet) {
      duration_ = new_duration;
    }
  
@@ -360,6 +361,9 @@ nothing for a tap, and costs nothing more.
 +  }
 +
    buffer_queue_.Push(std::move(buffer));
+   SatisfyPendingRead();
+ }
+@@ -629,6 +638,49 @@ void FFmpegDemuxerStream::OnMetadataAvailable() {
    SatisfyPendingRead();
  }
  
@@ -409,7 +413,7 @@ nothing for a tap, and costs nothing more.
  void FFmpegDemuxerStream::SetEndOfStream() {
    DCHECK(task_runner_->RunsTasksInCurrentSequence());
    end_of_stream_ = true;
-@@ -630,6 +682,8 @@
+@@ -636,6 +688,8 @@ void FFmpegDemuxerStream::SetEndOfStream() {
  }
  
  void FFmpegDemuxerStream::FlushBuffers(bool preserve_packet_position) {
@@ -418,15 +422,15 @@ nothing for a tap, and costs nothing more.
    DCHECK(task_runner_->RunsTasksInCurrentSequence());
    DCHECK(preserve_packet_position || !read_cb_)
        << "There should be no pending read";
-@@ -828,6 +882,7 @@
-            i < std::min(requested_buffer_count_, buffer_queue_.queue_size());
-            ++i) {
-         output_buffers.emplace_back(buffer_queue_.Pop());
-+        KeepForTap(output_buffers.back());
-       }
+@@ -831,6 +885,7 @@ void FFmpegDemuxerStream::SatisfyPendingRead() {
+     while (output_buffers.size() < requested_buffer_count_ &&
+            PrepareFrontBufferForRead()) {
+       output_buffers.emplace_back(buffer_queue_.Pop());
++      KeepForTap(output_buffers.back());
+     }
+     if (!output_buffers.empty()) {
        DVLOG(3) << __func__ << " Status:kOk, return output_buffers.size = "
-                << output_buffers.size();
-@@ -1001,6 +1056,11 @@
+@@ -1029,6 +1084,11 @@ void FFmpegDemuxer::Stop() {
        stream->Stop();
    }
  
@@ -438,7 +442,7 @@ nothing for a tap, and costs nothing more.
    data_source_ = nullptr;
  
    // Invalidate WeakPtrs on |task_runner_|, destruction may happen on another
-@@ -1013,6 +1073,31 @@
+@@ -1041,6 +1101,31 @@ void FFmpegDemuxer::Stop() {
  
  void FFmpegDemuxer::StartWaitingForSeek(base::TimeDelta seek_time) {}
  
@@ -472,7 +476,7 @@ nothing for a tap, and costs nothing more.
      AbortPendingReads();
 --- a/media/filters/ffmpeg_demuxer.h
 +++ b/media/filters/ffmpeg_demuxer.h
-@@ -131,6 +131,12 @@
+@@ -137,6 +137,12 @@ class MEDIA_EXPORT FFmpegDemuxerStream : public DemuxerStream {
    const AVRational& stream_time_base() const { return stream_time_base_; }
    base::TimeDelta stream_start_time() const { return stream_start_time_; }
  
@@ -485,7 +489,7 @@ nothing for a tap, and costs nothing more.
   private:
    friend class FFmpegDemuxerTest;
  
-@@ -176,6 +182,12 @@
+@@ -187,6 +193,12 @@ class MEDIA_EXPORT FFmpegDemuxerStream : public DemuxerStream {
    DecoderBufferQueue buffer_queue_;
    ReadCB read_cb_;
  
@@ -498,7 +502,7 @@ nothing for a tap, and costs nothing more.
  #if BUILDFLAG(USE_PROPRIETARY_CODECS)
    std::unique_ptr<FFmpegBitstreamConverter> bitstream_converter_;
  #endif
-@@ -240,6 +252,8 @@
+@@ -257,6 +269,8 @@ class MEDIA_EXPORT FFmpegDemuxer : public Demuxer {
                         base::TimeDelta curr_time,
                         TrackChangeCB change_completed_cb) override;
    void SetPlaybackRate(double rate) override {}
@@ -507,7 +511,7 @@ nothing for a tap, and costs nothing more.
  
    // The lowest demuxed timestamp.
    base::TimeDelta start_time() const { return start_time_; }
-@@ -327,6 +341,9 @@
+@@ -366,6 +380,9 @@ class MEDIA_EXPORT FFmpegDemuxer : public Demuxer {
    // Indicates if Stop() has been called.
    bool stopped_ = false;
  
@@ -519,7 +523,7 @@ nothing for a tap, and costs nothing more.
    // TODO(scherkus): Allow more than one read in flight for higher read
 --- a/media/filters/manifest_demuxer.cc
 +++ b/media/filters/manifest_demuxer.cc
-@@ -320,6 +320,12 @@
+@@ -320,6 +320,12 @@ void ManifestDemuxer::OnTracksChanged(DemuxerStream::Type track_type,
                       std::move(track_id), std::move(change_completed_cb)));
  }
  
@@ -534,7 +538,7 @@ nothing for a tap, and costs nothing more.
    bool rate_increase = rate > current_playback_rate_;
 --- a/media/filters/manifest_demuxer.h
 +++ b/media/filters/manifest_demuxer.h
-@@ -207,6 +207,7 @@
+@@ -207,6 +207,7 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
    base::Time GetTimelineOffset() const override;
    int64_t GetMemoryUsage() const override;
    void SetPlaybackRate(double rate) override;
@@ -544,7 +548,7 @@ nothing for a tap, and costs nothing more.
  
 --- a/media/filters/source_buffer_range.h
 +++ b/media/filters/source_buffer_range.h
-@@ -250,6 +250,9 @@
+@@ -253,6 +253,9 @@ class MEDIA_EXPORT SourceBufferRange {
    // Returns the memory usage of the buffered data in bytes.
    size_t GetMemoryUsage() const { return memory_usage_in_bytes_; }
  
@@ -556,7 +560,7 @@ nothing for a tap, and costs nothing more.
    friend class SourceBufferStreamTest;
 --- a/media/filters/source_buffer_stream.cc
 +++ b/media/filters/source_buffer_stream.cc
-@@ -2032,4 +2032,48 @@
+@@ -2037,4 +2037,48 @@ bool SourceBufferStream::IsRangeListSortedForTesting() const {
    return IsRangeListSorted(ranges_);
  }
  
@@ -615,7 +619,7 @@ nothing for a tap, and costs nothing more.
  #include "base/logging.h"
  #include "base/memory/memory_pressure_listener.h"
  #include "base/memory/raw_ptr.h"
-@@ -179,6 +180,17 @@
+@@ -179,6 +180,17 @@ class MEDIA_EXPORT SourceBufferStream {
    // stream buffer queue.
    bool IsNextBufferConfigChanged();
  

@@ -7,7 +7,7 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
 
 --- a/media/base/demuxer_tap.h
 +++ b/media/base/demuxer_tap.h
-@@ -30,6 +30,11 @@
+@@ -30,6 +30,11 @@ class MEDIA_EXPORT DemuxerTap
    DemuxerTap(const DemuxerTap&) = delete;
    DemuxerTap& operator=(const DemuxerTap&) = delete;
  
@@ -19,40 +19,9 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
    // |stream| tells the streams apart; it is not to be called.
    virtual void OnAudioConfig(const void* stream,
                               const AudioDecoderConfig& config) = 0;
---- a/media/filters/ffmpeg_demuxer.cc
-+++ b/media/filters/ffmpeg_demuxer.cc
-@@ -1087,6 +1087,8 @@
-     tap_->OnStopped();
-   }
-   tap_ = std::move(tap);
-+  if (tap_ && !timeline_offset_.is_null())
-+    tap_->OnTimelineOffset(timeline_offset_);
-   for (const auto& stream : streams_) {
-     if (!stream) {
-       continue;
---- a/media/filters/chunk_demuxer.h
-+++ b/media/filters/chunk_demuxer.h
-@@ -245,6 +245,8 @@
-   void Initialize(DemuxerHost* host, PipelineStatusCallback init_cb) override;
-   void Stop() override;
-   void SetTap(scoped_refptr<DemuxerTap> tap, base::TimeDelta from) override;
-+  // The manifest's UTC mapping, separate from parser-owned container dates.
-+  void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from);
-   void Seek(base::TimeDelta time, PipelineStatusCallback cb) override;
-   bool IsSeekable() const override;
-   base::Time GetTimelineOffset() const override;
-@@ -597,6 +599,8 @@
-   double user_specified_duration_ = -1;
- 
-   base::Time timeline_offset_;
-+  base::Time capture_timeline_offset_;
-+  std::map<base::TimeDelta, base::Time> capture_timeline_offsets_;
-   StreamLiveness liveness_ = StreamLiveness::kUnknown;
- 
-   std::map<std::string, std::unique_ptr<SourceBufferState>> source_state_map_;
 --- a/media/filters/chunk_demuxer.cc
 +++ b/media/filters/chunk_demuxer.cc
-@@ -553,6 +553,22 @@
+@@ -553,6 +553,22 @@ void ChunkDemuxer::Stop() {
    Shutdown();
  }
  
@@ -75,7 +44,7 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
  void ChunkDemuxer::SetTap(scoped_refptr<DemuxerTap> tap,
                            base::TimeDelta from) {
    base::AutoLock auto_lock(lock_);
-@@ -560,6 +576,14 @@
+@@ -560,6 +576,14 @@ void ChunkDemuxer::SetTap(scoped_refptr<DemuxerTap> tap,
      tap_->OnStopped();
    }
    tap_ = state_ == SHUTDOWN ? nullptr : tap;
@@ -90,7 +59,7 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
    for (const auto& stream : audio_streams_) {
      stream->SetTap(tap_, from);
    }
-@@ -608,7 +632,7 @@
+@@ -608,7 +632,7 @@ bool ChunkDemuxer::IsSeekable() const {
  
  // Demuxer implementation.
  base::Time ChunkDemuxer::GetTimelineOffset() const {
@@ -99,31 +68,53 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
  }
  
  std::vector<raw_ptr<DemuxerStream>> ChunkDemuxer::GetAllStreams() {
---- a/media/filters/manifest_demuxer.h
-+++ b/media/filters/manifest_demuxer.h
-@@ -96,6 +96,10 @@
+--- a/media/filters/chunk_demuxer.h
++++ b/media/filters/chunk_demuxer.h
+@@ -245,6 +245,8 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
+   void Initialize(DemuxerHost* host, PipelineStatusCallback init_cb) override;
+   void Stop() override;
+   void SetTap(scoped_refptr<DemuxerTap> tap, base::TimeDelta from) override;
++  // The manifest's UTC mapping, separate from parser-owned container dates.
++  void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from);
+   void Seek(base::TimeDelta time, PipelineStatusCallback cb) override;
+   bool IsSeekable() const override;
+   base::Time GetTimelineOffset() const override;
+@@ -597,6 +599,8 @@ class MEDIA_EXPORT ChunkDemuxer : public Demuxer {
+   double user_specified_duration_ = -1;
  
-   // Handle errors.
-   virtual void OnError(PipelineStatus error) = 0;
-+
-+  // A primary manifest rendition can associate its media timestamp zero
-+  // with UTC. Defaults to no mapping for engines without source dates.
-+  virtual void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from) {}
+   base::Time timeline_offset_;
++  base::Time capture_timeline_offset_;
++  std::map<base::TimeDelta, base::Time> capture_timeline_offsets_;
+   StreamLiveness liveness_ = StreamLiveness::kUnknown;
  
-   virtual void SetGroupStartTimestamp(std::string_view role,
-                                       base::TimeDelta time) = 0;
-@@ -243,6 +247,8 @@
-                         base::TimeDelta* offset) override;
-   void OnError(PipelineStatus status) override;
-   void RequestSeek(base::TimeDelta time) override;
-+  void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from) override;
-+
-   void SetGroupStartTimestamp(std::string_view role,
-                               base::TimeDelta time) override;
-   void SetEndOfStream() override;
+   std::map<std::string, std::unique_ptr<SourceBufferState>> source_state_map_;
+--- a/media/filters/ffmpeg_demuxer.cc
++++ b/media/filters/ffmpeg_demuxer.cc
+@@ -1115,6 +1115,8 @@ void FFmpegDemuxer::SetTap(scoped_refptr<DemuxerTap> tap,
+     tap_->OnStopped();
+   }
+   tap_ = std::move(tap);
++  if (tap_ && !timeline_offset_.is_null())
++    tap_->OnTimelineOffset(timeline_offset_);
+   for (const auto& stream : streams_) {
+     if (!stream) {
+       continue;
+--- a/media/filters/hls_rendition_impl.cc
++++ b/media/filters/hls_rendition_impl.cc
+@@ -467,6 +467,10 @@ void HlsRenditionImpl::FetchNext(base::OnceClosure cb,
+   bool needs_init = false;
+   std::tie(segment, segment_start, segment_end, needs_init) =
+       segments_->GetNextSegment();
++  if (role_ == "primary") {
++    if (auto program_date = segment->GetProgramDateTime())
++      engine_host_->SetTimelineOffsetForCapture(*program_date - segment_start, segment_start);
++  }
+ 
+   if (segment->IsGap()) {
+     TryFillingBuffers(
 --- a/media/filters/manifest_demuxer.cc
 +++ b/media/filters/manifest_demuxer.cc
-@@ -246,13 +246,7 @@
+@@ -246,13 +246,7 @@ base::TimeDelta ManifestDemuxer::GetStartTime() const {
  
  base::Time ManifestDemuxer::GetTimelineOffset() const {
    DCHECK(media_task_runner_->RunsTasksInCurrentSequence());
@@ -138,7 +129,7 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
    return chunk_demuxer_->GetTimelineOffset();
  }
  
-@@ -321,6 +315,11 @@
+@@ -321,6 +315,11 @@ void ManifestDemuxer::OnTracksChanged(DemuxerStream::Type track_type,
  }
  
  // What the engine appends is what plays.
@@ -150,16 +141,25 @@ FFmpeg sources provide DateUTC. Unknown dates stay unknown.
  void ManifestDemuxer::SetTap(scoped_refptr<DemuxerTap> tap,
                               base::TimeDelta from) {
    chunk_demuxer_->SetTap(std::move(tap), from);
---- a/media/filters/hls_rendition_impl.cc
-+++ b/media/filters/hls_rendition_impl.cc
-@@ -467,6 +467,10 @@
-   bool needs_init = false;
-   std::tie(segment, segment_start, segment_end, needs_init) =
-       segments_->GetNextSegment();
-+  if (role_ == "primary") {
-+    if (auto program_date = segment->GetProgramDateTime())
-+      engine_host_->SetTimelineOffsetForCapture(*program_date - segment_start, segment_start);
-+  }
+--- a/media/filters/manifest_demuxer.h
++++ b/media/filters/manifest_demuxer.h
+@@ -97,6 +97,10 @@ class MEDIA_EXPORT ManifestDemuxerEngineHost {
+   // Handle errors.
+   virtual void OnError(PipelineStatus error) = 0;
  
-   if (segment->IsGap()) {
-     TryFillingBuffers(
++  // A primary manifest rendition can associate its media timestamp zero
++  // with UTC. Defaults to no mapping for engines without source dates.
++  virtual void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from) {}
++
+   virtual void SetGroupStartTimestamp(std::string_view role,
+                                       base::TimeDelta time) = 0;
+ 
+@@ -243,6 +247,8 @@ class MEDIA_EXPORT ManifestDemuxer : public Demuxer, ManifestDemuxerEngineHost {
+                         base::TimeDelta* offset) override;
+   void OnError(PipelineStatus status) override;
+   void RequestSeek(base::TimeDelta time) override;
++  void SetTimelineOffsetForCapture(base::Time origin, base::TimeDelta from) override;
++
+   void SetGroupStartTimestamp(std::string_view role,
+                               base::TimeDelta time) override;
+   void SetEndOfStream() override;

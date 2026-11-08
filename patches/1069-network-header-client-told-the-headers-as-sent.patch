@@ -10,17 +10,52 @@ to what is sent. DevTools' interceptor, which stands in the chain, passes it on.
 Implementers of TrustedHeaderClient under chrome/ and in unit tests are not built here
 and are not changed.
 
+--- a/content/browser/devtools/devtools_url_loader_interceptor.cc
++++ b/content/browser/devtools/devtools_url_loader_interceptor.cc
+@@ -403,6 +403,9 @@ class NoOpHeaderClient final : public network::mojom::TrustedHeaderClient {
+                          OnHeadersReceivedCallback callback) override {
+     std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
+   }
++
++  void OnRequestHeadersSent(
++      std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override {}
+ };
+ 
+ }  // namespace
+@@ -536,6 +539,8 @@ class InterceptionJob : public network::mojom::URLLoaderClient,
+                          const net::IPEndPoint& endpoint,
+                          const std::optional<net::SSLInfo>& ssl_info,
+                          OnHeadersReceivedCallback callback) override;
++  void OnRequestHeadersSent(
++      std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override;
+ 
+   void OnTargetHeaderClientDisconnect();
+   void OnTargetHeaderClientBeforeSendHeadersComplete(
+@@ -2268,6 +2273,13 @@ void InterceptionJob::OnHeadersReceived(
+   std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
+ }
+ 
++void InterceptionJob::OnRequestHeadersSent(
++    std::vector<network::mojom::HttpRawHeaderPairPtr> headers) {
++  if (header_client_) {
++    header_client_->OnRequestHeadersSent(std::move(headers));
++  }
++}
++
+ void InterceptionJob::OnTargetHeaderClientBeforeSendHeadersComplete(
+     const net::HttpRequestHeaders& original_headers,
+     OnBeforeSendHeadersCallback original_callback,
 --- a/services/network/public/mojom/network_context.mojom
 +++ b/services/network/public/mojom/network_context.mojom
-@@ -33,6 +33,7 @@
+@@ -33,6 +33,7 @@ import "services/network/public/mojom/ct_policy.mojom";
  import "services/network/public/mojom/default_credentials.mojom";
  import "services/network/public/mojom/device_bound_sessions.mojom";
  import "services/network/public/mojom/devtools_observer.mojom";
 +import "services/network/public/mojom/http_raw_headers.mojom";
  import "services/network/public/mojom/document_isolation_policy.mojom";
  import "services/network/public/mojom/fetch_api.mojom";
- import "services/network/public/mojom/first_party_sets_access_delegate.mojom";
-@@ -204,6 +205,11 @@
+ import "services/network/public/mojom/hash_value.mojom";
+@@ -207,6 +208,11 @@ interface TrustedHeaderClient {
        => (int32 result,
            string? headers,
            url.mojom.Url? preserve_fragment_on_redirect_url);
@@ -34,7 +69,7 @@ and are not changed.
  // Interface to allow modifying the full request and response headers. This
 --- a/services/network/url_loader.cc
 +++ b/services/network/url_loader.cc
-@@ -2164,6 +2164,15 @@
+@@ -2185,6 +2185,15 @@ void URLLoader::MaybeNotifyEarlyResponseToDevtools(
  
  void URLLoader::SetRawRequestHeadersAndNotify(
      net::HttpRawRequestHeaders headers) {
@@ -50,38 +85,3 @@ and are not changed.
    // If we have emitted_devtools_raw_request_, don't notify DevTools
    // to prevent duplicate ExtraInfo events.
    if (!emitted_devtools_raw_request_ && devtools_observer_ &&
---- a/content/browser/devtools/devtools_url_loader_interceptor.cc
-+++ b/content/browser/devtools/devtools_url_loader_interceptor.cc
-@@ -401,6 +401,9 @@
-                          OnHeadersReceivedCallback callback) override {
-     std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
-   }
-+
-+  void OnRequestHeadersSent(
-+      std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override {}
- };
- 
- }  // namespace
-@@ -534,6 +537,8 @@
-                          const net::IPEndPoint& endpoint,
-                          const std::optional<net::SSLInfo>& ssl_info,
-                          OnHeadersReceivedCallback callback) override;
-+  void OnRequestHeadersSent(
-+      std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override;
- 
-   void OnTargetHeaderClientDisconnect();
-   void OnTargetHeaderClientBeforeSendHeadersComplete(
-@@ -2262,6 +2267,13 @@
-   std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
- }
- 
-+void InterceptionJob::OnRequestHeadersSent(
-+    std::vector<network::mojom::HttpRawHeaderPairPtr> headers) {
-+  if (header_client_) {
-+    header_client_->OnRequestHeadersSent(std::move(headers));
-+  }
-+}
-+
- void InterceptionJob::OnTargetHeaderClientBeforeSendHeadersComplete(
-     const net::HttpRequestHeaders& original_headers,
-     OnBeforeSendHeadersCallback original_callback,

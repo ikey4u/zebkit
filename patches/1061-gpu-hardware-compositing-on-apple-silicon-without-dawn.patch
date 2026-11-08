@@ -10,15 +10,15 @@ build already, and this costs no size.
 
 --- a/content/browser/gpu/gpu_data_manager_impl_private.cc
 +++ b/content/browser/gpu/gpu_data_manager_impl_private.cc
-@@ -437,9 +437,8 @@
+@@ -433,9 +433,8 @@ class HDRProxy {
  
  GpuDataManagerImplPrivate::GpuDataManagerImplPrivate(GpuDataManagerImpl* owner)
      : owner_(owner),
--#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
+-#if BUILDFLAG(IS_MAC)
 -      supports_gpu_mode_hardware_gl_(false),
 -#elif BUILDFLAG(IS_ANDROID)
 +// zebkit: on arm64 Macs too: without Dawn there is no Graphite, and GL on ANGLE's Metal draws.
 +#if BUILDFLAG(IS_ANDROID)
        supports_gpu_mode_hardware_gl_(
-           !base::android::device_info::is_desktop() ||
-           base::SysInfo::GetAndroidHardwareEGL() == "swiftshader" ||
+           !base::FeatureList::IsEnabled(features::kSkipVulkanBlocklist)),
+ #else

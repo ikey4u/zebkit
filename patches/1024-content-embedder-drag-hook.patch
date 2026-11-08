@@ -11,6 +11,34 @@ the DevTools interception (Input.setInterceptDrags, and drags of CDP's
 own mouse events, keep precedence) with the drop data as filtered for the
 renderer. When it takes the drag, the embedder ends it.
 
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -103,6 +103,7 @@
+ #include "content/public/browser/device_service.h"
+ #include "content/public/browser/disallow_activation_reason.h"
+ #include "content/public/browser/embedder_widget_hooks.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/global_dom_node_id.h"
+ #include "content/public/browser/gpu_data_manager.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+@@ -3261,6 +3262,17 @@ void RenderWidgetHostImpl::StartDragging(
+     }
+   }
+ 
++  if (GetEmbedderWidgetHooks().drag_started) {
++    WebContents* contents = WebContents::FromRenderFrameHost(&source_rfh);
++    if (contents &&
++        GetEmbedderWidgetHooks().drag_started(
++            contents, this, filtered_data, drag_operations_mask, bitmap,
++            GetView() ? GetScaleFactorForView(GetView()) : 1.f,
++            cursor_offset_in_dip, event_info->location)) {
++      return;
++    }
++  }
++
+   RenderViewHostDelegateView* view = delegate_->GetDelegateView();
+   if (!view || !GetView()) {
+     // Need to clear drag and drop state in blink.
 --- a/content/public/browser/embedder_widget_hooks.h
 +++ b/content/public/browser/embedder_widget_hooks.h
 @@ -7,8 +7,12 @@
@@ -26,7 +54,7 @@ renderer. When it takes the drag, the embedder ends it.
  }
  
  namespace ui {
-@@ -19,6 +23,7 @@
+@@ -19,6 +23,7 @@ namespace content {
  
  class RenderWidgetHost;
  class WebContents;
@@ -34,7 +62,7 @@ renderer. When it takes the drag, the embedder ends it.
  
  // What a page's widgets ask of the window they are in, for an embedder that
  // draws them without one (off-screen rendering) and shows the result
-@@ -32,6 +37,20 @@
+@@ -32,6 +37,20 @@ struct EmbedderWidgetHooks {
    void (*popup_shown)(WebContents* contents,
                        RenderWidgetHost* popup,
                        const gfx::Rect& bounds_in_screen) = nullptr;
@@ -55,31 +83,3 @@ renderer. When it takes the drag, the embedder ends it.
  };
  
  CONTENT_EXPORT void SetEmbedderWidgetHooks(const EmbedderWidgetHooks& hooks);
---- a/content/browser/renderer_host/render_widget_host_impl.cc
-+++ b/content/browser/renderer_host/render_widget_host_impl.cc
-@@ -100,6 +100,7 @@
- #include "content/public/browser/device_service.h"
- #include "content/public/browser/disallow_activation_reason.h"
- #include "content/public/browser/embedder_widget_hooks.h"
-+#include "content/public/browser/web_contents.h"
- #include "content/public/browser/global_dom_node_id.h"
- #include "content/public/browser/gpu_data_manager.h"
- #include "content/public/browser/keyboard_event_processing_result.h"
-@@ -3187,6 +3188,17 @@
-       return;
-     }
-   }
-+
-+  if (GetEmbedderWidgetHooks().drag_started) {
-+    WebContents* contents = WebContents::FromRenderFrameHost(&source_rfh);
-+    if (contents &&
-+        GetEmbedderWidgetHooks().drag_started(
-+            contents, this, filtered_data, drag_operations_mask, bitmap,
-+            GetView() ? GetScaleFactorForView(GetView()) : 1.f,
-+            cursor_offset_in_dip, event_info->location)) {
-+      return;
-+    }
-+  }
- 
-   RenderViewHostDelegateView* view = delegate_->GetDelegateView();
-   if (!view || !GetView()) {

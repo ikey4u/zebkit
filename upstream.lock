@@ -4,7 +4,7 @@
 # Bump CHROMIUM_VERSION to another tag of chromium/src; the dependencies
 # (V8, Skia, the toolchain Chromium builds with, its sysroot) follow from
 # the DEPS file at that tag, which gclient reads.
-CHROMIUM_VERSION=155.0.8059.84
+CHROMIUM_VERSION=157.0.8103.38
 CHROMIUM_URL=https://chromium.googlesource.com/chromium/src.git
 
 # Chromium's checkout and build tools. Pinned, and not left to update

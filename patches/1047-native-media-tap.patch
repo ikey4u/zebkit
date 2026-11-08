@@ -6,7 +6,7 @@ needs it. The native callback is independent of page-facing CORS copying.
 
 --- a/third_party/blink/public/platform/web_audio_source_provider_impl.h
 +++ b/third_party/blink/public/platform/web_audio_source_provider_impl.h
-@@ -90,6 +90,10 @@
+@@ -90,6 +90,10 @@ class BLINK_PLATFORM_EXPORT WebAudioSourceProviderImpl
    void SetCopyAudioCallback(CopyAudioCB callback);
    void ClearCopyAudioCallback();
  
@@ -17,7 +17,7 @@ needs it. The native callback is independent of page-facing CORS copying.
    int RenderForTesting(media::AudioBus* audio_bus);
  
    bool IsAudioBeingCaptured() const;
-@@ -133,6 +137,7 @@
+@@ -133,6 +137,7 @@ class BLINK_PLATFORM_EXPORT WebAudioSourceProviderImpl
    base::OnceClosure on_set_client_callback_;
  
    bool has_copy_audio_callback_ = false;
@@ -27,7 +27,7 @@ needs it. The native callback is independent of page-facing CORS copying.
    base::WeakPtrFactory<WebAudioSourceProviderImpl> weak_factory_{this};
 --- a/third_party/blink/public/platform/web_media_capture.h
 +++ b/third_party/blink/public/platform/web_media_capture.h
-@@ -33,6 +33,10 @@
+@@ -33,6 +33,10 @@ class WebMediaCapture {
  
    virtual Info GetCaptureInfo() const = 0;
  
@@ -48,7 +48,7 @@ needs it. The native callback is independent of page-facing CORS copying.
  
  #include "third_party/blink/public/platform/web_common.h"
  
-@@ -13,6 +14,9 @@
+@@ -13,6 +14,9 @@ namespace blink {
  
  class WebElement;
  class WebDocument;
@@ -68,7 +68,7 @@ needs it. The native callback is independent of page-facing CORS copying.
  
  namespace blink {
  
-@@ -22,4 +23,17 @@
+@@ -22,4 +23,17 @@ WebMediaPlayer* GetWebMediaPlayer(const WebElement& element) {
    return media ? media->GetWebMediaPlayer() : nullptr;
  }
  
@@ -88,7 +88,7 @@ needs it. The native callback is independent of page-facing CORS copying.
  }  // namespace blink
 --- a/third_party/blink/renderer/platform/media/web_audio_source_provider_impl.cc
 +++ b/third_party/blink/renderer/platform/media/web_audio_source_provider_impl.cc
-@@ -91,6 +91,16 @@
+@@ -91,6 +91,16 @@ class WebAudioSourceProviderImpl::TeeFilter
        }
      }
  
@@ -105,20 +105,20 @@ needs it. The native callback is independent of page-facing CORS copying.
      return num_rendered_frames;
    }
  
-@@ -107,6 +117,12 @@
-     copy_required_ = !callback.is_null();
-     base::AutoLock auto_lock(copy_lock_);
+@@ -109,6 +119,12 @@ class WebAudioSourceProviderImpl::TeeFilter
      copy_audio_bus_callback_ = std::move(callback);
-+  }
-+
+   }
+ 
 +  void SetEmbedderAudioCallback(CopyAudioCB callback) {
 +    base::AutoLock lock(copy_lock_);
 +    embedder_audio_callback_ = std::move(callback);
 +    embedder_copy_required_ = !embedder_audio_callback_.is_null();
-   }
- 
++  }
++
    void TaintOrigin() { origin_tainted_.Set(); }
-@@ -125,7 +141,9 @@
+   bool is_tainted() const { return origin_tainted_.IsSet(); }
+ 
+@@ -125,7 +141,9 @@ class WebAudioSourceProviderImpl::TeeFilter
  
    // The vast majority of the time we're operating in passthrough mode. So only
    // acquire a lock to read |copy_audio_bus_callback_| when necessary.
@@ -129,7 +129,7 @@ needs it. The native callback is independent of page-facing CORS copying.
    base::Lock copy_lock_;
    CopyAudioCB copy_audio_bus_callback_ GUARDED_BY(copy_lock_);
  };
-@@ -353,13 +371,18 @@
+@@ -351,13 +369,18 @@ void WebAudioSourceProviderImpl::ClearCopyAudioCallback() {
    has_copy_audio_callback_ = false;
  }
  
@@ -151,7 +151,7 @@ needs it. The native callback is independent of page-facing CORS copying.
  void WebAudioSourceProviderImpl::OnSetFormat() {
 --- a/third_party/blink/renderer/platform/media/web_media_player_impl.cc
 +++ b/third_party/blink/renderer/platform/media/web_media_player_impl.cc
-@@ -1689,7 +1689,14 @@
+@@ -1700,7 +1700,14 @@ void WebMediaPlayerImpl::SetContentDecryptionModule(
  }
  
  void WebMediaPlayerImpl::SetRenderMutedAudio(bool render_muted_audio) {
@@ -169,7 +169,7 @@ needs it. The native callback is independent of page-facing CORS copying.
  void WebMediaPlayerImpl::OnEncryptedMediaInitData(
 --- a/third_party/blink/renderer/platform/media/web_media_player_impl.h
 +++ b/third_party/blink/renderer/platform/media/web_media_player_impl.h
-@@ -335,6 +335,7 @@
+@@ -344,6 +344,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
    // WebMediaCapture:
    WebMediaCapture* GetMediaCapture() override;
    WebMediaCapture::Info GetCaptureInfo() const override;
@@ -177,7 +177,7 @@ needs it. The native callback is independent of page-facing CORS copying.
    bool SetCaptureTap(scoped_refptr<media::DemuxerTap> tap,
                       base::TimeDelta from) override;
    void RequestVideoFrameCallback() override;
-@@ -808,6 +809,8 @@
+@@ -819,6 +820,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
    int num_playback_rate_logs_ = 0;
  
    // Set while paused. |paused_time_| is only valid when |paused_| is true.

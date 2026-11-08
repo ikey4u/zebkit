@@ -12,23 +12,23 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
 
 --- a/content/utility/BUILD.gn
 +++ b/content/utility/BUILD.gn
-@@ -9,6 +9,7 @@ import("//media/media_options.gni")
+@@ -8,6 +8,7 @@ import("//media/gpu/args.gni")
+ import("//media/media_options.gni")
  import("//mojo/public/tools/bindings/mojom.gni")
  import("//printing/buildflags/buildflags.gni")
- import("//services/accessibility/buildflags.gni")
 +import("//services/on_device_model/on_device_model.gni")
  import("//services/screen_ai/buildflags/features.gni")
  
  source_set("utility") {
 @@ -47,7 +48,6 @@ source_set("utility") {
-     "//content/public/common:content_descriptor_keys",
      "//content/public/utility:utility_sources",
      "//content/services/devtools_media_encoding_service",
+     "//content/services/resource_broker",
 -    "//content/utility/on_device_model:on_device_model_sandbox_init",
      "//content/utility/webnn:webnn_sandbox_init",
      "//device/vr/buildflags",
      "//media:media_buildflags",
-@@ -60,8 +60,8 @@ source_set("utility") {
+@@ -59,8 +59,8 @@ source_set("utility") {
      "//services/data_decoder:lib",
      "//services/data_decoder/public/cpp",
      "//services/network:network_service",
@@ -38,7 +38,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
      "//services/on_device_model/public/mojom",
      "//services/screen_ai/buildflags",
      "//services/service_manager/public/cpp",
-@@ -77,6 +77,15 @@ source_set("utility") {
+@@ -76,6 +76,15 @@ source_set("utility") {
      "//url",
    ]
  
@@ -56,7 +56,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
    if (enable_library_cdms || is_win) {
 --- a/content/utility/services.cc
 +++ b/content/utility/services.cc
-@@ -32,13 +32,17 @@
+@@ -35,13 +35,17 @@
  #include "services/audio/service_factory.h"
  #include "services/data_decoder/data_decoder_service.h"
  #include "services/network/network_service.h"
@@ -76,7 +76,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
  #if BUILDFLAG(IS_MAC)
  #include "base/apple/mach_logging.h"
  #include "sandbox/mac/system_services.h"
-@@ -344,11 +348,13 @@ auto RunVideoCapture(
+@@ -346,11 +350,13 @@ auto RunVideoCapture(
    return service;
  }
  
@@ -90,7 +90,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
  
  #if BUILDFLAG(ENABLE_VR) && !BUILDFLAG(IS_ANDROID)
  auto RunXrDeviceService(
-@@ -415,7 +421,9 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
+@@ -420,7 +426,9 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
    services.Add(RunOOPVideoDecoderFactoryProcessService);
  #endif
  
@@ -98,16 +98,17 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
    services.Add(RunOnDeviceModel);
 +#endif
  
- #if BUILDFLAG(IS_WIN) || (BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
-                           (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)))
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
+   services.Add(RunWebNNCompilerService);
 --- a/content/utility/utility_main.cc
 +++ b/content/utility/utility_main.cc
-@@ -34,16 +34,20 @@
+@@ -34,17 +34,21 @@
  #include "content/public/common/content_switches.h"
  #include "content/public/common/main_function_params.h"
  #include "content/public/utility/content_utility_client.h"
 -#include "content/utility/on_device_model/on_device_model_sandbox_init.h"
  #include "content/utility/utility_thread_impl.h"
+ #include "device/vr/buildflags/buildflags.h"
  #include "printing/buildflags/buildflags.h"
  #include "sandbox/policy/mojom/sandbox.mojom.h"
  #include "sandbox/policy/sandbox.h"
@@ -124,7 +125,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
  #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
  #include "base/file_descriptor_store.h"
  #include "base/files/file_util.h"
-@@ -292,9 +296,11 @@ int UtilityMain(MainFunctionParams parameters) {
+@@ -297,9 +301,11 @@ int UtilityMain(MainFunctionParams parameters) {
      }
    }
  
@@ -136,7 +137,7 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
  
  #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
  
-@@ -336,9 +342,13 @@ int UtilityMain(MainFunctionParams parameters) {
+@@ -341,9 +347,13 @@ int UtilityMain(MainFunctionParams parameters) {
        pre_sandbox_hook = base::BindOnce(&audio::AudioPreSandboxHook);
        break;
      case sandbox::mojom::Sandbox::kOnDeviceModelExecution:
@@ -149,8 +150,8 @@ Off in profiles/slim.gn. Upstream's default is unchanged.
 +#endif
      case sandbox::mojom::Sandbox::kSpeechRecognition:
        pre_sandbox_hook =
-           base::BindOnce(&speech::SpeechRecognitionPreSandboxHook);
-@@ -526,9 +536,11 @@ int UtilityMain(MainFunctionParams parameters) {
+           base::BindOnce(&speech::SpeechRecognitionPreSandboxHook,
+@@ -538,9 +548,11 @@ int UtilityMain(MainFunctionParams parameters) {
  
    run_loop.Run();
  

@@ -57,6 +57,8 @@ link_engine() {
         mkdir -p "$SRC_DIR/build/mac_files"
         ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
         ln -sfn "$macos/cipd/mig" "$SRC_DIR/third_party/mig/bin"
+        # ui/gl/resources holds nothing else since Chromium 157.
+        mkdir -p "$SRC_DIR/ui/gl/resources"
         ln -sfn "$macos/cipd/angle-metal" "$SRC_DIR/ui/gl/resources/angle-metal"
         # With their times, and only what is not there yet: a compiler's
         # runtime with new times is a new toolchain to the build, which
