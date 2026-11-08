@@ -869,6 +869,7 @@ with no CDP in between:
   | zebkit, 2026-11-06, later | 4005 | 190 | 1067 | 44 | 25 | 0 | 146 |
   | zebkit, 2026-11-07 | 4026 | 169 | 1067 | 44 | 22 | 0 | 125 |
   | zebkit, 2026-11-07, later | 4046 | 149 | 1067 | 43 | 26 | 0 | 106 |
+  | zebkit on Chromium 157, 2026-11-08 | 4047 | 148 | 1067 | 43 | 25 | 0 | 105 |
   | Chrome (launched, 2026-11-01) | 4196 | 5 | 1061 | | | | |
 
   What moved it (2026-11-02): the engine started with Playwright's launch switches by

@@ -267,8 +267,8 @@ the same harness before and after (the commits have the runs):
 
 What could not be made the same:
 
-- **Chromium versions**: Electron 45.2.1 has Chromium 156, zebkit 155. Both
-  send zebkit's user agent (Chrome 155); the client hints still say 156 for
+- **Chromium versions**: Electron 45.2.1 has Chromium 156, zebkit 157. Both
+  send zebkit's user agent (Chrome 157); the client hints still say 156 for
   Electron.
 - **The sandbox**: off in both. Each needs its set-user-ID helper installed
   as root or unprivileged user namespaces, which this machine refuses; both

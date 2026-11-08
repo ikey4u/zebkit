@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
   kept warm for the next navigation, as Electron keeps none;
   `--zebkit-spare-renderer` keeps one. The user agent and client hints are
   Chromium's own for its version, with `--headless` too: Chrome's
-  `Chrome/155.0.0.0`, not `HeadlessChrome`, since headless views are shown
+  `Chrome/157.0.0.0`, not `HeadlessChrome`, since headless views are shown
   to people and sites take HeadlessChrome for a bot.
   `--zebkit-headless-user-agent` gives Chrome's headless string;
   `--user-agent` replaces it.
