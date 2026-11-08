@@ -28,10 +28,10 @@ use_ml_inliner = false
 # stays off); a patch to media/cdm/BUILD.gn could keep slim's false.
 enable_library_cdms = true
 
-# V8's instance types from Torque, its other way of making them, instead of
+# V8's instance types and object layouts from Torque, its other way, instead of
 # from metagen, which reads the build graph again with gn desc and so without
 # the root that scripts/build.sh gives gn gen (as on macOS).
-v8_use_metagen_instance_types = false
+v8_use_metagen = false
 
 # No CFI: Chrome has none here, and slim turns it on only for its Linux
 # PGO profile.

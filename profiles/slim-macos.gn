@@ -23,10 +23,10 @@ zebkit_v8_tls_local_dynamic = false
 # Mac checkout fetches. Stripping, with llvm-strip, stays.
 enable_dsyms = false
 
-# V8's instance types from Torque, its other way of making them, instead of
+# V8's instance types and object layouts from Torque, its other way, instead of
 # from metagen, which reads the build graph again with gn desc and so
 # without --root-pattern, and finds Chrome's targets in it (scripts/build.sh).
-v8_use_metagen_instance_types = false
+v8_use_metagen = false
 
 # Vtables as offsets need COMDATs for their type information, which Mach-O
 # does not have: the linker stops at the first library that uses them.
