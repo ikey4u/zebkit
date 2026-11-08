@@ -11,7 +11,7 @@ build = "build.rs"
 links = "zebkit_engine"
 
 [dependencies]
-zebkit-rs = { path = "../zebkit-rs", version = "=0.2.1" }
+zebkit-rs = { path = "../zebkit-rs", version = "=0.3.0" }
 
 # One process, one main loop: the test is a program, not a set of threads.
 [[test]]
