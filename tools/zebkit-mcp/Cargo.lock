@@ -93,14 +93,14 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "zebkit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "zebkit-rs",
 ]
 
 [[package]]
 name = "zebkit-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "zebkit",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "zebkit-rs"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "zmij"
