@@ -111,7 +111,9 @@ build_tools() {
             set_target_for_profile slim-windows
             cc=("$llvm_bin/clang" --target=x86_64-pc-windows-msvc -Xmicrosoft-windows-sys-root "$windows_sysroot"
                 -fms-runtime-lib=static -fuse-ld=lld -D_CRT_SECURE_NO_WARNINGS)
-            link=(-DZEBKIT_WIN_SANDBOX "$dist/zebkit.dll.lib" "$dist/zebkit_sandbox.lib" -Wl,/STACK:0x800000)
+            # /Brepro: the link's time is not written into the program, a hash of
+            # it is, so that the same tree gives the same archive.
+            link=(-DZEBKIT_WIN_SANDBOX "$dist/zebkit.dll.lib" "$dist/zebkit_sandbox.lib" -Wl,/STACK:0x800000 -Wl,/Brepro)
             rust_target=x86_64-pc-windows-msvc
             exe=.exe
             [[ -f "$dist/zebkit_sandbox.lib" ]] || die "no zebkit_sandbox.lib in $dist for the tools"
@@ -131,7 +133,7 @@ build_tools() {
     case "$system" in
         windows)
             rust_env+=(CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$llvm_bin/lld-link")
-            rust_flags+=" -C target-feature=+crt-static -C link-arg=/winsysroot:$windows_sysroot"
+            rust_flags+=" -C target-feature=+crt-static -C link-arg=/winsysroot:$windows_sysroot -C link-arg=/Brepro -C link-arg=/DEBUG:NONE"
             ;;
         *)
             # Named for what it runs: cargo links again when that changes.
