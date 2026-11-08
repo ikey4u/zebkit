@@ -189,7 +189,10 @@ redirected: a test program that crashes leaves a report in
 `~/Library/Logs/DiagnosticReports`. `ENGINE_TEST_WINDOWS=1` adds the tests with
 windows, which take no keyboard or pointer from the person at the Mac; their pixel
 checks need the display awake and Screen Recording for what started them, and say
-`skip` without.
+`skip` without. Since Chromium 157 a window that others cover is hidden to its page on macOS 26
+and later, as in Chrome (155 left that check off there): on a locked screen every
+window is. `mixed-views`, which checks what zebkit itself hides, runs with
+Chromium's `MacOcclusionForceShutoff` feature for that.
 
 ## State
 

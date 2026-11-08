@@ -567,7 +567,13 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]/profile/profile-gpu}"
     run native-parent-refused "$bin/native-parent-mac" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
     if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
-        run mixed-views "$bin/mixed-views" --no-sandbox --user-data-dir="$work/profile-mixed-views"
+        # Since Chromium 157 a window that others cover is hidden on macOS 26
+        # and later too, as in Chrome; on a Mac whose screen is locked, or
+        # under a full-screen terminal, all of the test's are. The test is of
+        # what zebkit hides, not of what covers the screen: Chromium's own
+        # switch turns that off for it.
+        run mixed-views "$bin/mixed-views" --no-sandbox --user-data-dir="$work/profile-mixed-views" \
+            --enable-features=MacOcclusionForceShutoff
         finished mixed-views "the mixed views' test"
         run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent"
         finished native-parent "the attached view's test"
