@@ -99,6 +99,7 @@ static void evaluated(zebkit_view *v, const char *json, const char *error, void 
     (void)v;
     (void)data;
     printf("page says %s, error %s\n", json ? json : "null", error ? error : "none");
+    /* The parent's pixels, at the display's scale (zebkit_view_attach_native). */
     check(json && !strcmp(json, "780"), "the page is the attached size, the client area less its margins");
     done = 1;
 }
@@ -113,7 +114,7 @@ static void loaded(zebkit_view *v, zebkit_load_event event, const char *url, voi
         check(1, "the page loads");
         zebkit_view_evaluate(v,
                              "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => "
-                             "setTimeout(() => r(innerWidth), 1000))))",
+                             "setTimeout(() => r(Math.round(innerWidth * devicePixelRatio)), 1000))))",
                              evaluated, NULL);
     }
 }

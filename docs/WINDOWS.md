@@ -118,6 +118,13 @@ ENGINE_TEST_WINDOWS=1 DIR/scripts/engine-test.sh slim-windows --prebuilt DIR/pro
 takes the mouse and the keyboard. Python comes from the machine; nothing is installed.
 A sandboxed child has no PATH of the parent's: `zebkit.dll` has to be beside the executable.
 
+The windowed tests need a desktop that is drawn. In a disconnected Remote Desktop
+session nothing is: a capture waits for a frame that never comes and the screen
+reads white. `tscon <session id> /dest:console` (as an administrator) moves the
+session to the console, where it is drawn with no one connected; its scale can
+then differ from the one Remote Desktop had, which the tests take from the page
+(`devicePixelRatio`), not from a fixed 100%.
+
 ## State
 
 Run the suite on NTFS. A shared folder has no ACLs, and there file key storage rightly refuses
