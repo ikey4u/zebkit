@@ -166,6 +166,9 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `window.fullscreen` | a page's fullscreen fills the content area and tells the application (`zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen`); the window itself never goes fullscreen (`Window::ToggleFullscreenModeForTab` sets a flag and resizes) | partial |
 | `window.drag-regions`, `window.controls-overlay` | neither used: `SetSupportsDraggableRegions`, `DraggableRegionsChanged` and `UpdateWindowControlsOverlay` are public in content and unused | gap |
 | `window.close` | the close box, `window.close()`, `zebkit_view_close`, `zebkit_view_request_close` (beforeunload first) | done |
+| `window.popup`: `window.open`, `target=_blank` | blocked without a gesture, as Chrome; `zebkit_view_on_new_window`, `zebkit_view_on_window_open`, the popup policy | done |
+| `window.web-controls`: the page's `window.minimize()`, `maximize()`, `restore()`, `setResizable()` (Additional Windowing Controls) and `moveTo`/`resizeTo` | Chromium's defaults: refused or ignored (`MinimizeFromWebAPI` and the others not overridden) | gap |
+| `window.picture-in-picture`: video and document picture-in-picture | `EnterPictureInPicture` returns not supported | gap |
 
 ### 5.3 Input
 
@@ -193,6 +196,8 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `dialog.client-certificate` | `zebkit_view_on_client_certificate`; none sent without one | done (no default presenter) |
 | `dialog.webauthn` | `zebkit_view_on_authentication`, or the engine's UI (Views, AppKit); system passkeys on macOS and Windows (`webauthn.cc`) | done |
 | `dialog.print`: `window.print()` | no dialog and no printer: reported to the application as a dialog, the page continues; `zebkit_view_print_to_pdf` for output (`print.cc`) | partial: no physical printing, no preview |
+| `dialog.repost`: "send the form again?" on reloading a POST | `ShowRepostFormWarningDialog` not overridden: Chromium's default, the form is not sent again | default only |
+| `dialog.fedcm`: FedCM sign-in (`navigator.credentials.get({identity})`) | no dialog controller and no permission contexts: not available | gap |
 
 ### 5.5 Permissions, devices and capture
 
@@ -203,6 +208,11 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `media.camera-microphone` | `zebkit_view_on_media_access`, else the permission table | done |
 | `media.display-capture`: `getDisplayMedia()` | refused: no chooser (`window.cc`, `permission_manager.cc`) | gap |
 | `device.usb`, `device.hid`, `device.serial`, `device.bluetooth` | no delegate: the services refuse or report not supported (`web_usb_service_impl.cc`, `hid_service.cc`, `serial_service.cc`, `bluetooth_device_chooser_controller.cc`) | gap |
+| `device.smart-card` | no delegate: not available | gap |
+| `media.audio-output`: `selectAudioOutput()` | Chromium's default | default only |
+| `media.system-controls`: the system's now-playing and media keys | Chromium's default | default only |
+| `media.speech`: speech recognition and synthesis | zebkit's recognition delegate; Chromium's synthesis | default only |
+| `clipboard`: reads and writes | the permission table for reads; Chromium's defaults for policy | default only |
 | `protocol-handler`: `registerProtocolHandler()` | kept in memory and reported registered; nothing reaches the system (`protocol_handler_delegate.cc`) | partial: it reports a success that is not one |
 
 ### 5.6 Notifications and the desktop
@@ -350,16 +360,19 @@ per surface:
 }
 ```
 
-`scripts/check-surfaces.py` keeps the list honest. It holds a list of the
-content layer's virtual methods that reach the system or the person (in
-`ContentBrowserClient`, `WebContentsDelegate`, `BrowserContext`,
-`PermissionControllerDelegate`, `WebContentsViewDelegate` and the device
-delegates), and fails when one of them is neither overridden in
-`src/engine` with a registry entry, nor listed with a reason as left to
-Chromium's default. It runs with the engine tests, and on a Chromium
-update shows the new methods. `docs/API.md`'s tables and this document's
-section 5 are generated from the registry, so that the code, the
-documentation and the release notes cannot disagree.
+`scripts/check-surfaces.py` keeps the list honest, and runs with the engine
+tests where Chromium's tree is (`engine-test.sh`, section `surfaces`). For
+each delegate class the engine implements (`WebContentsDelegate`,
+`ContentBrowserClient`, `BrowserContext`, `WebContentsViewDelegate`,
+`PermissionControllerDelegate`), it reads every virtual method from
+Chromium's header and fails when one is in neither list of the registry: the
+methods that reach the system or the person, each with its surface and
+whether zebkit implements it, and the plumbing. A Chromium update that adds
+a method fails it until the method is classified. It also fails when a
+method the registry says zebkit implements is not overridden in
+`src/engine`, or one it leaves to Chromium is; when a surface's test is not
+there; and when a surface is missing from section 5. On 157: 564 methods,
+112 of them reaching the system or the person, in 67 surfaces.
 
 Done means: no entry point to the system that is not in the registry, and
 no entry whose status the tests do not hold. A release's notes list the

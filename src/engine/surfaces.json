@@ -1,0 +1,1513 @@
+{
+ "_": "The registry of docs/SYSTEM_INTEGRATION.md, section 6.6, checked by scripts/check-surfaces.py.",
+ "classes": {
+  "WebContentsDelegate": {
+   "header": "content/public/browser/web_contents_delegate.h",
+   "system": {
+    "ActivateContents": {
+     "surface": "window.focus",
+     "zebkit": true
+    },
+    "AddNewContents": {
+     "surface": "window.popup",
+     "zebkit": true
+    },
+    "AllowKeyboardLockForInnerContents": {
+     "surface": "input.keyboard-lock",
+     "zebkit": false
+    },
+    "BeforeUnloadFired": {
+     "surface": "window.close",
+     "zebkit": true
+    },
+    "CanDownload": {
+     "surface": "download",
+     "zebkit": false
+    },
+    "CanDragEnter": {
+     "surface": "input.drop",
+     "zebkit": false
+    },
+    "CanEnterFullscreenModeForTab": {
+     "surface": "window.fullscreen",
+     "zebkit": true
+    },
+    "CanUseWindowingControls": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "CancelKeyboardLockRequest": {
+     "surface": "input.keyboard-lock",
+     "zebkit": false
+    },
+    "CheckMediaAccessPermission": {
+     "surface": "media.camera-microphone",
+     "zebkit": true
+    },
+    "CloseContents": {
+     "surface": "window.close",
+     "zebkit": true
+    },
+    "DraggableRegionsChanged": {
+     "surface": "window.drag-regions",
+     "zebkit": false
+    },
+    "EnterFullscreenModeForTab": {
+     "surface": "window.fullscreen",
+     "zebkit": true
+    },
+    "EnterPictureInPicture": {
+     "surface": "window.picture-in-picture",
+     "zebkit": true
+    },
+    "EnumerateDirectory": {
+     "surface": "dialog.file-chooser",
+     "zebkit": true
+    },
+    "ExitFullscreenModeForTab": {
+     "surface": "window.fullscreen",
+     "zebkit": true
+    },
+    "ExitPictureInPicture": {
+     "surface": "window.picture-in-picture",
+     "zebkit": false
+    },
+    "FullscreenStateChangedForTab": {
+     "surface": "window.fullscreen",
+     "zebkit": false
+    },
+    "GetCanResize": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "GetDisplayMode": {
+     "surface": "window.controls-overlay",
+     "zebkit": true
+    },
+    "GetFullscreenState": {
+     "surface": "window.fullscreen",
+     "zebkit": false
+    },
+    "GetIsAlwaysOnTop": {
+     "surface": "window.geometry",
+     "zebkit": false
+    },
+    "GetJavaScriptDialogManager": {
+     "surface": "dialog.javascript",
+     "zebkit": true
+    },
+    "GetProtocolHandlerSecurityLevel": {
+     "surface": "protocol-handler",
+     "zebkit": false
+    },
+    "GetTitleForMediaControls": {
+     "surface": "media.system-controls",
+     "zebkit": false
+    },
+    "GetWindowBoundsInScreen": {
+     "surface": "window.geometry",
+     "zebkit": false
+    },
+    "GetWindowShowState": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "HandleContextMenu": {
+     "surface": "input.context-menu",
+     "zebkit": true
+    },
+    "HandleKeyboardEvent": {
+     "surface": "input.reserved-keys",
+     "zebkit": true
+    },
+    "IsDocumentPictureInPictureBlockedBySystem": {
+     "surface": "window.picture-in-picture",
+     "zebkit": false
+    },
+    "IsFullscreenForTabOrPending": {
+     "surface": "window.fullscreen",
+     "zebkit": true
+    },
+    "IsPictureInPictureEnabled": {
+     "surface": "window.picture-in-picture",
+     "zebkit": false
+    },
+    "IsWaitingForPointerLockPrompt": {
+     "surface": "input.pointer-lock",
+     "zebkit": false
+    },
+    "IsWebContentsCreationOverridden": {
+     "surface": "window.popup",
+     "zebkit": true
+    },
+    "LostPointerLock": {
+     "surface": "input.pointer-lock",
+     "zebkit": false
+    },
+    "MaximizeFromWebAPI": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "MinimizeFromWebAPI": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "OpenColorChooser": {
+     "surface": "dialog.color",
+     "zebkit": false
+    },
+    "OpenEyeDropper": {
+     "surface": "dialog.eye-dropper",
+     "zebkit": false
+    },
+    "PreHandleKeyboardEvent": {
+     "surface": "input.reserved-keys",
+     "zebkit": true
+    },
+    "ProcessSelectAudioOutput": {
+     "surface": "media.audio-output",
+     "zebkit": false
+    },
+    "RegisterProtocolHandler": {
+     "surface": "protocol-handler",
+     "zebkit": true
+    },
+    "RequestKeyboardLock": {
+     "surface": "input.keyboard-lock",
+     "zebkit": false
+    },
+    "RequestMediaAccessPermission": {
+     "surface": "media.camera-microphone",
+     "zebkit": true
+    },
+    "RequestPointerLock": {
+     "surface": "input.pointer-lock",
+     "zebkit": true
+    },
+    "RestoreFromWebAPI": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "RunFileChooser": {
+     "surface": "dialog.file-chooser",
+     "zebkit": true
+    },
+    "SaveFrame": {
+     "surface": "download",
+     "zebkit": false
+    },
+    "SetContentsBounds": {
+     "surface": "window.geometry",
+     "zebkit": false
+    },
+    "SetResizableFromWebAPI": {
+     "surface": "window.web-controls",
+     "zebkit": false
+    },
+    "ShouldBlockMediaRequest": {
+     "surface": "media.camera-microphone",
+     "zebkit": false
+    },
+    "ShouldSuppressDialogs": {
+     "surface": "dialog.javascript",
+     "zebkit": false
+    },
+    "ShouldUseInstancedSystemMediaControls": {
+     "surface": "media.system-controls",
+     "zebkit": false
+    },
+    "ShowRepostFormWarningDialog": {
+     "surface": "dialog.repost",
+     "zebkit": false
+    },
+    "TakeFocus": {
+     "surface": "window.focus",
+     "zebkit": true
+    },
+    "UnregisterProtocolHandler": {
+     "surface": "protocol-handler",
+     "zebkit": true
+    },
+    "UseFileChooserForFileSystemAccess": {
+     "surface": "dialog.file-system-access",
+     "zebkit": false
+    },
+    "WebContentsCreated": {
+     "surface": "window.popup",
+     "zebkit": false
+    }
+   },
+   "plumbing": [
+    "AllowedPrerenderingCount",
+    "CanOverscrollContent",
+    "CapturePaintPreviewOfSubframe",
+    "ContentsMouseEvent",
+    "ContentsZoomChange",
+    "CreateAudioStreamBrokerFactory",
+    "CreateCustomWebContents",
+    "CreateSmsPrompt",
+    "DidAddMessageToConsole",
+    "DidBackForwardTransitionAnimationChange",
+    "DidChangeCloseSignalInterceptStatus",
+    "DoBrowserControlsShrinkRendererSize",
+    "FindMatchRectsReply",
+    "GetAIPageContent",
+    "GetApplicationContext",
+    "GetBackForwardTransitionFallbackUXConfig",
+    "GetBackForwardTransitionFallbackUXInternalPageIcon",
+    "GetBottomControlsHeight",
+    "GetBottomControlsMinHeight",
+    "GetInstalledWebappGeolocationContext",
+    "GetResponsibleWebContents",
+    "GetSavedRelatedApplications",
+    "GetSizeForNewRenderView",
+    "GetTopControlsHeight",
+    "GetTopControlsMinHeight",
+    "GetVirtualKeyboardHeight",
+    "GuestSaveFrame",
+    "HandleDragEnded",
+    "IsBackForwardCacheSupported",
+    "IsContentsActive",
+    "IsImmersivePlaybackEnabled",
+    "IsPrerender2Supported",
+    "IsPrivileged",
+    "LoadingStateChanged",
+    "MaybeCopyContentAreaAsBitmap",
+    "MaybeCopyContentAreaAsBitmapSync",
+    "MaybeCopyContentAreaAsHardwareBuffer",
+    "NavigationStateChanged",
+    "OnDidBlockNavigation",
+    "OnGoToEntryOffset",
+    "OnlyExpandTopControlsAtPageTop",
+    "OpenURLFromTab",
+    "PassiveInsecureContentFound",
+    "PreHandleDragExit",
+    "PreHandleDragUpdate",
+    "PreHandleGestureEvent",
+    "PreHandleMouseEvent",
+    "PrerenderWebContentsCreated",
+    "PrerenderWebContentsReleased",
+    "PrintCrossProcessSubframe",
+    "RendererResponsive",
+    "RendererUnresponsive",
+    "RequestImmersivePlaybackConfirmation",
+    "ResizeDueToAutoResize",
+    "SetFocusToLocationBar",
+    "SetOverlayMode",
+    "SetTopControlsGestureScrollInProgress",
+    "SetTopControlsShownRatio",
+    "ShouldAllowLazyLoad",
+    "ShouldAllowPartialParamMismatchOfPrerender2",
+    "ShouldAllowRendererInitiatedCrossProcessNavigation",
+    "ShouldAllowRunningInsecureContent",
+    "ShouldAnimateBrowserControlsHeightChanges",
+    "ShouldFocusLocationBarByDefault",
+    "ShouldFocusPageAfterCrash",
+    "ShouldOverrideUserAgentForPreloading",
+    "ShouldPreserveAbortedURLs",
+    "ShouldResumeRequestsForCreatedWindow",
+    "ShouldShowStaleContentOnEviction",
+    "UpdatePreferredSize",
+    "UpdateTargetURL",
+    "UpdateUserGestureCarryoverInfo",
+    "VisibleSecurityStateChanged"
+   ]
+  },
+  "ContentBrowserClient": {
+   "header": "content/public/browser/content_browser_client.h",
+   "system": {
+    "AllowCertificateError": {
+     "surface": "network.certificates",
+     "zebkit": true
+    },
+    "AllowWorkerWriteToClipboard": {
+     "surface": "clipboard",
+     "zebkit": false
+    },
+    "CanCreateWindow": {
+     "surface": "window.popup",
+     "zebkit": true
+    },
+    "CreateClientCertStore": {
+     "surface": "network.client-certificates",
+     "zebkit": true
+    },
+    "CreateIdentityRequestDialogController": {
+     "surface": "dialog.fedcm",
+     "zebkit": false
+    },
+    "CreateLoginDelegate": {
+     "surface": "dialog.http-auth",
+     "zebkit": true
+    },
+    "CreateScreenEnumerator": {
+     "surface": "display.list",
+     "zebkit": false
+    },
+    "CreateSelectFilePolicy": {
+     "surface": "dialog.file-chooser",
+     "zebkit": false
+    },
+    "CreateSpeechRecognitionManagerDelegate": {
+     "surface": "media.speech",
+     "zebkit": true
+    },
+    "CreateWindowForVideoPictureInPicture": {
+     "surface": "window.picture-in-picture",
+     "zebkit": false
+    },
+    "GetAcceptLangs": {
+     "surface": "locale",
+     "zebkit": true
+    },
+    "GetApplicationLocale": {
+     "surface": "locale",
+     "zebkit": false
+    },
+    "GetBluetoothDelegate": {
+     "surface": "device.bluetooth",
+     "zebkit": false
+    },
+    "GetDefaultDownloadDirectory": {
+     "surface": "download",
+     "zebkit": false
+    },
+    "GetFontAccessDelegate": {
+     "surface": "permission.*",
+     "zebkit": false
+    },
+    "GetForcedColorsForWebContents": {
+     "surface": "appearance.color-scheme",
+     "zebkit": false
+    },
+    "GetGeolocationSystemPermissionManager": {
+     "surface": "permission.geolocation.system",
+     "zebkit": true
+    },
+    "GetHidDelegate": {
+     "surface": "device.hid",
+     "zebkit": false
+    },
+    "GetMediaObserver": {
+     "surface": "media.display-capture",
+     "zebkit": false
+    },
+    "GetSensorDelegate": {
+     "surface": "permission.*",
+     "zebkit": false
+    },
+    "GetSerialDelegate": {
+     "surface": "device.serial",
+     "zebkit": false
+    },
+    "GetSmartCardDelegate": {
+     "surface": "device.smart-card",
+     "zebkit": false
+    },
+    "GetTtsControllerDelegate": {
+     "surface": "media.speech",
+     "zebkit": false
+    },
+    "GetTtsPlatform": {
+     "surface": "media.speech",
+     "zebkit": false
+    },
+    "GetUsbDelegate": {
+     "surface": "device.usb",
+     "zebkit": false
+    },
+    "GetWebAuthenticationDelegate": {
+     "surface": "dialog.webauthn",
+     "zebkit": true
+    },
+    "GetWebAuthenticationRequestDelegate": {
+     "surface": "dialog.webauthn",
+     "zebkit": true
+    },
+    "HandleExternalProtocol": {
+     "surface": "external-protocol",
+     "zebkit": true
+    },
+    "IsClipboardCopyAllowedByPolicy": {
+     "surface": "clipboard",
+     "zebkit": false
+    },
+    "IsClipboardPasteAllowed": {
+     "surface": "clipboard",
+     "zebkit": false
+    },
+    "IsClipboardPasteAllowedByPolicy": {
+     "surface": "clipboard",
+     "zebkit": false
+    },
+    "IsFileSystemAccessApiFilePickerAllowed": {
+     "surface": "dialog.file-system-access",
+     "zebkit": false
+    },
+    "IsFullscreenAllowedForUnfocusedWebContents": {
+     "surface": "window.fullscreen",
+     "zebkit": false
+    },
+    "OverrideWebPreferences": {
+     "surface": "appearance.color-scheme",
+     "zebkit": true
+    },
+    "SelectClientCertificate": {
+     "surface": "network.client-certificates",
+     "zebkit": true
+    },
+    "WebPreferencesNeedUpdateForColorRelatedStateChanges": {
+     "surface": "appearance.color-scheme",
+     "zebkit": false
+    }
+   },
+   "plumbing": [
+    "AddPresentationObserver",
+    "AllowCompressionDictionaryTransport",
+    "AllowGpuLaunchRetryOnIOThread",
+    "AllowNonActivatedCrossOriginPaintHolding",
+    "AllowRenderingMhtmlOverHttp",
+    "AllowServiceWorker",
+    "AllowServiceWorkerToControlSrcdocIframe",
+    "AllowSharedWorker",
+    "AllowSharedWorkerBlobURLFix",
+    "AllowSharedWorkerExtendedLifetime",
+    "AllowSignedExchange",
+    "AllowWorkerCacheStorage",
+    "AllowWorkerFileSystem",
+    "AllowWorkerIndexedDB",
+    "AllowWorkerWebLocks",
+    "AppendExtraCommandLineSwitches",
+    "AreDeprecatedAutomaticBeaconCredentialsAllowed",
+    "AreIsolatedWebAppsEnabled",
+    "AreThirdPartyCookiesGenerallyAllowed",
+    "AreV8OptimizationsEnabledForSite",
+    "AugmentNavigationDownloadPolicy",
+    "BindAIManager",
+    "BindBrowserControlInterface",
+    "BindGpuHostReceiver",
+    "BindHostReceiverForRenderer",
+    "BindLanguageDetectionDriver",
+    "BindMediaServiceReceiver",
+    "BindTranslationManager",
+    "BindUtilityHostReceiver",
+    "BrowserChildProcessHostCreated",
+    "BrowserURLHandlerCreated",
+    "CanAcceptUntrustedExchangesIfNeeded",
+    "CanCommitURL",
+    "CanSendSCTAuditingReport",
+    "CanShutdownGpuProcessNowOnIOThread",
+    "CancelRtcDiagnosticLogging",
+    "ConfigureNetworkContextParams",
+    "CreateAnchorElementPreconnectDelegate",
+    "CreateAudioManager",
+    "CreateBrowserMainParts",
+    "CreateCommitDeferringConditionsForNavigation",
+    "CreateDevToolsManagerDelegate",
+    "CreateDeviceInfoService",
+    "CreateDigitalIdentityProvider",
+    "CreateManagedConfigurationService",
+    "CreateMediaRemoter",
+    "CreateModelBrokerClient",
+    "CreateNativeIdpFetcher",
+    "CreateNonNetworkNavigationURLLoaderFactory",
+    "CreatePrefetchServiceDelegate",
+    "CreatePrerenderWebContentsDelegate",
+    "CreateProcessSelectionDeferringConditionsForNavigation",
+    "CreateResponsivenessCalculatorDelegate",
+    "CreateSecurePaymentConfirmationService",
+    "CreateThrottlesForCommitWithoutUrlLoader",
+    "CreateThrottlesForNavigation",
+    "CreateTracingDelegate",
+    "CreateTtsEnvironmentAndroid",
+    "CreateURLLoaderHandlerForServiceWorkerInitiatedNavigationRequest",
+    "CreateURLLoaderThrottles",
+    "CreateURLLoaderThrottlesForKeepAlive",
+    "CreateWebSocket",
+    "CrossProcessSubframeRenderProcessGone",
+    "DetermineAddressSpaceFromURL",
+    "DisallowV8FeatureFlagOverridesForSite",
+    "DoesSchemeAllowCrossOriginSharedWorker",
+    "DoesSiteRequireDedicatedProcess",
+    "DoesWebUIUrlRequireProcessLock",
+    "EnforceSystemAudioEchoCancellation",
+    "EnsureRequiredHeadersForIsolatedApp",
+    "ExposeInterfacesToChild",
+    "ExposeInterfacesToRenderer",
+    "FetchRemoteSms",
+    "FinishRtcDiagnosticLogging",
+    "ForceSniffingFileUrlsForHtml",
+    "GetAdditionalAllowedSchemesForFileSystem",
+    "GetAdditionalFileSystemBackends",
+    "GetAdditionalMappedFilesForChildProcess",
+    "GetAdditionalSiteIsolationModes",
+    "GetAdditionalViewSourceSchemes",
+    "GetAdditionalWebUISchemes",
+    "GetAlternativeErrorPageOverrideInfo",
+    "GetAppContainerSidForSandboxType",
+    "GetApplicationClientGUIDForQuarantineCheck",
+    "GetAutoPipInfo",
+    "GetBaselinePermissionsPolicyForIsolatedApp",
+    "GetBtmRemoveMask",
+    "GetChildModule",
+    "GetChildProcessPath",
+    "GetClipboardTypesIfPolicyApplied",
+    "GetCloudIdentifiers",
+    "GetContainerPolicyOverrideForCommit",
+    "GetControllerPresentationServiceDelegate",
+    "GetCpuPerformanceTierOverride",
+    "GetDefaultDownloadName",
+    "GetDefaultFavicon",
+    "GetDevToolsBackgroundServiceExpirations",
+    "GetDirectSocketsDelegate",
+    "GetDnsTxtResolverUrlPrefix",
+    "GetEffectiveTopFrameForPartitioning",
+    "GetEffectiveURL",
+    "GetFeatureObserverClient",
+    "GetFirstPartySetsDirectory",
+    "GetGPUPersistentCacheDirectory",
+    "GetGeneratedCodeCacheSettings",
+    "GetGeolocationApiKey",
+    "GetGrShaderDiskCacheDirectory",
+    "GetGraphiteDawnDiskCacheDirectory",
+    "GetHyphenationDictionary",
+    "GetLPACCapabilityNameForNetworkService",
+    "GetLocalTracesDirectory",
+    "GetLoggingFileName",
+    "GetMaxRendererProcessCountOverride",
+    "GetMediaDeviceIDSalt",
+    "GetNavigationUIData",
+    "GetNetLogConstants",
+    "GetNetLogDefaultDirectory",
+    "GetNetworkContextsParentDirectory",
+    "GetOnDeviceSpeechRecognitionAvailabilityStatus",
+    "GetOriginTrialsSettings",
+    "GetOriginsRequiringDedicatedProcess",
+    "GetOverrideValueForOriginKeyedProcesses",
+    "GetOverrideValueForStaticStorageQuota",
+    "GetPluginMimeTypesWithExternalHandlers",
+    "GetPostMessageTargetOverride",
+    "GetProcessCountToIgnoreForLimit",
+    "GetProduct",
+    "GetProductLogo",
+    "GetQuarantineConnectionCallback",
+    "GetReceiverPresentationServiceDelegate",
+    "GetSandboxedStorageServiceDataDirectory",
+    "GetSchemesBypassingSecureContextCheckAllowlist",
+    "GetScriptInjectionPolicy",
+    "GetShaderDiskCacheDirectory",
+    "GetSiteDisplayNameForCdmProcess",
+    "GetSpareRendererDelayForSiteURL",
+    "GetStoragePartitionConfigForSite",
+    "GetSystemNetworkContext",
+    "GetSystemSharedURLLoaderFactory",
+    "GetURLRequestAutoMountHandlers",
+    "GetUkmService",
+    "GetUserAgent",
+    "GetUserAgentMetadata",
+    "GetWebContentsFromWindowIfCaptureHandleAllowed",
+    "GetWebContentsViewDelegate",
+    "GetWebSocketOptions",
+    "GetWebUIHostnameForCodeCacheMetrics",
+    "GetWebUIResourceUrlToCodeCacheMap",
+    "GetWideColorGamutHeuristic",
+    "GetWindowsSecurityAttributeName",
+    "GetXrIntegrationClient",
+    "GrantAdditionalRequestPrivilegesToWorkerProcess",
+    "HasCustomSchemeHandler",
+    "HasErrorPage",
+    "HasWebRequestAPIProxy",
+    "IsAndroidAdvancedProtectionEnabled",
+    "IsAppContainerDisabled",
+    "IsBlobUrlPartitioningEnabled",
+    "IsBrowserStartupComplete",
+    "IsBuiltinComponent",
+    "IsClearWindowNameForNewBrowsingContextGroupAllowed",
+    "IsClipboardAllowedForServiceWorker",
+    "IsCrossOriginSubframeAllowedToShowFilePicker",
+    "IsDataSaverEnabled",
+    "IsDataUrlInWebWorkerOpaqueOriginEnabled",
+    "IsDragAllowedByPolicy",
+    "IsExemptFromWindowSizeCheck",
+    "IsExplicitNavigation",
+    "IsFileAccessAllowed",
+    "IsFileSystemURLNavigationAllowed",
+    "IsFindInPageDisabledForOrigin",
+    "IsFirstPartySetsEnabled",
+    "IsFullCookieAccessAllowed",
+    "IsHandledURL",
+    "IsInitialWebUIURL",
+    "IsInternalScheme",
+    "IsJitDisabledForSite",
+    "IsMultiCaptureAllowed",
+    "IsPinchToZoomAllowed",
+    "IsPopupBypassAllowed",
+    "IsPrefetchWithServiceWorkerAllowed",
+    "IsPrivacySandboxReportingDestinationAttested",
+    "IsRendererProcessPriorityEnabled",
+    "IsSecureContextRoot",
+    "IsSecurityLevelAcceptableForWebAuthn",
+    "IsServiceWorkerAutoPreloadAllowed",
+    "IsServiceWorkerSyntheticResponseAllowed",
+    "IsShuttingDown",
+    "IsSuitableHost",
+    "IsSystemWideTracingEnabled",
+    "IsTopChromeWebUIURL",
+    "IsTransientActivationRequiredForShowFileOrDirectoryPicker",
+    "IsUnboundedElementAllowed",
+    "IsUrlAllowedForBackForwardCache",
+    "IsUtilityCetCompatible",
+    "IsVideoCaptureAllowedWhileScreenLocked",
+    "IsWebUIAllowedToMakeNetworkRequests",
+    "IsWebUIBundledCodeCachingEnabled",
+    "LogWebDXFeatureForCurrentPage",
+    "LogWebFeatureForCurrentPage",
+    "LogWebUIUsage",
+    "MayDeleteServiceWorkerRegistration",
+    "MayReuseHost",
+    "MaybeCreateKeepAliveRequestTracker",
+    "MaybeGetScopedPictureInPictureTucker",
+    "MaybeOverrideLocalURLCrossOriginEmbedderPolicy",
+    "MaybeOverrideManifest",
+    "MaybeOverrideSourceURLForClipboardAccess",
+    "MaybePrewarmHttpDiskCache",
+    "ModifyRequestHeadersForPrefetch",
+    "NotifyMultiCaptureStateChanged",
+    "OnBtmServiceCreated",
+    "OnDisplayInsecureContent",
+    "OnFetchKeepAliveRequestCreated",
+    "OnFetchKeepAliveRequestDestroyed",
+    "OnKeepaliveRequestFinished",
+    "OnKeepaliveRequestStarted",
+    "OnNetworkServiceCreated",
+    "OnNetworkServiceDataUseUpdate",
+    "OnNewSCTAuditingReportSent",
+    "OnRendererProcessLockedStateUpdated",
+    "OnSharedStorageSelectURLCalled",
+    "OnSharedStorageWorkletHostCreated",
+    "OnTracingServiceStarted",
+    "OnTracingServiceStopped",
+    "OnUiTaskRunnerReady",
+    "OnWebContentsCreated",
+    "OpenURL",
+    "OriginSupportsConcreteCrossOriginIsolation",
+    "OverrideNavigationParams",
+    "OverrideSystemLocationProvider",
+    "OverrideURLLoaderFactoryParams",
+    "OverrideWebPreferencesAfterNavigation",
+    "OverridesAudioManager",
+    "PersistIsolatedOrigin",
+    "PostAfterStartupTask",
+    "PreSpawnChild",
+    "PreferenceRankAudioDeviceInfos",
+    "PreferenceRankVideoDeviceInfos",
+    "PrewarmServiceWorkerRegistrationForDSE",
+    "QueryInstalledWebAppsByManifestId",
+    "RecordAssistedLogin",
+    "RegisterAssociatedInterfaceBindersForRenderFrameHost",
+    "RegisterAssociatedInterfaceBindersForServiceWorker",
+    "RegisterBrowserInterfaceBindersForFrame",
+    "RegisterBrowserInterfaceBindersForServiceWorker",
+    "RegisterMojoBinderPoliciesForSameOriginPrerendering",
+    "RegisterNonNetworkServiceWorkerUpdateURLLoaderFactories",
+    "RegisterNonNetworkSubresourceURLLoaderFactories",
+    "RegisterNonNetworkWorkerMainResourceURLLoaderFactories",
+    "RegisterRendererPreferenceWatcher",
+    "RegisterTrustedWebUIInterfaceBrokers",
+    "RegisterUntrustedWebUIInterfaceBrokers",
+    "RemovePresentationObserver",
+    "RenderProcessWillLaunch",
+    "ReportLegacyTechEvent",
+    "RequestFilesAccess",
+    "RequestPlatformLocalNetworkPermission",
+    "RunSecondaryMediaService",
+    "SessionEnding",
+    "SetBrowserStartupIsCompleteForTesting",
+    "SetIsMinimalMode",
+    "SetupEmbedderSandboxParameters",
+    "ShouldAllowBackForwardCacheForCacheControlNoStorePage",
+    "ShouldAllowCrossProcessSandboxedFrameForPrecursor",
+    "ShouldAllowMojoJsBindingsForFrame",
+    "ShouldAllowNoLongerUsedProcessToExit",
+    "ShouldAllowPrefetchRedirection",
+    "ShouldAllowProcessPerSiteForMultipleMainFrames",
+    "ShouldAllowSameSiteRenderFrameHostChange",
+    "ShouldAllowSystemUiPopups",
+    "ShouldAnimateBackForwardTransitions",
+    "ShouldBlockRendererDebugURL",
+    "ShouldBtmDeleteInteractionRecords",
+    "ShouldCompareEffectiveURLsForSiteInstanceSelection",
+    "ShouldDenyRequestOnCertificateError",
+    "ShouldDisableOriginAgentClusterDefault",
+    "ShouldDisableOriginIsolation",
+    "ShouldDisableSiteIsolation",
+    "ShouldDisallowCredentialRequest",
+    "ShouldEmbeddedFramesTryToReuseExistingProcess",
+    "ShouldEnableAudioProcessHighPriority",
+    "ShouldEnableBtm",
+    "ShouldEnableStrictSiteIsolation",
+    "ShouldEnableSubframeZoom",
+    "ShouldForceDownloadResource",
+    "ShouldIgnoreSameSiteCookieRestrictionsWhenTopLevel",
+    "ShouldInheritCrossOriginEmbedderPolicyImplicitly",
+    "ShouldIsolateErrorPage",
+    "ShouldLockProcessToSite",
+    "ShouldObserveContainerViewLocationForDialogOverlays",
+    "ShouldOverrideLocalNetworkAccessRequestPolicy",
+    "ShouldOverrideUrlLoading",
+    "ShouldPreconnectNavigation",
+    "ShouldPrioritizeForBackForwardCache",
+    "ShouldRestrictCoreSharingOnRenderer",
+    "ShouldReuseAnyExistingProcessForNewMainFrameSiteInstance",
+    "ShouldRunOutOfProcessSystemDnsResolution",
+    "ShouldSandboxAudioService",
+    "ShouldSandboxNetworkService",
+    "ShouldSandboxWebNNCompilerService",
+    "ShouldSendOutermostOriginToRenderer",
+    "ShouldServiceWorkerInheritPolicyContainerFromCreator",
+    "ShouldServiceWorkerRequireForegroundPriorityDuringStartup",
+    "ShouldSkipBeforeUnloadDialog",
+    "ShouldStayInParentProcessForNTP",
+    "ShouldSuppressAXLoadComplete",
+    "ShouldSwapBrowsingInstancesForNavigation",
+    "ShouldTreatAsFirstPartyWhenTopLevel",
+    "ShouldTryToUpdateServiceWorkerRegistration",
+    "ShouldTryToUseExistingProcessHost",
+    "ShouldUpdateFontRendererPreferencesFromSystemSettings",
+    "ShouldUrlUseApplicationIsolationLevel",
+    "ShouldUseFirstPartyStorageKey",
+    "ShouldUseGmsCoreGeolocationProvider",
+    "ShouldUseProcessPerSite",
+    "ShouldUseSpareRenderProcessHost",
+    "ShowCaptionSettings",
+    "ShowPaymentHandlerWindow",
+    "SiteInstanceGotProcessAndSite",
+    "StartRtcDiagnosticLogging",
+    "SupportsAvoidUnnecessaryBeforeUnloadCheckSync",
+    "SupportsBaselinePermissionsPolicyForIsolatedApp",
+    "SuppressDifferentOriginSubframeJSDialogs",
+    "SuppressXSLTDeprecationBanner",
+    "ThreadPoolWillTerminate",
+    "UpdateCorsExemptHeaderForPrefetch",
+    "UpdateDevToolsBackgroundServiceExpiration",
+    "UpdateRendererPreferencesForWorker",
+    "UseOutermostMainFrameOrEmbedderForSubCaptureTargets",
+    "UsePrefetchPrerenderIntegration",
+    "WillComputeSiteForNavigation",
+    "WillCreateRestrictedCookieManager",
+    "WillCreateURLLoaderFactory",
+    "WillCreateURLLoaderRequestInterceptors",
+    "WillCreateWebTransport",
+    "WillInterceptWebSocket",
+    "WillProvidePublicFirstPartySets"
+   ]
+  },
+  "BrowserContext": {
+   "header": "content/public/browser/browser_context.h",
+   "system": {
+    "GetDownloadManagerDelegate": {
+     "surface": "download",
+     "zebkit": true
+    },
+    "GetFederatedIdentityApiPermissionContext": {
+     "surface": "dialog.fedcm",
+     "zebkit": false
+    },
+    "GetFederatedIdentityAutoReauthnPermissionContext": {
+     "surface": "dialog.fedcm",
+     "zebkit": false
+    },
+    "GetFederatedIdentityPermissionContext": {
+     "surface": "dialog.fedcm",
+     "zebkit": false
+    },
+    "GetFileSystemAccessPermissionContext": {
+     "surface": "dialog.file-system-access",
+     "zebkit": false
+    },
+    "GetPermissionControllerDelegate": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "GetPlatformNotificationService": {
+     "surface": "notification.web",
+     "zebkit": true
+    },
+    "GetPushMessagingService": {
+     "surface": "notification.push",
+     "zebkit": true
+    }
+   },
+   "plumbing": [
+    "CanUseDiskWhenOffTheRecord",
+    "CreateVideoDecodePerfHistory",
+    "CreateZoomLevelDelegate",
+    "GetBackgroundFetchDelegate",
+    "GetBackgroundSyncController",
+    "GetBrowsingDataRemoverDelegate",
+    "GetClientHintsControllerDelegate",
+    "GetContentIndexProvider",
+    "GetExtraHeadersForUrl",
+    "GetGuestManager",
+    "GetOriginTrialsControllerDelegate",
+    "GetPath",
+    "GetReduceAcceptLanguageControllerDelegate",
+    "GetSSLHostStateDelegate",
+    "GetSpecialStoragePolicy",
+    "GetStorageNotificationService",
+    "GetURLLoaderFactory",
+    "GetVariationsClient",
+    "IsOffTheRecord",
+    "RetrieveInProgressDownloadManager",
+    "ShouldClearSessionStorageOnStartup",
+    "TakeDefaultProtoDatabaseProvider",
+    "UniqueId"
+   ]
+  },
+  "WebContentsViewDelegate": {
+   "header": "content/public/browser/web_contents_view_delegate.h",
+   "system": {
+    "GetDragDestDelegate": {
+     "surface": "input.drop",
+     "zebkit": true
+    },
+    "OnPerformingDrop": {
+     "surface": "input.drop",
+     "zebkit": true
+    },
+    "ShowContextMenu": {
+     "surface": "input.context-menu",
+     "zebkit": true
+    }
+   },
+   "plumbing": [
+    "DismissContextMenu",
+    "ExecuteCommandForTesting",
+    "Focus",
+    "GetDelegateForHost",
+    "GetNativeWindow",
+    "IsContextMenuShowingForTesting",
+    "ResetStoredFocus",
+    "RestoreFocus",
+    "ShouldShowBlurTransitionAnimation",
+    "StoreFocus",
+    "TakeFocus",
+    "WebContentsDragEnded"
+   ]
+  },
+  "PermissionControllerDelegate": {
+   "header": "content/public/browser/permission_controller_delegate.h",
+   "system": {
+    "GetPermissionResultForCurrentDocument": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "GetPermissionResultForEmbeddedRequester": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "GetPermissionResultForOriginWithoutContext": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "GetPermissionResultForWorker": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "GetPermissionStatus": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "RequestPermissionsFromCurrentDocument": {
+     "surface": "permission.*",
+     "zebkit": true
+    },
+    "ResetPermission": {
+     "surface": "permission.*",
+     "zebkit": true
+    }
+   },
+   "plumbing": [
+    "GetExclusionAreaBoundsInScreen",
+    "IsPermissionOverridable",
+    "OnPermissionStatusChangeSubscriptionAdded",
+    "SubscribeToContentSettingsTypeChange",
+    "UnsubscribeFromContentSettingsTypeChange",
+    "UnsubscribeFromPermissionResultChange"
+   ]
+  }
+ },
+ "surfaces": [
+  {
+   "id": "app.lifecycle",
+   "status": "partial",
+   "default": "zebkit quits on a quit request; files opened go to the function",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/api.c"
+   ],
+   "zebkit_only": true
+  },
+  {
+   "id": "app.open-url",
+   "status": "gap",
+   "default": "not received",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "app.menu",
+   "status": "partial",
+   "default": "zebkit's application menu on macOS; elsewhere none",
+   "control": [
+    "configure",
+    "observe"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "app.dock",
+   "status": "gap",
+   "default": "none",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "app.identity",
+   "status": "partial",
+   "default": "the program's name",
+   "control": [
+    "configure"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "window.frame",
+   "status": "gap",
+   "default": "the system's frame",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "window.show",
+   "status": "partial",
+   "default": "shown at creation",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "window.geometry",
+   "status": "partial",
+   "default": "the system places it; size from creation",
+   "control": [
+    "configure"
+   ],
+   "tests": []
+  },
+  {
+   "id": "window.title",
+   "status": "done",
+   "default": "the page's title",
+   "control": [
+    "configure"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "window.focus",
+   "status": "done",
+   "default": "the page may ask for focus",
+   "control": [
+    "configure"
+   ],
+   "tests": []
+  },
+  {
+   "id": "window.fullscreen",
+   "status": "partial",
+   "default": "allowed; the content area only",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "window.drag-regions",
+   "status": "gap",
+   "default": "none",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "window.controls-overlay",
+   "status": "gap",
+   "default": "none",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "window.web-controls",
+   "status": "gap",
+   "default": "Chromium's default: refused",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "window.picture-in-picture",
+   "status": "gap",
+   "default": "not supported",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "window.popup",
+   "status": "done",
+   "default": "blocked without a gesture, as Chrome",
+   "control": [
+    "decide",
+    "observe",
+    "present"
+   ],
+   "tests": []
+  },
+  {
+   "id": "window.close",
+   "status": "done",
+   "default": "beforeunload, then closed",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "input.reserved-keys",
+   "status": "done",
+   "default": "none reserved",
+   "control": [
+    "configure",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "input.context-menu",
+   "status": "partial",
+   "default": "none shown",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "input.drop",
+   "status": "done",
+   "default": "the page gets the drop",
+   "control": [
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "input.pointer-lock",
+   "status": "gap",
+   "default": "always granted",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "input.keyboard-lock",
+   "status": "gap",
+   "default": "refused",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "input.global-shortcuts",
+   "status": "gap",
+   "default": "none",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "dialog.javascript",
+   "status": "done",
+   "default": "the system's dialog where it has one",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "dialog.repost",
+   "status": "default only",
+   "default": "Chromium's default: the form is not sent again",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "dialog.file-chooser",
+   "status": "done",
+   "default": "the system's dialog",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "dialog.file-system-access",
+   "status": "gap",
+   "default": "the system's picker, outside the hook; write refused",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "dialog.color",
+   "status": "default only",
+   "default": "Blink's in-page chooser",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "dialog.eye-dropper",
+   "status": "gap",
+   "default": "rejected",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "dialog.date-time",
+   "status": "default only",
+   "default": "Blink's in-page chooser",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "dialog.select",
+   "status": "default only",
+   "default": "a native menu on macOS windows, Blink's popup elsewhere",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "dialog.http-auth",
+   "status": "done",
+   "default": "cancelled",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "dialog.webauthn",
+   "status": "done",
+   "default": "the engine's UI and the system's passkeys",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "dialog.fedcm",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "dialog.print",
+   "status": "partial",
+   "default": "no dialog; told to the application",
+   "control": [
+    "observe"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "permission.*",
+   "status": "done",
+   "default": "denied, but a screen wake lock",
+   "control": [
+    "decide",
+    "configure",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "permission.geolocation.system",
+   "status": "partial",
+   "default": "Apple's source on macOS; none elsewhere",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "media.camera-microphone",
+   "status": "done",
+   "default": "the permission table",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "media.display-capture",
+   "status": "gap",
+   "default": "refused",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "media.audio-output",
+   "status": "default only",
+   "default": "Chromium's default",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "media.system-controls",
+   "status": "default only",
+   "default": "Chromium's default",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "media.speech",
+   "status": "default only",
+   "default": "Chromium's default",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "device.usb",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "device.hid",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "device.serial",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "device.bluetooth",
+   "status": "gap",
+   "default": "not supported",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "device.smart-card",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "protocol-handler",
+   "status": "partial",
+   "default": "reported registered, kept in memory",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "clipboard",
+   "status": "default only",
+   "default": "Chromium's default",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "notification.web",
+   "status": "gap",
+   "default": "denied",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "notification.push",
+   "status": "gap",
+   "default": "not available",
+   "control": [],
+   "tests": []
+  },
+  {
+   "id": "desktop.tray",
+   "status": "gap",
+   "default": "none",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "desktop.share",
+   "status": "gap",
+   "default": "not exposed",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "appearance.color-scheme",
+   "status": "partial",
+   "default": "light; per view in the settings",
+   "control": [
+    "configure"
+   ],
+   "tests": []
+  },
+  {
+   "id": "appearance.reduced-motion",
+   "status": "partial",
+   "default": "the system's",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "locale",
+   "status": "done",
+   "default": "the system's",
+   "control": [
+    "configure"
+   ],
+   "tests": []
+  },
+  {
+   "id": "accessibility.platform",
+   "status": "gap",
+   "default": "content's detection",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "download",
+   "status": "done",
+   "default": "saved in Downloads, never opened",
+   "control": [
+    "decide",
+    "configure",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "external-protocol",
+   "status": "done",
+   "default": "not opened; told",
+   "control": [
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "network.proxy",
+   "status": "done",
+   "default": "the system's",
+   "control": [
+    "configure"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "network.certificates",
+   "status": "done",
+   "default": "refused",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "network.client-certificates",
+   "status": "done",
+   "default": "none sent",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": []
+  },
+  {
+   "id": "storage.cookie-keys",
+   "status": "done",
+   "default": "the system's key store",
+   "control": [
+    "configure"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "devtools",
+   "status": "done",
+   "default": "off",
+   "control": [
+    "configure"
+   ],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "power.wake-lock",
+   "status": "default only",
+   "default": "the screen wake lock granted",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "power.events",
+   "status": "gap",
+   "default": "not told",
+   "control": [],
+   "tests": [],
+   "zebkit_only": true
+  },
+  {
+   "id": "display.list",
+   "status": "gap",
+   "default": "Chromium's default",
+   "control": [],
+   "tests": []
+  }
+ ]
+}

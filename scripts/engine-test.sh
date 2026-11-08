@@ -411,6 +411,12 @@ if [[ -n "$build_only" ]]; then
 fi
 if [[ -z "$prebuilt" ]]; then
     check_engine_library
+    # The registry of surfaces against Chromium's delegates and src/engine
+    # (docs/SYSTEM_INTEGRATION.md, 6.6).
+    if selected surfaces; then
+        log "surfaces"
+        python3 -I "$ZEBKIT_ROOT/scripts/check-surfaces.py" --chromium "$SRC_DIR" || failed=1
+    fi
 else
     log "what the engine exports and loads: checked by --build-only"
 fi
