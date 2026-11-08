@@ -156,6 +156,11 @@ void FileSelectHelper::RunFileChooser(
     case blink::mojom::FileChooserParams::Mode::kSave:
       dialog_type_ = ui::SelectFileDialog::SELECT_SAVEAS_FILE;
       break;
+    // showDirectoryPicker() (File System Access through the file chooser,
+    // Window::UseFileChooserForFileSystemAccess): the directory itself.
+    case blink::mojom::FileChooserParams::Mode::kOpenDirectory:
+      dialog_type_ = ui::SelectFileDialog::SELECT_FOLDER;
+      break;
     default:
       // Prevent warning.
       dialog_type_ = ui::SelectFileDialog::SELECT_OPEN_FILE;
@@ -163,8 +168,8 @@ void FileSelectHelper::RunFileChooser(
   }
 
   gfx::NativeWindow owning_window = web_contents_->GetTopLevelNativeWindow();
-  select_file_dialog_->SelectFile(dialog_type_, std::u16string(),
-                                  base::FilePath(), select_file_types_.get(),
+  select_file_dialog_->SelectFile(dialog_type_, params->title,
+                                  params->default_file_name, select_file_types_.get(),
                                   file_type_index, base::FilePath::StringType(),
                                   owning_window, nullptr);
 

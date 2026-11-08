@@ -132,6 +132,11 @@ pub(crate) unsafe fn take_bytes(data: *mut u8, size: usize) -> Vec<u8> {
     copy
 }
 
+/// What this build can do on this system and display, as JSON (`<zebkit/window.h>`).
+pub fn capabilities() -> Option<String> {
+    unsafe { take_string(sys::zebkit_get_capabilities()) }
+}
+
 /// The error a failed call set, or `fallback` when it set none.
 pub(crate) unsafe fn take_error(error: *mut c_char, fallback: &str) -> Error {
     Error::new(take_string(error).unwrap_or_else(|| fallback.to_string()))

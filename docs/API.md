@@ -339,6 +339,21 @@ in the permission's native Chromium scope. Worker policy remains context scoped.
 Rust, Python and host JavaScript expose the same rules and request lifecycle.
 See [the hooks contract](ROADMAP_HOOKS.md#each-hook) for limits and bindings.
 
+Besides Chromium's permissions (by their Permissions API names, such as
+`geolocation`, `camera`, `clipboard-read`), three are the engine's own, asked
+and set the same way:
+
+| Permission | Asked when | Metadata | Default |
+|---|---|---|---|
+| `file-system-write` | a page writes, through File System Access, to a file it opened (`createWritable()`, `requestPermission({mode: 'readwrite'})`), not one it saved | `path`, `name`, `kind` (`file`, `directory`) | denied |
+| `file-system-read` | a page reads a handle beyond what the person picked or dropped (one restored from storage) | the same | denied |
+| `protocol-handler` | `navigator.registerProtocolHandler()`, with a click | `scheme`, `url` | denied; nothing is registered with the system |
+
+`pointer-lock` is granted by default where the view has a window and refused
+without one (`--headless`, off screen), where there is no system pointer;
+`keyboard-lock` is denied by default. An unanswered engine permission (no hook,
+the deadline) is asked again the next time; an answer, or a rule, holds.
+
 ## Runtime document navigation policy
 
 `zebkit_view_on_navigation` pauses navigation stages for a host decision.

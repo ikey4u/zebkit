@@ -158,13 +158,13 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `window.frame` | macOS: fixed `Titled \| Closable \| Miniaturizable \| Resizable` (`window_mac.mm`); Views: the default frame (`window_views.cc`) | gap: no other frame |
-| `window.show` | macOS shows the window in `Create()`, before its page is attached (`makeKeyAndOrderFront:`); Views shows it in `SetContents()` | partial: no hidden start, and a first frame without its page on macOS |
-| `window.geometry` | size at creation, `zebkit_view_resize`, `zebkit_view_set_size_limits` | partial: no position, no state, no events |
+| `window.frame` | `system`, `overlay`, `none` by `zebkit_view_new_with_options()` (`<zebkit/window.h>`): macOS a full-size content view under a transparent title bar, the system's buttons; Views a frame of zebkit's with engine-drawn buttons (`window_mac.mm`, `window_views.cc`) | done |
+| `window.show` | shown once its page is in it, on macOS too; `show: false` makes it hidden until the `show` action | done |
+| `window.geometry` | size, place (`x`, `y`; refused on Wayland), limits by the options; `zebkit_view_get_window()` state, actions, `zebkit_view_on_window_state()` events | done |
 | `window.title` | `zebkit_view_set_title`, the page's by default | done |
 | `window.focus` | `zebkit_view_focus`; the page's own focus request (`ActivateContents`) | done |
-| `window.fullscreen` | a page's fullscreen fills the content area and tells the application (`zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen`); the window itself never goes fullscreen (`Window::ToggleFullscreenModeForTab` sets a flag and resizes) | partial |
-| `window.drag-regions`, `window.controls-overlay` | neither used: `SetSupportsDraggableRegions`, `DraggableRegionsChanged` and `UpdateWindowControlsOverlay` are public in content and unused | gap |
+| `window.fullscreen` | a page's fullscreen fills the content area, or with `pageFullscreen: "window"` makes the window fullscreen as Chrome does; the `fullscreen` actions; the policy hook still decides | done |
+| `window.drag-regions`, `window.controls-overlay` | the page's `app-region` while its main frame is of a granted origin, or `zebkit_view_set_drag_regions()`; an overlay's title bar area sent with `UpdateWindowControlsOverlay` (`navigator.windowControlsOverlay`, `env(titlebar-area-*)`, `display-mode: window-controls-overlay`) | done |
 | `window.close` | the close box, `window.close()`, `zebkit_view_close`, `zebkit_view_request_close` (beforeunload first) | done |
 | `window.popup`: `window.open`, `target=_blank` | blocked without a gesture, as Chrome; `zebkit_view_on_new_window`, `zebkit_view_on_window_open`, the popup policy | done |
 | `window.web-controls`: the page's `window.minimize()`, `maximize()`, `restore()`, `setResizable()` (Additional Windowing Controls) and `moveTo`/`resizeTo` | Chromium's defaults: refused or ignored (`MinimizeFromWebAPI` and the others not overridden) | gap |
@@ -177,8 +177,8 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `input.reserved-keys` | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | done |
 | `input.context-menu` | `zebkit_view_on_context_menu` takes it with its context; without one, `ViewDelegate::ShowContextMenu` has a null inner delegate and shows nothing (`view.cc`, `engine.cc`) | partial: no default menu, no way to run a menu's command |
 | `input.drop` | `zebkit_view_on_drop` (paths before the page has the drop), the drag API of `<zebkit/page.h>` | done |
-| `input.pointer-lock` | always granted (`Window::RequestPointerLock`) | gap: no policy |
-| `input.keyboard-lock` | not implemented (`RequestKeyboardLock` not overridden) | gap |
+| `input.pointer-lock` | the `pointer-lock` permission: granted by default where there is a window, as before; refused without one (`--headless`, off screen), where there is no system pointer | done |
+| `input.keyboard-lock` | the `keyboard-lock` permission, denied by default (`Window::RequestKeyboardLock`) | done |
 | `input.global-shortcuts` | none | gap; host's toolkit by preference |
 
 ### 5.4 Dialogs and choosers
@@ -187,7 +187,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 |---|---|---|
 | `dialog.javascript`: alert, confirm, prompt, beforeunload | `zebkit_view_on_dialog`, a policy per view; default presenter: `NSAlert` on macOS, `MessageBoxW` on Windows (where `prompt()` returns null), none on Linux, none without a display (`js_dialog_manager.cc`, `dialog.cc`) | done; the defaults differ by system |
 | `dialog.file-chooser`: `<input type=file>` | `zebkit_view_on_file_chooser`; default `ui::SelectFileDialog` (NSOpenPanel, the Windows dialog, the XDG portal on Linux) | done |
-| `dialog.file-system-access`: `showOpenFilePicker()`, `showSaveFilePicker()`, `showDirectoryPicker()` | enabled; opens the system's picker directly (`FileSystemChooser`), **not through `zebkit_view_on_file_chooser`**; no permission context (`Profile` does not override `GetFileSystemAccessPermissionContext`), write grants refused | gap: bypasses the application's hook |
+| `dialog.file-system-access`: `showOpenFilePicker()`, `showSaveFilePicker()`, `showDirectoryPicker()` | through `zebkit_view_on_file_chooser` (`"api": "file-system-access"`, modes open, save, directory; `patches/1084`); the page reads what was picked and writes where it saves; writing to an opened file, or a handle beyond what was picked, is the `file-system-write` or `file-system-read` permission, denied without a hook (`file_system_access.cc`) | done |
 | `dialog.color`: `<input type=color>` | Blink's in-page popup (`ColorChooserPopupUIController`) | default only |
 | `dialog.eye-dropper`: `EyeDropper.open()` | feature on, `OpenEyeDropper` not overridden: the promise rejects; the colour popup's eyedropper button does nothing | gap |
 | `dialog.date-time` | Blink's in-page chooser | default only |
@@ -213,7 +213,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `media.system-controls`: the system's now-playing and media keys | Chromium's default | default only |
 | `media.speech`: speech recognition and synthesis | zebkit's recognition delegate; Chromium's synthesis | default only |
 | `clipboard`: reads and writes | the permission table for reads; Chromium's defaults for policy | default only |
-| `protocol-handler`: `registerProtocolHandler()` | kept in memory and reported registered; nothing reaches the system (`protocol_handler_delegate.cc`) | partial: it reports a success that is not one |
+| `protocol-handler`: `registerProtocolHandler()` | the `protocol-handler` permission, with the scheme and the handler's URL, denied without a hook; a handler granted handles its links in the profile; nothing is registered with the system, and nothing says it is (`protocol_handler_delegate.cc`) | done |
 
 ### 5.6 Notifications and the desktop
 

@@ -404,6 +404,13 @@ zebkit_native_window NativeWindowForView(zebkit_view* view) {
                 : zebkit_native_window{};
 }
 
+WindowOwner ViewWindowOwner(const zebkit_view* view) {
+  auto it = AttachedViews().find(view);
+  if (it == AttachedViews().end())
+    return WindowOwner::kEngine;
+  return it->second.native ? WindowOwner::kApplication : WindowOwner::kView;
+}
+
 bool AttachViewNative(zebkit_view* view,
                       uintptr_t native_parent,
                       const gfx::Rect& bounds,

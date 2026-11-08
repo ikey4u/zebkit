@@ -6,6 +6,7 @@
 #include "zebkit/engine/view.h"
 #include <stdlib.h>
 #include <string.h>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -43,6 +44,9 @@ struct Group {
 };
 struct Pending {
   base::WeakPtr<zebkit_view> view;
+  // A named permission's code (NamedCode), with its answer; 0 for content's.
+  int named = 0;
+  base::OnceCallback<void(Status, bool decided)> done;
   content::WeakDocumentPtr document;
   content::GlobalRenderFrameHostId frame;
   std::shared_ptr<Group> group;
@@ -68,6 +72,16 @@ zebkit_permission_state ToState(Status status) {
 const char* StateName(Status status) { return status == Status::GRANTED ? "granted" : status == Status::DENIED ? "denied" : "prompt"; }
 bool ValidState(zebkit_permission_state state) { return state >= ZEBKIT_PERMISSION_PROMPT && state <= ZEBKIT_PERMISSION_DENIED; }
 Status DefaultReply(Type) { return Status::DENIED; }
+// Named permissions keep their rules in the view's table under codes past
+// every blink::PermissionType, without content's revisions: content never
+// reads them.
+constexpr const char* kNamed[] = {"file-system-read", "file-system-write", "protocol-handler"};
+constexpr int kNamedBase = 1 << 20;
+std::optional<int> NamedCode(std::string_view name) {
+  for (size_t i = 0; i < std::size(kNamed); ++i)
+    if (name == kNamed[i]) return kNamedBase + static_cast<int>(i);
+  return std::nullopt;
+}
 // A remembered answer holds for a site under the same top-level site only: a
 // camera granted to a widget under one page is not granted under every page.
 std::string RememberKey(const url::Origin& requesting, const url::Origin& embedding) {
@@ -125,6 +139,23 @@ void WriteRule(zebkit_view* view, const std::string& origin, Type type, Status s
 void Expire(content::BrowserContext* context, zebkit_view* only = nullptr);
 void Scan(content::BrowserContext* context, base::WeakPtr<zebkit_view> only, bool restricted);
 
+std::optional<Status> NamedRule(zebkit_view* view, const url::Origin& requesting,
+                                const url::Origin& embedding, int code) {
+  if (!view) return std::nullopt;
+  const std::string keys[] = {RememberKey(requesting, embedding), requesting.Serialize(), "*"};
+  for (zebkit_view* target = view; target;
+       target = target->inherits_policy_ ? target->policy_opener_.get() : nullptr) {
+    for (const auto& origin : keys) {
+      const auto it = target->permission_rules_.find({origin, code});
+      if (it != target->permission_rules_.end()) return ToStatus(it->second.state);
+    }
+  }
+  return std::nullopt;
+}
+void WriteNamed(zebkit_view* view, const std::string& origin, int code, Status status) {
+  view->permission_rules_[{origin, code}] = {ToState(status), content::NextEmbedderPermissionRevision()};
+}
+
 void Remember(zebkit_view* view, const std::string& origin, Type type, Status status) {
   Expire(nullptr, view);
   auto weak = view->GetWeakPtr();
@@ -146,6 +177,10 @@ bool Live(const Pending& request) {
 // overrides are terminal CDP decisions; native prompt rules ask the host.
 std::optional<Status> FixedDecision(const Pending& request) {
   if (!Live(request)) return Status::DENIED;
+  if (request.named) {
+    auto rule = NamedRule(request.view.get(), request.requesting, request.embedding, request.named);
+    return rule && *rule != Status::ASK ? rule : std::nullopt;
+  }
   if (auto rule = ViewRule(request.view.get(), request.requesting, request.embedding, request.type))
     return *rule == Status::ASK ? std::nullopt : rule;
   return content::GetEmbedderContextPermissionOverride(request.view->web_contents()->GetBrowserContext(),
@@ -165,6 +200,16 @@ void Finish(uintptr_t id, Status status, bool remember, const char* reason) {
   if (it == Store().pending.end()) return;
   auto request = std::move(it->second);
   Store().pending.erase(it);
+  if (request->named) {
+    if (remember && Live(*request))
+      WriteNamed(request->view.get(), RememberKey(request->requesting, request->embedding), request->named, status);
+    auto event = request->metadata.Clone();
+    event.Set("state", StateName(status)); event.Set("reason", reason); event.Set("remembered", remember);
+    Report(request->view, std::move(event));
+    const bool decided = !strcmp(reason, "answered") || !strcmp(reason, "policy-changed");
+    std::move(request->done).Run(status, decided);
+    return;
+  }
   if (remember && Live(*request)) Remember(request->view.get(), RememberKey(request->requesting, request->embedding), request->type, status);
   auto event = request->metadata.Clone();
   event.Set("state", StateName(status)); event.Set("reason", reason); event.Set("remembered", remember);
@@ -284,6 +329,61 @@ bool Request(content::RenderFrameHost* frame, const content::PermissionRequestDe
 }
 }  // namespace
 
+bool IsNamedPermission(std::string_view name) { return NamedCode(name).has_value(); }
+
+void RequestNamedPermission(content::RenderFrameHost* frame, std::string_view name,
+                            base::DictValue details, bool user_gesture,
+                            base::OnceCallback<void(NamedAnswer)> done) {
+  auto code = NamedCode(name);
+  auto* view = frame ? ViewOf(content::WebContents::FromRenderFrameHost(frame)) : nullptr;
+  if (!code || !view || !Store().active || frame->GetLastCommittedOrigin().opaque()) {
+    std::move(done).Run(NamedAnswer::kUndecided);
+    return;
+  }
+  if (auto rule = NamedRule(view, frame->GetLastCommittedOrigin(),
+                            frame->GetMainFrame()->GetLastCommittedOrigin(), *code);
+      rule && *rule != Status::ASK) {
+    std::move(done).Run(*rule == Status::GRANTED ? NamedAnswer::kGranted : NamedAnswer::kDenied);
+    return;
+  }
+  auto* decider = view->Decider(&zebkit_view::on_permission_);
+  if (!decider || !decider->on_permission_) {
+    std::move(done).Run(NamedAnswer::kUndecided);
+    return;
+  }
+  size_t mine = 0;
+  for (const auto& [id, request] : Store().pending) mine += request->view.get() == view;
+  if (mine >= kMaxRequests || Store().next == std::numeric_limits<uintptr_t>::max()) {
+    std::move(done).Run(NamedAnswer::kUndecided);
+    return;
+  }
+  const auto id = Store().next++;
+  auto request = std::make_unique<Pending>();
+  request->view = view->GetWeakPtr(); request->document = frame->GetWeakDocumentPtr(); request->frame = frame->GetGlobalId();
+  request->named = *code; request->type = Type::NUM;
+  request->done = base::BindOnce([](base::OnceCallback<void(NamedAnswer)> answer, Status status, bool decided) {
+    std::move(answer).Run(!decided ? NamedAnswer::kUndecided
+                          : status == Status::GRANTED ? NamedAnswer::kGranted : NamedAnswer::kDenied);
+  }, std::move(done));
+  request->deadline = base::TimeTicks::Now() + base::Milliseconds(view->permission_timeout_ms_);
+  request->requesting = frame->GetLastCommittedOrigin();
+  request->embedding = frame->GetMainFrame()->GetLastCommittedOrigin();
+  request->metadata = std::move(details);
+  request->metadata.Set("id", base::NumberToString(id));
+  request->metadata.Set("permission", std::string(name));
+  request->metadata.Set("requestingOrigin", request->requesting.Serialize());
+  request->metadata.Set("topOrigin", request->embedding.Serialize());
+  request->metadata.Set("userGesture", user_gesture);
+  request->metadata.Set("timeoutMs", static_cast<int>(view->permission_timeout_ms_));
+  request->metadata.Set("deadlineUnixMs", static_cast<double>((base::Time::Now() - base::Time::UnixEpoch()).InMilliseconds()) + view->permission_timeout_ms_);
+  request->metadata.Set("state", "pending");
+  const uint32_t timeout = view->permission_timeout_ms_;
+  Store().pending.emplace(id, std::move(request));
+  auto runner = base::SingleThreadTaskRunner::GetCurrentDefault();
+  runner->PostTask(FROM_HERE, base::BindOnce(&Deliver, id));
+  runner->PostDelayedTask(FROM_HERE, base::BindOnce(&TimedOut, id), base::Milliseconds(timeout));
+}
+
 void InstallPermissionHooks() {
   Store().active = true;
   content::SetEmbedderPermissionHooks(base::BindRepeating(&StatusHook), base::BindRepeating(
@@ -329,6 +429,17 @@ bool zebkit_view_set_permission(zebkit_view* view, const char* origin, const cha
   using namespace zebkit;
   auto fail = [&](const std::string& message) { if (error) *error = strdup(message.c_str()); return false; };
   if (!Ready() || !view || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
+  if (auto code = NamedCode(permission ? permission : "")) {
+    if (!ValidState(state)) return fail("unknown permission or state");
+    std::string key; std::optional<url::Origin> parsed;
+    if (!Scope(origin, true, &key, &parsed)) return fail("permission origin must be a non-opaque URL or *");
+    if (!view->permission_rules_.contains({key, *code}) && view->permission_rules_.size() >= kMaxRules)
+      return fail("too many view permission rules");
+    Expire(nullptr, view);
+    WriteNamed(view, key, *code, ToStatus(state));
+    ScheduleScan(nullptr, view->GetWeakPtr());
+    return true;
+  }
   auto type = PermissionTypeNamed(permission ? permission : "");
   if (!type || !ValidState(state)) return fail("unknown permission or state");
   if (*type == Type::GEOLOCATION_APPROXIMATE) return fail("use geolocation to set both location precisions; approximate-only decisions may be answered once");
@@ -342,6 +453,18 @@ bool zebkit_view_set_permission(zebkit_view* view, const char* origin, const cha
 zebkit_permission_state zebkit_view_get_permission(zebkit_view* view, const char* origin, const char* permission) {
   using namespace zebkit;
   if (!Ready() || !view || !view->web_contents()) return ZEBKIT_PERMISSION_INVALID;
+  if (auto code = NamedCode(permission ? permission : "")) {
+    std::string key; std::optional<url::Origin> parsed;
+    auto* main = view->web_contents()->GetPrimaryMainFrame();
+    if (!origin) {
+      if (!main || main->GetLastCommittedOrigin().opaque()) return ZEBKIT_PERMISSION_INVALID;
+      parsed = main->GetLastCommittedOrigin();
+    } else if (!Scope(origin, false, &key, &parsed)) return ZEBKIT_PERMISSION_INVALID;
+    auto embedding = main && !main->GetLastCommittedOrigin().opaque() ? main->GetLastCommittedOrigin() : *parsed;
+    if (auto rule = NamedRule(view, *parsed, embedding, *code)) return ToState(*rule);
+    auto* decider = view->Decider(&zebkit_view::on_permission_);
+    return decider && decider->on_permission_ ? ZEBKIT_PERMISSION_PROMPT : ZEBKIT_PERMISSION_DENIED;
+  }
   auto type = PermissionTypeNamed(permission ? permission : "");
   if (!type) return ZEBKIT_PERMISSION_INVALID;
   std::string key; std::optional<url::Origin> parsed;
@@ -432,7 +555,9 @@ bool zebkit_permission_respond(zebkit_permission_request* handle, zebkit_permiss
   if (base::TimeTicks::Now() >= request->deadline) { TimedOut(id); return false; }
   if (auto status = FixedDecision(*request)) { Finish(id, *status, false, "policy-changed"); return false; }
   auto view = request->view;
-  if (remember && (request->requesting.opaque() || !CanRemember(view.get(), RememberKey(request->requesting, request->embedding), request->type, ToStatus(state)))) return false;
+  if (remember && (request->requesting.opaque() ||
+      (request->named ? view->permission_rules_.size() >= kMaxRules
+                      : !CanRemember(view.get(), RememberKey(request->requesting, request->embedding), request->type, ToStatus(state))))) return false;
   Finish(id, ToStatus(state), remember, "answered");
   if (remember && view && view->web_contents()) ScheduleScan(nullptr, view);
   return true;

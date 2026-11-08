@@ -62,6 +62,10 @@
 #   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/automation_python.py: the same through zebkit.automation,
 #   Playwright's async API for Python.
+# - tests/engine/window_frame.py: <zebkit/window.h>: options before the window, frames,
+#   the title bar area the page sees, drag regions against real clicks, state and events.
+# - tests/engine/system_holes.py: File System Access through the file chooser hook
+#   and the permission hook, protocol handlers and pointer/keyboard lock as permissions.
 # - tests/engine/html_in_canvas.py: HTML drawn into a canvas (drawElementImage(),
 #   Chromium 157) in a view's pixels where it is drawn, and its input there.
 # - tests/engine/system_locale.py: the page's locale the system's (LANG, on
@@ -522,6 +526,10 @@ if [[ -x "$bin/native-parent" ]]; then
                 "$bin/native-window" --no-sandbox --user-data-dir="$work/profile-native-window-x11"
             run native-window-javascript env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/tools/zebkit-js" \
                 --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
+            run window-frame-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/window_frame.py" --no-sandbox --user-data-dir="$work/profile-window-frame-x11"
+            run system-holes-window env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/system_holes.py" --no-sandbox --user-data-dir="$work/profile-holes-window"
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
@@ -546,7 +554,7 @@ fi
 # Wayland: a headless wlroots compositor of its own (labwc, no GPU), with an
 # empty configuration so that nothing of the user's starts in it.
 if [[ -x "$bin/native-window" && "$ZEBKIT_HOST" == linux ]] && command -v labwc > /dev/null &&
-    { selected native-window-wayland || selected native-window-javascript-wayland; }; then
+    { selected native-window-wayland || selected native-window-javascript-wayland || selected window-frame-wayland; }; then
     wayland_run="$work/wayland-run"
     mkdir -p "$wayland_run" "$work/wayland-config" && chmod 700 "$wayland_run"
     env -i HOME="$work" PATH=/usr/bin:/bin XDG_RUNTIME_DIR="$wayland_run" XDG_CONFIG_HOME="$work/wayland-config" \
@@ -563,6 +571,9 @@ if [[ -x "$bin/native-window" && "$ZEBKIT_HOST" == linux ]] && command -v labwc 
         run native-window-javascript-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
             "$bin/tools/zebkit-js" --no-sandbox --ozone-platform=wayland \
             --user-data-dir="$work/profile-native-window-js-wayland" "$tests/script/native_window.mjs" wayland
+        run window-frame-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
+            ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" --no-sandbox --ozone-platform=wayland \
+            --user-data-dir="$work/profile-window-frame-wayland"
     else
         echo "FAIL labwc did not start"; tail -5 "$work/labwc.log"; failed=1
     fi
@@ -703,6 +714,12 @@ run user-agent-native env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/binding
 run offscreen-scale "$bin/offscreen-scale" "${engine_switches[@]}"
 run automation-python env ZEBKIT_DIR="$package" python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
+# What reached the system without the application's decision: File System Access,
+# protocol handlers, pointer and keyboard lock (docs/SYSTEM_INTEGRATION.md, phase 2).
+run system-holes env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" "${engine_switches[@]/profile/profile-holes}"
+# A view's window made with options (<zebkit/window.h>): without a window here,
+# with one under Xvfb and labwc below.
+run window-frame env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" "${engine_switches[@]/profile/profile-window-frame}"
 if [[ "$ZEBKIT_HOST" == linux ]]; then
     # LANG is the system's locale on Linux only; macOS and Windows have the user's settings.
     run system-locale env ZEBKIT_DIR="$package" LANG=ja_JP.UTF-8 LC_ALL=ja_JP.UTF-8 \

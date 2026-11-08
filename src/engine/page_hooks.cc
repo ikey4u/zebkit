@@ -471,10 +471,15 @@ bool HandleFileChooserHook(content::RenderFrameHost* frame,
   if (!FileRequests::HasDecider(view))
     return false;
   base::DictValue metadata;
-  metadata.Set("mode", params.mode == Mode::kOpen           ? "open"
-                       : params.mode == Mode::kOpenMultiple ? "open-multiple"
-                       : params.mode == Mode::kUploadFolder ? "upload-folder"
-                                                            : "save");
+  metadata.Set("mode", params.mode == Mode::kOpen            ? "open"
+                       : params.mode == Mode::kOpenMultiple  ? "open-multiple"
+                       : params.mode == Mode::kUploadFolder  ? "upload-folder"
+                       : params.mode == Mode::kOpenDirectory ? "directory"
+                                                             : "save");
+  // <input type=file>, or File System Access's pickers (showOpenFilePicker,
+  // showSaveFilePicker, showDirectoryPicker), which ask for files they can
+  // write: what they may write is the "file-system-write" permission.
+  metadata.Set("api", params.open_writable ? "file-system-access" : "input");
   metadata.Set("title", base::UTF16ToUTF8(params.title));
   metadata.Set("defaultFileName", params.default_file_name.AsUTF8Unsafe());
   base::ListValue accept;

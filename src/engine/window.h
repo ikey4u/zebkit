@@ -7,11 +7,13 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "content/public/browser/session_storage_namespace_handle.h"
@@ -20,6 +22,7 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
+#include "zebkit/engine/window_options.h"
 
 namespace content {
 class BrowserContext;
@@ -68,7 +71,35 @@ class Window : public content::WebContentsDelegate,
                         const GURL& url,
                         const scoped_refptr<content::SiteInstance>& site_instance,
                         const gfx::Size& initial_size,
-                        Kind kind = Kind::kNative);
+                        Kind kind = Kind::kNative,
+                        const WindowOptions* options = nullptr);
+
+  // <zebkit/window.h>: the options the window was made with and has now, its
+  // state as the system has it, what it is asked to do, and where it is
+  // dragged from (docs/SYSTEM_INTEGRATION.md, 7).
+  const WindowOptions& options() const { return options_; }
+  // The frame asked for, when the system's was taken instead (fallback).
+  WindowOptions::Frame requested_frame() const { return requested_frame_; }
+  // Runtime options, already validated: to the platform, the page's display
+  // mode and its title bar area.
+  void SetOptions(WindowOptions options);
+  // For the windows pages of this one open; none: the system's frame.
+  void SetPopupOptions(std::optional<WindowOptions> options) { popup_options_ = std::move(options); }
+  WindowGeometry Geometry();
+  WindowCapabilities Capabilities();
+  bool PerformAction(WindowAction action, std::string* error);
+  // The regions in force: the page's app-region (CSS) while its main frame is
+  // of a granted origin, or the application's.
+  const std::vector<DragRegion>& drag_regions() const { return drag_regions_; }
+  bool InDragRegion(const gfx::Point& point_in_content) const;
+  bool SetHostDragRegions(std::vector<DragRegion> regions, std::string* error);
+  // The platform: the window's state, place, size, focus or buttons changed.
+  void PlatformChanged();
+  uint64_t revision() const { return revision_; }
+  // Told after each change, on the engine's thread: a state change at once, a
+  // size or place one with the others of the same task.
+  void SetStateObserver(base::RepeatingClosure observer) { state_observer_ = std::move(observer); }
+  bool page_fullscreen() const { return is_fullscreen_; }
 
   // The window of a page.
   static Window* FromWebContents(content::WebContents* web_contents);
@@ -186,6 +217,8 @@ class Window : public content::WebContentsDelegate,
   void RequestPointerLock(content::WebContents* web_contents,
                           bool user_gesture,
                           bool last_unlocked_by_target) override;
+  void RequestKeyboardLock(content::WebContents* web_contents,
+                           bool esc_key_locked) override;
   void CloseContents(content::WebContents* source) override;
   // a page kept by its beforeunload stays, rather than unloading
   // all the same (the delegate's default).
@@ -205,6 +238,7 @@ class Window : public content::WebContentsDelegate,
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
                       scoped_refptr<content::FileSelectListener> listener,
                       const blink::mojom::FileChooserParams& params) override;
+  bool UseFileChooserForFileSystemAccess() const override;
   void EnumerateDirectory(content::WebContents* web_contents,
                           scoped_refptr<content::FileSelectListener> listener,
                           const base::FilePath& path) override;
@@ -218,6 +252,9 @@ class Window : public content::WebContentsDelegate,
                                          const GURL& resource_url) override;
   content::PictureInPictureResult EnterPictureInPicture(
       content::WebContents* web_contents) override;
+  void DraggableRegionsChanged(
+      const std::vector<blink::mojom::DraggableRegionPtr>& regions,
+      content::WebContents* contents) override;
 
   static gfx::Size DefaultSize();
 
@@ -227,7 +264,8 @@ class Window : public content::WebContentsDelegate,
   // A window for a page made already, as one opened from a page is.
   static Window* CreateForContents(std::unique_ptr<content::WebContents> web_contents,
                                    const gfx::Size& initial_size,
-                                   Kind kind);
+                                   Kind kind,
+                                   const WindowOptions* options = nullptr);
 
   // A window for what a page of @source opens with no opener of its own: a view
   // as every window a page opens is (Window::SetPopupHandler()).
@@ -248,12 +286,33 @@ class Window : public content::WebContentsDelegate,
   // WebContentsObserver
   void TitleWasSet(content::NavigationEntry* entry) override;
   void RenderFrameCreated(content::RenderFrameHost* frame_host) override;
+  void PrimaryPageChanged(content::Page& page) override;
+  void PrimaryMainFrameRenderProcessGone(base::TerminationStatus status) override;
+
+  // Whether the page's own regions count now: CSS regions, and its main
+  // frame's document of a granted origin.
+  bool CssRegionsAllowed();
+  // What the page is told of its title bar (Window Controls Overlay).
+  void UpdateTitlebarArea(const WindowGeometry& geometry);
+  void Notify();
 
   std::unique_ptr<content::JavaScriptDialogManager> dialog_manager_;
   std::unique_ptr<content::WebContents> web_contents_;
   const Kind kind_;
   const raw_ptr<WindowPlatform> platform_;
   bool is_fullscreen_ = false;
+
+  WindowOptions options_;
+  WindowOptions::Frame requested_frame_ = WindowOptions::Frame::kSystem;
+  std::optional<WindowOptions> popup_options_;
+  std::vector<DragRegion> drag_regions_;
+  uint64_t revision_ = 0;
+  gfx::Rect titlebar_area_;
+  base::RepeatingClosure state_observer_;
+  bool notify_pending_ = false;
+  std::optional<WindowGeometry::State> told_state_;
+  std::optional<bool> told_visible_;
+  base::WeakPtrFactory<Window> weak_factory_{this};
 
   // A container of all the open windows. We use a vector so we can keep track
   // of ordering.

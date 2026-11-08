@@ -160,6 +160,17 @@ _view_window_open_info = _declare("zebkit_view_get_window_open_info", _P, _V)
 _CONSOLE = ctypes.CFUNCTYPE(None, _V, _S, _P)
 _view_on_console = _declare("zebkit_view_on_console", None, _V, _CONSOLE, _P)
 
+# <zebkit/window.h>
+_WINDOW_STATE = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_new_with_options = _declare("zebkit_view_new_with_options", _V, _P, _S, _S, ctypes.POINTER(_P))
+_view_get_window = _declare("zebkit_view_get_window", _P, _V)
+_view_set_window = _declare("zebkit_view_set_window", _B, _V, _S, ctypes.POINTER(_P))
+_view_window_action = _declare("zebkit_view_window_action", _B, _V, _S, ctypes.POINTER(_P))
+_view_on_window_state = _declare("zebkit_view_on_window_state", None, _V, _WINDOW_STATE, _P)
+_view_set_drag_regions = _declare("zebkit_view_set_drag_regions", _B, _V, _S, ctypes.POINTER(_P))
+_view_set_popup_window_options = _declare("zebkit_view_set_popup_window_options", _B, _V, _S, ctypes.POINTER(_P))
+_get_capabilities = _declare("zebkit_get_capabilities", _P)
+
 _view_set_settings = _declare("zebkit_view_set_settings", _B, _V, _S, ctypes.POINTER(_P))
 _view_get_settings = _declare("zebkit_view_get_settings", _P, _V)
 _set_engine_settings = _declare("zebkit_set_engine_settings", _B, _S, ctypes.POINTER(_P))
@@ -571,6 +582,12 @@ def engine_version():
     return _engine_version().decode()
 
 
+def capabilities():
+    """What this build can do on this system and display (<zebkit/window.h>)."""
+    value = _string(_get_capabilities())
+    return json.loads(value) if value else None
+
+
 def is_headless():
     return bool(_is_headless())
 
@@ -674,11 +691,69 @@ def post(function, delay_ms=0):
 class View:
     """A page, in a window when the machine has a display."""
 
-    def __init__(self, url=None, width=0, height=0):
-        self._handle = _view_new(url.encode() if url else None, width, height)
+    def __init__(self, url=None, width=0, height=0, options=None):
+        """A view loading url. options (<zebkit/window.h>): the window's, before
+        it is made, such as {"frame": "overlay", "show": False}; width and
+        height go into them."""
+        if options is None:
+            self._handle = _view_new(url.encode() if url else None, width, height)
+        else:
+            given = dict(options)
+            if width:
+                given.setdefault("width", width)
+            if height:
+                given.setdefault("height", height)
+            error = _P()
+            self._handle = _view_new_with_options(None, url.encode() if url else None,
+                                                  json.dumps(given).encode(), ctypes.byref(error))
+            if not self._handle:
+                _raise(error, "cannot create a view with these window options")
         if not self._handle:
             raise Error("cannot create a view")
         self._initialize_callbacks()
+
+    @property
+    def window(self):
+        """The window's state (<zebkit/window.h>): state, bounds, frame,
+        titlebarArea, controls, capabilities."""
+        value = _string(_view_get_window(self._check()))
+        return json.loads(value) if value else None
+
+    def set_window(self, options=None, **fields):
+        """Changes the window's runtime options, merged by key."""
+        given = dict(options or {}, **fields)
+        error = _P()
+        if not _view_set_window(self._check(), json.dumps(given).encode(), ctypes.byref(error)):
+            _raise(error, "window options rejected")
+
+    def window_action(self, action):
+        """show, hide, minimize, maximize, restore, fullscreen,
+        exit-fullscreen, close: asked of the system; the state tells."""
+        error = _P()
+        if not _view_window_action(self._check(), action.encode(), ctypes.byref(error)):
+            _raise(error, "window action refused")
+
+    def on_window_state(self, function):
+        """function(dict) for every change of the window's state; None removes it."""
+        if function is None:
+            self._callbacks.pop("window-state", None)
+            _view_on_window_state(self._check(), _WINDOW_STATE(), None)
+            return
+        callback = _WINDOW_STATE(_guard(lambda h, payload, d: function(json.loads(payload.decode()))))
+        self._set("window-state", callback, _view_on_window_state)
+
+    def set_drag_regions(self, regions):
+        """With dragRegions.source "host": [{"x", "y", "width", "height", "drag"}]."""
+        error = _P()
+        if not _view_set_drag_regions(self._check(), json.dumps(list(regions)).encode(), ctypes.byref(error)):
+            _raise(error, "drag regions rejected")
+
+    def set_popup_window_options(self, options):
+        """Options for the windows this view's pages open; None: the system's frame."""
+        error = _P()
+        text = json.dumps(options).encode() if options is not None else None
+        if not _view_set_popup_window_options(self._check(), text, ctypes.byref(error)):
+            _raise(error, "popup window options rejected")
 
     @classmethod
     def _adopt(cls, handle):

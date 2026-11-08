@@ -34,6 +34,7 @@ class ZoomLevelDelegate;
 namespace zebkit {
 
 class EngineDownloadManagerDelegate;
+class FileSystemAccessContext;
 
 // The path key of the directory --user-data-dir says (PathService).
 inline constexpr int kUserDataPath = 18600;
@@ -67,6 +68,7 @@ class Profile : public content::BrowserContext {
   content::BrowserPluginGuestManager* GetGuestManager() override;
   storage::SpecialStoragePolicy* GetSpecialStoragePolicy() override;
   content::PlatformNotificationService* GetPlatformNotificationService() override;
+  content::FileSystemAccessPermissionContext* GetFileSystemAccessPermissionContext() override;
   content::PushMessagingService* GetPushMessagingService() override;
   content::StorageNotificationService* GetStorageNotificationService() override;
   content::SSLHostStateDelegate* GetSSLHostStateDelegate() override;
@@ -85,6 +87,7 @@ class Profile : public content::BrowserContext {
 
   std::unique_ptr<EngineDownloadManagerDelegate> download_manager_delegate_;
   std::unique_ptr<content::PermissionControllerDelegate> permission_manager_;
+  std::unique_ptr<FileSystemAccessContext> file_system_access_;
   std::unique_ptr<content::BackgroundSyncController> background_sync_controller_;
   std::unique_ptr<content::ContentIndexProvider> content_index_provider_;
   std::unique_ptr<content::ReduceAcceptLanguageControllerDelegate>

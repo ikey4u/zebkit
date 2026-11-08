@@ -451,7 +451,8 @@ zebkit_view* NewView(zebkit_context* context,
                      const char* url,
                      int width,
                      int height,
-                     Window::Kind kind);
+                     Window::Kind kind,
+                     const WindowOptions* options = nullptr);
 // Nobody sees the page's window: an off-screen view, or all under --headless.
 // What a window would show is then answered without one.
 bool HasNoDisplay(content::WebContents* contents);
@@ -489,6 +490,11 @@ void ExportNativeWindowForView(zebkit_view* view,
                                base::OnceCallback<void(std::string)> done);
 // The view is closing, and its window with it.
 void ForgetAttachedNative(zebkit_view* view);
+// Whose window the view's page is in (<zebkit/window.h>'s "owner"): its own
+// (kEngine), another view's (kView, zebkit_view_attach()), or the
+// application's (kApplication, zebkit_view_attach_native()).
+enum class WindowOwner { kEngine, kView, kApplication };
+WindowOwner ViewWindowOwner(const zebkit_view* view);
 
 // Closes the views the application holds, before the rest of the windows
 // close (view.cc).

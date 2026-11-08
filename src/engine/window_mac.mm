@@ -20,8 +20,48 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/native_ui_types.h"
+#include "skia/ext/skia_utils_mac.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 #include "zebkit/engine/window.h"
+#include "zebkit/engine/window_options.h"
+
+// A window that is dragged from where the page's or the application's drag
+// regions say (<zebkit/window.h>): a press there is the system's drag, with
+// its snapping and Stage Manager, and a double click there what the person
+// set for a title bar's (System Settings, "double-click a window's title bar").
+@interface ZebkitNSWindow : NSWindow
+@property(nonatomic) zebkit::Window* owner;
+@end
+
+@implementation ZebkitNSWindow
+@synthesize owner = _owner;
+
+- (BOOL)inDragRegion:(NSEvent*)event {
+  if (!_owner || _owner->drag_regions().empty())
+    return NO;
+  NSView* content = self.contentView;
+  NSPoint point = [content convertPoint:event.locationInWindow fromView:nil];
+  // The content area's top left is the origin, as the regions have it.
+  const gfx::Point at(point.x, content.isFlipped ? point.y : NSHeight(content.bounds) - point.y);
+  return _owner->InDragRegion(at);
+}
+
+- (void)sendEvent:(NSEvent*)event {
+  if (event.type == NSEventTypeLeftMouseDown && [self inDragRegion:event]) {
+    if (event.clickCount == 2) {
+      NSString* action = [NSUserDefaults.standardUserDefaults stringForKey:@"AppleActionOnDoubleClick"];
+      if ([action isEqualToString:@"Minimize"])
+        [self performMiniaturize:nil];
+      else if (![action isEqualToString:@"None"])
+        [self performZoom:nil];
+      return;
+    }
+    [self performWindowDragWithEvent:event];
+    return;
+  }
+  [super sendEvent:event];
+}
+@end
 
 // Receives notification that the window is closing so that it can start the
 // tear-down process.
@@ -40,6 +80,20 @@
 
 @synthesize window = _window;
 
+- (void)changed {
+  if (_owner)
+    _owner->PlatformChanged();
+}
+- (void)windowDidResize:(NSNotification*)notification { [self changed]; }
+- (void)windowDidMove:(NSNotification*)notification { [self changed]; }
+- (void)windowDidMiniaturize:(NSNotification*)notification { [self changed]; }
+- (void)windowDidDeminiaturize:(NSNotification*)notification { [self changed]; }
+- (void)windowDidEnterFullScreen:(NSNotification*)notification { [self changed]; }
+- (void)windowDidExitFullScreen:(NSNotification*)notification { [self changed]; }
+- (void)windowDidBecomeKey:(NSNotification*)notification { [self changed]; }
+- (void)windowDidResignKey:(NSNotification*)notification { [self changed]; }
+- (void)windowDidChangeOcclusionState:(NSNotification*)notification { [self changed]; }
+
 - (id)initWithWindow:(zebkit::Window*)owner window:(NSWindow*)window {
   if ((self = [super init])) {
     _owner = owner;
@@ -56,6 +110,8 @@
   // Don't leave a dangling pointer if the window lives beyond
   // this method. See crbug.com/719830.
   _window.delegate = nil;
+  if ([_window isKindOfClass:[ZebkitNSWindow class]])
+    static_cast<ZebkitNSWindow*>(_window).owner = nullptr;
   _window = nil;
   _owner.ClearAndDelete();
   return YES;
@@ -74,12 +130,36 @@ class NativePlatform : public WindowPlatform {
     NSUInteger style_mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable |
                             NSWindowStyleMaskResizable;
-    NSWindow* ns_window =
-        [[NSWindow alloc] initWithContentRect:content_rect
-                                    styleMask:style_mask
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO];
+    const WindowOptions& options = window->options();
+    // "overlay" and "none": the page from the window's top, under the
+    // system's title bar made transparent; a titled window still, with its
+    // key-window behaviour, the Window menu's commands, resizing, fullscreen
+    // and tiling. Borderless would lose them.
+    const bool custom = options.frame != WindowOptions::Frame::kSystem;
+    if (custom)
+      style_mask |= NSWindowStyleMaskFullSizeContentView;
+    ZebkitNSWindow* ns_window =
+        [[ZebkitNSWindow alloc] initWithContentRect:content_rect
+                                          styleMask:style_mask
+                                            backing:NSBackingStoreBuffered
+                                              defer:NO];
+    ns_window.owner = window;
     ns_window.title = @"";
+    if (custom) {
+      ns_window.titlebarAppearsTransparent = YES;
+      ns_window.titleVisibility = NSWindowTitleHidden;
+      // A taller title bar as the system makes one, its buttons placed by it:
+      // the unified toolbar styles.
+      if (options.controls_height > 28) {
+        ns_window.toolbar = [[NSToolbar alloc] initWithIdentifier:@"zebkit"];
+        ns_window.toolbarStyle = options.controls_height >= 46 ? NSWindowToolbarStyleUnified
+                                                               : NSWindowToolbarStyleUnifiedCompact;
+      }
+      if (options.frame == WindowOptions::Frame::kNone) {
+        for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton})
+          [ns_window standardWindowButton:kind].hidden = YES;
+      }
+    }
     // The smallest it may be without the view bindings wrecked; in window
     // coordinates. zebkit_view_set_size_limits() has another.
     ns_window.contentMinSize =
@@ -91,7 +171,13 @@ class NativePlatform : public WindowPlatform {
     ns_window.releasedWhenClosed = NO;
     windows_[window] = [[ZebkitWindowDelegate alloc] initWithWindow:window
                                                              window:ns_window];
-    [ns_window makeKeyAndOrderFront:nil];
+    ApplyOptions(window, ns_window);
+    if (options.position)
+      [ns_window setFrameTopLeftPoint:ScreenPoint(*options.position)];
+    else
+      [ns_window center];
+    // Shown once its page is in it (SetContents()), not before: the first
+    // frame the person sees is the window as configured.
   }
 
   void SetContents(Window* window) override {
@@ -101,6 +187,9 @@ class NativePlatform : public WindowPlatform {
     [ns_window.contentView addSubview:web_view];
     web_view.frame = ns_window.contentView.bounds;
     web_view.needsDisplay = YES;
+    if (window->options().show)
+      [ns_window makeKeyAndOrderFront:nil];
+    window->PlatformChanged();
   }
 
   void ResizeContents(Window* window, const gfx::Size& content_size) override {
@@ -148,7 +237,141 @@ class NativePlatform : public WindowPlatform {
       ns_window.styleMask &= ~NSWindowStyleMaskResizable;
   }
 
+  WindowCapabilities Capabilities(Window* window) override {
+    WindowCapabilities capabilities;
+    capabilities.overlay = true;
+    capabilities.none = true;
+    capabilities.position = true;
+    capabilities.actions = true;
+    capabilities.controls_drawn_by_engine = false;
+    capabilities.controls_height = true;
+    return capabilities;
+  }
+
+  WindowGeometry Geometry(Window* window) override {
+    WindowGeometry geometry;
+    NSWindow* ns_window = windows_.contains(window) ? windows_[window].window : nil;
+    if (!ns_window)
+      return WindowPlatform::Geometry(window);
+    const bool fullscreen = ns_window.styleMask & NSWindowStyleMaskFullScreen;
+    geometry.state = fullscreen                ? WindowGeometry::State::kFullscreen
+                     : ns_window.miniaturized ? WindowGeometry::State::kMinimized
+                     : ns_window.zoomed       ? WindowGeometry::State::kMaximized
+                                              : WindowGeometry::State::kNormal;
+    geometry.visible = ns_window.visible;
+    geometry.focused = ns_window.keyWindow;
+    const NSRect frame = ns_window.frame;
+    const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+    geometry.bounds = gfx::Rect(NSMinX(frame), top - NSMaxY(frame), NSWidth(frame), NSHeight(frame));
+    NSView* content = ns_window.contentView;
+    geometry.content = gfx::Size(NSWidth(content.bounds), NSHeight(content.bounds));
+    geometry.scale = ns_window.backingScaleFactor;
+    if (window->options().frame == WindowOptions::Frame::kOverlay && !fullscreen) {
+      // The title bar is what the content layout leaves at the top; the
+      // buttons are the system's, where it put them.
+      const CGFloat height = NSHeight(content.bounds) - NSHeight(ns_window.contentLayoutRect);
+      int right = 0;
+      for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+        NSButton* button = [ns_window standardWindowButton:kind];
+        if (!button || button.hidden)
+          continue;
+        NSRect rect = [content convertRect:button.bounds fromView:button];
+        const gfx::Rect converted(NSMinX(rect), content.isFlipped ? NSMinY(rect)
+                                                                  : NSHeight(content.bounds) - NSMaxY(rect),
+                                  NSWidth(rect), NSHeight(rect));
+        geometry.controls.push_back(converted);
+        right = std::max(right, converted.right());
+      }
+      // The free area starts past the buttons, with the system's own gap.
+      const int start = right ? right + 8 : 0;
+      geometry.titlebar = gfx::Rect(start, 0, std::max(0, geometry.content.width() - start), height);
+    }
+    return geometry;
+  }
+
+  bool PerformAction(Window* window, WindowAction action, std::string* error) override {
+    NSWindow* ns_window = windows_.contains(window) ? windows_[window].window : nil;
+    if (!ns_window)
+      return WindowPlatform::PerformAction(window, action, error);
+    const bool fullscreen = ns_window.styleMask & NSWindowStyleMaskFullScreen;
+    switch (action) {
+      case WindowAction::kShow: [ns_window makeKeyAndOrderFront:nil]; break;
+      case WindowAction::kHide: [ns_window orderOut:nil]; break;
+      case WindowAction::kMinimize: [ns_window miniaturize:nil]; break;
+      case WindowAction::kMaximize:
+        if (!(ns_window.styleMask & NSWindowStyleMaskResizable)) {
+          *error = "unsupported: the window is not resizable";
+          return false;
+        }
+        if (!ns_window.zoomed)
+          [ns_window zoom:nil];
+        break;
+      case WindowAction::kRestore:
+        if (ns_window.miniaturized)
+          [ns_window deminiaturize:nil];
+        else if (fullscreen)
+          [ns_window toggleFullScreen:nil];
+        else if (ns_window.zoomed)
+          [ns_window zoom:nil];
+        break;
+      case WindowAction::kFullscreen:
+        if (!fullscreen)
+          [ns_window toggleFullScreen:nil];
+        break;
+      case WindowAction::kExitFullscreen:
+        if (fullscreen)
+          [ns_window toggleFullScreen:nil];
+        break;
+      case WindowAction::kClose: break;  // zebkit_view_request_close(), in window_api.cc.
+    }
+    // The outcome comes as the delegate's notifications; miniaturize: and the
+    // like may tell nothing when nothing changes.
+    window->PlatformChanged();
+    return true;
+  }
+
+  void OptionsChanged(Window* window) override {
+    NSWindow* ns_window = windows_.contains(window) ? windows_[window].window : nil;
+    if (!ns_window)
+      return;
+    ApplyOptions(window, ns_window);
+    if (window->options().position)
+      [ns_window setFrameTopLeftPoint:ScreenPoint(*window->options().position)];
+  }
+
+  void SetFullscreen(Window* window, bool fullscreen) override {
+    NSWindow* ns_window = windows_.contains(window) ? windows_[window].window : nil;
+    if (!ns_window || static_cast<bool>(ns_window.styleMask & NSWindowStyleMaskFullScreen) == fullscreen)
+      return;
+    [ns_window toggleFullScreen:nil];
+  }
+
  private:
+  // A point on the screen, top left the origin, in AppKit's coordinates.
+  static NSPoint ScreenPoint(const gfx::Point& point) {
+    const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+    return NSMakePoint(point.x(), top - point.y());
+  }
+
+  // What can change while the window is open: its colour and its look.
+  static void ApplyOptions(Window* window, NSWindow* ns_window) {
+    const WindowOptions& options = window->options();
+    if (options.background) {
+      ns_window.backgroundColor = skia::SkColorToSRGBNSColor(*options.background);
+      if (content::RenderWidgetHostView* view = window->web_contents()->GetRenderWidgetHostView())
+        view->SetBackgroundColor(*options.background);
+    }
+    switch (options.appearance) {
+      case WindowOptions::Appearance::kSystem: ns_window.appearance = nil; break;
+      case WindowOptions::Appearance::kLight:
+        ns_window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        break;
+      case WindowOptions::Appearance::kDark:
+        ns_window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        break;
+    }
+  }
+
   base::flat_map<Window*, ZebkitWindowDelegate*> windows_;
 };
 

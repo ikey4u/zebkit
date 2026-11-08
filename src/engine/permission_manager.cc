@@ -32,6 +32,9 @@ bool IsAllowlistedPermissionType(PermissionType permission) {
     // so the rest is denied unless the application or an agent grants it
     // (CDP's Browser.setPermission, which overrides this).
     case PermissionType::WAKE_LOCK_SCREEN:
+    // zebkit: as before it was a permission (docs/SYSTEM_INTEGRATION.md, 10),
+    // and as Chrome grants it after a click; the application can deny it.
+    case PermissionType::POINTER_LOCK:
       return true;
 
     // zebkit: denied by default. Location (the device's Wi-Fi networks are
@@ -71,7 +74,6 @@ bool IsAllowlistedPermissionType(PermissionType permission) {
     case PermissionType::WEB_PRINTING:
     case PermissionType::SPEAKER_SELECTION:
     case PermissionType::KEYBOARD_LOCK:
-    case PermissionType::POINTER_LOCK:
     case PermissionType::AUTOMATIC_FULLSCREEN:
     case PermissionType::WEB_APP_INSTALLATION:
     case PermissionType::LOCAL_NETWORK_ACCESS:

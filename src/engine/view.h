@@ -27,6 +27,7 @@
 #include "ui/base/window_open_disposition.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 #include "zebkit/engine/include/zebkit/hooks.h"
+#include "zebkit/engine/include/zebkit/window.h"
 
 namespace content {
 class RenderFrameHost;
@@ -230,6 +231,13 @@ struct zebkit_view : public content::WebContentsObserver,
   zebkit_load_func on_load_ = nullptr;
   // Made without a URL: the about:blank it starts on is not reported.
   bool quiet_blank_ = false;
+  // The about:blank a view made without a URL loads first, until it has
+  // committed: a load the application asks for meanwhile waits for it, or the
+  // blank's commit would take its place.
+  bool initial_blank_pending_ = false;
+  // <zebkit/window.h>: state events (window_api.cc).
+  zebkit_window_state_func on_window_state_ = nullptr;
+  void* on_window_state_data_ = nullptr;
   void* on_load_data_ = nullptr;
   zebkit_title_func on_title_ = nullptr;
   void* on_title_data_ = nullptr;

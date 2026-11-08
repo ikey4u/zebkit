@@ -30,6 +30,7 @@ macro_rules! opaque {
 }
 
 opaque!(zebkit_view);
+opaque!(zebkit_context);
 opaque!(zebkit_call);
 opaque!(zebkit_script);
 opaque!(zebkit_navigation_request);
@@ -42,6 +43,8 @@ pub type zebkit_navigation_func = unsafe extern "C" fn(*mut zebkit_view, *mut ze
 pub type zebkit_navigation_result_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 pub type zebkit_window_open_event_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 pub type zebkit_console_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
+/// `<zebkit/window.h>`: a change of the window's state, as JSON.
+pub type zebkit_window_state_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 opaque!(zebkit_certificate_request);
 pub type zebkit_certificate_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_certificate_request, *const c_char, *mut c_void);
 pub type zebkit_certificate_result_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
@@ -267,6 +270,16 @@ extern "C" {
     pub fn zebkit_view_on_window_open_event(view: *mut zebkit_view, func: Option<zebkit_window_open_event_func>, data: *mut c_void);
     pub fn zebkit_view_get_window_open_info(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_view_on_console(view: *mut zebkit_view, func: Option<zebkit_console_func>, data: *mut c_void);
+
+    // <zebkit/window.h>
+    pub fn zebkit_view_new_with_options(context: *mut zebkit_context, url: *const c_char, options_json: *const c_char, error: *mut *mut c_char) -> *mut zebkit_view;
+    pub fn zebkit_view_get_window(view: *mut zebkit_view) -> *mut c_char;
+    pub fn zebkit_view_set_window(view: *mut zebkit_view, options_json: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_window_action(view: *mut zebkit_view, action: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_on_window_state(view: *mut zebkit_view, func: Option<zebkit_window_state_func>, data: *mut c_void);
+    pub fn zebkit_view_set_drag_regions(view: *mut zebkit_view, regions_json: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_set_popup_window_options(view: *mut zebkit_view, options_json: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_get_capabilities() -> *mut c_char;
     pub fn zebkit_view_set_navigation_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
     pub fn zebkit_view_set_navigation_fail_closed(view: *mut zebkit_view, fail_closed: bool) -> bool;
     pub fn zebkit_navigation_request_info(request: *mut zebkit_navigation_request) -> *mut c_char;

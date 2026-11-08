@@ -597,6 +597,16 @@ void ForgetAttachedNative(zebkit_view* view) {}
 
 #endif  // defined(ZEBKIT_X11), BUILDFLAG(IS_WIN)
 
+WindowOwner ViewWindowOwner(const zebkit_view* view) {
+  if (AttachedViews().contains(view))
+    return WindowOwner::kView;
+#if defined(ZEBKIT_X11) || BUILDFLAG(IS_WIN)
+  if (NativeOf(view))
+    return WindowOwner::kApplication;
+#endif
+  return WindowOwner::kEngine;
+}
+
 zebkit_native_window NativeWindowForView(zebkit_view* view) {
   // Follow the page's actual native view: its original Widget can be hidden
   // after AttachView has moved the contents into another zebkit window.

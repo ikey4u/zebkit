@@ -49,6 +49,7 @@
 #include "v8/include/v8-typed-array.h"
 #include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/include/zebkit/window.h"
 #include "zebkit/engine/pdf_script.h"
 #include "zebkit/engine/ui.h"
 #include "zebkit/engine/ui_script.h"
@@ -153,9 +154,12 @@ constexpr char kBootstrap[] = R"js((function (native) {
   const VIEW_ADOPT = Symbol();
   class View {
     #id;
-    #handlers = {load: [], title: [], close: [], 'popup-blocked': [], 'permission-result': [], 'navigation-result': [], 'window-open': [], console: [], 'certificate-result': [], 'http-auth-result': []};
-    constructor(url = 'about:blank', {width = 0, height = 0} = {}, adoption = null) {
-      this.#id = adoption?.key === VIEW_ADOPT ? adoption.id : native.viewNew(String(url), width, height);
+    #handlers = {load: [], title: [], close: [], 'popup-blocked': [], 'permission-result': [], 'navigation-result': [], 'window-open': [], console: [], 'certificate-result': [], 'http-auth-result': [], 'window-state': []};
+    // {window: {...}}: <zebkit/window.h>'s options, before the window is made.
+    constructor(url = 'about:blank', {width = 0, height = 0, window = null} = {}, adoption = null) {
+      const options = window === null ? undefined
+          : JSON.stringify({...window, ...(width ? {width} : {}), ...(height ? {height} : {})});
+      this.#id = adoption?.key === VIEW_ADOPT ? adoption.id : native.viewNew(String(url), width, height, options);
       native.viewOn(this.#id, 'load', (event, url) => this.#emit('load', event, url));
       native.viewOn(this.#id, 'title', (title) => this.#emit('title', title));
       native.viewOn(this.#id, 'close', () => this.#emit('close'));
@@ -164,6 +168,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
       native.viewOn(this.#id, 'navigation-result', event => this.#emit('navigation-result', event));
       native.viewOn(this.#id, 'window-open', event => this.#emit('window-open', event));
       native.viewOn(this.#id, 'console', event => this.#emit('console', event));
+      native.viewOn(this.#id, 'window-state', event => this.#emit('window-state', event));
       native.viewOn(this.#id, 'certificate-result', event => this.#emit('certificate-result', event));
       native.viewOn(this.#id, 'http-auth-result', event => this.#emit('http-auth-result', event));
     }
@@ -181,6 +186,15 @@ constexpr char kBootstrap[] = R"js((function (native) {
     // Focus to the view, as when a person clicks it: a page goes fullscreen
     // only from a view with focus (zebkit_view_focus).
     focus() { native.viewFocus(this.#id); }
+    // The window (<zebkit/window.h>): its state, runtime options, actions and
+    // drag regions; 'window-state' events tell its changes.
+    get window() { return native.viewWindow(this.#id, 'get'); }
+    setWindow(options) { return native.viewWindow(this.#id, 'set', JSON.stringify(options)); }
+    windowAction(action) { return native.viewWindow(this.#id, 'action', String(action)); }
+    setDragRegions(regions) { return native.viewWindow(this.#id, 'regions', JSON.stringify(regions)); }
+    setPopupWindowOptions(options) {
+      return native.viewWindow(this.#id, 'popup', options === null ? null : JSON.stringify(options));
+    }
     setSettings(settings) { return native.viewSettings(this.#id, JSON.stringify(settings)); }
     get settings() { return JSON.parse(native.viewGetSettings(this.#id)); }
     setRuntimeSettings(settings) { return native.viewRuntimeSettings(this.#id, JSON.stringify(settings)); }
@@ -339,6 +353,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     engineVersion: native.engineVersion,
     args: Object.freeze([...native.args]),
     quit: () => native.quit(),
+    // What this build can do on this system and display (<zebkit/window.h>).
+    capabilities: () => native.capabilities(),
     View,
     setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
     get engineSettings() { return JSON.parse(native.engineSettings()); },
@@ -607,6 +623,8 @@ struct zebkit_script {
   int WrapView(zebkit_view* view);
   static void SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void ViewWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -764,6 +782,8 @@ void zebkit_script::Install() {
   SetMethod(native, "clearTimer", &ClearTimer);
   SetMethod(native, "quit", &Quit);
   SetMethod(native, "viewNew", &ViewNew);
+  SetMethod(native, "viewWindow", &ViewWindow);
+  SetMethod(native, "capabilities", &Capabilities);
   SetMethod(native, "setViewFactory", &SetViewFactory);
   SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
   SetMethod(native, "viewNativeWindow", &ViewNativeWindow);
@@ -1071,13 +1091,78 @@ void zebkit_script::ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info) {
   const std::string url = Utf8(isolate, info[0]);
   const int width = info[1]->IsNumber() ? info[1].As<v8::Number>()->Value() : 0;
   const int height = info[2]->IsNumber() ? info[2].As<v8::Number>()->Value() : 0;
-  zebkit_view* view = zebkit_view_new(url.c_str(), width, height);
+  zebkit_view* view = nullptr;
+  // new zebkit.View(url, {window: {...}}): <zebkit/window.h>'s options.
+  if (info[3]->IsString()) {
+    char* error = nullptr;
+    view = zebkit_view_new_with_options(nullptr, url.c_str(), Utf8(isolate, info[3]).c_str(), &error);
+    if (!view) {
+      isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "window options rejected")));
+      zebkit_free(error);
+      return;
+    }
+  } else {
+    view = zebkit_view_new(url.c_str(), width, height);
+  }
   if (!view) {
     isolate->ThrowException(
         v8::Exception::Error(String8(isolate, "cannot create a view")));
     return;
   }
   info.GetReturnValue().Set(self->WrapView(view));
+}
+
+// native.viewWindow(id, op, argument): <zebkit/window.h> for a view.
+void zebkit_script::ViewWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  ViewEntry* entry = self->FindView(info);
+  if (!entry)
+    return;
+  zebkit_view* view = entry->view;
+  const std::string op = Utf8(isolate, info[1]);
+  char* error = nullptr;
+  bool ok = true;
+  if (op == "get") {
+    char* json = zebkit_view_get_window(view);
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    if (json) {
+      v8::Local<v8::Value> parsed;
+      if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+    }
+    zebkit_free(json);
+    info.GetReturnValue().Set(value);
+    return;
+  } else if (op == "set") {
+    ok = zebkit_view_set_window(view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (op == "action") {
+    ok = zebkit_view_window_action(view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (op == "regions") {
+    ok = zebkit_view_set_drag_regions(view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (op == "popup") {
+    ok = info[2]->IsString()
+             ? zebkit_view_set_popup_window_options(view, Utf8(isolate, info[2]).c_str(), &error)
+             : zebkit_view_set_popup_window_options(view, nullptr, &error);
+  } else {
+    ok = false;
+    error = strdup("unknown window operation");
+  }
+  if (!ok)
+    isolate->ThrowException(v8::Exception::TypeError(String8(isolate, error ? error : "window call refused")));
+  zebkit_free(error);
+  info.GetReturnValue().Set(ok);
+}
+
+void zebkit_script::Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  char* json = zebkit_get_capabilities();
+  v8::Local<v8::Value> value = v8::Null(isolate);
+  if (json) {
+    v8::Local<v8::Value> parsed;
+    if (v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, json)).ToLocal(&parsed)) value = parsed;
+  }
+  zebkit_free(json);
+  info.GetReturnValue().Set(value);
 }
 
 void zebkit_script::SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -1182,6 +1267,15 @@ int zebkit_script::WrapView(zebkit_view* view) {
         v8::Local<v8::Value> value;
         if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
           hook->script->ViewEvent(hook->id, "console", {value});
+      }, hook);
+  zebkit_view_on_window_state(view,
+      [](zebkit_view*, const char* json, void* data) {
+        auto* hook = static_cast<ViewHook*>(data);
+        if (!hook->script) return;
+        Scope scope(hook->script.get());
+        v8::Local<v8::Value> value;
+        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
+          hook->script->ViewEvent(hook->id, "window-state", {value});
       }, hook);
   zebkit_view_on_window_open(view,
       [](zebkit_view*, zebkit_view* child, const char*, void* data) {

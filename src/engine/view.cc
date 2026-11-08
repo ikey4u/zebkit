@@ -735,7 +735,7 @@ void zebkit_view::SendScript(const std::string& source, Reply reply, const std::
 void zebkit_view::LoadUrl(const GURL& url) {
   const bool attaching = devtools_ && !protocol_attach_failed_ && web_contents() &&
       !protocol_ready_targets_.contains(content::DevToolsAgentHost::GetOrCreateFor(web_contents())->GetId());
-  if (scripts_pending_ > 0 || protocol_setups_pending_ > 0 || attaching) {
+  if (scripts_pending_ > 0 || protocol_setups_pending_ > 0 || attaching || initial_blank_pending_) {
     deferred_load_ = url;
     return;
   }
@@ -747,7 +747,8 @@ void zebkit_view::LoadUrl(const GURL& url) {
 }
 
 void zebkit_view::MaybeRunDeferredLoad() {
-  if (scripts_pending_ || protocol_setups_pending_ || !deferred_load_ || !web_contents()) return;
+  if (scripts_pending_ || protocol_setups_pending_ || initial_blank_pending_ || !deferred_load_ ||
+      !web_contents()) return;
   GURL url = std::move(*deferred_load_);
   deferred_load_.reset();
   LoadUrl(url);
@@ -1025,10 +1026,18 @@ void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
   }
   if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
     return;
+  const bool blank_done = initial_blank_pending_;
+  initial_blank_pending_ = false;
+  auto weak = GetWeakPtr();
   if (navigation->HasCommitted() && !navigation->IsErrorPage())
     Load(ZEBKIT_LOAD_COMMITTED, navigation->GetURL());
   else
     Load(ZEBKIT_LOAD_FAILED, navigation->GetURL());
+  // After this navigation's own observers: one started from inside its
+  // DidFinishNavigation is lost to it.
+  if (blank_done && weak)
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&zebkit_view::MaybeRunDeferredLoad, weak));
 }
 
 void zebkit_view::RenderFrameDeleted(content::RenderFrameHost* frame) {
@@ -1079,10 +1088,14 @@ void zebkit_view::WebContentsDestroyed() {
 }
 
 void zebkit_view::Load(zebkit_load_event event, const GURL& url) {
+  // The first about:blank of a view made without a URL is not the
+  // application's to hear of, its late "finished" included: quiet until a
+  // document of the application's commits.
   if (quiet_blank_) {
     if (url.IsAboutBlank())
       return;
-    quiet_blank_ = false;
+    if (event == ZEBKIT_LOAD_COMMITTED)
+      quiet_blank_ = false;
   }
   if (on_load_)
     on_load_(this, event, url.spec().c_str(), on_load_data_);
@@ -1363,14 +1376,15 @@ zebkit_view* NewView(zebkit_context* context,
                      const char* url,
                      int width,
                      int height,
-                     Window::Kind kind) {
+                     Window::Kind kind,
+                     const WindowOptions* options) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (context && !context->profile)
     return nullptr;
   const bool sized = width > 0 && height > 0;
   zebkit::Window* window = zebkit::Window::Create(
       zebkit::ProfileOf(context), GURL(), nullptr,
-      gfx::Size(sized ? width : 0, sized ? height : 0), kind);
+      gfx::Size(sized ? width : 0, sized ? height : 0), kind, options);
   if (!window)
     return nullptr;
   zebkit_view* view = new zebkit_view(window);
@@ -1378,6 +1392,7 @@ zebkit_view* NewView(zebkit_context* context,
   // scripts for new documents are registered with, but its loading is not
   // the application's to hear of (a new WebContents has no navigation).
   view->quiet_blank_ = !(url && *url);
+  view->initial_blank_pending_ = view->quiet_blank_;
   window->LoadURL(GURL(url && *url ? url : "about:blank"));
   return view;
 }

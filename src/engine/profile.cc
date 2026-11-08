@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "zebkit/engine/profile.h"
+#include "zebkit/engine/file_system_access.h"
 
 #include <memory>
 #include <utility>
@@ -123,6 +124,13 @@ storage::SpecialStoragePolicy* Profile::GetSpecialStoragePolicy() {
 PlatformNotificationService*
 Profile::GetPlatformNotificationService() {
   return nullptr;
+}
+
+// What File System Access handles may do (file_system_access.h).
+content::FileSystemAccessPermissionContext* Profile::GetFileSystemAccessPermissionContext() {
+  if (!file_system_access_)
+    file_system_access_ = std::make_unique<FileSystemAccessContext>();
+  return file_system_access_.get();
 }
 
 PushMessagingService* Profile::GetPushMessagingService() {

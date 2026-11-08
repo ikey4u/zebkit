@@ -46,6 +46,9 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/page.h"
+#include "base/task/single_thread_task_runner.h"
+#include "content/public/browser/render_widget_host_view.h"
+#include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -58,6 +61,7 @@
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/js_dialog_manager.h"
 #include "zebkit/engine/page_internal.h"
+#include "zebkit/engine/permissions.h"
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/window_platform.h"
 #include "media/media_buildflags.h"
@@ -217,10 +221,23 @@ Window::~Window() {
 
 Window* Window::CreateForContents(std::unique_ptr<WebContents> web_contents,
                                   const gfx::Size& initial_size,
-                                  Kind kind) {
+                                  Kind kind,
+                                  const WindowOptions* options) {
   WebContents* contents = web_contents.get();
   Window* window = new Window(std::move(web_contents), kind);
+  if (options) {
+    window->options_ = *options;
+    window->requested_frame_ = options->frame;
+    // A frame this platform cannot give: the system's, when the options allow
+    // it (the C API refused the others before making the window).
+    const WindowCapabilities capabilities = window->platform_->Capabilities(nullptr);
+    if ((options->frame == WindowOptions::Frame::kOverlay && !capabilities.overlay) ||
+        (options->frame == WindowOptions::Frame::kNone && !capabilities.none))
+      window->options_.frame = WindowOptions::Frame::kSystem;
+  }
   window->platform_->Create(window, initial_size);
+  if (!window->options_.minimum.IsEmpty() || !window->options_.resizable)
+    window->platform_->SetSizeLimits(window, window->options_.minimum, window->options_.resizable);
   // Note: Do not make RenderFrameHost or RenderViewHost specific state changes
   // here, because they will be forgotten after a cross-process navigation. Use
   // RenderFrameCreated or RenderViewCreated instead.
@@ -346,10 +363,11 @@ Window* Window::Create(BrowserContext* browser_context,
                        const GURL& url,
                        const scoped_refptr<SiteInstance>& site_instance,
                        const gfx::Size& initial_size,
-                       Kind kind) {
+                       Kind kind,
+                       const WindowOptions* options) {
   WebContents::CreateParams create_params(browser_context, site_instance);
   Window* window = CreateForContents(WebContents::Create(create_params),
-                                     AdjustWindowSize(initial_size), kind);
+                                     AdjustWindowSize(initial_size), kind, options);
   if (!url.is_empty())
     window->LoadURL(url);
   return window;
@@ -389,9 +407,11 @@ WebContents* Window::AddNewContents(
 
   base::WeakPtr<WebContents> result = new_contents->GetWeakPtr();
   // What an off-screen view opens is off-screen too.
+  // The opener's options for its popups (zebkit_view_set_popup_window_options),
+  // never its drag regions.
   Window* popup = CreateForContents(
       std::move(new_contents), AdjustWindowSize(window_features.bounds.size()),
-      kind_);
+      kind_, popup_options_ ? &*popup_options_ : nullptr);
   // To the embedder, with its opener.
   if (const PopupHandler& handler = PopupHandlerForEmbedder(); handler)
     handler.Run(source, popup, target_url, disposition, window_features, user_gesture);
@@ -416,7 +436,8 @@ Window* Window::OpenFrom(WebContents* source,
   Window* opener = FromWebContents(source);
   // Nothing loaded yet: the view's policy is its own before the first request.
   Window* window = Create(source->GetBrowserContext(), GURL(), site_instance,
-                          gfx::Size(), opener ? opener->kind() : Kind::kNative);
+                          gfx::Size(), opener ? opener->kind() : Kind::kNative,
+                          opener && opener->popup_options_ ? &*opener->popup_options_ : nullptr);
   base::WeakPtr<WebContents> contents = window->web_contents()->GetWeakPtr();
   if (const PopupHandler& handler = PopupHandlerForEmbedder(); handler) {
     handler.Run(source, window, url, disposition, blink::mojom::WindowFeatures(),
@@ -493,6 +514,9 @@ void Window::ToggleFullscreenModeForTab(WebContents* web_contents,
         ->GetWidget()
         ->SynchronizeVisualProperties();
   }
+  // pageFullscreen "window": the window with the page, as Chrome's.
+  if (options_.page_fullscreen == WindowOptions::PageFullscreen::kWindow)
+    platform_->SetFullscreen(this, enter_fullscreen);
 }
 
 bool Window::IsFullscreenForTabOrPending(const WebContents* web_contents) {
@@ -504,9 +528,16 @@ blink::mojom::DisplayMode Window::GetDisplayMode(
   // TODO: should return blink::mojom::DisplayModeFullscreen wherever user puts
   // a browser window into fullscreen (not only in case of renderer-initiated
   // fullscreen mode): crbug.com/476874.
-  return IsFullscreenForTabOrPending(web_contents)
-             ? blink::mojom::DisplayMode::kFullscreen
-             : blink::mojom::DisplayMode::kBrowser;
+  if (IsFullscreenForTabOrPending(web_contents))
+    return blink::mojom::DisplayMode::kFullscreen;
+  // A window in fullscreen, by the application or the person, as Chrome's.
+  if (platform_->Geometry(this).state == WindowGeometry::State::kFullscreen)
+    return blink::mojom::DisplayMode::kFullscreen;
+  // The system's buttons over the page: Window Controls Overlay, as an
+  // installed web app's (@media (display-mode: window-controls-overlay)).
+  if (options_.frame == WindowOptions::Frame::kOverlay)
+    return blink::mojom::DisplayMode::kWindowControlsOverlay;
+  return blink::mojom::DisplayMode::kBrowser;
 }
 
 void Window::RegisterProtocolHandler(RenderFrameHost* requesting_frame,
@@ -548,12 +579,35 @@ void Window::RegisterProtocolHandler(RenderFrameHost* requesting_frame,
     return;
   }
 
-  // TODO(jfernandez): Are we interested at all on using the
-  // PermissionRequestManager in the ContentShell ?
-  if (registry->registration_mode() ==
-      custom_handlers::RphRegistrationMode::kAutoAccept) {
-    registry->OnAcceptRegisterProtocolHandler(handler);
-  }
+  // zebkit: the application decides, as a person does in Chrome's prompt: the
+  // "protocol-handler" permission (permissions.h), denied without a hook. A
+  // handler accepted handles the scheme's links in this profile; registering
+  // the scheme with the system is the application's installer's
+  // (docs/SYSTEM_INTEGRATION.md, 10 and 15).
+  base::DictValue details;
+  details.Set("scheme", protocol);
+  details.Set("url", url.spec());
+  RequestNamedPermission(
+      requesting_frame, "protocol-handler", std::move(details), user_gesture,
+      base::BindOnce(
+          [](content::GlobalRenderFrameHostId frame_id,
+             custom_handlers::ProtocolHandler handler, NamedAnswer answer) {
+            RenderFrameHost* frame = RenderFrameHost::FromID(frame_id);
+            // Undecided: nothing recorded, so that a later registration is
+            // asked again (a denial is remembered by the registry).
+            if (!frame || answer == NamedAnswer::kUndecided)
+              return;
+            const bool granted = answer == NamedAnswer::kGranted;
+            custom_handlers::ProtocolHandlerRegistry* registry =
+                ProtocolHandlers::GetForBrowserContext(frame->GetBrowserContext(), true);
+            if (!registry)
+              return;
+            if (granted)
+              registry->OnAcceptRegisterProtocolHandler(handler);
+            else
+              registry->OnDenyRegisterProtocolHandler(handler);
+          },
+          requesting_frame->GetGlobalId(), handler));
 }
 
 void Window::UnregisterProtocolHandler(RenderFrameHost* requesting_frame,
@@ -574,11 +628,57 @@ void Window::UnregisterProtocolHandler(RenderFrameHost* requesting_frame,
   registry->RemoveHandler(handler);
 }
 
+namespace {
+// Pointer and keyboard lock are permissions (docs/SYSTEM_INTEGRATION.md, 10):
+// the main frame's document asks, the permission hook or the default decides
+// (pointer lock granted, keyboard lock denied, permission_manager.cc).
+void AskLock(WebContents* web_contents, blink::PermissionType type, bool user_gesture,
+             base::OnceCallback<void(WebContents*, bool)> answer) {
+  RenderFrameHost* frame = web_contents->GetPrimaryMainFrame();
+  if (!frame || !frame->IsActive()) {
+    std::move(answer).Run(web_contents, false);
+    return;
+  }
+  frame->GetBrowserContext()->GetPermissionController()->RequestPermissionFromCurrentDocument(
+      frame,
+      content::PermissionRequestDescription(
+          content::PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(type),
+          user_gesture),
+      base::BindOnce(
+          [](base::WeakPtr<WebContents> contents,
+             base::OnceCallback<void(WebContents*, bool)> answer,
+             content::PermissionResult result) {
+            if (contents)
+              std::move(answer).Run(contents.get(),
+                                    result.status == blink::mojom::PermissionStatus::GRANTED);
+          },
+          web_contents->GetWeakPtr(), std::move(answer)));
+}
+}  // namespace
+
 void Window::RequestPointerLock(WebContents* web_contents,
                                bool user_gesture,
                                bool last_unlocked_by_target) {
-  web_contents->GotResponseToPointerLockRequest(
-      blink::mojom::PointerLockResult::kSuccess);
+  // Without a window of the system's (--headless, an off-screen view) there is
+  // no system pointer to lock, and Aura's keeping it at the centre spins the
+  // engine's thread there: refused, as a lock the page cannot have.
+  if (HasNoDisplay(web_contents)) {
+    web_contents->GotResponseToPointerLockRequest(blink::mojom::PointerLockResult::kUnsupportedOptions);
+    return;
+  }
+  AskLock(web_contents, blink::PermissionType::POINTER_LOCK, user_gesture,
+          base::BindOnce([](WebContents* contents, bool allowed) {
+            contents->GotResponseToPointerLockRequest(
+                allowed ? blink::mojom::PointerLockResult::kSuccess
+                        : blink::mojom::PointerLockResult::kPermissionDenied);
+          }));
+}
+
+void Window::RequestKeyboardLock(WebContents* web_contents, bool esc_key_locked) {
+  AskLock(web_contents, blink::PermissionType::KEYBOARD_LOCK, false,
+          base::BindOnce([](WebContents* contents, bool allowed) {
+            contents->GotResponseToKeyboardLockRequest(allowed);
+          }));
 }
 
 void Window::Close() {
@@ -643,6 +743,13 @@ void Window::RunFileChooser(RenderFrameHost* render_frame_host,
                                    params);
 }
 
+// File System Access's pickers come here too, so that the application's file
+// chooser hook decides them as it decides <input type=file>
+// (docs/SYSTEM_INTEGRATION.md, 9; patches/1084).
+bool Window::UseFileChooserForFileSystemAccess() const {
+  return true;
+}
+
 void Window::EnumerateDirectory(WebContents* web_contents,
                                scoped_refptr<FileSelectListener> listener,
                                const base::FilePath& path) {
@@ -703,6 +810,154 @@ void Window::UpdateTitle() {
 
 void WindowPlatform::Activate(Window* window) {
   window->web_contents()->Focus();
+}
+
+WindowGeometry WindowPlatform::Geometry(Window* window) {
+  WindowGeometry geometry;
+  if (auto* view = window->web_contents()->GetRenderWidgetHostView())
+    geometry.content = view->GetViewBounds().size();
+  geometry.bounds = gfx::Rect(geometry.content);
+  return geometry;
+}
+
+bool WindowPlatform::PerformAction(Window* window, WindowAction action, std::string* error) {
+  *error = std::string("unsupported: ") + WindowActionName(action) + " needs a window of the system's";
+  return false;
+}
+
+void Window::SetOptions(WindowOptions options) {
+  const bool limits = options.minimum != options_.minimum || options.resizable != options_.resizable;
+  const bool title = options.title != options_.title;
+  const WindowOptions::DragSource source = options_.drag_source;
+  const auto origins = options_.drag_origins;
+  options_ = std::move(options);
+  if (limits)
+    platform_->SetSizeLimits(this, options_.minimum, options_.resizable);
+  if (title)
+    UpdateTitle();
+  platform_->OptionsChanged(this);
+  // Where regions come from: the page's, while allowed, or the application's.
+  if (source != options_.drag_source || origins != options_.drag_origins) {
+    web_contents()->SetSupportsDraggableRegions(CssRegionsAllowed());
+    if (options_.drag_source != WindowOptions::DragSource::kHost) {
+      drag_regions_.clear();
+      platform_->DragRegionsChanged(this);
+    }
+  }
+  web_contents()->GetPrimaryMainFrame()->GetRenderWidgetHost()->SynchronizeVisualProperties();
+  PlatformChanged();
+}
+
+WindowCapabilities Window::Capabilities() {
+  return platform_->Capabilities(this);
+}
+
+WindowGeometry Window::Geometry() {
+  return platform_->Geometry(this);
+}
+
+bool Window::PerformAction(WindowAction action, std::string* error) {
+  return platform_->PerformAction(this, action, error);
+}
+
+bool Window::InDragRegion(const gfx::Point& point_in_content) const {
+  return zebkit::InDragRegion(drag_regions_, point_in_content);
+}
+
+bool Window::SetHostDragRegions(std::vector<DragRegion> regions, std::string* error) {
+  if (options_.drag_source != WindowOptions::DragSource::kHost) {
+    *error = "the window's dragRegions.source is not host";
+    return false;
+  }
+  drag_regions_ = std::move(regions);
+  platform_->DragRegionsChanged(this);
+  return true;
+}
+
+bool Window::CssRegionsAllowed() {
+  if (options_.drag_source != WindowOptions::DragSource::kCss || !web_contents())
+    return false;
+  const url::Origin origin = web_contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  for (const url::Origin& allowed : options_.drag_origins)
+    if (allowed == origin)
+      return true;
+  return false;
+}
+
+void Window::DraggableRegionsChanged(
+    const std::vector<blink::mojom::DraggableRegionPtr>& regions,
+    WebContents* contents) {
+  // Blink sends the main frame's document's regions only, in DIPs; they count
+  // while that document is of a granted origin, and are checked again here
+  // because a document of another origin may have sent them before its
+  // commit was seen.
+  if (!CssRegionsAllowed())
+    return;
+  std::vector<DragRegion> converted;
+  converted.reserve(regions.size());
+  for (const auto& region : regions)
+    converted.push_back({region->bounds, region->draggable});
+  drag_regions_ = std::move(converted);
+  platform_->DragRegionsChanged(this);
+}
+
+void Window::PrimaryPageChanged(content::Page& page) {
+  // A new document has none of the old one's regions, and only a granted
+  // origin's document is asked for them at all.
+  if (options_.drag_source == WindowOptions::DragSource::kCss) {
+    drag_regions_.clear();
+    platform_->DragRegionsChanged(this);
+    web_contents()->SetSupportsDraggableRegions(CssRegionsAllowed());
+  }
+  // The title bar area again for the new document.
+  if (!titlebar_area_.IsEmpty())
+    web_contents()->UpdateWindowControlsOverlay(titlebar_area_);
+}
+
+void Window::PrimaryMainFrameRenderProcessGone(base::TerminationStatus status) {
+  if (options_.drag_source == WindowOptions::DragSource::kCss && !drag_regions_.empty()) {
+    drag_regions_.clear();
+    platform_->DragRegionsChanged(this);
+  }
+}
+
+void Window::UpdateTitlebarArea(const WindowGeometry& geometry) {
+  const gfx::Rect area = options_.frame == WindowOptions::Frame::kOverlay ? geometry.titlebar : gfx::Rect();
+  if (area == titlebar_area_)
+    return;
+  titlebar_area_ = area;
+  web_contents()->UpdateWindowControlsOverlay(area);
+}
+
+void Window::PlatformChanged() {
+  ++revision_;
+  const WindowGeometry geometry = platform_->Geometry(this);
+  UpdateTitlebarArea(geometry);
+  if (!state_observer_)
+    return;
+  // A change of state or visibility is told on its own; one of size or place
+  // with the others of this task, as a live resize makes many.
+  const bool state_changed = told_state_ != geometry.state || told_visible_ != geometry.visible;
+  told_state_ = geometry.state;
+  told_visible_ = geometry.visible;
+  if (state_changed) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce([](base::WeakPtr<Window> window) {
+          if (window && window->state_observer_) window->state_observer_.Run();
+        }, weak_factory_.GetWeakPtr()));
+    return;
+  }
+  if (notify_pending_)
+    return;
+  notify_pending_ = true;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&Window::Notify, weak_factory_.GetWeakPtr()));
+}
+
+void Window::Notify() {
+  notify_pending_ = false;
+  if (state_observer_)
+    state_observer_.Run();
 }
 
 }  // namespace zebkit

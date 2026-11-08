@@ -36,28 +36,26 @@ bool ProtocolHandlerDelegate::IsExternalHandlerRegistered(
   return registered_protocols_.find(protocol) != registered_protocols_.end();
 }
 
+// zebkit: nothing is registered with the system, and nothing says it is: a
+// scheme becomes the application's with the system through its installer
+// (docs/SYSTEM_INTEGRATION.md, 15). Handlers stay in the profile's registry,
+// where they handle the scheme's links in the engine's pages.
 void ProtocolHandlerDelegate::RegisterWithOSAsDefaultClient(
     const std::string& protocol,
     DefaultClientCallback callback) {
-  // Do as-if the registration has to run on another sequence and post back
-  // the result with a task to the current thread.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), !force_os_failure_));
-
-  if (!force_os_failure_)
-    os_registered_protocols_.insert(protocol);
+      FROM_HERE, base::BindOnce(std::move(callback), false));
 }
 
 void ProtocolHandlerDelegate::CheckDefaultClientWithOS(
     const std::string& protocol,
     DefaultClientCallback callback) {
-  // Respond asynchronously to mimic the real behavior.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), true));
+      FROM_HERE, base::BindOnce(std::move(callback), false));
 }
 
 bool ProtocolHandlerDelegate::ShouldRemoveHandlersNotInOS() {
-  return true;
+  return false;
 }
 
 bool ProtocolHandlerDelegate::IsFakeRegisteredWithOS(

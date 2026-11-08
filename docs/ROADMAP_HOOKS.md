@@ -67,7 +67,7 @@ service worker's fetch, are for the engine (`zebkit_on_*`).
 | Console messages | `WebContentsDelegate::DidAddMessageToConsole` | told | `zebkit_view_on_console` | told |
 | Scripts at document start | `ContentRendererClient::RunScriptsAtDocumentStart`; isolated worlds as CDP's `Page.addScriptToEvaluateOnNewDocument` with `worldName` | in the renderer, before the page's script | `zebkit_view_add_script`, `zebkit_view_add_world_script` (named world, all frames or main frame) | set |
 | Settings of a view | `ContentBrowserClient::OverrideWebPreferences`, `WebContents::NotifyPreferencesChanged` | on the spot | Chromium's defaults; `zebkit_view_set_settings` | set |
-| File choosers | `WebContentsDelegate::RunFileChooser` | waits | `zebkit_view_on_file_chooser`; without a function the engine's: cancelled where it has no dialog | asked |
+| File choosers | `WebContentsDelegate::RunFileChooser`, and File System Access's pickers through it (`UseFileChooserForFileSystemAccess`, `patches/1084`) | waits | `zebkit_view_on_file_chooser`, `"api"` `input` or `file-system-access`; without a function the engine's: cancelled where it has no dialog | asked |
 | Camera, microphone, screen | `WebContentsDelegate::RequestMediaAccessPermission` | waits | `zebkit_view_on_media_access` for camera and microphone; without a function the permission controller; screen refused | asked |
 | Keys before the page | `WebContentsDelegate::PreHandleKeyboardEvent` | on the spot | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | set, then told |
 | Context menu | `WebContentsDelegate::HandleContextMenu` | told | `zebkit_view_on_context_menu`; without a function the system's menu with a window (`docs/ROADMAP.md`) | told |

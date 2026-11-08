@@ -50,7 +50,7 @@
     },
     "DraggableRegionsChanged": {
      "surface": "window.drag-regions",
-     "zebkit": false
+     "zebkit": true
     },
     "EnterFullscreenModeForTab": {
      "surface": "window.fullscreen",
@@ -174,7 +174,7 @@
     },
     "RequestKeyboardLock": {
      "surface": "input.keyboard-lock",
-     "zebkit": false
+     "zebkit": true
     },
     "RequestMediaAccessPermission": {
      "surface": "media.camera-microphone",
@@ -230,7 +230,7 @@
     },
     "UseFileChooserForFileSystemAccess": {
      "surface": "dialog.file-system-access",
-     "zebkit": false
+     "zebkit": true
     },
     "WebContentsCreated": {
      "surface": "window.popup",
@@ -823,7 +823,7 @@
     },
     "GetFileSystemAccessPermissionContext": {
      "surface": "dialog.file-system-access",
-     "zebkit": false
+     "zebkit": true
     },
     "GetPermissionControllerDelegate": {
      "surface": "permission.*",
@@ -990,28 +990,43 @@
   },
   {
    "id": "window.frame",
-   "status": "gap",
-   "default": "the system's frame",
-   "control": [],
-   "tests": [],
+   "status": "done",
+   "default": "the system's frame; overlay and none by the window's options",
+   "control": [
+    "configure",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/window_frame.py"
+   ],
    "zebkit_only": true
   },
   {
    "id": "window.show",
-   "status": "partial",
-   "default": "shown at creation",
-   "control": [],
-   "tests": [],
+   "status": "done",
+   "default": "shown once its page is in it; hidden with show false",
+   "control": [
+    "configure",
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/window_frame.py"
+   ],
    "zebkit_only": true
   },
   {
    "id": "window.geometry",
-   "status": "partial",
-   "default": "the system places it; size from creation",
+   "status": "done",
+   "default": "the system places it; size and place by the options",
    "control": [
-    "configure"
+    "configure",
+    "decide",
+    "observe"
    ],
-   "tests": []
+   "tests": [
+    "tests/engine/window_frame.py"
+   ]
   },
   {
    "id": "window.title",
@@ -1034,27 +1049,39 @@
   },
   {
    "id": "window.fullscreen",
-   "status": "partial",
-   "default": "allowed; the content area only",
+   "status": "done",
+   "default": "allowed; the content area, or the window's with pageFullscreen window",
    "control": [
     "decide",
+    "configure",
     "observe"
    ],
-   "tests": []
+   "tests": [
+    "tests/engine/window_frame.py"
+   ]
   },
   {
    "id": "window.drag-regions",
-   "status": "gap",
-   "default": "none",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "none; the page's app-region for granted origins, or the application's",
+   "control": [
+    "configure"
+   ],
+   "tests": [
+    "tests/engine/window_frame.py"
+   ]
   },
   {
    "id": "window.controls-overlay",
-   "status": "gap",
-   "default": "none",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "none; Window Controls Overlay with frame overlay",
+   "control": [
+    "configure",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/window_frame.py"
+   ]
   },
   {
    "id": "window.web-controls",
@@ -1122,17 +1149,29 @@
   },
   {
    "id": "input.pointer-lock",
-   "status": "gap",
-   "default": "always granted",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "granted where there is a window; refused without one",
+   "control": [
+    "decide",
+    "configure",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/system_holes.py"
+   ]
   },
   {
    "id": "input.keyboard-lock",
-   "status": "gap",
-   "default": "refused",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "denied",
+   "control": [
+    "decide",
+    "configure",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/system_holes.py"
+   ]
   },
   {
    "id": "input.global-shortcuts",
@@ -1173,10 +1212,16 @@
   },
   {
    "id": "dialog.file-system-access",
-   "status": "gap",
-   "default": "the system's picker, outside the hook; write refused",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "the system's picker through the file chooser hook; reads what was picked, writes where it saves; more is the file-system-read/-write permission",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/system_holes.py"
+   ]
   },
   {
    "id": "dialog.color",
@@ -1340,10 +1385,15 @@
   },
   {
    "id": "protocol-handler",
-   "status": "partial",
-   "default": "reported registered, kept in memory",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "the protocol-handler permission, denied without a hook; nothing registered with the system",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/system_holes.py"
+   ]
   },
   {
    "id": "clipboard",

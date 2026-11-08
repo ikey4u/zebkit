@@ -357,13 +357,18 @@ ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_reque
 ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view*, const char *world, const char *source,
                                              bool main_frame_only, char **error);
 
-/* File choosers of a view. Without a function, the engine's: the system's dialog, or
- * cancelled without a display. Ahead of automation's file chooser events; CDP's
- * interception stays ahead of this hook. Metadata: mode (open, open-multiple,
- * upload-folder, save), title, defaultFileName, acceptTypes, capture, frameId,
+/* File choosers of a view: <input type=file> and File System Access's pickers
+ * (showOpenFilePicker, showSaveFilePicker, showDirectoryPicker). Without a function,
+ * the engine's: the system's dialog, or cancelled without a display. Ahead of
+ * automation's file chooser events; CDP's interception stays ahead of this hook.
+ * Metadata: mode (open, open-multiple, upload-folder, directory, save), api ("input"
+ * or "file-system-access"), title, defaultFileName, acceptTypes, capture, frameId,
  * mainFrame, origin. Reply once with absolute paths: none cancels, one for open,
- * save and upload-folder (a directory, whose files the page gets). Unanswered,
- * replaced, closed or a frame that has gone: cancelled.
+ * save, directory and upload-folder (a directory, whose files the page gets).
+ * Unanswered, replaced, closed or a frame that has gone: cancelled. What a File
+ * System Access page may then do: it reads what was picked and writes where it saves;
+ * writing to a file it opened, or reading or writing beyond what was picked, is the
+ * "file-system-write" or "file-system-read" permission (zebkit_view_on_permission).
  */
 typedef struct zebkit_file_chooser_request zebkit_file_chooser_request;
 typedef void (*zebkit_file_chooser_func)(zebkit_view*, zebkit_file_chooser_request*, const char *json, void *data);

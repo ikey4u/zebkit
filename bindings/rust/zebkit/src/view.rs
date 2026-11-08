@@ -223,6 +223,8 @@ pub(crate) struct Inner {
     window_open_event_generation: Cell<u64>,
     on_console: Slot<dyn FnMut(&str)>,
     console_generation: Cell<u64>,
+    on_window_state: Slot<dyn FnMut(&str)>,
+    window_state_generation: Cell<u64>,
     on_certificate: Slot<dyn FnMut(CertificateRequest)>,
     certificate_generation: Cell<u64>,
     on_certificate_result: Slot<dyn FnMut(&str)>,
@@ -278,6 +280,85 @@ impl View {
         View::wrap(raw)
     }
 
+    /// A view whose window is made with `options_json` (`<zebkit/window.h>`):
+    /// its frame (`"system"`, `"overlay"`, `"none"`), whether it starts shown,
+    /// its place, colours and drag regions. Invalid options: an error, and no view.
+    pub fn new_with_options(url: Option<&str>, options_json: &str) -> Result<View, Error> {
+        require_engine_thread("View::new_with_options()");
+        let url = url.map(c_string);
+        let mut error = std::ptr::null_mut();
+        let raw = unsafe {
+            sys::zebkit_view_new_with_options(
+                std::ptr::null_mut(),
+                url.as_ref().map_or(std::ptr::null(), |url| url.as_ptr()),
+                c_string(options_json).as_ptr(),
+                &mut error,
+            )
+        };
+        if raw.is_null() {
+            return Err(unsafe { crate::take_error(error, "the window options were refused") });
+        }
+        Ok(View::wrap(raw))
+    }
+
+    /// The window's state as JSON: state, bounds, frame, titlebarArea, controls, capabilities.
+    pub fn window(&self) -> Option<String> {
+        self.raw().and_then(|raw| unsafe { take_string(sys::zebkit_view_get_window(raw)) })
+    }
+
+    /// Changes the window's runtime options, merged by key; the creation ones
+    /// are `requires-recreate`.
+    pub fn set_window(&self, options_json: &str) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_view_set_window(raw, c_string(options_json).as_ptr(), &mut error) };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "window options rejected") }) }
+    }
+
+    /// `show`, `hide`, `minimize`, `maximize`, `restore`, `fullscreen`,
+    /// `exit-fullscreen`, `close`: asked of the system; the state tells.
+    pub fn window_action(&self, action: &str) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_view_window_action(raw, c_string(action).as_ptr(), &mut error) };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "window action refused") }) }
+    }
+
+    /// Observe every change of the window's state, as JSON.
+    pub fn on_window_state<F: FnMut(&str) + 'static>(&self, function: F) {
+        let Some(raw) = self.raw() else { return };
+        self.inner.window_state_generation.set(self.inner.window_state_generation.get().wrapping_add(1));
+        *self.inner.on_window_state.borrow_mut() = Some(Box::new(function));
+        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
+        unsafe { sys::zebkit_view_on_window_state(raw, Some(on_window_state), data); }
+    }
+    /// Remove the window state observer, including inside that observer.
+    pub fn clear_window_state_handler(&self) {
+        let Some(raw) = self.raw() else { return };
+        self.inner.window_state_generation.set(self.inner.window_state_generation.get().wrapping_add(1));
+        self.inner.on_window_state.borrow_mut().take();
+        unsafe { sys::zebkit_view_on_window_state(raw, None, std::ptr::null_mut()); }
+    }
+
+    /// With `dragRegions.source` `"host"`: `[{"x", "y", "width", "height", "drag"}]`.
+    pub fn set_drag_regions(&self, regions_json: &str) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe { sys::zebkit_view_set_drag_regions(raw, c_string(regions_json).as_ptr(), &mut error) };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "drag regions rejected") }) }
+    }
+
+    /// Options for the windows this view's pages open; `None`: the system's frame.
+    pub fn set_popup_window_options(&self, options_json: Option<&str>) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let options = options_json.map(c_string);
+        let mut error = std::ptr::null_mut();
+        let ok = unsafe {
+            sys::zebkit_view_set_popup_window_options(raw, options.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()), &mut error)
+        };
+        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "popup window options rejected") }) }
+    }
+
     /// The view the engine made, with the callbacks every view has.
     pub(crate) fn wrap(raw: *mut sys::zebkit_view) -> View {
         let inner = Rc::new(Inner {
@@ -300,6 +381,8 @@ impl View {
             window_open_event_generation: Cell::new(0),
             on_console: RefCell::new(None),
             console_generation: Cell::new(0),
+            on_window_state: RefCell::new(None),
+            window_state_generation: Cell::new(0),
             on_certificate: RefCell::new(None),
             certificate_generation: Cell::new(0),
             on_certificate_result: RefCell::new(None),
@@ -1139,6 +1222,17 @@ unsafe extern "C" fn on_window_open_event(_view: *mut sys::zebkit_view, json: *c
     let Some(mut function) = inner.on_window_open_event.borrow_mut().take() else { return };
     function(&string_from(json).unwrap_or_default());
     if inner.window_open_event_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_window_open_event.borrow_mut() = Some(function); }
+}
+
+unsafe extern "C" fn on_window_state(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
+    // The handler may close the view, releasing the last other reference.
+    let pointer = data.cast_const().cast::<Inner>();
+    Rc::increment_strong_count(pointer);
+    let inner = Rc::from_raw(pointer);
+    let generation = inner.window_state_generation.get();
+    let Some(mut function) = inner.on_window_state.borrow_mut().take() else { return };
+    function(&string_from(json).unwrap_or_default());
+    if inner.window_state_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_window_state.borrow_mut() = Some(function); }
 }
 
 unsafe extern "C" fn on_console(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
