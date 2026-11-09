@@ -152,6 +152,11 @@ build_tools() {
         cargo build -q --release --locked --target "$rust_target" -j "${ZEBKIT_JOBS:-12}") \
         || die "zebkit-mcp did not build for $system"
     cp "$work/target/$rust_target/release/zebkit-mcp$exe" "$dist/zebkit-mcp$exe"
+    # The crates zebkit-mcp is made of, after the engine's notices (package.sh).
+    [[ -f "$dist/THIRD_PARTY_NOTICES.txt" ]] || die "no THIRD_PARTY_NOTICES.txt in $dist"
+    python3 -I "$ZEBKIT_ROOT/scripts/third-party-notices.py" crates "$ZEBKIT_ROOT/tools/zebkit-mcp/Cargo.toml" \
+        "$rust_target" zebkit-mcp "$work/crates-$system.txt" >&2 || die "no notices for zebkit-mcp's crates"
+    { printf '\n'; cat "$work/crates-$system.txt"; } >> "$dist/THIRD_PARTY_NOTICES.txt"
 
     for tool in zebkit-run zebkit-js zebkit-mcp; do
         # This machine's paths stay here.

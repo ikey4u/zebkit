@@ -47,6 +47,22 @@ copy_data() {
     cp "$OUT_DIR/icu/icudtl.dat" "$1/icudtl.dat"
 }
 
+# What the package is under, and what it contains under theirs (docs/LICENSING.md):
+# LICENSE, NOTICE, and THIRD_PARTY_NOTICES.txt from Chromium's own tool over the
+# engine's dependencies (scripts/third-party-notices.py). release.sh appends the
+# crates of the tools it adds.
+copy_notices() {
+    local target_os version
+    target_os="$(profile_args "$profile" | sed -n 's/^target_os = "\(.*\)"/\1/p' | tail -1)"
+    version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
+    cp "$ZEBKIT_ROOT/LICENSE" "$package/LICENSE"
+    sed -e "s/@VERSION@/$version/g" -e "s/@CHROMIUM@/$CHROMIUM_VERSION/g" \
+        "$ZEBKIT_ROOT/scripts/NOTICE.in" > "$package/NOTICE"
+    (cd "$SRC_DIR" && python3 -I "$ZEBKIT_ROOT/scripts/third-party-notices.py" engine "out/$profile" \
+        "${target_os:-linux}" "$package/THIRD_PARTY_NOTICES.txt") >&2 \
+        || die "no third-party notices for $profile"
+}
+
 if grep -q '^target_os = "mac"' <<< "$(profile_args "$profile")"; then
     framework="$build_dir/Zebkit.framework"
     [[ -f "$framework/Versions/A/Zebkit" ]] || die "profile '$profile' is not built; run scripts/build.sh $profile"
@@ -78,6 +94,7 @@ if grep -q '^target_os = "mac"' <<< "$(profile_args "$profile")"; then
         codesign --force --sign - "$package/Zebkit.framework"
         codesign --verify --deep --strict "$package/Zebkit.framework"
     fi
+    copy_notices
     log "package: $package"
     exit 0
 fi
@@ -103,6 +120,7 @@ if grep -q '^target_os = "win"' <<< "$(profile_args "$profile")"; then
     sandbox_lib="$SRC_DIR/out/$profile-sandbox/zebkit_sandbox.lib"
     [[ -f "$sandbox_lib" ]] || die "no zebkit_sandbox.lib; run scripts/build.sh $profile-sandbox zebkit/engine:zebkit_sandbox"
     cp "$sandbox_lib" "$package/"
+    copy_notices
     log "package: $package"
     exit 0
 fi
@@ -135,6 +153,7 @@ copy_headers
 # which only root can do and a package cannot.
 cp "$build_dir/chrome_sandbox" "$package/chrome-sandbox"
 cp "$ZEBKIT_ROOT/scripts/zebkit-sandbox-install" "$package/zebkit-sandbox-install"
+copy_notices
 
 is_elf() { [[ "$(od -An -tx1 -N4 "$1" | tr -d ' ')" == 7f454c46 ]]; }
 

@@ -1,0 +1,27 @@
+zebkit @VERSION@
+https://github.com/ikey4u/zebkit
+
+zebkit is free software: you can redistribute it and/or modify it under the
+terms of the GNU Lesser General Public License as published by the Free
+Software Foundation, either version 2.1 of the License, or (at your option)
+any later version. The license is in LICENSE.
+
+It contains Chromium @CHROMIUM@ and the third-party libraries Chromium and
+zebkit use (among them Blink, V8, Skia, PDFium, FFmpeg, ICU, SQLite and
+BoringSSL), each under its own license. THIRD_PARTY_NOTICES.txt lists every
+one of them with its license text.
+
+The source of this build is the zebkit repository at tag v@VERSION@:
+
+    https://github.com/ikey4u/zebkit/tree/v@VERSION@
+
+It names the Chromium release the engine is built from (upstream.lock), the
+changes made to it (patches/) and how it is built (scripts/, profiles/).
+FFmpeg is built with its LGPL parts only: no GPL and no nonfree component.
+
+An application uses the engine as a shared library (libzebkit.so.1,
+Zebkit.framework or zebkit.dll), which it can replace with another build of
+the same version. docs/LICENSING.md in the repository says what shipping the
+engine with an application involves.
+
+This software is provided without any warranty; see LICENSE.

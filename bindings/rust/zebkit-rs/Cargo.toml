@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-include = ["src", "build.rs", "engines.txt", "Cargo.toml"]
+include = ["src", "build.rs", "engines.txt", "Cargo.toml", "LICENSE"]
 build = "build.rs"
 # One crate per process links the engine; dependents read where it is from
 # DEP_ZEBKIT_LIB_DIR in their build scripts.

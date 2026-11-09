@@ -567,6 +567,7 @@ The same Playwright commands three ways, headless, medians
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds |
 | [docs/WINDOWS.md](docs/WINDOWS.md) | The Windows DLL, its sandbox, cross-building on Linux, the state of the port |
 | [docs/SANDBOX.md](docs/SANDBOX.md) | The sandbox on each system, and running without one |
+| [docs/LICENSING.md](docs/LICENSING.md) | zebkit's license, the third-party licenses inside the engine, and what shipping it involves |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
 | [docs/ROADMAP_HOOKS.md](docs/ROADMAP_HOOKS.md) | Hooks: how an application decides what the engine does, from native code |
 | [docs/UI.md](docs/UI.md) | `zebkit.ui`: the engine's own small UI, what it is for and what it is not |
@@ -595,3 +596,20 @@ are generated and not tracked.
 zebkit is Chromium plus a small patch set (`patches/`), built from source.
 Where Chromium lacks something an application needs, zebkit patches
 Chromium rather than working around it (`docs/BUILD.md`).
+
+## License
+
+zebkit is free software under the GNU Lesser General Public License, version
+2.1 or (at your option) any later version: [LICENSE](LICENSE). Applications
+of any license, open or closed, can use it as a library.
+
+The engine contains Chromium and the libraries it uses (Blink, V8, Skia,
+PDFium, FFmpeg in its LGPL configuration, ICU, SQLite, BoringSSL and others),
+each under its own license. Every release archive carries `LICENSE`, a
+`NOTICE` that says where its source is, and `THIRD_PARTY_NOTICES.txt` with
+every third-party license text. [docs/LICENSING.md](docs/LICENSING.md) says
+what an application that ships zebkit has to do.
+
+Contributions are accepted under the same license: by sending a pull request
+you agree that your contribution is licensed under the LGPL 2.1 or later, as
+the rest of zebkit.
