@@ -380,6 +380,20 @@ ZEBKIT_API char *zebkit_file_chooser_request_info(zebkit_file_chooser_request*);
 ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request*, const char *const *paths, size_t count,
                                             char **error);
 
+/* The page's EyeDropper.open(): a colour from the screen. Without a function, cancelled,
+ * as there is no eye dropper of the engine's (Chrome's is its browser's). Metadata:
+ * origin, frameId, mainFrame. Reply once with "#rrggbb", or NULL to cancel. Unanswered,
+ * replaced, closed or a frame that has gone: cancelled.
+ */
+typedef struct zebkit_eye_dropper_request zebkit_eye_dropper_request;
+typedef void (*zebkit_eye_dropper_func)(zebkit_view*, zebkit_eye_dropper_request*, const char *json, void *data);
+typedef void (*zebkit_eye_dropper_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_eye_dropper(zebkit_view*, zebkit_eye_dropper_func, void *data);
+ZEBKIT_API void zebkit_view_on_eye_dropper_result(zebkit_view*, zebkit_eye_dropper_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_eye_dropper_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_eye_dropper_request_info(zebkit_eye_dropper_request*);
+ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request*, const char *color);
+
 /* Camera and microphone (getUserMedia). Without a function, Chromium's permission
  * controller decides (zebkit_view_on_permission). With one it replaces that decision
  * for this request; Permissions Policy still refuses first. Screen and tab capture
@@ -410,10 +424,25 @@ ZEBKIT_API void zebkit_view_on_reserved_key(zebkit_view*, zebkit_reserved_key_fu
 
 /* With a function, the engine shows no context menu and tells what was asked: x, y,
  * linkUrl, linkText, srcUrl, mediaType, selectionText, editable, pageUrl, frameUrl,
- * frameId. Without one, the system's menu where there is a window.
+ * frameId, menuId and items (the default menu's: [{id, title, enabled}] or
+ * {separator: true}). Without one, the engine's default menu, with the system's look,
+ * where there is a window: Back, Forward, Reload; Cut, Copy, Paste, Select All in a
+ * field; Copy Link Address, Open Link in New Window; Save Image As, Copy Image.
+ *
+ * zebkit_view_context_menu_run() runs a default item's command against what was
+ * right-clicked, as captured then: a page cannot name what is saved or opened. The
+ * last eight menus of a view are kept. zebkit_view_context_menu_show() shows a menu
+ * there: @items_json NULL for the default items, or a list mixing default ids (their
+ * own title and state unless given, never more enabled) with the application's own
+ * {id, title, enabled}; a default item chosen runs, the application's goes to @func
+ * with its id ("" when the menu closes with none). False without a window.
  */
 typedef void (*zebkit_context_menu_func)(zebkit_view*, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_context_menu(zebkit_view*, zebkit_context_menu_func, void *data);
+ZEBKIT_API bool zebkit_view_context_menu_run(zebkit_view*, uint64_t menu_id, const char *command, char **error);
+typedef void (*zebkit_context_menu_item_func)(zebkit_view*, const char *item_id, void *data);
+ZEBKIT_API bool zebkit_view_context_menu_show(zebkit_view*, uint64_t menu_id, const char *items_json,
+                                              zebkit_context_menu_item_func func, void *data, char **error);
 
 /* Whether a page may go fullscreen; allowed by default. Denying leaves fullscreen if
  * the page is in it. A popup takes its opener's policy until it has its own, and is

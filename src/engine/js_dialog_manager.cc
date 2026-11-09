@@ -14,6 +14,9 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "zebkit/engine/js_dialog.h"
+#if !BUILDFLAG(IS_MAC)
+#include "zebkit/engine/js_dialog_views.h"
+#endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -91,8 +94,12 @@ void JavaScriptDialogManagerImpl::RunJavaScriptDialog(
   if (g_message_box_open)
     return;
   if (dialog_type == JAVASCRIPT_DIALOG_TYPE_PROMPT) {
-    // A box has no text field: prompt() gives null, as when it is cancelled.
-    std::move(callback).Run(false, std::u16string());
+    // A message box has no text field: Chromium's views dialog, as on Linux;
+    // without a window, null, as when it is cancelled.
+    if (!ShowViewsJavaScriptDialog(web_contents,
+                                   url_formatter::FormatUrl(render_frame_host->GetLastCommittedOrigin().GetURL()),
+                                   dialog_type, message_text, default_prompt_text, callback))
+      std::move(callback).Run(false, std::u16string());
     return;
   }
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -104,8 +111,12 @@ void JavaScriptDialogManagerImpl::RunJavaScriptDialog(
                      dialog_type == JAVASCRIPT_DIALOG_TYPE_CONFIRM ? MB_OKCANCEL : MB_OK,
                      std::move(callback)));
 #else
-  // The application's to show, through <zebkit/page.h> (dialog.cc).
-  *did_suppress_message = true;
+  // Chromium's views dialog where the page has a window, as Chrome's on
+  // Linux; without one the application's to show, through <zebkit/page.h>
+  // (dialog.cc), or suppressed.
+  *did_suppress_message = !ShowViewsJavaScriptDialog(
+      web_contents, url_formatter::FormatUrl(render_frame_host->GetLastCommittedOrigin().GetURL()), dialog_type,
+      message_text, default_prompt_text, callback);
 #endif
 }
 
@@ -134,7 +145,12 @@ void JavaScriptDialogManagerImpl::RunBeforeUnloadDialog(
                                 L"Is it OK to leave/reload this page?", MB_OKCANCEL,
                                 std::move(callback)));
 #else
-  std::move(callback).Run(true, std::u16string());
+  // "Leave this page?" in Chromium's views dialog where there is a window.
+  if (!ShowViewsJavaScriptDialog(web_contents, std::u16string(), JAVASCRIPT_DIALOG_TYPE_CONFIRM,
+                                 is_reload ? u"Reload this page? Changes you made may not be saved."
+                                           : u"Leave this page? Changes you made may not be saved.",
+                                 std::u16string(), callback))
+    std::move(callback).Run(true, std::u16string());
 #endif
 }
 

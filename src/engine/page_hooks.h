@@ -19,6 +19,8 @@
 
 class GURL;
 namespace content {
+class EyeDropper;
+class EyeDropperListener;
 class ClientCertificateDelegate;
 class FileSelectListener;
 class RenderFrameHost;
@@ -42,6 +44,10 @@ void TellExternalProtocol(const GURL& url, content::WebContents* contents,
                           network::mojom::WebSandboxFlags sandbox, bool user_gesture,
                           const std::optional<url::Origin>& initiator,
                           content::RenderFrameHost* initiator_document);
+// The page's EyeDropper.open() to the application (zebkit_view_on_eye_dropper);
+// null without a function, which cancels it.
+std::unique_ptr<content::EyeDropper> OpenEyeDropperHook(content::RenderFrameHost* frame,
+                                                       content::EyeDropperListener* listener);
 bool HandleFileChooserHook(content::RenderFrameHost* frame,
                            scoped_refptr<content::FileSelectListener> listener,
                            const blink::mojom::FileChooserParams& params);

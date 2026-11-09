@@ -226,6 +226,14 @@ const std::vector<MenuItem>& AppMenu() {
   return TheApp().menu;
 }
 
+std::optional<std::vector<MenuItem>> ParseMenuItems(const std::string& json, std::string* problem) {
+  std::optional<base::Value> parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
+  *problem = "the menu is not a JSON array";
+  if (!parsed || !parsed->is_list())
+    return std::nullopt;
+  return ParseItems(parsed->GetList(), *problem);
+}
+
 bool MenuItemEnabled(const std::string& id) {
   bool found = false;
   const bool enabled = AnyEnabled(TheApp().menu, id, &found);

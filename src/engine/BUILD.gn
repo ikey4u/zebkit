@@ -399,6 +399,18 @@ _sources = [
   "speech_delegate.cc",
   "speech_delegate.h",
   "window.cc",
+  "context_menu.cc",
+  "sign_in_dialog.cc",
+  "notifications.cc",
+  "system_events.cc",
+  "desktop_actions.cc",
+  "tray.cc",
+  "tray.h",
+  "desktop_actions.h",
+  "notifications.h",
+  "certificate_picker.h",
+  "sign_in_dialog.h",
+  "context_menu.h",
   "appearance.cc",
   "appearance.h",
   "window_api.cc",
@@ -608,7 +620,15 @@ if (is_mac) {
   _deps += [
     "//dbus",
     "//components/dbus",
+    "//components/dbus/menu",
     "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
+  ]
+  # The desktop's notifications (org.freedesktop.Notifications).
+  _sources += [
+    "notifications_linux.cc",
+    "tray_linux.cc",
+    "tray_linux_dbus.cc",
+    "tray_linux_dbus.h",
   ]
 }
 # Frames on demand for pages without a display (automation.cc).
@@ -638,7 +658,14 @@ declare_args() {
 if (is_win) {
   _sources += [
     "attach.cc",
+    "desktop_actions_win.cc",
+    "tray_win.cc",
     "window_views.cc",
+    "context_menu_views.cc",
+    "js_dialog_views.cc",
+    "sign_in_dialog_views.cc",
+    "certificate_picker_views.cc",
+    "js_dialog_views.h",
   ]
 
   # zebkit.dll and its import library zebkit.dll.lib. What it exports is what
@@ -719,8 +746,14 @@ if (is_win) {
 } else if (!is_mac) {
   _sources += [
     "attach.cc",
+    "desktop_actions_linux.cc",
     "glibc_compat.cc",
     "window_views.cc",
+    "context_menu_views.cc",
+    "js_dialog_views.cc",
+    "sign_in_dialog_views.cc",
+    "certificate_picker_views.cc",
+    "js_dialog_views.h",
   ]
 
   shared_library("zebkit") {
@@ -863,6 +896,12 @@ if (is_win) {
       "js_dialog.h",
       "js_dialog_mac.mm",
       "window_mac.mm",
+      "context_menu_mac.mm",
+      "sign_in_dialog_mac.mm",
+      "certificate_picker_mac.mm",
+      "notifications_mac.mm",
+      "desktop_actions_mac.mm",
+      "tray_mac.mm",
       "offscreen_mac.h",
       "offscreen_mac.mm",
     ]
@@ -877,6 +916,7 @@ if (is_win) {
       "CoreImage.framework",
       "Foundation.framework",
       "IOSurface.framework",
+      "UserNotifications.framework",
     ]
     bundle_deps = [
       ":zebkit_helpers",

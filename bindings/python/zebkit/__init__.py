@@ -171,6 +171,26 @@ _view_set_drag_regions = _declare("zebkit_view_set_drag_regions", _B, _V, _S, ct
 _view_set_popup_window_options = _declare("zebkit_view_set_popup_window_options", _B, _V, _S, ctypes.POINTER(_P))
 _get_capabilities = _declare("zebkit_get_capabilities", _P)
 _ENVIRONMENT = ctypes.CFUNCTYPE(None, _S, _P)
+_JSON_EVENT = ctypes.CFUNCTYPE(None, _S, _P)
+_on_notification = _declare("zebkit_on_notification", None, _JSON_EVENT, _P)
+_notification_clicked = _declare("zebkit_notification_clicked", _B, _S, ctypes.c_int)
+_notification_closed = _declare("zebkit_notification_closed", _B, _S, _B)
+_on_power_event = _declare("zebkit_on_power_event", None, _JSON_EVENT, _P)
+_get_displays = _declare("zebkit_get_displays", _P)
+_on_displays_changed = _declare("zebkit_on_displays_changed", None, _JSON_EVENT, _P)
+_prevent_sleep = _declare("zebkit_prevent_sleep", ctypes.c_uint64, _B, _S)
+_allow_sleep = _declare("zebkit_allow_sleep", _B, ctypes.c_uint64)
+_open_external = _declare("zebkit_open_external", _B, _S, ctypes.POINTER(_P))
+_show_in_folder = _declare("zebkit_show_in_folder", _B, _S, ctypes.POINTER(_P))
+_TRAY_CLICK = ctypes.CFUNCTYPE(None, _P)
+_TRAY_MENU = ctypes.CFUNCTYPE(None, _S, _P)
+_tray_new = _declare("zebkit_tray_new", _P, ctypes.c_char_p, ctypes.c_size_t, _S, ctypes.POINTER(_P))
+_tray_set_icon = _declare("zebkit_tray_set_icon", _B, _P, ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(_P))
+_tray_set_tooltip = _declare("zebkit_tray_set_tooltip", None, _P, _S)
+_tray_set_menu = _declare("zebkit_tray_set_menu", _B, _P, _S, _TRAY_MENU, _P, ctypes.POINTER(_P))
+_tray_on_click = _declare("zebkit_tray_on_click", None, _P, _TRAY_CLICK, _P)
+_tray_close = _declare("zebkit_tray_close", None, _P)
+_system_callbacks = {}
 _get_environment = _declare("zebkit_get_environment", _P)
 _on_environment_changed = _declare("zebkit_on_environment_changed", None, _ENVIRONMENT, _P)
 _environment_callback = None
@@ -251,6 +271,11 @@ _view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED
 _view_on_file_chooser_result = _declare("zebkit_view_on_file_chooser_result", None, _V, _TOLD, _P)
 _view_file_chooser_timeout = _declare("zebkit_view_set_file_chooser_timeout", _B, _V, ctypes.c_uint32)
 _file_chooser_info = _declare("zebkit_file_chooser_request_info", _P, _P)
+_view_on_eye_dropper = _declare("zebkit_view_on_eye_dropper", None, _V, _ASKED, _P)
+_view_on_eye_dropper_result = _declare("zebkit_view_on_eye_dropper_result", None, _V, _TOLD, _P)
+_view_eye_dropper_timeout = _declare("zebkit_view_set_eye_dropper_timeout", _B, _V, ctypes.c_uint32)
+_eye_dropper_info = _declare("zebkit_eye_dropper_request_info", _P, _P)
+_eye_dropper_respond = _declare("zebkit_eye_dropper_respond", _B, _P, _S)
 _file_chooser_respond = _declare("zebkit_file_chooser_respond", _B, _P, ctypes.POINTER(ctypes.c_char_p), _Z, _P)
 _view_on_media_access = _declare("zebkit_view_on_media_access", None, _V, _ASKED, _P)
 _view_on_media_access_result = _declare("zebkit_view_on_media_access_result", None, _V, _TOLD, _P)
@@ -260,6 +285,10 @@ _media_access_respond = _declare("zebkit_media_access_respond", _B, _P, _B, _S, 
 _view_set_reserved_keys = _declare("zebkit_view_set_reserved_keys", _B, _V, _S, _P)
 _view_on_reserved_key = _declare("zebkit_view_on_reserved_key", None, _V, _TOLD, _P)
 _view_on_context_menu = _declare("zebkit_view_on_context_menu", None, _V, _TOLD, _P)
+_CONTEXT_MENU_ITEM = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_context_menu_run = _declare("zebkit_view_context_menu_run", _B, _V, ctypes.c_uint64, _S, _EP)
+_view_context_menu_show = _declare("zebkit_view_context_menu_show", _B, _V, ctypes.c_uint64, _S,
+                                   _CONTEXT_MENU_ITEM, _P, _EP)
 _view_set_fullscreen_policy = _declare("zebkit_view_set_fullscreen_policy", _B, _V, _I)
 _view_on_fullscreen = _declare("zebkit_view_on_fullscreen", None, _V, _TOLD, _P)
 _view_set_network_filter = _declare("zebkit_view_set_network_filter", _B, _V, _S, _P)
@@ -303,6 +332,14 @@ class DownloadRequest(_Request):
             raise ValueError("a download is saved or cancelled")
         encoded = None if path is None else os.fsencode(path)
         return bool(_download_respond(self._handle, 0 if action == "save" else 1, encoded, None))
+
+
+class EyeDropperRequest(_Request):
+    _info = _eye_dropper_info
+
+    def respond(self, color=None):
+        """respond("#rrggbb") gives the page that colour; respond() cancels."""
+        return bool(_eye_dropper_respond(self._handle, color.encode() if color else None))
 
 
 class ClientCertificateRequest(_Request):
@@ -602,6 +639,105 @@ def on_environment_changed(function):
         return
     _environment_callback = _ENVIRONMENT(_guard(lambda payload, d: function(json.loads(payload.decode()))))
     _on_environment_changed(_environment_callback, None)
+
+
+def _json_event(kind, setter, function):
+    if function is None:
+        _system_callbacks.pop(kind, None)
+        setter(_JSON_EVENT(), None)
+        return
+    callback = _JSON_EVENT(_guard(lambda payload, d: function(json.loads(payload.decode()))))
+    _system_callbacks[kind] = callback
+    setter(callback, None)
+
+
+def on_notification(function):
+    """function(dict) shows web notifications: {"event": "show" | "close", ...};
+    None: the system shows them."""
+    _json_event("notification", _on_notification, function)
+
+
+def notification_clicked(notification_id, action=-1):
+    return bool(_notification_clicked(notification_id.encode(), int(action)))
+
+
+def notification_closed(notification_id, by_user=True):
+    return bool(_notification_closed(notification_id.encode(), bool(by_user)))
+
+
+def on_power_event(function):
+    """function(dict): suspend, resume, power-source."""
+    _json_event("power", _on_power_event, function)
+
+
+def displays():
+    """The screens: [{id, bounds, workArea, scale, rotation, primary}]."""
+    value = _string(_get_displays())
+    return json.loads(value) if value else []
+
+
+def on_displays_changed(function):
+    _json_event("displays", _on_displays_changed, function)
+
+
+def prevent_sleep(reason, keep_display_on=False):
+    """Keeps the system awake until allow_sleep(token)."""
+    return int(_prevent_sleep(bool(keep_display_on), reason.encode()))
+
+
+def allow_sleep(token):
+    return bool(_allow_sleep(int(token)))
+
+
+def open_external(url):
+    """The system's handler for url."""
+    error = _P()
+    if not _open_external(url.encode(), ctypes.byref(error)):
+        _raise(error, "the URL was not opened")
+
+
+def show_in_folder(path):
+    """The file manager, with path selected."""
+    error = _P()
+    if not _show_in_folder(os.fsencode(path), ctypes.byref(error)):
+        _raise(error, "the file was not shown")
+
+
+class Tray:
+    """The application's icon in the system's tray (png: bytes of a PNG)."""
+
+    def __init__(self, png, tooltip=""):
+        error = _P()
+        self._handle = _tray_new(png, len(png), tooltip.encode(), ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the tray was not made")
+        self._callbacks = {}
+
+    def set_icon(self, png):
+        error = _P()
+        if not _tray_set_icon(self._handle, png, len(png), ctypes.byref(error)):
+            _raise(error, "the icon was refused")
+
+    def set_tooltip(self, tooltip):
+        _tray_set_tooltip(self._handle, tooltip.encode())
+
+    def set_menu(self, menu, function):
+        """Items as app_set_menu's; function(id) for one chosen."""
+        callback = _TRAY_MENU(_guard(lambda item, d: function(item.decode())))
+        error = _P()
+        if not _tray_set_menu(self._handle, json.dumps(menu).encode(), callback, None, ctypes.byref(error)):
+            _raise(error, "the menu was refused")
+        self._callbacks["menu"] = callback
+
+    def on_click(self, function):
+        callback = _TRAY_CLICK(_guard(lambda d: function())) if function else _TRAY_CLICK()
+        self._callbacks["click"] = callback
+        _tray_on_click(self._handle, callback, None)
+
+    def close(self):
+        if self._handle:
+            _tray_close(self._handle)
+            self._handle = None
 
 
 def capabilities():
@@ -1071,6 +1207,11 @@ class View:
         """function(FileChooserRequest); None cancels pending ones and removes it."""
         self._asked('file-chooser', _view_on_file_chooser, FileChooserRequest, function)
 
+    def on_eye_dropper(self, function):
+        """function(EyeDropperRequest) for the page's EyeDropper.open(); without
+        one it is cancelled."""
+        self._asked('eye-dropper', _view_on_eye_dropper, EyeDropperRequest, function)
+
     def on_file_chooser_result(self, function):
         self._told('file-chooser-result', _view_on_file_chooser_result, function)
 
@@ -1096,8 +1237,27 @@ class View:
         self._told('reserved-key', _view_on_reserved_key, function)
 
     def on_context_menu(self, function):
-        """function(dict); while set, the engine shows no menu."""
+        """function(dict) with what was right-clicked, its menuId and the
+        default items; while set, the engine shows no menu itself."""
         self._told('context-menu', _view_on_context_menu, function)
+
+    def context_menu_run(self, menu_id, command):
+        """Runs a default item's command against what was right-clicked."""
+        error = _P()
+        if not _view_context_menu_run(self._check(), int(menu_id), command.encode(), ctypes.byref(error)):
+            _raise(error, "the context menu's command was refused")
+
+    def context_menu_show(self, menu_id, items=None, function=None):
+        """Shows a menu where it was asked for: the default items (None) or a
+        list mixing default ids and the application's own; function(id) for
+        an item of the application's ("" when none is chosen)."""
+        error = _P()
+        callback = _CONTEXT_MENU_ITEM(_guard(lambda h, item, d: function(item.decode()))) if function else \
+            _CONTEXT_MENU_ITEM()
+        self._callbacks["context-menu-item"] = callback
+        text = json.dumps(items).encode() if items is not None else None
+        if not _view_context_menu_show(self._check(), int(menu_id), text, callback, None, ctypes.byref(error)):
+            _raise(error, "the context menu was not shown")
 
     def set_fullscreen_policy(self, policy):
         if policy not in ("allow", "deny"):

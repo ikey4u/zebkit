@@ -62,6 +62,8 @@
 #include "zebkit/engine/js_dialog_manager.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/permissions.h"
+#include "zebkit/engine/page_hooks.h"
+#include "content/public/browser/eye_dropper.h"
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/window_platform.h"
 #include "media/media_buildflags.h"
@@ -882,6 +884,11 @@ bool Window::CssRegionsAllowed() {
     if (allowed == origin)
       return true;
   return false;
+}
+
+std::unique_ptr<content::EyeDropper> Window::OpenEyeDropper(RenderFrameHost* frame,
+                                                          content::EyeDropperListener* listener) {
+  return OpenEyeDropperHook(frame, listener);
 }
 
 void Window::DraggableRegionsChanged(

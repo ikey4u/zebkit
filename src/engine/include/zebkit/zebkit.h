@@ -186,6 +186,55 @@ ZEBKIT_API bool zebkit_is_headless(void);
  * engine's, for the call. The engine never changes the system's settings.
  */
 ZEBKIT_API char *zebkit_get_environment(void);
+
+/*
+ * Web notifications (new Notification(), a service worker's
+ * showNotification()), once a page has the "notifications" permission, which is
+ * denied by default (zebkit_view_on_permission). With @func the application shows
+ * them: @func gets {"event": "show", id, persistent, origin, title, body, icon,
+ * image, badge, tag, lang, silent, requireInteraction, renotify, actions: [{action,
+ * title}]} and {"event": "close", id} when the page closes one; it tells what the
+ * person did with zebkit_notification_clicked(id, action index or -1) and
+ * zebkit_notification_closed(id, by_user), which reach the page's onclick/onclose
+ * and its service worker's notificationclick/notificationclose. Without @func the
+ * system shows them where it can: org.freedesktop.Notifications on Linux, the
+ * UserNotifications framework on macOS (for an application with a bundle
+ * identifier). The JSON is the engine's, for the call. Engine thread only.
+ */
+typedef void (*zebkit_notification_func)(const char *json, void *data);
+
+/*
+ * What the system tells of itself, as JSON to @func on the engine's thread.
+ * zebkit_on_power_event(): {"event": "suspend"}, {"event": "resume"},
+ * {"event": "power-source", "onBattery"}. zebkit_get_displays(): the screens,
+ * [{id, bounds, workArea, scale, rotation, primary}] in DIPs (free it);
+ * zebkit_on_displays_changed() tells {"event": "displays", "displays": [...]}.
+ * NULL @func stops.
+ * zebkit_prevent_sleep(): keeps the system from sleeping (and its display on,
+ * with @keep_display_on) for the application until zebkit_allow_sleep(token),
+ * or the engine's end; pages have the Wake Lock API for their own. 0 on failure.
+ */
+/*
+ * The system's handler for @url (a browser for https:, the mail program for
+ * mailto:, the default program of a file: URL), or the file manager showing
+ * @path selected in its folder. For the application: pages reach neither
+ * (zebkit_view_on_external_protocol tells their links to other programs). The
+ * URL or path is one argument to the system, never a shell's. False with
+ * @error for javascript:, data:, blob:, about: and invalid URLs, a relative
+ * path, or a system that cannot.
+ */
+ZEBKIT_API bool zebkit_open_external(const char *url, char **error);
+ZEBKIT_API bool zebkit_show_in_folder(const char *path, char **error);
+
+typedef void (*zebkit_system_event_func)(const char *json, void *data);
+ZEBKIT_API void zebkit_on_power_event(zebkit_system_event_func func, void *data);
+ZEBKIT_API char *zebkit_get_displays(void);
+ZEBKIT_API void zebkit_on_displays_changed(zebkit_system_event_func func, void *data);
+ZEBKIT_API uint64_t zebkit_prevent_sleep(bool keep_display_on, const char *reason);
+ZEBKIT_API bool zebkit_allow_sleep(uint64_t token);
+ZEBKIT_API void zebkit_on_notification(zebkit_notification_func func, void *data);
+ZEBKIT_API bool zebkit_notification_clicked(const char *id, int action);
+ZEBKIT_API bool zebkit_notification_closed(const char *id, bool by_user);
 typedef void (*zebkit_environment_func)(const char *json, void *data);
 ZEBKIT_API void zebkit_on_environment_changed(zebkit_environment_func func, void *data);
 
@@ -248,6 +297,25 @@ ZEBKIT_API void zebkit_app_on_reopen(zebkit_app_func func, void *data);
  * quits.
  */
 ZEBKIT_API void zebkit_app_on_quit_request(zebkit_app_func func, void *data);
+
+/*
+ * The application's icon in the system's tray: the menu bar on macOS, the
+ * notification area on Windows, a StatusNotifierItem on Linux (a desktop
+ * without a host for those shows none). @png: the icon, a PNG of at most 1024
+ * by 1024 (a template image on macOS: its shape, in the menu bar's colour).
+ * Its menu takes zebkit_app_set_menu()'s items, enabled, checked and
+ * radioGroup included; @func gets a chosen item's id. A click on the icon is
+ * zebkit_tray_on_click()'s; on macOS, with a menu, a click opens it. Engine
+ * thread only; zebkit_tray_close() removes it.
+ */
+typedef struct zebkit_tray zebkit_tray;
+ZEBKIT_API zebkit_tray *zebkit_tray_new(const uint8_t *png, size_t size, const char *tooltip, char **error);
+ZEBKIT_API bool zebkit_tray_set_icon(zebkit_tray *tray, const uint8_t *png, size_t size, char **error);
+ZEBKIT_API void zebkit_tray_set_tooltip(zebkit_tray *tray, const char *tooltip);
+ZEBKIT_API bool zebkit_tray_set_menu(zebkit_tray *tray, const char *json, zebkit_menu_func func, void *data,
+                                     char **error);
+ZEBKIT_API void zebkit_tray_on_click(zebkit_tray *tray, zebkit_app_func func, void *data);
+ZEBKIT_API void zebkit_tray_close(zebkit_tray *tray);
 
 /* ---- Views ----------------------------------------------------------- */
 

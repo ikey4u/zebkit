@@ -4,6 +4,7 @@
 
 #include "zebkit/engine/profile.h"
 #include "zebkit/engine/file_system_access.h"
+#include "zebkit/engine/notifications.h"
 
 #include <memory>
 #include <utility>
@@ -123,7 +124,10 @@ storage::SpecialStoragePolicy* Profile::GetSpecialStoragePolicy() {
 
 PlatformNotificationService*
 Profile::GetPlatformNotificationService() {
-  return nullptr;
+  // Web notifications, once permitted (notifications.h).
+  if (!notifications_)
+    notifications_ = std::make_unique<NotificationService>(this);
+  return notifications_.get();
 }
 
 // What File System Access handles may do (file_system_access.h).

@@ -35,6 +35,7 @@ namespace zebkit {
 
 class EngineDownloadManagerDelegate;
 class FileSystemAccessContext;
+class NotificationService;
 
 // The path key of the directory --user-data-dir says (PathService).
 inline constexpr int kUserDataPath = 18600;
@@ -88,6 +89,7 @@ class Profile : public content::BrowserContext {
   std::unique_ptr<EngineDownloadManagerDelegate> download_manager_delegate_;
   std::unique_ptr<content::PermissionControllerDelegate> permission_manager_;
   std::unique_ptr<FileSystemAccessContext> file_system_access_;
+  std::unique_ptr<NotificationService> notifications_;
   std::unique_ptr<content::BackgroundSyncController> background_sync_controller_;
   std::unique_ptr<content::ContentIndexProvider> content_index_provider_;
   std::unique_ptr<content::ReduceAcceptLanguageControllerDelegate>

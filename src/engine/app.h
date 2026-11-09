@@ -6,6 +6,7 @@
 #ifndef ZEBKIT_ENGINE_APP_H_
 #define ZEBKIT_ENGINE_APP_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,9 @@ struct MenuItem {
 
 // Whether the item @id is enabled; true for an id of no item.
 bool MenuItemEnabled(const std::string& id);
+
+// Menu items as zebkit_app_set_menu() takes them, for the tray's menu too.
+std::optional<std::vector<MenuItem>> ParseMenuItems(const std::string& json, std::string* problem);
 
 // The menu zebkit_app_set_menu() was given; empty before.
 const std::vector<MenuItem>& AppMenu();

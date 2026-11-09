@@ -158,7 +158,7 @@
     },
     "OpenEyeDropper": {
      "surface": "dialog.eye-dropper",
-     "zebkit": false
+     "zebkit": true
     },
     "PreHandleKeyboardEvent": {
      "surface": "input.reserved-keys",
@@ -961,13 +961,15 @@
   },
   {
    "id": "app.menu",
-   "status": "partial",
-   "default": "zebkit's application menu on macOS; elsewhere none",
+   "status": "done",
+   "default": "zebkit's application menu on macOS; elsewhere the items' keys",
    "control": [
     "configure",
     "observe"
    ],
-   "tests": [],
+   "tests": [
+    "tests/engine/menu_state.py"
+   ],
    "zebkit_only": true
   },
   {
@@ -1130,13 +1132,16 @@
   },
   {
    "id": "input.context-menu",
-   "status": "partial",
-   "default": "none shown",
+   "status": "done",
+   "default": "the engine's default menu with the system's look where there is a window; commands on the captured context",
    "control": [
     "decide",
+    "present",
     "observe"
    ],
-   "tests": []
+   "tests": [
+    "tests/engine/context_menu.py"
+   ]
   },
   {
    "id": "input.drop",
@@ -1184,13 +1189,15 @@
   {
    "id": "dialog.javascript",
    "status": "done",
-   "default": "the system's dialog where it has one",
+   "default": "the system's dialog on macOS and Windows, Chromium's views dialog on Linux and for Windows' prompt(); suppressed without a window",
    "control": [
     "decide",
     "present",
     "observe"
    ],
-   "tests": []
+   "tests": [
+    "tests/engine/js_dialogs.py"
+   ]
   },
   {
    "id": "dialog.repost",
@@ -1232,10 +1239,16 @@
   },
   {
    "id": "dialog.eye-dropper",
-   "status": "gap",
-   "default": "rejected",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "cancelled; the application's colour with zebkit_view_on_eye_dropper",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/js_dialogs.py"
+   ]
   },
   {
    "id": "dialog.date-time",
@@ -1404,10 +1417,16 @@
   },
   {
    "id": "notification.web",
-   "status": "gap",
-   "default": "denied",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "denied until permitted; then the application's function, or the system's service (Linux, macOS)",
+   "control": [
+    "decide",
+    "present",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/notifications.py"
+   ]
   },
   {
    "id": "notification.push",
@@ -1418,10 +1437,15 @@
   },
   {
    "id": "desktop.tray",
-   "status": "gap",
-   "default": "none",
-   "control": [],
-   "tests": [],
+   "status": "done",
+   "default": "none unless made",
+   "control": [
+    "configure",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/tray.py"
+   ],
    "zebkit_only": true
   },
   {
@@ -1553,18 +1577,27 @@
   },
   {
    "id": "power.events",
-   "status": "gap",
-   "default": "not told",
-   "control": [],
-   "tests": [],
+   "status": "partial",
+   "default": "told: suspend, resume, power source; no lock events",
+   "control": [
+    "observe",
+    "configure"
+   ],
+   "tests": [
+    "tests/engine/system_services.py"
+   ],
    "zebkit_only": true
   },
   {
    "id": "display.list",
-   "status": "gap",
-   "default": "Chromium's default",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "the screens and their changes, told",
+   "control": [
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/system_services.py"
+   ]
   }
  ]
 }

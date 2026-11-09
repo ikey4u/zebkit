@@ -198,11 +198,8 @@ blink::mojom::PermissionStatus PermissionManager::GetPermissionStatus(
   // as in Chrome, not as refused: no browser shows a site every permission
   // refused before it asked. A request is still turned down
   // (RequestPermissionsFromCurrentDocument), as a prompt the person
-  // dismissed is, and nothing is kept. Notifications stay refused: there is
-  // no notification service to show them, and with none Chromium tells
-  // pages Notification.permission "denied", which the status agrees with.
-  if (permission_type == PermissionType::NOTIFICATIONS)
-    return blink::mojom::PermissionStatus::DENIED;
+  // dismissed is, and nothing is kept. Notifications too, now that the
+  // profile has a service to show them (notifications.cc).
   return IsAllowlistedPermissionType(permission_type)
              ? blink::mojom::PermissionStatus::GRANTED
              : blink::mojom::PermissionStatus::ASK;

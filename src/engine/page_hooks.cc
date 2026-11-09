@@ -3,6 +3,11 @@
 // fullscreen, as content's delegates ask of an embedder.
 
 #include "zebkit/engine/page_hooks.h"
+#include "zebkit/engine/context_menu.h"
+#include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
+#include "content/public/browser/eye_dropper_listener.h"
+#include "content/public/browser/eye_dropper.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -125,6 +130,52 @@ struct MediaTraits {
   static const char* State(const Decision& decision) { return decision.allow ? "allowed" : "denied"; }
 };
 using MediaRequests = HookRequests<MediaTraits>;
+
+struct EyeDropperTraits {
+  struct Decision {
+    std::optional<SkColor> color;
+  };
+  using Request = zebkit_eye_dropper_request;
+  static constexpr auto kHandler = &zebkit_view::on_eye_dropper_;
+  static constexpr auto kData = &zebkit_view::on_eye_dropper_data_;
+  static constexpr auto kResult = &zebkit_view::on_eye_dropper_result_;
+  static constexpr auto kResultData = &zebkit_view::on_eye_dropper_result_data_;
+  static constexpr auto kGeneration = &zebkit_view::eye_dropper_generation_;
+  static constexpr auto kTimeout = &zebkit_view::eye_dropper_timeout_ms_;
+  static Decision Refusal() { return {}; }
+  static Decision Unanswered() { return {}; }
+  static const char* State(const Decision& decision) { return decision.color ? "selected" : "cancelled"; }
+};
+using EyeDropperRequests = HookRequests<EyeDropperTraits>;
+std::map<uintptr_t, DocumentOf>& EyeDropperDocuments() {
+  static base::NoDestructor<std::map<uintptr_t, DocumentOf>> documents;
+  return *documents;
+}
+
+// What content holds while a page's eye dropper is open; its listener is
+// good as long as this is.
+class HookEyeDropper : public content::EyeDropper {
+ public:
+  explicit HookEyeDropper(content::EyeDropperListener* listener) : listener_(listener) {}
+  ~HookEyeDropper() override {
+    if (id_ && EyeDropperRequests::Get().Pending(id_))
+      EyeDropperRequests::Get().Settle(id_, EyeDropperTraits::Decision(), "cancelled");
+  }
+  void set_id(uintptr_t id) { id_ = id; }
+  void Answer(EyeDropperTraits::Decision decision) {
+    id_ = 0;
+    if (decision.color)
+      listener_->ColorSelected(*decision.color);
+    else
+      listener_->ColorSelectionCanceled();
+  }
+  base::WeakPtr<HookEyeDropper> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
+
+ private:
+  raw_ptr<content::EyeDropperListener> listener_;
+  uintptr_t id_ = 0;
+  base::WeakPtrFactory<HookEyeDropper> weak_factory_{this};
+};
 std::map<uintptr_t, DocumentOf>& MediaDocuments() {
   static base::NoDestructor<std::map<uintptr_t, DocumentOf>> documents;
   return *documents;
@@ -322,6 +373,9 @@ class Hooks : public Window::EmbedderHooks {
     told.Set("pageUrl", params.page_url.spec());
     told.Set("frameUrl", params.frame_url.spec());
     told.Set("frameId", FrameId(&frame));
+    // What a default item would do, kept for zebkit_view_context_menu_run/show.
+    told.Set("menuId", static_cast<double>(CaptureContextMenu(view, frame, params)));
+    told.Set("items", ContextMenuValue(DefaultContextMenu(view->web_contents(), params)));
     Tell<&zebkit_view::on_context_menu_, &zebkit_view::on_context_menu_data_,
          &zebkit_view::context_menu_generation_>(view, std::move(told));
     return true;
@@ -408,18 +462,22 @@ void InstallPageHooks() {
   Window::SetEmbedderHooks(hooks.get());
   FileRequests::Get().Start();
   MediaRequests::Get().Start();
+  EyeDropperRequests::Get().Start();
 }
 void StopPageHooks() {
   Window::SetEmbedderHooks(nullptr);
   FileRequests::Get().Stop();
   MediaRequests::Get().Stop();
+  EyeDropperRequests::Get().Stop();
   FileDocuments().clear();
   MediaDocuments().clear();
+  EyeDropperDocuments().clear();
 }
 void CancelPageHookRequests(zebkit_view* view) {
   auto weak = view->GetWeakPtr();
   FileRequests::Get().CancelAll(view, "cancelled");
   if (weak) MediaRequests::Get().CancelAll(view, "cancelled");
+  if (weak) EyeDropperRequests::Get().CancelAll(view, "cancelled");
   if (weak) CancelDownloadRequests(view);
   if (weak) CancelClientCertificateRequests(view);
   if (weak) CancelNetworkHookRequests(view);
@@ -429,6 +487,33 @@ void PageHooksFrameGone(zebkit_view* view, content::RenderFrameHost* frame) {
   SweepDocuments(FileRequests::Get(), FileDocuments(), view, frame);
   if (weak)
     SweepDocuments(MediaRequests::Get(), MediaDocuments(), view, frame);
+  if (weak)
+    SweepDocuments(EyeDropperRequests::Get(), EyeDropperDocuments(), view, frame);
+}
+
+std::unique_ptr<content::EyeDropper> OpenEyeDropperHook(content::RenderFrameHost* frame,
+                                                       content::EyeDropperListener* listener) {
+  zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
+  // Without a function, nothing to pick a colour with: cancelled, as before.
+  if (!view || EyeDropperRequests::OrphanedPopup(view) || !EyeDropperRequests::HasDecider(view))
+    return nullptr;
+  auto dropper = std::make_unique<HookEyeDropper>(listener);
+  base::DictValue metadata;
+  metadata.Set("frameId", FrameId(frame));
+  metadata.Set("mainFrame", frame->IsInPrimaryMainFrame());
+  metadata.Set("origin", frame->GetLastCommittedOrigin().Serialize());
+  auto& requests = EyeDropperRequests::Get();
+  EyeDropperRequests::Reply reply = base::BindOnce(
+      [](base::WeakPtr<HookEyeDropper> dropper, EyeDropperTraits::Decision decision) {
+        if (dropper)
+          dropper->Answer(std::move(decision));
+      },
+      dropper->GetWeakPtr());
+  if (!requests.Ask(view, std::move(metadata), reply))
+    return nullptr;
+  dropper->set_id(requests.last_id());
+  RememberDocument(requests, EyeDropperDocuments(), {frame->GetWeakDocumentPtr(), frame->GetGlobalId()});
+  return dropper;
 }
 
 void TellExternalProtocol(const GURL& url, content::WebContents* contents,
@@ -541,6 +626,34 @@ bool zebkit_file_chooser_respond(zebkit_file_chooser_request* request, const cha
     decision.paths.push_back(std::move(file));
   }
   zebkit::FileDocuments().erase(id);
+  requests.Settle(id, std::move(decision), "answered");
+  return true;
+}
+void zebkit_view_on_eye_dropper(zebkit_view* view, zebkit_eye_dropper_func function, void* data) {
+  zebkit::EyeDropperRequests::Get().Install(view, function, data);
+}
+void zebkit_view_on_eye_dropper_result(zebkit_view* view, zebkit_eye_dropper_result_func function, void* data) {
+  zebkit::EyeDropperRequests::Get().Observe(view, function, data);
+}
+bool zebkit_view_set_eye_dropper_timeout(zebkit_view* view, uint32_t milliseconds) {
+  return zebkit::EyeDropperRequests::Get().SetTimeout(view, milliseconds);
+}
+char* zebkit_eye_dropper_request_info(zebkit_eye_dropper_request* request) {
+  return zebkit::EyeDropperRequests::Get().Info(reinterpret_cast<uintptr_t>(request));
+}
+bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request* request, const char* color) {
+  auto& requests = zebkit::EyeDropperRequests::Get();
+  if (!requests.Ready()) return false;
+  const auto id = reinterpret_cast<uintptr_t>(request);
+  if (!requests.Find(id)) return false;
+  zebkit::EyeDropperTraits::Decision decision;
+  if (color) {
+    uint32_t value = 0;
+    const std::string_view text(color);
+    if (text.size() != 7 || text[0] != '#' || !base::HexStringToUInt(text.substr(1), &value)) return false;
+    decision.color = SkColorSetRGB(value >> 16, (value >> 8) & 0xff, value & 0xff);
+  }
+  zebkit::EyeDropperDocuments().erase(id);
   requests.Settle(id, std::move(decision), "answered");
   return true;
 }

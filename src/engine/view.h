@@ -28,6 +28,7 @@
 #include "zebkit/engine/include/zebkit/zebkit.h"
 #include "zebkit/engine/include/zebkit/hooks.h"
 #include "zebkit/engine/include/zebkit/window.h"
+#include "zebkit/engine/context_menu.h"
 
 namespace content {
 class RenderFrameHost;
@@ -322,6 +323,13 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_file_chooser_result_data_ = nullptr;
   uint64_t file_chooser_generation_ = 0;
   uint32_t file_chooser_timeout_ms_ = 30000;
+  // The page's EyeDropper.open() (page_hooks.cc).
+  zebkit_eye_dropper_func on_eye_dropper_ = nullptr;
+  void* on_eye_dropper_data_ = nullptr;
+  zebkit_eye_dropper_result_func on_eye_dropper_result_ = nullptr;
+  void* on_eye_dropper_result_data_ = nullptr;
+  uint64_t eye_dropper_generation_ = 0;
+  uint32_t eye_dropper_timeout_ms_ = 30000;
   zebkit_media_access_func on_media_access_ = nullptr;
   void* on_media_access_data_ = nullptr;
   zebkit_media_access_result_func on_media_access_result_ = nullptr;
@@ -333,6 +341,9 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_reserved_key_data_ = nullptr;
   uint64_t reserved_key_generation_ = 0;
   zebkit_context_menu_func on_context_menu_ = nullptr;
+  // The last right clicks, for their menus' commands (context_menu.cc).
+  std::vector<zebkit::CapturedContextMenu> context_menus_;
+  uint64_t next_context_menu_ = 1;
   void* on_context_menu_data_ = nullptr;
   uint64_t context_menu_generation_ = 0;
   std::optional<zebkit_fullscreen_policy> fullscreen_policy_;

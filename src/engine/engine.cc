@@ -17,6 +17,7 @@
 #endif
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/appearance.h"
+#include "zebkit/engine/sign_in_dialog.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include <signal.h>
@@ -1203,6 +1204,10 @@ std::unique_ptr<content::LoginDelegate> BrowserClient::CreateLoginDelegate(
       return delegate;
     auth_required_callback = std::move(*callback);
   }
+  // Neither the application nor automation answers: the engine's sign-in
+  // dialog where the page has a window (sign_in_dialog.h).
+  if (auto dialog = CreateSignInDialogDelegate(auth_info, web_contents, url, auth_required_callback))
+    return dialog;
   return nullptr;
 }
 

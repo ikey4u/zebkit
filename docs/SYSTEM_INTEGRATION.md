@@ -150,7 +150,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 |---|---|---|
 | `app.lifecycle`: ready, quit request, reopen, files opened | `zebkit_main()` ready callback, `zebkit_app_on_quit_request`, `zebkit_app_on_reopen` (macOS), `zebkit_app_on_open_files` (macOS from Finder and Dock; elsewhere program arguments) | done on macOS; partial elsewhere (no single-instance hand-over of files: by design the host's) |
 | `app.open-url`: a URL the system gives the application (`myapp://`) | not received | gap |
-| `app.menu`: the application's menu | `zebkit_app_set_menu()` with roles; the macOS menu bar; elsewhere the items' keys only, no menu bar | partial: no checked/enabled state, no update by id, no menu bar on Windows and Linux |
+| `app.menu`: the application's menu | `zebkit_app_set_menu()` with roles, `enabled`, `checked`, `radioGroup`; `zebkit_app_update_menu_item()` by id, `zebkit_app_get_menu()`; the macOS menu bar; elsewhere the items' keys (a menu bar there is the application's, section 8) | done |
 | `app.dock`: Dock menu, badge, progress; taskbar on Windows | none | gap |
 | `app.identity`: name, icon, app id (`wm_class`, AppUserModelID) | `wm_class` from the program name (`window_views.cc`); bundle metadata on macOS | partial |
 
@@ -175,7 +175,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | Surface | Today | Status |
 |---|---|---|
 | `input.reserved-keys` | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | done |
-| `input.context-menu` | `zebkit_view_on_context_menu` takes it with its context; without one, `ViewDelegate::ShowContextMenu` has a null inner delegate and shows nothing (`view.cc`, `engine.cc`) | partial: no default menu, no way to run a menu's command |
+| `input.context-menu` | without a function the engine's default menu, `NSMenu` on macOS and Chromium's views menu elsewhere; `zebkit_view_on_context_menu` gets the context with `menuId` and the default items; `zebkit_view_context_menu_run()` runs a default command against the captured context, `zebkit_view_context_menu_show()` shows a menu mixing default and own items (`context_menu.cc`) | done |
 | `input.drop` | `zebkit_view_on_drop` (paths before the page has the drop), the drag API of `<zebkit/page.h>` | done |
 | `input.pointer-lock` | the `pointer-lock` permission: granted by default where there is a window, as before; refused without one (`--headless`, off screen), where there is no system pointer | done |
 | `input.keyboard-lock` | the `keyboard-lock` permission, denied by default (`Window::RequestKeyboardLock`) | done |
@@ -185,11 +185,11 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `dialog.javascript`: alert, confirm, prompt, beforeunload | `zebkit_view_on_dialog`, a policy per view; default presenter: `NSAlert` on macOS, `MessageBoxW` on Windows (where `prompt()` returns null), none on Linux, none without a display (`js_dialog_manager.cc`, `dialog.cc`) | done; the defaults differ by system |
+| `dialog.javascript`: alert, confirm, prompt, beforeunload | `zebkit_view_on_dialog`, a policy per view; default presenter: `NSAlert` on macOS, `MessageBoxW` on Windows, Chromium's views dialog on Linux and for Windows' `prompt()` (`js_dialog_views.cc`); suppressed without a display | done |
 | `dialog.file-chooser`: `<input type=file>` | `zebkit_view_on_file_chooser`; default `ui::SelectFileDialog` (NSOpenPanel, the Windows dialog, the XDG portal on Linux) | done |
 | `dialog.file-system-access`: `showOpenFilePicker()`, `showSaveFilePicker()`, `showDirectoryPicker()` | through `zebkit_view_on_file_chooser` (`"api": "file-system-access"`, modes open, save, directory; `patches/1084`); the page reads what was picked and writes where it saves; writing to an opened file, or a handle beyond what was picked, is the `file-system-write` or `file-system-read` permission, denied without a hook (`file_system_access.cc`) | done |
 | `dialog.color`: `<input type=color>` | Blink's in-page popup (`ColorChooserPopupUIController`) | default only |
-| `dialog.eye-dropper`: `EyeDropper.open()` | feature on, `OpenEyeDropper` not overridden: the promise rejects; the colour popup's eyedropper button does nothing | gap |
+| `dialog.eye-dropper`: `EyeDropper.open()` | `zebkit_view_on_eye_dropper`: the application answers with a colour; without a function cancelled (Chrome's eye dropper is its browser's, capturing the screen) | done |
 | `dialog.date-time` | Blink's in-page chooser | default only |
 | `dialog.select`: `<select>` popups | macOS windows: a native `NSMenu`; macOS off-screen views and Views: Blink's in-page popup (`offscreen.cc` forbids external popups) | default only |
 | `dialog.http-auth` | `zebkit_view_on_http_auth`; cancelled without one | done (no default presenter) |
@@ -219,9 +219,9 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `notification.web`: `new Notification()`, a service worker's `showNotification()` | denied: `Profile::GetPlatformNotificationService` is null and `Notification.permission` reads "denied" (`permission_manager.cc`, `profile.cc`) | gap |
+| `notification.web`: `new Notification()`, a service worker's `showNotification()` | the `notifications` permission, undecided ("default") and denied without a decision; once granted, `zebkit_on_notification` shows them, or the system does: `org.freedesktop.Notifications` on Linux, UserNotifications on macOS for an application with a bundle identifier (`notifications.cc`); clicks and closes reach the page and its service worker | done; no system presenter on Windows yet |
 | `notification.push` | `GetPushMessagingService` null | gap (needs a push service; likely out of scope) |
-| `desktop.tray`: status item, tray icon | none | gap |
+| `desktop.tray`: status item, tray icon | `zebkit_tray_new()`: `NSStatusItem` on macOS, `Shell_NotifyIcon` on Windows, a StatusNotifierItem with a `com.canonical.dbusmenu` menu on Linux (ported from Chrome's, `tray_linux_dbus.cc`) | done |
 | `desktop.share`: `navigator.share()` | not exposed (Blink's `WebShare` flag is for tests, no `ShareService`) | gap |
 
 ### 5.7 Appearance, locale, accessibility
@@ -248,8 +248,8 @@ configure), **gap** (missing or refused for lack of an implementation).
 | Surface | Today | Status |
 |---|---|---|
 | `power.wake-lock` | the screen wake lock granted; system wake lock via Chromium's device service | default only |
-| `power.events`: suspend, resume, lock, battery | Chromium's power monitor inside the engine; nothing told to the application | gap |
-| `display.list`: screens, scale, work area, changes | Chromium's `display::Screen` inside; nothing told | gap |
+| `power.events`: suspend, resume, lock, battery | `zebkit_on_power_event`: suspend, resume, the power source, from `base::PowerMonitor`; `zebkit_prevent_sleep()` (`system_events.cc`) | partial: no lock and unlock events |
+| `display.list`: screens, scale, work area, changes | `zebkit_get_displays()`, `zebkit_on_displays_changed()` from `display::Screen` | done |
 
 ## 6. The common contract
 

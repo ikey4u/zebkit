@@ -1243,8 +1243,18 @@ class ViewDelegate : public content::WebContentsViewDelegate {
   }
   void ShowContextMenu(content::RenderFrameHost& render_frame_host,
                        const content::ContextMenuParams& params) override {
-    if (inner_)
+    if (inner_) {
       inner_->ShowContextMenu(render_frame_host, params);
+      return;
+    }
+    // No function of the application's took it: the engine's default menu,
+    // with the system's look, where there is a window (context_menu.cc).
+    zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(&render_frame_host));
+    if (!view || !view->web_contents())
+      return;
+    const uint64_t id = zebkit::CaptureContextMenu(view, render_frame_host, params);
+    if (const zebkit::CapturedContextMenu* menu = zebkit::FindContextMenu(view, id))
+      zebkit::PresentContextMenu(view, *menu, zebkit::DefaultContextMenu(view->web_contents(), params), {});
   }
   void DismissContextMenu() override {
     if (inner_)

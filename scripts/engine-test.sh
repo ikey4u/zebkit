@@ -62,6 +62,8 @@
 #   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/automation_python.py: the same through zebkit.automation,
 #   Playwright's async API for Python.
+# - tests/engine/notifications.py, tray.py: web notifications and the tray icon, on Linux
+#   against fake desktop services on a private bus (fake_notifications.py, fake_tray_watcher.py).
 # - tests/engine/appearance.py: pages following the system's colour scheme (appearance.follow),
 #   on Linux through a fake XDG portal (fake_portal.py).
 # - tests/engine/window_frame.py: <zebkit/window.h>: options before the window, frames,
@@ -528,6 +530,12 @@ if [[ -x "$bin/native-parent" ]]; then
                 "$bin/native-window" --no-sandbox --user-data-dir="$work/profile-native-window-x11"
             run native-window-javascript env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/tools/zebkit-js" \
                 --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
+            run sign-in-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/sign_in.py" --no-sandbox --user-data-dir="$work/profile-sign-in-x11"
+            run js-dialogs-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/js_dialogs.py" --no-sandbox --user-data-dir="$work/profile-js-dialogs-x11"
+            run context-menu-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                python3 -I "$tests/context_menu.py" --no-sandbox --user-data-dir="$work/profile-context-menu-x11"
             run menu-state-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 python3 -I "$tests/menu_state.py" --no-sandbox --user-data-dir="$work/profile-menu-x11"
             run window-frame-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
@@ -731,8 +739,16 @@ run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.p
 # What reached the system without the application's decision: File System Access,
 # protocol handlers, pointer and keyboard lock (docs/SYSTEM_INTEGRATION.md, phase 2).
 run system-holes env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" "${engine_switches[@]/profile/profile-holes}"
+# HTTP authentication without a function: the engine's sign-in dialog with a window (9).
+run sign-in env ZEBKIT_DIR="$package" python3 -I "$tests/sign_in.py" "${engine_switches[@]/profile/profile-sign-in}"
+# A page's prompt() and confirm(): Chromium's views dialog with a window (9).
+run js-dialogs env ZEBKIT_DIR="$package" python3 -I "$tests/js_dialogs.py" "${engine_switches[@]/profile/profile-js-dialogs}"
+# A page's context menu: default items, commands on the captured context (8).
+run context-menu env ZEBKIT_DIR="$package" python3 -I "$tests/context_menu.py" "${engine_switches[@]/profile/profile-context-menu}"
 # The menu's items' state by id (docs/SYSTEM_INTEGRATION.md, 8).
 run menu-state env ZEBKIT_DIR="$package" python3 -I "$tests/menu_state.py" "${engine_switches[@]/profile/profile-menu}"
+# Screens, keeping awake, opening URLs with the system's handler (13, 14).
+run system-services env ZEBKIT_DIR="$package" python3 -I "$tests/system_services.py" "${engine_switches[@]/profile/profile-services}"
 # Accessibility trees when an assistive technology asks (macOS: AXManualAccessibility).
 run accessibility env ZEBKIT_DIR="$package" python3 -I "$tests/accessibility.py" "${engine_switches[@]/profile/profile-a11y}"
 # Pages following the system's appearance: a fake XDG portal on a private bus (Linux).
@@ -741,6 +757,11 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && p
         "${engine_switches[@]/profile/profile-appearance}"
     run appearance-fixed env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/appearance.py" fixed \
         "${engine_switches[@]/profile/profile-appearance-fixed}"
+    # Web notifications to the desktop's service, and the tray's StatusNotifierItem (12).
+    run notifications env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/notifications.py" \
+        "${engine_switches[@]/profile/profile-notifications}"
+    run tray env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/tray.py" \
+        "${engine_switches[@]/profile/profile-tray}"
 else
     log "appearance: skipped (no dbus-run-session or dbus-python)"
 fi

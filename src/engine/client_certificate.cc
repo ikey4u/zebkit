@@ -28,6 +28,9 @@
 #include "third_party/boringssl/src/include/openssl/bio.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/pem.h"
+#include "base/strings/utf_string_conversions.h"
+#include "zebkit/engine/certificate_picker.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/hook_requests.h"
 #include "zebkit/engine/page_hooks.h"
 
@@ -98,6 +101,44 @@ base::OnceClosure HandleClientCertificate(
   if (Requests::OrphanedPopup(view))
     return base::OnceClosure();  // The delegate goes: the request fails.
   if (!Requests::HasDecider(view)) {
+    // The person chooses, as in Chrome, when the system's stores offer
+    // identities and the page has a window (certificate_picker.h).
+    if (!identities.empty() && contents) {
+      std::vector<std::u16string> names;
+      for (const auto& identity : identities)
+        names.push_back(base::UTF8ToUTF16(identity->certificate()->subject().GetDisplayName() + " (" +
+                                          identity->certificate()->issuer().GetDisplayName() + ")"));
+      auto shared = std::make_shared<std::pair<net::ClientCertIdentityList,
+                                               std::unique_ptr<content::ClientCertificateDelegate>>>();
+      CertificateAnswer answer = base::BindOnce(
+          [](decltype(shared) state, std::optional<size_t> index) {
+            auto& [list, delegate] = *state;
+            if (!delegate)
+              return;
+            // Cancelled: no certificate, as Chrome's picker's Cancel.
+            if (!index || *index >= list.size() || !list[*index]) {
+              delegate->ContinueWithCertificate(nullptr, nullptr);
+              return;
+            }
+            scoped_refptr<net::X509Certificate> certificate(list[*index]->certificate());
+            net::ClientCertIdentity::SelfOwningAcquirePrivateKey(
+                std::move(list[*index]),
+                base::BindOnce(
+                    [](decltype(state) state, scoped_refptr<net::X509Certificate> certificate,
+                       scoped_refptr<net::SSLPrivateKey> key) {
+                      if (state->second)
+                        state->second->ContinueWithCertificate(key ? std::move(certificate) : nullptr,
+                                                               std::move(key));
+                    },
+                    state, std::move(certificate)));
+          },
+          shared);
+      if (ShowCertificatePicker(contents, base::UTF8ToUTF16(info.host_and_port.ToString()), names, answer)) {
+        shared->first = std::move(identities);
+        shared->second = std::move(delegate);
+        return base::OnceClosure();
+      }
+    }
     // As Chrome with no certificates to offer.
     delegate->ContinueWithCertificate(nullptr, nullptr);
     return base::OnceClosure();

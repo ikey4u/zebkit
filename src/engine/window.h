@@ -252,6 +252,9 @@ class Window : public content::WebContentsDelegate,
                                          const GURL& resource_url) override;
   content::PictureInPictureResult EnterPictureInPicture(
       content::WebContents* web_contents) override;
+  std::unique_ptr<content::EyeDropper> OpenEyeDropper(
+      content::RenderFrameHost* frame,
+      content::EyeDropperListener* listener) override;
   void DraggableRegionsChanged(
       const std::vector<blink::mojom::DraggableRegionPtr>& regions,
       content::WebContents* contents) override;
