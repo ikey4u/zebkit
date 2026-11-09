@@ -206,7 +206,8 @@ typedef void (*zebkit_notification_func)(const char *json, void *data);
 /*
  * What the system tells of itself, as JSON to @func on the engine's thread.
  * zebkit_on_power_event(): {"event": "suspend"}, {"event": "resume"},
- * {"event": "power-source", "onBattery"}. zebkit_get_displays(): the screens,
+ * {"event": "power-source", "onBattery"}, {"event": "lock"} and
+ * {"event": "unlock"} for the session's lock (checked each second). zebkit_get_displays(): the screens,
  * [{id, bounds, workArea, scale, rotation, primary}] in DIPs (free it);
  * zebkit_on_displays_changed() tells {"event": "displays", "displays": [...]}.
  * NULL @func stops.
@@ -287,6 +288,19 @@ typedef void (*zebkit_paths_func)(const char *paths_json, void *data);
 ZEBKIT_API void zebkit_app_on_open_files(zebkit_paths_func func, void *data);
 
 typedef void (*zebkit_app_func)(void *data);
+
+/*
+ * The application's icon in the Dock (macOS) or on the taskbar (Windows), or on a
+ * Linux dock that knows the launcher API (com.canonical.Unity.LauncherEntry; its
+ * desktop file named after the program): a badge (a number on Linux; "" for none),
+ * a progress from 0 to 1 (below 0 for none), and a request for the person's
+ * attention (the Dock's bounce, the taskbar button's flash). The Dock's menu, on
+ * macOS only, takes zebkit_app_set_menu()'s items; @func gets a chosen item's id.
+ */
+ZEBKIT_API bool zebkit_app_set_badge(const char *text);
+ZEBKIT_API bool zebkit_app_set_progress(double progress);
+ZEBKIT_API void zebkit_app_request_attention(bool critical);
+ZEBKIT_API bool zebkit_app_set_dock_menu(const char *json, zebkit_menu_func func, void *data, char **error);
 
 /* The application's icon in the Dock was clicked while no window was shown (macOS). */
 ZEBKIT_API void zebkit_app_on_reopen(zebkit_app_func func, void *data);

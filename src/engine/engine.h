@@ -218,6 +218,9 @@ class BrowserClient : public content::ContentBrowserClient {
   bool HasErrorPage(int http_status_code) override;
   void OnWebContentsCreated(content::WebContents* web_contents) override;
   content::WebAuthenticationDelegate* GetWebAuthenticationDelegate() override;
+  content::UsbDelegate* GetUsbDelegate() override;
+  content::HidDelegate* GetHidDelegate() override;
+  content::SerialDelegate* GetSerialDelegate() override;
   std::unique_ptr<content::AuthenticatorRequestClientDelegate>
   GetWebAuthenticationRequestDelegate(content::RenderFrameHost* frame) override;
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(

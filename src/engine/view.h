@@ -330,6 +330,19 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_eye_dropper_result_data_ = nullptr;
   uint64_t eye_dropper_generation_ = 0;
   uint32_t eye_dropper_timeout_ms_ = 30000;
+  zebkit_device_chooser_func on_device_chooser_ = nullptr;
+  void* on_device_chooser_data_ = nullptr;
+  zebkit_device_chooser_result_func on_device_chooser_result_ = nullptr;
+  void* on_device_chooser_result_data_ = nullptr;
+  uint64_t device_chooser_generation_ = 0;
+  uint32_t device_chooser_timeout_ms_ = 60000;
+  // The page's navigator.share() (share.cc).
+  zebkit_share_func on_share_ = nullptr;
+  void* on_share_data_ = nullptr;
+  zebkit_share_result_func on_share_result_ = nullptr;
+  void* on_share_result_data_ = nullptr;
+  uint64_t share_generation_ = 0;
+  uint32_t share_timeout_ms_ = 30000;
   zebkit_media_access_func on_media_access_ = nullptr;
   void* on_media_access_data_ = nullptr;
   zebkit_media_access_result_func on_media_access_result_ = nullptr;

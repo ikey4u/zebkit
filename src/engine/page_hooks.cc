@@ -4,6 +4,7 @@
 
 #include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/context_menu.h"
+#include "zebkit/engine/share.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "content/public/browser/eye_dropper_listener.h"
@@ -27,7 +28,12 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "build/build_config.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/desktop_media_id.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents_media_capture_id.h"
+#include "media/mojo/mojom/display_media_information.mojom.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/media_capture_devices.h"
@@ -147,6 +153,27 @@ struct EyeDropperTraits {
   static const char* State(const Decision& decision) { return decision.color ? "selected" : "cancelled"; }
 };
 using EyeDropperRequests = HookRequests<EyeDropperTraits>;
+
+struct DeviceTraits {
+  struct Decision {
+    std::optional<std::string> id;
+  };
+  using Request = zebkit_device_chooser_request;
+  static constexpr auto kHandler = &zebkit_view::on_device_chooser_;
+  static constexpr auto kData = &zebkit_view::on_device_chooser_data_;
+  static constexpr auto kResult = &zebkit_view::on_device_chooser_result_;
+  static constexpr auto kResultData = &zebkit_view::on_device_chooser_result_data_;
+  static constexpr auto kGeneration = &zebkit_view::device_chooser_generation_;
+  static constexpr auto kTimeout = &zebkit_view::device_chooser_timeout_ms_;
+  static Decision Refusal() { return {}; }
+  static Decision Unanswered() { return {}; }
+  static const char* State(const Decision& decision) { return decision.id ? "selected" : "cancelled"; }
+};
+using DeviceRequests = HookRequests<DeviceTraits>;
+std::map<uintptr_t, DocumentOf>& DeviceDocuments() {
+  static base::NoDestructor<std::map<uintptr_t, DocumentOf>> documents;
+  return *documents;
+}
 std::map<uintptr_t, DocumentOf>& EyeDropperDocuments() {
   static base::NoDestructor<std::map<uintptr_t, DocumentOf>> documents;
   return *documents;
@@ -243,6 +270,92 @@ void SelectFiles(scoped_refptr<content::FileSelectListener> listener,
           },
           directory),
       base::BindOnce(give, std::move(listener), mode, directory));
+}
+
+// Sources getDisplayMedia() may get (docs/SYSTEM_INTEGRATION.md, 10): the view
+// itself, whose WebContents content captures without the system; and the whole
+// screen where WebRTC's capturer reaches one (X11, macOS, Windows; not Wayland,
+// whose capture is PipeWire's, off in this build).
+bool ScreenCaptureAvailable() {
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+  return true;
+#elif BUILDFLAG(IS_LINUX)
+  return getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY");
+#else
+  return false;
+#endif
+}
+
+base::ListValue DisplaySources(content::WebContents* contents) {
+  base::ListValue list;
+  base::DictValue view;
+  view.Set("id", "view");
+  view.Set("kind", "view");
+  view.Set("name", base::UTF16ToUTF8(contents->GetTitle()));
+  list.Append(std::move(view));
+  if (ScreenCaptureAvailable()) {
+    base::DictValue screen;
+    screen.Set("id", "screen");
+    screen.Set("kind", "screen");
+    screen.Set("name", "Entire screen");
+    list.Append(std::move(screen));
+  }
+  return list;
+}
+
+void GrantDisplay(content::WeakDocumentPtr document, content::MediaStreamRequest request,
+                  content::MediaResponseCallback callback, MediaTraits::Decision decision) {
+  using Result = blink::mojom::MediaStreamRequestResult;
+  using Stream = blink::mojom::MediaStreamType;
+  auto* frame = document.AsRenderFrameHostIfValid();
+  if (!decision.allow || !frame || !frame->IsActive()) {
+    std::move(callback).Run(blink::mojom::StreamDevicesSet(), Result::PERMISSION_DENIED, nullptr);
+    return;
+  }
+  content::WebContents* contents = content::WebContents::FromRenderFrameHost(frame);
+  const std::string source = decision.video.value_or("");
+  content::DesktopMediaID chosen;
+  media::mojom::DisplayCaptureSurfaceType surface = media::mojom::DisplayCaptureSurfaceType::MONITOR;
+  std::string name;
+  if (source == "view" && contents) {
+    content::RenderFrameHost* main = contents->GetPrimaryMainFrame();
+    chosen = content::DesktopMediaID(
+        content::DesktopMediaID::TYPE_WEB_CONTENTS, content::DesktopMediaID::kNullId,
+        content::WebContentsMediaCaptureId(main->GetProcess()->GetDeprecatedID(), main->GetRoutingID()));
+    surface = media::mojom::DisplayCaptureSurfaceType::BROWSER;
+    name = base::UTF16ToUTF8(contents->GetTitle());
+  } else if (source == "screen" && ScreenCaptureAvailable()) {
+    // webrtc::kFullDesktopScreenId: every screen of the desktop.
+    chosen = content::DesktopMediaID(content::DesktopMediaID::TYPE_SCREEN, -1);
+    name = "Entire screen";
+  } else {
+    std::move(callback).Run(blink::mojom::StreamDevicesSet(), Result::INVALID_STATE, nullptr);
+    return;
+  }
+  // The view's sound with its picture, when the page asked and the application
+  // said so (an audio answer); the system's sound is not offered.
+  const bool audio = request.audio_type == Stream::DISPLAY_AUDIO_CAPTURE && decision.audio &&
+                     chosen.type == content::DesktopMediaID::TYPE_WEB_CONTENTS;
+  chosen.audio_share = audio;
+  auto information = [&] {
+    return media::mojom::DisplayMediaInformation::New(
+        surface, /*logical_surface=*/true,
+        surface == media::mojom::DisplayCaptureSurfaceType::BROWSER ? media::mojom::CursorCaptureType::MOTION
+                                                                     : media::mojom::CursorCaptureType::ALWAYS,
+        /*capture_handle=*/nullptr, /*initial_zoom_level=*/100);
+  };
+  auto stream = blink::mojom::StreamDevices::New();
+  blink::MediaStreamDevice video(Stream::DISPLAY_VIDEO_CAPTURE, chosen.ToString(), name);
+  video.display_media_info = information();
+  stream->video_device = std::move(video);
+  if (audio) {
+    blink::MediaStreamDevice sound(Stream::DISPLAY_AUDIO_CAPTURE, chosen.ToString(), name);
+    sound.display_media_info = information();
+    stream->audio_device = std::move(sound);
+  }
+  blink::mojom::StreamDevicesSet selected;
+  selected.stream_devices.push_back(std::move(stream));
+  std::move(callback).Run(selected, Result::OK, nullptr);
 }
 
 void GrantMedia(content::WeakDocumentPtr document, content::MediaStreamRequest request,
@@ -415,7 +528,35 @@ class Hooks : public Window::EmbedderHooks {
     auto* frame = content::RenderFrameHost::FromID(request.render_process_id, request.render_frame_id);
     const bool audio = request.audio_type == Stream::DEVICE_AUDIO_CAPTURE;
     const bool video = request.video_type == Stream::DEVICE_VIDEO_CAPTURE;
-    // Screen and tab capture need a chooser: the window's path refuses them.
+    // getDisplayMedia(): the application chooses the source.
+    if (request.video_type == Stream::DISPLAY_VIDEO_CAPTURE &&
+        (request.audio_type == Stream::NO_SERVICE || request.audio_type == Stream::DISPLAY_AUDIO_CAPTURE)) {
+      if (MediaRequests::OrphanedPopup(view) || !frame || !frame->IsActive() ||
+          content::WebContents::FromRenderFrameHost(frame) != contents ||
+          frame->GetLastCommittedOrigin() != request.url_origin ||
+          !frame->IsFeatureEnabled(network::mojom::PermissionsPolicyFeature::kDisplayCapture)) {
+        return refuse();
+      }
+      base::DictValue metadata;
+      metadata.Set("type", "display");
+      metadata.Set("audio", request.audio_type == Stream::DISPLAY_AUDIO_CAPTURE);
+      metadata.Set("video", true);
+      metadata.Set("origin", request.url_origin.Serialize());
+      metadata.Set("frameId", FrameId(frame));
+      metadata.Set("mainFrame", frame->IsInPrimaryMainFrame());
+      metadata.Set("userGesture", request.user_gesture);
+      metadata.Set("sources", DisplaySources(contents));
+      auto& requests = MediaRequests::Get();
+      const DocumentOf document{frame->GetWeakDocumentPtr(), frame->GetGlobalId()};
+      MediaRequests::Reply reply = base::BindOnce(&GrantDisplay, document.document, request, std::move(callback));
+      if (!requests.Ask(view, std::move(metadata), reply)) {
+        std::move(reply).Run(MediaTraits::Decision());
+        return true;
+      }
+      RememberDocument(requests, MediaDocuments(), document);
+      return true;
+    }
+    // Other screen and tab capture (an extension's) need a chooser: the window's path refuses them.
     if ((!audio && request.audio_type != Stream::NO_SERVICE) ||
         (!video && request.video_type != Stream::NO_SERVICE) || (!audio && !video)) {
       return false;
@@ -463,12 +604,15 @@ void InstallPageHooks() {
   FileRequests::Get().Start();
   MediaRequests::Get().Start();
   EyeDropperRequests::Get().Start();
+  DeviceRequests::Get().Start();
 }
 void StopPageHooks() {
   Window::SetEmbedderHooks(nullptr);
   FileRequests::Get().Stop();
   MediaRequests::Get().Stop();
   EyeDropperRequests::Get().Stop();
+  DeviceRequests::Get().Stop();
+  DeviceDocuments().clear();
   FileDocuments().clear();
   MediaDocuments().clear();
   EyeDropperDocuments().clear();
@@ -478,6 +622,8 @@ void CancelPageHookRequests(zebkit_view* view) {
   FileRequests::Get().CancelAll(view, "cancelled");
   if (weak) MediaRequests::Get().CancelAll(view, "cancelled");
   if (weak) EyeDropperRequests::Get().CancelAll(view, "cancelled");
+  if (weak) DeviceRequests::Get().CancelAll(view, "cancelled");
+  if (weak) CancelShareRequests(view);
   if (weak) CancelDownloadRequests(view);
   if (weak) CancelClientCertificateRequests(view);
   if (weak) CancelNetworkHookRequests(view);
@@ -489,6 +635,49 @@ void PageHooksFrameGone(zebkit_view* view, content::RenderFrameHost* frame) {
     SweepDocuments(MediaRequests::Get(), MediaDocuments(), view, frame);
   if (weak)
     SweepDocuments(EyeDropperRequests::Get(), EyeDropperDocuments(), view, frame);
+  if (weak)
+    SweepDocuments(DeviceRequests::Get(), DeviceDocuments(), view, frame);
+}
+
+std::optional<uintptr_t> AskDeviceChooser(content::RenderFrameHost* frame, const char* kind, base::Value filters,
+                                          base::ListValue devices, DeviceChoice& choice) {
+  zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
+  if (!view || DeviceRequests::OrphanedPopup(view) || !DeviceRequests::HasDecider(view))
+    return std::nullopt;
+  base::DictValue metadata;
+  metadata.Set("kind", kind);
+  metadata.Set("frameId", FrameId(frame));
+  metadata.Set("mainFrame", frame->IsInPrimaryMainFrame());
+  metadata.Set("origin", frame->GetLastCommittedOrigin().Serialize());
+  metadata.Set("filters", std::move(filters));
+  metadata.Set("devices", std::move(devices));
+  auto& requests = DeviceRequests::Get();
+  DeviceRequests::Reply reply = base::BindOnce(
+      [](DeviceChoice choice, DeviceTraits::Decision decision) { std::move(choice).Run(decision.id); },
+      std::move(choice));
+  if (!requests.Ask(view, std::move(metadata), reply)) {
+    // Too many waiting: none, after the chooser is made.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(reply), DeviceTraits::Decision()));
+    return 0;
+  }
+  RememberDocument(requests, DeviceDocuments(), {frame->GetWeakDocumentPtr(), frame->GetGlobalId()});
+  return requests.last_id();
+}
+
+void UpdateDeviceChooser(uintptr_t id, base::ListValue devices) {
+  auto& requests = DeviceRequests::Get();
+  if (!requests.Ready())
+    return;
+  if (auto* entry = requests.Find(id))
+    entry->metadata.Set("devices", std::move(devices));
+}
+
+void AbandonDeviceChooser(uintptr_t id) {
+  auto& requests = DeviceRequests::Get();
+  if (requests.Ready())
+    requests.Abandon(id);
+  DeviceDocuments().erase(id);
 }
 
 std::unique_ptr<content::EyeDropper> OpenEyeDropperHook(content::RenderFrameHost* frame,
@@ -626,6 +815,42 @@ bool zebkit_file_chooser_respond(zebkit_file_chooser_request* request, const cha
     decision.paths.push_back(std::move(file));
   }
   zebkit::FileDocuments().erase(id);
+  requests.Settle(id, std::move(decision), "answered");
+  return true;
+}
+void zebkit_view_on_device_chooser(zebkit_view* view, zebkit_device_chooser_func function, void* data) {
+  zebkit::DeviceRequests::Get().Install(view, function, data);
+}
+void zebkit_view_on_device_chooser_result(zebkit_view* view, zebkit_device_chooser_result_func function, void* data) {
+  zebkit::DeviceRequests::Get().Observe(view, function, data);
+}
+bool zebkit_view_set_device_chooser_timeout(zebkit_view* view, uint32_t milliseconds) {
+  return zebkit::DeviceRequests::Get().SetTimeout(view, milliseconds);
+}
+char* zebkit_device_chooser_request_info(zebkit_device_chooser_request* request) {
+  return zebkit::DeviceRequests::Get().Info(reinterpret_cast<uintptr_t>(request));
+}
+bool zebkit_device_chooser_respond(zebkit_device_chooser_request* request, const char* device_id) {
+  auto& requests = zebkit::DeviceRequests::Get();
+  if (!requests.Ready()) return false;
+  const auto id = reinterpret_cast<uintptr_t>(request);
+  auto* entry = requests.Find(id);
+  if (!entry) return false;
+  zebkit::DeviceTraits::Decision decision;
+  if (device_id) {
+    // Only a device the request lists now.
+    const base::ListValue* devices = entry->metadata.FindList("devices");
+    bool listed = false;
+    if (devices) {
+      for (const base::Value& device : *devices) {
+        const std::string* known = device.is_dict() ? device.GetDict().FindString("id") : nullptr;
+        listed |= known && *known == device_id;
+      }
+    }
+    if (!listed) return false;
+    decision.id = device_id;
+  }
+  zebkit::DeviceDocuments().erase(id);
   requests.Settle(id, std::move(decision), "answered");
   return true;
 }

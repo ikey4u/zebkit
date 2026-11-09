@@ -15,9 +15,12 @@
 #elif BUILDFLAG(IS_WIN)
 #include "net/ssl/client_cert_store_win.h"
 #endif
+#include "zebkit/engine/device_choosers.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/appearance.h"
 #include "zebkit/engine/sign_in_dialog.h"
+#include "zebkit/engine/share.h"
+#include "third_party/blink/public/platform/web_runtime_features.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include <signal.h>
@@ -702,6 +705,8 @@ void RendererClient::RenderThreadStarted() {
   // The page's locale is the system's, from base's first default ICU locale
   // (patches/1083), as Chrome's from l10n_util.
   RegisterSchemesInRenderer();
+  // navigator.share(), served by the browser's ShareService (share.h).
+  blink::WebRuntimeFeatures::EnableWebShare(true);
 }
 
 std::variant<int, content::MainFunctionParams> MainDelegate::RunProcess(
@@ -986,6 +991,17 @@ bool BrowserClient::CanCreateWindow(
 // drive.
 std::string BrowserClient::GetProduct() {
   return std::string(version_info::GetProductNameAndVersionForUserAgent());
+}
+
+// WebUSB, WebHID, Web Serial: their choosers are the application's (device_choosers.h).
+content::UsbDelegate* BrowserClient::GetUsbDelegate() {
+  return UsbChooserDelegate();
+}
+content::HidDelegate* BrowserClient::GetHidDelegate() {
+  return HidChooserDelegate();
+}
+content::SerialDelegate* BrowserClient::GetSerialDelegate() {
+  return SerialChooserDelegate();
 }
 
 content::WebAuthenticationDelegate* BrowserClient::GetWebAuthenticationDelegate() {
@@ -1366,6 +1382,7 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InstallHttpAuthHooks();
   InstallNavigationHooks();
   InstallPageHooks();
+  InstallShareHooks();
   InstallDownloadHooks();
   StartRuntimeSettings();
   InstallClientCertificateHooks();
@@ -1397,6 +1414,7 @@ void BrowserMainParts::PostMainMessageLoopRun() {
   StopCertificateHooks();
   StopHttpAuthHooks();
   StopPageHooks();
+  StopShareHooks();
   StopRuntimeSettings();
   StopDownloadHooks();
   StopClientCertificateHooks();

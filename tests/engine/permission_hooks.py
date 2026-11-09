@@ -385,7 +385,8 @@ try:
     assert public_results[-1]['reason'] == 'answered'
     first.on_permission_result(None)
     on_permission(first._check(), PERMISSION(), None)
-    assert evaluate(first, "permissionState('notifications')") == 'denied'
+    # Notifications are undecided without a decision (docs/SYSTEM_INTEGRATION.md, 12).
+    assert evaluate(first, "permissionState('notifications')") == 'prompt'
     print('ok native permission hooks: real requests, fake coordinates, rules/subscriptions, once/remember, deadlines, navigation, OOPIF, handler replacement and actor ordering', flush=True)
 finally:
     assert zebkit.shutdown()

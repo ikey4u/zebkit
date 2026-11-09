@@ -23,7 +23,7 @@ thread_local! {
     static PERMISSION_DONE: Cell<bool> = const { Cell::new(false) };
     static AUTHENTICATION_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
-    static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
+    static CAPTURED: RefCell<std::path::PathBuf> = const { RefCell::new(std::path::PathBuf::new()) };
     static FAILED: Cell<u32> = const { Cell::new(0) };
     static PASSED: Cell<u32> = const { Cell::new(0) };
 }
@@ -658,6 +658,23 @@ fn script_and_cdp(view: View) {
         |_| {},
     );
     check(menu.is_ok(), "app: the menu", &menu);
+    let updated = zebkit::app::update_menu_item("open", r#"{"enabled": false}"#);
+    check(updated.is_ok() && zebkit::app::menu().is_some_and(|menu| menu.contains("open")), "app: a menu item changed in place", &updated);
+    check(zebkit::app::set_badge(Some("3")) && zebkit::app::set_badge(None), "app: a badge, then none", ());
+    check(zebkit::app::set_progress(Some(0.5)) && !zebkit::app::set_progress(Some(2.0)), "app: a progress; past 1 refused", ());
+    let dock = zebkit::app::set_dock_menu(r#"[{"title": "New", "id": "new"}]"#, |_| {});
+    check(dock.is_ok() == cfg!(target_os = "macos"), "app: the Dock's menu is macOS's", &dock);
+    let tray = zebkit::Tray::new(b"not a png", "nothing");
+    check(tray.is_err(), "a tray icon that is not a PNG is refused", tray.as_ref().err());
+    let displays = zebkit::system::displays();
+    check(displays.as_deref().is_some_and(|list| list.starts_with('[')), "system: the displays", &displays);
+    let token = zebkit::system::prevent_sleep("the Rust test", false);
+    check(token.is_some_and(zebkit::system::allow_sleep) && token.is_some_and(|token| !zebkit::system::allow_sleep(token)),
+          "system: sleep prevented, then allowed once", token);
+    let refused = zebkit::system::open_external("javascript:alert(1)");
+    check(refused.is_err(), "system: a javascript: URL is not opened", &refused);
+    zebkit::system::on_power_event(Some(|_: &str| {}));
+    zebkit::system::on_power_event(None::<fn(&str)>);
     zebkit::app::on_open_files(|_| {});
     zebkit::app::on_reopen(|| {});
 

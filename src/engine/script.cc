@@ -25,6 +25,7 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
+#include "base/no_destructor.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
@@ -296,6 +297,20 @@ constexpr char kBootstrap[] = R"js((function (native) {
     onMediaAccess(fn) { return this.#asked('media-access', fn, (id, allow = false, audioDevice = null, videoDevice = null) => native.hookRequest('media-access', 'respond', id, !!allow, audioDevice, videoDevice)); }
     onMediaAccessResult(fn) { return this.#told('media-access-result', fn); }
     setMediaAccessTimeout(ms) { return native.viewHookTimeout(this.#id, 'media-access', ms); }
+    onEyeDropper(fn) { return this.#asked('eye-dropper', fn, (id, color = null) => native.hookRequest('eye-dropper', 'respond', id, color)); }
+    onEyeDropperResult(fn) { return this.#told('eye-dropper-result', fn); }
+    setEyeDropperTimeout(ms) { return native.viewHookTimeout(this.#id, 'eye-dropper', ms); }
+    onShare(fn) { return this.#asked('share', fn, (id, shared = false) => native.hookRequest('share', 'respond', id, !!shared)); }
+    onShareResult(fn) { return this.#told('share-result', fn); }
+    setShareTimeout(ms) { return native.viewHookTimeout(this.#id, 'share', ms); }
+    onDeviceChooser(fn) { return this.#asked('device-chooser', fn, (id, deviceId = null) => native.hookRequest('device-chooser', 'respond', id, deviceId)); }
+    onDeviceChooserResult(fn) { return this.#told('device-chooser-result', fn); }
+    setDeviceChooserTimeout(ms) { return native.viewHookTimeout(this.#id, 'device-chooser', ms); }
+    contextMenuRun(menuId, command) { return native.viewHookCall(this.#id, 'context-menu-run', String(menuId), String(command)); }
+    contextMenuShow(menuId, items = null, fn = null) {
+      if (fn !== null && typeof fn !== 'function') throw new TypeError('a context menu function must be a function or null');
+      return native.viewHookCall(this.#id, 'context-menu-show', String(menuId), items === null ? null : JSON.stringify(items), fn);
+    }
     setReservedKeys(keys) { return native.viewHookCall(this.#id, 'reserved-keys', JSON.stringify(keys)); }
     onReservedKey(fn) { return this.#told('reserved-key', fn); }
     onContextMenu(fn) { return this.#told('context-menu', fn); }
@@ -358,6 +373,36 @@ constexpr char kBootstrap[] = R"js((function (native) {
     // What the system says of how things should look; its changes to fn.
     environment: () => native.environment(),
     onEnvironmentChanged: (fn) => native.onEnvironmentChanged(typeof fn === 'function' ? fn : null),
+    // The system's services for the application (docs/SYSTEM_INTEGRATION.md, 12 to 14).
+    displays: () => native.system('displays'),
+    onDisplaysChanged: (fn) => native.onSystem('displays', typeof fn === 'function' ? fn : null),
+    onPowerEvent: (fn) => native.onSystem('power', typeof fn === 'function' ? fn : null),
+    preventSleep: (reason, keepDisplayOn = false) => native.system('prevent-sleep', String(reason), !!keepDisplayOn),
+    allowSleep: (token) => native.system('allow-sleep', String(token)),
+    openExternal: (url) => native.system('open-external', String(url)),
+    showInFolder: (path) => native.system('show-in-folder', String(path)),
+    onNotification: (fn) => native.onSystem('notification', typeof fn === 'function' ? fn : null),
+    notificationClicked: (id, action = -1) => native.system('notification-clicked', String(id), Number(action)),
+    notificationClosed: (id, byUser = true) => native.system('notification-closed', String(id), !!byUser),
+    app: Object.freeze({
+      setMenu: (menu, fn) => native.system('set-menu', JSON.stringify(menu), fn),
+      updateMenuItem: (id, state) => native.system('update-menu-item', String(id), JSON.stringify(state)),
+      menu: () => native.system('menu'),
+      setBadge: (text) => native.system('set-badge', text == null ? '' : String(text)),
+      setProgress: (progress) => native.system('set-progress', progress == null ? -1 : Number(progress)),
+      requestAttention: (critical = false) => native.system('request-attention', !!critical),
+      setDockMenu: (items, fn) => native.system('set-dock-menu', JSON.stringify(items), fn),
+    }),
+    // A tray icon: a PNG's bytes and a tooltip; its menu takes app.setMenu()'s items.
+    Tray: class Tray {
+      #id;
+      constructor(png, tooltip = '') { this.#id = native.system('tray-new', png, String(tooltip)); }
+      setIcon(png) { return native.system('tray-icon', this.#id, png); }
+      setTooltip(text) { return native.system('tray-tooltip', this.#id, String(text)); }
+      setMenu(items, fn) { return native.system('tray-menu', this.#id, JSON.stringify(items), fn); }
+      onClick(fn) { return native.system('tray-click', this.#id, typeof fn === 'function' ? fn : null); }
+      close() { return native.system('tray-close', this.#id); }
+    },
     View,
     setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
     get engineSettings() { return JSON.parse(native.engineSettings()); },
@@ -630,7 +675,15 @@ struct zebkit_script {
   static void Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void Environment(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void OnEnvironmentChanged(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void System(const v8::FunctionCallbackInfo<v8::Value>& info);
+  static void OnSystem(const v8::FunctionCallbackInfo<v8::Value>& info);
+  // A system event or a chosen menu item to the script's function for @kind.
+  static void DeliverSystem(void* data, const std::string& kind, const char* text, bool json);
   v8::Global<v8::Function> environment_function_;
+  // onSystem()'s functions, and the menus' and trays' ("app-menu", "tray-menu:<id>", ...).
+  std::map<std::string, v8::Global<v8::Function>> system_functions_;
+  std::map<uint64_t, zebkit_tray*> trays_;
+  uint64_t next_tray_ = 1;
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -734,6 +787,14 @@ zebkit_script::~zebkit_script() {
   // The engine's function for the environment holds this script.
   if (!environment_function_.IsEmpty())
     zebkit_on_environment_changed(nullptr, nullptr);
+  // What the system would tell this script, and its trays.
+  if (system_functions_.contains("power")) zebkit_on_power_event(nullptr, nullptr);
+  if (system_functions_.contains("displays")) zebkit_on_displays_changed(nullptr, nullptr);
+  if (system_functions_.contains("notification")) zebkit_on_notification(nullptr, nullptr);
+  if (system_functions_.contains("app-menu")) zebkit_app_set_menu("[]", nullptr, nullptr, nullptr);
+  if (system_functions_.contains("dock-menu")) zebkit_app_set_dock_menu("[]", nullptr, nullptr, nullptr);
+  for (const auto& [id, tray] : trays_) zebkit_tray_close(tray);
+  trays_.clear();
   // Its views stay, and must not wait on a handler that is gone: a pending
   // navigation would stall until its deadline. A setter can close a view.
   std::vector<base::WeakPtr<zebkit_view>> kept;
@@ -766,6 +827,7 @@ zebkit_script::~zebkit_script() {
     // this would release theirs into an isolate that is gone.
     ui_listener_.Reset();
     view_factory_.Reset();
+    system_functions_.clear();
     context_.Reset();
   }
   holder_.reset();
@@ -795,6 +857,8 @@ void zebkit_script::Install() {
   SetMethod(native, "capabilities", &Capabilities);
   SetMethod(native, "environment", &Environment);
   SetMethod(native, "onEnvironmentChanged", &OnEnvironmentChanged);
+  SetMethod(native, "system", &System);
+  SetMethod(native, "onSystem", &OnSystem);
   SetMethod(native, "setViewFactory", &SetViewFactory);
   SetMethod(native, "viewWindowOpenInfo", &ViewAction<Action::kWindowOpenInfo>);
   SetMethod(native, "viewNativeWindow", &ViewNativeWindow);
@@ -1194,6 +1258,207 @@ void zebkit_script::OnEnvironmentChanged(const v8::FunctionCallbackInfo<v8::Valu
           script->CallFunction(script->environment_function_.Get(script->isolate()), {value});
       },
       self);
+}
+
+namespace {
+void PermissionTypeError(v8::Isolate* isolate, const char* text);
+}  // namespace
+
+void zebkit_script::DeliverSystem(void* data, const std::string& kind, const char* text, bool json) {
+  auto* script = static_cast<zebkit_script*>(data);
+  auto it = script->system_functions_.find(kind);
+  if (it == script->system_functions_.end() || it->second.IsEmpty()) return;
+  Scope scope(script);
+  auto* isolate = script->isolate();
+  v8::Local<v8::Value> argument = String8(isolate, text ? text : "");
+  if (json && !v8::JSON::Parse(script->context(), argument.As<v8::String>()).ToLocal(&argument))
+    argument = v8::Null(isolate);
+  script->CallFunction(it->second.Get(isolate), {argument});
+}
+
+namespace {
+
+// A PNG's bytes from a Uint8Array or an ArrayBuffer.
+bool Bytes(v8::Local<v8::Value> value, std::string* out) {
+  if (value->IsArrayBufferView()) {
+    auto view = value.As<v8::ArrayBufferView>();
+    out->resize(view->ByteLength());
+    view->CopyContents(out->data(), out->size());
+    return true;
+  }
+  if (value->IsArrayBuffer()) {
+    auto buffer = value.As<v8::ArrayBuffer>();
+    out->assign(static_cast<const char*>(buffer->Data()), buffer->ByteLength());
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+void zebkit_script::OnSystem(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  auto* isolate = info.GetIsolate();
+  const std::string kind = Utf8(isolate, info[0]);
+  const bool set = info[1]->IsFunction();
+  if (set)
+    self->system_functions_[kind].Reset(isolate, info[1].As<v8::Function>());
+  else
+    self->system_functions_.erase(kind);
+  void* data = set ? self : nullptr;
+  if (kind == "power") {
+    zebkit_on_power_event(set ? +[](const char* json, void* data) { DeliverSystem(data, "power", json, true); }
+                              : nullptr, data);
+  } else if (kind == "displays") {
+    zebkit_on_displays_changed(set ? +[](const char* json, void* data) { DeliverSystem(data, "displays", json, true); }
+                                   : nullptr, data);
+  } else if (kind == "notification") {
+    zebkit_on_notification(set ? +[](const char* json, void* data) { DeliverSystem(data, "notification", json, true); }
+                               : nullptr, data);
+  } else {
+    self->system_functions_.erase(kind);
+    PermissionTypeError(isolate, "unknown system event");
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void zebkit_script::System(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  auto* isolate = info.GetIsolate();
+  const std::string kind = Utf8(isolate, info[0]);
+  char* error = nullptr;
+  auto finish = [&](bool ok, const char* otherwise) {
+    if (!ok) {
+      PermissionTypeError(isolate, error ? error : otherwise);
+      zebkit_free(error);
+      return;
+    }
+    info.GetReturnValue().Set(true);
+  };
+  auto json = [&](char* text) {
+    v8::Local<v8::Value> value = v8::Null(isolate);
+    v8::Local<v8::Value> parsed;
+    if (text && v8::JSON::Parse(isolate->GetCurrentContext(), String8(isolate, text)).ToLocal(&parsed)) value = parsed;
+    zebkit_free(text);
+    info.GetReturnValue().Set(value);
+  };
+  // A menu's function, kept as @key's; a chosen item's id reaches it.
+  auto menu_function = [&](int index, const std::string& key) {
+    if (info[index]->IsFunction())
+      self->system_functions_[key].Reset(isolate, info[index].As<v8::Function>());
+    else
+      self->system_functions_.erase(key);
+  };
+  auto tray = [&]() -> zebkit_tray* {
+    uint64_t id = info[1]->IsNumber() ? static_cast<uint64_t>(info[1].As<v8::Number>()->Value()) : 0;
+    auto it = self->trays_.find(id);
+    if (it == self->trays_.end()) { PermissionTypeError(isolate, "the tray is closed"); return nullptr; }
+    return it->second;
+  };
+  if (kind == "displays") return json(zebkit_get_displays());
+  if (kind == "menu") return json(zebkit_app_get_menu());
+  if (kind == "prevent-sleep") {
+    const uint64_t token = zebkit_prevent_sleep(info[2]->IsTrue(), Utf8(isolate, info[1]).c_str());
+    if (!token) { PermissionTypeError(isolate, "the system was not kept awake"); return; }
+    info.GetReturnValue().Set(String8(isolate, base::NumberToString(token).c_str()));
+    return;
+  }
+  if (kind == "allow-sleep") {
+    uint64_t token = 0;
+    info.GetReturnValue().Set(base::StringToUint64(Utf8(isolate, info[1]), &token) && zebkit_allow_sleep(token));
+    return;
+  }
+  if (kind == "open-external") return finish(zebkit_open_external(Utf8(isolate, info[1]).c_str(), &error), "not opened");
+  if (kind == "show-in-folder") return finish(zebkit_show_in_folder(Utf8(isolate, info[1]).c_str(), &error), "not shown");
+  if (kind == "notification-clicked") {
+    const int action = info[2]->IsNumber() ? static_cast<int>(info[2].As<v8::Number>()->Value()) : -1;
+    info.GetReturnValue().Set(zebkit_notification_clicked(Utf8(isolate, info[1]).c_str(), action));
+    return;
+  }
+  if (kind == "notification-closed") {
+    info.GetReturnValue().Set(zebkit_notification_closed(Utf8(isolate, info[1]).c_str(), info[2]->IsTrue()));
+    return;
+  }
+  if (kind == "set-badge") { info.GetReturnValue().Set(zebkit_app_set_badge(Utf8(isolate, info[1]).c_str())); return; }
+  if (kind == "set-progress") {
+    info.GetReturnValue().Set(zebkit_app_set_progress(info[1]->IsNumber() ? info[1].As<v8::Number>()->Value() : -1));
+    return;
+  }
+  if (kind == "request-attention") { zebkit_app_request_attention(info[1]->IsTrue()); info.GetReturnValue().Set(true); return; }
+  if (kind == "set-menu") {
+    menu_function(2, "app-menu");
+    return finish(zebkit_app_set_menu(Utf8(isolate, info[1]).c_str(),
+                                      [](const char* id, void* data) { DeliverSystem(data, "app-menu", id, false); },
+                                      self, &error), "the menu was refused");
+  }
+  if (kind == "set-dock-menu") {
+    menu_function(2, "dock-menu");
+    return finish(zebkit_app_set_dock_menu(Utf8(isolate, info[1]).c_str(),
+                                           [](const char* id, void* data) { DeliverSystem(data, "dock-menu", id, false); },
+                                           self, &error), "the Dock's menu was refused");
+  }
+  if (kind == "update-menu-item")
+    return finish(zebkit_app_update_menu_item(Utf8(isolate, info[1]).c_str(), Utf8(isolate, info[2]).c_str(), &error),
+                  "the menu item was not changed");
+  if (kind == "tray-new") {
+    std::string png;
+    if (!Bytes(info[1], &png)) { PermissionTypeError(isolate, "a tray's icon is a PNG's bytes"); return; }
+    zebkit_tray* made = zebkit_tray_new(reinterpret_cast<const uint8_t*>(png.data()), png.size(),
+                                        Utf8(isolate, info[2]).c_str(), &error);
+    if (!made) return finish(false, "the tray was refused");
+    const uint64_t id = self->next_tray_++;
+    self->trays_[id] = made;
+    info.GetReturnValue().Set(static_cast<double>(id));
+    return;
+  }
+  if (kind == "tray-icon") {
+    zebkit_tray* found = tray();
+    std::string png;
+    if (!found) return;
+    if (!Bytes(info[2], &png)) { PermissionTypeError(isolate, "a tray's icon is a PNG's bytes"); return; }
+    return finish(zebkit_tray_set_icon(found, reinterpret_cast<const uint8_t*>(png.data()), png.size(), &error),
+                  "the icon was refused");
+  }
+  if (kind == "tray-tooltip") {
+    zebkit_tray* found = tray();
+    if (!found) return;
+    zebkit_tray_set_tooltip(found, Utf8(isolate, info[2]).c_str());
+    info.GetReturnValue().Set(true);
+    return;
+  }
+  if (kind == "tray-menu" || kind == "tray-click") {
+    zebkit_tray* found = tray();
+    if (!found) return;
+    // One function of each per tray, by the tray's number.
+    const std::string key = kind + ":" + base::NumberToString(static_cast<uint64_t>(info[1].As<v8::Number>()->Value()));
+    struct Target { base::WeakPtr<zebkit_script> script; std::string key; };
+    static base::NoDestructor<std::map<std::string, Target>> targets;
+    menu_function(kind == "tray-menu" ? 3 : 2, key);
+    Target& target = (*targets)[key];
+    target = {self->weak_factory_.GetWeakPtr(), key};
+    if (kind == "tray-click") {
+      zebkit_tray_on_click(found, [](void* data) {
+        auto* target = static_cast<Target*>(data);
+        if (target->script) DeliverSystem(target->script.get(), target->key, "", false);
+      }, &target);
+      info.GetReturnValue().Set(true);
+      return;
+    }
+    return finish(zebkit_tray_set_menu(found, Utf8(isolate, info[2]).c_str(), [](const char* id, void* data) {
+      auto* target = static_cast<Target*>(data);
+      if (target->script) DeliverSystem(target->script.get(), target->key, id, false);
+    }, &target, &error), "the menu was refused");
+  }
+  if (kind == "tray-close") {
+    zebkit_tray* found = tray();
+    if (!found) return;
+    zebkit_tray_close(found);
+    self->trays_.erase(static_cast<uint64_t>(info[1].As<v8::Number>()->Value()));
+    info.GetReturnValue().Set(true);
+    return;
+  }
+  PermissionTypeError(isolate, "unknown system call");
 }
 
 void zebkit_script::Capabilities(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -1697,6 +1962,12 @@ void zebkit_script::ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& 
   ZEBKIT_TOLD_HOOK("file-chooser-result", zebkit_view_on_file_chooser_result)
   ZEBKIT_ASKED_HOOK("media-access", zebkit_view_on_media_access, zebkit_media_access_request)
   ZEBKIT_TOLD_HOOK("media-access-result", zebkit_view_on_media_access_result)
+  ZEBKIT_ASKED_HOOK("eye-dropper", zebkit_view_on_eye_dropper, zebkit_eye_dropper_request)
+  ZEBKIT_TOLD_HOOK("eye-dropper-result", zebkit_view_on_eye_dropper_result)
+  ZEBKIT_ASKED_HOOK("share", zebkit_view_on_share, zebkit_share_request)
+  ZEBKIT_TOLD_HOOK("share-result", zebkit_view_on_share_result)
+  ZEBKIT_ASKED_HOOK("device-chooser", zebkit_view_on_device_chooser, zebkit_device_chooser_request)
+  ZEBKIT_TOLD_HOOK("device-chooser-result", zebkit_view_on_device_chooser_result)
   ZEBKIT_TOLD_HOOK("reserved-key", zebkit_view_on_reserved_key)
   ZEBKIT_TOLD_HOOK("context-menu", zebkit_view_on_context_menu)
   ZEBKIT_TOLD_HOOK("fullscreen", zebkit_view_on_fullscreen)
@@ -1715,7 +1986,10 @@ void zebkit_script::ViewHookTimeout(const v8::FunctionCallbackInfo<v8::Value>& i
       : kind == "download" ? zebkit_view_set_download_timeout(entry->view, ms)
       : kind == "client-certificate" ? zebkit_view_set_client_certificate_timeout(entry->view, ms)
       : kind == "file-chooser" ? zebkit_view_set_file_chooser_timeout(entry->view, ms)
-      : kind == "media-access" ? zebkit_view_set_media_access_timeout(entry->view, ms) : false;
+      : kind == "media-access" ? zebkit_view_set_media_access_timeout(entry->view, ms)
+      : kind == "eye-dropper" ? zebkit_view_set_eye_dropper_timeout(entry->view, ms)
+      : kind == "share" ? zebkit_view_set_share_timeout(entry->view, ms)
+      : kind == "device-chooser" ? zebkit_view_set_device_chooser_timeout(entry->view, ms) : false;
   if (!ok) { PermissionTypeError(isolate, "a deadline is from 1 to 300000"); return; }
   info.GetReturnValue().Set(true);
 }
@@ -1753,6 +2027,24 @@ void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info
     return;
   } else if (kind == "reserved-keys") {
     ok = zebkit_view_set_reserved_keys(entry->view, Utf8(isolate, info[2]).c_str(), &error);
+  } else if (kind == "context-menu-run" || kind == "context-menu-show") {
+    uint64_t menu = 0;
+    if (!base::StringToUint64(Utf8(isolate, info[2]), &menu)) { PermissionTypeError(isolate, "invalid menu id"); return; }
+    if (kind == "context-menu-run") {
+      ok = zebkit_view_context_menu_run(entry->view, menu, Utf8(isolate, info[3]).c_str(), &error);
+    } else {
+      // The application's items' choice to fn, as a told hook's event.
+      const std::string items = info[3]->IsString() ? Utf8(isolate, info[3]) : std::string();
+      entry->handlers.erase("context-menu-item");
+      if (info[4]->IsFunction()) entry->handlers["context-menu-item"].Reset(isolate, info[4].As<v8::Function>());
+      ok = zebkit_view_context_menu_show(
+          entry->view, menu, info[3]->IsString() ? items.c_str() : nullptr,
+          info[4]->IsFunction() ? +[](zebkit_view*, const char* item, void* data) {
+            const std::string json = base::WriteJson(base::Value(item ? item : "")).value_or("\"\"");
+            DeliverHook(data, "context-menu-item", json.c_str());
+          } : nullptr,
+          entry->hook, &error);
+    }
   } else if (kind == "fullscreen-policy") {
     const auto policy = Utf8(isolate, info[2]);
     ok = (policy == "allow" || policy == "deny") &&
@@ -1807,7 +2099,11 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
         : kind == "download" ? zebkit_download_request_info(static_cast<zebkit_download_request*>(request))
         : kind == "client-certificate" ? zebkit_client_certificate_request_info(static_cast<zebkit_client_certificate_request*>(request))
         : kind == "file-chooser" ? zebkit_file_chooser_request_info(static_cast<zebkit_file_chooser_request*>(request))
-        : kind == "media-access" ? zebkit_media_access_request_info(static_cast<zebkit_media_access_request*>(request)) : nullptr;
+        : kind == "media-access" ? zebkit_media_access_request_info(static_cast<zebkit_media_access_request*>(request))
+        : kind == "eye-dropper" ? zebkit_eye_dropper_request_info(static_cast<zebkit_eye_dropper_request*>(request))
+        : kind == "share" ? zebkit_share_request_info(static_cast<zebkit_share_request*>(request))
+        : kind == "device-chooser" ? zebkit_device_chooser_request_info(static_cast<zebkit_device_chooser_request*>(request))
+        : nullptr;
     v8::Local<v8::Value> value = v8::Null(isolate);
     if (json) {
       v8::Local<v8::Value> parsed;
@@ -1888,6 +2184,16 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     if (!optional(4, &first) || !optional(5, &second)) { PermissionTypeError(isolate, "a device id is a string"); return; }
     ok = zebkit_media_access_respond(static_cast<zebkit_media_access_request*>(request), info[3]->IsTrue(),
         info[4]->IsString() ? first.c_str() : nullptr, info[5]->IsString() ? second.c_str() : nullptr);
+  } else if (kind == "eye-dropper") {
+    if (!optional(3, &first)) { PermissionTypeError(isolate, "a colour is \"#rrggbb\" or null"); return; }
+    ok = zebkit_eye_dropper_respond(static_cast<zebkit_eye_dropper_request*>(request),
+                                    info[3]->IsString() ? first.c_str() : nullptr);
+  } else if (kind == "share") {
+    ok = zebkit_share_respond(static_cast<zebkit_share_request*>(request), info[3]->IsTrue());
+  } else if (kind == "device-chooser") {
+    if (!optional(3, &first)) { PermissionTypeError(isolate, "a device id is a string or null"); return; }
+    ok = zebkit_device_chooser_respond(static_cast<zebkit_device_chooser_request*>(request),
+                                       info[3]->IsString() ? first.c_str() : nullptr);
   }
   info.GetReturnValue().Set(ok);
 }

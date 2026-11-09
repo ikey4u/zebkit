@@ -41,7 +41,8 @@ __all__ = [
     "Pdf", "RENDER_ANNOTATIONS", "RENDER_FORMS", "RENDER_LCD_TEXT", "RENDER_GRAYSCALE", "RENDER_PRINTING",
     "RENDER_NO_SMOOTHING", "Request", "scheme_register", "scheme_handle",
     "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
-    "app_set_menu", "app_update_menu_item", "app_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
+    "app_set_menu", "app_update_menu_item", "app_menu", "app_set_badge", "app_set_progress",
+    "app_request_attention", "app_set_dock_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -276,6 +277,16 @@ _view_on_eye_dropper_result = _declare("zebkit_view_on_eye_dropper_result", None
 _view_eye_dropper_timeout = _declare("zebkit_view_set_eye_dropper_timeout", _B, _V, ctypes.c_uint32)
 _eye_dropper_info = _declare("zebkit_eye_dropper_request_info", _P, _P)
 _eye_dropper_respond = _declare("zebkit_eye_dropper_respond", _B, _P, _S)
+_view_on_device_chooser = _declare("zebkit_view_on_device_chooser", None, _V, _ASKED, _P)
+_view_on_device_chooser_result = _declare("zebkit_view_on_device_chooser_result", None, _V, _TOLD, _P)
+_view_device_chooser_timeout = _declare("zebkit_view_set_device_chooser_timeout", _B, _V, ctypes.c_uint32)
+_device_chooser_info = _declare("zebkit_device_chooser_request_info", _P, _P)
+_device_chooser_respond = _declare("zebkit_device_chooser_respond", _B, _P, _S)
+_view_on_share = _declare("zebkit_view_on_share", None, _V, _ASKED, _P)
+_view_on_share_result = _declare("zebkit_view_on_share_result", None, _V, _TOLD, _P)
+_view_share_timeout = _declare("zebkit_view_set_share_timeout", _B, _V, ctypes.c_uint32)
+_share_info = _declare("zebkit_share_request_info", _P, _P)
+_share_respond = _declare("zebkit_share_respond", _B, _P, _B)
 _file_chooser_respond = _declare("zebkit_file_chooser_respond", _B, _P, ctypes.POINTER(ctypes.c_char_p), _Z, _P)
 _view_on_media_access = _declare("zebkit_view_on_media_access", None, _V, _ASKED, _P)
 _view_on_media_access_result = _declare("zebkit_view_on_media_access_result", None, _V, _TOLD, _P)
@@ -340,6 +351,25 @@ class EyeDropperRequest(_Request):
     def respond(self, color=None):
         """respond("#rrggbb") gives the page that colour; respond() cancels."""
         return bool(_eye_dropper_respond(self._handle, color.encode() if color else None))
+
+
+class DeviceChooserRequest(_Request):
+    """navigator.usb.requestDevice(), navigator.hid.requestDevice(),
+    navigator.serial.requestPort(): metadata["kind"], ["devices"] (info has the
+    list as it is now)."""
+    _info = _device_chooser_info
+
+    def respond(self, device_id=None):
+        """respond(id) gives the page that device; respond() gives none."""
+        return bool(_device_chooser_respond(self._handle, device_id.encode() if device_id else None))
+
+
+class ShareRequest(_Request):
+    _info = _share_info
+
+    def respond(self, shared=True):
+        """respond(True): shared; respond(False): cancelled (AbortError)."""
+        return bool(_share_respond(self._handle, bool(shared)))
 
 
 class ClientCertificateRequest(_Request):
@@ -666,7 +696,7 @@ def notification_closed(notification_id, by_user=True):
 
 
 def on_power_event(function):
-    """function(dict): suspend, resume, power-source."""
+    """function(dict): suspend, resume, power-source, lock, unlock."""
     _json_event("power", _on_power_event, function)
 
 
@@ -1211,6 +1241,24 @@ class View:
         """function(EyeDropperRequest) for the page's EyeDropper.open(); without
         one it is cancelled."""
         self._asked('eye-dropper', _view_on_eye_dropper, EyeDropperRequest, function)
+
+    def on_device_chooser(self, function):
+        """function(DeviceChooserRequest) for the page's USB, HID and serial
+        choosers; without one the page gets no device."""
+        self._asked('device-chooser', _view_on_device_chooser, DeviceChooserRequest, function)
+
+    def on_device_chooser_result(self, function):
+        self._told('device-chooser-result', _view_on_device_chooser_result, function)
+
+    def set_device_chooser_timeout(self, milliseconds):
+        self._deadline(_view_device_chooser_timeout, milliseconds)
+
+    def on_share(self, function):
+        """function(ShareRequest) for the page's navigator.share()."""
+        self._asked('share', _view_on_share, ShareRequest, function)
+
+    def set_share_timeout(self, milliseconds):
+        self._deadline(_view_share_timeout, milliseconds)
 
     def on_file_chooser_result(self, function):
         self._told('file-chooser-result', _view_on_file_chooser_result, function)
@@ -1913,8 +1961,41 @@ _app_get_menu = _declare("zebkit_app_get_menu", _P)
 _app_on_open_files = _declare("zebkit_app_on_open_files", None, _PATHS, _P)
 _app_on_reopen = _declare("zebkit_app_on_reopen", None, _APP, _P)
 _app_on_quit_request = _declare("zebkit_app_on_quit_request", None, _APP, _P)
+_app_set_badge = _declare("zebkit_app_set_badge", _B, _S)
+_app_set_progress = _declare("zebkit_app_set_progress", _B, ctypes.c_double)
+_app_request_attention = _declare("zebkit_app_request_attention", None, _B)
+_app_set_dock_menu = _declare("zebkit_app_set_dock_menu", _B, _S, _MENU, _P, _EP)
 # The application's callbacks, one of each, as the engine holds them.
 _app_callbacks = {}
+
+
+def app_set_badge(text):
+    """The badge on the application's icon in the Dock or on the taskbar; a
+    number on Linux's launcher docks; "" or None for none."""
+    return bool(_app_set_badge((text or "").encode()))
+
+
+def app_set_progress(progress):
+    """A progress from 0 to 1 on the application's icon; None (or below 0)
+    for none."""
+    return bool(_app_set_progress(-1.0 if progress is None else float(progress)))
+
+
+def app_request_attention(critical=False):
+    """The Dock's bounce (critical: until the application is active) or the
+    taskbar button's flash; urgent on Linux's launcher docks."""
+    _app_request_attention(bool(critical))
+
+
+def app_set_dock_menu(items, function):
+    """The Dock's menu (macOS): items as app_set_menu's; function(id) for one
+    chosen. Raises elsewhere."""
+    text = items if isinstance(items, str) else json.dumps(items)
+    callback = _MENU(_guard(lambda item, data: function(item.decode())))
+    error = ctypes.c_void_p()
+    if not _app_set_dock_menu(text.encode(), callback, None, ctypes.byref(error)):
+        _raise(error, "the Dock's menu was refused")
+    _app_callbacks["dock"] = callback
 
 
 def app_set_menu(menu, function):

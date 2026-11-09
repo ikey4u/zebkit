@@ -151,7 +151,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `app.lifecycle`: ready, quit request, reopen, files opened | `zebkit_main()` ready callback, `zebkit_app_on_quit_request`, `zebkit_app_on_reopen` (macOS), `zebkit_app_on_open_files` (macOS from Finder and Dock; elsewhere program arguments) | done on macOS; partial elsewhere (no single-instance hand-over of files: by design the host's) |
 | `app.open-url`: a URL the system gives the application (`myapp://`) | not received | gap |
 | `app.menu`: the application's menu | `zebkit_app_set_menu()` with roles, `enabled`, `checked`, `radioGroup`; `zebkit_app_update_menu_item()` by id, `zebkit_app_get_menu()`; the macOS menu bar; elsewhere the items' keys (a menu bar there is the application's, section 8) | done |
-| `app.dock`: Dock menu, badge, progress; taskbar on Windows | none | gap |
+| `app.dock`: Dock menu, badge, progress; taskbar on Windows | `zebkit_app_set_badge()`, `zebkit_app_set_progress()`, `zebkit_app_request_attention()`: `NSDockTile` and the Dock's bounce on macOS, `ITaskbarList3` (progress, an overlay badge) and `FlashWindowEx` on Windows, the launcher API (`com.canonical.Unity.LauncherEntry`) on Linux docks that know it; `zebkit_app_set_dock_menu()` on macOS (`dock.cc`) | done |
 | `app.identity`: name, icon, app id (`wm_class`, AppUserModelID) | `wm_class` from the program name (`window_views.cc`); bundle metadata on macOS | partial |
 
 ### 5.2 Windows
@@ -195,7 +195,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `dialog.http-auth` | `zebkit_view_on_http_auth`; cancelled without one | done (no default presenter) |
 | `dialog.client-certificate` | `zebkit_view_on_client_certificate`; none sent without one | done (no default presenter) |
 | `dialog.webauthn` | `zebkit_view_on_authentication`, or the engine's UI (Views, AppKit); system passkeys on macOS and Windows (`webauthn.cc`) | done |
-| `dialog.print`: `window.print()` | no dialog and no printer: reported to the application as a dialog, the page continues; `zebkit_view_print_to_pdf` for output (`print.cc`) | partial: no physical printing, no preview |
+| `dialog.print`: `window.print()` | no dialog and no printer: reported to the application as a dialog, the page continues; `zebkit_view_print_to_pdf` for output (`print.cc`). Decided for this build: no printing backend (its size), as section 9 allows | partial: no physical printing, no preview |
 | `dialog.repost`: "send the form again?" on reloading a POST | `ShowRepostFormWarningDialog` not overridden: Chromium's default, the form is not sent again | default only |
 | `dialog.fedcm`: FedCM sign-in (`navigator.credentials.get({identity})`) | no dialog controller and no permission contexts: not available | gap |
 
@@ -206,8 +206,9 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `permission.*` (geolocation, clipboard, sensors, MIDI, ...) | `zebkit_view_on_permission`, a table per view; default denied, but a screen wake lock (`permission_manager.cc`) | done |
 | `permission.geolocation.system` | Apple's location source on macOS; none elsewhere (`client_defaults.cc`) | partial |
 | `media.camera-microphone` | `zebkit_view_on_media_access`, else the permission table | done |
-| `media.display-capture`: `getDisplayMedia()` | refused: no chooser (`window.cc`, `permission_manager.cc`) | gap |
-| `device.usb`, `device.hid`, `device.serial`, `device.bluetooth` | no delegate: the services refuse or report not supported (`web_usb_service_impl.cc`, `hid_service.cc`, `serial_service.cc`, `bluetooth_device_chooser_controller.cc`) | gap |
+| `media.display-capture`: `getDisplayMedia()` | refused without a function; `zebkit_view_on_media_access` gets `"type": "display"` and the sources, and answers with one: `view` (the view itself, with its sound when asked) or `screen` (the whole desktop, where WebRTC's capturer reaches one: X11, macOS, Windows) (`page_hooks.cc`) | partial: no system picker as the default; Wayland's PipeWire capture is off in this build |
+| `device.usb`, `device.hid`, `device.serial` | `UsbDelegate`, `HidDelegate`, `SerialDelegate` whose chooser is `zebkit_view_on_device_chooser`: the system's matching devices, the list following them as they come and go, answered with one or none; a chosen device is the origin's for the engine's run, until `forget()`; HID devices of only protected reports (keyboards, mice) are not offered, as in Chrome; no device without a function (`device_choosers.cc`; `patches/1085` for serial ports without a platform Bluetooth) | done |
+| `device.bluetooth` | no delegate: Web Bluetooth reports not supported | gap: its scanning and pairing prompts are a chooser of their own |
 | `device.smart-card` | no delegate: not available | gap |
 | `media.audio-output`: `selectAudioOutput()` | Chromium's default | default only |
 | `media.system-controls`: the system's now-playing and media keys | Chromium's default | default only |
@@ -219,10 +220,10 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `notification.web`: `new Notification()`, a service worker's `showNotification()` | the `notifications` permission, undecided ("default") and denied without a decision; once granted, `zebkit_on_notification` shows them, or the system does: `org.freedesktop.Notifications` on Linux, UserNotifications on macOS for an application with a bundle identifier (`notifications.cc`); clicks and closes reach the page and its service worker | done; no system presenter on Windows yet |
+| `notification.web`: `new Notification()`, a service worker's `showNotification()` | the `notifications` permission, undecided ("default") and denied without a decision; once granted, `zebkit_on_notification` shows them, or the system does: `org.freedesktop.Notifications` on Linux, UserNotifications on macOS for an application with a bundle identifier, a notification area balloon on Windows (a toast on Windows 10 and later; one at a time) (`notifications.cc`); clicks and closes reach the page and its service worker | done |
 | `notification.push` | `GetPushMessagingService` null | gap (needs a push service; likely out of scope) |
 | `desktop.tray`: status item, tray icon | `zebkit_tray_new()`: `NSStatusItem` on macOS, `Shell_NotifyIcon` on Windows, a StatusNotifierItem with a `com.canonical.dbusmenu` menu on Linux (ported from Chrome's, `tray_linux_dbus.cc`) | done |
-| `desktop.share`: `navigator.share()` | not exposed (Blink's `WebShare` flag is for tests, no `ShareService`) | gap |
+| `desktop.share`: `navigator.share()` | `zebkit_view_on_share`: the application shares it; without a function macOS's share sheet, cancelled elsewhere (`share.cc`) | done |
 
 ### 5.7 Appearance, locale, accessibility
 
@@ -248,7 +249,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | Surface | Today | Status |
 |---|---|---|
 | `power.wake-lock` | the screen wake lock granted; system wake lock via Chromium's device service | default only |
-| `power.events`: suspend, resume, lock, battery | `zebkit_on_power_event`: suspend, resume, the power source, from `base::PowerMonitor`; `zebkit_prevent_sleep()` (`system_events.cc`) | partial: no lock and unlock events |
+| `power.events`: suspend, resume, lock, battery | `zebkit_on_power_event`: suspend, resume, the power source, from `base::PowerMonitor`; the session's lock and unlock from `ui::CheckIdleStateIsLocked()` (the desktop's screen saver on Linux), checked each second while a function is set; `zebkit_prevent_sleep()` (`system_events.cc`) | done |
 | `display.list`: screens, scale, work area, changes | `zebkit_get_displays()`, `zebkit_on_displays_changed()` from `display::Screen` | done |
 
 ## 6. The common contract
@@ -954,6 +955,14 @@ the API shape of the others. The size of each phase is measured as for
 any change (`docs/SIZE_AND_SPEED.md`); phase 6's services are D-Bus and
 system frameworks, already linked, not new libraries.
 
+Where the phases stand (0.4.0): all seven are implemented. What remains
+open is listed in section 5 with its reason: the system's screen-capture
+picker as a default (the application chooses the source today), Web
+Bluetooth, the reading of platform accessibility trees in tests, and
+physical printing (decided against for the release build, section 19).
+Checks that need what a test machine lacks (a focused window on a locked
+macOS session, a device on a machine without one) report "not run".
+
 ## 18. Testing
 
 - **Each surface**: the default; each answer; an answer later; the
@@ -992,6 +1001,9 @@ Decided by this document:
 | No menu bar on Windows and Linux from the engine | it is window content there, the application's to draw |
 | No global shortcuts, no install-level registration in the engine | the host's toolkit and the installer do them better, and they outlive the process |
 | The system's consent is never replaced | the system's to give |
+| No printing backend in the release build: `window.print()` is told to the application, `zebkit_view_print_to_pdf` makes the output | the backend and its dialogs cost size for what an application does with the PDF and the system's own print command |
+| Device choosers, the screen-capture source and Web Share are the application's to present; the engine has no chooser of its own | a list of devices or screens is the application's UI, in its style; the hook gives it everything it needs |
+| Web Bluetooth stays unsupported | its scanning, pairing and PIN prompts are a separate chooser, with the system's Bluetooth stack under it |
 
 Open, to decide when the phase starts:
 
@@ -1003,7 +1015,5 @@ Open, to decide when the phase starts:
   Windows 11.
 - The exact first-frame wait on macOS (7.7): the page's first frame or a
   limit, and the limit's value.
-- Whether printing's backend fits the size rule (9), which decides whether
-  the release build has the print dialog or reports it unsupported.
 - The accessibility bridge for off-screen views (11): what the host
   needs, and whether CDP's tree is enough.

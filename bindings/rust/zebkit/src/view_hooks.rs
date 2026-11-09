@@ -88,12 +88,20 @@ request!(/// A file chooser a page opened.
 request!(/// A page's request for camera or microphone.
     MediaAccessRequest, sys::zebkit_media_access_request, sys::zebkit_media_access_request_info);
 
+request!(/// A page's EyeDropper.open().
+    EyeDropperRequest, sys::zebkit_eye_dropper_request, sys::zebkit_eye_dropper_request_info);
+request!(/// A page's USB, HID or serial chooser: `kind`, `devices` (`info` has the list as it is now).
+    DeviceChooserRequest, sys::zebkit_device_chooser_request, sys::zebkit_device_chooser_request_info);
+request!(/// A page's navigator.share().
+    ShareRequest, sys::zebkit_share_request, sys::zebkit_share_request_info);
+
 request!(/// A request or response a network rule holds.
     NetworkRequest, sys::zebkit_network_request, sys::zebkit_network_request_info);
 
 slots!(network: NetworkRequest, download: DownloadRequest, client_certificate: ClientCertificateRequest,
-       file_chooser: FileChooserRequest, media_access: MediaAccessRequest;
-       external_protocol, download_progress, client_certificate_result, file_chooser_result,
+       file_chooser: FileChooserRequest, media_access: MediaAccessRequest, eye_dropper: EyeDropperRequest,
+       device_chooser: DeviceChooserRequest, share: ShareRequest;
+       eye_dropper_result, device_chooser_result, share_result, external_protocol, download_progress, client_certificate_result, file_chooser_result,
        media_access_result, network_event, reserved_key, context_menu, fullscreen);
 
 impl DownloadRequest {
@@ -146,6 +154,29 @@ impl MediaAccessRequest {
         let audio = audio_device.map(cstring).transpose()?;
         let video = video_device.map(cstring).transpose()?;
         Ok(unsafe { sys::zebkit_media_access_respond(self.raw, allow, optional(&audio), optional(&video)) })
+    }
+}
+
+impl EyeDropperRequest {
+    /// `Some("#rrggbb")` gives the page that colour; `None` cancels.
+    pub fn respond(&self, color: Option<&str>) -> Result<bool, Error> {
+        let color = color.map(cstring).transpose()?;
+        Ok(unsafe { sys::zebkit_eye_dropper_respond(self.raw, optional(&color)) })
+    }
+}
+
+impl DeviceChooserRequest {
+    /// `Some(id)` of a listed device gives the page that device; `None` gives none.
+    pub fn respond(&self, device_id: Option<&str>) -> Result<bool, Error> {
+        let id = device_id.map(cstring).transpose()?;
+        Ok(unsafe { sys::zebkit_device_chooser_respond(self.raw, optional(&id)) })
+    }
+}
+
+impl ShareRequest {
+    /// Shared, or not (the page's promise rejects).
+    pub fn respond(&self, shared: bool) -> bool {
+        unsafe { sys::zebkit_share_respond(self.raw, shared) }
     }
 }
 
@@ -294,6 +325,12 @@ asked!(on_client_certificate, clear_client_certificate_handler, client_certifica
 asked!(on_file_chooser, clear_file_chooser_handler, file_chooser, FileChooserRequest, sys::zebkit_file_chooser_request, sys::zebkit_view_on_file_chooser);
 asked!(on_media_access, clear_media_access_handler, media_access, MediaAccessRequest, sys::zebkit_media_access_request, sys::zebkit_view_on_media_access);
 asked!(on_network, clear_network_handler, network, NetworkRequest, sys::zebkit_network_request, sys::zebkit_view_on_network);
+asked!(on_eye_dropper, clear_eye_dropper_handler, eye_dropper, EyeDropperRequest, sys::zebkit_eye_dropper_request, sys::zebkit_view_on_eye_dropper);
+asked!(on_device_chooser, clear_device_chooser_handler, device_chooser, DeviceChooserRequest, sys::zebkit_device_chooser_request, sys::zebkit_view_on_device_chooser);
+asked!(on_share, clear_share_handler, share, ShareRequest, sys::zebkit_share_request, sys::zebkit_view_on_share);
+told!(on_eye_dropper_result, clear_eye_dropper_result_handler, eye_dropper_result, sys::zebkit_view_on_eye_dropper_result);
+told!(on_device_chooser_result, clear_device_chooser_result_handler, device_chooser_result, sys::zebkit_view_on_device_chooser_result);
+told!(on_share_result, clear_share_result_handler, share_result, sys::zebkit_view_on_share_result);
 told!(on_network_event, clear_network_event_handler, network_event, sys::zebkit_view_on_network_event);
 told!(on_external_protocol, clear_external_protocol_handler, external_protocol, sys::zebkit_view_on_external_protocol);
 told!(on_download_progress, clear_download_progress_handler, download_progress, sys::zebkit_view_on_download_progress);
@@ -361,6 +398,51 @@ impl View {
     }
     pub fn set_media_access_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_media_access_timeout(raw, milliseconds) })
+    }
+    pub fn set_eye_dropper_timeout(&self, milliseconds: u32) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_eye_dropper_timeout(raw, milliseconds) })
+    }
+    pub fn set_device_chooser_timeout(&self, milliseconds: u32) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_device_chooser_timeout(raw, milliseconds) })
+    }
+    pub fn set_share_timeout(&self, milliseconds: u32) -> bool {
+        self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_share_timeout(raw, milliseconds) })
+    }
+    /// Runs a default item's command (its id in the context menu event)
+    /// against what was right-clicked in menu `menu_id`.
+    pub fn context_menu_run(&self, menu_id: u64, command: &str) -> Result<(), Error> {
+        let command = cstring(command)?;
+        let Some(raw) = self.raw() else { return Err(Error::new("the view is closed")) };
+        let mut error = std::ptr::null_mut();
+        if unsafe { sys::zebkit_view_context_menu_run(raw, menu_id, command.as_ptr(), &mut error) } {
+            Ok(())
+        } else {
+            Err(Error::new(owned(error).unwrap_or_else(|| "the context menu's command was refused".into())))
+        }
+    }
+    /// Shows a menu where menu `menu_id` was asked for: the default items
+    /// (`None`) or a JSON list mixing default ids and the application's own;
+    /// `function` gets an item of the application's ("" when none is chosen).
+    pub fn context_menu_show<F: FnOnce(&str) + 'static>(&self, menu_id: u64, items_json: Option<&str>, function: Option<F>) -> Result<(), Error> {
+        unsafe extern "C" fn trampoline<F: FnOnce(&str)>(_: *mut sys::zebkit_view, item: *const c_char, data: *mut c_void) {
+            let function = Box::from_raw(data.cast::<F>());
+            function(&text(item));
+        }
+        let items = items_json.map(cstring).transpose()?;
+        let Some(raw) = self.raw() else { return Err(Error::new("the view is closed")) };
+        let (callback, data) = match function {
+            Some(function) => (Some(trampoline::<F> as sys::zebkit_context_menu_item_func), Box::into_raw(Box::new(function)).cast::<c_void>()),
+            None => (None, std::ptr::null_mut()),
+        };
+        let mut error = std::ptr::null_mut();
+        if unsafe { sys::zebkit_view_context_menu_show(raw, menu_id, optional(&items), callback, data, &mut error) } {
+            Ok(())
+        } else {
+            if !data.is_null() {
+                drop(unsafe { Box::from_raw(data.cast::<F>()) });
+            }
+            Err(Error::new(owned(error).unwrap_or_else(|| "the context menu was refused".into())))
+        }
     }
     /// A script before the page's, in the named isolated world or (None) the page's.
     pub fn add_world_script(&self, source: &str, world: Option<&str>, main_frame_only: bool) -> Result<bool, Error> {

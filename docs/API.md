@@ -334,6 +334,58 @@ region is the system's drag (snapping, the system menu on Windows, moving
 on Wayland from the press itself); a double click there does what the
 system's title bar does.
 
+## The desktop, the system and the page's choosers
+
+What the engine does for the application on the person's desktop, and the
+page's requests that only the application answers. The design and the
+defaults are `docs/SYSTEM_INTEGRATION.md`, sections 8 to 14; each surface's
+status is in its section 5. Engine thread only.
+
+| C | Python | Rust | host JavaScript |
+|---|---|---|---|
+| `zebkit_app_update_menu_item(id, json, &error)`, `zebkit_app_get_menu()` | `zebkit.app_update_menu_item(id, enabled=..., checked=..., title=...)`, `zebkit.app_menu()` | `app::update_menu_item(id, json)`, `app::menu()` | `zebkit.app.updateMenuItem(id, {...})`, `zebkit.app.menu()` |
+| `zebkit_app_set_badge(text)`, `zebkit_app_set_progress(p)`, `zebkit_app_request_attention(critical)` | `zebkit.app_set_badge(text)`, `app_set_progress(p)`, `app_request_attention()` | `app::set_badge`, `app::set_progress`, `app::request_attention` | `zebkit.app.setBadge`, `setProgress`, `requestAttention` |
+| `zebkit_app_set_dock_menu(json, func, data, &error)` (macOS) | `zebkit.app_set_dock_menu(items, fn)` | `app::set_dock_menu(json, fn)` | `zebkit.app.setDockMenu(items, fn)` |
+| `zebkit_tray_new(png, size, tooltip, &error)` and `_set_icon`, `_set_tooltip`, `_set_menu`, `_on_click`, `_close` | `zebkit.Tray(png, tooltip)` | `Tray::new(png, tooltip)` | `new zebkit.Tray(png, tooltip)` |
+| `zebkit_on_notification(func, data)`, `zebkit_notification_clicked(id, action)`, `zebkit_notification_closed(id, by_user)` | `zebkit.on_notification(fn)`, `notification_clicked`, `notification_closed` | `system::on_notification`, ... | `zebkit.onNotification(fn)`, `notificationClicked`, `notificationClosed` |
+| `zebkit_open_external(url, &error)`, `zebkit_show_in_folder(path, &error)` | `zebkit.open_external(url)`, `show_in_folder(path)` | `system::open_external`, `system::show_in_folder` | `zebkit.openExternal(url)`, `showInFolder(path)` |
+| `zebkit_get_displays()`, `zebkit_on_displays_changed(func, data)` | `zebkit.displays()`, `on_displays_changed(fn)` | `system::displays()`, `system::on_displays_changed` | `zebkit.displays()`, `onDisplaysChanged(fn)` |
+| `zebkit_on_power_event(func, data)` | `zebkit.on_power_event(fn)` | `system::on_power_event` | `zebkit.onPowerEvent(fn)` |
+| `zebkit_prevent_sleep(keep_display_on, reason)`, `zebkit_allow_sleep(token)` | `zebkit.prevent_sleep(reason)`, `allow_sleep(token)` | `system::prevent_sleep`, `system::allow_sleep` | `zebkit.preventSleep(reason)`, `allowSleep(token)` |
+| `zebkit_view_context_menu_run(view, menu_id, command, &error)`, `zebkit_view_context_menu_show(...)` | `view.context_menu_run(menu_id, command)`, `view.context_menu_show(menu_id, items, fn)` | `view.context_menu_run`, `view.context_menu_show` | `view.contextMenuRun`, `view.contextMenuShow` |
+| `zebkit_view_on_eye_dropper(view, func, data)`; `zebkit_eye_dropper_respond(request, "#rrggbb" or NULL)` | `view.on_eye_dropper(fn)`; `request.respond(color)` | `view.on_eye_dropper(fn)` | `view.onEyeDropper(fn)` |
+| `zebkit_view_on_share(view, func, data)`; `zebkit_share_respond(request, shared)` | `view.on_share(fn)`; `request.respond(True)` | `view.on_share(fn)` | `view.onShare(fn)` |
+| `zebkit_view_on_device_chooser(view, func, data)`; `zebkit_device_chooser_respond(request, id or NULL)` | `view.on_device_chooser(fn)`; `request.respond(id)` | `view.on_device_chooser(fn)` | `view.onDeviceChooser(fn)` |
+| `zebkit_view_on_media_access(...)` with `"type": "display"` | `view.on_media_access(fn)`; `request.respond(True, None, "view")` | `view.on_media_access(fn)` | `view.onMediaAccess(fn)` |
+
+- **Events** are JSON. Power: `{"event": "suspend" | "resume" | "lock" |
+  "unlock"}`, `{"event": "power-source", "onBattery"}`. Displays:
+  `[{id, bounds, workArea, scale, rotation, primary}]` in DIPs.
+  Notifications, when the application shows them: `{"event": "show", id,
+  persistent, origin, title, body, icon, image, badge, tag, lang, silent,
+  requireInteraction, renotify, actions}` and `{"event": "close", id}`; it
+  tells clicks and closes back with `zebkit_notification_clicked()` and
+  `zebkit_notification_closed()`. Without a function the system shows them
+  (Linux's notification service, macOS for a bundled application, Windows'
+  notification area).
+- **The badge** is text on macOS and Windows (an overlay icon), a number on
+  Linux's launcher docks; `""` clears it. A progress below 0 clears it.
+- **Device choosers**: the request's `kind` (`usb`, `hid`, `serial`),
+  `origin`, `filters` as the page gave them, and `devices`, each with an
+  `id`, a `name` and what the kind has (`vendorId`, `productId`,
+  `serialNumber`, `path`, HID `collections`). `request.info` has the list as
+  it is now. An id not listed is refused. A device chosen is the origin's
+  until the engine ends or the page's `forget()`.
+- **Screen capture**: `getDisplayMedia()` reaches the media access hook with
+  `"type": "display"`, `audio`, and `sources` (`view`, and `screen` where the
+  system's screen can be captured). The video answer is the source's id; an
+  audio answer gives the view's sound with it.
+- **Opening**: `zebkit_open_external()` gives the URL to the system's
+  handler (a browser for `https:`, the mail program for `mailto:`, a
+  `file:` URL's default program) and refuses `javascript:`, `data:`, `blob:`,
+  `about:` and invalid URLs; `zebkit_show_in_folder()` takes an absolute
+  path. The URL or path is one argument to the system, never a shell's.
+
 ## Runtime view preferences
 
 `<zebkit/hooks.h>` has `zebkit_view_set_settings(view, json, &error)` and

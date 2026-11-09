@@ -61,6 +61,7 @@
 #include "v8/include/v8-initialization.h"
 #include "v8/include/v8.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/share.h"
 #include "zebkit/engine/protocol_handlers.h"
 #include "zebkit/engine/speech_delegate.h"
 #include "zebkit/engine/view.h"
@@ -248,6 +249,7 @@ void BrowserClient::RegisterBrowserInterfaceBindersForFrame(
       ->GetBinders()
       .ExposeInterfacesToRenderFrame(map);
   map->Add<network_hints::mojom::NetworkHintsHandler>(&BindNetworkHintsHandler);
+  map->Add<blink::mojom::ShareService>(&BindShareService);
 #if BUILDFLAG(IS_WIN)
   map->Add<media::mojom::MediaFoundationPreferences>(&BindMediaFoundationPreferences);
 #endif

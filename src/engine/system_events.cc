@@ -16,12 +16,14 @@
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_observer.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/timer/timer.h"
 #include "base/values.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/device_service.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/wake_lock.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
+#include "ui/base/idle/idle.h"
 #include "ui/display/display.h"
 #include "ui/display/display_observer.h"
 #include "ui/display/screen.h"
@@ -49,9 +51,14 @@ class PowerEvents : public base::PowerSuspendObserver, public base::PowerStateOb
     if (func && !func_) {
       monitor->AddPowerSuspendObserver(this);
       monitor->AddPowerStateObserver(this);
+      // The session's lock: the system's own state (ui/base/idle), asked each
+      // second while the application listens, told when it changes.
+      locked_ = ui::CheckIdleStateIsLocked();
+      lock_check_.Start(FROM_HERE, base::Seconds(1), this, &PowerEvents::CheckLock);
     } else if (!func && func_) {
       monitor->RemovePowerSuspendObserver(this);
       monitor->RemovePowerStateObserver(this);
+      lock_check_.Stop();
     }
     func_ = func;
     data_ = data;
@@ -71,6 +78,15 @@ class PowerEvents : public base::PowerSuspendObserver, public base::PowerStateOb
     event.Set("event", name);
     Tell(func_, data_, std::move(event));
   }
+  void CheckLock() {
+    const bool locked = ui::CheckIdleStateIsLocked();
+    if (locked == locked_)
+      return;
+    locked_ = locked;
+    Event(locked ? "lock" : "unlock");
+  }
+  bool locked_ = false;
+  base::RepeatingTimer lock_check_;
   zebkit_system_event_func func_ = nullptr;
   void* data_ = nullptr;
 };

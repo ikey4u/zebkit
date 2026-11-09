@@ -116,6 +116,20 @@ def main():
         picked = ev(view, pick)
         check(picked == "#336699" and asked and asked[0]["origin"] == secure.rstrip("/"),
               "with one, the page gets the application's colour", (picked, asked[:1]))
+        # navigator.share(): cancelled without a function on Linux, the application's with one.
+        share = "navigator.share({title: 'A page', url: location.href}).then(() => 'shared', e => e.name)"
+        if sys.platform.startswith("linux"):
+            alone = ev(view, share)
+            check(alone == "AbortError", "navigator.share() without a function is cancelled (Linux has no sheet)", alone)
+        shares = []
+
+        def shared(request):
+            shares.append(request.metadata)
+            request.respond(True)
+        view.on_share(shared)
+        answered = ev(view, share)
+        check(answered == "shared" and shares and shares[0]["title"] == "A page" and shares[0]["url"] == secure,
+              "with one, the application shares it", (answered, shares[:1]))
         view.close()
     except Exception as error:  # noqa: BLE001
         check(False, "the test ran to the end", repr(error))

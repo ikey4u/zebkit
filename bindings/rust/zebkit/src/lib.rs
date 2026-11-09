@@ -23,6 +23,9 @@
 //!   compression, digests and encryption, URLs, images and HTTP; [`canvas`]
 //!   draws on the engine's Skia and shapes text on its HarfBuzz; [`pdf`]
 //!   is PDF documents on the engine's PDFium.
+//! - [`system`] is what the system tells of itself and does for the
+//!   application: screens, power, sleep, notifications, the system's
+//!   handlers; [`Tray`] is the tray icon; [`app`] the menu, Dock and taskbar.
 //! - [`scheme`] makes URL schemes of the application's own, which it
 //!   answers: its interface and its files, without a server.
 //! - [`vendor`] is the libraries inside the engine: FFmpeg, so far.
@@ -57,6 +60,8 @@ pub mod pdf;
 pub mod scheme;
 mod script;
 pub mod services;
+pub mod system;
+mod tray;
 pub mod vendor;
 mod view;
 
@@ -67,7 +72,11 @@ pub use engine::{
 pub use script::Script;
 pub use media::{MediaCapture, MediaTap};
 mod view_hooks;
-pub use view_hooks::{ClientCertificateAction, ClientCertificateRequest, DownloadRequest, FileChooserRequest, FullscreenPolicy, MediaAccessRequest, NetworkRequest, NetworkStream};
+pub use tray::Tray;
+pub use view_hooks::{
+    ClientCertificateAction, ClientCertificateRequest, DeviceChooserRequest, DownloadRequest, EyeDropperRequest, FileChooserRequest, FullscreenPolicy,
+    MediaAccessRequest, NetworkRequest, NetworkStream, ShareRequest,
+};
 /// On Windows, with the static C runtime (`+crt-static`): this executable as the
 /// engine's sandboxed child process, which Chromium's sandbox there needs. Call it
 /// first in `main`; `Some(code)` when this process was a child and has finished,

@@ -762,9 +762,20 @@ if [[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && p
         "${engine_switches[@]/profile/profile-notifications}"
     run tray env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/tray.py" \
         "${engine_switches[@]/profile/profile-tray}"
+    # The session's lock, from the desktop's screen saver (14).
+    run session-lock env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/session_lock.py" \
+        "${engine_switches[@]/profile/profile-lock}"
 else
     log "appearance: skipped (no dbus-run-session or dbus-python)"
 fi
+# getDisplayMedia() through the media access hook: the view itself as the source (10).
+run display-capture env ZEBKIT_DIR="$package" python3 -I "$tests/display_capture.py" "${engine_switches[@]/profile/profile-capture}"
+# WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
+run device-chooser env ZEBKIT_DIR="$package" python3 -I "$tests/device_chooser.py" "${engine_switches[@]/profile/profile-devices}"
+# The application's icon in the Dock or on the taskbar (12); the launcher's signal on Linux's private bus.
+dock_bus=()
+[[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && dock_bus=(dbus-run-session --)
+run dock env ZEBKIT_DIR="$package" "${dock_bus[@]}" python3 -I "$tests/dock.py" "${engine_switches[@]/profile/profile-dock}"
 # A view's window made with options (<zebkit/window.h>): without a window here,
 # with one under Xvfb and labwc below.
 run window-frame env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" "${engine_switches[@]/profile/profile-window-frame}"
@@ -1044,6 +1055,7 @@ if [[ -n "$rust_settings_program" ]]; then
 fi
 
 run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
+run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"
 run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit-js"
 run user-agent-bindings python3 "$tests/user_agent_bindings.py" "$bin/tools/zebkit-js"

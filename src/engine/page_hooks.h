@@ -7,10 +7,12 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/values.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom-forward.h"
@@ -48,6 +50,16 @@ void TellExternalProtocol(const GURL& url, content::WebContents* contents,
 // null without a function, which cancels it.
 std::unique_ptr<content::EyeDropper> OpenEyeDropperHook(content::RenderFrameHost* frame,
                                                        content::EyeDropperListener* listener);
+// A page's device chooser to the application (zebkit_view_on_device_chooser):
+// the request's id (0 when too many wait: @choice gets none); nullopt without
+// a function, @choice unrun and the caller's.
+// @choice gets the chosen device's id, or nothing; Update replaces the list
+// while it waits, Abandon ends it when the chooser goes.
+using DeviceChoice = base::OnceCallback<void(std::optional<std::string>)>;
+std::optional<uintptr_t> AskDeviceChooser(content::RenderFrameHost* frame, const char* kind, base::Value filters,
+                                          base::ListValue devices, DeviceChoice& choice);
+void UpdateDeviceChooser(uintptr_t id, base::ListValue devices);
+void AbandonDeviceChooser(uintptr_t id);
 bool HandleFileChooserHook(content::RenderFrameHost* frame,
                            scoped_refptr<content::FileSelectListener> listener,
                            const blink::mojom::FileChooserParams& params);

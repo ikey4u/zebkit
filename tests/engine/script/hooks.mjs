@@ -50,7 +50,8 @@ await view.evaluate('askGeo()');
 const result = await outcome;
 if (count !== 1 || result.id !== savedRequest.metadata.id || result.reason !== 'answered' || result.state !== 'denied')
   throw new Error('permission outcome mismatch');
-if (await view.evaluate("permissionState('notifications')") !== 'denied') throw new Error('handler removal failed');
+// Notifications are undecided without a decision (docs/SYSTEM_INTEGRATION.md, 12).
+if (await view.evaluate("permissionState('notifications')") !== 'prompt') throw new Error('handler removal failed');
 for (const timeout of [0, 300001, 1.5, true]) {
   let invalid = false;
   try { view.setNavigationTimeout(timeout); } catch (error) { invalid = error instanceof TypeError; }

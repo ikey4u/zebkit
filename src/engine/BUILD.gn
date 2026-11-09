@@ -405,6 +405,12 @@ _sources = [
   "system_events.cc",
   "desktop_actions.cc",
   "tray.cc",
+  "share.cc",
+  "device_choosers.cc",
+  "device_choosers.h",
+  "dock.cc",
+  "dock.h",
+  "share.h",
   "tray.h",
   "desktop_actions.h",
   "notifications.h",
@@ -582,6 +588,8 @@ if (use_aura) {
     "//ui/wm",
   ]
 }
+# WebUSB's filters (device_choosers.cc); the session's lock (system_events.cc).
+_deps += [ "//services/device/public/cpp/usb", "//ui/base/idle" ]
 if (is_mac) {
   # The system's location permission (client_defaults.cc).
   _deps += [ "//services/device/public/cpp/geolocation" ]
@@ -627,6 +635,7 @@ if (is_mac) {
   _sources += [
     "notifications_linux.cc",
     "tray_linux.cc",
+    "dock_linux.cc",
     "tray_linux_dbus.cc",
     "tray_linux_dbus.h",
   ]
@@ -660,6 +669,8 @@ if (is_win) {
     "attach.cc",
     "desktop_actions_win.cc",
     "tray_win.cc",
+    "notifications_win.cc",
+    "dock_win.cc",
     "window_views.cc",
     "context_menu_views.cc",
     "js_dialog_views.cc",
@@ -902,6 +913,8 @@ if (is_win) {
       "notifications_mac.mm",
       "desktop_actions_mac.mm",
       "tray_mac.mm",
+      "share_mac.mm",
+      "dock_mac.mm",
       "offscreen_mac.h",
       "offscreen_mac.mm",
     ]

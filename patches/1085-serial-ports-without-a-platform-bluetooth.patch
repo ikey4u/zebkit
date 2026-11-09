@@ -1,0 +1,39 @@
+Serial ports without a platform Bluetooth.
+
+The serial port manager enumerates Bluetooth serial ports alongside the
+wired ones, creating the Bluetooth adapter without asking whether the
+platform has one. A Linux build without BlueZ (use_bluez = false, zebkit's)
+has only bluetooth_adapter_stub.cc, whose CreateAdapter() is NOTREACHED():
+navigator.serial.requestPort() and getPorts() crashed the browser process.
+Without platform Bluetooth, GetDevices() returns the wired ports and
+OpenPort() of an unknown token fails, as they would with no Bluetooth ports.
+docs/SYSTEM_INTEGRATION.md, section 10.
+
+diff --git a/services/device/serial/serial_port_manager_impl.cc b/services/device/serial/serial_port_manager_impl.cc
+index f79ab119ed..96aeac8084 100644
+--- a/services/device/serial/serial_port_manager_impl.cc
++++ b/services/device/serial/serial_port_manager_impl.cc
+@@ -100,6 +100,12 @@ void SerialPortManagerImpl::GetDevices(bool allow_bluetooth_system_prompt,
+     }
+   }
+ 
++  // A build without a platform Bluetooth (Linux without BlueZ) has only the
++  // stub adapter, which must not be created.
++  if (!bluetooth_enumerator_ && !BluetoothAdapterFactory::IsBluetoothSupported()) {
++    std::move(callback).Run(std::move(devices));
++    return;
++  }
+   if (!bluetooth_enumerator_) {
+     bluetooth_enumerator_ =
+         std::make_unique<BluetoothSerialDeviceEnumerator>(ui_task_runner_);
+@@ -136,6 +142,10 @@ void SerialPortManagerImpl::OpenPort(
+     return;
+   }
+ 
++  if (!bluetooth_enumerator_ && !BluetoothAdapterFactory::IsBluetoothSupported()) {
++    std::move(callback).Run(mojo::NullRemote());
++    return;
++  }
+   if (!bluetooth_enumerator_) {
+     bluetooth_enumerator_ =
+         std::make_unique<BluetoothSerialDeviceEnumerator>(ui_task_runner_);

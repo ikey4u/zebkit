@@ -31,6 +31,7 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
 #include "zebkit/engine/app.h"
+#include "zebkit/engine/dock.h"
 #include "zebkit/engine/view.h"
 
 // Menu items of the application's (zebkit_app_set_menu()).
@@ -52,7 +53,49 @@
 @interface ZebkitAppDelegate : NSObject <NSApplicationDelegate>
 @end
 
+// The Dock's menu's items (dock.h).
+@interface ZebkitDockMenuTarget : NSObject
+- (void)dockItem:(NSMenuItem*)item;
+@end
+
+@implementation ZebkitDockMenuTarget
+- (void)dockItem:(NSMenuItem*)item {
+  zebkit::RunDockMenuItem(base::SysNSStringToUTF8(item.representedObject));
+}
+@end
+
+static void AddDockItems(NSMenu* menu, const std::vector<zebkit::MenuItem>& items, ZebkitDockMenuTarget* target) {
+  for (const zebkit::MenuItem& item : items) {
+    if (item.separator) {
+      [menu addItem:[NSMenuItem separatorItem]];
+      continue;
+    }
+    NSMenuItem* entry = [[NSMenuItem alloc] initWithTitle:base::SysUTF8ToNSString(item.title)
+                                                   action:@selector(dockItem:)
+                                            keyEquivalent:@""];
+    entry.target = target;
+    entry.enabled = item.enabled;
+    entry.state = item.checked ? NSControlStateValueOn : NSControlStateValueOff;
+    entry.representedObject = base::SysUTF8ToNSString(item.id);
+    if (!item.items.empty()) {
+      entry.submenu = [[NSMenu alloc] initWithTitle:entry.title];
+      entry.submenu.autoenablesItems = NO;
+      AddDockItems(entry.submenu, item.items, target);
+    }
+    [menu addItem:entry];
+  }
+}
+
 @implementation ZebkitAppDelegate
+- (NSMenu*)applicationDockMenu:(NSApplication*)sender {
+  if (zebkit::DockMenu().empty())
+    return nil;
+  static ZebkitDockMenuTarget* target = [[ZebkitDockMenuTarget alloc] init];
+  NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+  menu.autoenablesItems = NO;
+  AddDockItems(menu, zebkit::DockMenu(), target);
+  return menu;
+}
 - (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
   std::vector<std::string> paths;
   for (NSURL* url in urls) {

@@ -394,6 +394,41 @@ ZEBKIT_API bool zebkit_view_set_eye_dropper_timeout(zebkit_view*, uint32_t milli
 ZEBKIT_API char *zebkit_eye_dropper_request_info(zebkit_eye_dropper_request*);
 ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request*, const char *color);
 
+/*
+ * A page's device chooser (docs/SYSTEM_INTEGRATION.md, 10):
+ * navigator.usb.requestDevice(), navigator.hid.requestDevice() and
+ * navigator.serial.requestPort(). The request's JSON has "kind" ("usb", "hid",
+ * "serial"), "origin", "frameId", the page's "filters", and "devices", those
+ * of the system's that match, each with an "id", a "name" and what the kind
+ * has (vendorId, productId, serialNumber, path, ...). The list follows devices
+ * as they come and go: zebkit_device_chooser_request_info() returns it as it
+ * is now. Answered with a device's id, which the origin may then use for the
+ * engine's run (and forget() ends), or NULL for none. Without a function the
+ * page gets none, as before; there is no chooser of the engine's own.
+ */
+typedef struct zebkit_device_chooser_request zebkit_device_chooser_request;
+typedef void (*zebkit_device_chooser_func)(zebkit_view*, zebkit_device_chooser_request*, const char *json, void *data);
+typedef void (*zebkit_device_chooser_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_device_chooser(zebkit_view*, zebkit_device_chooser_func, void *data);
+ZEBKIT_API void zebkit_view_on_device_chooser_result(zebkit_view*, zebkit_device_chooser_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_device_chooser_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_device_chooser_request_info(zebkit_device_chooser_request*);
+ZEBKIT_API bool zebkit_device_chooser_respond(zebkit_device_chooser_request*, const char *device_id);
+
+/* The page's navigator.share(): the application answers it shared or not. Without a
+ * function, the system's share sheet where there is one (macOS); otherwise cancelled
+ * (AbortError), as Linux has none. Metadata: title, text, url, files (their names),
+ * origin. Unanswered, replaced or closed: cancelled.
+ */
+typedef struct zebkit_share_request zebkit_share_request;
+typedef void (*zebkit_share_func)(zebkit_view*, zebkit_share_request*, const char *json, void *data);
+typedef void (*zebkit_share_result_func)(zebkit_view*, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_share(zebkit_view*, zebkit_share_func, void *data);
+ZEBKIT_API void zebkit_view_on_share_result(zebkit_view*, zebkit_share_result_func, void *data);
+ZEBKIT_API bool zebkit_view_set_share_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_share_request_info(zebkit_share_request*);
+ZEBKIT_API bool zebkit_share_respond(zebkit_share_request*, bool shared);
+
 /* Camera and microphone (getUserMedia). Without a function, Chromium's permission
  * controller decides (zebkit_view_on_permission). With one it replaces that decision
  * for this request; Permissions Policy still refuses first. Screen and tab capture

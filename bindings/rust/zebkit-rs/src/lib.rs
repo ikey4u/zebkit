@@ -55,6 +55,13 @@ pub type zebkit_client_certificate_func = unsafe extern "C" fn(*mut zebkit_view,
 opaque!(zebkit_file_chooser_request);
 pub type zebkit_file_chooser_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_file_chooser_request, *const c_char, *mut c_void);
 opaque!(zebkit_media_access_request);
+opaque!(zebkit_eye_dropper_request);
+pub type zebkit_eye_dropper_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_eye_dropper_request, *const c_char, *mut c_void);
+opaque!(zebkit_device_chooser_request);
+pub type zebkit_device_chooser_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_device_chooser_request, *const c_char, *mut c_void);
+opaque!(zebkit_share_request);
+pub type zebkit_share_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_share_request, *const c_char, *mut c_void);
+pub type zebkit_context_menu_item_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 pub type zebkit_media_access_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_media_access_request, *const c_char, *mut c_void);
 opaque!(zebkit_network_request);
 pub type zebkit_network_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_network_request, *const c_char, *mut c_void);
@@ -259,6 +266,23 @@ extern "C" {
     pub fn zebkit_view_set_reserved_keys(view: *mut zebkit_view, keys_json: *const c_char, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_on_reserved_key(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
     pub fn zebkit_view_on_context_menu(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
+    pub fn zebkit_view_context_menu_run(view: *mut zebkit_view, menu_id: u64, command: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_context_menu_show(view: *mut zebkit_view, menu_id: u64, items_json: *const c_char, func: Option<zebkit_context_menu_item_func>, data: *mut c_void, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_view_on_eye_dropper(view: *mut zebkit_view, func: Option<zebkit_eye_dropper_func>, data: *mut c_void);
+    pub fn zebkit_view_on_eye_dropper_result(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
+    pub fn zebkit_view_set_eye_dropper_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
+    pub fn zebkit_eye_dropper_request_info(request: *mut zebkit_eye_dropper_request) -> *mut c_char;
+    pub fn zebkit_eye_dropper_respond(request: *mut zebkit_eye_dropper_request, color: *const c_char) -> bool;
+    pub fn zebkit_view_on_device_chooser(view: *mut zebkit_view, func: Option<zebkit_device_chooser_func>, data: *mut c_void);
+    pub fn zebkit_view_on_device_chooser_result(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
+    pub fn zebkit_view_set_device_chooser_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
+    pub fn zebkit_device_chooser_request_info(request: *mut zebkit_device_chooser_request) -> *mut c_char;
+    pub fn zebkit_device_chooser_respond(request: *mut zebkit_device_chooser_request, device_id: *const c_char) -> bool;
+    pub fn zebkit_view_on_share(view: *mut zebkit_view, func: Option<zebkit_share_func>, data: *mut c_void);
+    pub fn zebkit_view_on_share_result(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
+    pub fn zebkit_view_set_share_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
+    pub fn zebkit_share_request_info(request: *mut zebkit_share_request) -> *mut c_char;
+    pub fn zebkit_share_respond(request: *mut zebkit_share_request, shared: bool) -> bool;
     pub fn zebkit_view_set_fullscreen_policy(view: *mut zebkit_view, policy: c_int) -> bool;
     pub fn zebkit_view_on_fullscreen(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
     pub fn zebkit_view_on_http_auth(view: *mut zebkit_view, func: Option<zebkit_http_auth_func>, data: *mut c_void);
@@ -893,6 +917,9 @@ pub type zebkit_scheme_func = unsafe extern "C" fn(request: *mut zebkit_request,
 pub type zebkit_menu_func = unsafe extern "C" fn(id: *const c_char, data: *mut c_void);
 pub type zebkit_paths_func = unsafe extern "C" fn(paths_json: *const c_char, data: *mut c_void);
 pub type zebkit_app_func = unsafe extern "C" fn(data: *mut c_void);
+pub type zebkit_system_event_func = unsafe extern "C" fn(json: *const c_char, data: *mut c_void);
+pub type zebkit_notification_func = unsafe extern "C" fn(json: *const c_char, data: *mut c_void);
+opaque!(zebkit_tray);
 
 extern "C" {
     pub fn zebkit_pdf_open(data: *const c_void, size: usize, password: *const c_char, error: *mut *mut c_char)
@@ -998,6 +1025,30 @@ extern "C" {
     pub fn zebkit_app_on_open_files(func: Option<zebkit_paths_func>, data: *mut c_void);
     pub fn zebkit_app_on_reopen(func: Option<zebkit_app_func>, data: *mut c_void);
     pub fn zebkit_app_on_quit_request(func: Option<zebkit_app_func>, data: *mut c_void);
+    pub fn zebkit_app_update_menu_item(id: *const c_char, json: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_app_get_menu() -> *mut c_char;
+    pub fn zebkit_app_set_badge(text: *const c_char) -> bool;
+    pub fn zebkit_app_set_progress(progress: f64) -> bool;
+    pub fn zebkit_app_request_attention(critical: bool);
+    pub fn zebkit_app_set_dock_menu(json: *const c_char, func: Option<zebkit_menu_func>, data: *mut c_void, error: *mut *mut c_char) -> bool;
+
+    pub fn zebkit_tray_new(png: *const u8, size: usize, tooltip: *const c_char, error: *mut *mut c_char) -> *mut zebkit_tray;
+    pub fn zebkit_tray_set_icon(tray: *mut zebkit_tray, png: *const u8, size: usize, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_tray_set_tooltip(tray: *mut zebkit_tray, tooltip: *const c_char);
+    pub fn zebkit_tray_set_menu(tray: *mut zebkit_tray, json: *const c_char, func: Option<zebkit_menu_func>, data: *mut c_void, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_tray_on_click(tray: *mut zebkit_tray, func: Option<zebkit_app_func>, data: *mut c_void);
+    pub fn zebkit_tray_close(tray: *mut zebkit_tray);
+
+    pub fn zebkit_open_external(url: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_show_in_folder(path: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_on_power_event(func: Option<zebkit_system_event_func>, data: *mut c_void);
+    pub fn zebkit_get_displays() -> *mut c_char;
+    pub fn zebkit_on_displays_changed(func: Option<zebkit_system_event_func>, data: *mut c_void);
+    pub fn zebkit_prevent_sleep(keep_display_on: bool, reason: *const c_char) -> u64;
+    pub fn zebkit_allow_sleep(token: u64) -> bool;
+    pub fn zebkit_on_notification(func: Option<zebkit_notification_func>, data: *mut c_void);
+    pub fn zebkit_notification_clicked(id: *const c_char, action: c_int) -> bool;
+    pub fn zebkit_notification_closed(id: *const c_char, by_user: bool) -> bool;
     pub fn zebkit_request_url(request: *mut zebkit_request) -> *const c_char;
     pub fn zebkit_request_method(request: *mut zebkit_request) -> *const c_char;
     pub fn zebkit_request_headers(request: *mut zebkit_request) -> *const c_char;

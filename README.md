@@ -75,12 +75,19 @@ JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   its operator sets (`docs/MCP.md`). They can also drive zebkit through
   Playwright's API or over CDP, Chromium's own DevTools server, headless or
   windowed.
-- **Customise it from your code.** Native hooks decide what the engine
-  does, in C, Rust, Python and JavaScript: permissions, navigation, popups,
-  dialogs, downloads, certificates and client certificates, sign-in, network
-  requests and responses at every stage, settings at run time, your own URL
-  schemes, what a page may call, scripts before the page's own
-  (`docs/ROADMAP_HOOKS.md`).
+- **Customise it from your code, down to the desktop.** Native hooks decide
+  what the engine does, in C, Rust, Python and JavaScript: permissions,
+  navigation, popups, dialogs, downloads, certificates and client
+  certificates, sign-in, network requests and responses at every stage,
+  settings at run time, your own URL schemes, what a page may call, scripts
+  before the page's own (`docs/ROADMAP_HOOKS.md`). And everything a page or
+  the engine would show the person or ask of the system goes through the
+  application: the window's frame (system, overlay or none, with the page as
+  the title bar), menus and the context menu, JavaScript dialogs and sign-in,
+  file and device choosers, screen capture, notifications, the tray, the
+  Dock and taskbar, sharing, the system's theme, power and displays
+  ([Fit it into the desktop](#fit-it-into-the-desktop),
+  `docs/SYSTEM_INTEGRATION.md`).
 - **Safe by default.** A page has no `zebkit` object unless the
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
@@ -259,6 +266,59 @@ const hits = await pdf.search('revenue');
 const packed = await zebkit.compress('zstd', bytes, 19);
 const hash = await zebkit.crypto.digest('SHA-256', 'abc');
 ```
+
+### Fit it into the desktop
+
+Each thing the engine would show the person, or ask of the system, has a
+default that works and a function of the application's that replaces it.
+Nothing reaches the system without a decision the application can take;
+without a function, a page gets what a careful browser gives it, and
+nothing at all where a browser would ask.
+
+```python
+import zebkit
+
+zebkit.scheme_register("app")   # served by a scheme_handle(), as in the C example above
+zebkit.init(["app"])
+# The page is the title bar: the window's buttons over it, dragged by its CSS.
+view = zebkit.View("app://main/index.html", 1000, 700, options={
+    "frame": "overlay", "controls": {"height": 40, "color": "#1b1d2a", "symbolColor": "#ffffff"},
+    "dragRegions": {"source": "css", "origins": ["app://main"]}})
+
+# The application's menu bar (macOS) and keys, with state that changes in place.
+zebkit.app_set_menu([{"title": "File", "items": [{"title": "Autosave", "id": "autosave", "checked": True}]}],
+                    lambda item: zebkit.app_update_menu_item(item, checked=False))
+
+# A tray icon, the Dock's or the taskbar's badge, and the page's notifications as the application's.
+tray = zebkit.Tray(open("icon.png", "rb").read(), "My application")
+zebkit.app_set_badge("3")
+zebkit.on_notification(lambda event: print("show in my own UI:", event))
+
+# What a page asks for: a USB device, a screen to capture, a colour, a share.
+view.on_device_chooser(lambda request: request.respond(request.metadata["devices"][0]["id"]))
+view.on_media_access(lambda request: request.respond(True, None, "view"))
+view.on_share(lambda request: request.respond(True))
+
+# The system: its theme and its changes, the session's lock, the screens.
+zebkit.on_environment_changed(lambda env: print("dark" if env["colorScheme"] == "dark" else "light"))
+zebkit.on_power_event(lambda event: print(event["event"]))   # suspend, resume, lock, unlock
+print(zebkit.displays())
+```
+
+| | The default | The application's |
+|---|---|---|
+| Window frame | the system's | `overlay` (Window Controls Overlay) or `none`, title, colours, drag regions, state, actions |
+| Menus | the menu bar on macOS; the default context menu | items with state by id; the context menu replaced, extended or run |
+| Dialogs | the system's alerts; the engine's prompt and sign-in where there is a window | `zebkit_view_on_dialog`, `on_http_auth`, `on_client_certificate`, the eye dropper |
+| Files and devices | the system's file dialog; no device | the file chooser and File System Access; WebUSB, WebHID and Web Serial choosers |
+| Capture and media | camera and microphone by permission; no screen | `getDisplayMedia()`'s source: the view itself or the screen |
+| Notifications | undecided; then the system's own service | shown in the application's UI, with clicks and closes back to the page |
+| Desktop | none | the tray, the Dock's and the taskbar's badge, progress and attention, the Dock menu, Web Share, opening URLs and folders |
+| The system | a light page | the system's dark mode and contrast followed live; power, lock and display events; keeping awake |
+
+`docs/SYSTEM_INTEGRATION.md` has each surface, its default, its status on
+each system and why; `docs/API.md` has the calls in the four languages;
+`examples/custom-titlebar` is a window whose title bar is the page.
 
 ### Rust
 

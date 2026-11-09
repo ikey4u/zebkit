@@ -63,3 +63,4 @@
 1082-copy-results-in-shared-memory-populated-at-once.patch
 1083-the-system-locale-as-base-first-default.patch
 1084-file-system-access-through-the-embedder-file-chooser.patch
+1085-serial-ports-without-a-platform-bluetooth.patch

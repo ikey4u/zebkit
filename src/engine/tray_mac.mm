@@ -75,7 +75,7 @@ class MacTray : public TrayPlatform {
     NSImage* picture = skia::SkBitmapToNSImage(image);
     // The menu bar's height: a picture of its own size, as the system scales it.
     picture.size = NSMakeSize(18, 18);
-    picture.template = YES;
+    [picture setTemplate:YES];
     item_.button.image = picture;
   }
   void SetToolTip(const std::u16string& tooltip) override {

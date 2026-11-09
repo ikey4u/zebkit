@@ -386,7 +386,7 @@
     },
     "GetHidDelegate": {
      "surface": "device.hid",
-     "zebkit": false
+     "zebkit": true
     },
     "GetMediaObserver": {
      "surface": "media.display-capture",
@@ -398,7 +398,7 @@
     },
     "GetSerialDelegate": {
      "surface": "device.serial",
-     "zebkit": false
+     "zebkit": true
     },
     "GetSmartCardDelegate": {
      "surface": "device.smart-card",
@@ -414,7 +414,7 @@
     },
     "GetUsbDelegate": {
      "surface": "device.usb",
-     "zebkit": false
+     "zebkit": true
     },
     "GetWebAuthenticationDelegate": {
      "surface": "dialog.webauthn",
@@ -974,10 +974,14 @@
   },
   {
    "id": "app.dock",
-   "status": "gap",
-   "default": "none",
-   "control": [],
-   "tests": [],
+   "status": "done",
+   "default": "none; badge, progress, attention and the Dock menu (macOS) by the application",
+   "control": [
+    "configure"
+   ],
+   "tests": [
+    "tests/engine/dock.py"
+   ],
    "zebkit_only": true
   },
   {
@@ -1298,7 +1302,7 @@
   {
    "id": "dialog.print",
    "status": "partial",
-   "default": "no dialog; told to the application",
+   "default": "no dialog and no printer in this build (no printing backend, for size): told to the application; zebkit_view_print_to_pdf for output",
    "control": [
     "observe"
    ],
@@ -1335,10 +1339,15 @@
   },
   {
    "id": "media.display-capture",
-   "status": "gap",
-   "default": "refused",
-   "control": [],
-   "tests": []
+   "status": "partial",
+   "default": "refused without a function; with zebkit_view_on_media_access (\"type\": \"display\") the view itself or the whole screen (X11, macOS, Windows); no system picker as the default",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/display_capture.py"
+   ]
   },
   {
    "id": "media.audio-output",
@@ -1363,29 +1372,44 @@
   },
   {
    "id": "device.usb",
-   "status": "gap",
-   "default": "not available",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "no device without a function; zebkit_view_on_device_chooser chooses among the system's; a chosen device the origin's for the run",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/device_chooser.py"
+   ]
   },
   {
    "id": "device.hid",
-   "status": "gap",
-   "default": "not available",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "no device without a function; zebkit_view_on_device_chooser chooses among the system's (keyboards and mice excluded, as in Chrome)",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/device_chooser.py"
+   ]
   },
   {
    "id": "device.serial",
-   "status": "gap",
-   "default": "not available",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "no port without a function; zebkit_view_on_device_chooser chooses among the system's wired ports",
+   "control": [
+    "decide",
+    "observe"
+   ],
+   "tests": [
+    "tests/engine/device_chooser.py"
+   ]
   },
   {
    "id": "device.bluetooth",
    "status": "gap",
-   "default": "not supported",
+   "default": "not supported: no Bluetooth delegate (its scanning and pairing prompts are a chooser of their own)",
    "control": [],
    "tests": []
   },
@@ -1418,7 +1442,7 @@
   {
    "id": "notification.web",
    "status": "done",
-   "default": "denied until permitted; then the application's function, or the system's service (Linux, macOS)",
+   "default": "undecided until permitted; then the application's function, or the system's: org.freedesktop.Notifications, UserNotifications (macOS), a notification area balloon (Windows)",
    "control": [
     "decide",
     "present",
@@ -1450,10 +1474,15 @@
   },
   {
    "id": "desktop.share",
-   "status": "gap",
-   "default": "not exposed",
-   "control": [],
-   "tests": [],
+   "status": "done",
+   "default": "macOS's share sheet; cancelled elsewhere; the application's with zebkit_view_on_share",
+   "control": [
+    "decide",
+    "replace"
+   ],
+   "tests": [
+    "tests/engine/js_dialogs.py"
+   ],
    "zebkit_only": true
   },
   {
@@ -1577,14 +1606,15 @@
   },
   {
    "id": "power.events",
-   "status": "partial",
-   "default": "told: suspend, resume, power source; no lock events",
+   "status": "done",
+   "default": "told: suspend, resume, power source, the session's lock and unlock",
    "control": [
     "observe",
     "configure"
    ],
    "tests": [
-    "tests/engine/system_services.py"
+    "tests/engine/system_services.py",
+    "tests/engine/session_lock.py"
    ],
    "zebkit_only": true
   },

@@ -209,7 +209,7 @@ void SystemNotificationClosed(const std::string& id, bool by_user) {
     service->Closed(id, by_user);
 }
 
-#if !BUILDFLAG(IS_MAC) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_COOKIES_USE_DBUS))
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_COOKIES_USE_DBUS))
 // No system presenter here yet: the application's function shows them.
 bool ShowSystemNotification(const std::string& id, const base::DictValue& notification) {
   return false;
