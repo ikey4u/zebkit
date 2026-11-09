@@ -461,7 +461,7 @@ in `examples/native-host` (Done table). What is left:
 
 ### Releases
 
-- The latest engine, 0.3.0 (Chromium 157, HTML in canvas, pages in the system's locale again; `docs/releases/0.3.0.md`), after 0.2.1 (native screenshots at 12 ms and their pixels unencoded, the tools in every archive; `docs/releases/0.2.1.md`) and 0.2.0 (level with Electron 45.2.1 on the DOM, faster on page calls and starting, input into every frame, a window's handle for the system's dialogs, Wayland's first run, Playwright's suite at 4,046; `docs/releases/0.2.0.md`), is published for Linux, macOS and Windows;
+- The latest engine, 0.4.0 (system integration: the window's frame, menus, dialogs, device choosers, screen capture, notifications, the tray, the Dock and taskbar, the system's theme and power, each the application's to decide; `docs/releases/0.4.0.md`), after 0.3.0 (Chromium 157, HTML in canvas, pages in the system's locale again; `docs/releases/0.3.0.md`), 0.2.1 (native screenshots at 12 ms and their pixels unencoded, the tools in every archive; `docs/releases/0.2.1.md`) and 0.2.0 (level with Electron 45.2.1 on the DOM, faster on page calls and starting, input into every frame, a window's handle for the system's dialogs, Wayland's first run, Playwright's suite at 4,046; `docs/releases/0.2.0.md`), is published for Linux, macOS and Windows;
   the Rust crates download a release only from a repository anyone can
   read, so the repository has to be public for them.
 

@@ -8486,14 +8486,14 @@ dependencies = [
 
 [[package]]
 name = "zebkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "zebkit-rs",
 ]
 
 [[package]]
 name = "zebkit-build"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "zebkit-gpui-browser"
@@ -8511,7 +8511,7 @@ dependencies = [
 
 [[package]]
 name = "zebkit-rs"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "zed-font-kit"
