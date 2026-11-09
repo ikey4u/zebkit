@@ -232,7 +232,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `appearance.color-scheme` | light by default, as before; with the startup setting `appearance.follow` the system's colour scheme, contrast and forced colours and their changes (`NativeTheme`, on Linux the XDG portal's `color-scheme`, `appearance.cc`); per view `colorScheme` and `contrast` in `zebkit_view_set_settings` still win; `zebkit_get_environment()` and `zebkit_on_environment_changed()` | done |
 | `appearance.reduced-motion`, forced colours | through automation's media emulation only | partial |
 | `locale` | the system's, from Chromium 157 on (`patches/1083`); `Accept-Language` from it | done (157 branch) |
-| `accessibility.platform` | the trees when an assistive technology asks: on macOS VoiceOver's `AXEnhancedUserInterface`, `AXManualAccessibility` and a read of the application's role (`application_mac.mm`, as Chrome's), elsewhere content's detection; the environment's `accessibility` says which; no client reads AT-SPI, NSAccessibility or UI Automation on the test machines | partial: the trees' reading is not tested |
+| `accessibility.platform` | the trees when an assistive technology asks: on macOS VoiceOver's `AXEnhancedUserInterface`, `AXManualAccessibility` and a read of the application's role (`application_mac.mm`, as Chrome's), also in an application's own `NSApplication` when it owns the loop, elsewhere content's detection; the environment's `accessibility` says which; no client reads AT-SPI, NSAccessibility or UI Automation on the test machines | partial: the trees' reading is not tested |
 
 ### 5.8 Files, other programs, network
 

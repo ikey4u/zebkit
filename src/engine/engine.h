@@ -425,6 +425,9 @@ void SetUpViews();
 // The NSApplication that Chromium's event handling expects, when the engine
 // owns the loop.
 void RegisterApplication();
+// An application's own NSApplication (an external loop): the pages' trees when
+// an assistive technology asks, as ZebkitApplication has them; undone at the end.
+void HookHostAccessibility(bool on);
 // The resource pack in the framework.
 base::FilePath ResourcePackPath();
 #endif

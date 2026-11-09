@@ -589,7 +589,7 @@ if (use_aura) {
   ]
 }
 # WebUSB's filters (device_choosers.cc); the session's lock (system_events.cc).
-_deps += [ "//services/device/public/cpp/usb", "//ui/base/idle" ]
+_deps += [ "//services/device/public/cpp:device_features", "//services/device/public/cpp/hid", "//services/device/public/cpp/usb", "//ui/base/idle" ]
 if (is_mac) {
   # The system's location permission (client_defaults.cc).
   _deps += [ "//services/device/public/cpp/geolocation" ]

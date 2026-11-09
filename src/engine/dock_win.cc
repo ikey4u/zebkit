@@ -6,14 +6,17 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/scoped_gdi_object.h"
+#include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkCanvas.h"
-#include "third_party/skia/include/core/SkFont.h"
-#include "third_party/skia/include/core/SkPaint.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/gfx/canvas.h"
+#include "ui/gfx/font_list.h"
+#include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/win/icon_util.h"
 #include "zebkit/engine/dock.h"
 #include "zebkit/engine/window.h"
@@ -33,30 +36,27 @@ std::vector<HWND> Windows() {
 }
 
 Microsoft::WRL::ComPtr<ITaskbarList3> Taskbar() {
-  static Microsoft::WRL::ComPtr<ITaskbarList3> taskbar;
-  if (!taskbar && SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
-                                             IID_PPV_ARGS(&taskbar))))
-    taskbar->HrInit();
-  return taskbar;
+  static base::NoDestructor<Microsoft::WRL::ComPtr<ITaskbarList3>> taskbar;
+  if (!*taskbar && SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                              IID_PPV_ARGS(&*taskbar))))
+    (*taskbar)->HrInit();
+  return *taskbar;
 }
 
-// The badge's text on a red disc, as the taskbar's overlay is 16 by 16.
+// The badge's text on a red disc, in the system's UI font; the taskbar shows
+// its overlay at 16 by 16.
 base::win::ScopedGDIObject<HICON> BadgeIcon(const std::string& text) {
-  SkBitmap bitmap;
-  bitmap.allocN32Pixels(32, 32);
-  bitmap.eraseColor(SK_ColorTRANSPARENT);
-  SkCanvas canvas(bitmap);
-  SkPaint disc;
+  gfx::Canvas canvas(gfx::Size(32, 32), 1.0f, /*is_opaque=*/false);
+  canvas.DrawColor(SK_ColorTRANSPARENT, SkBlendMode::kSrc);
+  cc::PaintFlags disc;
   disc.setAntiAlias(true);
   disc.setColor(SkColorSetRGB(0xd9, 0x30, 0x25));
-  canvas.drawCircle(16, 16, 16, disc);
-  SkPaint ink;
-  ink.setAntiAlias(true);
-  ink.setColor(SK_ColorWHITE);
-  SkFont font(nullptr, text.size() > 2 ? 14 : 20);
-  const std::string shown = text.size() > 3 ? text.substr(0, 3) : text;
-  const SkScalar width = font.measureText(shown.data(), shown.size(), SkTextEncoding::kUTF8);
-  canvas.drawSimpleText(shown.data(), shown.size(), SkTextEncoding::kUTF8, 16 - width / 2, 23, font, ink);
+  canvas.DrawCircle(gfx::PointF(16, 16), 16, disc);
+  const std::u16string shown = base::UTF8ToUTF16(text.size() > 3 ? text.substr(0, 3) : text);
+  const gfx::FontList font = gfx::FontList().DeriveWithSizeDelta(shown.size() > 2 ? 2 : 8).DeriveWithWeight(
+      gfx::Font::Weight::BOLD);
+  canvas.DrawStringRectWithFlags(shown, font, SK_ColorWHITE, gfx::Rect(0, 0, 32, 32), gfx::Canvas::TEXT_ALIGN_CENTER);
+  const SkBitmap bitmap = canvas.GetBitmap();
   return IconUtil::CreateHICONFromSkBitmap(bitmap);
 }
 

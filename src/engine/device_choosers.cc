@@ -29,6 +29,9 @@
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "base/feature_list.h"
+#include "services/device/public/cpp/device_features.h"
+#include "services/device/public/cpp/hid/hid_report_utils.h"
 #include "services/device/public/cpp/usb/usb_utils.h"
 #include "services/device/public/mojom/hid.mojom.h"
 #include "services/device/public/mojom/serial.mojom.h"
@@ -333,23 +336,43 @@ bool HidMatches(const blink::mojom::HidDeviceFilter& filter, const device::mojom
   return true;
 }
 
-// Whether the page could use any of @device's reports: content drops the
-// collections whose reports are all protected (HidService::RemoveProtectedReports),
-// keyboards' and mice's, so a device of only those is not offered, as in Chrome.
-bool HidUsable(const device::mojom::HidDeviceInfo& device) {
-  auto open = [](const std::vector<device::mojom::HidReportDescriptionPtr>& reports,
-                 const std::optional<std::vector<uint8_t>>& protected_ids) {
-    for (const auto& report : reports)
-      if (!protected_ids || !std::ranges::contains(*protected_ids, report->report_id))
-        return true;
+// Whether the page could use any of @device's reports. Content drops the
+// reports that are protected, and the collections left empty
+// (HidService::RemoveProtectedReports, without FIDO, as here): a device of
+// only those (keyboards, mice, some vendors' controls) is not offered, as in
+// Chrome. The same rules, recursive or flat as the feature says.
+bool HidReportOpen(const device::mojom::HidCollectionInfo& collection, uint8_t report_id,
+                   device::HidReportType type, const std::optional<std::vector<uint8_t>>& protected_ids,
+                   bool recursive) {
+  if (recursive && device::HasReportInAlwaysProtectedCollection(collection, report_id, type))
     return false;
-  };
-  for (const auto& collection : device.collections) {
-    if (open(collection->input_reports, device.protected_input_report_ids) ||
-        open(collection->output_reports, device.protected_output_report_ids) ||
-        open(collection->feature_reports, device.protected_feature_report_ids))
+  return !protected_ids || !std::ranges::contains(*protected_ids, report_id);
+}
+
+bool HidCollectionOpen(const device::mojom::HidCollectionInfo& collection, const device::mojom::HidDeviceInfo& device,
+                       bool recursive) {
+  using Type = device::HidReportType;
+  for (const auto& report : collection.input_reports)
+    if (HidReportOpen(collection, report->report_id, Type::kInput, device.protected_input_report_ids, recursive))
       return true;
-  }
+  for (const auto& report : collection.output_reports)
+    if (HidReportOpen(collection, report->report_id, Type::kOutput, device.protected_output_report_ids, recursive))
+      return true;
+  for (const auto& report : collection.feature_reports)
+    if (HidReportOpen(collection, report->report_id, Type::kFeature, device.protected_feature_report_ids, recursive))
+      return true;
+  if (recursive)
+    for (const auto& child : collection.children)
+      if (HidCollectionOpen(*child, device, recursive))
+        return true;
+  return false;
+}
+
+bool HidUsable(const device::mojom::HidDeviceInfo& device) {
+  const bool recursive = base::FeatureList::IsEnabled(features::kWebHidRecursiveFiltering);
+  for (const auto& collection : device.collections)
+    if (HidCollectionOpen(*collection, device, recursive))
+      return true;
   return false;
 }
 

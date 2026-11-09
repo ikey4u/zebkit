@@ -1378,6 +1378,9 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   off_the_record_browser_context_->GetOriginTrialsControllerDelegate();
   InstallClientHints();
   InstallPermissionHooks();
+#if BUILDFLAG(IS_MAC)
+  HookHostAccessibility(true);
+#endif
   InstallCertificateHooks();
   InstallHttpAuthHooks();
   InstallNavigationHooks();
@@ -1406,6 +1409,9 @@ int BrowserMainParts::PreMainMessageLoopRun() {
 }
 
 void BrowserMainParts::PostMainMessageLoopRun() {
+#if BUILDFLAG(IS_MAC)
+  HookHostAccessibility(false);
+#endif
   StopSystemAppearance();
   CdpStop();
   StopNetworkQuality();

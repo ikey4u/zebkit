@@ -11,6 +11,11 @@
 
 #include <memory>
 
+#include <objc/runtime.h>
+
+#include "base/no_destructor.h"
+#include "zebkit/engine/engine.h"
+
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
 #include "ui/accessibility/ax_mode.h"
@@ -83,3 +88,49 @@
 }
 
 @end
+
+namespace zebkit {
+
+namespace {
+
+IMP g_host_set_value = nullptr;
+
+std::unique_ptr<content::ScopedAccessibilityMode>& HostComplete() {
+  static base::NoDestructor<std::unique_ptr<content::ScopedAccessibilityMode>> mode;
+  return *mode;
+}
+
+// NSApplication's accessibilitySetValue:forAttribute:, while the engine runs
+// in an application's own NSApplication: what ZebkitApplication does, then
+// the system's own.
+void HostSetValue(id self, SEL command, id value, NSString* attribute) {
+  const bool manual = [attribute isEqualToString:@"AXManualAccessibility"];
+  if (manual || [attribute isEqualToString:@"AXEnhancedUserInterface"]) {
+    if ([value boolValue] && !HostComplete())
+      HostComplete() = content::BrowserAccessibilityState::GetInstance()->CreateScopedModeForProcess(ui::kAXModeComplete);
+    else if (![value boolValue])
+      HostComplete().reset();
+    if (manual)
+      return;
+  }
+  reinterpret_cast<void (*)(id, SEL, id, NSString*)>(g_host_set_value)(self, command, value, attribute);
+}
+
+}  // namespace
+
+void HookHostAccessibility(bool on) {
+  if ([NSApp isKindOfClass:[ZebkitApplication class]])
+    return;
+  Method method = class_getInstanceMethod([NSApplication class], @selector(accessibilitySetValue:forAttribute:));
+  if (!method)
+    return;
+  if (on && !g_host_set_value) {
+    g_host_set_value = method_setImplementation(method, reinterpret_cast<IMP>(&HostSetValue));
+  } else if (!on && g_host_set_value) {
+    method_setImplementation(method, g_host_set_value);
+    g_host_set_value = nullptr;
+    HostComplete().reset();
+  }
+}
+
+}  // namespace zebkit

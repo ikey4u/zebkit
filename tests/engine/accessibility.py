@@ -74,8 +74,11 @@ def main():
             check(zebkit.environment()["accessibility"] == "off", "no tree until something asks",
                   zebkit.environment()["accessibility"])
             ask_like_an_assistive_client()
-        wait(lambda: zebkit.environment()["accessibility"] == "complete", 5)
-        check(zebkit.environment()["accessibility"] == "complete",
+        # The trees on: "complete", or "basic" where Chromium leaves the screen
+        # reader's part to its own detection of one (macOS without VoiceOver).
+        on = ("basic", "complete") if mac else ("complete",)
+        wait(lambda: zebkit.environment()["accessibility"] in on, 5)
+        check(zebkit.environment()["accessibility"] in on,
               "an assistive technology's request turns the pages' trees on", zebkit.environment()["accessibility"])
         view.close()
     except Exception as error:  # noqa: BLE001
