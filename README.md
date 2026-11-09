@@ -2,6 +2,12 @@
 
 <p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux, macOS and Windows. Add it in a few lines.</p>
 
+<p align="center">
+<a href="https://crates.io/crates/zebkit"><img src="https://img.shields.io/crates/v/zebkit.svg?label=crates.io" alt="crates.io"></a>
+<a href="https://pypi.org/project/zebkit/"><img src="https://img.shields.io/pypi/v/zebkit.svg?label=PyPI" alt="PyPI"></a>
+<a href="https://github.com/ikey4u/zebkit/releases/latest"><img src="https://img.shields.io/github/v/release/ikey4u/zebkit?label=engine" alt="Engine release"></a>
+</p>
+
 ## Introduction
 
 zebkit is Chromium's engine as one library you link into your own
@@ -322,6 +328,11 @@ each system and why; `docs/API.md` has the calls in the four languages;
 
 ### Rust
 
+[`zebkit`](https://crates.io/crates/zebkit) on crates.io, with
+[`zebkit-build`](https://crates.io/crates/zebkit-build) to put the engine
+beside your program; the build downloads the engine for your system once and
+checks its SHA-256.
+
 ```toml
 [dependencies]
 zebkit = "0.4.0"
@@ -352,8 +363,18 @@ fn main() {
 
 ### Python
 
+[`zebkit`](https://pypi.org/project/zebkit/) on PyPI is the binding; the
+engine is the archive for your system from the
+[releases](https://github.com/ikey4u/zebkit/releases) of the same version,
+with `ZEBKIT_DIR` pointing at it:
+
+```sh
+pip install zebkit
+export ZEBKIT_DIR=/path/to/zebkit-0.4.0-x86_64-unknown-linux-gnu
+```
+
 ```python
-import zebkit                      # bindings/python, on ctypes: nothing to compile
+import zebkit                      # pure Python on ctypes: nothing to compile
 
 def ready():
     view = zebkit.View("https://example.com/")
