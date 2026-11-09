@@ -27,6 +27,8 @@ gh = "2.102.0"
 "conda:xz-tools" = "5.8.3"
 # uv, for r:python only: builds the Python package and uploads it.
 uv = "0.13.7"
+# Go, for the Go binding's checks (bindings/golang, scripts/engine-test.sh).
+go = "1.26.9"
 
 [tasks.r]
 description = "Build the release zebkit for Linux (dist/release) and macOS (dist/release-macos, cross-built), and the archives the Rust crates download"

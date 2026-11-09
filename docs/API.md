@@ -695,6 +695,11 @@ std::process::exit(zebkit::run(|| {
 }));
 ```
 
+`bindings/golang` is a Go binding over cgo: the engine, views, pages'
+calls, the application's schemes, the page hooks of 0.4.0 and the system's
+services, on Linux and macOS (`bindings/golang/README.md` lists what it covers
+and what is still C, Rust and Python only).
+
 ## 4. JavaScript in the page
 
 A page the application grants it to has a global `zebkit`:

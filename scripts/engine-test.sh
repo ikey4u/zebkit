@@ -1055,6 +1055,18 @@ if [[ -n "$rust_settings_program" ]]; then
 fi
 
 run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
+# The Go binding (bindings/golang): its checks against this package, where Go is.
+go_cmd=()
+if command -v go > /dev/null; then go_cmd=(go); elif command -v mise > /dev/null && mise which go > /dev/null 2>&1; then go_cmd=(mise exec go -- go); fi
+if [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; then
+    log "building the Go binding's checks"
+    (cd "$ZEBKIT_ROOT/bindings/golang" && CGO_CFLAGS="-I$package/include" CGO_LDFLAGS="-L$package -Wl,-rpath,$package" \
+        "${go_cmd[@]}" vet ./... && CGO_CFLAGS="-I$package/include" CGO_LDFLAGS="-L$package -Wl,-rpath,$package" \
+        "${go_cmd[@]}" build -o "$work/go-check" ./internal/check) || { echo "FAIL the Go binding did not build"; failed=1; }
+    [[ -x "$work/go-check" ]] && run go-binding "$work/go-check" "${engine_switches[@]/profile/profile-go}"
+else
+    log "go-binding: skipped (prebuilt, or no Go)"
+fi
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"
 run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit-js"
