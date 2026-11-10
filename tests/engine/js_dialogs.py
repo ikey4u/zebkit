@@ -104,7 +104,9 @@ def main():
         # EyeDropper.open() wants its document focused.
         view.focus()
         wait(lambda: ev(view, "document.hasFocus()") is True, 3)
-        pick = "new EyeDropper().open().then(r => r.sRGBHex, e => e.name)"
+        # After the evaluation's user activation has reached the browser
+        # (device_chooser.py): EyeDropper.open() consumes it there.
+        pick = "new Promise(r => setTimeout(r, 200)).then(() => new EyeDropper().open()).then(r => r.sRGBHex, e => e.name)"
         cancelled = ev(view, pick)
         check(cancelled == "AbortError", "EyeDropper.open() without a function is cancelled", cancelled)
         asked = []
@@ -117,7 +119,8 @@ def main():
         check(picked == "#336699" and asked and asked[0]["origin"] == secure.rstrip("/"),
               "with one, the page gets the application's colour", (picked, asked[:1]))
         # navigator.share(): cancelled without a function on Linux, the application's with one.
-        share = "navigator.share({title: 'A page', url: location.href}).then(() => 'shared', e => e.name)"
+        share = ("new Promise(r => setTimeout(r, 200)).then(() => navigator.share({title: 'A page', url: location.href}))"
+                 ".then(() => 'shared', e => e.name)")
         if sys.platform.startswith("linux"):
             alone = ev(view, share)
             check(alone == "AbortError", "navigator.share() without a function is cancelled (Linux has no sheet)", alone)

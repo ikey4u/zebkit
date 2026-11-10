@@ -806,6 +806,9 @@ else
 fi
 # getDisplayMedia() through the media access hook: the view itself as the source (10).
 run display-capture env ZEBKIT_DIR="$package" python3 -I "$tests/display_capture.py" "${engine_switches[@]/profile/profile-capture}"
+# The Python binding's later families: contexts, scripts, off-screen views,
+# page dialogs, print and drag, media capture, the rest of PDF.
+run python-parity env ZEBKIT_DIR="$package" python3 -I "$tests/python_parity.py" "${engine_switches[@]/profile/profile-python-parity}"
 # WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
 run device-chooser env ZEBKIT_DIR="$package" python3 -I "$tests/device_chooser.py" "${engine_switches[@]/profile/profile-devices}"
 # The application's icon in the Dock or on the taskbar (12); the launcher's signal on Linux's private bus.

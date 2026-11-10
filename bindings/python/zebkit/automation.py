@@ -29,7 +29,7 @@ from . import _VIEW, Error, View, _P, _S, _V, _alive, _declare, _guard, _view_on
 
 __all__ = ["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle", "Route", "Request",
            "Response", "Dialog", "FileChooser", "Download", "BrowserContext", "Worker", "Tracing", "Pixels", "expect", "run",
-           "new_context", "listen", "TimeoutError", "commands"]
+           "new_context", "listen", "TimeoutError", "commands", "page_id"]
 
 _DONE = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
 _EVENT = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
@@ -37,6 +37,7 @@ _call = _declare("zebkit_automation_call", None, _V, _S, _S, _DONE, _P)
 _on_event = _declare("zebkit_automation_on_event", None, _V, _EVENT, _P)
 _commands = _declare("zebkit_automation_commands", _P)
 _page_view = _declare("zebkit_automation_page", _V, _S)
+_page_id = _declare("zebkit_automation_page_id", _P, _V)
 _LISTEN = ctypes.CFUNCTYPE(None, _S, _S, _P)
 _listen = _declare("zebkit_automation_listen", None, ctypes.c_int, _LISTEN, _P)
 _free = _declare("zebkit_free", None, _P)
@@ -46,6 +47,17 @@ _screenshot_pixels = _declare("zebkit_automation_screenshot_pixels", None, _V, _
 
 class TimeoutError(Error):  # noqa: A001
     """A command's timeout passed: Playwright's TimeoutError."""
+
+
+def page_id(view):
+    """The page id Playwright's protocol and the automation calls name the view by."""
+    pointer = _page_id(view._check())
+    if not pointer:
+        return None
+    try:
+        return ctypes.string_at(pointer).decode()
+    finally:
+        _free(pointer)
 
 
 def commands():

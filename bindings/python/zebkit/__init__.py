@@ -879,11 +879,15 @@ def post(function, delay_ms=0):
 class View:
     """A page, in a window when the machine has a display."""
 
-    def __init__(self, url=None, width=0, height=0, options=None):
+    def __init__(self, url=None, width=0, height=0, options=None, context=None):
         """A view loading url. options (<zebkit/window.h>): the window's, before
         it is made, such as {"frame": "overlay", "show": False}; width and
-        height go into them."""
-        if options is None:
+        height go into them. context: a Context of its own cookies and
+        storage, else the default one."""
+        context_handle = context._check() if context is not None else None
+        if options is None and context_handle:
+            self._handle = _view_new_in(context_handle, url.encode() if url else None, width, height)
+        elif options is None:
             self._handle = _view_new(url.encode() if url else None, width, height)
         else:
             given = dict(options)
@@ -892,7 +896,7 @@ class View:
             if height:
                 given.setdefault("height", height)
             error = _P()
-            self._handle = _view_new_with_options(None, url.encode() if url else None,
+            self._handle = _view_new_with_options(context_handle, url.encode() if url else None,
                                                   json.dumps(given).encode(), ctypes.byref(error))
             if not self._handle:
                 _raise(error, "cannot create a view with these window options")
@@ -2670,3 +2674,884 @@ def _pdf_more(cls):
 
 
 _pdf_more(Pdf)
+
+
+# ---- Contexts, views' windows, script outside pages: <zebkit/zebkit.h> ----
+
+_URL = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_DROP = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_CAPTURE = ctypes.CFUNCTYPE(None, _V, _P, _Z, _S, _P)
+_context_new = _declare("zebkit_context_new", _P)
+_context_close = _declare("zebkit_context_close", None, _P)
+_view_new_in = _declare("zebkit_view_new_in", _V, _P, _S, _I, _I)
+_view_set_size_limits = _declare("zebkit_view_set_size_limits", None, _V, _I, _I, _B)
+_view_attach = _declare("zebkit_view_attach", None, _V, _V, _I, _I, _I, _I)
+_view_set_visible = _declare("zebkit_view_set_visible", None, _V, _B)
+_view_set_title = _declare("zebkit_view_set_title", None, _V, _S)
+_view_add_script = _declare("zebkit_view_add_script", None, _V, _S)
+_view_stop = _declare("zebkit_view_stop", None, _V)
+_view_is_loading = _declare("zebkit_view_is_loading", _B, _V)
+_view_set_user_agent = _declare("zebkit_view_set_user_agent", None, _V, _S)
+_view_capture = _declare("zebkit_view_capture", None, _V, _CAPTURE, _P)
+_view_on_new_window = _declare("zebkit_view_on_new_window", None, _V, _URL, _P)
+_view_on_drop = _declare("zebkit_view_on_drop", None, _V, _DROP, _P)
+_script_new = _declare("zebkit_script_new", _P, _I, ctypes.POINTER(ctypes.c_char_p))
+_script_run_module = _declare("zebkit_script_run_module", None, _P, _S, _RESULT, _P)
+_script_evaluate = _declare("zebkit_script_evaluate", None, _P, _S, _RESULT, _P)
+_script_on_idle = _declare("zebkit_script_on_idle", None, _P, _TASK, _P)
+_script_destroy = _declare("zebkit_script_destroy", None, _P)
+
+
+class Context:
+    """Cookies, storage and cache of their own for the views made in it, as a
+    browser's profile or Playwright's BrowserContext; off the record. close()
+    closes its views."""
+
+    def __init__(self):
+        self._handle = _context_new()
+        if not self._handle:
+            raise Error("cannot create a context")
+
+    def _check(self):
+        if not self._handle:
+            raise Error("the context is closed")
+        return self._handle
+
+    def close(self):
+        handle, self._handle = self._handle, None
+        if handle:
+            _context_close(handle)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class Script:
+    """JavaScript outside any page, on the engine's V8, as zebkit-js runs it:
+    zebkit.* is there, without a page. Engine thread only."""
+
+    def __init__(self, args=()):
+        argv = [b"zebkit"] + [str(a).encode() for a in args]
+        array = (ctypes.c_char_p * len(argv))(*argv)
+        self._handle = _script_new(len(argv), array)
+        if not self._handle:
+            raise Error("cannot create a script runtime")
+
+    def _check(self):
+        if not self._handle:
+            raise Error("the script runtime is closed")
+        return self._handle
+
+    def _result(self, function, value_from):
+        def done(view, result, error, data):
+            _alive.discard(callback)
+            if function:
+                if error is not None:
+                    function(None, error.decode())
+                else:
+                    function(value_from(result), None)
+        callback = _RESULT(_guard(done))
+        _alive.add(callback)
+        return callback
+
+    def run_module(self, path, function=None):
+        """Runs the ES module at path; function(None, error_or_None) when it
+        has finished, its promises included."""
+        callback = self._result(function, lambda result: None)
+        _script_run_module(self._check(), os.fspath(path).encode(), callback, None)
+
+    def evaluate(self, source, function=None):
+        """Evaluates source; function(value, error), value as from JSON."""
+        callback = self._result(function, lambda result: json.loads(result.decode()) if result else None)
+        _script_evaluate(self._check(), source.encode(), callback, None)
+
+    def on_idle(self, function):
+        """function() once nothing is left to run: no timers, no pending work."""
+        def idle(data):
+            _alive.discard(callback)
+            function()
+        callback = _TASK(_guard(idle))
+        _alive.add(callback)
+        _script_on_idle(self._check(), callback, None)
+
+    def close(self):
+        handle, self._handle = self._handle, None
+        if handle:
+            _script_destroy(handle)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _view_core(cls):
+    def set_size_limits(self, min_width=0, min_height=0, resizable=True):
+        """The window's smallest size, and whether it may be resized."""
+        _view_set_size_limits(self._check(), min_width, min_height, bool(resizable))
+
+    def attach(self, parent, x, y, width, height):
+        """Shows this view inside parent's window, at (x, y), width by height."""
+        _view_attach(self._check(), parent._check(), x, y, width, height)
+
+    def set_visible(self, visible):
+        _view_set_visible(self._check(), bool(visible))
+
+    def set_title(self, title):
+        """The window's title; None for the page's."""
+        _view_set_title(self._check(), title.encode() if title is not None else None)
+
+    def add_script(self, source):
+        """Runs source in every document of the view, before the page's own."""
+        _view_add_script(self._check(), source.encode())
+
+    def stop(self):
+        _view_stop(self._check())
+
+    @property
+    def is_loading(self):
+        return bool(_view_is_loading(self._check()))
+
+    def set_user_agent(self, user_agent):
+        """The User-Agent the view sends; None for the engine's."""
+        _view_set_user_agent(self._check(), user_agent.encode() if user_agent is not None else None)
+
+    def capture(self, function):
+        """function(png_bytes, error): a PNG of what the view shows."""
+        def done(view, png, size, error, data):
+            _alive.discard(callback)
+            if error is not None:
+                function(None, error.decode())
+            else:
+                function(ctypes.string_at(png, size) if png and size else b"", None)
+        callback = _CAPTURE(_guard(done))
+        _alive.add(callback)
+        _view_capture(self._check(), callback, None)
+
+    def on_new_window(self, function):
+        """function(url) for a link or window.open() the page wanted in a new
+        window, when no on_window_open takes it; None removes it."""
+        if function is None:
+            self._callbacks.pop("new-window", None)
+            _view_on_new_window(self._check(), _URL(), None)
+            return
+        self._set("new-window", _URL(_guard(lambda h, url, d: function(url.decode()))), _view_on_new_window)
+
+    def on_drop(self, function):
+        """function(paths): files the person dropped on the view's window."""
+        if function is None:
+            self._callbacks.pop("drop", None)
+            _view_on_drop(self._check(), _DROP(), None)
+            return
+        self._set("drop", _DROP(_guard(lambda h, paths, d: function(json.loads(paths.decode())))), _view_on_drop)
+
+    for function in (set_size_limits, attach, set_visible, set_title, add_script, stop, is_loading,
+                     set_user_agent, capture, on_new_window, on_drop):
+        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
+
+
+_view_core(View)
+
+
+# ---- Off-screen views: <zebkit/offscreen.h> ----
+
+class _Rect(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_int32), ("y", ctypes.c_int32), ("width", ctypes.c_int32), ("height", ctypes.c_int32)]
+
+
+class _Frame(ctypes.Structure):
+    _fields_ = [("sequence", ctypes.c_uint64), ("layer", ctypes.c_int), ("bounds", _Rect),
+                ("width", ctypes.c_int32), ("height", ctypes.c_int32), ("scale", ctypes.c_float),
+                ("damage", ctypes.POINTER(_Rect)), ("damage_count", ctypes.c_size_t),
+                ("drawn_us", ctypes.c_int64), ("ready_us", ctypes.c_int64),
+                ("kind", ctypes.c_int), ("format", ctypes.c_int), ("buffer_id", ctypes.c_uint64),
+                ("pixels", ctypes.c_void_p), ("stride", ctypes.c_size_t), ("fd", ctypes.c_int),
+                ("size", ctypes.c_size_t), ("offset", ctypes.c_size_t), ("iosurface", ctypes.c_void_p),
+                ("plane_count", ctypes.c_int), ("fds", ctypes.c_int * 4), ("strides", ctypes.c_uint32 * 4),
+                ("offsets", ctypes.c_uint32 * 4), ("modifier", ctypes.c_uint64), ("fourcc", ctypes.c_uint32),
+                ("handle", ctypes.c_void_p)]
+
+
+class _KeyEvent(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("modifiers", ctypes.c_uint), ("key_code", ctypes.c_int),
+                ("native_key_code", ctypes.c_int), ("code", ctypes.c_char_p), ("key", ctypes.c_char_p),
+                ("text", ctypes.c_char_p), ("unmodified_text", ctypes.c_char_p)]
+
+
+class _EditCommand(ctypes.Structure):
+    _fields_ = [("name", ctypes.c_char_p), ("value", ctypes.c_char_p)]
+
+
+class _CursorImage(ctypes.Structure):
+    _fields_ = [("pixels", ctypes.c_void_p), ("width", ctypes.c_int32), ("height", ctypes.c_int32),
+                ("hot_x", ctypes.c_int32), ("hot_y", ctypes.c_int32), ("scale", ctypes.c_float)]
+
+
+_FRAME = ctypes.CFUNCTYPE(None, _V, ctypes.POINTER(_Frame), _P)
+_CARET = ctypes.CFUNCTYPE(None, _V, ctypes.POINTER(_Rect), _P)
+_CURSOR = ctypes.CFUNCTYPE(None, _V, _S, ctypes.POINTER(_CursorImage), _P)
+_POPUP = ctypes.CFUNCTYPE(None, _V, _B, ctypes.POINTER(_Rect), _P)
+_view_new_offscreen = _declare("zebkit_view_new_offscreen", _V, _S, _I, _I, ctypes.c_float)
+_view_new_offscreen_in = _declare("zebkit_view_new_offscreen_in", _V, _P, _S, _I, _I, ctypes.c_float)
+_view_is_offscreen = _declare("zebkit_view_is_offscreen", _B, _V)
+_view_set_size = _declare("zebkit_view_set_size", None, _V, _I, _I, ctypes.c_float)
+_view_on_frame = _declare("zebkit_view_on_frame", None, _V, _FRAME, _P)
+_frame_release = _declare("zebkit_frame_release", None, ctypes.POINTER(_Frame))
+_view_set_frame_rate = _declare("zebkit_view_set_frame_rate", None, _V, ctypes.c_double)
+_view_max_frames = _declare("zebkit_view_set_max_frames_in_flight", None, _V, _I)
+_view_frame_buffers = _declare("zebkit_view_set_frame_buffers", None, _V, _I)
+_view_request_frame = _declare("zebkit_view_request_frame", None, _V)
+_frame_mach_port = _declare("zebkit_frame_iosurface_mach_port", ctypes.c_uint32, ctypes.POINTER(_Frame))
+_view_send_mouse = _declare("zebkit_view_send_mouse", None, _V, _I, ctypes.c_float, ctypes.c_float, _I, _I, _U)
+_view_send_wheel = _declare("zebkit_view_send_wheel", None, _V, ctypes.c_float, ctypes.c_float, ctypes.c_float,
+                            ctypes.c_float, _B, _I, _U)
+_view_send_key = _declare("zebkit_view_send_key", None, _V, ctypes.POINTER(_KeyEvent))
+_view_send_key_commands = _declare("zebkit_view_send_key_with_commands", _B, _V, ctypes.POINTER(_KeyEvent),
+                                   ctypes.POINTER(_EditCommand), _Z)
+_view_ime_set_composition = _declare("zebkit_view_ime_set_composition", None, _V, _S, _I, _I)
+_view_ime_commit = _declare("zebkit_view_ime_commit", None, _V, _S)
+_view_ime_cancel = _declare("zebkit_view_ime_cancel", None, _V)
+_view_on_caret = _declare("zebkit_view_on_caret", None, _V, _CARET, _P)
+_view_set_focus = _declare("zebkit_view_set_focus", None, _V, _B)
+_view_on_cursor = _declare("zebkit_view_on_cursor", None, _V, _CURSOR, _P)
+_view_on_popup = _declare("zebkit_view_on_popup", None, _V, _POPUP, _P)
+
+FRAME_SHARED_MEMORY, FRAME_IOSURFACE, FRAME_DMABUF, FRAME_D3D11 = 1, 2, 3, 4
+LAYER_VIEW, LAYER_POPUP = 0, 1
+FORMAT_BGRA8, FORMAT_RGBA8 = 1, 2
+BUFFERS_AUTO, BUFFERS_SHARED_MEMORY, BUFFERS_GPU = 0, 1, 2
+MODIFIER_SHIFT, MODIFIER_CONTROL, MODIFIER_ALT, MODIFIER_META = 1, 2, 4, 8
+MODIFIER_CAPS_LOCK, MODIFIER_NUM_LOCK, MODIFIER_LEFT_BUTTON, MODIFIER_MIDDLE_BUTTON = 16, 32, 64, 128
+MODIFIER_RIGHT_BUTTON, MODIFIER_KEYPAD, MODIFIER_AUTO_REPEAT = 256, 512, 1024
+MOUSE_MOVE, MOUSE_DOWN, MOUSE_UP, MOUSE_LEAVE = 0, 1, 2, 3
+BUTTON_NONE, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_BACK, BUTTON_FORWARD = 0, 1, 2, 3, 4, 5
+WHEEL_PHASE_NONE, WHEEL_PHASE_BEGAN, WHEEL_PHASE_CHANGED, WHEEL_PHASE_ENDED, WHEEL_PHASE_MOMENTUM = 0, 1, 2, 3, 4
+KEY_DOWN, KEY_UP, KEY_CHAR = 0, 1, 2
+
+
+def _rect(rect):
+    return {"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height}
+
+
+class Frame:
+    """A frame of an off-screen view (<zebkit/offscreen.h>): its buffer is
+    the engine's until release(), which dropping the Frame also does. Keep
+    it to keep the buffer; the engine holds back frames while the
+    application holds as many as set_max_frames_in_flight allows."""
+
+    def __init__(self, pointer):
+        self._pointer = pointer
+        frame = pointer.contents
+        self.sequence = frame.sequence
+        self.layer = frame.layer
+        self.bounds = _rect(frame.bounds)
+        self.width, self.height, self.scale = frame.width, frame.height, frame.scale
+        self.damage = [_rect(frame.damage[i]) for i in range(frame.damage_count)] if frame.damage else []
+        self.drawn_us, self.ready_us = frame.drawn_us, frame.ready_us
+        self.kind, self.format, self.buffer_id = frame.kind, frame.format, frame.buffer_id
+        self.stride, self.fd, self.size, self.offset = frame.stride, frame.fd, frame.size, frame.offset
+        self.iosurface = frame.iosurface
+        self.handle = frame.handle
+        planes = max(0, min(4, frame.plane_count))
+        self.fds = list(frame.fds[:planes])
+        self.strides = list(frame.strides[:planes])
+        self.offsets = list(frame.offsets[:planes])
+        self.modifier, self.fourcc = frame.modifier, frame.fourcc
+
+    def pixels(self):
+        """The shared memory frame's pixels, copied: stride bytes a row,
+        format BGRA8 or RGBA8; None for a GPU buffer or once released."""
+        if not self._pointer:
+            return None
+        frame = self._pointer.contents
+        if frame.kind != FRAME_SHARED_MEMORY or not frame.pixels or frame.height <= 0:
+            return None
+        return ctypes.string_at(frame.pixels, frame.stride * (frame.height - 1) + frame.width * 4)
+
+    def iosurface_mach_port(self):
+        """macOS: a send right to the frame's IOSurface, for another process; 0 elsewhere."""
+        return _frame_mach_port(self._pointer) if self._pointer else 0
+
+    def release(self):
+        pointer, self._pointer = self._pointer, None
+        if pointer:
+            _frame_release(pointer)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+    def __del__(self):
+        self.release()
+
+
+def _key_event(kind, key_code=0, code=None, key=None, text=None, unmodified_text=None, modifiers=0,
+               native_key_code=0):
+    enc = lambda value: value.encode() if value is not None else None  # noqa: E731
+    return _KeyEvent(kind, modifiers, key_code, native_key_code, enc(code), enc(key), enc(text), enc(unmodified_text))
+
+
+def _view_offscreen(cls):
+    @classmethod
+    def offscreen(cls, url=None, width=800, height=600, scale=1.0, context=None):
+        """A view with no window: its frames go to on_frame, and the
+        application sends its input (send_mouse, send_key, ...)."""
+        url = url.encode() if url else None
+        if context is not None:
+            handle = _view_new_offscreen_in(context._check(), url, width, height, scale)
+        else:
+            handle = _view_new_offscreen(url, width, height, scale)
+        if not handle:
+            raise Error("cannot create an off-screen view")
+        view = cls.__new__(cls)
+        view._handle = handle
+        view._initialize_callbacks()
+        return view
+
+    @property
+    def is_offscreen(self):
+        return bool(_view_is_offscreen(self._check()))
+
+    def set_size(self, width, height, scale=1.0):
+        _view_set_size(self._check(), width, height, scale)
+
+    def on_frame(self, function):
+        """function(Frame) for each frame; the frame is released when the
+        Frame is dropped or released. None stops."""
+        if function is None:
+            self._callbacks.pop("frame", None)
+            _view_on_frame(self._check(), _FRAME(), None)
+            return
+
+        def frame(handle, pointer, data):
+            given = Frame(pointer)
+            try:
+                function(given)
+            finally:
+                del given
+        self._set("frame", _FRAME(_guard(frame)), _view_on_frame)
+
+    def set_frame_rate(self, fps):
+        _view_set_frame_rate(self._check(), float(fps))
+
+    def set_max_frames_in_flight(self, count):
+        _view_max_frames(self._check(), count)
+
+    def set_frame_buffers(self, buffers):
+        """BUFFERS_AUTO, BUFFERS_SHARED_MEMORY or BUFFERS_GPU."""
+        _view_frame_buffers(self._check(), buffers)
+
+    def request_frame(self):
+        """A new frame now, even when nothing changed."""
+        _view_request_frame(self._check())
+
+    def send_mouse(self, kind, x, y, button=BUTTON_NONE, click_count=0, modifiers=0):
+        """kind MOUSE_MOVE, MOUSE_DOWN, MOUSE_UP or MOUSE_LEAVE, at (x, y) in CSS pixels."""
+        _view_send_mouse(self._check(), kind, x, y, button, click_count, modifiers)
+
+    def send_wheel(self, x, y, delta_x, delta_y, precise=False, phase=WHEEL_PHASE_NONE, modifiers=0):
+        _view_send_wheel(self._check(), x, y, delta_x, delta_y, bool(precise), phase, modifiers)
+
+    def send_key(self, kind, key_code=0, code=None, key=None, text=None, unmodified_text=None, modifiers=0,
+                 native_key_code=0):
+        """kind KEY_DOWN, KEY_UP or KEY_CHAR (with text)."""
+        event = _key_event(kind, key_code, code, key, text, unmodified_text, modifiers, native_key_code)
+        _view_send_key(self._check(), ctypes.byref(event))
+
+    def send_key_with_commands(self, commands, kind=KEY_DOWN, key_code=0, code=None, key=None, text=None,
+                               unmodified_text=None, modifiers=0, native_key_code=0):
+        """A key that runs editing commands, [(name, value_or_None), ...] such
+        as [("selectAll", None)], as the system's key bindings do. False when
+        a command is unknown."""
+        event = _key_event(kind, key_code, code, key, text, unmodified_text, modifiers, native_key_code)
+        items = [(name.encode(), value.encode() if value is not None else None) for name, value in commands]
+        array = (_EditCommand * len(items))(*[_EditCommand(n, v) for n, v in items])
+        return bool(_view_send_key_commands(self._check(), ctypes.byref(event), array, len(items)))
+
+    def ime_set_composition(self, text, selection_start=-1, selection_end=-1):
+        _view_ime_set_composition(self._check(), text.encode(), selection_start, selection_end)
+
+    def ime_commit(self, text):
+        _view_ime_commit(self._check(), text.encode())
+
+    def ime_cancel(self):
+        _view_ime_cancel(self._check())
+
+    def set_focus(self, focused):
+        _view_set_focus(self._check(), bool(focused))
+
+    def on_caret(self, function):
+        """function(rect_or_None): where the text caret is, in CSS pixels."""
+        if function is None:
+            self._callbacks.pop("caret", None)
+            _view_on_caret(self._check(), _CARET(), None)
+            return
+        self._set("caret", _CARET(_guard(lambda h, rect, d: function(_rect(rect.contents) if rect else None))),
+                  _view_on_caret)
+
+    def on_cursor(self, function):
+        """function(cursor, image): the CSS cursor's name, and for a custom
+        one {"pixels", "width", "height", "hotX", "hotY", "scale"}, else None."""
+        def cursor(handle, name, image, data):
+            picture = None
+            if image:
+                i = image.contents
+                picture = {"pixels": ctypes.string_at(i.pixels, i.width * i.height * 4) if i.pixels else b"",
+                           "width": i.width, "height": i.height, "hotX": i.hot_x, "hotY": i.hot_y, "scale": i.scale}
+            function(name.decode() if name else "", picture)
+        if function is None:
+            self._callbacks.pop("cursor", None)
+            _view_on_cursor(self._check(), _CURSOR(), None)
+            return
+        self._set("cursor", _CURSOR(_guard(cursor)), _view_on_cursor)
+
+    def on_popup(self, function):
+        """function(shown, bounds_or_None): a popup (a <select>'s list) over the view."""
+        if function is None:
+            self._callbacks.pop("popup", None)
+            _view_on_popup(self._check(), _POPUP(), None)
+            return
+        self._set("popup", _POPUP(_guard(lambda h, shown, rect, d: function(bool(shown),
+                                                                            _rect(rect.contents) if rect else None))),
+                  _view_on_popup)
+
+    cls.offscreen = offscreen
+    for function in (is_offscreen, set_size, on_frame, set_frame_rate, set_max_frames_in_flight, set_frame_buffers,
+                     request_frame, send_mouse, send_wheel, send_key, send_key_with_commands, ime_set_composition,
+                     ime_commit, ime_cancel, set_focus, on_caret, on_cursor, on_popup):
+        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
+
+
+_view_offscreen(View)
+
+
+# ---- Dialogs, closing, printing, drag and drop: <zebkit/page.h> ----
+
+class _Dialog(ctypes.Structure):
+    _fields_ = [("id", ctypes.c_uint64), ("type", ctypes.c_int), ("message", ctypes.c_char_p),
+                ("default_prompt", ctypes.c_char_p), ("url", ctypes.c_char_p), ("is_reload", ctypes.c_bool),
+                ("held", ctypes.c_bool)]
+
+
+class _Drag(ctypes.Structure):
+    _fields_ = [("data_json", ctypes.c_char_p), ("operations", ctypes.c_uint), ("x", ctypes.c_float),
+                ("y", ctypes.c_float), ("image", ctypes.c_void_p), ("image_width", ctypes.c_int),
+                ("image_height", ctypes.c_int), ("image_stride", ctypes.c_int), ("image_scale", ctypes.c_float),
+                ("image_offset_x", ctypes.c_float), ("image_offset_y", ctypes.c_float)]
+
+
+_DIALOG = ctypes.CFUNCTYPE(None, _V, ctypes.POINTER(_Dialog), _P)
+_DIALOG_CLOSED = ctypes.CFUNCTYPE(None, _V, ctypes.c_uint64, _B, _S, _P)
+_PDF_DONE = ctypes.CFUNCTYPE(None, _V, _P, _Z, _S, _P)
+_DRAG = ctypes.CFUNCTYPE(_B, _V, ctypes.POINTER(_Drag), _P)
+_DRAG_OPERATION = ctypes.CFUNCTYPE(None, _V, _U, _P)
+_view_on_dialog = _declare("zebkit_view_on_dialog", None, _V, _DIALOG, _P)
+_view_on_dialog_closed = _declare("zebkit_view_on_dialog_closed", None, _V, _DIALOG_CLOSED, _P)
+_view_set_dialog_policy = _declare("zebkit_view_set_dialog_policy", None, _V, _I)
+_view_get_dialog_policy = _declare("zebkit_view_get_dialog_policy", _I, _V)
+_view_dialog_respond = _declare("zebkit_view_dialog_respond", _B, _V, ctypes.c_uint64, _B, _S)
+_view_dialogs = _declare("zebkit_view_dialogs", _P, _V)
+_view_request_close = _declare("zebkit_view_request_close", None, _V)
+_view_print_to_pdf = _declare("zebkit_view_print_to_pdf", None, _V, _S, _PDF_DONE, _P)
+_view_on_drag_start = _declare("zebkit_view_on_drag_start", None, _V, _DRAG, _P)
+_view_on_drag_end = _declare("zebkit_view_on_drag_end", None, _V, _DRAG_OPERATION, _P)
+_view_is_dragging = _declare("zebkit_view_is_dragging", _B, _V)
+_view_drag_enter = _declare("zebkit_view_drag_enter", None, _V, _S, ctypes.c_float, ctypes.c_float, _U, _U)
+_view_drag_over = _declare("zebkit_view_drag_over", None, _V, ctypes.c_float, ctypes.c_float, _U, _U,
+                           _DRAG_OPERATION, _P)
+_view_drag_leave = _declare("zebkit_view_drag_leave", None, _V)
+_view_drop = _declare("zebkit_view_drop", None, _V, ctypes.c_float, ctypes.c_float, _U, _DRAG_OPERATION, _P)
+_view_drag_source_end = _declare("zebkit_view_drag_source_end", None, _V, ctypes.c_float, ctypes.c_float, _U)
+
+DIALOG_ALERT, DIALOG_CONFIRM, DIALOG_PROMPT, DIALOG_BEFOREUNLOAD, DIALOG_PRINT = 0, 1, 2, 3, 4
+DIALOG_POLICY_DEFAULT, DIALOG_POLICY_HOLD, DIALOG_POLICY_ACCEPT, DIALOG_POLICY_DISMISS = 0, 1, 2, 3
+DRAG_NONE, DRAG_COPY, DRAG_LINK, DRAG_MOVE, DRAG_ALL = 0, 1, 2, 16, 19
+
+
+def _view_page(cls):
+    def on_dialog(self, function):
+        """function(dialog): {"id", "type", "message", "defaultPrompt", "url",
+        "isReload", "held"} for each alert, confirm, prompt, beforeunload or
+        print; a held one waits for dialog_respond(). None removes it."""
+        def dialog(handle, pointer, data):
+            d = pointer.contents
+            text = lambda value: value.decode() if value else ""  # noqa: E731
+            function({"id": d.id, "type": d.type, "message": text(d.message),
+                      "defaultPrompt": text(d.default_prompt), "url": text(d.url),
+                      "isReload": bool(d.is_reload), "held": bool(d.held)})
+        if function is None:
+            self._callbacks.pop("dialog", None)
+            _view_on_dialog(self._check(), _DIALOG(), None)
+            return
+        self._set("dialog", _DIALOG(_guard(dialog)), _view_on_dialog)
+
+    def on_dialog_closed(self, function):
+        """function(dialog_id, accepted, user_input_or_None)."""
+        if function is None:
+            self._callbacks.pop("dialog-closed", None)
+            _view_on_dialog_closed(self._check(), _DIALOG_CLOSED(), None)
+            return
+        self._set("dialog-closed", _DIALOG_CLOSED(_guard(
+            lambda h, dialog_id, accepted, text, d: function(dialog_id, bool(accepted),
+                                                             text.decode() if text is not None else None))),
+            _view_on_dialog_closed)
+
+    def set_dialog_policy(self, policy):
+        """DIALOG_POLICY_DEFAULT, _HOLD, _ACCEPT or _DISMISS."""
+        _view_set_dialog_policy(self._check(), policy)
+
+    @property
+    def dialog_policy(self):
+        return _view_get_dialog_policy(self._check())
+
+    def respond_dialog(self, dialog_id, accept, prompt_text=None):
+        """Answers a held dialog; False when there is no such dialog."""
+        return bool(_view_dialog_respond(self._check(), dialog_id, bool(accept),
+                                         prompt_text.encode() if prompt_text is not None else None))
+
+    def dialogs(self):
+        """The dialogs open now, as the engine lists them."""
+        value = _string(_view_dialogs(self._check()))
+        return json.loads(value) if value else []
+
+    def request_close(self):
+        """Closes the view as a person would: the page's beforeunload first."""
+        _view_request_close(self._check())
+
+    def print_to_pdf(self, function, options=None):
+        """function(pdf_bytes, error): the page printed, as Chrome's
+        Page.printToPDF, with its options (landscape, paperWidth, ...)."""
+        def done(view, pdf, size, error, data):
+            _alive.discard(callback)
+            if error is not None:
+                function(None, error.decode())
+            else:
+                function(ctypes.string_at(pdf, size) if pdf and size else b"", None)
+        callback = _PDF_DONE(_guard(done))
+        _alive.add(callback)
+        _view_print_to_pdf(self._check(), json.dumps(options).encode() if options is not None else None,
+                           callback, None)
+
+    def on_drag_start(self, function):
+        """function(drag) -> bool: the page started a drag: {"data",
+        "operations", "x", "y", "image": {"pixels", "width", "height",
+        "stride", "scale", "offsetX", "offsetY"} or None}. Return True to run
+        it yourself, False to let the engine run it in the page."""
+        def drag(handle, pointer, data):
+            d = pointer.contents
+            image = None
+            if d.image:
+                image = {"pixels": ctypes.string_at(d.image, d.image_stride * d.image_height),
+                         "width": d.image_width, "height": d.image_height, "stride": d.image_stride,
+                         "scale": d.image_scale, "offsetX": d.image_offset_x, "offsetY": d.image_offset_y}
+            try:
+                return bool(function({"data": json.loads(d.data_json.decode()) if d.data_json else None,
+                                      "operations": d.operations, "x": d.x, "y": d.y, "image": image}))
+            except Exception:  # noqa: BLE001
+                sys.excepthook(*sys.exc_info())
+                return False
+        if function is None:
+            self._callbacks.pop("drag-start", None)
+            _view_on_drag_start(self._check(), _DRAG(), None)
+            return
+        self._set("drag-start", _DRAG(drag), _view_on_drag_start)
+
+    def on_drag_end(self, function):
+        """function(operation): what the page's drag ended with (DRAG_*)."""
+        if function is None:
+            self._callbacks.pop("drag-end", None)
+            _view_on_drag_end(self._check(), _DRAG_OPERATION(), None)
+            return
+        self._set("drag-end", _DRAG_OPERATION(_guard(lambda h, operation, d: function(operation))),
+                  _view_on_drag_end)
+
+    @property
+    def is_dragging(self):
+        return bool(_view_is_dragging(self._check()))
+
+    def drag_enter(self, data, x, y, operations=DRAG_ALL, modifiers=0):
+        """A drag from outside enters the view with data (a dict of the drag's
+        items, as zebkit_view_drag_enter takes them, or its JSON)."""
+        text = data if isinstance(data, str) else json.dumps(data)
+        _view_drag_enter(self._check(), text.encode(), x, y, operations, modifiers)
+
+    def _operation(self, function):
+        def done(view, operation, data):
+            _alive.discard(callback)
+            if function:
+                function(operation)
+        callback = _DRAG_OPERATION(_guard(done))
+        _alive.add(callback)
+        return callback
+
+    def drag_over(self, x, y, operations=DRAG_ALL, modifiers=0, function=None):
+        """function(operation): what the page would do with it there."""
+        _view_drag_over(self._check(), x, y, operations, modifiers, self._operation(function), None)
+
+    def drag_leave(self):
+        _view_drag_leave(self._check())
+
+    def drop(self, x, y, modifiers=0, function=None):
+        """Drops the drag there; function(operation) with what the page did."""
+        _view_drop(self._check(), x, y, modifiers, self._operation(function), None)
+
+    def drag_source_end(self, x, y, operation):
+        """Ends the page's own drag that the application ran (on_drag_start's True)."""
+        _view_drag_source_end(self._check(), x, y, operation)
+
+    for function in (on_dialog, on_dialog_closed, set_dialog_policy, dialog_policy, respond_dialog, dialogs,
+                     request_close, print_to_pdf, on_drag_start, on_drag_end, is_dragging, drag_enter, _operation,
+                     drag_over, drag_leave, drop, drag_source_end):
+        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
+
+
+_view_page(View)
+
+
+# ---- Media a page plays: <zebkit/media.h> ----
+
+_MEDIA_CAPTURE = ctypes.CFUNCTYPE(None, _P, _S, _P)
+_view_media_list = _declare("zebkit_view_media_list", None, _V, _RESULT, _P)
+_view_media_at = _declare("zebkit_view_media_at", None, _V, ctypes.c_float, ctypes.c_float, _RESULT, _P)
+_media_keep_history = _declare("zebkit_media_keep_history", None, _B)
+_media_capture_start = _declare("zebkit_media_capture_start", _P, _V, _S, _S, _S, _EP)
+_media_capture_on_progress = _declare("zebkit_media_capture_on_progress", None, _P, _MEDIA_CAPTURE, _P)
+_media_capture_on_done = _declare("zebkit_media_capture_on_done", None, _P, _MEDIA_CAPTURE, _P)
+_media_capture_stop = _declare("zebkit_media_capture_stop", None, _P)
+_media_capture_status = _declare("zebkit_media_capture_status", _P, _P)
+_media_capture_free = _declare("zebkit_media_capture_free", None, _P)
+
+
+def media_keep_history(keep):
+    """Whether the engine keeps what media played before a capture starts,
+    so that a capture can begin from the start."""
+    _media_keep_history(bool(keep))
+
+
+class MediaCapture:
+    """What a page plays, written to a file as it plays (<zebkit/media.h>).
+    View.media_capture() starts it; close() frees it."""
+
+    def __init__(self, view, media_id, path, **options):
+        error = _P()
+        self._handle = _media_capture_start(view._check(), str(media_id).encode(), os.fspath(path).encode(),
+                                            json.dumps(options).encode() if options else None, ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the capture did not start")
+        self._callbacks = {}
+        _alive.add(self)
+
+    def _on(self, kind, setter, function):
+        if function is None:
+            self._callbacks.pop(kind, None)
+            setter(self._handle, _MEDIA_CAPTURE(), None)
+            return
+        callback = _MEDIA_CAPTURE(_guard(lambda capture, text, data: function(json.loads(text.decode()))))
+        self._callbacks[kind] = callback
+        setter(self._handle, callback, None)
+
+    def on_progress(self, function):
+        """function(progress) as it writes."""
+        self._on("progress", _media_capture_on_progress, function)
+
+    def on_done(self, function):
+        """function(result) once the file is finished, or the capture failed."""
+        self._on("done", _media_capture_on_done, function)
+
+    def stop(self):
+        if self._handle:
+            _media_capture_stop(self._handle)
+
+    def status(self):
+        if not self._handle:
+            return None
+        value = _string(_media_capture_status(self._handle))
+        return json.loads(value) if value else None
+
+    def close(self):
+        handle, self._handle = getattr(self, "_handle", None), None
+        if handle:
+            _media_capture_free(handle)
+        _alive.discard(self)
+
+
+def _view_media(cls):
+    def _media_result(self, function):
+        def done(view, result, error, data):
+            _alive.discard(callback)
+            if error is not None:
+                function(None, error.decode())
+            else:
+                function(json.loads(result.decode()) if result else None, None)
+        callback = _RESULT(_guard(done))
+        _alive.add(callback)
+        return callback
+
+    def media_list(self, function):
+        """function(media, error): what the page's frames play."""
+        _view_media_list(self._check(), self._media_result(function), None)
+
+    def media_at(self, x, y, function):
+        """function(media, error): the media element at (x, y), or None."""
+        _view_media_at(self._check(), x, y, self._media_result(function), None)
+
+    def media_capture(self, media_id, path, **options):
+        """Starts writing media_id (from media_list) to path: a MediaCapture."""
+        return MediaCapture(self, media_id, path, **options)
+
+    for function in (_media_result, media_list, media_at, media_capture):
+        setattr(cls, function.__name__, function)
+
+
+_view_media(View)
+
+
+# ---- PDF, the rest of <zebkit/pdf.h> ----
+
+_pdf_text_lines = _declare("zebkit_pdf_text_lines", _P, _P, _I, _EP)
+_pdf_images = _declare("zebkit_pdf_images", _P, _P, _I, _EP)
+_pdf_image_data = _declare("zebkit_pdf_image_data", _P, _P, _I, _I, _ZP, ctypes.POINTER(ctypes.c_bool), _EP)
+_pdf_signatures = _declare("zebkit_pdf_signatures", _P, _P, _EP)
+_pdf_signature_contents = _declare("zebkit_pdf_signature_contents", _P, _P, _I, _ZP, _EP)
+_pdf_annotation_set_image = _declare("zebkit_pdf_annotation_set_image", _B, _P, _I, _I, _P, _I, _I, _EP)
+_pdf_redact = _declare("zebkit_pdf_redact", _I, _P, _I, _S, ctypes.c_uint32, _EP)
+_pdf_form_fields = _declare("zebkit_pdf_form_fields", _P, _P, _EP)
+_pdf_form_set = _declare("zebkit_pdf_form_set", _B, _P, _S, _S, _EP)
+_pdf_form_reset = _declare("zebkit_pdf_form_reset", _B, _P, _EP)
+_pdf_page_rotate = _declare("zebkit_pdf_page_rotate", _B, _P, _I, _I, _EP)
+_pdf_pages_delete = _declare("zebkit_pdf_pages_delete", _B, _P, _IP, _I, _EP)
+_pdf_pages_move = _declare("zebkit_pdf_pages_move", _B, _P, _IP, _I, _I, _EP)
+_pdf_page_insert = _declare("zebkit_pdf_page_insert", _B, _P, _I, ctypes.c_double, ctypes.c_double, _EP)
+_pdf_pages_import = _declare("zebkit_pdf_pages_import", _B, _P, _P, _IP, _I, _I, _EP)
+_pdf_new = _declare("zebkit_pdf_new", _P, _EP)
+
+
+def _ints(values):
+    values = list(values)
+    return (ctypes.c_int * len(values))(*values), len(values)
+
+
+def _pdf_rest(cls):
+    @classmethod
+    def new(cls):
+        """A new, empty document, for building one from others' pages."""
+        error = _P()
+        handle = _pdf_new(ctypes.byref(error))
+        if not handle:
+            _raise(error, "cannot create a document")
+        pdf = cls.__new__(cls)
+        pdf._handle = handle
+        return pdf
+
+    def text_lines(self, index):
+        """The page's lines: [{"text", "box", "unmapped"}, ...]."""
+        return self._json(_pdf_text_lines, index)
+
+    def images(self, index):
+        """The images the page draws: [{"width", "height", "rect", "jpeg"}, ...]."""
+        return self._json(_pdf_images, index)
+
+    def image_data(self, index, image):
+        """(bytes, jpeg): the image as stored (a JPEG file) or decoded (RGBA)."""
+        size, jpeg, error = ctypes.c_size_t(), ctypes.c_bool(), _P()
+        out = _pdf_image_data(self._handle, index, image, ctypes.byref(size), ctypes.byref(jpeg), ctypes.byref(error))
+        if not out:
+            _raise(error, "no such image")
+        return _buffer(out, size.value), bool(jpeg.value)
+
+    def signatures(self):
+        """The document's signatures, each checked against the document."""
+        return self._json(_pdf_signatures)
+
+    def signature_contents(self, index):
+        """Signature index's DER-encoded PKCS#7 or time stamp."""
+        size, error = ctypes.c_size_t(), _P()
+        out = _pdf_signature_contents(self._handle, index, ctypes.byref(size), ctypes.byref(error))
+        if not out:
+            _raise(error, "no such signature")
+        return _buffer(out, size.value)
+
+    def set_annotation_image(self, index, annotation, rgba, width, height):
+        """Makes RGBA pixels, width by height, the appearance of a stamp annotation."""
+        rgba = bytes(rgba)
+        if len(rgba) < width * height * 4:
+            raise ValueError("rgba is smaller than width * height * 4")
+        self._ok(_pdf_annotation_set_image, index, annotation, rgba, width, height,
+                 fallback="the image cannot be set")
+
+    def redact(self, index, areas=None, fill=0):
+        """Takes what is under areas ([[l, b, r, t], ...]; None for the page's
+        redaction marks) out of the page for good, with a box of fill
+        (0xRRGGBBAA, 0 for none) over each. The number of areas."""
+        error = _P()
+        count = _pdf_redact(self._handle, index, json.dumps(areas).encode() if areas is not None else None,
+                            fill, ctypes.byref(error))
+        if count < 0:
+            _raise(error, "the page cannot be redacted")
+        return count
+
+    def form_fields(self):
+        return self._json(_pdf_form_fields)
+
+    def set_field(self, name, value):
+        """Sets a form field (by its full name) to value; appearances follow."""
+        self._ok(_pdf_form_set, name.encode(), str(value).encode(), fallback="the field cannot be set")
+
+    def reset_form(self):
+        self._ok(_pdf_form_reset, fallback="the form cannot be reset")
+
+    def rotate_page(self, index, rotation):
+        """0, 90, 180 or 270."""
+        self._ok(_pdf_page_rotate, index, rotation, fallback="the page cannot be rotated")
+
+    def delete_pages(self, pages):
+        array, count = _ints(pages)
+        self._ok(_pdf_pages_delete, array, count, fallback="the pages cannot be deleted")
+
+    def move_pages(self, pages, to):
+        """Moves pages, in the order given, to start at index to."""
+        array, count = _ints(pages)
+        self._ok(_pdf_pages_move, array, count, to, fallback="the pages cannot be moved")
+
+    def insert_page(self, at, width=612.0, height=792.0):
+        """A blank page, width by height points, at index at."""
+        self._ok(_pdf_page_insert, at, float(width), float(height), fallback="the page cannot be inserted")
+
+    def import_pages(self, source, pages=None, at=None):
+        """Copies pages of source (all for None) in at index at (the end for None)."""
+        if pages is None:
+            array, count = None, 0
+        else:
+            array, count = _ints(pages)
+        if at is None:
+            at = self.page_count
+        self._ok(_pdf_pages_import, source._handle, array, count, at, fallback="the pages cannot be imported")
+
+    cls.new = new
+    for function in (text_lines, images, image_data, signatures, signature_contents, set_annotation_image, redact,
+                     form_fields, set_field, reset_form, rotate_page, delete_pages, move_pages, insert_page,
+                     import_pages):
+        setattr(cls, function.__name__, function)
+
+
+_pdf_rest(Pdf)
+
+__all__ += [
+    "Context", "Script", "Frame", "MediaCapture", "media_keep_history",
+    "FRAME_SHARED_MEMORY", "FRAME_IOSURFACE", "FRAME_DMABUF", "FRAME_D3D11", "LAYER_VIEW", "LAYER_POPUP",
+    "FORMAT_BGRA8", "FORMAT_RGBA8", "BUFFERS_AUTO", "BUFFERS_SHARED_MEMORY", "BUFFERS_GPU",
+    "MODIFIER_SHIFT", "MODIFIER_CONTROL", "MODIFIER_ALT", "MODIFIER_META", "MODIFIER_CAPS_LOCK", "MODIFIER_NUM_LOCK",
+    "MODIFIER_LEFT_BUTTON", "MODIFIER_MIDDLE_BUTTON", "MODIFIER_RIGHT_BUTTON", "MODIFIER_KEYPAD",
+    "MODIFIER_AUTO_REPEAT", "MOUSE_MOVE", "MOUSE_DOWN", "MOUSE_UP", "MOUSE_LEAVE",
+    "BUTTON_NONE", "BUTTON_LEFT", "BUTTON_MIDDLE", "BUTTON_RIGHT", "BUTTON_BACK", "BUTTON_FORWARD",
+    "WHEEL_PHASE_NONE", "WHEEL_PHASE_BEGAN", "WHEEL_PHASE_CHANGED", "WHEEL_PHASE_ENDED", "WHEEL_PHASE_MOMENTUM",
+    "KEY_DOWN", "KEY_UP", "KEY_CHAR", "DIALOG_ALERT", "DIALOG_CONFIRM", "DIALOG_PROMPT", "DIALOG_BEFOREUNLOAD",
+    "DIALOG_PRINT", "DIALOG_POLICY_DEFAULT", "DIALOG_POLICY_HOLD", "DIALOG_POLICY_ACCEPT", "DIALOG_POLICY_DISMISS",
+    "DRAG_NONE", "DRAG_COPY", "DRAG_LINK", "DRAG_MOVE", "DRAG_ALL",
+]

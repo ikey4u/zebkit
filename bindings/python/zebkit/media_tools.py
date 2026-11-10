@@ -42,9 +42,19 @@ def ffprobe(argv):
     return json.loads(value)
 
 
+_media_probe = _declare('zebkit_media_probe', ctypes.c_int, _S, ctypes.POINTER(_P), ctypes.POINTER(_P))
+
+
 def probe(path):
-    """Inspect a local media file; return format and stream metadata."""
-    return ffprobe(['-i', path])
+    """Inspect a local media file; return format and stream metadata, as
+    ffprobe(['-i', path])."""
+    result, error = _P(), _P()
+    code = _media_probe(os.fsencode(path), ctypes.byref(result), ctypes.byref(error))
+    message = _string(error)
+    value = _string(result)
+    if code:
+        raise Error(message or 'media probe failed')
+    return json.loads(value)
 
 
 def ffmpeg(argv, *, progress=None):
