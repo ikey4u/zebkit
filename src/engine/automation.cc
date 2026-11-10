@@ -12289,11 +12289,6 @@ bool AutomationDrivesInput(content::WebContents* contents) {
   return contents && Automation::FromWebContents(contents);
 }
 
-void ForgetAutomationEvents(content::WebContents* contents) {
-  if (Automation* automation = contents ? Automation::FromWebContents(contents) : nullptr)
-    automation->SetEventHandler(nullptr, nullptr);
-}
-
 void ForgetAutomationContext(content::BrowserContext* profile) {
   ContextStates().erase(profile);
   ContextProxies().erase(profile);

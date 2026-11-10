@@ -79,11 +79,6 @@ bool AutomationSelectClientCertificate(
 // mouse events carry a drag the page starts (drag.cc).
 bool AutomationDrivesInput(content::WebContents* contents);
 
-// The view's automation events go to nobody from now on: the view is closing,
-// and the page's automation, which outlives it a little, still emits events
-// (zebkit_automation_on_event's function and data are the view's).
-void ForgetAutomationEvents(content::WebContents* contents);
-
 // The browser's end of @frame's page calls (Playwright's exposeBinding),
 // bound by the frame's associated interfaces.
 void BindAutomationHost(

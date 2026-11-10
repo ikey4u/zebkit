@@ -7,7 +7,6 @@
 #endif
 
 #include "zebkit/engine/view.h"
-#include "zebkit/engine/automation.h"
 #include "zebkit/engine/http_auth.h"
 
 #include <stdlib.h>
@@ -1081,7 +1080,6 @@ void zebkit_view::WebContentsDestroyed() {
   }
   on_authentication_ = nullptr;
   on_authentication_data_ = nullptr;
-  zebkit::ForgetAutomationEvents(web_contents());
   FailPending("the view was closed");
   Observe(nullptr);
   if (on_close_)

@@ -71,7 +71,11 @@ ZEBKIT_API void zebkit_automation_screenshot_pixels(zebkit_view *view, const cha
  * Dialog.accept or Dialog.dismiss, and file choosers for
  * FileChooser.setFiles, once Page.updateSubscription has asked for them
  * ({"event": "dialog" or "fileChooser", "enabled": true}). One function
- * per view; NULL stops.
+ * per view; NULL stops. The page's last events ("Page.close" among them)
+ * can come as the view closes, after its zebkit_view_on_close() function has
+ * run: keep @data valid until the task that closed the view has ended (free
+ * it in a posted task, as the bindings do), or stop the function before
+ * closing the view yourself.
  */
 typedef void (*zebkit_automation_event_func)(zebkit_view *view, const char *event, const char *json, void *data);
 ZEBKIT_API void zebkit_automation_on_event(zebkit_view *view, zebkit_automation_event_func func, void *data);

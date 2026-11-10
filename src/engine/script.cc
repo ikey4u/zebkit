@@ -2770,10 +2770,10 @@ int zebkit_script::WrapView(zebkit_view* view) {
   zebkit_view_on_close(
       view,
       [](zebkit_view* closing, void* data) {
-        // What ViewListen subscribed to with this hook goes first: an event the
-        // view sends as it closes (an automation event among them) must not
-        // reach the hook freed below.
-        zebkit_automation_on_event(closing, nullptr, nullptr);
+        // What ViewListen subscribed to with this hook stops here. The page's
+        // automation outlives the view a little and can still send it events
+        // as its page goes (the Playwright endpoint needs those): the hook is
+        // freed after this task, not now, and finds no view by then.
         zebkit_view_on_new_window(closing, nullptr, nullptr);
         zebkit_view_on_drop(closing, nullptr, nullptr);
         zebkit_view_on_dialog(closing, nullptr, nullptr);
@@ -2785,9 +2785,10 @@ int zebkit_script::WrapView(zebkit_view* view) {
         zebkit_view_on_cursor(closing, nullptr, nullptr);
         zebkit_view_on_popup(closing, nullptr, nullptr);
         zebkit_view_on_authentication(closing, nullptr, nullptr);
-        std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
+        auto* hook = static_cast<ViewHook*>(data);
         if (hook->script)
           hook->script->ViewClosed(hook->id);
+        base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, hook);
       },
       hook);
   zebkit_view_on_popup_blocked(
