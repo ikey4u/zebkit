@@ -83,9 +83,13 @@ inline constexpr char kPdfScript[] = R"js(((send) => {
     textPath(text, x, y) { return this.#op('textPath', String(text), x, y); }
     // The list of operations, for what takes one.
     get operations() { return this.#ops; }
-    // {width, height, data}: RGBA, not premultiplied.
-    pixels() { return send('canvas', 'render', [this.width, this.height, this.#ops, 'pixels']); }
-    png() { return send('canvas', 'render', [this.width, this.height, this.#ops, 'png']); }
+    // {width, height, data}: RGBA, not premultiplied. @over: pixels to draw
+    // over ({data} or bytes, width * height * 4, as pixels() gives them),
+    // the canvas's own picture when null (zebkit_canvas_wrap()).
+    pixels(over = null) { return send('canvas', 'render', [this.width, this.height, this.#ops, 'pixels', over?.data ?? over]); }
+    png(over = null) { return send('canvas', 'render', [this.width, this.height, this.#ops, 'png', over?.data ?? over]); }
+    // The advance of @text in the font set last, in the canvas's units.
+    measureText(text) { return send('canvas', 'measure', [this.width || 1, this.height || 1, this.#ops, String(text)]); }
   }
 
   // zebkit.pdf.use(plugin): what every document opened from now on runs through.

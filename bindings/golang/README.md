@@ -101,33 +101,26 @@ calls `zebkit_win_startup()`, so a child runs the engine's part there and
 exits before the program's own code.
 
 The engine and that library are built with clang for Microsoft's C runtime,
-not MinGW. `cmd/zebkit-cc` is the C compiler for cgo that matches: clang
-for `x86_64-pc-windows-msvc`, linking with `lld-link`, without the flags
-only MinGW knows. It needs LLVM's clang and lld (on Windows, LLVM's
-installer, with the Visual Studio Build Tools or the Windows SDK):
-
-```bat
-go install github.com/ikey4u/zebkit/bindings/golang/cmd/zebkit-cc@main
-set CC=zebkit-cc
-set CGO_ENABLED=1
-set CGO_CFLAGS=-I%ZEBKIT_DIR%\include
-set CGO_LDFLAGS=%ZEBKIT_DIR%\zebkit.dll.lib %ZEBKIT_DIR%\zebkit_sandbox.lib -Wl,/STACK:0x800000
-go build -ldflags="-s -w" .
-```
-
-Put the program beside `zebkit.dll` (the engine's children find it there).
-The 8 MiB stack is `chrome.exe`'s, which the renderer it also is needs.
-
-Cross-building from Linux or macOS works the same way, with the Windows SDK
-laid out as Chromium's `--winsysroot` takes it (`scripts/windows-toolchain.sh`):
+not MinGW, so a Go program for Windows is cross-built, from Linux or macOS,
+with `cmd/zebkit-cc` as cgo's C compiler: clang for
+`x86_64-pc-windows-msvc`, linking with `lld-link`, without the flags only
+MinGW knows. It needs LLVM's clang and lld (Chromium's own build has them) and
+the Windows SDK laid out as Chromium's `--winsysroot` takes it
+(`scripts/windows-toolchain.sh`):
 
 ```sh
+go install github.com/ikey4u/zebkit/bindings/golang/cmd/zebkit-cc@main
 GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=zebkit-cc ZEBKIT_CLANG=/path/to/clang \
 ZEBKIT_CC_FLAGS="-Xmicrosoft-windows-sys-root /path/to/vs_files" \
 CGO_CFLAGS="-I$ZEBKIT_DIR/include" \
 CGO_LDFLAGS="$ZEBKIT_DIR/zebkit.dll.lib $ZEBKIT_DIR/zebkit_sandbox.lib -Wl,/STACK:0x800000" \
 go build -ldflags="-s -w" .
 ```
+
+Put the program beside `zebkit.dll` (the engine's children find it there).
+The 8 MiB stack is `chrome.exe`'s, which the renderer it also is needs. This
+is how the checks below are built for Windows; building on Windows itself is
+not tested.
 
 ## Checks
 

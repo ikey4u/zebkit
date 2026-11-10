@@ -1,18 +1,18 @@
-// zebkit-cc is the C compiler for building a Go program with zebkit on
-// Windows: clang for the MSVC target, as the engine is built, linking with
-// lld-link and the static C runtime that zebkit_sandbox.lib needs. Go's cgo
-// speaks to a MinGW gcc; zebkit-cc drops the flags only MinGW knows and passes
-// the rest on.
+// zebkit-cc is the C compiler for cross-building a Go program with zebkit
+// for Windows, from Linux or macOS: clang for the MSVC target, as the engine
+// is built, linking with lld-link and the static C runtime that
+// zebkit_sandbox.lib needs. Go's cgo speaks to a MinGW gcc; zebkit-cc drops
+// the flags only MinGW knows and passes the rest on.
 //
 //	go install github.com/ikey4u/zebkit/bindings/golang/cmd/zebkit-cc@main
-//	set CC=zebkit-cc
+//	GOOS=windows CGO_ENABLED=1 CC=zebkit-cc go build ...
 //
 // Environment:
 //
 //	ZEBKIT_CLANG      the clang to run (default: clang on PATH)
 //	ZEBKIT_CC_FLAGS   more flags for it, split on spaces, such as
-//	                  "-Xmicrosoft-windows-sys-root /path/to/vs_files" when
-//	                  cross-building from Linux or macOS with the Windows SDK
+//	                  "-Xmicrosoft-windows-sys-root /path/to/vs_files", the
+//	                  Windows SDK laid out for clang
 package main
 
 import (

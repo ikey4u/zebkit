@@ -720,7 +720,7 @@ const url = await zebkit.url.parse('../x', location.href);
 | `zebkit.fetch(url, {method, headers, body})` | `{status, url, headers, body}`, `body` a `Uint8Array` |
 | `zebkit.fs` | `readFile`, `readText`, `writeFile`, `readDir`, `stat`, `mkdir`, `remove(path, {recursive})` |
 | `zebkit.compress(format, bytes, level)`, `zebkit.decompress(format, bytes)` | `gzip`, `zlib`, `deflate-raw`, `br`, `zstd` |
-| `zebkit.crypto` | `digest(algorithm, data)`, `hmac(algorithm, key, data)`, `randomBytes(count)` |
+| `zebkit.crypto` | `digest(algorithm, data)`, `hmac(algorithm, key, data)`, `randomBytes(count)`, `aesGcmSeal(key, nonce, data, ad)` and `aesGcmOpen(key, nonce, sealed, ad)` (AES-256/128-GCM: the ciphertext then its tag) |
 | `zebkit.image` | `decode(bytes)`, `encode('png' \| 'jpeg' \| 'webp', {width, height, data}, quality)` |
 | `zebkit.url` | `parse(url, base)`, `registrableDomain(host)` |
 | `zebkit.pdf` | `open(bytes, {password})`, a document with `info`, `page`, `pages` (every page's `page`, in one call), `render(i, {scale, rotation, x, y, width, height})` (RGBA), `renderAnnotation(i, a, {mode, scale, rotation})` and `renderAnnotations(i, {scale, rotation})` (each annotation's appearance alone, for a layer over the page), `text`, `textLayout`, `textLines` (lines with boxes), `textRects`, `charAt`, `search`, `outline`, `setOutline(items)` (atomic bookmark-tree replacement), `signatures`, `links`, `images` (each image's pixel size and place), `imageData` (one's JPEG as stored, or PNG), `annotations`, `annotationsOfPages` (several pages' in one call), `addAnnotation`, `updateAnnotation`, `removeAnnotation`, `setAnnotationImage` (an image as a stamp's appearance) (annotations carry their dictionary's `entries`, which add and update also set), `flatten`, `redact(i, areas, fill)`, `formFields`, `setField`, `resetForm`, `rotatePage`, `deletePages`, `movePages`, `insertPage`, `importPages`, `attachments`, `attach`, `detach`, `setMetadata`, `save`, `close`; `zebkit.pdf.create()` for a new one: `<zebkit/pdf.h>` |
@@ -783,8 +783,23 @@ const packed = await zebkit.compress('zstd', new TextEncoder().encode('...'), 19
 |---|---|
 | `zebkit.View(url, {width, height})` | `load`, `reload`, `back`, `forward`, `resize`, `close`, `url`, `title`, `evaluate(script)`, `grant(origin, capabilities, filesRoot)`, `bind(name, fn)`, `on('load' \| 'title' \| 'close', fn)` |
 | `zebkit.fetch`, `fs`, `compress`, `decompress`, `crypto`, `image`, `url`, `pdf` | As in a page (layer 4), with no grant: the script is the application; `fs` takes any path, and `pdf.open` a path as well as bytes |
-| `zebkit.args`, `zebkit.quit()`, `zebkit.version`, `zebkit.engineVersion` | |
+| `zebkit.args`, `zebkit.quit()`, `zebkit.version`, `zebkit.engineVersion`, `zebkit.isHeadless()` | |
 | `console`, `setTimeout`, `setInterval`, `TextEncoder`, `TextDecoder` | |
+| `new zebkit.Context()`, `new zebkit.View(url, {context})`, `context.close()` | `zebkit_context_new()`, `zebkit_view_new_in()`, `zebkit_context_close()`: cookies, storage and cache of its own |
+| `view.targetId`, `setSizeLimits`, `attach(parent, x, y, w, h)`, `setBounds`, `setVisible`, `attachNative(handle, ...)`, `detachNative()`, `setTitle`, `addScript`, `stop()`, `isLoading`, `setUserAgent`, `capture()` (a PNG), `setNavigationFailClosed`, `popupPolicy`, `on('new-window' \| 'drop', fn)` | the rest of `<zebkit/zebkit.h>`'s view |
+| `view.on('dialog' \| 'dialog-closed', fn)`, `setDialogPolicy`, `dialogPolicy`, `respondDialog(id, accept, text)`, `dialogs`, `requestClose()`, `printToPdf(options)`, `dragEnter`, `dragOver`, `dragLeave`, `drop`, `dragSourceEnd`, `isDragging`, `on('drag-start' \| 'drag-end', fn)`, `zebkit.DRAG` | `<zebkit/page.h>` |
+| `zebkit.View.offscreen(url, {width, height, scale, context})`, `on('frame', frame => ...)` (`frame.pixels()`, `keep()`, `release()`: released after the handlers unless kept), `setSize`, `setFrameRate`, `setMaxFramesInFlight`, `setFrameBuffers`, `requestFrame`, `sendMouse`, `sendWheel`, `sendKey`, `sendKeyWithCommands`, `imeSetComposition`, `imeCommit`, `imeCancel`, `setFocus`, `on('caret' \| 'cursor' \| 'popup', fn)`, `zebkit.MODIFIERS` | `<zebkit/offscreen.h>` |
+| `zebkit.automation.call(view, command, params)`, `screenshotPixels`, `page(id)`, `pageId(view)`, `listen(port)`, `commands()`, `view.on('automation', fn)` | `<zebkit/automation.h>` |
+| `view.mediaList()`, `mediaAt(x, y)`, `mediaCapture(id, path, options, {onProgress, onDone})`, `mediaTap(id, options, fn)`, `zebkit.media.keepHistory`, `probe`, `ffprobe(args)`, `ffmpeg(args, onProgress)` (on a worker thread; `false` from `onProgress` cancels) | `<zebkit/media.h>`, `media_tap.h`, `media_tools.h` |
+| `zebkit.scheme.handle(name, request => request.respond(status, headers, body))`, `zebkit.cdp.listen(address, port)`, `.port`, `.url`, `.stop()` | schemes are registered with `--zebkit-scheme=NAME,standard,secure,fetch`; `<zebkit/zebkit.h>`'s CDP |
+| `view.on('authentication', fn)`, `authenticationAction(action)`, `setAuthenticationUi`, `zebkit.app.onOpenFiles`, `onReopen`, `onQuitRequest` | WebAuthn's host UI; the application's events |
+| `zebkit.crypto.aesGcmSeal(key, nonce, data, ad)`, `aesGcmOpen`; `canvas.measureText(text)`, `canvas.pixels(over)` | AES-GCM; text's advance and drawing over given pixels (`zebkit_canvas_wrap()`) |
+
+`zebkit-js --zebkit-cookie-key-file=PATH` encrypts cookies with the
+application's own 32-byte key, read from PATH (never an argument);
+`--zebkit-cookie-storage` and the other startup settings are the engine's
+switches. `scripts/check-bindings.py` checks that zebkit-js reaches every
+function of the C API, listing what it reaches otherwise than by name.
 
 Bytes are `Uint8Array`s both ways, without base64: the calls go to the
 same code as a page's, in the same process. A function bound with

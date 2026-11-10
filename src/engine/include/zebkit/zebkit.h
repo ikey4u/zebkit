@@ -589,7 +589,7 @@ ZEBKIT_API void zebkit_view_on_drop(zebkit_view *view, zebkit_drop_func func, vo
  *                          mkdir, remove, under the directory granted
  *   ZEBKIT_ALLOW_COMPRESS  zebkit.compress(format, bytes, level) and
  *                          zebkit.decompress(format, bytes)
- *   ZEBKIT_ALLOW_CRYPTO    zebkit.crypto: digest, hmac, randomBytes
+ *   ZEBKIT_ALLOW_CRYPTO    zebkit.crypto: digest, hmac, randomBytes, aesGcmSeal, aesGcmOpen
  *   ZEBKIT_ALLOW_IMAGE     zebkit.image: decode(bytes), encode(format, image, quality)
  *   ZEBKIT_ALLOW_URL       zebkit.url: parse(url, base), registrableDomain(host)
  *   ZEBKIT_ALLOW_PDF       zebkit.pdf: open(bytes), and the document's

@@ -151,7 +151,7 @@ constexpr char kBridgeScript[] = R"js((() => {
     fs: api('fs', ['readFile', 'readText', 'writeFile', 'readDir', 'stat', 'mkdir', 'remove']),
     compress: (format, bytes, level) => send('compress', 'compress', [format, bytes, level ?? -1]),
     decompress: (format, bytes) => send('compress', 'decompress', [format, bytes]),
-    crypto: api('crypto', ['digest', 'hmac', 'randomBytes']),
+    crypto: api('crypto', ['digest', 'hmac', 'randomBytes', 'aesGcmSeal', 'aesGcmOpen']),
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
     pdf,

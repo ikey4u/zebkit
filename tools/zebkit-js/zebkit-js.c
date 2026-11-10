@@ -91,6 +91,25 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: zebkit-js [switches] app.mjs [arguments]\n");
         return 2;
     }
+    /* --zebkit-cookie-key-file=PATH: cookies encrypted with the application's
+     * own key, its 32 bytes read from PATH (zebkit_set_cookie_encryption_key):
+     * the key is never an argument. --zebkit-cookie-storage=os|file and
+     * --zebkit-scheme=... are the engine's own switches. */
+    for (int i = 1; argv[i] != module_path; ++i) {
+        static const char prefix[] = "--zebkit-cookie-key-file=";
+        if (strncmp(argv[i], prefix, sizeof prefix - 1) != 0)
+            continue;
+        unsigned char key[33];
+        FILE *file = fopen(argv[i] + sizeof prefix - 1, "rb");
+        const size_t size = file ? fread(key, 1, sizeof key, file) : 0;
+        if (file)
+            fclose(file);
+        if (size != 32 || !zebkit_set_cookie_encryption_key(key, 32)) {
+            fprintf(stderr, "zebkit-js: %s holds no 32-byte key\n", argv[i] + sizeof prefix - 1);
+            return 2;
+        }
+        memset(key, 0, sizeof key);
+    }
     int code = zebkit_main(argc, argv, ready, NULL);
     return failed ? 1 : code;
 }

@@ -1129,6 +1129,17 @@ if [[ -n "$go_dir" ]]; then
         fi
     done
 fi
+# zebkit-js beyond the basics: contexts, view basics, schemes, CDP, AES-GCM,
+# the canvas over pixels; page.h and off-screen views; automation and media.
+js_font=
+[[ -f "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf" ]] && js_font="$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
+run views-more-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --zebkit-scheme=jsapp,standard,secure,fetch \
+    --user-data-dir="$work/profile-views-more-javascript" "$tests/script/views_more.mjs" "http://127.0.0.1:$port" $js_font
+run page-offscreen-javascript "$bin/tools/zebkit-js" --no-sandbox --headless \
+    --user-data-dir="$work/profile-page-offscreen-javascript" "$tests/script/page_offscreen.mjs" "http://127.0.0.1:$port"
+run automation-media-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --autoplay-policy=no-user-gesture-required \
+    --user-data-dir="$work/profile-automation-media-javascript" "$tests/script/automation_media.mjs" "http://127.0.0.1:$port" \
+    "$tests/pages/media/clip.mp4" "$work"
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"
 run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit-js"

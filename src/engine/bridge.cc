@@ -299,6 +299,25 @@ Result Compute(const std::string& module,
       zebkit_random_bytes(out.data(), out.size());
       return Ok(Bytes(out));
     }
+    // AES-GCM: (key, nonce, plaintext or sealed, additional data or null);
+    // sealing gives the ciphertext and its tag, opening the plaintext.
+    if (method == "aesGcmSeal" || method == "aesGcmOpen") {
+      std::optional<std::string> key = GetBytes(arg(0));
+      std::optional<std::string> nonce = GetBytes(arg(1));
+      std::optional<std::string> data = GetBytes(arg(2));
+      std::optional<std::string> ad = arg(3) && !arg(3)->is_none() ? GetBytes(arg(3)) : std::string();
+      if (!key || !nonce || !data || !ad)
+        return Error(method + " takes a key, a nonce, bytes and additional data or null");
+      size_t size = 0;
+      auto* fn = method == "aesGcmSeal" ? &zebkit_aes_gcm_seal : &zebkit_aes_gcm_open;
+      uint8_t* out = fn(key->data(), key->size(), nonce->data(), nonce->size(), ad->data(), ad->size(),
+                        data->data(), data->size(), &size, &error);
+      if (!out)
+        return failed(method == "aesGcmSeal" ? "sealing failed" : "the data does not open");
+      base::Value bytes = Bytes(out, size);
+      free(out);
+      return Ok(std::move(bytes));
+    }
     std::optional<zebkit_digest> digest = DigestNamed(text(0));
     if (!digest)
       return Error("unknown digest \"" + text(0) +
@@ -380,14 +399,25 @@ Result Compute(const std::string& module,
     return Error("zebkit.image has no " + method);
   }
   if (module == "canvas") {
-    // (width, height, operations, "png" | "pixels")
-    if (method != "render")
+    // render: (width, height, operations, "png" | "pixels", R, G, B, A pixels
+    // to draw over or null); measure: (width, height, operations, text), the
+    // advance of the text in the font the operations set.
+    if (method != "render" && method != "measure")
       return Error("zebkit.canvas has no " + method);
     const base::Value* w = arg(0);
     const base::Value* h = arg(1);
     if (!w || !h || !w->is_int() || !h->is_int())
       return Error("a canvas has a width and a height");
-    zebkit_canvas* canvas = zebkit_canvas_new(w->GetInt(), h->GetInt(), &error);
+    std::optional<std::string> base;
+    if (method == "render" && arg(4) && !arg(4)->is_none()) {
+      base = GetBytes(arg(4));
+      if (!base || base->size() != static_cast<size_t>(w->GetInt()) * h->GetInt() * 4)
+        return Error("the pixels to draw over are width * height * 4 bytes");
+    }
+    zebkit_canvas* canvas =
+        base ? zebkit_canvas_wrap(reinterpret_cast<uint8_t*>(base->data()), w->GetInt(), h->GetInt(), 0,
+                                  ZEBKIT_CANVAS_UNPREMULTIPLIED, &error)
+             : zebkit_canvas_new(w->GetInt(), h->GetInt(), &error);
     if (!canvas)
       return failed("the canvas cannot be made");
     const base::Value* ops = arg(2);
@@ -397,7 +427,9 @@ Result Compute(const std::string& module,
       return failed("the drawing failed");
     }
     base::Value answer;
-    if (text(3) == "png") {
+    if (method == "measure") {
+      answer = base::Value(zebkit_canvas_measure_text(canvas, text(3).c_str()));
+    } else if (text(3) == "png") {
       size_t size = 0;
       uint8_t* out = zebkit_canvas_png(canvas, &size, &error);
       if (out) {
