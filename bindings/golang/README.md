@@ -57,45 +57,89 @@ engine calls back; from other goroutines, hand work over with
 
 ## What it covers
 
-- The engine: `Main`, `Init`, `Pump`, `Shutdown`, `Quit`, `Post`,
-  `PostDelayed`, `Version`, `EngineVersion`, `IsHeadless`, `Environment`,
-  `OnEnvironmentChanged`, `Capabilities`.
-- Views: `NewView`, `NewViewWithOptions` (the window's frame and options),
-  load, reload, back and forward, resize, focus, close, URL and title,
-  `Evaluate`, `AddScript`, `Capture`, `OnLoad`, `OnTitle`, `OnClose`,
-  `Window`, `SetWindow`, `WindowAction`, `OnWindowState`.
-- Pages calling the application: `Grant`, `Bind` and `Call`.
-- The application's URL schemes: `SchemeRegister`, `SchemeHandle`, `Request`.
-- Hooks: `SetPermission`, `OnPermission`, `OnNavigation`, `OnMediaAccess`
-  (camera, microphone, and `getDisplayMedia()`'s source), `OnEyeDropper`,
-  `OnShare`, `OnDeviceChooser` (WebUSB, WebHID, Web Serial), `OnContextMenu`.
-- The desktop and the system: `AppSetMenu`, `AppUpdateMenuItem`, `AppMenu`,
-  `AppSetBadge`, `AppSetProgress`, `AppRequestAttention`, `AppSetDockMenu`,
-  `NewTray`, `OnNotification`, `NotificationClicked`, `NotificationClosed`,
-  `OpenExternal`, `ShowInFolder`, `Displays`, `OnDisplaysChanged`,
-  `OnPowerEvent`, `PreventSleep`, `AllowSleep`.
+All of the C API (`docs/API.md`), as Rust and Python have it;
+`scripts/check-bindings.py` checks every exported function against each
+binding:
 
-Not yet in Go, and in C, Rust and Python: the PDF API, Playwright's API
-(`automation.h`), off-screen views, the canvas and text APIs, media capture
-and the other hooks of `<zebkit/hooks.h>` (network, downloads,
-certificates, HTTP authentication, file choosers). The C API is the
-reference for all of it (`docs/API.md`).
+- The engine: `Main`, or `Init`, `Pump` and `Shutdown` in a loop of your own;
+  `Post`, startup settings, cookie storage, contexts (`NewContext`), CDP, and
+  scripts outside any page (`NewScript`).
+- Views: windows with options, native windows and attaching, loading,
+  `Evaluate`, `Capture`, settings, user agents, popups and new windows,
+  files dropped, drag regions; off-screen views (`NewOffscreenView`), with
+  their frames as shared memory, dmabuf planes, IOSurfaces or Windows handles,
+  and the input sent to them.
+- Pages calling the application (`Grant`, `Bind`), the application's URL
+  schemes, and every hook of `<zebkit/hooks.h>`: permissions, navigation,
+  certificates and client certificates, HTTP authentication, the network at
+  every stage, downloads, file choosers, media access and screen capture, the
+  eye dropper, sharing, device choosers, the context menu, reserved keys and
+  fullscreen.
+- `<zebkit/page.h>`: dialogs, printing to PDF, closing, drag and drop.
+- Playwright's API inside the engine (`Page`, `Locator`,
+  `AutomationCall`, `AutomationListen`).
+- PDF (`OpenPDF`, rendering, text, search, annotations, forms, redaction,
+  page editing, signatures, and every PDF hook), the canvas and text
+  shaping, media capture, taps and tools, and the services (compression,
+  digests, encryption, images, URLs, `Fetch`).
+- The desktop and the system: menus, the Dock and the taskbar, the tray,
+  notifications, opening URLs and folders, displays, power events, keeping
+  awake.
 
 ## Systems
 
-Linux x86-64 and macOS on Apple silicon, where `internal/check` passes
-against the release engine (on macOS with the sandbox on). Windows is not
-supported yet: Go's cgo builds with a MinGW toolchain, and the engine's
-Windows sandbox needs the program linked with `zebkit_sandbox.lib`, built
-with Microsoft's C runtime.
+Linux x86-64, macOS on Apple silicon and Windows x64. The checks in
+`internal/` (257 of them) pass on all three, on macOS and Windows with the
+sandbox on.
+
+### Windows
+
+Chromium's sandbox on Windows needs the program that starts the engine's
+children to be those children too (`docs/WINDOWS.md`), so the program links
+`zebkit_sandbox.lib`. The package does the rest: on Windows its `init()`
+calls `zebkit_win_startup()`, so a child runs the engine's part there and
+exits before the program's own code.
+
+The engine and that library are built with clang for Microsoft's C runtime,
+not MinGW. `cmd/zebkit-cc` is the C compiler for cgo that matches: clang
+for `x86_64-pc-windows-msvc`, linking with `lld-link`, without the flags
+only MinGW knows. It needs LLVM's clang and lld (on Windows, LLVM's
+installer, with the Visual Studio Build Tools or the Windows SDK):
+
+```bat
+go install github.com/ikey4u/zebkit/bindings/golang/cmd/zebkit-cc@main
+set CC=zebkit-cc
+set CGO_ENABLED=1
+set CGO_CFLAGS=-I%ZEBKIT_DIR%\include
+set CGO_LDFLAGS=%ZEBKIT_DIR%\zebkit.dll.lib %ZEBKIT_DIR%\zebkit_sandbox.lib -Wl,/STACK:0x800000
+go build -ldflags="-s -w" .
+```
+
+Put the program beside `zebkit.dll` (the engine's children find it there).
+The 8 MiB stack is `chrome.exe`'s, which the renderer it also is needs.
+
+Cross-building from Linux or macOS works the same way, with the Windows SDK
+laid out as Chromium's `--winsysroot` takes it (`scripts/windows-toolchain.sh`):
+
+```sh
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=zebkit-cc ZEBKIT_CLANG=/path/to/clang \
+ZEBKIT_CC_FLAGS="-Xmicrosoft-windows-sys-root /path/to/vs_files" \
+CGO_CFLAGS="-I$ZEBKIT_DIR/include" \
+CGO_LDFLAGS="$ZEBKIT_DIR/zebkit.dll.lib $ZEBKIT_DIR/zebkit_sandbox.lib -Wl,/STACK:0x800000" \
+go build -ldflags="-s -w" .
+```
 
 ## Checks
 
 ```sh
-go run ./internal/check --headless
+go run ./internal/check --headless              # pages, calls, schemes, hooks, the system
+go run ./internal/check_hooks --headless        # every hook, settings, contexts, CDP, scripts
+go run ./internal/check_pdf --headless          # PDF, canvas, text, services
+go run ./internal/check_automation --headless   # Playwright's API, off-screen views, page, media
 ```
 
-runs the binding against a real engine: pages, calls, schemes, the hooks
-and the system's services. `scripts/engine-test.sh` runs it on Linux.
+run the binding against a real engine. `scripts/engine-test.sh` runs it on Linux, and
+builds it into the macOS and Windows test bundles (`--build-only`), where it
+runs from the package.
 
 The binding is under the LGPL 2.1 or later, as the rest of zebkit (`LICENSE`).

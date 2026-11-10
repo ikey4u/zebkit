@@ -16,6 +16,7 @@ use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View, PermissionState, Navig
 
 thread_local! {
     static OFFSCREEN_DONE: Cell<bool> = const { Cell::new(false) };
+    static CONTEXTS_DONE: Cell<bool> = const { Cell::new(false) };
     static MEDIA_DONE: Cell<bool> = const { Cell::new(false) };
     static NAVIGATION_DONE: Cell<bool> = const { Cell::new(false) };
     static CONSOLE_DONE: Cell<bool> = const { Cell::new(false) };
@@ -187,6 +188,8 @@ fn engine(page_port: u16) {
         } else if request.url() == "rs://test/captured.webm" {
             let captured = CAPTURED.with(|path| path.borrow().clone());
             request.respond_file(&captured, "Content-Type: video/webm");
+        } else if request.url() == "rs://test/context.html" {
+            request.respond(200, "Content-Type: text/html", b"<title>context</title>");
         } else if request.url() == "rs://test/index.html" {
             request.respond(
                 200,
@@ -199,6 +202,7 @@ fn engine(page_port: u16) {
         }
     });
     offscreen();
+    contexts();
     media();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
@@ -435,6 +439,51 @@ fn offscreen() {
             }
         });
     }
+}
+
+// A context's storage is its own: what a page stores there, a page of the
+// same origin in the engine's profile does not see.
+fn contexts() {
+    let context = match zebkit::Context::new() {
+        Ok(context) => context,
+        Err(error) => {
+            check(false, "Context::new", error);
+            CONTEXTS_DONE.with(|done| done.set(true));
+            return;
+        }
+    };
+    check(context.new_offscreen_view(None, 100, 100, 1.0).is_some(), "an off-screen view in a context", ());
+    let Some(inside) = context.new_view(Some("rs://test/context.html"), 320, 240) else {
+        check(false, "Context::new_view", "none");
+        CONTEXTS_DONE.with(|done| done.set(true));
+        return;
+    };
+    let inside2 = inside.clone();
+    inside.on_title(move |title| {
+        if title != "context" {
+            return;
+        }
+        let inside3 = inside2.clone();
+        inside2.evaluate("localStorage.setItem('kept', 'in the context'); localStorage.getItem('kept')", move |stored| {
+            check(stored.as_deref() == Ok("\"in the context\""), "a context's storage", &stored);
+            let outside = View::new(Some("rs://test/context.html"), 320, 240);
+            let outside2 = outside.clone();
+            let inside4 = inside3.clone();
+            outside.on_title(move |title| {
+                if title != "context" {
+                    return;
+                }
+                let (outside3, inside5) = (outside2.clone(), inside4.clone());
+                outside2.evaluate("localStorage.getItem('kept')", move |seen| {
+                    check(seen.as_deref() == Ok("null"), "the engine's profile does not see it", &seen);
+                    outside3.close();
+                    inside5.close();
+                    CONTEXTS_DONE.with(|done| done.set(true));
+                });
+            });
+        });
+    });
+    std::mem::forget(context);
 }
 
 fn editing(view: View) {
@@ -700,7 +749,7 @@ fn script_and_cdp(view: View) {
         text
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
-        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
+        if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
             || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;

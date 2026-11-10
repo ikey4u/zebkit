@@ -323,6 +323,9 @@ extern "C" {
     pub fn zebkit_view_on_popup_blocked(view: *mut zebkit_view, func: Option<zebkit_popup_blocked_func>, data: *mut c_void);
 
     pub fn zebkit_view_new(url: *const c_char, width: c_int, height: c_int) -> *mut zebkit_view;
+    pub fn zebkit_context_new() -> *mut zebkit_context;
+    pub fn zebkit_context_close(context: *mut zebkit_context);
+    pub fn zebkit_view_new_in(context: *mut zebkit_context, url: *const c_char, width: c_int, height: c_int) -> *mut zebkit_view;
     pub fn zebkit_view_load_url(view: *mut zebkit_view, url: *const c_char);
     pub fn zebkit_view_reload(view: *mut zebkit_view);
     pub fn zebkit_view_go_back(view: *mut zebkit_view);
@@ -1209,6 +1212,7 @@ pub type zebkit_popup_func =
 
 extern "C" {
     pub fn zebkit_view_new_offscreen(url: *const c_char, width: c_int, height: c_int, scale: f32) -> *mut zebkit_view;
+    pub fn zebkit_view_new_offscreen_in(context: *mut zebkit_context, url: *const c_char, width: c_int, height: c_int, scale: f32) -> *mut zebkit_view;
     pub fn zebkit_view_is_offscreen(view: *mut zebkit_view) -> bool;
     pub fn zebkit_view_set_size(view: *mut zebkit_view, width: c_int, height: c_int, scale: f32);
     pub fn zebkit_view_on_frame(view: *mut zebkit_view, func: Option<zebkit_frame_func>, data: *mut c_void);

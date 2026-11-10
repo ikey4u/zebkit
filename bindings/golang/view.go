@@ -123,12 +123,19 @@ func (v *View) Close() {
 	}
 	C.zebkit_view_close(v.view)
 	v.view = nil
-	for _, s := range v.slots {
-		s.clear()
-	}
-	for i := range v.binds {
-		v.binds[i].clear()
-	}
+	// The engine can still call the view's functions as it closes (OnClose
+	// among them): they are let go after that, from the engine's loop. A
+	// call that comes later still finds nothing and does nothing (callback).
+	slots, binds := v.slots, v.binds
+	v.slots, v.binds = map[string]*slot{}, nil
+	Post(func() {
+		for _, s := range slots {
+			s.clear()
+		}
+		for i := range binds {
+			binds[i].clear()
+		}
+	})
 }
 
 // Evaluate runs script in the page; done gets its result as JSON, or the

@@ -369,8 +369,44 @@ if [[ -z "$prebuilt" && ! -f "$real_pdf" ]]; then
         && [[ "$(sha256 "$real_pdf.part" | cut -d' ' -f1)" == "$PDF_REAL_SHA256" ]] \
         && mv "$real_pdf.part" "$real_pdf" || rm -f "$real_pdf.part"
 fi
+# Go, from the PATH or mise's pin (mise.toml), for the Go binding's checks.
+go_cmd=()
+if (cd "$ZEBKIT_ROOT" && command -v go > /dev/null && go version > /dev/null 2>&1); then go_cmd=(go)
+elif command -v mise > /dev/null && (cd "$ZEBKIT_ROOT" && mise which go > /dev/null 2>&1); then go_cmd=(mise exec -C "$ZEBKIT_ROOT" -- go); fi
+
 if [[ -n "$build_only" ]]; then
     check_engine_library
+    # The Go binding's checks for the bundle's system: Windows with zebkit-cc
+    # (clang for MSVC, the sandbox library linked), macOS with the SDK. They run
+    # from the package, beside the engine, as an application does.
+    if [[ ${#go_cmd[@]} -gt 0 && "$ZEBKIT_TARGET" != linux ]]; then
+        log "building the Go binding's checks for $ZEBKIT_TARGET"
+        go_env=(CGO_ENABLED=1 CGO_CFLAGS="-I$package/include")
+        if [[ "$ZEBKIT_TARGET" == windows ]]; then
+            (cd "$ZEBKIT_ROOT/bindings/golang" && "${go_cmd[@]}" build -o "$work/zebkit-cc" ./cmd/zebkit-cc) \
+                || die "zebkit-cc did not build"
+            go_env+=(GOOS=windows GOARCH=amd64 CC="$work/zebkit-cc" ZEBKIT_CLANG="$llvm_bin/clang"
+                ZEBKIT_CC_FLAGS="-Xmicrosoft-windows-sys-root $windows_sysroot"
+                CGO_LDFLAGS="$package/zebkit.dll.lib $package/zebkit_sandbox.lib -Wl,/STACK:0x800000")
+        else
+            mkdir -p "$work/go-bin"
+            ln -sf "$llvm_bin/llvm-strip" "$work/go-bin/strip"
+            go_env+=(GOOS=darwin GOARCH=arm64 PATH="$work/go-bin:$PATH" CC="$llvm_bin/clang --target=arm64-apple-macos13 -isysroot $macos_sdk"
+                CGO_LDFLAGS="-fuse-ld=lld -F$package")
+        fi
+        go_exe= go_ldflags="-s -w -extldflags=-Wl,-rpath,@executable_path"
+        [[ "$ZEBKIT_TARGET" == windows ]] && go_exe=.exe go_ldflags="-s -w"
+        for go_check in check check_hooks check_pdf check_automation; do
+            (cd "$ZEBKIT_ROOT/bindings/golang" && env "${go_env[@]}" "${go_cmd[@]}" build -ldflags="$go_ldflags" \
+                -o "$bin/go-$go_check$go_exe" "./internal/$go_check" 2>&1 | grep -v 'longer than 8 characters' >&2
+                [[ -f "$bin/go-$go_check$go_exe" ]]) || die "the Go binding's $go_check did not build for $ZEBKIT_TARGET"
+        done
+        # What check_pdf reads, from PDFium's tests (the bundle has no Chromium tree).
+        pdfium_resources="$SRC_DIR/third_party/pdfium/testing/resources"
+        mkdir -p "$bin/go-resources/fonts/ahem"
+        cp "$pdfium_resources/hello_world.pdf" "$pdfium_resources/bookmarks.pdf" "$pdfium_resources/text_form.pdf" "$bin/go-resources/"
+        cp "$pdfium_resources/fonts/ahem/Ahem.ttf" "$bin/go-resources/fonts/ahem/"
+    fi
     # The Rust hook program, if this machine's toolchain has the target.
     rust_target=
     [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]] && rust_target=aarch64-apple-darwin
@@ -1055,17 +1091,40 @@ if [[ -n "$rust_settings_program" ]]; then
 fi
 
 run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
-# The Go binding (bindings/golang): its checks against this package, where Go is.
-go_cmd=()
-if command -v go > /dev/null; then go_cmd=(go); elif command -v mise > /dev/null && mise which go > /dev/null 2>&1; then go_cmd=(mise exec go -- go); fi
-if [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; then
+# The Go binding (bindings/golang): its four check programs against this
+# package. Built here on Linux; for macOS and Windows built into the bundle
+# (--build-only) and run from the package there, as an application runs beside
+# the engine, on Windows sandboxed.
+go_checks=(check check_hooks check_pdf check_automation)
+go_dir=
+if [[ -n "$prebuilt" && ( -f "$bin/go-check" || -f "$bin/go-check.exe" ) ]]; then
+    go_dir="$package"
+    for go_check in "${go_checks[@]}"; do cp "$bin/go-$go_check"* "$package/"; done
+    go_resources="$bin/go-resources"
+elif [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; then
     log "building the Go binding's checks"
-    (cd "$ZEBKIT_ROOT/bindings/golang" && CGO_CFLAGS="-I$package/include" CGO_LDFLAGS="-L$package -Wl,-rpath,$package" \
-        "${go_cmd[@]}" vet ./... && CGO_CFLAGS="-I$package/include" CGO_LDFLAGS="-L$package -Wl,-rpath,$package" \
-        "${go_cmd[@]}" build -o "$work/go-check" ./internal/check) || { echo "FAIL the Go binding did not build"; failed=1; }
-    [[ -x "$work/go-check" ]] && run go-binding "$work/go-check" "${engine_switches[@]/profile/profile-go}"
+    go_dir="$work/go"
+    mkdir -p "$go_dir"
+    (cd "$ZEBKIT_ROOT/bindings/golang" && export CGO_CFLAGS="-I$package/include" CGO_LDFLAGS="-L$package -Wl,-rpath,$package" \
+        && "${go_cmd[@]}" vet ./... && for go_check in "${go_checks[@]}"; do
+            "${go_cmd[@]}" build -o "$go_dir/go-$go_check" "./internal/$go_check" || exit 1; done) \
+        || { echo "FAIL the Go binding did not build"; failed=1; go_dir=; }
+    go_resources="$SRC_DIR/third_party/pdfium/testing/resources"
 else
-    log "go-binding: skipped (prebuilt, or no Go)"
+    log "go-binding: skipped (no Go, or no checks in the bundle)"
+fi
+if [[ -n "$go_dir" ]]; then
+    for go_check in "${go_checks[@]}"; do
+        go_args=()
+        [[ "$go_check" == check_pdf ]] && go_args=(--resources="$go_resources")
+        if [[ "$ZEBKIT_HOST" == windows ]]; then
+            run "go-$go_check" env ZEBKIT_MEDIA_DIR="$tests/pages/media" "$go_dir/go-$go_check" "${go_args[@]}" \
+                --headless --user-data-dir="$work/profile-go-$go_check"
+        else
+            run "go-$go_check" env ZEBKIT_MEDIA_DIR="$tests/pages/media" "$go_dir/go-$go_check" "${go_args[@]}" \
+                "${engine_switches[@]/profile/profile-go-$go_check}"
+        fi
+    done
 fi
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"

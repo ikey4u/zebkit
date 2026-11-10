@@ -51,6 +51,7 @@ pub mod app;
 pub mod automation;
 pub mod canvas;
 pub mod cdp;
+mod context;
 mod engine;
 pub mod media;
 pub mod media_tools;
@@ -70,6 +71,7 @@ pub use engine::{
     set_cookie_encryption_key, set_cookie_storage, set_engine_settings, set_wakeup, shutdown, version, CookieStorage,
 };
 pub use script::Script;
+pub use context::Context;
 pub use media::{MediaCapture, MediaTap};
 mod view_hooks;
 pub use tray::Tray;
