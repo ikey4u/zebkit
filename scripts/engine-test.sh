@@ -163,7 +163,16 @@ cleanup() {
                 -a "$identity" >/dev/null 2>&1 || true
         done
     fi
-    if [[ -n "${ENGINE_TEST_KEEP_WORK:-}" ]]; then echo "kept: $work"; else rm -rf "$work"; fi
+    if [[ -n "${ENGINE_TEST_KEEP_WORK:-}" ]]; then
+        echo "kept: $work"
+    else
+        # On Windows the last test's engine children can hold its profile's
+        # files for a moment after it ends: its result is the run's, not this.
+        local tries=0
+        until rm -rf "$work" 2>/dev/null || (( ++tries >= 30 )); do sleep 1; done
+        [[ -e "$work" ]] && echo "note: $work is still in use; not removed" >&2
+    fi
+    return 0
 }
 trap cleanup EXIT
 
