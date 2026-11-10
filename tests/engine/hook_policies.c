@@ -552,7 +552,11 @@ static void net_asked(zebkit_view *v, zebkit_network_request *request, const cha
 static zebkit_network_stream *net_stream;
 static long stream_left;
 static int stream_blocked;
-static char stream_block[262144];
+/* net-stream-full: blocks of 1 MiB, the most one write takes, 16 MiB in all.
+ * The engine buffers 1 MiB before its pipe; with smaller blocks a reader as
+ * fast as the writer drains it between writes and no write is ever refused,
+ * which is what the mode is about. */
+static char stream_block[1 << 20];
 static void stream_pump(zebkit_network_stream *stream, void *d) {
     (void)d;
     while (stream_left > 0) {
@@ -612,7 +616,7 @@ static void more_asked(zebkit_view *v, zebkit_network_request *request, const ch
         } else if (IS("net-stream-full")) {
             static char too_much[(1 << 20) + 1];
             CHECK(!zebkit_network_stream_write(net_stream, too_much, sizeof too_much));
-            stream_left = 3 << 20;
+            stream_left = 16 << 20;
             memset(stream_block, 'f', sizeof stream_block);
             zebkit_network_stream_on_writable(net_stream, stream_pump, NULL);
             stream_pump(net_stream, NULL);
@@ -769,7 +773,7 @@ static void network_answers(void) {
     } else if (IS("net-stream")) {
         more_answer("fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))", "\"201|by-host|abcd\"");
     } else if (IS("net-stream-full")) {
-        more_answer(PAGE_READS("/held"), "3145728");
+        more_answer(PAGE_READS("/held"), "16777216");
         CHECK(stream_blocked && stream_left <= 0);
     } else if (IS("net-stream-fail")) {
         more_answer(PAGE_READS("/held"), "\"failed\"");

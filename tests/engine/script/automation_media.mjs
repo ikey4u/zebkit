@@ -68,7 +68,9 @@ if (media.length === 1) {
     onDone: (state) => { finished = state; },
   });
   await until(() => progressed, 10000);
-  await sleep(1500);
+  // Until what it wrote is media, not only the file's header: under load the
+  // clip can play late.
+  await until(() => (capture.status?.bytes ?? 0) > 1000, 20000);
   check(JSON.stringify(capture.status).includes('"state"'), 'mediaCapture status', capture.status);
   capture.stop();
   check(await until(() => finished !== null, 20000) && progressed, 'mediaCapture: progress, stop, done', finished);

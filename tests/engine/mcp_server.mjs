@@ -1350,7 +1350,9 @@ let stderrLogs = '';
 {
   const server = startHttp(binary, [...engine]);
   const port = await server.port;
-  const printed = server.log.text.match(/bearer token \(shown once\): ([0-9a-f]{64})/);
+  const shown = /bearer token \(shown once\): ([0-9a-f]{64})/;
+  for (const end = Date.now() + 10000; !shown.test(server.log.text) && Date.now() < end;) await new Promise(r => setTimeout(r, 20));
+  const printed = server.log.text.match(shown);
   check(!!printed, 'HTTP: without a file, a token is generated and shown once');
   const list = await raw(port, { headers: { Authorization: `Bearer ${printed?.[1]}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { _meta: META } }) });
   check(list.status === 200, 'HTTP: and it works', list.status);

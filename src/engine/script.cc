@@ -804,8 +804,14 @@ struct zebkit_script {
       ++script->depth_;
     }
     ~Scope() {
-      if (--script->depth_ == 0)
+      // Not from inside a checkpoint: a module's code after an await runs in
+      // one, and a promise settled there gets its handler after this scope.
+      if (--script->depth_ == 0 && !script->checkpointing_) {
+        script->checkpointing_ = true;
         script->isolate()->PerformMicrotaskCheckpoint();
+        script->checkpointing_ = false;
+        script->ReportUnhandledRejections();
+      }
     }
     raw_ptr<zebkit_script> script;
     v8::Isolate::Scope isolate_scope;
@@ -976,6 +982,12 @@ struct zebkit_script {
 
   int holds_ = 0;
   int depth_ = 0;
+  // Promises rejected with no handler yet: reported once the promise jobs have
+  // run and none was added, as browsers and Node.js report them, so that a
+  // rejection handled in the same turn (a .then() just after) is not.
+  std::vector<std::pair<v8::Global<v8::Promise>, v8::Global<v8::Value>>> unhandled_;
+  void ReportUnhandledRejections();
+  bool checkpointing_ = false;
   // zebkit.ui's views, made when first used, and the function it hands
   // their events to.
   std::unique_ptr<zebkit::UiTree> ui_;
@@ -1006,12 +1018,22 @@ zebkit_script::zebkit_script(std::vector<std::string> args)
   // Promise jobs run when an entry from C++ into script ends (Scope).
   isolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
   isolate()->SetPromiseRejectCallback([](v8::PromiseRejectMessage message) {
-    if (message.GetEvent() != v8::kPromiseRejectWithNoHandler)
-      return;
     v8::Isolate* isolate = v8::Isolate::GetCurrent();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
-    fprintf(stderr, "Uncaught (in promise) %s\n",
-            Describe(isolate, context, message.GetValue()).c_str());
+    if (context.IsEmpty())
+      return;
+    auto* script = static_cast<zebkit_script*>(
+        context->GetAlignedPointerFromEmbedderData(1, v8::kEmbedderDataTypeTagDefault));
+    if (!script)
+      return;
+    auto& unhandled = script->unhandled_;
+    v8::Local<v8::Promise> promise = message.GetPromise();
+    if (message.GetEvent() == v8::kPromiseRejectWithNoHandler) {
+      unhandled.emplace_back(v8::Global<v8::Promise>(isolate, promise),
+                             v8::Global<v8::Value>(isolate, message.GetValue()));
+    } else if (message.GetEvent() == v8::kPromiseHandlerAddedAfterReject) {
+      std::erase_if(unhandled, [&](const auto& entry) { return entry.first == promise; });
+    }
   });
   v8::Local<v8::Context> context = v8::Context::New(isolate());
   context->SetAlignedPointerInEmbedderData(1, this,
@@ -1195,6 +1217,17 @@ void zebkit_script::Install() {
           .IsEmpty()) {
     Report(try_catch);
   }
+}
+
+void zebkit_script::ReportUnhandledRejections() {
+  if (unhandled_.empty())
+    return;
+  auto unhandled = std::move(unhandled_);
+  unhandled_.clear();
+  v8::Isolate* isolate = this->isolate();
+  v8::Local<v8::Context> context = this->context();
+  for (const auto& [promise, value] : unhandled)
+    fprintf(stderr, "Uncaught (in promise) %s\n", Describe(isolate, context, value.Get(isolate)).c_str());
 }
 
 void zebkit_script::CheckIdle() {
@@ -2736,7 +2769,22 @@ int zebkit_script::WrapView(zebkit_view* view) {
       hook);
   zebkit_view_on_close(
       view,
-      [](zebkit_view*, void* data) {
+      [](zebkit_view* closing, void* data) {
+        // What ViewListen subscribed to with this hook goes first: an event the
+        // view sends as it closes (an automation event among them) must not
+        // reach the hook freed below.
+        zebkit_automation_on_event(closing, nullptr, nullptr);
+        zebkit_view_on_new_window(closing, nullptr, nullptr);
+        zebkit_view_on_drop(closing, nullptr, nullptr);
+        zebkit_view_on_dialog(closing, nullptr, nullptr);
+        zebkit_view_on_dialog_closed(closing, nullptr, nullptr);
+        zebkit_view_on_drag_start(closing, nullptr, nullptr);
+        zebkit_view_on_drag_end(closing, nullptr, nullptr);
+        zebkit_view_on_frame(closing, nullptr, nullptr);
+        zebkit_view_on_caret(closing, nullptr, nullptr);
+        zebkit_view_on_cursor(closing, nullptr, nullptr);
+        zebkit_view_on_popup(closing, nullptr, nullptr);
+        zebkit_view_on_authentication(closing, nullptr, nullptr);
         std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
         if (hook->script)
           hook->script->ViewClosed(hook->id);

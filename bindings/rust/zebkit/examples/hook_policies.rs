@@ -601,8 +601,11 @@ fn network_answers(run: &Run) {
                     "net-stream-fail" => { assert!(stream.write(b"ab")); stream.end(true); }
                     "net-stream-full" => {
                         assert!(!stream.write(&vec![0u8; (1 << 20) + 1]));
-                        let left = Rc::new(Cell::new(3usize << 20));
-                        let block = vec![b'f'; 262144];
+                        // Blocks of 1 MiB, the most one write takes, 16 MiB in all:
+                        // with smaller ones a fast reader drains the engine's 1 MiB
+                        // buffer between writes and none is refused (hook_policies.c).
+                        let left = Rc::new(Cell::new(16usize << 20));
+                        let block = vec![b'f'; 1 << 20];
                         let (writer, jam) = (Rc::downgrade(&stream), jam.clone());
                         let pour = move || {
                             let Some(stream) = writer.upgrade() else { return };
@@ -639,7 +642,7 @@ fn network_answers(run: &Run) {
         }
         "net-stream" => assert_eq!(ev(&run.view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))"), "\"201|by-host|abcd\""),
         "net-stream-full" => {
-            assert_eq!(ev(&run.view, &page_reads("/held")), "3145728");
+            assert_eq!(ev(&run.view, &page_reads("/held")), "16777216");
             assert!(blocked.get());
         }
         other => panic!("{other}"),

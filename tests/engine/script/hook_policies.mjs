@@ -465,8 +465,11 @@ async function networkAnswers() {
       } else if (mode === 'net-stream-fail') { must(stream.write('ab'), 'write'); stream.end(true); }
       else if (mode === 'net-stream-full') {
         must(!stream.write(new Uint8Array((1 << 20) + 1)), 'too much');
-        const block = new Uint8Array(262144).fill(0x66);
-        let left = 3 << 20;
+        // Blocks of 1 MiB, the most one write takes, 16 MiB in all: with smaller
+        // ones a fast reader drains the engine's 1 MiB buffer between writes and
+        // none is refused (hook_policies.c).
+        const block = new Uint8Array(1 << 20).fill(0x66);
+        let left = 16 << 20;
         const pour = () => {
           while (left > 0) {
             if (!stream.write(block)) { blocked = true; return; }
@@ -498,8 +501,8 @@ async function networkAnswers() {
     const answer = await view.evaluate(`fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))`);
     must(answer === '201|by-host|abcd', answer);
   } else if (mode === 'net-stream-full') {
-    // Whether it was ever full depends on how fast the page reads: only the bytes are certain.
-    must(await view.evaluate(pageReads('/held')) === 3 << 20, 'page');
+    must(await view.evaluate(pageReads('/held')) === 16 << 20, 'page');
+    must(blocked, 'a write was refused while the stream was full');
   }
   view.close();
 }

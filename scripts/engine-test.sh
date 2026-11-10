@@ -376,6 +376,12 @@ elif command -v mise > /dev/null && (cd "$ZEBKIT_ROOT" && mise which go > /dev/n
 
 if [[ -n "$build_only" ]]; then
     check_engine_library
+    # What the PDF checks read (python_parity.py, Go's check_pdf), from PDFium's
+    # tests: the bundle has no Chromium tree.
+    pdfium_resources="$SRC_DIR/third_party/pdfium/testing/resources"
+    mkdir -p "$bin/pdf-resources/fonts/ahem"
+    cp "$pdfium_resources/hello_world.pdf" "$pdfium_resources/bookmarks.pdf" "$pdfium_resources/text_form.pdf" "$bin/pdf-resources/"
+    cp "$pdfium_resources/fonts/ahem/Ahem.ttf" "$bin/pdf-resources/fonts/ahem/"
     # The Go binding's checks for the bundle's system: Windows with zebkit-cc
     # (clang for MSVC, the sandbox library linked), macOS with the SDK. They run
     # from the package, beside the engine, as an application does.
@@ -401,11 +407,6 @@ if [[ -n "$build_only" ]]; then
                 -o "$bin/go-$go_check$go_exe" "./internal/$go_check" 2>&1 | grep -v 'longer than 8 characters' >&2
                 [[ -f "$bin/go-$go_check$go_exe" ]]) || die "the Go binding's $go_check did not build for $ZEBKIT_TARGET"
         done
-        # What check_pdf reads, from PDFium's tests (the bundle has no Chromium tree).
-        pdfium_resources="$SRC_DIR/third_party/pdfium/testing/resources"
-        mkdir -p "$bin/go-resources/fonts/ahem"
-        cp "$pdfium_resources/hello_world.pdf" "$pdfium_resources/bookmarks.pdf" "$pdfium_resources/text_form.pdf" "$bin/go-resources/"
-        cp "$pdfium_resources/fonts/ahem/Ahem.ttf" "$bin/go-resources/fonts/ahem/"
     fi
     # The Rust hook program, if this machine's toolchain has the target.
     rust_target=
@@ -808,7 +809,11 @@ fi
 run display-capture env ZEBKIT_DIR="$package" python3 -I "$tests/display_capture.py" "${engine_switches[@]/profile/profile-capture}"
 # The Python binding's later families: contexts, scripts, off-screen views,
 # page dialogs, print and drag, media capture, the rest of PDF.
-run python-parity env ZEBKIT_DIR="$package" python3 -I "$tests/python_parity.py" "${engine_switches[@]/profile/profile-python-parity}"
+# PDFium's test files: the Chromium tree's here, the bundle's copy (--build-only) elsewhere.
+pdf_resources="$SRC_DIR/third_party/pdfium/testing/resources"
+[[ -n "$prebuilt" ]] && pdf_resources="$bin/pdf-resources"
+run python-parity env ZEBKIT_DIR="$package" ZEBKIT_PDF_RESOURCES="$pdf_resources" python3 -I "$tests/python_parity.py" \
+    "${engine_switches[@]/profile/profile-python-parity}"
 # WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
 run device-chooser env ZEBKIT_DIR="$package" python3 -I "$tests/device_chooser.py" "${engine_switches[@]/profile/profile-devices}"
 # The application's icon in the Dock or on the taskbar (12); the launcher's signal on Linux's private bus.
@@ -1103,7 +1108,7 @@ go_dir=
 if [[ -n "$prebuilt" && ( -f "$bin/go-check" || -f "$bin/go-check.exe" ) ]]; then
     go_dir="$package"
     for go_check in "${go_checks[@]}"; do cp "$bin/go-$go_check"* "$package/"; done
-    go_resources="$bin/go-resources"
+    go_resources="$bin/pdf-resources"
 elif [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; then
     log "building the Go binding's checks"
     go_dir="$work/go"

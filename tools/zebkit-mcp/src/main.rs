@@ -450,9 +450,12 @@ fn main() {
             let shown = shown.strip_suffix(":0").unwrap_or(&shown).to_string();
             match http::listen(config) {
                 Ok(port) => {
-                    eprintln!("zebkit-mcp: listening on http://{shown}:{port}/mcp");
+                    // One write: whoever reads the address has the token too.
+                    let listening = format!("zebkit-mcp: listening on http://{shown}:{port}/mcp");
                     if generated {
-                        eprintln!("zebkit-mcp: bearer token (shown once): {token}");
+                        eprintln!("{listening}\nzebkit-mcp: bearer token (shown once): {token}");
+                    } else {
+                        eprintln!("{listening}");
                     }
                 }
                 Err(why) => return refuse_in_engine(&why),

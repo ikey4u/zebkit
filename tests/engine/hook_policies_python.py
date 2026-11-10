@@ -710,13 +710,16 @@ def network_answers(mode):
                 stream.end(failed=True)
             elif mode == 'net-stream-full':
                 assert not stream.write(bytes((1 << 20) + 1))
-                left = [3 << 20]
+                # Blocks of 1 MiB, the most one write takes, 16 MiB in all: with
+                # smaller ones a fast reader drains the engine's 1 MiB buffer
+                # between writes, and none is refused (hook_policies.c).
+                left = [16 << 20]
                 def pour():
                     while left[0] > 0:
-                        if not stream.write(b'f' * 262144):
+                        if not stream.write(b'f' * (1 << 20)):
                             blocked.append(1)
                             return
-                        left[0] -= 262144
+                        left[0] -= 1 << 20
                     stream.end()
                 stream.on_writable(guarded(pour))
                 pour()
@@ -739,7 +742,7 @@ def network_answers(mode):
     elif mode == 'net-stream':
         assert ev(view, "fetch('/held').then(async r => [r.status, r.headers.get('x-added'), await r.text()].join('|'))") == '201|by-host|abcd'
     elif mode == 'net-stream-full':
-        assert ev(view, PAGE_READS % '/held') == 3 << 20
+        assert ev(view, PAGE_READS % '/held') == 16 << 20
         assert blocked
     elif mode == 'net-stream-fail':
         assert ev(view, PAGE_READS % '/held') == 'failed'

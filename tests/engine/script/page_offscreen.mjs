@@ -81,7 +81,10 @@ off.load(base + '/offscreen.html');
 await within(done, 15000, 'offscreen.html');
 off.requestFrame();
 check(await until(() => frames.some((f) => f.pixel)), 'frames with their pixels');
-const frame = frames.find((f) => f.pixel) ?? {};
+// A frame of the page once it has painted: the first can be the blank page's.
+const red = (f) => f.pixel?.[2] === 255 && f.pixel?.[0] === 0;
+await until(() => frames.some(red));
+const frame = frames.find(red) ?? frames.find((f) => f.pixel) ?? {};
 // The red box at (20, 20, 40 by 30): B, G, R, A at (30, 30).
 check(frame.width === 400 && frame.height === 300 && frame.kind === 'shared-memory' && frame.damage > 0 &&
       frame.pixel?.[2] === 255 && frame.pixel?.[0] === 0, 'a frame of the page, its size and a pixel', frame);
