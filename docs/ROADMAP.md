@@ -129,7 +129,9 @@ in `examples/native-host` (Done table). What is left:
   views beside Wayland windows (refused, `zebkit_view_new_offscreen()` returns
   NULL: their root's stub platform window crashed there), attaching to an
   application's window, input methods; not run with a person or a GPU.
-- **A real input method in X11 windows.** None: see `docs/ARCHITECTURE.md`.
+- **A real input method in X11 windows: done** (2026-11-10), through IBus
+  (`docs/ARCHITECTURE.md`, `tests/engine/input_method.py`; run with ibus-rime).
+  Left: XIM-only input methods (fcitx 4 without an IBus frontend).
 - **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
   Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root
   runs `zebkit-sandbox-install`, and `--no-sandbox` is documented for containers and said

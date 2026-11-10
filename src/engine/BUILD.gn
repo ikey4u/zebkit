@@ -31,6 +31,9 @@ config("implementation") {
   ]
   if (is_linux && use_dbus) {
     defines += [ "ZEBKIT_COOKIES_USE_DBUS" ]
+
+    # libdbus itself, for IBus's own bus (ime_ibus_linux.cc).
+    configs = [ "//build/config/linux/dbus" ]
   }
   if (ozone_platform_x11) {
     defines += [ "ZEBKIT_X11" ]
@@ -631,11 +634,17 @@ if (is_mac) {
     "//components/dbus/menu",
     "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
   ]
+  if (ozone_platform_x11) {
+    # A key's X11 keysym, for the input method (ime_ibus_linux.cc).
+    _deps += [ "//ui/events/keycodes:x11" ]
+  }
   # The desktop's notifications (org.freedesktop.Notifications).
   _sources += [
     "notifications_linux.cc",
     "tray_linux.cc",
     "dock_linux.cc",
+    "ime_ibus_linux.cc",
+    "ime_ibus_linux.h",
     "tray_linux_dbus.cc",
     "tray_linux_dbus.h",
   ]

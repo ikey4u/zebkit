@@ -203,7 +203,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 
 | Surface | Today | Status |
 |---|---|---|
-| `permission.*` (geolocation, clipboard, sensors, MIDI, ...) | `zebkit_view_on_permission`, a table per view; default denied, but a screen wake lock (`permission_manager.cc`) | done |
+| `permission.*` (geolocation, clipboard, sensors, MIDI, ...) | `zebkit_view_on_permission`, a table per view; default denied, but a screen wake lock, pointer lock and writing to the clipboard after a click, as Chrome grants them (`permission_manager.cc`) | done |
 | `permission.geolocation.system` | Apple's location source on macOS; none elsewhere (`client_defaults.cc`) | partial |
 | `media.camera-microphone` | `zebkit_view_on_media_access`, else the permission table | done |
 | `media.display-capture`: `getDisplayMedia()` | refused without a function; `zebkit_view_on_media_access` gets `"type": "display"` and the sources, and answers with one: `view` (the view itself, with its sound when asked) or `screen` (the whole desktop, where WebRTC's capturer reaches one: X11, macOS, Windows) (`page_hooks.cc`) | partial: no system picker as the default; Wayland's PipeWire capture is off in this build |
@@ -213,7 +213,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 | `media.audio-output`: `selectAudioOutput()` | Chromium's default | default only |
 | `media.system-controls`: the system's now-playing and media keys | Chromium's default | default only |
 | `media.speech`: speech recognition and synthesis | zebkit's recognition delegate; Chromium's synthesis | default only |
-| `clipboard`: reads and writes | the permission table for reads; Chromium's defaults for policy | default only |
+| `clipboard`: reads and writes | keys and the context menu copy and paste as in Chrome; `navigator.clipboard.writeText()` and `write()` are allowed after a click (`clipboard-write`), `readText()` and `read()` are the `clipboard-read` permission, denied without a decision | done |
 | `protocol-handler`: `registerProtocolHandler()` | the `protocol-handler` permission, with the scheme and the handler's URL, denied without a hook; a handler granted handles its links in the profile; nothing is registered with the system, and nothing says it is (`protocol_handler_delegate.cc`) | done |
 
 ### 5.6 Notifications and the desktop

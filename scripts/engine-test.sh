@@ -578,6 +578,11 @@ if [[ -x "$bin/native-parent" ]]; then
                 --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
             run sign-in-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 python3 -I "$tests/sign_in.py" --no-sandbox --user-data-dir="$work/profile-sign-in-x11"
+            # A real input method in an X11 window: IBus, a fake one on its own bus.
+            if command -v dbus-run-session > /dev/null && python3 -c "import dbus.mainloop.glib" 2> /dev/null; then
+                run input-method-x11 env -u WAYLAND_DISPLAY -u IBUS_ADDRESS DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
+                    dbus-run-session -- python3 -I "$tests/input_method.py" --no-sandbox --user-data-dir="$work/profile-input-method"
+            fi
             run js-dialogs-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 python3 -I "$tests/js_dialogs.py" --no-sandbox --user-data-dir="$work/profile-js-dialogs-x11"
             run context-menu-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \

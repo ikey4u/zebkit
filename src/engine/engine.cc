@@ -15,6 +15,7 @@
 #elif BUILDFLAG(IS_WIN)
 #include "net/ssl/client_cert_store_win.h"
 #endif
+#include "zebkit/engine/ime_ibus_linux.h"
 #include "zebkit/engine/device_choosers.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/appearance.h"
@@ -103,6 +104,7 @@
 #include "net/proxy_resolution/proxy_config_with_annotation.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info_with_user_agent.h"
@@ -823,7 +825,12 @@ std::string AcceptLanguages() {
 }
 
 void ApplyLanguages(content::WebContents* contents) {
-  contents->GetMutableRendererPrefs()->accept_languages = AcceptLanguages();
+  blink::RendererPreferences* prefs = contents->GetMutableRendererPrefs();
+  prefs->accept_languages = AcceptLanguages();
+  // The focus ring's colour, as Chrome sets it (renderer_preferences_util.cc):
+  // Blink's own default, 0xE59700, is a placeholder that draws an orange ring
+  // round every focused field.
+  prefs->focus_ring_color = BUILDFLAG(IS_MAC) ? SkColorSetRGB(0x00, 0x5F, 0xCC) : SkColorSetRGB(0x10, 0x10, 0x10);
   contents->SyncRendererPrefs();
 }
 
@@ -1341,6 +1348,9 @@ void BrowserMainParts::PostCreateMainMessageLoop() {
 void BrowserMainParts::ToolkitInitialized() {
 #if BUILDFLAG(IS_LINUX)
   ui::LinuxUi::SetInstance(ui::GetDefaultLinuxUi());
+#if defined(ZEBKIT_COOKIES_USE_DBUS)
+  InstallIBusInputMethod();
+#endif
 #endif
 }
 

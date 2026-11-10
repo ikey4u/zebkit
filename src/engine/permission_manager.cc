@@ -35,6 +35,11 @@ bool IsAllowlistedPermissionType(PermissionType permission) {
     // zebkit: as before it was a permission (docs/SYSTEM_INTEGRATION.md, 10),
     // and as Chrome grants it after a click; the application can deny it.
     case PermissionType::POINTER_LOCK:
+    // zebkit: a page writing text, HTML or a picture to the clipboard after a
+    // click (navigator.clipboard.writeText(), a site's "Copy" button), as
+    // Chrome grants it without asking: Blink wants the click, and the page
+    // learns nothing. Reading the clipboard stays the application's to grant.
+    case PermissionType::CLIPBOARD_SANITIZED_WRITE:
       return true;
 
     // zebkit: denied by default. Location (the device's Wi-Fi networks are
@@ -57,7 +62,6 @@ bool IsAllowlistedPermissionType(PermissionType permission) {
     case PermissionType::AUDIO_CAPTURE:
     case PermissionType::VIDEO_CAPTURE:
     case PermissionType::CLIPBOARD_READ_WRITE:
-    case PermissionType::CLIPBOARD_SANITIZED_WRITE:
     case PermissionType::NUM:
     case PermissionType::WAKE_LOCK_SYSTEM:
     case PermissionType::HAND_TRACKING:
