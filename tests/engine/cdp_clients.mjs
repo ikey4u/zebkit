@@ -1332,7 +1332,10 @@ for (const [key, chrome] of chromeResults) {
     ++same;
     if (!chrome.ok) {
       ++sameError;
-      rows.push({ kind: 'both-fail', key, chrome: brief(chrome), zebkit: brief(zebkit), reason: reason || '' });
+      // Failing alike hides a broken case or server: allowed only when listed.
+      if (!reason)
+        ++unexpected;
+      rows.push({ kind: reason ? 'both-fail' : 'BOTH-FAIL', key, chrome: brief(chrome), zebkit: brief(zebkit), reason: reason || 'not listed in the expected file' });
     } else if (reason) {
       ++stale;
       rows.push({ kind: 'no-longer-differs', key, chrome: brief(chrome), zebkit: brief(zebkit), reason });
@@ -1347,7 +1350,7 @@ for (const [key, chrome] of chromeResults) {
 for (const row of rows)
   console.log(`\n${row.kind}  ${row.key}\n  chrome: ${row.chrome}\n  zebkit: ${row.zebkit}${row.reason ? `\n  reason: ${row.reason}` : ''}`);
 const expectedCount = rows.filter(r => r.kind === 'expected').length;
-console.log(`\n| Result | Cases |\n|---|---|\n| same as Chrome | ${same - sameError} |\n| both fail alike | ${sameError} |\n| expected differences | ${expectedCount} |\n| unexpected differences | ${unexpected} |\n| listed but no longer different | ${stale} |\n| total | ${chromeResults.size} |`);
+console.log(`\n| Result | Cases |\n|---|---|\n| same as Chrome | ${same - sameError} |\n| both fail alike | ${sameError} |\n| expected differences | ${expectedCount} |\n| unexpected (differences, failures not listed) | ${unexpected} |\n| listed but no longer different | ${stale} |\n| total | ${chromeResults.size} |`);
 if (option('--json'))
   fs.writeFileSync(option('--json'), JSON.stringify({ rows, same, sameError, expectedCount, unexpected, stale, total: chromeResults.size, chrome: [...chromeResults], zebkit: [...zebkitResults] }, null, 1));
 process.exit(unexpected ? 1 : 0);

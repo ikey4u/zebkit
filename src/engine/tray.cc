@@ -6,9 +6,12 @@
 #include <utility>
 
 #include "base/containers/span.h"
+#include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace zebkit {
@@ -39,13 +42,26 @@ void Tray::SetMenu(std::vector<MenuItem> menu, base::RepeatingCallback<void(cons
 }
 
 void Tray::Clicked() {
-  if (click_)
-    click_.Run();
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<Tray> tray) {
+                       if (tray && tray->click_)
+                         tray->click_.Run();
+                     },
+                     weak_factory_.GetWeakPtr()));
 }
 
 void Tray::Chosen(const std::string& id) {
-  if (chosen_ && !id.empty())
-    chosen_.Run(id);
+  if (id.empty())
+    return;
+  // @id may be the menu's own, which SetMenu() frees: a copy.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<Tray> tray, const std::string& id) {
+                       if (tray && tray->chosen_)
+                         tray->chosen_.Run(id);
+                     },
+                     weak_factory_.GetWeakPtr(), id));
 }
 
 }  // namespace zebkit
@@ -55,10 +71,6 @@ struct zebkit_tray {
 };
 
 namespace {
-
-bool OnEngineThread() {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
-}
 
 std::optional<SkBitmap> Decode(const uint8_t* png, size_t size) {
   if (!png || !size || size > 16 * 1024 * 1024)
@@ -83,7 +95,7 @@ extern "C" {
 zebkit_tray* zebkit_tray_new(const uint8_t* png, size_t size, const char* tooltip, char** error) {
   if (error)
     *error = nullptr;
-  if (!OnEngineThread()) {
+  if (!zebkit::CurrentlyOnEngineThread()) {
     Fail(error, "the engine's thread");
     return nullptr;
   }
@@ -100,7 +112,7 @@ zebkit_tray* zebkit_tray_new(const uint8_t* png, size_t size, const char* toolti
 bool zebkit_tray_set_icon(zebkit_tray* tray, const uint8_t* png, size_t size, char** error) {
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !tray)
+  if (!zebkit::CurrentlyOnEngineThread() || !tray)
     return Fail(error, "a tray on the engine's thread");
   std::optional<SkBitmap> image = Decode(png, size);
   if (!image)
@@ -110,14 +122,14 @@ bool zebkit_tray_set_icon(zebkit_tray* tray, const uint8_t* png, size_t size, ch
 }
 
 void zebkit_tray_set_tooltip(zebkit_tray* tray, const char* tooltip) {
-  if (OnEngineThread() && tray)
+  if (zebkit::CurrentlyOnEngineThread() && tray)
     tray->tray->SetToolTip(base::UTF8ToUTF16(tooltip ? tooltip : ""));
 }
 
 bool zebkit_tray_set_menu(zebkit_tray* tray, const char* json, zebkit_menu_func func, void* data, char** error) {
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !tray)
+  if (!zebkit::CurrentlyOnEngineThread() || !tray)
     return Fail(error, "a tray on the engine's thread");
   std::string problem;
   auto items = zebkit::ParseMenuItems(json ? json : "[]", &problem);
@@ -133,15 +145,21 @@ bool zebkit_tray_set_menu(zebkit_tray* tray, const char* json, zebkit_menu_func 
 }
 
 void zebkit_tray_on_click(zebkit_tray* tray, zebkit_app_func func, void* data) {
-  if (!OnEngineThread() || !tray)
+  if (!zebkit::CurrentlyOnEngineThread() || !tray)
     return;
   tray->tray->SetClick(func ? base::BindRepeating([](zebkit_app_func func, void* data) { func(data); }, func, data)
                             : base::RepeatingClosure());
 }
 
 void zebkit_tray_close(zebkit_tray* tray) {
-  if (OnEngineThread())
+  if (!tray)
+    return;
+  if (zebkit::CurrentlyOnEngineThread()) {
     delete tray;
+    return;
+  }
+  // From another thread: closed on the engine's.
+  zebkit::PostEngineTask(base::BindOnce([](zebkit_tray* tray) { delete tray; }, tray), base::TimeDelta());
 }
 
 }  // extern "C"

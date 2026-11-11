@@ -1,23 +1,31 @@
 package zebkit
 
 /*
-#include "bridge_b.h"
+#include "bridge.h"
 */
 import "C"
 
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 // Canvas is 2D drawing on the engine's Skia (<zebkit/canvas.h>), as the web's
 // canvas works: a current path put through the matrix as it is made, and a
 // stack of state kept by Save and Restore. The origin is the top left, y
 // down, units are pixels. A canvas a PDF hook is given writes PDF operators
-// instead, in points, and its Pixels and PNG fail. One goroutine at a time.
+// instead, in points, and its Pixels and PNG fail; it is the hook's only while
+// the hook runs, and does nothing after. One goroutine at a time; a closed
+// canvas does nothing.
 type Canvas struct {
 	c        *C.zebkit_canvas
 	borrowed bool
 }
 
 func borrowedCanvas(c *C.zebkit_canvas) *Canvas { return &Canvas{c: c, borrowed: true} }
+
+// expire ends a hook's loan of the canvas.
+func (c *Canvas) expire() { c.c = nil }
 
 // NewCanvas is a canvas over a transparent bitmap of its own, at most 32768
 // on a side and 1 << 28 pixels.
@@ -38,27 +46,31 @@ type CanvasFlags uint
 const CanvasUnpremultiplied CanvasFlags = 1 << 0
 
 // OnPixels runs draw on a canvas over rgba, width by height pixels of R, G,
-// B, A, with stride bytes from row to row (0 for width * 4), and writes what
-// was drawn back into rgba.
+// B, A, with stride bytes from row to row (0 for width * 4), drawing into
+// rgba in place.
 func OnPixels(rgba []byte, width, height, stride int, flags CanvasFlags, draw func(*Canvas)) error {
 	if stride == 0 {
 		stride = width * 4
 	}
-	if width <= 0 || height <= 0 || stride < width*4 || len(rgba) < stride*(height-1)+width*4 {
-		return &Error{"fewer pixels than the size says"}
+	if width <= 0 || height <= 0 || stride < width*4 || uint64(len(rgba)) < uint64(stride)*uint64(height-1)+uint64(width)*4 {
+		return refused("fewer pixels than the size says")
 	}
-	// The engine keeps the pixels until the canvas closes: C's, not Go's.
-	pixels := C.CBytes(rgba)
-	defer C.free(pixels)
+	// The engine draws into the pixels until the canvas closes: pinned
+	// until then.
+	var pinner runtime.Pinner
+	pinner.Pin(&rgba[0])
+	defer pinner.Unpin()
 	var message *C.char
-	c := C.zebkit_canvas_wrap((*C.uint8_t)(pixels), C.int(width), C.int(height), C.size_t(stride), C.uint(flags), &message)
+	c := C.zebkit_canvas_wrap((*C.uint8_t)(unsafe.Pointer(&rgba[0])), C.int(width), C.int(height), C.size_t(stride), C.uint(flags),
+		&message)
 	if c == nil {
 		return takeError(message, "no canvas")
 	}
 	canvas := &Canvas{c: c}
-	draw(canvas)
-	canvas.Close()
-	copy(rgba, unsafe.Slice((*byte)(pixels), len(rgba)))
+	defer canvas.Close()
+	if draw != nil {
+		draw(canvas)
+	}
 	return nil
 }
 
@@ -80,8 +92,8 @@ func (c *Canvas) Pixels() (*Pixels, error) {
 	if out == nil {
 		return nil, takeError(message, "no pixels")
 	}
-	width, height := c.Width(), c.Height()
-	return &Pixels{Width: width, Height: height, RGBA: takeBytes(out, C.size_t(width*height*4))}, nil
+	width, height := C.zebkit_canvas_width(c.c), C.zebkit_canvas_height(c.c)
+	return &Pixels{Width: int(width), Height: int(height), RGBA: takeBytes(out, rgbaSize(width, height))}, nil
 }
 
 // PNG is the pixels as a PNG file.
@@ -118,11 +130,11 @@ func (c *Canvas) SetStrokeColor(rgba uint32) { C.zebkit_canvas_set_stroke_color(
 // SetAlpha is 0 to 1, multiplied into everything drawn.
 func (c *Canvas) SetAlpha(alpha float64) { C.zebkit_canvas_set_alpha(c.c, C.double(alpha)) }
 
-// SetBlend takes PDF's names: "Normal", "Multiply", "Screen", ...; false for another.
-func (c *Canvas) SetBlend(mode string) bool {
+// SetBlend takes PDF's names: "Normal", "Multiply", "Screen", ...
+func (c *Canvas) SetBlend(mode string) error {
 	cmode := cString(mode)
 	defer free(cmode)
-	return bool(C.zebkit_canvas_set_blend(c.c, cmode))
+	return check(C.zebkit_canvas_set_blend(c.c, cmode), "no such blend mode")
 }
 
 func (c *Canvas) SetLineWidth(width float64) { C.zebkit_canvas_set_line_width(c.c, C.double(width)) }
@@ -157,25 +169,33 @@ func (c *Canvas) SetDash(lengths []float64, phase float64) {
 	C.zebkit_canvas_set_dash(c.c, p, C.int(len(lengths)), C.double(phase))
 }
 
-func gradientStops(offsets []float64, colors []uint32) (*C.double, *C.uint32_t, C.int, bool) {
+func gradientStops(offsets []float64, colors []uint32) (*C.double, *C.uint32_t, C.int, error) {
 	if len(offsets) < 2 || len(offsets) != len(colors) {
-		return nil, nil, 0, false
+		return nil, nil, 0, refused("a gradient has two stops or more, each with its color")
 	}
 	return (*C.double)(unsafe.Pointer(unsafe.SliceData(offsets))), (*C.uint32_t)(unsafe.Pointer(unsafe.SliceData(colors))),
-		C.int(len(offsets)), true
+		C.int(len(offsets)), nil
 }
 
 // SetLinearGradient fills from now on with a gradient from (x0, y0) to (x1,
 // y1): offsets from 0 to 1, going up, and their colors as 0xRRGGBBAA.
-func (c *Canvas) SetLinearGradient(x0, y0, x1, y1 float64, offsets []float64, colors []uint32) bool {
-	o, k, n, ok := gradientStops(offsets, colors)
-	return ok && bool(C.zebkit_canvas_set_linear_gradient(c.c, C.double(x0), C.double(y0), C.double(x1), C.double(y1), o, k, n))
+func (c *Canvas) SetLinearGradient(x0, y0, x1, y1 float64, offsets []float64, colors []uint32) error {
+	o, k, n, err := gradientStops(offsets, colors)
+	if err != nil {
+		return err
+	}
+	return check(C.zebkit_canvas_set_linear_gradient(c.c, C.double(x0), C.double(y0), C.double(x1), C.double(y1), o, k, n),
+		"the gradient was refused")
 }
 
 // SetRadialGradient is the same about (x, y), to radius.
-func (c *Canvas) SetRadialGradient(x, y, radius float64, offsets []float64, colors []uint32) bool {
-	o, k, n, ok := gradientStops(offsets, colors)
-	return ok && bool(C.zebkit_canvas_set_radial_gradient(c.c, C.double(x), C.double(y), C.double(radius), o, k, n))
+func (c *Canvas) SetRadialGradient(x, y, radius float64, offsets []float64, colors []uint32) error {
+	o, k, n, err := gradientStops(offsets, colors)
+	if err != nil {
+		return err
+	}
+	return check(C.zebkit_canvas_set_radial_gradient(c.c, C.double(x), C.double(y), C.double(radius), o, k, n),
+		"the gradient was refused")
 }
 
 func (c *Canvas) BeginPath()          { C.zebkit_canvas_begin_path(c.c) }
@@ -202,13 +222,13 @@ func (c *Canvas) Clip(evenOdd bool) { C.zebkit_canvas_clip(c.c, C.bool(evenOdd))
 func (c *Canvas) Clear(rgba uint32) { C.zebkit_canvas_clear(c.c, C.uint32_t(rgba)) }
 
 // DrawImage draws RGBA pixels, not premultiplied, over the rectangle (x, y)
-// destWidth by destHeight; false for sizes not positive or over 1 << 14.
-func (c *Canvas) DrawImage(image *Pixels, x, y, destWidth, destHeight float64) bool {
-	if image == nil || len(image.RGBA) < image.Width*image.Height*4 {
-		return false
+// destWidth by destHeight; refused for sizes not positive or over 1 << 14.
+func (c *Canvas) DrawImage(image *Pixels, x, y, destWidth, destHeight float64) error {
+	if !image.complete() {
+		return refused("fewer pixels than the size says")
 	}
-	return bool(C.zebkit_canvas_draw_image(c.c, (*C.uint8_t)(bytesArg(image.RGBA)), C.int(image.Width), C.int(image.Height),
-		C.double(x), C.double(y), C.double(destWidth), C.double(destHeight)))
+	return check(C.zebkit_canvas_draw_image(c.c, (*C.uint8_t)(bytesArg(image.RGBA)), C.int(image.Width), C.int(image.Height),
+		C.double(x), C.double(y), C.double(destWidth), C.double(destHeight)), "the image was refused")
 }
 
 // Font is a font for a canvas, from a TrueType or OpenType file.
@@ -232,8 +252,13 @@ func (f *Font) Close() {
 	}
 }
 
+// SetFont sets the font of the text drawn from now on; nil for none.
 func (c *Canvas) SetFont(font *Font, size float64) {
-	C.zebkit_canvas_set_font(c.c, font.f, C.double(size))
+	var f *C.zebkit_canvas_font
+	if font != nil {
+		f = font.f
+	}
+	C.zebkit_canvas_set_font(c.c, f, C.double(size))
 }
 
 // FillText shapes text and fills its outlines with the baseline's left end at (x, y).
@@ -268,8 +293,11 @@ func (c *Canvas) MeasureText(text string) (float64, bool) {
 
 // Run runs ops, a JSON array of operations (<zebkit/canvas.h>), stopping at
 // the first that is wrong.
-func (c *Canvas) Run(ops string) error {
-	cops := cString(ops)
+func (c *Canvas) Run(ops any) error {
+	cops, err := jsonArg(ops)
+	if err != nil {
+		return err
+	}
 	defer free(cops)
 	var message *C.char
 	if !C.zebkit_canvas_run(c.c, cops, &message) {

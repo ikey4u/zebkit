@@ -16,36 +16,15 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "bindings", "python"))
+sys.path.insert(0, HERE)
 
-import zebkit  # noqa: E402
-
-failures = []
-checks = 0
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.01)
-    return False
+from harness import SETTLE, check, finish, pump, wait, zebkit  # noqa: E402
 
 
 def main():
     with tempfile.TemporaryDirectory(prefix="zebkit-lock-") as directory:
-        ready = os.path.join(directory, "ready")
-        saver = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_screensaver.py"), ready])
+        ready, asked = os.path.join(directory, "ready"), os.path.join(directory, "asked")
+        saver = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_screensaver.py"), ready, asked])
         end = time.monotonic() + 10
         while not os.path.exists(ready) and time.monotonic() < end:
             time.sleep(.05)
@@ -56,7 +35,8 @@ def main():
             events = []
             zebkit.on_power_event(lambda event: events.append(event["event"]))
             # The engine's watcher reads the state first, then follows the signal.
-            wait(lambda: False, 2)
+            check(wait(lambda: os.path.exists(asked), 10), "the engine's watcher reads the screen saver's state")
+            pump(SETTLE)
             saver.send_signal(signal.SIGUSR1)
             wait(lambda: "lock" in events, 8)
             check("lock" in events, "the screen locked: a lock event", events)
@@ -66,15 +46,14 @@ def main():
             zebkit.on_power_event(None)
             saver.send_signal(signal.SIGUSR1)
             count = len(events)
-            wait(lambda: False, 2.5)
+            pump(SETTLE)
             check(len(events) == count, "without a function nothing is told", events)
         except Exception as error:  # noqa: BLE001
             check(False, "the test ran to the end", repr(error))
         finally:
             zebkit.shutdown()
             saver.terminate()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

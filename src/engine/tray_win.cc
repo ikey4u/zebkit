@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/task/current_thread.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/scoped_gdi_object.h"
 #include "ui/gfx/win/icon_util.h"
@@ -80,10 +82,17 @@ class WinTray : public TrayPlatform {
     GetCursorPos(&at);
     // The system closes a tray's menu on a click elsewhere only for a window in front.
     SetForegroundWindow(window_);
-    const UINT chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, at.x, at.y, 0,
-                                       window_, nullptr);
+    // The engine's tasks go on while the menu is open; one of them may
+    // close the tray, and this with it.
+    base::WeakPtr<WinTray> alive = weak_factory_.GetWeakPtr();
+    UINT chosen;
+    {
+      base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
+      chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, at.x, at.y, 0, window_,
+                              nullptr);
+    }
     DestroyMenu(menu);
-    if (chosen > 0 && chosen <= ids.size())
+    if (alive && chosen > 0 && chosen <= ids.size())
       tray_->Chosen(ids[chosen - 1]);
   }
   static void Add(HMENU menu, const std::vector<MenuItem>& items, std::vector<std::string>* ids) {
@@ -122,6 +131,7 @@ class WinTray : public TrayPlatform {
   HWND window_ = nullptr;
   NOTIFYICONDATAW data_ = {};
   base::win::ScopedGDIObject<HICON> icon_;
+  base::WeakPtrFactory<WinTray> weak_factory_{this};
 };
 
 }  // namespace

@@ -58,16 +58,4 @@ bool ProtocolHandlerDelegate::ShouldRemoveHandlersNotInOS() {
   return false;
 }
 
-bool ProtocolHandlerDelegate::IsFakeRegisteredWithOS(
-    const std::string& protocol) {
-  return os_registered_protocols_.find(protocol) !=
-         os_registered_protocols_.end();
-}
-
-void ProtocolHandlerDelegate::Reset() {
-  registered_protocols_.clear();
-  os_registered_protocols_.clear();
-  force_os_failure_ = false;
-}
-
 }  // namespace zebkit

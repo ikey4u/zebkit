@@ -18,38 +18,11 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "bindings", "python"))
+sys.path.insert(0, HERE)
 
-import zebkit  # noqa: E402
+from harness import SETTLE, check, ev, finish, pump, wait, zebkit  # noqa: E402
 
-failures = []
-checks = 0
 DARK = "matchMedia('(prefers-color-scheme: dark)').matches"
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
-
-
-def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append((value, error)))
-    wait(lambda: box)
-    return box[0][0] if box and box[0][1] is None else None
 
 
 def main():
@@ -85,8 +58,8 @@ def main():
                 check(ev(view, DARK) is True, "a view's own colorScheme wins over the system's")
                 zebkit.on_environment_changed(None)
             else:
-                time.sleep(1)
-                wait(lambda: False, 1)
+                # Nothing to wait for: what must not come, given the time to.
+                pump(SETTLE)
                 check(ev(view, DARK) is False, "without appearance.follow the page stays light, as before")
                 check(zebkit.environment()["following"] is False, "and the environment says it does not follow")
             view.close()
@@ -95,8 +68,7 @@ def main():
         finally:
             zebkit.shutdown()
             portal.terminate()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

@@ -44,6 +44,9 @@
                                          base::StringToInt(action.substr(7), &index))
                                        chosen = index;
                                      zebkit::SystemNotificationClicked(id, chosen);
+                                     // The system takes a notification away once it is
+                                     // clicked: the page learns that it has closed.
+                                     zebkit::SystemNotificationClosed(id, true);
                                    },
                                    id, action, dismissed));
   handler();
@@ -95,11 +98,16 @@ bool ShowSystemNotification(const std::string& id, const base::DictValue& notifi
                                           options:UNNotificationActionOptionNone]];
     }
     NSString* category = [@"zebkit-" stringByAppendingString:base::SysUTF8ToNSString(id)];
-    [center setNotificationCategories:[NSSet setWithObject:[UNNotificationCategory
-                                                               categoryWithIdentifier:category
-                                                                              actions:buttons
-                                                                    intentIdentifiers:@[]
-                                                                              options:UNNotificationCategoryOptionCustomDismissAction]]];
+    // The categories set replace those before: the earlier notifications'
+    // stay among them (the last 64), so that they keep their buttons.
+    static NSMutableArray<UNNotificationCategory*>* categories = [NSMutableArray array];
+    [categories addObject:[UNNotificationCategory categoryWithIdentifier:category
+                                                                 actions:buttons
+                                                       intentIdentifiers:@[]
+                                                                 options:UNNotificationCategoryOptionCustomDismissAction]];
+    if (categories.count > 64)
+      [categories removeObjectAtIndex:0];
+    [center setNotificationCategories:[NSSet setWithArray:categories]];
     content.categoryIdentifier = category;
   }
   UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:base::SysUTF8ToNSString(id)

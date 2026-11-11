@@ -17,8 +17,7 @@ dry=0
 
 crates="$ZEBKIT_ROOT/bindings/rust"
 version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
-crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$crates/Cargo.toml" | head -1)"
-[[ "$crate_version" == "$version" ]] || die "VERSION says $version but bindings/rust/Cargo.toml says $crate_version"
+check_versions
 
 for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
     grep -q "^$version $target " "$crates/zebkit-rs/engines.txt" \

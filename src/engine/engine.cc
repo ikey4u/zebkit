@@ -70,6 +70,7 @@
 #include "base/process/current_process.h"
 #include "base/run_loop.h"
 #include "base/threading/platform_thread.h"
+#include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/strings/string_util.h"
@@ -154,7 +155,7 @@
 #include "content/public/browser/authenticator_request_client_delegate.h"
 #include "zebkit/engine/webauthn.h"
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 #include "dbus/bus.h"
 #endif
 
@@ -780,11 +781,6 @@ BrowserClient::GetWebContentsViewDelegate(content::WebContents* web_contents) {
 void BrowserClient::AppendExtraCommandLineSwitches(
     base::CommandLine* command_line,
     int child_process_id) {
-  if (command_line->GetSwitchValueASCII(switches::kProcessType) ==
-          switches::kRendererProcess &&
-      base::FeatureList::IsEnabled(features::kIsolatedWebApps)) {
-    command_line->AppendSwitch(switches::kEnableIsolatedWebAppsInRenderer);
-  }
   const auto& process = *base::CommandLine::ForCurrentProcess();
   for (const char* flag : {"enable-logging", "disable-logging", "log-file", "log-level"}) {
 #if BUILDFLAG(IS_WIN)
@@ -1336,10 +1332,41 @@ void SetWindowSizeLimits(Window* window,
   PlatformFor(window->kind())->SetSizeLimits(window, minimum, resizable);
 }
 
+namespace {
+
+// The engine thread's runner for zebkit_post_task(), which any thread calls:
+// there from the main loop's creation until the engine stops.
+base::Lock& EngineRunnerLock() {
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
+}
+scoped_refptr<base::SingleThreadTaskRunner>& EngineRunner() {
+  static base::NoDestructor<scoped_refptr<base::SingleThreadTaskRunner>> runner;
+  return *runner;
+}
+
+}  // namespace
+
+bool PostEngineTask(base::OnceClosure task, base::TimeDelta delay) {
+  // Posted outside the lock: a post from another thread wakes the host loop,
+  // which calls the application's zebkit_set_wakeup() function, and that
+  // function may post (or wait on a thread that posts) itself.
+  scoped_refptr<base::SingleThreadTaskRunner> runner;
+  {
+    base::AutoLock lock(EngineRunnerLock());
+    runner = EngineRunner();
+  }
+  return runner && runner->PostDelayedTask(FROM_HERE, std::move(task), delay);
+}
+
 BrowserMainParts::BrowserMainParts() = default;
 BrowserMainParts::~BrowserMainParts() = default;
 
 void BrowserMainParts::PostCreateMainMessageLoop() {
+  {
+    base::AutoLock lock(EngineRunnerLock());
+    EngineRunner() = content::GetUIThreadTaskRunner({});
+  }
 #if BUILDFLAG(IS_LINUX)
   bluez::DBusBluezManagerWrapperLinux::Initialize();
 #endif
@@ -1348,7 +1375,7 @@ void BrowserMainParts::PostCreateMainMessageLoop() {
 void BrowserMainParts::ToolkitInitialized() {
 #if BUILDFLAG(IS_LINUX)
   ui::LinuxUi::SetInstance(ui::GetDefaultLinuxUi());
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   InstallIBusInputMethod();
 #endif
 #endif
@@ -1411,8 +1438,9 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   SetUpViews();
 #endif
   InitializePlatforms();
-  if (FollowsSystemAppearance())
-    StartSystemAppearance();
+  // Read whether or not the pages follow it: zebkit_get_environment() says
+  // what the system's scheme is either way.
+  StartSystemAppearance();
   net::NetModule::SetResourceProvider(&NetResourceProvider);
   StartCdpFromCommandLine();
   return 0;
@@ -1438,12 +1466,19 @@ void BrowserMainParts::PostMainMessageLoopRun() {
   CloseAllViews();
   Window::Shutdown();
   DCHECK(Window::windows().empty());
+  // Closed contexts' profiles still waiting for their processes.
+  DestroyClosedProfiles();
   browser_context_.reset();
   off_the_record_browser_context_.reset();
+  // The private profile directory is deleted later, once Chromium has shut
+  // down (zebkit_main(), zebkit_shutdown()): its child processes may hold files.
 #if BUILDFLAG(IS_LINUX)
   ui::LinuxUi::SetInstance(nullptr);
 #endif
   performance_manager_lifetime_.reset();
+  // A task posted from now on would never run: refused instead.
+  base::AutoLock lock(EngineRunnerLock());
+  EngineRunner() = nullptr;
 }
 
 content::BrowserContext* GetBrowserContext() {
@@ -1502,33 +1537,6 @@ thread_local bool g_embedded_thread = false;
 
 extern "C" {
 
-bool zebkit_view_set_popup_policy(zebkit_view* view, zebkit_popup_policy policy) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!view || !view->web_contents() ||
-      (policy != ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE &&
-       policy != ZEBKIT_POPUP_POLICY_ALLOW && policy != ZEBKIT_POPUP_POLICY_BLOCK))
-    return false;
-  view->popup_policy_ = policy;
-  return true;
-}
-
-zebkit_popup_policy zebkit_view_get_popup_policy(zebkit_view* view) {
-  if (view && view->popup_policy_)
-    return *view->popup_policy_;
-  if (auto engine = zebkit::EnginePopupPolicy())
-    return *engine;
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(embedder_support::kDisablePopupBlocking)
-      ? ZEBKIT_POPUP_POLICY_ALLOW : ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE;
-}
-
-void zebkit_view_on_popup_blocked(zebkit_view* view, zebkit_popup_blocked_func func, void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!view)
-    return;
-  view->on_popup_blocked_ = func;
-  view->on_popup_blocked_data_ = data;
-}
-
 const char* zebkit_version(void) {
   return ZEBKIT_VERSION;
 }
@@ -1546,6 +1554,11 @@ void zebkit_free(void* pointer) {
 int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
   if (g_engine_started || argc < 0 || (argc && !argv))
     return 1;
+  // Checked before anything is set: a start refused here can be tried again.
+  for (int i = 0; i < argc; ++i) {
+    if (!argv[i])
+      return 1;
+  }
 #if BUILDFLAG(IS_WIN)
   std::vector<std::string> utf8_store;
   std::vector<char*> utf8_argv;
@@ -1554,27 +1567,34 @@ int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
     argv = utf8_argv.data();
   }
 #endif
-  g_engine_started = true;
 #if BUILDFLAG(IS_MAC)
   zebkit::SetUpBundle(zebkit::LibraryDirectory());
 #endif
-  for (int i = 0; i < argc; ++i) {
-    if (!argv[i])
-      return 1;
-  }
 #if BUILDFLAG(IS_LINUX)
   zebkit::PrefetchEngineFiles(argc, argv);
 #endif
   std::vector<std::string> args = zebkit::EngineArguments(argc, argv);
-  if (!zebkit::PrepareCookieStorage(args))
+  std::string problem;
+  if (!zebkit::PrepareUserDataDirectory(&args, &problem)) {
+    fprintf(stderr, "zebkit: %s\n", problem.c_str());
     return 1;
+  }
+  if (!zebkit::PrepareCookieStorage(args)) {
+    zebkit::DeleteTemporaryUserData();
+    return 1;
+  }
+  // Chromium cannot be initialized twice in one process.
+  g_engine_started = true;
+  zebkit::LockCookieStorage();
   std::vector<char*> engine_argv;
   for (std::string& arg : args)
     engine_argv.push_back(arg.data());
   engine_argv.push_back(nullptr);
   static base::NoDestructor<zebkit::MainDelegate> delegate(ready, data);
-  return zebkit::RunContent(static_cast<int>(args.size()), engine_argv.data(),
-                            delegate.get());
+  const int result = zebkit::RunContent(static_cast<int>(args.size()), engine_argv.data(),
+                                        delegate.get());
+  zebkit::DeleteTemporaryUserData();
+  return result;
 }
 
 int zebkit_init(int argc, char** argv) {
@@ -1641,10 +1661,16 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
   auto engine = std::make_unique<EmbeddedEngine>();
   engine->args = zebkit::EngineArguments(static_cast<int>(input.size()), input_argv.data());
   engine->args.insert(engine->args.end(), positional.begin(), positional.end());
-  if (!zebkit::PrepareCookieStorage(engine->args))
+  if (!zebkit::PrepareUserDataDirectory(&engine->args, &problem))
+    return fail(problem);
+  if (!zebkit::PrepareCookieStorage(engine->args)) {
+    zebkit::DeleteTemporaryUserData();
     return fail("Cookie storage could not be initialized");
-  if (!zebkit::InstallHostLoop())
+  }
+  if (!zebkit::InstallHostLoop()) {
+    zebkit::DeleteTemporaryUserData();
     return fail("The UI message pump factory was already configured");
+  }
   for (const auto& arg : engine->args)
     engine->argv.push_back(arg.c_str());
   engine->argv.push_back(nullptr);
@@ -1658,9 +1684,10 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
   params.argv = engine->argv.data();
 #endif
   g_engine_started = true;
+  zebkit::LockCookieStorage();
   zebkit::g_external_loop = true;
   zebkit::g_application_integration = application_integration;
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   dbus::Bus::SetRequireExplicitSessionBusAddress(true);
 #endif
   const int result = content::RunContentProcess(std::move(params), &engine->runner);
@@ -1668,6 +1695,7 @@ int zebkit_init_with_settings(int argc, char** argv, const char* settings_json, 
     zebkit::StopHostLoop();
     engine->delegate.ShutdownBrowser();
     engine->runner.Finish();
+    zebkit::DeleteTemporaryUserData();
     if (error)
       *error = strdup(("Engine initialization failed with exit code " + std::to_string(result)).c_str());
     return result;
@@ -1706,6 +1734,7 @@ bool zebkit_shutdown(void) {
   zebkit::StopHostLoop();
   engine->delegate.ShutdownBrowser();
   engine->runner.Finish();
+  zebkit::DeleteTemporaryUserData();
   return true;
 }
 
@@ -1722,7 +1751,8 @@ int zebkit_helper_main(int argc, char** argv) {
 }
 
 void zebkit_quit(void) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   // As a task: the caller may be a callback of a view being destroyed,
   // such as on_close, which the shutdown must not pull out from under it.
   content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, base::BindOnce([] {
@@ -1734,18 +1764,15 @@ void zebkit_quit(void) {
                                                }));
 }
 
-void zebkit_post_task(zebkit_task_func func, void* data) {
-  CHECK(g_engine_started) << "zebkit_post_task() before the engine started";
-  content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE,
-                                               base::BindOnce(func, data));
+bool zebkit_post_task(zebkit_task_func func, void* data) {
+  return func && zebkit::PostEngineTask(base::BindOnce(func, data), base::TimeDelta());
 }
 
-void zebkit_post_delayed_task(zebkit_task_func func,
+bool zebkit_post_delayed_task(zebkit_task_func func,
                               void* data,
                               uint32_t delay_ms) {
-  CHECK(g_engine_started) << "zebkit_post_delayed_task() before the engine started";
-  content::GetUIThreadTaskRunner({})->PostDelayedTask(
-      FROM_HERE, base::BindOnce(func, data), base::Milliseconds(delay_ms));
+  return func && zebkit::PostEngineTask(base::BindOnce(func, data),
+                                        base::Milliseconds(delay_ms));
 }
 
 bool zebkit_is_headless(void) {

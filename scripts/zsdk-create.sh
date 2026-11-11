@@ -16,7 +16,9 @@
 #   Mac this script packs it into macos/ and stops; copy that to the Linux machine.
 #   On Linux it uses macos/sdk.tar.xz and macos/version.plist, and fetches the rest.
 #
-# What exists is reused; a finished SDK is never deleted here. The SDKs stay on
+# What exists is reused: a macOS SDK of the same version and Xcode is kept, and
+# the pieces Chromium's DEPS pins are fetched again only when it pins others,
+# each laid out beside the old one and then put in its place. The SDKs stay on
 # this machine: do not publish them.
 set -euo pipefail
 

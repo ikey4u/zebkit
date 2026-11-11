@@ -83,11 +83,19 @@ static void on_frame(zebkit_view *view, const zebkit_frame *frame, void *data) {
     }
     zebkit_frame_release(frame);
 }
-/* MIXED_WRONG_COLOUR (a run that must fail): the page's colours expected swapped. */
+/* ZEBKIT_TEST_WRONG_COLOUR (a run that must fail, to see that the check can):
+   the page's colours expected swapped. */
 static int same_colour(unsigned a, unsigned b) {
     static const char *wrong = (const char *)1;
     if (wrong == (const char *)1)
-        wrong = getenv("MIXED_WRONG_COLOUR");
+        wrong = getenv("ZEBKIT_TEST_WRONG_COLOUR");
+    if (wrong && wrong != (const char *)1) {
+        static int said;
+        if (!said++) {
+            printf("narrowed: ZEBKIT_TEST_WRONG_COLOUR=%s, colours expected swapped: this run must fail\n", wrong);
+            fflush(stdout);
+        }
+    }
     if (wrong)
         b = (b & 0xff) << 16 | (b & 0xff00) | b >> 16;
     /* sRGB everywhere, the same bytes: one step for rounding. */

@@ -68,7 +68,7 @@ class NotificationService : public content::PlatformNotificationService {
 };
 
 // The system's notifications (notifications_linux.cc, notifications_mac.mm,
-// and none elsewhere yet): false when the system has no service to show it.
+// notifications_win.cc): false when the system has no service to show it.
 bool ShowSystemNotification(const std::string& id, const base::DictValue& notification);
 void CloseSystemNotification(const std::string& id);
 // Told by the system: clicked (with an action's index or none), closed.

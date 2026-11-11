@@ -4,32 +4,24 @@
 //! the system's appearance changing, and web notifications. Engine thread
 //! only; events are JSON, as the C header gives them.
 
-use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 
 use crate::engine::require_engine_thread;
-use crate::{c_string, string_from, sys, take_error, take_string, Error};
+use crate::{c_string, string_from, sys, take_error, take_string, Error, Slot};
 
-type Event = RefCell<Option<Box<dyn FnMut(&str)>>>;
+type Event = Slot<dyn FnMut(&str)>;
 
 thread_local! {
-    static ON_POWER: Event = const { RefCell::new(None) };
-    static ON_DISPLAYS: Event = const { RefCell::new(None) };
-    static ON_NOTIFICATION: Event = const { RefCell::new(None) };
-    static ON_ENVIRONMENT: Event = const { RefCell::new(None) };
+    static ON_POWER: Event = const { Slot::new() };
+    static ON_DISPLAYS: Event = const { Slot::new() };
+    static ON_NOTIFICATION: Event = const { Slot::new() };
+    static ON_ENVIRONMENT: Event = const { Slot::new() };
 }
 
-// The function is out of its slot while it runs, so that it may replace itself.
+// The function is out of its slot while it runs, so that it may replace or remove itself.
 fn deliver(slot: &'static std::thread::LocalKey<Event>, json: *const c_char) {
     let json = unsafe { string_from(json) }.unwrap_or_default();
-    let Some(mut function) = slot.with(|slot| slot.borrow_mut().take()) else { return };
-    function(&json);
-    slot.with(|slot| {
-        let mut current = slot.borrow_mut();
-        if current.is_none() {
-            *current = Some(function);
-        }
-    });
+    slot.with(|slot| slot.call(|function| function(&json)));
 }
 
 unsafe extern "C" fn on_power(json: *const c_char, _: *mut c_void) {
@@ -51,7 +43,7 @@ unsafe extern "C" fn on_environment(json: *const c_char, _: *mut c_void) {
 pub fn on_power_event<F: FnMut(&str) + 'static>(function: Option<F>) {
     require_engine_thread("system::on_power_event()");
     let set = function.is_some();
-    ON_POWER.with(|slot| *slot.borrow_mut() = function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>));
+    ON_POWER.with(|slot| slot.set(function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>)));
     unsafe { sys::zebkit_on_power_event(set.then_some(on_power as _), std::ptr::null_mut()) }
 }
 
@@ -65,15 +57,19 @@ pub fn displays() -> Option<String> {
 pub fn on_displays_changed<F: FnMut(&str) + 'static>(function: Option<F>) {
     require_engine_thread("system::on_displays_changed()");
     let set = function.is_some();
-    ON_DISPLAYS.with(|slot| *slot.borrow_mut() = function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>));
+    ON_DISPLAYS.with(|slot| slot.set(function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>)));
     unsafe { sys::zebkit_on_displays_changed(set.then_some(on_displays as _), std::ptr::null_mut()) }
 }
+
+/// [`crate::environment`] and [`crate::capabilities`], here beside the
+/// functions that tell of their changes.
+pub use crate::{capabilities, environment};
 
 /// The system's appearance changing, with what [`crate::environment`] returns. `None` stops.
 pub fn on_environment_changed<F: FnMut(&str) + 'static>(function: Option<F>) {
     require_engine_thread("system::on_environment_changed()");
     let set = function.is_some();
-    ON_ENVIRONMENT.with(|slot| *slot.borrow_mut() = function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>));
+    ON_ENVIRONMENT.with(|slot| slot.set(function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>)));
     unsafe { sys::zebkit_on_environment_changed(set.then_some(on_environment as _), std::ptr::null_mut()) }
 }
 
@@ -121,7 +117,7 @@ pub fn show_in_folder(path: &str) -> Result<(), Error> {
 pub fn on_notification<F: FnMut(&str) + 'static>(function: Option<F>) {
     require_engine_thread("system::on_notification()");
     let set = function.is_some();
-    ON_NOTIFICATION.with(|slot| *slot.borrow_mut() = function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>));
+    ON_NOTIFICATION.with(|slot| slot.set(function.map(|f| Box::new(f) as Box<dyn FnMut(&str)>)));
     unsafe { sys::zebkit_on_notification(set.then_some(on_notification_call as _), std::ptr::null_mut()) }
 }
 

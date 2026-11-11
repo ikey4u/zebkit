@@ -1,9 +1,11 @@
 package zebkit
 
 /*
-#include "bridge_b.h"
+#include "bridge.h"
 */
 import "C"
+
+import "encoding/json"
 
 // ShapeText shapes text with HarfBuzz, in font (a TrueType or OpenType
 // file; the first face of a collection) at size units per em. language is a
@@ -11,7 +13,7 @@ import "C"
 // the text. The answer is JSON (<zebkit/text.h>): {"direction", "script",
 // "unitsPerEm", "advance": [x, y], "glyphs": [{"glyph", "cluster", "advance",
 // "offset"}]}, glyphs in visual order, y up.
-func ShapeText(font []byte, size float64, text, language, direction string) (string, error) {
+func ShapeText(font []byte, size float64, text, language, direction string) (json.RawMessage, error) {
 	ctext := cString(text)
 	defer free(ctext)
 	clanguage := optionalString(language)
@@ -21,7 +23,7 @@ func ShapeText(font []byte, size float64, text, language, direction string) (str
 	var message *C.char
 	out := C.zebkit_text_shape(bytesArg(font), C.size_t(len(font)), C.double(size), ctext, clanguage, cdirection, &message)
 	if out == nil {
-		return "", takeError(message, "not shaped")
+		return nil, takeError(message, "not shaped")
 	}
-	return takeString(out), nil
+	return json.RawMessage(takeString(out)), nil
 }

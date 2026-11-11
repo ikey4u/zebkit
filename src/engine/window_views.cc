@@ -53,11 +53,6 @@
 #include "zebkit/engine/window.h"
 #include "zebkit/engine/window_platform.h"
 
-#if BUILDFLAG(IS_WIN)
-#include <fcntl.h>
-#include <io.h>
-#endif
-
 namespace zebkit {
 
 namespace {
@@ -430,12 +425,11 @@ class NativePlatform : public WindowPlatform {
   }
 
   void ResizeContents(Window* window, const gfx::Size& content_size) override {
-    auto found = windows_.find(window);
-    views::Widget* widget = found == windows_.end() ? nullptr : found->second.widget.get();
+    Data* data = Find(window);
+    views::Widget* widget = data ? data->widget.get() : nullptr;
     // A window of the system's: its content area that size, the frame
     // around it, as macOS's does; without one, the page.
-    if (!widget || zebkit_is_headless() || window->kind() == Window::Kind::kOffscreen ||
-        !widget->non_client_view()) {
+    if (!widget || !HasSystemWindow(window) || !widget->non_client_view()) {
       window->web_contents()->Resize(gfx::Rect(content_size));
       return;
     }
@@ -444,11 +438,13 @@ class NativePlatform : public WindowPlatform {
   }
 
   void SetTitle(Window* window, const std::u16string& title) override {
-    windows_[window].widget->widget_delegate()->SetTitle(title);
+    if (Data* data = Find(window))
+      data->widget->widget_delegate()->SetTitle(title);
   }
 
   gfx::NativeWindow GetNativeWindow(Window* window) override {
-    return windows_[window].widget->GetNativeWindow();
+    Data* data = Find(window);
+    return data ? data->widget->GetNativeWindow() : gfx::NativeWindow();
   }
 
   void CleanUp(Window* window) override {
@@ -461,21 +457,26 @@ class NativePlatform : public WindowPlatform {
   }
 
   bool Destroy(Window* window) override {
+    Data* data = Find(window);
+    if (!data)
+      return false;
     // Before the widget frees the root, and the client under this one.
-    windows_[window].parenting.reset();
-    windows_[window].widget->CloseNow();
+    data->parenting.reset();
+    data->widget->CloseNow();
     return true;
   }
 
   void BringToFront(Window* window) override {
-    windows_[window].widget->Activate();
+    if (Data* data = Find(window))
+      data->widget->Activate();
     window->web_contents()->Focus();
   }
 
   void SetSizeLimits(Window* window,
                      const gfx::Size& minimum,
                      bool resizable) override {
-    views::Widget* widget = windows_[window].widget;
+    Data* data = Find(window);
+    views::Widget* widget = data ? data->widget.get() : nullptr;
     if (!widget)
       return;
     ViewOf(widget)->set_minimum_size(minimum);
@@ -486,7 +487,7 @@ class NativePlatform : public WindowPlatform {
 
   WindowCapabilities Capabilities(Window* window) override {
     WindowCapabilities capabilities;
-    if (zebkit_is_headless() || (window && window->kind() == Window::Kind::kOffscreen))
+    if (zebkit_is_headless() || (window && !HasSystemWindow(window)))
       return capabilities;
     capabilities.overlay = true;
     capabilities.none = true;
@@ -505,10 +506,10 @@ class NativePlatform : public WindowPlatform {
 
   WindowGeometry Geometry(Window* window) override {
     WindowGeometry geometry = WindowPlatform::Geometry(window);
-    auto found = windows_.find(window);
-    if (found == windows_.end() || !found->second.widget)
+    Data* data = Find(window);
+    if (!data)
       return geometry;
-    views::Widget* widget = found->second.widget;
+    views::Widget* widget = data->widget;
     geometry.state = widget->IsFullscreen()  ? WindowGeometry::State::kFullscreen
                      : widget->IsMinimized() ? WindowGeometry::State::kMinimized
                      : widget->IsMaximized() ? WindowGeometry::State::kMaximized
@@ -528,11 +529,10 @@ class NativePlatform : public WindowPlatform {
   }
 
   bool PerformAction(Window* window, WindowAction action, std::string* error) override {
-    auto found = windows_.find(window);
-    if (found == windows_.end() || !found->second.widget || zebkit_is_headless() ||
-        window->kind() == Window::Kind::kOffscreen)
+    Data* data = Find(window);
+    if (!data || !HasSystemWindow(window))
       return WindowPlatform::PerformAction(window, action, error);
-    views::Widget* widget = found->second.widget;
+    views::Widget* widget = data->widget;
     switch (action) {
       case WindowAction::kShow:
         widget->GetNativeWindow()->GetHost()->Show();
@@ -556,17 +556,17 @@ class NativePlatform : public WindowPlatform {
   }
 
   void OptionsChanged(Window* window) override {
-    auto found = windows_.find(window);
-    if (found == windows_.end() || !found->second.widget)
+    Data* data = Find(window);
+    if (!data)
       return;
-    views::Widget* widget = found->second.widget;
+    views::Widget* widget = data->widget;
     const WindowOptions& options = window->options();
     if (options.position && widget->GetWindowBoundsInScreen().origin() != *options.position) {
       gfx::Rect bounds = widget->GetWindowBoundsInScreen();
       bounds.set_origin(*options.position);
       widget->SetBounds(bounds);
     }
-    ApplyBackground(window, found->second);
+    ApplyBackground(window, *data);
     if (auto* frame = FrameOf(window)) {
       frame->UpdateColors();
       frame->UpdateState();
@@ -574,11 +574,8 @@ class NativePlatform : public WindowPlatform {
   }
 
   void SetFullscreen(Window* window, bool fullscreen) override {
-    auto found = windows_.find(window);
-    if (found == windows_.end() || !found->second.widget || zebkit_is_headless() ||
-        window->kind() == Window::Kind::kOffscreen)
-      return;
-    found->second.widget->SetFullscreen(fullscreen);
+    if (Data* data = Find(window); data && HasSystemWindow(window))
+      data->widget->SetFullscreen(fullscreen);
   }
 
  private:
@@ -591,16 +588,26 @@ class NativePlatform : public WindowPlatform {
     std::unique_ptr<NoSystemWindowParenting> parenting;
   };
 
+  // The window's, while it has a widget; never inserts one.
+  Data* Find(Window* window) {
+    auto found = windows_.find(window);
+    return found != windows_.end() && found->second.widget ? &found->second : nullptr;
+  }
+
+  // A window the system shows: not headless and not off-screen.
+  static bool HasSystemWindow(Window* window) {
+    return !zebkit_is_headless() && window->kind() != Window::Kind::kOffscreen;
+  }
+
   static WindowView* ViewOf(views::Widget* widget) {
     return static_cast<WindowView*>(widget->widget_delegate()->GetContentsView());
   }
 
   ZebkitFrameView* FrameOf(Window* window) {
-    auto found = windows_.find(window);
-    if (found == windows_.end() || !found->second.widget || window->options().frame == WindowOptions::Frame::kSystem ||
-        !found->second.widget->non_client_view())
+    Data* data = Find(window);
+    if (!data || window->options().frame == WindowOptions::Frame::kSystem || !data->widget->non_client_view())
       return nullptr;
-    return static_cast<ZebkitFrameView*>(found->second.widget->non_client_view()->frame_view());
+    return static_cast<ZebkitFrameView*>(data->widget->non_client_view()->frame_view());
   }
 
   // The window's colour before the page's first frame and under a transparent
@@ -625,10 +632,6 @@ ViewsDelegate* g_views_delegate = nullptr;
 }  // namespace
 
 void InitializePlatforms() {
-#if BUILDFLAG(IS_WIN)
-  _setmode(_fileno(stdout), _O_BINARY);
-  _setmode(_fileno(stderr), _O_BINARY);
-#endif
   g_wm_state = new wm::WMState();
   if (!display::Screen::HasScreen())
     g_screen = views::CreateDesktopScreen().release();

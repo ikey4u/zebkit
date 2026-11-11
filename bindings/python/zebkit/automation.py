@@ -25,11 +25,12 @@ import json
 import pathlib
 import re
 
-from . import _VIEW, Error, View, _P, _S, _V, _alive, _declare, _guard, _view_on_close, post
+from . import Error, View, _P, _S, _V, _alive, _declare, _guard, _retire, _string, post
 
 __all__ = ["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle", "Route", "Request",
            "Response", "Dialog", "FileChooser", "Download", "BrowserContext", "Worker", "Tracing", "Pixels", "expect", "run",
-           "new_context", "listen", "TimeoutError", "commands", "page_id"]
+           "new_context", "listen", "TimeoutError", "commands", "page_id", "Keyboard", "Mouse", "Touchscreen",
+           "Clock", "ConsoleMessage", "APIRequestContext", "APIResponse", "Future", "sleep"]
 
 _DONE = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
 _EVENT = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
@@ -40,7 +41,6 @@ _page_view = _declare("zebkit_automation_page", _V, _S)
 _page_id = _declare("zebkit_automation_page_id", _P, _V)
 _LISTEN = ctypes.CFUNCTYPE(None, _S, _S, _P)
 _listen = _declare("zebkit_automation_listen", None, ctypes.c_int, _LISTEN, _P)
-_free = _declare("zebkit_free", None, _P)
 _PIXELS = ctypes.CFUNCTYPE(None, _V, _P, ctypes.c_int, ctypes.c_int, ctypes.c_int, _S, _P)
 _screenshot_pixels = _declare("zebkit_automation_screenshot_pixels", None, _V, _S, _S, _PIXELS, _P)
 
@@ -51,22 +51,13 @@ class TimeoutError(Error):  # noqa: A001
 
 def page_id(view):
     """The page id Playwright's protocol and the automation calls name the view by."""
-    pointer = _page_id(view._check())
-    if not pointer:
-        return None
-    try:
-        return ctypes.string_at(pointer).decode()
-    finally:
-        _free(pointer)
+    return _string(_page_id(view._check()))
 
 
 def commands():
     """The commands the engine has, by Playwright's protocol names."""
-    pointer = _commands()
-    try:
-        return json.loads(ctypes.string_at(pointer).decode())
-    finally:
-        _free(pointer)
+    value = _string(_commands())
+    return json.loads(value) if value else []
 
 
 # ---- Futures and coroutines on the engine's thread ----------------------
@@ -160,10 +151,11 @@ def _command(view, method, params=None):
         else:
             future.set_result(json.loads(result.decode()) if result else {})
 
+    handle = view._check() if view is not None else None
     callback = _DONE(_guard(done))
     _alive.add(callback)
     clean = {k: v for k, v in (params or {}).items() if v is not None}
-    _call(view._check() if view is not None else None, method.encode(), json.dumps(clean).encode(), callback, None)
+    _call(handle, method.encode(), json.dumps(clean).encode(), callback, None)
     return future
 
 
@@ -194,10 +186,11 @@ def _pixels(view, method, params):
         else:
             future.set_result(Pixels(width, height, stride, ctypes.string_at(pixels, stride * height)))
 
+    handle = view._check()
     callback = _PIXELS(_guard(done))
     _alive.add(callback)
     clean = {k: v for k, v in (params or {}).items() if v is not None}
-    _screenshot_pixels(view._check(), method.encode(), json.dumps(clean).encode(), callback, None)
+    _screenshot_pixels(handle, method.encode(), json.dumps(clean).encode(), callback, None)
     return future
 
 
@@ -473,9 +466,19 @@ class Page(Frame):
         self._workers = {}
         self.touchscreen = Touchscreen(self)
         self.tracing = Tracing(self)
+        handle = self._view._check()
         self._event_callback = _EVENT(_guard(self._event))
         _alive.add(self._event_callback)
-        _on_event(self._view._check(), self._event_callback, None)
+        _on_event(handle, self._event_callback, None)
+        # The page's last events can come as its view closes, until the task
+        # that closed it has ended (<zebkit/automation.h>): let go after it.
+        self._view._close_hooks.append(self._release_events)
+
+    def _release_events(self):
+        callback, self._event_callback = self._event_callback, None
+        if callback is not None:
+            _retire(callback)
+            _alive.discard(callback)
 
     @property
     def view(self):
@@ -1395,14 +1398,7 @@ class Tracing:
 
 def _adopt_view(handle):
     """A View for a view the engine made (a context's page)."""
-    view = View.__new__(View)
-    view._handle = handle
-    view._callbacks = {}
-    view._on_close_user = None
-    view._closed = False
-    view._set("close", _VIEW(_guard(view._closed_by_engine)), _view_on_close)
-    _alive.add(view)
-    return view
+    return View._adopt(handle)
 
 
 class BrowserContext:

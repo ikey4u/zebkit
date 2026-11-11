@@ -1,12 +1,17 @@
 # Tasks for zebkit, run with mise (https://mise.jdx.dev).
 #
-#   mise run r                release build for this machine  -> dist/release, and its archive
-#   mise run r:github         the same, published as a GitHub release
+#   mise run r                release build for Linux, macOS and Windows, all on this Linux machine
+#                             -> dist/release, dist/release-macos, dist/release-windows, and their archives
+#   mise run r:github         the same, published as a GitHub release (after mise run check)
+#   mise run check            the checks a release needs: engine-test (strict), glibc-test, web-bench --check
+#   mise run check:static     the checks that need no build: bash -n, Python syntax, check-bindings.py
 #   mise run r:crate          the Rust crates to crates.io (CARGO_REGISTRY_TOKEN)
 #   mise run r:python         the Python binding to PyPI (UV_PUBLISH_TOKEN or PYPI_TOKEN)
 #   mise run d                debug build for this machine    -> dist/debug
+#   mise run bench:web        what web pages cost in zebkit against Electron
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
 #   mise example:macos:basic  build and run examples/window.c on macOS
+#   mise example:macos:appkit build and run the AppKit host of examples/native-host on macOS
 #   mise example:ffmpeg       build and run examples/ffmpeg.cpp, which uses the engine's FFmpeg
 #   mise example:rust:window  run the Rust crate's window example
 #   mise example:rust:codecs  run the Rust crate's example of the engine's FFmpeg
@@ -29,14 +34,25 @@ gh = "2.102.0"
 uv = "0.13.7"
 # Go, for the Go binding's checks (bindings/golang, scripts/engine-test.sh).
 go = "1.26.9"
+# Node.js, for the tests' and benchmarks' JavaScript clients (Playwright,
+# Puppeteer, the MCP client) and for building Playwright's injected script.
+node = "24.22.0"
 
 [tasks.r]
-description = "Build the release zebkit for Linux (dist/release) and macOS (dist/release-macos, cross-built), and the archives the Rust crates download"
+description = "Build the release zebkit for Linux (dist/release), macOS and Windows (dist/release-macos, dist/release-windows, cross-built), and the archives the Rust crates download"
 run = "scripts/release.sh"
 
 [tasks."r:github"]
-description = "Build the release and publish it as the GitHub release v<VERSION>"
+description = "Build the release and publish it as the GitHub release v<VERSION>; needs mise run check passed on the same sources"
 run = "scripts/release.sh --publish"
+
+[tasks.check]
+description = "The checks before a release: check-bindings, engine-test (strict, with check-surfaces), glibc-test, web-bench --check; records the pass for r:github"
+run = "scripts/check.sh"
+
+[tasks."check:static"]
+description = "The checks that need no build: bash -n of the scripts, Python syntax, check-bindings.py"
+run = "scripts/check.sh --static"
 
 [tasks."r:crate"]
 description = "Publish the Rust crates (zebkit-rs, zebkit-build, zebkit) at VERSION to crates.io; the token in CARGO_REGISTRY_TOKEN (--dry-run to check only)"
@@ -61,6 +77,10 @@ run = "scripts/example.sh linux-basic"
 [tasks."example:macos:basic"]
 description = "Build and run examples/window.c against Zebkit.framework (pass a URL after --)"
 run = "scripts/example.sh macos-basic"
+
+[tasks."example:macos:appkit"]
+description = "Build and run the AppKit host of examples/native-host: a web and PDF window AppKit owns (pass switches after --)"
+run = "scripts/example.sh macos-appkit"
 
 [tasks."example:ffmpeg"]
 description = "Build and run examples/ffmpeg.cpp: decode an MP3 to WAV with the FFmpeg inside zebkit (pass IN.mp3 OUT.wav after --)"

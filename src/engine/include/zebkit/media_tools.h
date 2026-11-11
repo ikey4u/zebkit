@@ -17,8 +17,8 @@ typedef int (*zebkit_media_progress_func)(int64_t packets, int64_t time_us, void
  * ffprobe: [-show_format] [-show_streams] [-of json|-print_format json]
  *          [-i] INPUT
  * With neither show switch, both format and streams are returned.
- * ffmpeg: [-y|-n] -i INPUT [-map 0:INDEX]... [-vn] [-an]
- *   (-c copy | -c:a pcm_s16le | -c:v rawvideo) [-f FORMAT]
+ * ffmpeg: [-y|-n] [-ss SECONDS] [-t SECONDS] -i INPUT [-map 0:INDEX]...
+ *   [-vn] [-an] (-c|-codec copy | -c:a pcm_s16le | -c:v rawvideo) [-f FORMAT]
  *   [-ar RATE] [-ac CHANNELS] [-s WIDTHxHEIGHT] [-frames:v COUNT]
  *   [-pix_fmt rgba] OUTPUT
  * copy supports MP4/MOV/Matroska/WebM; PCM supports WAV/s16le; video RGBA.

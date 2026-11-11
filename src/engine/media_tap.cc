@@ -21,6 +21,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "zebkit/engine/media_capture.mojom.h"
 #include "zebkit/engine/media_capture_writer.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 struct zebkit_media_tap : zebkit::mojom::MediaTapSink {
@@ -189,7 +190,7 @@ extern "C" zebkit_media_tap* zebkit_media_tap_start(zebkit_view* view,
     if (error) *error = strdup(message.c_str());
     return nullptr;
   };
-  if (!view || !view->web_contents() || !id || !func) return fail("view, media id and callback are required");
+  if (!zebkit::LiveView(view) || !view->web_contents() || !id || !func) return fail("view, media id and callback are required");
   auto options = base::JSONReader::ReadDict(options_json ? options_json : "{}", 0);
   if (!options) return fail("media tap options must be a JSON object");
   for (auto [key, value] : *options) {

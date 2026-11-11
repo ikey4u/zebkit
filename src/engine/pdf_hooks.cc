@@ -69,10 +69,6 @@ std::string Write(const base::DictValue& value) {
   return base::WriteJson(value).value_or("{}");
 }
 
-char* Duplicate(const std::string& text) {
-  return strdup(text.c_str());
-}
-
 }  // namespace
 
 Hook::~Hook() {
@@ -308,13 +304,12 @@ std::string CheckKindData(const Hook& kind, const base::Value& data) {
 
 using zebkit::pdf::Hook;
 using zebkit::pdf::HookType;
-using zebkit::pdf::Duplicate;
 using zebkit::pdf::Register;
 
 extern "C" {
 
 char* zebkit_pdf_string(const char* text) {
-  return text ? Duplicate(text) : nullptr;
+  return text ? strdup(text) : nullptr;
 }
 
 uint8_t* zebkit_pdf_bytes(const void* data, size_t size) {

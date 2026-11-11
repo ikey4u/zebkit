@@ -150,10 +150,13 @@ async def test(base):
 
     await page.tracing.start(screenshots=True)
     await page.locator("#go").click()
-    trace = await page.tracing.stop(os.path.join(os.environ.get("TMPDIR", "/tmp"), "zebkit-python-%d.zip" % os.getpid()))
-    check(trace and open(trace, "rb").read(2) == b"PK", "tracing.stop() writes the zip", trace)
-    if trace:
-        os.unlink(trace)
+    zip_path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "zebkit-python-%d.zip" % os.getpid())
+    try:
+        trace = await page.tracing.stop(zip_path)
+        check(trace and open(trace, "rb").read(2) == b"PK", "tracing.stop() writes the zip", trace)
+    finally:
+        if os.path.exists(zip_path):
+            os.unlink(zip_path)
 
     context = await new_context(viewport={"width": 640, "height": 480}, user_agent="zebkit-python-context")
     other = await context.new_page()

@@ -2,12 +2,11 @@ package zebkit
 
 /*
 #include "bridge.h"
-#include "bridge_c.h"
 */
 import "C"
 
 import (
-	"runtime/cgo"
+	"encoding/json"
 	"unsafe"
 )
 
@@ -25,21 +24,29 @@ const (
 	DialogPrint        DialogType = 4 // window.print(); answering only closes it
 )
 
+var dialogNames = []string{"alert", "confirm", "prompt", "beforeunload", "print"}
+
 // Name is the type as the engine's JSON names it.
 func (t DialogType) Name() string {
-	switch t {
-	case DialogAlert:
-		return "alert"
-	case DialogConfirm:
-		return "confirm"
-	case DialogPrompt:
-		return "prompt"
-	case DialogBeforeUnload:
-		return "beforeunload"
-	case DialogPrint:
-		return "print"
+	if t >= 0 && int(t) < len(dialogNames) {
+		return dialogNames[t]
 	}
 	return "unknown"
+}
+
+// UnmarshalJSON reads the type's name.
+func (t *DialogType) UnmarshalJSON(text []byte) error {
+	var name string
+	if err := json.Unmarshal(text, &name); err != nil {
+		return err
+	}
+	*t = -1
+	for i, known := range dialogNames {
+		if known == name {
+			*t = DialogType(i)
+		}
+	}
+	return nil
 }
 
 // DialogPolicy is what becomes of a view's dialogs.
@@ -68,80 +75,121 @@ type Dialog struct {
 // OnDialog calls function for every dialog the view's pages open, held or
 // not; nil stops. With a function set, the default policy holds them for it.
 func (v *View) OnDialog(function func(*Dialog)) {
-	if function == nil {
-		C.zebkit_view_on_dialog(v.view, nil, nil)
-		v.slot("dialog").clear()
-		return
+	var value func(*C.zebkit_dialog)
+	if function != nil {
+		value = func(d *C.zebkit_dialog) {
+			function(&Dialog{
+				ID: uint64(d.id), Type: DialogType(d._type), Message: goString(d.message),
+				DefaultPrompt: goString(d.default_prompt), URL: goString(d.url),
+				IsReload: bool(d.is_reload), Held: bool(d.held),
+			})
+		}
 	}
-	h := v.slot("dialog").set(func(d *C.zebkit_dialog) {
-		function(&Dialog{
-			ID: uint64(d.id), Type: DialogType(d._type), Message: goString(d.message),
-			DefaultPrompt: goString(d.default_prompt), URL: goString(d.url),
-			IsReload: bool(d.is_reload), Held: bool(d.held),
-		})
+	v.hook("dialog", function, value, unsafe.Pointer(C.zk_dialog), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_dialog(raw, C.zebkit_dialog_func(f), d)
 	})
-	C.zebkit_view_on_dialog(v.view, C.zebkit_dialog_func(C.zkc_dialog), data(h))
 }
 
 // OnDialogClosed calls function when a dialog closes, however it was
-// answered; userInput is a prompt's text.
+// answered; userInput is a prompt's text. nil stops.
 func (v *View) OnDialogClosed(function func(id uint64, accepted bool, userInput string)) {
-	if function == nil {
-		C.zebkit_view_on_dialog_closed(v.view, nil, nil)
-		v.slot("dialog-closed").clear()
-		return
-	}
-	h := v.slot("dialog-closed").set(function)
-	C.zebkit_view_on_dialog_closed(v.view, C.zebkit_dialog_closed_func(C.zkc_dialog_closed), data(h))
+	v.hook("dialog-closed", function, function, unsafe.Pointer(C.zk_dialog_closed), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_dialog_closed(raw, C.zebkit_dialog_closed_func(f), d)
+	})
 }
 
+// SetDialogPolicy says what becomes of the view's dialogs.
 func (v *View) SetDialogPolicy(policy DialogPolicy) {
-	C.zebkit_view_set_dialog_policy(v.view, C.zebkit_dialog_policy(policy))
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_dialog_policy(raw, C.zebkit_dialog_policy(policy))
+	}
 }
 
+// DialogPolicy is the view's dialog policy.
 func (v *View) DialogPolicy() DialogPolicy {
-	return DialogPolicy(C.zebkit_view_get_dialog_policy(v.view))
+	if raw, ok := v.raw(); ok {
+		return DialogPolicy(C.zebkit_view_get_dialog_policy(raw))
+	}
+	return DialogPolicyDefault
 }
 
 // RespondDialog answers dialog id: OK (accept) or Cancel; a prompt with
-// promptText ("" for its default). False when no such dialog is open.
-func (v *View) RespondDialog(id uint64, accept bool, promptText string) bool {
+// promptText ("" for its default).
+func (v *View) RespondDialog(id uint64, accept bool, promptText string) error {
+	raw, ok := v.raw()
+	if !ok {
+		return ErrClosed
+	}
 	text := optionalString(promptText)
 	defer free(text)
-	return bool(C.zebkit_view_dialog_respond(v.view, C.uint64_t(id), C.bool(accept), text))
+	return check(C.zebkit_view_dialog_respond(raw, C.uint64_t(id), C.bool(accept), text), "no such dialog is open")
 }
 
-// DialogsJSON is the view's open dialogs as a JSON array, oldest first.
-func (v *View) DialogsJSON() string { return takeString(C.zebkit_view_dialogs(v.view)) }
+// Dialogs are the view's open dialogs, oldest first; all of them are held.
+func (v *View) Dialogs() ([]Dialog, error) {
+	raw, ok := v.raw()
+	if !ok {
+		return nil, ErrClosed
+	}
+	// The engine writes the ids as JSON numbers that may have a fraction.
+	var open []struct {
+		ID            float64    `json:"id"`
+		Type          DialogType `json:"type"`
+		Message       string     `json:"message"`
+		DefaultPrompt string     `json:"defaultPrompt"`
+		URL           string     `json:"url"`
+		IsReload      bool       `json:"isReload"`
+	}
+	if err := takeJSON(C.zebkit_view_dialogs(raw), &open, "no dialogs"); err != nil {
+		return nil, err
+	}
+	dialogs := make([]Dialog, len(open))
+	for i, d := range open {
+		dialogs[i] = Dialog{ID: uint64(d.ID), Type: d.Type, Message: d.Message, DefaultPrompt: d.DefaultPrompt, URL: d.URL,
+			IsReload: d.IsReload, Held: true}
+	}
+	return dialogs, nil
+}
 
 // RequestClose closes the view as a browser closes a tab: the page's
 // beforeunload handlers first.
-func (v *View) RequestClose() { C.zebkit_view_request_close(v.view) }
-
-// PrintToPDF prints the page to PDF with CDP's Page.printToPDF parameters as
-// JSON ("" for the defaults).
-func (v *View) PrintToPDF(options string, done func(pdf []byte, err error)) {
-	var h C.uintptr_t
-	h = handle(func(pdf []byte, failure string, failed bool) {
-		cgo.Handle(h).Delete()
-		if failed {
-			done(nil, &Error{failure})
-		} else {
-			done(pdf, nil)
-		}
-	})
-	coptions := optionalString(options)
-	defer free(coptions)
-	C.zebkit_view_print_to_pdf(v.view, coptions, C.zebkit_pdf_func(C.zk_capture), data(h))
+func (v *View) RequestClose() {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_request_close(raw)
+	}
 }
 
-// Drag operations, as masks of what is allowed and as what was done.
+// PrintToPDF prints the page to PDF with CDP's Page.printToPDF parameters,
+// JSON (nil for the defaults).
+func (v *View) PrintToPDF(options any, done func(pdf []byte, err error)) {
+	raw, ok := v.raw()
+	if !ok {
+		if done != nil {
+			done(nil, ErrClosed)
+		}
+		return
+	}
+	coptions, err := optionalJSON(options)
+	if err != nil {
+		if done != nil {
+			done(nil, err)
+		}
+		return
+	}
+	defer free(coptions)
+	C.zebkit_view_print_to_pdf(raw, coptions, C.zebkit_pdf_func(C.zk_bytes), data(bytesOnce(done)))
+}
+
+// DragOperation is a drag's operations: a mask of what is allowed, or what
+// was done.
+type DragOperation uint32
+
 const (
-	DragNone uint32 = 0
-	DragCopy uint32 = 1
-	DragLink uint32 = 2
-	DragMove uint32 = 16
-	DragAll  uint32 = DragCopy | DragLink | DragMove
+	DragNone DragOperation = 0
+	DragCopy DragOperation = 1
+	DragLink DragOperation = 2
+	DragMove DragOperation = 16
+	DragAll  DragOperation = DragCopy | DragLink | DragMove
 )
 
 // DragImage is the picture a page gives its drag: BGRA premultiplied.
@@ -154,82 +202,111 @@ type DragImage struct {
 
 // Drag is a drag the page started.
 type Drag struct {
-	DataJSON   string  // what it carries (<zebkit/page.h>)
-	Operations uint32  // what the page allows
-	X, Y       float32 // where it started, CSS pixels
+	Data       json.RawMessage // what it carries (<zebkit/page.h>)
+	Operations DragOperation   // what the page allows
+	X, Y       float32         // where it started, CSS pixels
 	Image      *DragImage
 }
 
 // OnDragStart calls function when the page starts dragging: return false to
 // let the engine run the drag in the page, true to run it yourself
-// (DragEnter and the rest, then DragSourceEnd).
+// (DragEnter and the rest, then DragSourceEnd). nil stops.
 func (v *View) OnDragStart(function func(*Drag) bool) {
-	if function == nil {
-		C.zebkit_view_on_drag_start(v.view, nil, nil)
-		v.slot("drag-start").clear()
-		return
-	}
-	h := v.slot("drag-start").set(func(d *C.zebkit_drag) bool {
-		drag := &Drag{DataJSON: goString(d.data_json), Operations: uint32(d.operations), X: float32(d.x), Y: float32(d.y)}
-		if d.image != nil && d.image_height > 0 && d.image_stride > 0 {
-			drag.Image = &DragImage{
-				Pixels: C.GoBytes(unsafe.Pointer(d.image), d.image_height*d.image_stride),
-				Width:  int(d.image_width), Height: int(d.image_height), Stride: int(d.image_stride),
-				Scale: float32(d.image_scale), OffsetX: float32(d.image_offset_x), OffsetY: float32(d.image_offset_y),
+	var value func(*C.zebkit_drag) bool
+	if function != nil {
+		value = func(d *C.zebkit_drag) bool {
+			drag := &Drag{Data: json.RawMessage(goString(d.data_json)), Operations: DragOperation(d.operations),
+				X: float32(d.x), Y: float32(d.y)}
+			if d.image != nil && d.image_height > 0 && d.image_stride > 0 {
+				drag.Image = &DragImage{
+					Pixels: goBytes(unsafe.Pointer(d.image), C.size_t(d.image_height)*C.size_t(d.image_stride)),
+					Width:  int(d.image_width), Height: int(d.image_height), Stride: int(d.image_stride),
+					Scale: float32(d.image_scale), OffsetX: float32(d.image_offset_x), OffsetY: float32(d.image_offset_y),
+				}
 			}
+			return function(drag)
 		}
-		return function(drag)
-	})
-	C.zebkit_view_on_drag_start(v.view, C.zebkit_drag_func(C.zkc_drag), data(h))
-}
-
-// OnDragEnd calls function when the page's drag ended, with what was done.
-func (v *View) OnDragEnd(function func(operation uint32)) {
-	if function == nil {
-		C.zebkit_view_on_drag_end(v.view, nil, nil)
-		v.slot("drag-end").clear()
-		return
 	}
-	h := v.slot("drag-end").set(function)
-	C.zebkit_view_on_drag_end(v.view, C.zebkit_drag_end_func(C.zkc_drag_operation), data(h))
+	v.hook("drag-start", function, value, unsafe.Pointer(C.zk_drag), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_drag_start(raw, C.zebkit_drag_func(f), d)
+	})
 }
 
-func (v *View) IsDragging() bool { return bool(C.zebkit_view_is_dragging(v.view)) }
+// OnDragEnd calls function when the page's drag ended, with what was done;
+// nil stops.
+func (v *View) OnDragEnd(function func(operation DragOperation)) {
+	v.hook("drag-end", function, function, unsafe.Pointer(C.zk_drag_operation), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_drag_end(raw, C.zebkit_drag_end_func(f), d)
+	})
+}
 
-// DragEnter starts a drag into the page from outside it, at (x, y).
-func (v *View) DragEnter(dataJSON string, x, y float32, operations uint32, modifiers Modifiers) {
-	d := cString(dataJSON)
+// IsDragging says whether a drag is over the page.
+func (v *View) IsDragging() bool {
+	raw, ok := v.raw()
+	return ok && bool(C.zebkit_view_is_dragging(raw))
+}
+
+// DragEnter starts a drag into the page from outside it, at (x, y), carrying
+// data, JSON (<zebkit/page.h>).
+func (v *View) DragEnter(data any, x, y float32, operations DragOperation, modifiers Modifiers) error {
+	raw, ok := v.raw()
+	if !ok {
+		return ErrClosed
+	}
+	d, err := jsonArg(data)
+	if err != nil {
+		return err
+	}
 	defer free(d)
-	C.zebkit_view_drag_enter(v.view, d, C.float(x), C.float(y), C.uint(operations), C.uint(modifiers))
+	C.zebkit_view_drag_enter(raw, d, C.float(x), C.float(y), C.uint(operations), C.uint(modifiers))
+	return nil
 }
 
-// operationDone is the handle of a once-called operation function.
-func operationDone(done func(uint32)) C.uintptr_t {
-	var h C.uintptr_t
-	h = handle(func(operation uint32) {
-		cgo.Handle(h).Delete()
+// operationOnce is the handle of a once-called operation function.
+func operationOnce(done func(DragOperation)) C.uintptr_t {
+	return onceHandle(func(operation DragOperation) {
 		if done != nil {
 			done(operation)
 		}
 	})
-	return h
 }
 
 // DragOver moves the drag; done gets the operation the page chose.
-func (v *View) DragOver(x, y float32, operations uint32, modifiers Modifiers, done func(operation uint32)) {
-	C.zebkit_view_drag_over(v.view, C.float(x), C.float(y), C.uint(operations), C.uint(modifiers),
-		C.zebkit_drag_operation_func(C.zkc_drag_operation), data(operationDone(done)))
+func (v *View) DragOver(x, y float32, operations DragOperation, modifiers Modifiers, done func(operation DragOperation)) {
+	raw, ok := v.raw()
+	if !ok {
+		if done != nil {
+			done(DragNone)
+		}
+		return
+	}
+	C.zebkit_view_drag_over(raw, C.float(x), C.float(y), C.uint(operations), C.uint(modifiers),
+		C.zebkit_drag_operation_func(C.zk_drag_operation), data(operationOnce(done)))
 }
 
-func (v *View) DragLeave() { C.zebkit_view_drag_leave(v.view) }
+// DragLeave takes the drag out of the page.
+func (v *View) DragLeave() {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_drag_leave(raw)
+	}
+}
 
 // Drop drops the drag at (x, y); done gets the operation done.
-func (v *View) Drop(x, y float32, modifiers Modifiers, done func(operation uint32)) {
-	C.zebkit_view_drop(v.view, C.float(x), C.float(y), C.uint(modifiers),
-		C.zebkit_drag_operation_func(C.zkc_drag_operation), data(operationDone(done)))
+func (v *View) Drop(x, y float32, modifiers Modifiers, done func(operation DragOperation)) {
+	raw, ok := v.raw()
+	if !ok {
+		if done != nil {
+			done(DragNone)
+		}
+		return
+	}
+	C.zebkit_view_drop(raw, C.float(x), C.float(y), C.uint(modifiers),
+		C.zebkit_drag_operation_func(C.zk_drag_operation), data(operationOnce(done)))
 }
 
 // DragSourceEnd ends the drag the page started, with what was done.
-func (v *View) DragSourceEnd(x, y float32, operation uint32) {
-	C.zebkit_view_drag_source_end(v.view, C.float(x), C.float(y), C.uint(operation))
+func (v *View) DragSourceEnd(x, y float32, operation DragOperation) {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_drag_source_end(raw, C.float(x), C.float(y), C.uint(operation))
+	}
 }

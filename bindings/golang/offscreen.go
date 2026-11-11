@@ -1,17 +1,16 @@
 package zebkit
 
 /*
-#include "bridge_c.h"
+#include "bridge.h"
 
-static zebkit_rect zkc_damage_at(const zebkit_frame *frame, size_t i) { return frame->damage[i]; }
-static int zkc_fd_at(const zebkit_frame *frame, int i) { return frame->fds[i]; }
-static uint32_t zkc_stride_at(const zebkit_frame *frame, int i) { return frame->strides[i]; }
-static uint32_t zkc_offset_at(const zebkit_frame *frame, int i) { return frame->offsets[i]; }
+static zebkit_rect zk_damage_at(const zebkit_frame *frame, size_t i) { return frame->damage[i]; }
+static int zk_fd_at(const zebkit_frame *frame, int i) { return frame->fds[i]; }
+static uint32_t zk_stride_at(const zebkit_frame *frame, int i) { return frame->strides[i]; }
+static uint32_t zk_offset_at(const zebkit_frame *frame, int i) { return frame->offsets[i]; }
 */
 import "C"
 
 import (
-	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -19,43 +18,57 @@ import (
 // Off-screen views (<zebkit/offscreen.h>): pages drawn into buffers handed
 // to the application, with the input it sends.
 
-// ViewRect is a rectangle, in CSS pixels or a frame's pixels as each use says.
-type ViewRect struct{ X, Y, Width, Height int32 }
+// Rect is a rectangle, in CSS pixels or a frame's pixels as each use says.
+type Rect struct{ X, Y, Width, Height int32 }
 
-func viewRectFrom(r *C.zebkit_rect) ViewRect {
-	return ViewRect{int32(r.x), int32(r.y), int32(r.width), int32(r.height)}
+func rectFrom(r *C.zebkit_rect) Rect {
+	return Rect{int32(r.x), int32(r.y), int32(r.width), int32(r.height)}
 }
 
 // NewOffscreenView makes a view drawn off-screen, width by height CSS pixels
-// at scale device pixels per CSS pixel (0 for 1); "" loads nothing. Nil
+// at scale device pixels per CSS pixel (0 for 1); "" loads nothing. An error
 // where the engine cannot make one.
-func NewOffscreenView(url string, width, height int, scale float32) *View {
+func NewOffscreenView(url string, width, height int, scale float32) (*View, error) {
+	if !started.Load() {
+		return nil, ErrNotStarted
+	}
+	onEngineThread()
 	curl := optionalString(url)
 	defer free(curl)
-	view := C.zebkit_view_new_offscreen(curl, C.int(width), C.int(height), C.float(scale))
+	view := newView(C.zebkit_view_new_offscreen(curl, C.int(width), C.int(height), C.float(scale)))
 	if view == nil {
-		return nil
+		return nil, refused("no off-screen view")
 	}
-	return newView(view)
+	return view, nil
 }
 
-// NewOffscreenViewIn is NewOffscreenView in context (its cookies and
-// storage).
-func NewOffscreenViewIn(context *Context, url string, width, height int, scale float32) *View {
+// NewOffscreenView is the package's NewOffscreenView in the context (its
+// cookies and storage).
+func (c *Context) NewOffscreenView(url string, width, height int, scale float32) (*View, error) {
+	raw, ok := c.raw()
+	if !ok {
+		return nil, ErrClosed
+	}
 	curl := optionalString(url)
 	defer free(curl)
-	view := C.zebkit_view_new_offscreen_in(context.context, curl, C.int(width), C.int(height), C.float(scale))
+	view := newView(C.zebkit_view_new_offscreen_in(raw, curl, C.int(width), C.int(height), C.float(scale)))
 	if view == nil {
-		return nil
+		return nil, refused("no off-screen view")
 	}
-	return newView(view)
+	return view, nil
 }
 
-func (v *View) IsOffscreen() bool { return bool(C.zebkit_view_is_offscreen(v.view)) }
+// IsOffscreen says whether the view is drawn off-screen.
+func (v *View) IsOffscreen() bool {
+	raw, ok := v.raw()
+	return ok && bool(C.zebkit_view_is_offscreen(raw))
+}
 
 // SetSize changes an off-screen view's size and scale.
 func (v *View) SetSize(width, height int, scale float32) {
-	C.zebkit_view_set_size(v.view, C.int(width), C.int(height), C.float(scale))
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_size(raw, C.int(width), C.int(height), C.float(scale))
+	}
 }
 
 // FrameLayer is the layer of the view a frame is of.
@@ -93,19 +106,20 @@ type DmabufPlane struct {
 
 // OffscreenFrame is a frame of an off-screen view: the whole picture, and
 // what changed since the layer's previous frame. Its buffer is the
-// application's to read until Release, which must be called once; the engine
+// application's to read until Release, which must be called once, by the
+// application (nothing releases a frame dropped without it); the engine
 // holds back newer frames while the application holds as many as it may.
 type OffscreenFrame struct {
 	frame    *C.zebkit_frame
 	release  sync.Once
 	Sequence uint64
 	Layer    FrameLayer
-	Bounds   ViewRect // where it goes in the view, in CSS pixels
-	Width    int      // its size in pixels
+	Bounds   Rect // where it goes in the view, in CSS pixels
+	Width    int  // its size in pixels
 	Height   int
 	Scale    float32
-	Damage   []ViewRect // what changed, in the frame's pixels
-	DrawnUs  int64      // monotonic microseconds
+	Damage   []Rect // what changed, in the frame's pixels
+	DrawnUs  int64  // monotonic microseconds
 	ReadyUs  int64
 	Kind     FrameKind
 	Format   PixelFormat
@@ -135,7 +149,7 @@ func newOffscreenFrame(f *C.zebkit_frame) *OffscreenFrame {
 		frame:     f,
 		Sequence:  uint64(f.sequence),
 		Layer:     FrameLayer(f.layer),
-		Bounds:    viewRectFrom(&f.bounds),
+		Bounds:    rectFrom(&f.bounds),
 		Width:     int(f.width),
 		Height:    int(f.height),
 		Scale:     float32(f.scale),
@@ -154,28 +168,32 @@ func newOffscreenFrame(f *C.zebkit_frame) *OffscreenFrame {
 		Handle:    f.handle,
 	}
 	for i := C.size_t(0); i < f.damage_count; i++ {
-		r := C.zkc_damage_at(f, i)
-		frame.Damage = append(frame.Damage, viewRectFrom(&r))
+		r := C.zk_damage_at(f, i)
+		frame.Damage = append(frame.Damage, rectFrom(&r))
 	}
 	if frame.Kind == FrameDmabuf {
 		for i := C.int(0); i < f.plane_count && i < 4; i++ {
-			frame.Planes = append(frame.Planes, DmabufPlane{int(C.zkc_fd_at(f, i)), uint32(C.zkc_stride_at(f, i)),
-				uint32(C.zkc_offset_at(f, i))})
+			frame.Planes = append(frame.Planes, DmabufPlane{int(C.zk_fd_at(f, i)), uint32(C.zk_stride_at(f, i)),
+				uint32(C.zk_offset_at(f, i))})
 		}
 	}
-	// A frame dropped without Release still goes back to the engine.
-	runtime.SetFinalizer(frame, (*OffscreenFrame).Release)
 	return frame
 }
 
-// Pixels are the shared-memory frame's pixels, valid until Release (nil for
-// other kinds): Height rows of Stride bytes, 4 bytes a pixel in Format.
+// Pixels are the shared-memory frame's pixels, the engine's memory, valid
+// until Release and not after (nil for other kinds): Height rows of Stride
+// bytes, 4 bytes a pixel in Format. CopyPixels keeps them.
 func (f *OffscreenFrame) Pixels() []byte {
-	if f.frame == nil || f.frame.pixels == nil || f.Height <= 0 {
+	if f.frame == nil || f.frame.pixels == nil || f.Height <= 0 || f.Width <= 0 {
 		return nil
 	}
 	length := int(f.Stride)*(f.Height-1) + f.Width*4
 	return unsafe.Slice((*byte)(unsafe.Pointer(f.frame.pixels)), length)
+}
+
+// CopyPixels is a copy of Pixels, the application's to keep.
+func (f *OffscreenFrame) CopyPixels() []byte {
+	return append([]byte(nil), f.Pixels()...)
 }
 
 // IOSurfaceMachPort is a new send right to the frame's IOSurface, for
@@ -187,12 +205,15 @@ func (f *OffscreenFrame) IOSurfaceMachPort() uint32 {
 	return uint32(C.zebkit_frame_iosurface_mach_port(f.frame))
 }
 
-// Release gives the frame back: its buffer may be drawn into again. Any
-// goroutine; once is enough, later calls do nothing.
+// Release gives the frame back: its buffer may be drawn into again, and
+// Pixels' slice is no longer the application's. Any goroutine while the
+// engine runs; once is enough, later calls do nothing. After Shutdown the
+// buffers are gone with the engine, and it does nothing.
 func (f *OffscreenFrame) Release() {
 	f.release.Do(func() {
-		C.zebkit_frame_release(f.frame)
-		runtime.SetFinalizer(f, nil)
+		if started.Load() {
+			C.zebkit_frame_release(f.frame)
+		}
 		f.frame = nil
 	})
 }
@@ -200,20 +221,27 @@ func (f *OffscreenFrame) Release() {
 // OnFrame calls function with each frame of an off-screen view; the
 // function, or what it hands the frame to, releases it. Nil stops.
 func (v *View) OnFrame(function func(*OffscreenFrame)) {
-	if function == nil {
-		C.zebkit_view_on_frame(v.view, nil, nil)
-		v.slot("frame").clear()
-		return
+	var value func(*C.zebkit_frame)
+	if function != nil {
+		value = func(f *C.zebkit_frame) { function(newOffscreenFrame(f)) }
 	}
-	h := v.slot("frame").set(func(f *C.zebkit_frame) { function(newOffscreenFrame(f)) })
-	C.zebkit_view_on_frame(v.view, C.zebkit_frame_func(C.zkc_frame), data(h))
+	v.hook("frame", function, value, unsafe.Pointer(C.zk_frame), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_frame(raw, C.zebkit_frame_func(f), d)
+	})
 }
 
-func (v *View) SetFrameRate(fps float64) { C.zebkit_view_set_frame_rate(v.view, C.double(fps)) }
+// SetFrameRate sets the most frames a second an off-screen view draws.
+func (v *View) SetFrameRate(fps float64) {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_frame_rate(raw, C.double(fps))
+	}
+}
 
 // SetMaxFramesInFlight is how many frames the application may hold at once.
 func (v *View) SetMaxFramesInFlight(count int) {
-	C.zebkit_view_set_max_frames_in_flight(v.view, C.int(count))
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_max_frames_in_flight(raw, C.int(count))
+	}
 }
 
 // FrameBuffers is what an off-screen view's frames are made in.
@@ -225,12 +253,19 @@ const (
 	BuffersGPU          FrameBuffers = 2 // IOSurfaces, dmabufs, D3D11 textures where the GPU makes them
 )
 
+// SetFrameBuffers chooses what the view's frames are made in.
 func (v *View) SetFrameBuffers(buffers FrameBuffers) {
-	C.zebkit_view_set_frame_buffers(v.view, C.zebkit_frame_buffers(buffers))
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_frame_buffers(raw, C.zebkit_frame_buffers(buffers))
+	}
 }
 
 // RequestFrame asks for a frame now, changed or not.
-func (v *View) RequestFrame() { C.zebkit_view_request_frame(v.view) }
+func (v *View) RequestFrame() {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_request_frame(raw)
+	}
+}
 
 // Modifiers are the keys and buttons held during an input event.
 type Modifiers uint
@@ -273,7 +308,11 @@ const (
 
 // SendMouse sends a mouse event at (x, y), CSS pixels in the view.
 func (v *View) SendMouse(event MouseEvent, x, y float32, button MouseButton, clickCount int, modifiers Modifiers) {
-	C.zebkit_view_send_mouse(v.view, C.zebkit_mouse_type(event), C.float(x), C.float(y),
+	raw, ok := v.raw()
+	if !ok {
+		return
+	}
+	C.zebkit_view_send_mouse(raw, C.zebkit_mouse_type(event), C.float(x), C.float(y),
 		C.zebkit_mouse_button(button), C.int(clickCount), C.uint(modifiers))
 }
 
@@ -290,7 +329,11 @@ const (
 
 // SendWheel scrolls by (deltaX, deltaY): pixels when precise, else lines.
 func (v *View) SendWheel(x, y, deltaX, deltaY float32, precise bool, phase WheelPhase, modifiers Modifiers) {
-	C.zebkit_view_send_wheel(v.view, C.float(x), C.float(y), C.float(deltaX), C.float(deltaY), C.bool(precise),
+	raw, ok := v.raw()
+	if !ok {
+		return
+	}
+	C.zebkit_view_send_wheel(raw, C.float(x), C.float(y), C.float(deltaX), C.float(deltaY), C.bool(precise),
 		C.zebkit_wheel_phase(phase), C.uint(modifiers))
 }
 
@@ -336,9 +379,13 @@ func (e *KeyEvent) c() (C.zebkit_key_event, func()) {
 
 // SendKey sends a key event.
 func (v *View) SendKey(event KeyEvent) {
+	raw, ok := v.raw()
+	if !ok {
+		return
+	}
 	e, done := event.c()
 	defer done()
-	C.zebkit_view_send_key(v.view, &e)
+	C.zebkit_view_send_key(raw, &e)
 }
 
 // EditCommand is an editing command a key runs ("MoveToEndOfLine", ...).
@@ -346,11 +393,15 @@ type EditCommand struct{ Name, Value string }
 
 // SendKeyWithCommands sends a key that runs the given editing commands, as
 // the system's key bindings would.
-func (v *View) SendKeyWithCommands(event KeyEvent, commands []EditCommand) bool {
+func (v *View) SendKeyWithCommands(event KeyEvent, commands []EditCommand) error {
+	raw, ok := v.raw()
+	if !ok {
+		return ErrClosed
+	}
 	e, done := event.c()
 	defer done()
 	if len(commands) == 0 {
-		return bool(C.zebkit_view_send_key_with_commands(v.view, &e, nil, 0))
+		return check(C.zebkit_view_send_key_with_commands(raw, &e, nil, 0), "the key was refused")
 	}
 	array := (*C.zebkit_edit_command)(C.malloc(C.size_t(len(commands)) * C.size_t(unsafe.Sizeof(C.zebkit_edit_command{}))))
 	defer C.free(unsafe.Pointer(array))
@@ -365,50 +416,69 @@ func (v *View) SendKeyWithCommands(event KeyEvent, commands []EditCommand) bool 
 			free(items[i].value)
 		}
 	}()
-	return bool(C.zebkit_view_send_key_with_commands(v.view, &e, array, C.size_t(len(commands))))
+	return check(C.zebkit_view_send_key_with_commands(raw, &e, array, C.size_t(len(commands))), "the key was refused")
 }
 
-// ImeSetComposition shows text being composed by an input method; the
+// SetIMEComposition shows text being composed by an input method; the
 // selection is in characters of text (-1, -1 for its end).
-func (v *View) ImeSetComposition(text string, selectionStart, selectionEnd int) {
-	t := cString(text)
-	defer free(t)
-	C.zebkit_view_ime_set_composition(v.view, t, C.int(selectionStart), C.int(selectionEnd))
+func (v *View) SetIMEComposition(text string, selectionStart, selectionEnd int) {
+	if raw, ok := v.raw(); ok {
+		t := cString(text)
+		defer free(t)
+		C.zebkit_view_ime_set_composition(raw, t, C.int(selectionStart), C.int(selectionEnd))
+	}
 }
 
-func (v *View) ImeCommit(text string) {
-	t := cString(text)
-	defer free(t)
-	C.zebkit_view_ime_commit(v.view, t)
+// CommitIME commits text an input method composed.
+func (v *View) CommitIME(text string) {
+	if raw, ok := v.raw(); ok {
+		t := cString(text)
+		defer free(t)
+		C.zebkit_view_ime_commit(raw, t)
+	}
 }
 
-func (v *View) ImeCancel() { C.zebkit_view_ime_cancel(v.view) }
+// CancelIME cancels the input method's composition.
+func (v *View) CancelIME() {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_ime_cancel(raw)
+	}
+}
 
-// SetFocus gives the off-screen view the keyboard's focus, or takes it.
-func (v *View) SetFocus(focused bool) { C.zebkit_view_set_focus(v.view, C.bool(focused)) }
+// SetFocused gives the off-screen view the keyboard's focus, or takes it
+// (Focus is a window's).
+func (v *View) SetFocused(focused bool) {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_set_focus(raw, C.bool(focused))
+	}
+}
 
 // SetAuthenticationUI turns the engine's own passkey UI for this view on or off.
-func (v *View) SetAuthenticationUI(enabled bool) bool {
-	return bool(C.zebkit_view_set_authentication_ui(v.view, C.bool(enabled)))
+func (v *View) SetAuthenticationUI(enabled bool) error {
+	raw, ok := v.raw()
+	if !ok {
+		return ErrClosed
+	}
+	return check(C.zebkit_view_set_authentication_ui(raw, C.bool(enabled)), "refused")
 }
 
 // OnCaret calls function with the caret's place, CSS pixels in the view, or
 // nil when there is none (for an input method's window).
-func (v *View) OnCaret(function func(caret *ViewRect)) {
-	if function == nil {
-		C.zebkit_view_on_caret(v.view, nil, nil)
-		v.slot("caret").clear()
-		return
+func (v *View) OnCaret(function func(caret *Rect)) {
+	var value func(*C.zebkit_rect)
+	if function != nil {
+		value = func(r *C.zebkit_rect) { function(optionalRect(r)) }
 	}
-	h := v.slot("caret").set(func(r *C.zebkit_rect) { function(optionalViewRect(r)) })
-	C.zebkit_view_on_caret(v.view, C.zebkit_caret_func(C.zkc_caret), data(h))
+	v.hook("caret", function, value, unsafe.Pointer(C.zk_caret), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_caret(raw, C.zebkit_caret_func(f), d)
+	})
 }
 
-func optionalViewRect(r *C.zebkit_rect) *ViewRect {
+func optionalRect(r *C.zebkit_rect) *Rect {
 	if r == nil {
 		return nil
 	}
-	rect := viewRectFrom(r)
+	rect := rectFrom(r)
 	return &rect
 }
 
@@ -425,33 +495,33 @@ type CursorImage struct {
 // OnCursor calls function with the cursor the page asks for ("pointer",
 // "text", ..., or "custom" with its image).
 func (v *View) OnCursor(function func(cursor string, image *CursorImage)) {
-	if function == nil {
-		C.zebkit_view_on_cursor(v.view, nil, nil)
-		v.slot("cursor").clear()
-		return
-	}
-	h := v.slot("cursor").set(func(cursor string, image *C.zebkit_cursor_image) {
-		var picture *CursorImage
-		if image != nil && image.pixels != nil && image.width > 0 && image.height > 0 {
-			picture = &CursorImage{
-				Pixels: C.GoBytes(unsafe.Pointer(image.pixels), C.int(image.width*image.height*4)),
-				Width:  int(image.width), Height: int(image.height),
-				HotX: int(image.hot_x), HotY: int(image.hot_y), Scale: float32(image.scale),
+	var value func(string, *C.zebkit_cursor_image)
+	if function != nil {
+		value = func(cursor string, image *C.zebkit_cursor_image) {
+			var picture *CursorImage
+			if image != nil && image.pixels != nil && image.width > 0 && image.height > 0 {
+				picture = &CursorImage{
+					Pixels: goBytes(unsafe.Pointer(image.pixels), rgbaSize(image.width, image.height)),
+					Width:  int(image.width), Height: int(image.height),
+					HotX: int(image.hot_x), HotY: int(image.hot_y), Scale: float32(image.scale),
+				}
 			}
+			function(cursor, picture)
 		}
-		function(cursor, picture)
+	}
+	v.hook("cursor", function, value, unsafe.Pointer(C.zk_cursor), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_cursor(raw, C.zebkit_cursor_func(f), d)
 	})
-	C.zebkit_view_on_cursor(v.view, C.zebkit_cursor_func(C.zkc_cursor), data(h))
 }
 
 // OnPopup calls function with a popup widget's place when it opens, CSS
 // pixels in the view, and nil when it closes.
-func (v *View) OnPopup(function func(bounds *ViewRect)) {
-	if function == nil {
-		C.zebkit_view_on_popup(v.view, nil, nil)
-		v.slot("popup").clear()
-		return
+func (v *View) OnPopup(function func(bounds *Rect)) {
+	var value func(*C.zebkit_rect)
+	if function != nil {
+		value = func(r *C.zebkit_rect) { function(optionalRect(r)) }
 	}
-	h := v.slot("popup").set(func(r *C.zebkit_rect) { function(optionalViewRect(r)) })
-	C.zebkit_view_on_popup(v.view, C.zebkit_popup_func(C.zkc_popup), data(h))
+	v.hook("popup", function, value, unsafe.Pointer(C.zk_popup), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_popup(raw, C.zebkit_popup_func(f), d)
+	})
 }

@@ -13,59 +13,16 @@
 Exit 0 when every check passes.
 """
 
-import http.server
 import os
 import pathlib
 import sys
 import tempfile
-import threading
-import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
+from harness import Server, activated, check, ev, finish, skip, wait, zebkit  # noqa: E402
 
-failures = []
-checks = 0
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-class Pages(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = b"<!DOCTYPE html><title>holes</title><body><input id=file type=file>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *args):
-        pass
-
-
-def wait(condition, seconds=15):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.002)
-    return False
-
-
-def ev(view, script, seconds=15):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append((value, error)))
-    if not wait(lambda: box, seconds):
-        return ("timeout", script)
-    return box[0][0] if box[0][1] is None else ("error", box[0][1])
+PAGE = b"<!DOCTYPE html><title>holes</title><body><input id=file type=file>"
 
 
 def opened(url):
@@ -97,7 +54,7 @@ def file_system_access(base, files):
             request.respond([])
     view.on_file_chooser(chooser)
 
-    text = ev(view, "showOpenFilePicker().then(([h]) => (window.h = h).getFile()).then(f => f.text())")
+    text = ev(view, activated("showOpenFilePicker().then(([h]) => (window.h = h).getFile()).then(f => f.text())"))
     check(text == "alpha", "showOpenFilePicker() goes through the file chooser hook, and the page reads what was picked",
           text)
     check(asked and asked[-1]["mode"] == "open" and asked[-1]["api"] == "file-system-access",
@@ -114,25 +71,25 @@ def file_system_access(base, files):
         permissions.append(request.metadata)
         request.respond("granted" if request.metadata["permission"] == "file-system-write" else "denied")
     view.on_permission(permission)
-    wrote = ev(view, "h.requestPermission({mode: 'readwrite'}).then(s => s === 'granted' ? " + write + " : s)")
+    wrote = ev(view, activated("h.requestPermission({mode: 'readwrite'}).then(s => s === 'granted' ? " + write + " : s)"))
     check(wrote == "wrote", "with the permission hook granting file-system-write, the page writes", wrote)
     check(alpha.read_text() == "beta", "and the file has what it wrote", alpha.read_text())
     asked_write = [p for p in permissions if p["permission"] == "file-system-write"]
     check(asked_write and asked_write[0]["path"] == str(alpha) and asked_write[0]["kind"] == "file",
           "the permission request names the file", asked_write[:1] or None)
 
-    saved = ev(view, "showSaveFilePicker({suggestedName: 'saved.txt'}).then(h => h.createWritable())"
-                     ".then(w => w.write('gamma').then(() => w.close())).then(() => 'saved', e => e.name)")
+    saved = ev(view, activated("showSaveFilePicker({suggestedName: 'saved.txt'}).then(h => h.createWritable())"
+                               ".then(w => w.write('gamma').then(() => w.close())).then(() => 'saved', e => e.name)"))
     check(saved == "saved" and (files / "saved.txt").read_text() == "gamma",
           "where the person saves, the page writes, without another question", saved)
     check(asked[-1]["mode"] == "save", "showSaveFilePicker() is the hook's save mode", asked[-1])
 
-    names = ev(view, "showDirectoryPicker().then(async d => { const n = []; for await (const k of d.keys()) n.push(k);"
-                     " return n.sort().join(','); })")
+    names = ev(view, activated("showDirectoryPicker().then(async d => { const n = []; "
+                               "for await (const k of d.keys()) n.push(k); return n.sort().join(','); })"))
     check(isinstance(names, str) and "alpha.txt" in names.split(","), "showDirectoryPicker() picks a directory", names)
     check(asked[-1]["mode"] == "directory", "the hook's directory mode", asked[-1])
 
-    ev(view, "document.getElementById('file').click(); 1")
+    ev(view, activated("document.getElementById('file').click(), 1"))
     wait(lambda: asked and asked[-1].get("api") == "input", 5)
     check(asked[-1].get("api") == "input", "<input type=file> is the hook's input", asked[-1])
     view.close()
@@ -169,25 +126,26 @@ def protocol_handlers(base):
 def locks(base):
     view = opened(base + "/page")
     view.focus()
-    pointer = "document.body.requestPointerLock().then(() => 'locked', e => e.name)"
-    settled = lambda value: value is not None and not (isinstance(value, tuple) and value[0] == "timeout")
+    pointer = activated("document.body.requestPointerLock().then(() => 'locked', e => e.name)")
     if zebkit.is_headless():
         refused = ev(view, pointer)
-        check(settled(refused) and refused != "locked",
+        # Linux and Windows refuse it as not supported; macOS as the wrong document.
+        check(refused in ("NotSupportedError", "WrongDocumentError"),
               "without a window there is no pointer to lock: refused, and the engine goes on", refused)
     elif not (view.window or {}).get("focused", True):
-        print("ok   pointer lock: not run, the window cannot have focus (a locked screen?)", flush=True)
+        skip("pointer lock", "the window cannot have focus (a locked screen?)")
     else:
         locked = ev(view, pointer)
         check(locked == "locked", "pointer lock is granted by default, as before", locked)
         ev(view, "document.exitPointerLock(); 1")
         view.set_permission("pointer-lock", "denied", "*")
         refused = ev(view, pointer)
-        check(settled(refused) and refused != "locked", "and refused when the application denies it", refused)
+        check(refused == "SecurityError", "and refused when the application denies it", refused)
 
-    keyboard = "navigator.keyboard.lock().then(() => 'locked', e => e.name)"
+    keyboard = activated("navigator.keyboard.lock().then(() => 'locked', e => e.name)")
     denied = ev(view, keyboard)
-    check(settled(denied) and denied != "locked", "keyboard lock is denied by default", denied)
+    # Blink's answer to a lock the browser refused (kRequestFailedError).
+    check(denied == "InvalidStateError", "keyboard lock is denied by default", denied)
     view.set_permission("keyboard-lock", "granted", "*")
     granted = ev(view, keyboard)
     check(granted == "locked", "and granted when the application grants it", granted)
@@ -195,9 +153,8 @@ def locks(base):
 
 
 def main():
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Pages)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = "http://127.0.0.1:%d" % server.server_address[1]
+    server = Server(PAGE)
+    base = server.base
     with tempfile.TemporaryDirectory(prefix="zebkit-holes-") as directory:
         files = pathlib.Path(directory) / "files"
         files.mkdir()
@@ -213,9 +170,8 @@ def main():
                     check(False, "the test ran to the end", repr(error))
         finally:
             zebkit.shutdown()
-            server.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+            server.close()
+    return finish()
 
 
 if __name__ == "__main__":

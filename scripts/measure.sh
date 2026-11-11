@@ -2,7 +2,8 @@
 # Measure what a profile ships and write docs/reports/<profile>.md.
 #
 # The number that counts is the size of the package directory that
-# scripts/package.sh assembles, checked against the 150 MiB limit; its size
+# scripts/package.sh assembles, against Electron's trimmed size, the baseline
+# (docs/reports/electron.md, from scripts/electron-baseline.sh); its size
 # compressed, as a download takes it, is reported beside it. The report
 # also lists what the package still expects from the system, since a small
 # package that needs a long list of system libraries would not be the same
@@ -10,9 +11,14 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# Electron 45.2.1 trimmed (docs/SIZE_AND_SPEED.md), the baseline;
-# the 150 MiB limit gave way to speed on 2026-10-21.
-GOAL_BYTES=$(( 2605 * 1024 * 1024 / 10 ))
+# Electron trimmed, the baseline, as scripts/electron-baseline.sh measured the
+# release upstream.lock pins (the 150 MiB limit gave way to speed on 2026-10-21).
+electron_report="$REPORTS_DIR/electron.md"
+grep -q "^- Electron $ELECTRON_VERSION " "$electron_report" 2> /dev/null \
+    || die "$electron_report is not of Electron $ELECTRON_VERSION: run scripts/electron-baseline.sh"
+goal_mib="$(sed -n 's/^- \*\*Trimmed .*: \([0-9.]*\) MiB\*\*$/\1/p' "$electron_report")"
+[[ -n "$goal_mib" ]] || die "no trimmed size in $electron_report"
+GOAL_BYTES="$(awk -v m="$goal_mib" 'BEGIN { printf "%d", m * 1048576 }')"
 
 profile="${1:-}"
 require_profile "$profile"
@@ -39,9 +45,9 @@ zip_bytes=$(compressed_size zip "$package")
 {
     echo "# Size report: \`$profile\`"
     echo
-    echo "- Upstream: Chromium $CHROMIUM_VERSION, content shell"
+    echo "- Upstream: Chromium $CHROMIUM_VERSION, zebkit's engine library"
     echo "- Measured: $(date -u +%Y-%m-%d) on $(uname -sm), from the package directory \`scripts/package.sh\` assembles"
-    echo "- **Total: $(mib "$total") MiB** ($verdict the $(mib "$GOAL_BYTES") MiB of Electron, the baseline)"
+    echo "- **Total: $(mib "$total") MiB** ($verdict the $(mib "$GOAL_BYTES") MiB of Electron $ELECTRON_VERSION trimmed, the baseline)"
     echo "- Compressed: $(mib "$xz_bytes") MiB as \`.tar.xz\` (xz -6, as releases ship), $(mib "$zip_bytes") MiB as \`.zip\` (deflate -9, as Electron ships)"
     echo "- Oldest glibc it can run on: $(field 'oldest usable glibc')"
     echo "- Expects from the system: $(field 'expects from the system')"
@@ -51,5 +57,5 @@ zip_bytes=$(compressed_size zip "$package")
     sort -t'|' -k1,1nr <<< "$rows" | awk -F'|' '$1 != "" { printf "| %s | %.1f |\n", $2, $1 / 1048576 }'
 } > "$report"
 
-log "$(mib "$total") MiB ($verdict the limit)"
+log "$(mib "$total") MiB ($verdict Electron's $(mib "$GOAL_BYTES") MiB)"
 log "wrote $report"

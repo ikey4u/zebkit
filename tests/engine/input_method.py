@@ -18,22 +18,12 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "bindings", "python"))
+sys.path.insert(0, HERE)
 
-failures = []
-checks = 0
 
 PAGE = ("data:text/html,<title>ime</title><input id=a autofocus><input id=p type=password><p id=out></p><script>"
         "window.events = []; for (const e of ['compositionstart','compositionupdate','compositionend','keydown'])"
         " document.addEventListener(e, ev => events.push(e + ':' + (ev.data ?? ev.key)), true);</script>")
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
 
 
 def main():
@@ -45,22 +35,8 @@ def main():
             time.sleep(.05)
         # Before the engine starts: where it looks for IBus.
         os.environ["IBUS_ADDRESS"] = os.environ["DBUS_SESSION_BUS_ADDRESS"]
-        import zebkit
-
-        def wait(condition, seconds=10):
-            end = time.monotonic() + seconds
-            while time.monotonic() < end:
-                zebkit.pump()
-                if condition():
-                    return True
-                time.sleep(.005)
-            return False
-
-        def ev(view, script):
-            box = []
-            view.evaluate(script, lambda value, error=None: box.append(value))
-            wait(lambda: box)
-            return box[0] if box else None
+        # harness imports the binding.
+        from harness import check, ev, finish, wait, zebkit
 
         def keys(*args):
             # The engine answers the input method while xdotool types: keep pumping.
@@ -127,8 +103,7 @@ def main():
         finally:
             zebkit.shutdown()
             fake.terminate()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

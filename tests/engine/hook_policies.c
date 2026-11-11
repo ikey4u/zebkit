@@ -452,7 +452,10 @@ static void menu(void) {
     CHECK(ev_is("window.menu", "1"));
     zebkit_view_close(view);
 }
-#define FULL "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)"
+/* A gated call, once the evaluation's user activation has reached the
+   browser: it goes there on a pipe of its own, and the call consumes it. */
+#define ACTIVATED(script) "new Promise(r => setTimeout(r, 200)).then(() => " script ")"
+#define FULL ACTIVATED("document.documentElement.requestFullscreen()") ".then(() => 'in', e => e.name)"
 static void fullscreen(void) {
     open_page();
     zebkit_view_on_fullscreen(view, note, NULL);
@@ -853,6 +856,10 @@ static void network(void) {
     else if (IS("net-observe")) { CHECK(!asked); WAIT(net_request_told && net_response_told && net_finished_told); }
     else if (IS("net-timeout")) { WAIT(net_timeout); CHECK(!zebkit_network_request_info(net_request)); }
     else if (IS("net-flood")) { CHECK(!strcmp(answer, "\"failed\"") && asked >= 1024); }
+    else if (IS("net-post")) { CHECK(strstr(answer, "\"200|")); }
+    /* Its checks are above: the request went stale, the handler-changed event came. */
+    else if (IS("net-replace")) {}
+    else FAIL("a network mode with nothing to check");
     zebkit_view_close(view);
 }
 

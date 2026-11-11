@@ -11,6 +11,7 @@ import ctypes
 import ctypes.wintypes as w
 import http.server
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -56,8 +57,9 @@ def windows():
 version = ctypes.WinDLL("webauthn").WebAuthNGetApiVersionNumber()
 print("webauthn.dll API version:", version, flush=True)
 if version < 1:
-    print("skip this machine's webauthn.dll offers no API; Windows' route cannot be tried here", flush=True)
-    sys.exit(0)
+    print("skip Windows' WebAuthn route: this machine's webauthn.dll offers no API", flush=True)
+    # A skip is not a pass where every part must run.
+    sys.exit(1 if os.environ.get("ENGINE_TEST_STRICT") == "1" else 0)
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -128,13 +130,19 @@ with tempfile.TemporaryDirectory(prefix="zebkit-win-webauthn-") as directory:
             check(offered, "Windows' route is offered to the host")
             if offered:
                 check(action(event, "system"), "the host asks for it")
-                time.sleep(6)
+                # Windows' own dialog opens, or the request ends by itself.
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and not set(windows()) - before and \
+                        evaluate("window.authResult") == "pending":
+                    time.sleep(.1)
                 print("windows it opened:", sorted(set(windows()) - before), flush=True)
                 latest = state()
                 print("then:", {k: latest.get(k) for k in ("state", "actions")}, evaluate("window.authResult"), flush=True)
                 if evaluate("window.authResult") == "pending":
                     action(latest, "cancel")
-                time.sleep(2)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and evaluate("window.authResult") == "pending":
+                    time.sleep(.05)
                 check(evaluate("window.authResult") == "NotAllowedError", "the page is told when it ends",
                       evaluate("window.authResult"))
         finally:

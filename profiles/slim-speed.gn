@@ -14,6 +14,12 @@
 # against 73 s; Electron 44.9 took 90), 2% more memory, 27 MB larger
 # (186 MB against 159). slim already costs less than Electron, so slim
 # stays the release build; this profile is kept to measure with.
+#
+# It predates slim's later speed arguments (zebkit_speed_patterns,
+# zebkit_max_speed_patterns, zebkit_lto_optimize, zebkit_tls_initial_exec),
+# which it inherits as slim sets them: the measurement above is of the slim
+# of 2026-10-24. slim-chrome is the profile that compiles everything as
+# Chrome does.
 
 optimize_for_size = false
 use_ml_inliner = false

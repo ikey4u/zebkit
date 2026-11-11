@@ -176,7 +176,8 @@ void CdpStop() {
   Endpoint& endpoint = Current();
   if (!endpoint.port)
     return;
-  content::DevToolsAgentHost::DetachAllClients();
+  // The server's own connections close with it; the views' sessions and
+  // automation's are not the endpoint's to end.
   content::DevToolsAgentHost::StopRemoteDebuggingServer();
   base::ScopedAllowBlockingForTesting allow_blocking;
   std::ignore = endpoint.directory.Delete();
@@ -214,6 +215,11 @@ void StartCdpFromCommandLine() {
 extern "C" {
 
 unsigned zebkit_cdp_listen(const char* address, unsigned port, char** error) {
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    if (error)
+      *error = strdup("zebkit_cdp_listen is for the engine's thread");
+    return 0;
+  }
   std::string message;
   const unsigned bound =
       zebkit::CdpListen(address ? address : "", port, &message);
@@ -223,16 +229,21 @@ unsigned zebkit_cdp_listen(const char* address, unsigned port, char** error) {
 }
 
 unsigned zebkit_cdp_get_port(void) {
+  if (!zebkit::CurrentlyOnEngineThread())
+    return 0;
   return zebkit::CdpPort();
 }
 
 char* zebkit_cdp_get_url(void) {
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   const std::string url = zebkit::CdpUrl();
   return url.empty() ? nullptr : strdup(url.c_str());
 }
 
 void zebkit_cdp_stop(void) {
-  zebkit::CdpStop();
+  if (zebkit::CurrentlyOnEngineThread())
+    zebkit::CdpStop();
 }
 
 }  // extern "C"

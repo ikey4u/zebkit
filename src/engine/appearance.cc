@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/command_line.h"
@@ -19,7 +20,7 @@
 #include "ui/native_theme/native_theme_observer.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
-#if BUILDFLAG(IS_LINUX) && defined(ZEBKIT_COOKIES_USE_DBUS)
+#if BUILDFLAG(IS_LINUX) && defined(ZEBKIT_USE_DBUS)
 #include "base/memory/weak_ptr.h"
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
 #include "components/dbus/utils/call_method.h"
@@ -38,10 +39,16 @@ namespace {
 constexpr char kFollowSwitch[] = "zebkit-follow-system-appearance";
 
 #if defined(ZEBKIT_APPEARANCE_PORTAL)
+void TellEnvironment();
+std::optional<bool>& SystemDark();
+#endif
+
+#if defined(ZEBKIT_APPEARANCE_PORTAL)
 // org.freedesktop.appearance's color-scheme from the XDG portal, as
 // ui/linux/portal_settings_linux.cc reads it for Chrome's toolkits, into the
-// NativeTheme the pages and the engine's own UI take theirs from. zebkit has
-// no GTK or Qt behind it; a desktop without the portal leaves the theme
+// NativeTheme the pages and the engine's own UI take theirs from while they
+// follow the system; otherwise only what zebkit_get_environment() says. zebkit
+// has no GTK or Qt behind it; a desktop without the portal leaves the theme
 // light. The portal's "no preference" is light, as Chrome and Firefox read it.
 class PortalAppearance {
  public:
@@ -92,8 +99,17 @@ class PortalAppearance {
 
   // 0 no preference, 1 dark, 2 light (the portal's specification).
   static void Set(uint32_t scheme) {
-    const auto preferred = scheme == 1 ? ui::NativeTheme::PreferredColorScheme::kDark
-                                       : ui::NativeTheme::PreferredColorScheme::kLight;
+    const bool dark = scheme == 1;
+    if (!FollowsSystemAppearance()) {
+      if (SystemDark() != dark) {
+        SystemDark() = dark;
+        TellEnvironment();
+      }
+      return;
+    }
+    SystemDark() = dark;
+    const auto preferred = dark ? ui::NativeTheme::PreferredColorScheme::kDark
+                                : ui::NativeTheme::PreferredColorScheme::kLight;
     for (ui::NativeTheme* theme : {ui::NativeTheme::GetInstanceForWeb(), ui::NativeTheme::GetInstanceForNativeUi()}) {
       if (theme->preferred_color_scheme() == preferred)
         continue;
@@ -107,6 +123,13 @@ class PortalAppearance {
   base::WeakPtrFactory<PortalAppearance> weak_factory_{this};
 };
 
+// The portal's scheme, once it has said: the system's, which the theme has
+// only while the pages follow it.
+std::optional<bool>& SystemDark() {
+  static std::optional<bool> dark;
+  return dark;
+}
+
 std::unique_ptr<PortalAppearance>& Portal() {
   static base::NoDestructor<std::unique_ptr<PortalAppearance>> portal;
   return *portal;
@@ -116,8 +139,12 @@ std::unique_ptr<PortalAppearance>& Portal() {
 base::DictValue Environment() {
   const ui::NativeTheme* theme = ui::NativeTheme::GetInstanceForWeb();
   base::DictValue value;
-  value.Set("colorScheme",
-            theme->preferred_color_scheme() == ui::NativeTheme::PreferredColorScheme::kDark ? "dark" : "light");
+  bool dark = theme->preferred_color_scheme() == ui::NativeTheme::PreferredColorScheme::kDark;
+#if defined(ZEBKIT_APPEARANCE_PORTAL)
+  if (SystemDark())
+    dark = *SystemDark();
+#endif
+  value.Set("colorScheme", dark ? "dark" : "light");
   const char* contrast = "no-preference";
   switch (theme->preferred_contrast()) {
     case ui::NativeTheme::PreferredContrast::kMore: contrast = "more"; break;
@@ -174,6 +201,12 @@ EnvironmentObserver& Observer() {
   static base::NoDestructor<EnvironmentObserver> observer;
   return *observer;
 }
+
+#if defined(ZEBKIT_APPEARANCE_PORTAL)
+void TellEnvironment() {
+  Observer().OnNativeThemeUpdated(ui::NativeTheme::GetInstanceForWeb());
+}
+#endif
 
 }  // namespace
 

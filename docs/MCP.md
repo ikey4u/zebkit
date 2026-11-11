@@ -269,7 +269,8 @@ development dependencies, pinned in `upstream.lock`, shipped nowhere:
 - `tests/engine/mcp_agent_run.mjs`: research across a local site, a form of two steps and a
   320-page PDF, using only the tools. **It is a scripted run**, written by those who wrote the
   server: no model decides anything in it. It shows the tools are enough for the task, not
-  that an outside agent does well with them; that is still to do (`docs/ROADMAP.md`).
+  that an outside agent does well with them; an outside agent's runs, by hand, are the
+  next section.
 
 ## Engine fixes made for it
 
@@ -352,4 +353,7 @@ Plainly, what these bounds do not do:
   file opened there can follow a last link: do not rely on them there yet.
 - **Device flow against real providers is untested**: the tests use a local provider. Google and
   Microsoft may treat the request's `Origin` header differently.
-- **Not run on macOS.**
+- **macOS and Windows** run the server from each release archive (`docs/releases/0.4.0.md`:
+  the archive unpacked on its system runs `zebkit-mcp`). The suite's MCP tests
+  (`mcp_server.mjs` and the others) need Node.js, which the Windows run did not have
+  (`docs/WINDOWS.md`, "State").

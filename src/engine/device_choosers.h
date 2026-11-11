@@ -9,6 +9,7 @@
 #define ZEBKIT_ENGINE_DEVICE_CHOOSERS_H_
 
 namespace content {
+class BrowserContext;
 class HidDelegate;
 class SerialDelegate;
 class UsbDelegate;
@@ -19,6 +20,8 @@ namespace zebkit {
 content::UsbDelegate* UsbChooserDelegate();
 content::HidDelegate* HidChooserDelegate();
 content::SerialDelegate* SerialChooserDelegate();
+// What a closed profile's origins were given (DestroyProfileWhenUnused).
+void ForgetDeviceGrants(content::BrowserContext* profile);
 
 }  // namespace zebkit
 

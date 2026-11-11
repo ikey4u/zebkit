@@ -2,15 +2,31 @@
 # Test the engine library from programs built against the package, as an
 # application is built against it.
 #
-#   scripts/engine-test.sh <profile> [--only REGEX]
+#   scripts/engine-test.sh <profile> [--only REGEX] [--strict]
+#   scripts/engine-test.sh <profile> --fetch
 #   scripts/engine-test.sh <profile> --build-only DIR
-#   DIR/scripts/engine-test.sh <profile> --prebuilt DIR/programs [--only REGEX]
+#   DIR/scripts/engine-test.sh <profile> --prebuilt DIR/programs [--only REGEX] [--strict]
 #
 # --build-only makes DIR, which holds all the suite needs: the programs (for a
 # macOS profile on Linux, cross-compiled and signed ad hoc), the package, the
 # tests' scripts and pages. Copy it to a machine with no compiler or source and
 # run the suite there with --prebuilt; docs/MACOS.md has the steps. --only runs the
-# tests whose names match.
+# tests whose names match, and builds only the programs they run; one that
+# matches no test fails.
+#
+# The run itself does not use the network. --fetch gets what some tests need
+# from it, into .cache: the real long PDF, and the npm packages of the CDP
+# clients and of the MCP client (upstream.lock's versions); without them those
+# tests are skipped. Every test skipped for want of a tool or a download is
+# listed at the end, with every part of a test its log says was not run (its
+# "skip <part>: <why>" and "narrowed: ..." lines). --strict (or
+# ENGINE_TEST_STRICT=1) makes a skip, and a test that exits 0 after printing
+# FAIL lines, a failure; ENGINE_TEST_EXPECTED_SKIPS, extended regular
+# expressions one a line on "<test>: <why>" or "<test>: <part>: <why>", names
+# the skips it accepts (scripts/check.sh's list). Tests that are only run when
+# asked (ENGINE_TEST_WINDOWS=1, ENGINE_TEST_PERSISTENT_COOKIES=1) are not
+# skips. Each test has a profile of its own, profile-<name> in the work
+# directory, and the page server is on the port the system gives it.
 #
 # On macOS the suite keeps out of the person's files: HOME and the temporary
 # directory are its own, and the Keychain calls are answered from files
@@ -135,14 +151,52 @@ shift
 build_only=
 prebuilt=
 only=
+fetch=
+strict="${ENGINE_TEST_STRICT:-}"
+[[ "$strict" == 0 ]] && strict=
 while (( $# )); do
     case "$1" in
-        --build-only) build_only="${2:?a directory}"; shift 2 ;;
-        --prebuilt) prebuilt="${2:?a directory}"; shift 2 ;;
+        --build-only) build_only="$(caller_path "${2:?a directory}")"; shift 2 ;;
+        --prebuilt) prebuilt="$(caller_path "${2:?a directory}")"; shift 2 ;;
         --only) only="${2:?a regular expression}"; shift 2 ;;
+        --strict) strict=1; shift ;;
+        --fetch) fetch=1; shift ;;
         *) die "unknown option $1" ;;
     esac
 done
+# The tests read it too: a part of one not run fails it, unless
+# ENGINE_TEST_EXPECTED_SKIPS names it (tests/engine/harness.py).
+[[ -n "$strict" ]] && export ENGINE_TEST_STRICT=1 || unset ENGINE_TEST_STRICT
+# Nothing of the tests' Python is compiled into the source tree: this for the
+# runs without -I, -B for the isolated ones (lib.sh's python_run).
+export PYTHONDONTWRITEBYTECODE=1
+# Cargo's builds within the machine's limit (lib.sh's ZEBKIT_JOBS).
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$ZEBKIT_JOBS}"
+
+# What the run takes from the network, fetched apart: --fetch.
+real_pdf="${ZEBKIT_TEST_REAL_PDF:-$CACHE_DIR/pdf/PDF32000_2008.pdf}"
+cdp_clients="$CACHE_DIR/cdp-clients"
+cdp_clients_packages=("puppeteer-core@$PUPPETEER_CORE_VERSION" "playwright-core@$PLAYWRIGHT_CORE_VERSION")
+mcp_tools="$CACHE_DIR/mcp-tools"
+mcp_tools_packages=("@modelcontextprotocol/sdk@$MCP_SDK_VERSION" "@modelcontextprotocol/conformance@$MCP_CONFORMANCE_VERSION")
+if [[ -n "$fetch" ]]; then
+    if [[ ! -f "$real_pdf" ]]; then
+        log "fetching $PDF_REAL_URL"
+        mkdir -p "$(dirname "$real_pdf")"
+        curl -fsSL --max-time 300 -o "$real_pdf.part" "$PDF_REAL_URL" || die "the real PDF could not be fetched"
+        [[ "$(sha256 "$real_pdf.part" | cut -d' ' -f1)" == "$PDF_REAL_SHA256" ]] || { rm -f "$real_pdf.part"; die "the real PDF is not the pinned one"; }
+        mv "$real_pdf.part" "$real_pdf"
+    fi
+    if "${node_cmd[@]}" --version > /dev/null 2>&1; then
+        ensure_npm --ignore-scripts "$cdp_clients" "${cdp_clients_packages[@]}" || die "the CDP clients could not be installed"
+        ensure_npm "$mcp_tools" "${mcp_tools_packages[@]}" || die "the MCP client could not be installed"
+        ensure_npm "$CACHE_DIR/playwright-tools" "${playwright_tools[@]}" || die "playwright-core could not be installed"
+    else
+        log "no Node.js: the npm packages are not fetched"
+    fi
+    log "fetched what the tests need"
+    exit 0
+fi
 set_target_for_profile "$profile"
 [[ "$ZEBKIT_TARGET" == "$ZEBKIT_HOST" || -n "$build_only" ]] \
     || die "$profile's programs do not run on $ZEBKIT_HOST: use --build-only and run them there"
@@ -152,10 +206,14 @@ library="$(engine_library "$package")"
 
 work="$(mktemp -d "$TMPDIR/engine-test.XXXXXX")"
 pids=()
+# Programs copied into the package for a run (on Windows, beside zebkit.dll):
+# removed again, the package stays what package.sh made.
+package_copies=()
 offscreen_key_identity=
 webauthn_key_identity=
 cleanup() {
     for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+    for copy in "${package_copies[@]}"; do rm -f "$copy"; done
     if [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_REAL_KEYCHAIN:-}" ]]; then
         # Only the throwaway keys of this invocation's test executables.
         for identity in "$offscreen_key_identity" "$webauthn_key_identity"; do
@@ -180,10 +238,10 @@ trap cleanup EXIT
 # they find the engine from where they are.
 bin="$work"
 if [[ -n "$prebuilt" ]]; then
-    bin="$(cd "$prebuilt" && pwd -P)"
+    bin="$(cd "$prebuilt" && pwd -P)" || die "no directory $prebuilt"
 elif [[ -n "$build_only" ]]; then
     mkdir -p "$build_only/programs"
-    build_only="$(cd "$build_only" && pwd -P)"
+    build_only="$(cd "$build_only" && pwd -P)" || die "no directory $build_only"
     bin="$build_only/programs"
     origin='$ORIGIN'
     [[ "$ZEBKIT_TARGET" == macos ]] && origin='@executable_path'
@@ -201,88 +259,131 @@ fi
 webauthn_key_identity="zebkit-test-webauthn-$(basename "$bin" | tr -cd 'A-Za-z0-9.')"
 webauthn_host="$bin/$webauthn_key_identity"
 
+# program <command...>: the build of a test program, whose output is after -o
+# or build_against_package's second argument. For the whole suite and for
+# --build-only it is built at once; with --only, when a selected test names it
+# (need, from run).
+program_outputs=()
+program_commands=()
+program() {
+    local output= i
+    if [[ "$1" == build_against_package ]]; then
+        output="$3"
+    else
+        for (( i = 2; i <= $#; i++ )); do [[ "${!i}" == -o ]] && { i=$(( i + 1 )); output="${!i}"; }; done
+    fi
+    if [[ -z "$only" || -n "$build_only" || -z "$output" ]]; then
+        "$@"
+        return
+    fi
+    program_outputs+=("$output")
+    program_commands+=("$(printf '%q ' "$@")")
+}
+# need <word...>: builds the programs not built yet that a word names: the
+# program itself, or VAR=program, --option=program.
+need() {
+    (( ${#program_outputs[@]} )) || return 0
+    local word i output
+    for word in "$@"; do
+        for i in "${!program_outputs[@]}"; do
+            output="${program_outputs[i]}"
+            [[ -n "$output" && ( "$word" == "$output" || "$word" == *"=$output" ) ]] || continue
+            log "building ${output#"$bin"/}"
+            eval "${program_commands[i]}" || die "${output#"$bin"/} did not build"
+            program_outputs[i]=
+        done
+    done
+}
+# have_program <path>: it is built, or would be when a test needs it.
+have_program() {
+    local output
+    [[ -x "$1" ]] && return 0
+    for output in "${program_outputs[@]}"; do [[ "$output" == "$1" ]] && return 0; done
+    return 1
+}
+
 if [[ -z "$prebuilt" ]]; then
 log "building the test programs against $package"
-build_against_package "$package" "$bin/vendor" "$tests/vendor.c"
+program build_against_package "$package" "$bin/vendor" "$tests/vendor.c"
 # shellcheck disable=SC2046
-target_cxx -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
+program target_cxx -std=c++17 -Wall -Werror -I"$package/include" "$tests/vendor.cc" \
     $(engine_link_options "$package") -o "$bin/vendor-cxx"
-build_against_package "$package" "$bin/services" "$tests/services.c"
-build_against_package "$package" "$bin/pdf" "$tests/pdf.c"
-build_against_package "$package" "$bin/canvas" "$tests/canvas.c"
-build_against_package "$package" "$bin/pdf-annotations" "$tests/pdf_annotations.c"
-build_against_package "$package" "$bin/pdf-hooks" "$tests/pdf_hooks.c" "$ZEBKIT_ROOT/examples/pdf-plugin/plugin.c" -- -D_GNU_SOURCE -I"$ZEBKIT_ROOT/examples/pdf-plugin"
-build_against_package "$package" "$bin/api" "$tests/api.c" -- -pthread
-target_cc -std=c11 -O1 -Wall -Werror -I"$package/include" "$tests/late_load.c" -ldl -pthread -o "$bin/late-load"
-build_against_package "$package" "$bin/lifecycle" "$tests/lifecycle.c" -- -pthread
-build_against_package "$package" "$bin/host-loop" "$tests/host_loop.c" -- -pthread
+program build_against_package "$package" "$bin/services" "$tests/services.c"
+program build_against_package "$package" "$bin/pdf" "$tests/pdf.c"
+program build_against_package "$package" "$bin/canvas" "$tests/canvas.c"
+program build_against_package "$package" "$bin/pdf-annotations" "$tests/pdf_annotations.c"
+program build_against_package "$package" "$bin/pdf-hooks" "$tests/pdf_hooks.c" "$ZEBKIT_ROOT/examples/pdf-plugin/plugin.c" -- -D_GNU_SOURCE -I"$ZEBKIT_ROOT/examples/pdf-plugin"
+program build_against_package "$package" "$bin/api" "$tests/api.c" -- -pthread
+program target_cc -std=c11 -O1 -Wall -Werror -I"$package/include" "$tests/late_load.c" -ldl -pthread -o "$bin/late-load"
+program build_against_package "$package" "$bin/lifecycle" "$tests/lifecycle.c" -- -pthread
+program build_against_package "$package" "$bin/host-loop" "$tests/host_loop.c" -- -pthread
 if [[ "$ZEBKIT_TARGET" == linux ]] && pkg-config --exists glib-2.0; then
     read -r -a glib_flags <<< "$(pkg-config --cflags --libs glib-2.0)"
-    build_against_package "$package" "$bin/host-loop-glib" "$tests/host_loop_glib.c" -- "${glib_flags[@]}" -pthread
+    program build_against_package "$package" "$bin/host-loop-glib" "$tests/host_loop_glib.c" -- "${glib_flags[@]}" -pthread
 fi
-build_against_package "$package" "$bin/startup-settings" "$tests/startup_settings.c"
-build_against_package "$package" "$bin/edit-commands" "$tests/edit_commands.c"
-build_against_package "$package" "$bin/hooks" "$tests/hooks.c"
-build_against_package "$package" "$bin/certificate" "$tests/certificate.c"
-build_against_package "$package" "$bin/http_auth" "$tests/http_auth.c"
-build_against_package "$package" "$bin/hook-policies" "$tests/hook_policies.c"
-build_against_package "$package" "$bin/runtime-settings" "$tests/runtime_settings.c"
-build_against_package "$package" "$bin/offscreen-scale" "$tests/offscreen_scale.c"
-build_against_package "$package" "$bin/bridge" "$tests/bridge.c"
+program build_against_package "$package" "$bin/startup-settings" "$tests/startup_settings.c"
+program build_against_package "$package" "$bin/edit-commands" "$tests/edit_commands.c"
+program build_against_package "$package" "$bin/hooks" "$tests/hooks.c"
+program build_against_package "$package" "$bin/certificate" "$tests/certificate.c"
+program build_against_package "$package" "$bin/http_auth" "$tests/http_auth.c"
+program build_against_package "$package" "$bin/hook-policies" "$tests/hook_policies.c"
+program build_against_package "$package" "$bin/runtime-settings" "$tests/runtime_settings.c"
+program build_against_package "$package" "$bin/offscreen-scale" "$tests/offscreen_scale.c"
+program build_against_package "$package" "$bin/bridge" "$tests/bridge.c"
 if [[ "$ZEBKIT_TARGET" == windows ]]; then
     # An application's own window and loop, and the sandbox with its executable
     # as the child (docs/WINDOWS.md); frames through file mappings and textures.
-    build_against_package "$package" "$bin/win-smoke" "$tests/win_smoke.c"
-    build_against_package "$package" "$bin/win-host" "$tests/win_host.c"
-    build_against_package "$package" "$bin/win-offscreen" "$tests/win_offscreen.c"
-    build_against_package "$package" "$bin/win-smoke-sandbox" "$tests/win_smoke.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
-    build_against_package "$package" "$bin/win-host-sandbox" "$tests/win_host.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
-    build_against_package "$package" "$bin/win-native-parent" "$tests/win_native_parent.c"
-    build_against_package "$package" "$bin/win-native-parent-sandbox" "$tests/win_native_parent.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    program build_against_package "$package" "$bin/win-smoke" "$tests/win_smoke.c"
+    program build_against_package "$package" "$bin/win-host" "$tests/win_host.c"
+    program build_against_package "$package" "$bin/win-offscreen" "$tests/win_offscreen.c"
+    program build_against_package "$package" "$bin/win-smoke-sandbox" "$tests/win_smoke.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    program build_against_package "$package" "$bin/win-host-sandbox" "$tests/win_host.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
+    program build_against_package "$package" "$bin/win-native-parent" "$tests/win_native_parent.c"
+    program build_against_package "$package" "$bin/win-native-parent-sandbox" "$tests/win_native_parent.c" -- -DZEBKIT_TEST_SANDBOX "$package/zebkit_sandbox.lib" -Wl,/STACK:0x800000
     # shellcheck disable=SC2046
-    target_cxx -std=c++20 -O1 -I"$package/include" "$tests/win_sandbox_stubs.cc" "$package/zebkit_sandbox.lib" \
+    program target_cxx -std=c++20 -O1 -I"$package/include" "$tests/win_sandbox_stubs.cc" "$package/zebkit_sandbox.lib" \
         $(engine_link_options "$package") -Wl,/STACK:0x800000 -o "$bin/win-sandbox-stubs"
 fi
 if [[ "$ZEBKIT_TARGET" == linux ]] && [[ -f /usr/include/X11/Xlib.h ]]; then
-    build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
-    build_against_package "$package" "$bin/native-window" "$tests/native_window.c" -- -pthread
-    build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -DMIXED_X11 -lX11 -ldl
-    build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
+    program build_against_package "$package" "$bin/native-parent" "$tests/native_parent.c" -- -lX11 -ldl
+    program build_against_package "$package" "$bin/native-window" "$tests/native_window.c" -- -pthread
+    program build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -DMIXED_X11 -lX11 -ldl
+    program build_against_package "$package" "$bin/native-host-x11" "$ZEBKIT_ROOT/examples/native-host/x11.c" -- -lX11
 fi
 if [[ "$ZEBKIT_TARGET" == macos ]]; then
-    build_against_package "$package" "$bin/native-parent-mac" "$tests/native_parent_mac.m" -- -fobjc-arc -framework Cocoa
-    build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -framework IOSurface
-    target_cxx -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Wno-deprecated-declarations -I"$package/include" "$ZEBKIT_ROOT/examples/native-host/appkit.mm" \
+    program build_against_package "$package" "$bin/native-parent-mac" "$tests/native_parent_mac.m" -- -fobjc-arc -framework Cocoa
+    program build_against_package "$package" "$bin/mixed-views" "$tests/mixed_views.c" -- -framework IOSurface
+    program target_cxx -std=c++17 -fobjc-arc -O1 -Wall -Wextra -Wno-deprecated-declarations -I"$package/include" "$ZEBKIT_ROOT/examples/native-host/appkit.mm" \
         -framework Cocoa -framework IOSurface $(engine_link_options "$package") -o "$bin/native-host-appkit"
 fi
-build_against_package "$package" "$bin/scheme" "$tests/scheme.c"
+program build_against_package "$package" "$bin/scheme" "$tests/scheme.c"
 offscreen_options=()
 [[ "$ZEBKIT_TARGET" == macos ]] && offscreen_options=(-framework IOSurface)
-build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
+program build_against_package "$package" "$offscreen_test" "$tests/offscreen.c" -- "${offscreen_options[@]}"
 frames_options=()
 [[ "$ZEBKIT_TARGET" == linux && -f /usr/include/X11/Xlib.h ]] && frames_options=(-DFRAMES_X11 -lX11 -ldl)
-build_against_package "$package" "$bin/frames-input" "$tests/frames_input.c" -- "${frames_options[@]}"
-build_against_package "$package" "$bin/page" "$tests/page.c"
-build_against_package "$package" "$bin/popup" "$tests/popup.c"
-build_against_package "$package" "$bin/cookie-host" "$tests/cookie_host.c"
-build_against_package "$package" "$bin/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
-build_against_package "$package" "$bin/automation" "$tests/automation.c"
-build_against_package "$package" "$bin/automation-reentry" "$tests/automation_reentry.c"
-build_against_package "$package" "$bin/media" "$tests/media.c"
-build_against_package "$package" "$bin/media-probe" "$tests/media_probe.c"
-build_against_package "$package" "$bin/mode" "$tests/mode.c"
-build_against_package "$package" "$webauthn_host" "$tests/webauthn_host.c"
+program build_against_package "$package" "$bin/frames-input" "$tests/frames_input.c" -- "${frames_options[@]}"
+program build_against_package "$package" "$bin/page" "$tests/page.c"
+program build_against_package "$package" "$bin/popup" "$tests/popup.c"
+program build_against_package "$package" "$bin/cookie-host" "$tests/cookie_host.c"
+program build_against_package "$package" "$bin/cookie-file-runner" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+program build_against_package "$package" "$bin/automation" "$tests/automation.c"
+program build_against_package "$package" "$bin/automation-reentry" "$tests/automation_reentry.c"
+program build_against_package "$package" "$bin/media" "$tests/media.c"
+program build_against_package "$package" "$bin/media-probe" "$tests/media_probe.c"
+program build_against_package "$package" "$bin/mode" "$tests/mode.c"
+program build_against_package "$package" "$webauthn_host" "$tests/webauthn_host.c"
 render_options=(-pthread)
 [[ "$ZEBKIT_TARGET" == macos ]] && render_options+=(-framework IOSurface)
 # The example of another process's frames: Unix sockets and mach ports, not on Windows.
 if [[ "$ZEBKIT_TARGET" != windows ]]; then
-build_against_package "$package" "$bin/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
+program build_against_package "$package" "$bin/offscreen-render" "$ZEBKIT_ROOT/examples/offscreen-host/render.c" -- "${render_options[@]}"
 host_options=()
 [[ "$ZEBKIT_TARGET" == macos ]] && host_options=(-framework CoreVideo -framework IOSurface -framework CoreFoundation)
-target_cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$bin/offscreen-show"
+program target_cc -std=c11 -O1 -Wall -Werror "$ZEBKIT_ROOT/examples/offscreen-host/show.c" "${host_options[@]}" -o "$bin/offscreen-show"
 fi
-build_against_package "$package" "$bin/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
-build_against_package "$package" "$bin/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
+program build_against_package "$package" "$bin/tools/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+program build_against_package "$package" "$bin/tools/zebkit-js" "$ZEBKIT_ROOT/tools/zebkit-js/zebkit-js.c"
 if [[ "$ZEBKIT_TARGET" == macos ]]; then
     keychain_source="$tests/macos_private_keychain.c"
     keychain_frameworks=(-framework Security -framework CoreFoundation)
@@ -292,24 +393,89 @@ if [[ "$ZEBKIT_TARGET" == macos ]]; then
 fi
 fi
 
+# The engine's switches for a test; run gives each test a profile of its own.
 engine_switches=(--no-sandbox --headless --user-data-dir="$work/profile")
 failed=0
+ran=0
+# The names of the tests run, between spaces (bash 3.2 has no associative arrays).
+ran_tests=" "
+# What was not run: "<test>: <why>", or "<test>: <part>: <why>" for a part of
+# one (its "skip <part>: <why>" and "narrowed: ..." lines, collected by run).
+skipped=()
+unsure=()
+# ENGINE_TEST_EXPECTED_SKIPS: extended regular expressions, one a line, of
+# skips that --strict accepts (scripts/check.sh's list); every other skip fails it.
+expected_skips="${ENGINE_TEST_EXPECTED_SKIPS:-}"
+export ENGINE_TEST_EXPECTED_SKIPS="$expected_skips"
 
 selected() { [[ -z "$only" || "$1" =~ $only ]]; }
 
-# finished <name> <what>: its log ends with every check passed.
+# expected_skip <entry>: an entry of skipped that the expected skips name.
+expected_skip() {
+    [[ -n "$expected_skips" ]] && grep -Eq -e "$expected_skips" <<< "$1"
+}
+
+# skip <reason> <name...>: those tests, the selected of them, were not run.
+skip() {
+    local reason="$1" name
+    shift
+    for name in "$@"; do
+        selected "$name" && skipped+=("$name: $reason")
+    done
+    return 0
+}
+
+# mark_ran <name>: a test that has run, by run() or by hand.
+mark_ran() {
+    ran=$(( ran + 1 ))
+    ran_tests+="$1 "
+}
+was_run() { [[ "$ran_tests" == *" $1 "* ]]; }
+
+# finished <name> <what>: its log ends with every check passed, and at least one.
+# Nothing for a test that was not selected or not run.
 finished() {
-    selected "$1" || return 0
-    grep -q '^\([0-9]*\) of \1 checks passed$' "$work/$1.log" || { echo "FAIL $2 did not finish"; failed=1; }
+    was_run "$1" || return 0
+    grep -q '^\([1-9][0-9]*\) of \1 checks passed$' "$work/$1.log" || { echo "FAIL $2 did not finish"; failed=1; }
+}
+
+# finished_line <name> <regex> <what>: it printed its last line, which a
+# script that ended early (zebkit-js ends once nothing is pending) has not.
+finished_line() {
+    was_run "$1" || return 0
+    grep -q "$2" "$work/$1.log" || { echo "FAIL $3 did not finish"; failed=1; }
+}
+
+# collect_skips <name>: the parts of a test its log says were not run.
+collect_skips() {
+    local line
+    while IFS= read -r line; do
+        line="${line#skip }"
+        skipped+=("$1: $line")
+    done < <(grep -E '^(skip |narrowed:)' "$work/$1.log" || true)
 }
 
 # run <name> <command...>: a test program; its output, and the engine's on failure.
 run() {
-    local name="$1"
+    local name="$1" arg args=() line words=()
     shift
     selected "$name" || return 0
+    mark_ran "$name"
+    # A profile of its own: what one test leaves there is not the next one's.
+    for arg in "$@"; do
+        [[ "$arg" == "--user-data-dir=$work/profile" ]] && arg="--user-data-dir=$work/profile-$name"
+        args+=("$arg")
+    done
+    set -- "${args[@]}"
+    # The programs it names, and the environment it is given, built if they are not.
+    if (( ${#program_outputs[@]} )); then
+        while IFS= read -r line; do words+=("$line"); done < <(env)
+        need "${launch[@]}" "$@" "${words[@]}"
+    fi
     log "$name"
     if ! (
+        # The name the expected skips are matched with (tests/engine/harness.py).
+        export ENGINE_TEST_NAME="$name"
         # Protected programs clear DYLD_*, so env is done here, before the launcher.
         if (( ${#launch[@]} )) && [[ "$1" == env ]]; then
             shift
@@ -321,8 +487,21 @@ run() {
         cat "$work/$name.log"
         echo "FAIL $name: it did not exit 0"
         echo "it printed on stderr:"; tail -20 "$work/$name.err"
+        collect_skips "$name"
     else
         cat "$work/$name.log"
+        collect_skips "$name"
+        # A count of checks that is not all of them, or none, is not a pass.
+        if grep -E '^[0-9]+ of [0-9]+ checks passed$' "$work/$name.log" | awk '$1 != $3 || $3 == 0 { bad = 1 } END { exit !bad }'; then
+            echo "FAIL $name: not every check passed"; failed=1
+        elif grep -q '^FAIL' "$work/$name.log"; then
+            unsure+=("$name")
+            if [[ -n "$strict" ]]; then
+                echo "FAIL $name: it exited 0 but printed FAIL lines"; failed=1
+            else
+                echo "note: $name exited 0 but printed FAIL lines"
+            fi
+        fi
     fi
 }
 
@@ -337,12 +516,13 @@ check_engine_library() {
         # Chromium's own dllexports are there too: base's handle verifier and
         # crash hooks, and SQLite's recovery extension.
         exported="$("$llvm_bin/llvm-readobj" --coff-exports "$library" | awk '$1 == "Name:" { print $2 }' \
-            | grep -vxE 'CrashForExceptionInNonABICompliantCodeRange|GetHandleVerifier|IsSandboxedProcess|sqlite3_dbdata_init')"
+            | grep -vxE 'CrashForExceptionInNonABICompliantCodeRange|GetHandleVerifier|IsSandboxedProcess|sqlite3_dbdata_init')" \
+            || die "the engine's exports could not be read"
     elif [[ "$ZEBKIT_TARGET" == macos ]]; then
         # Mach-O puts an underscore before every C name.
-        exported="$("${nm_tool[@]}" -gU "$library" | awk '{ print substr($3, 2) }')"
+        exported="$("${nm_tool[@]}" -gU "$library" | awk '{ print substr($3, 2) }')" || die "the engine's exports could not be read"
     else
-        exported="$("${nm_tool[@]}" -D --defined-only "$library" | awk '{ print $3 }')"
+        exported="$("${nm_tool[@]}" -D --defined-only "$library" | awk '{ print $3 }')" || die "the engine's exports could not be read"
     fi
     foreign="$(grep -v '^zebkit_' <<< "$exported" | grep -v '^$' || true)"
     if [[ -n "$foreign" ]]; then
@@ -358,7 +538,7 @@ check_engine_library() {
             | grep -iE '^(vcruntime|msvcp|ucrtbase|concrt|api-ms-win-crt|d3dcompiler)' || true)"
     elif [[ "$ZEBKIT_TARGET" == macos ]]; then
         # The system's frameworks and libraries, and the framework itself.
-        loads="$("${otool_tool[@]}" -L "$library" | tail -n +2 | awk '{ print $1 }')"
+        loads="$("${otool_tool[@]}" -L "$library" | tail -n +2 | awk '{ print $1 }')" || die "what the engine loads could not be read"
         stray="$(grep -v -e '^/System/Library/' -e '^/usr/lib/' -e '^@rpath/Zebkit.framework/' <<< "$loads" || true)"
     else
         # Whatever the dynamic linker cannot find beside it or on the system.
@@ -370,14 +550,12 @@ check_engine_library() {
         echo "ok   only the system's libraries"
     fi
 }
-# The real long PDF the suite opens; nothing fails without it.
-real_pdf="${ZEBKIT_TEST_REAL_PDF:-$CACHE_DIR/pdf/PDF32000_2008.pdf}"
-if [[ -z "$prebuilt" && ! -f "$real_pdf" ]]; then
-    mkdir -p "$(dirname "$real_pdf")"
-    curl -fsSL --max-time 120 -o "$real_pdf.part" "$PDF_REAL_URL" \
-        && [[ "$(sha256 "$real_pdf.part" | cut -d' ' -f1)" == "$PDF_REAL_SHA256" ]] \
-        && mv "$real_pdf.part" "$real_pdf" || rm -f "$real_pdf.part"
-fi
+# Cargo's builds for the suite, kept from run to run: this profile's package
+# is what the crates link.
+cargo_dir="$OUT_DIR/engine-test/$profile/cargo"
+# The Rust examples the suite runs: the hook and settings programs, and the Rust
+# halves of tests/engine/*_bindings.py.
+rust_examples=(hook_policies runtime_settings certificate_policy http_auth user_agent)
 # Go, from the PATH or mise's pin (mise.toml), for the Go binding's checks.
 go_cmd=()
 if (cd "$ZEBKIT_ROOT" && command -v go > /dev/null && go version > /dev/null 2>&1); then go_cmd=(go)
@@ -421,10 +599,12 @@ if [[ -n "$build_only" ]]; then
     rust_target=
     [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]] && rust_target=aarch64-apple-darwin
     [[ "$ZEBKIT_TARGET" == windows ]] && rust_target=x86_64-pc-windows-msvc
-    if command -v cargo > /dev/null && { [[ -z "$rust_target" ]] || rustup target list --installed 2> /dev/null | grep -qx "$rust_target"; }; then
+    installed_targets=
+    [[ -n "$rust_target" ]] && installed_targets="$(rustup target list --installed 2> /dev/null || true)"
+    if command -v cargo > /dev/null && { [[ -z "$rust_target" ]] || grep -qx "$rust_target" <<< "$installed_targets"; }; then
         log "building the Rust hook program"
         rust_options=()
-        rust_env=(ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$work/rust-target")
+        rust_env=(ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$cargo_dir/bundle-${rust_target:-host}")
         rust_flags="-C link-arg=-Wl,-rpath,$origin/../../out/blink/$profile/package"
         if [[ "$ZEBKIT_TARGET" == windows ]]; then
             rust_options=(--target "$rust_target")
@@ -439,12 +619,13 @@ if [[ -n "$build_only" ]]; then
         fi
         mkdir -p "$bin/rust"
         (cd "$ZEBKIT_ROOT/bindings/rust" && env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
-            cargo build -q -p zebkit --example hook_policies --example runtime_settings "${rust_options[@]}") \
+            cargo build -q -p zebkit $(printf -- '--example %s ' "${rust_examples[@]}") "${rust_options[@]}") \
             || die "the Rust hook program did not build"
         rust_exe=
         [[ "$ZEBKIT_TARGET" == windows ]] && rust_exe=.exe
-        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/hook_policies$rust_exe" "$bin/rust/hook_policies$rust_exe"
-        cp "$work/rust-target/${rust_target:+$rust_target/}debug/examples/runtime_settings$rust_exe" "$bin/rust/runtime_settings$rust_exe"
+        for rust_example in "${rust_examples[@]}"; do
+            cp "$cargo_dir/bundle-${rust_target:-host}/${rust_target:+$rust_target/}debug/examples/$rust_example$rust_exe" "$bin/rust/$rust_example$rust_exe"
+        done
     else
         log "hook-rust: not built (no cargo or no ${rust_target:-host} target)"
     fi
@@ -469,7 +650,14 @@ if [[ -z "$prebuilt" ]]; then
     # (docs/SYSTEM_INTEGRATION.md, 6.6).
     if selected surfaces; then
         log "surfaces"
-        python3 -I "$ZEBKIT_ROOT/scripts/check-surfaces.py" --chromium "$SRC_DIR" || failed=1
+        mark_ran surfaces
+        "${python_run[@]}" "$ZEBKIT_ROOT/scripts/check-surfaces.py" --chromium "$SRC_DIR" || { echo "FAIL the surfaces' registry"; failed=1; }
+    fi
+    # Every function of the C API in every binding (scripts/check-bindings.py).
+    if selected check-bindings; then
+        log "check-bindings"
+        mark_ran check-bindings
+        "${python_run[@]}" "$ZEBKIT_ROOT/scripts/check-bindings.py" || { echo "FAIL a binding misses functions of the C API"; failed=1; }
     fi
 else
     log "what the engine exports and loads: checked by --build-only"
@@ -481,9 +669,9 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     # pyvenv.cfg to find its standard library by: a script of that name is not a
     # program on a shared folder.
     mkdir -p "$work/path"
-    python_home="$(python -c 'import sys; print(sys.base_prefix)' | tr -d '\r')"
-    python_dll="$(python -c 'import sys; print("python%d%d" % sys.version_info[:2])' | tr -d '\r')"
-    python_home="$(cygpath -u "$python_home")"
+    python_home="$(python -c 'import sys; print(sys.base_prefix)' | tr -d '\r')" || die "no Python (python) on PATH"
+    python_dll="$(python -c 'import sys; print("python%d%d" % sys.version_info[:2])' | tr -d '\r')" || die "no Python (python) on PATH"
+    python_home="$(cygpath -u "$python_home")" || die "cygpath did not convert $python_home"
     cp "$python_home/python.exe" "$work/path/python3.exe"
     cp "$python_home/$python_dll.dll" "$python_home/python3.dll" "$python_home/vcruntime140.dll" "$work/path/"
     [[ -f "$python_home/vcruntime140_1.dll" ]] && cp "$python_home/vcruntime140_1.dll" "$work/path/"
@@ -515,7 +703,7 @@ launch=()
 if [[ "$ZEBKIT_HOST" == macos ]]; then
     mkdir -p "$work/path" "$work/home" "$work/keychain" "$work/tmp"
     export TMPDIR="$work/tmp" MAC_CHROMIUM_TMPDIR="$work/tmp"
-    ln -s "$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.executable))')" "$work/path/python3"
+    ln -s "$("${python_run[@]}" -c 'import os, sys; print(os.path.realpath(sys.executable))')" "$work/path/python3"
     export PATH="$work/path:$PATH"
     export HOME="$work/home" CFFIXED_USER_HOME="$work/home"
     if [[ -z "${ENGINE_TEST_REAL_KEYCHAIN:-}" ]]; then
@@ -526,7 +714,7 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         printf 'check' > "$work/keychain/$(printf 'zebkit-test-check' | od -An -tx1 | tr -d ' \n')-$(printf 'zebkit-test-check' | od -An -tx1 | tr -d ' \n')"
         limited 30 "${launch[@]}" "$bin/macos-keychain-check" > /dev/null \
             || die "the private Keychain is not in effect in a program; stopping before the login Keychain is touched"
-        [[ "$(limited 30 "${launch[@]}" python3 -I -c 'import os; print(os.environ.get("DYLD_INSERT_LIBRARIES", ""))')" == "$ZEBKIT_TEST_KEYCHAIN_LIBRARY" ]] \
+        [[ "$(limited 30 "${launch[@]}" "${python_run[@]}" -c 'import os; print(os.environ.get("DYLD_INSERT_LIBRARIES", ""))')" == "$ZEBKIT_TEST_KEYCHAIN_LIBRARY" ]] \
             || die "$(command -v python3) drops DYLD_INSERT_LIBRARIES (a protected Python?); another Python on PATH, or ENGINE_TEST_REAL_KEYCHAIN=1"
     fi
 fi
@@ -546,8 +734,10 @@ run api "$bin/api" "${engine_switches[@]}"
 run lifecycle "$bin/lifecycle" --no-sandbox --headless --user-data-dir="$work/profile-lifecycle"
 run host-loop "$bin/host-loop" --no-sandbox --headless --user-data-dir="$work/profile-host-loop"
 run edit-commands "$bin/edit-commands" --no-sandbox --headless --user-data-dir="$work/profile-edit-commands"
-if [[ -x "$bin/host-loop-glib" ]]; then
+if have_program "$bin/host-loop-glib"; then
     run host-loop-glib "$bin/host-loop-glib" --no-sandbox --headless --user-data-dir="$work/profile-host-loop-glib"
+elif [[ "$ZEBKIT_TARGET" == linux ]]; then
+    skip "no glib-2.0 to build it with" host-loop-glib
 fi
 mkdir -p "$work/startup-settings-files"
 ZEBKIT_TEST_SETTINGS_DIR="$work/startup-settings-files" run startup-settings "$bin/startup-settings" --user-agent=argv-agent --user-data-dir="$work/unused-argv-profile"
@@ -555,12 +745,20 @@ for log_mode in none file; do
     run "startup-settings-python-$log_mode" env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         ZEBKIT_TEST_LOG_MODE="$log_mode" python3 "$tests/startup_settings_python.py"
 done
-if [[ -x "$bin/native-window" ]]; then
+# The tests in a window of a private X server.
+x11_tests=(native-parent mixed-views mixed-views-scaled native-window-x11 native-window-javascript sign-in-x11 input-method-x11 js-dialogs-x11 context-menu-x11 menu-state-x11 window-frame-x11 system-holes-window native-parent-python native-parent-rust)
+if have_program "$bin/native-window"; then
     run native-window "$bin/native-window" --no-sandbox --headless --user-data-dir="$work/profile-native-window"
 fi
-if [[ -x "$bin/native-parent" ]]; then
+if [[ "$ZEBKIT_TARGET" == linux ]] && ! have_program "$bin/native-parent"; then
+    skip "no X11 headers to build it with" native-window native-parent-refused "${x11_tests[@]}"
+    skip "no X11 headers" native-window-wayland native-window-javascript-wayland window-frame-wayland
+fi
+x11_selected=
+for x11_test in "${x11_tests[@]}"; do selected "$x11_test" && x11_selected=1; done
+if have_program "$bin/native-parent"; then
     run native-parent-refused "$bin/native-parent" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
-    if command -v Xvfb > /dev/null; then
+    if [[ -n "$x11_selected" ]] && command -v Xvfb > /dev/null; then
         exec 9< <(Xvfb -displayfd 1 -screen 0 2200x1400x24 -nolisten tcp 2> /dev/null)
         xvfb=$!
         pids+=("$xvfb")
@@ -576,47 +774,56 @@ if [[ -x "$bin/native-parent" ]]; then
                 "$bin/native-window" --no-sandbox --user-data-dir="$work/profile-native-window-x11"
             run native-window-javascript env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" "$bin/tools/zebkit-js" \
                 --no-sandbox --user-data-dir="$work/profile-native-window-js" "$tests/script/native_window.mjs" x11
+            finished_line native-window-javascript '^ok JavaScript native window platform type' "the native window script (X11)"
             run sign-in-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/sign_in.py" --no-sandbox --user-data-dir="$work/profile-sign-in-x11"
+                "${python_run[@]}" "$tests/sign_in.py" --no-sandbox --user-data-dir="$work/profile-sign-in-x11"
             # A real input method in an X11 window: IBus, a fake one on its own bus.
             if command -v dbus-run-session > /dev/null && python3 -c "import dbus.mainloop.glib" 2> /dev/null; then
                 run input-method-x11 env -u WAYLAND_DISPLAY -u IBUS_ADDRESS DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                    dbus-run-session -- python3 -I "$tests/input_method.py" --no-sandbox --user-data-dir="$work/profile-input-method"
+                    dbus-run-session -- "${python_run[@]}" "$tests/input_method.py" --no-sandbox --user-data-dir="$work/profile-input-method"
+            else
+                skip "no dbus-run-session or dbus-python" input-method-x11
             fi
             run js-dialogs-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/js_dialogs.py" --no-sandbox --user-data-dir="$work/profile-js-dialogs-x11"
+                "${python_run[@]}" "$tests/js_dialogs.py" --no-sandbox --user-data-dir="$work/profile-js-dialogs-x11"
             run context-menu-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/context_menu.py" --no-sandbox --user-data-dir="$work/profile-context-menu-x11"
+                "${python_run[@]}" "$tests/context_menu.py" --no-sandbox --user-data-dir="$work/profile-context-menu-x11"
             run menu-state-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/menu_state.py" --no-sandbox --user-data-dir="$work/profile-menu-x11"
+                "${python_run[@]}" "$tests/menu_state.py" --no-sandbox --user-data-dir="$work/profile-menu-x11"
             run window-frame-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/window_frame.py" --no-sandbox --user-data-dir="$work/profile-window-frame-x11"
+                "${python_run[@]}" "$tests/window_frame.py" --no-sandbox --user-data-dir="$work/profile-window-frame-x11"
             run system-holes-window env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
-                python3 -I "$tests/system_holes.py" --no-sandbox --user-data-dir="$work/profile-holes-window"
+                "${python_run[@]}" "$tests/system_holes.py" --no-sandbox --user-data-dir="$work/profile-holes-window"
             run native-parent-python env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" \
                 PYTHONPATH="$ZEBKIT_ROOT/bindings/python" python3 "$tests/native_parent_python.py" \
                 --no-sandbox --user-data-dir="$work/profile-native-parent-python"
-            if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null; then
-                if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example native_parent); then
+            if ! selected native-parent-rust; then
+                :
+            elif [[ -n "$prebuilt" ]]; then
+                skip "not in the bundle (--prebuilt): run from a checkout" native-parent-rust
+            elif command -v cargo > /dev/null; then
+                if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$cargo_dir/host" cargo build -q -p zebkit --example native_parent); then
                     run native-parent-rust env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" LD_LIBRARY_PATH="$package" \
-                        "$ZEBKIT_ROOT/bindings/rust/target/debug/examples/native_parent" \
+                        "$cargo_dir/host/debug/examples/native_parent" \
                         --no-sandbox --user-data-dir="$work/profile-native-parent-rust"
                 else
                     echo "FAIL the Rust native parent program did not build"; failed=1
                 fi
+            else
+                skip "no cargo" native-parent-rust
             fi
         else
             echo "FAIL Xvfb did not start"; failed=1
         fi
         kill "$xvfb" 2>/dev/null || true
         exec 9<&-
-    else
-        log "native-parent: skipped (no Xvfb)"
+    elif [[ -n "$x11_selected" ]]; then
+        skip "no Xvfb" "${x11_tests[@]}"
     fi
 fi
 # Wayland: a headless wlroots compositor of its own (labwc, no GPU), with an
 # empty configuration so that nothing of the user's starts in it.
-if [[ -x "$bin/native-window" && "$ZEBKIT_HOST" == linux ]] && command -v labwc > /dev/null &&
+if have_program "$bin/native-window" && [[ "$ZEBKIT_HOST" == linux ]] && command -v labwc > /dev/null &&
     { selected native-window-wayland || selected native-window-javascript-wayland || selected window-frame-wayland; }; then
     wayland_run="$work/wayland-run"
     mkdir -p "$wayland_run" "$work/wayland-config" && chmod 700 "$wayland_run"
@@ -628,25 +835,38 @@ if [[ -x "$bin/native-window" && "$ZEBKIT_HOST" == linux ]] && command -v labwc 
     # Slower to start on a loaded machine: up to 20 s.
     for _ in $(seq 200); do [[ -S "$wayland_run/wayland-0" ]] && break; sleep 0.1; done
     if [[ -S "$wayland_run/wayland-0" ]]; then
+        # A keyboard on the compositor's seat: without one labwc gives no window
+        # the focus, which window_frame.py's window actions need. wtype's virtual
+        # keyboard, held (it would press Shift an hour later) until the tests end.
+        wayland_keyboard=
+        if command -v wtype > /dev/null; then
+            env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 wtype -s 3600000 -k Shift_L \
+                > /dev/null 2>&1 &
+            wayland_keyboard=$!
+            pids+=("$wayland_keyboard")
+            sleep 0.5
+        fi
         run native-window-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
             ZEBKIT_TEST_NATIVE_WINDOW_WAYLAND=1 "$bin/native-window" --no-sandbox --ozone-platform=wayland \
             --user-data-dir="$work/profile-native-window-wayland"
         run native-window-javascript-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
             "$bin/tools/zebkit-js" --no-sandbox --ozone-platform=wayland \
             --user-data-dir="$work/profile-native-window-js-wayland" "$tests/script/native_window.mjs" wayland
+        finished_line native-window-javascript-wayland '^ok JavaScript native window platform type' "the native window script (Wayland)"
         run window-frame-wayland env -u DISPLAY XDG_RUNTIME_DIR="$wayland_run" WAYLAND_DISPLAY=wayland-0 \
-            ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" --no-sandbox --ozone-platform=wayland \
+            ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/window_frame.py" --no-sandbox --ozone-platform=wayland \
             --user-data-dir="$work/profile-window-frame-wayland"
+        [[ -z "$wayland_keyboard" ]] || kill "$wayland_keyboard" 2> /dev/null || true
     else
         echo "FAIL labwc did not start"; tail -5 "$work/labwc.log"; failed=1
     fi
     kill "$labwc" 2>/dev/null || true
-elif ! command -v labwc > /dev/null; then
-    log "native-window-wayland: skipped (no labwc)"
+elif [[ "$ZEBKIT_HOST" == linux ]] && ! command -v labwc > /dev/null; then
+    skip "no labwc" native-window-wayland native-window-javascript-wayland window-frame-wayland
 fi
 # Windows on the screen, and the keyboard for a moment: only when asked, on a person's Mac.
 if [[ "$ZEBKIT_HOST" == macos ]]; then
-    run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]/profile/profile-gpu}"
+    run gpu-status-headless python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" "${engine_switches[@]}"
     run native-parent-refused "$bin/native-parent-mac" --no-sandbox --headless --user-data-dir="$work/profile-native-parent-refused"
     if [[ -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
         # Since Chromium 157 a window that others cover is hidden on macOS 26
@@ -657,14 +877,19 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         run mixed-views "$bin/mixed-views" --no-sandbox --user-data-dir="$work/profile-mixed-views" \
             --enable-features=MacOcclusionForceShutoff
         finished mixed-views "the mixed views' test"
-        run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent"
+        # The same for these three: under a locked or covered screen macOS calls
+        # their windows occluded, and Chromium then hides the page and aborts its pickers.
+        run native-parent "$bin/native-parent-mac" --no-sandbox --user-data-dir="$work/profile-native-parent" \
+            --enable-features=MacOcclusionForceShutoff
         finished native-parent "the attached view's test"
         run gpu-status-window python3 "$tests/gpu_status.py" "$bin/tools/zebkit-run" --no-sandbox --user-data-dir="$work/profile-gpu-window"
         # <zebkit/window.h> in AppKit windows, the system's actions included.
-        run window-frame-mac env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" \
-            --no-sandbox --user-data-dir="$work/profile-window-frame-mac"
-        run system-holes-mac env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" \
-            --no-sandbox --user-data-dir="$work/profile-holes-mac"
+        run window-frame-mac env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/window_frame.py" \
+            --no-sandbox --user-data-dir="$work/profile-window-frame-mac" \
+            --enable-features=MacOcclusionForceShutoff
+        run system-holes-mac env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/system_holes.py" \
+            --no-sandbox --user-data-dir="$work/profile-holes-mac" \
+            --enable-features=MacOcclusionForceShutoff
         # The AppKit host, its application and run loop its own: the panes' picture.
         run native-host-appkit "$bin/native-host-appkit" --no-sandbox --user-data-dir="$work/profile-appkit" \
             --url="data:text/html,<body style='background:%2312a456'>" --pdf="$ZEBKIT_ROOT/examples/native-host/sample.pdf" \
@@ -681,7 +906,9 @@ fi
 if [[ "$ZEBKIT_HOST" == windows ]]; then
     # A sandboxed child has the environment's PATH no more: zebkit.dll beside the
     # executable, as an application has it.
+    need "$bin/win-smoke-sandbox" "$bin/win-host-sandbox" "$bin/win-native-parent-sandbox"
     cp "$bin/win-smoke-sandbox.exe" "$bin/win-host-sandbox.exe" "$bin/win-native-parent-sandbox.exe" "$package/"
+    package_copies+=("$package/win-smoke-sandbox.exe" "$package/win-host-sandbox.exe" "$package/win-native-parent-sandbox.exe")
     run win-smoke "$bin/win-smoke" --no-sandbox --user-data-dir="$work/profile-win-smoke" "$work/win-smoke.png"
     run win-smoke-sandbox "$package/win-smoke-sandbox" --user-data-dir="$work/profile-win-smoke-sandbox" "$work/win-smoke-sandbox.png"
     run win-host "$bin/win-host" --no-sandbox --user-data-dir="$work/profile-win-host"
@@ -689,8 +916,11 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
     run win-offscreen "$bin/win-offscreen" --no-sandbox --headless --user-data-dir="$work/profile-win-offscreen"
     if selected win-sandbox-stubs; then
         log win-sandbox-stubs
+        mark_ran win-sandbox-stubs
         stub_code=0
+        need "$bin/win-sandbox-stubs"
         cp "$bin/win-sandbox-stubs.exe" "$package/"
+        package_copies+=("$package/win-sandbox-stubs.exe")
         "$package/win-sandbox-stubs" > "$work/win-sandbox-stubs.log" 2>&1 || stub_code=$?
         if grep -q '^returned' "$work/win-sandbox-stubs.log" || ! grep -q 'reached' "$work/win-sandbox-stubs.log"; then
             echo "FAIL a stub in zebkit_sandbox.lib did not end the process: code $stub_code"; failed=1
@@ -703,9 +933,9 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
         run win-webauthn python3 "$tests/win_webauthn.py" "$webauthn_host" --no-sandbox
         run win-native-parent "$bin/win-native-parent" --no-sandbox --user-data-dir="$work/profile-win-native-parent"
         # <zebkit/window.h> in Win32 windows, the system's actions included.
-        run window-frame-win env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" \
+        run window-frame-win env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/window_frame.py" \
             --no-sandbox --user-data-dir="$work/profile-window-frame-win"
-        run system-holes-win env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" \
+        run system-holes-win env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/system_holes.py" \
             --no-sandbox --user-data-dir="$work/profile-holes-win"
         finished win-native-parent "the attached view's test"
         run win-native-parent-sandbox "$package/win-native-parent-sandbox" --user-data-dir="$work/profile-win-native-parent-sandbox"
@@ -720,14 +950,14 @@ run media-inventory env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/
     python3 "$tests/media_inventory.py" --no-sandbox --headless --js-flags=--expose-gc --user-data-dir="$work/profile-media-inventory"
 run mode-headless "$bin/mode" "${engine_switches[@]}"
 run mode-automation "$bin/mode" --no-sandbox --headless --enable-automation \
-    --expect-automation --user-data-dir="$work/profile-automation"
+    --expect-automation --user-data-dir="$work/profile-mode-automation"
 run mode-driver-port "$bin/mode" --no-sandbox --headless --remote-debugging-port=0 \
     --expect-automation --user-data-dir="$work/profile-driver-port"
 
-port="${ENGINE_TEST_PORT:-8796}"
-python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$tests/pages" "$port" > "$work/server.log" 2>&1 &
-pids+=($!)
-sleep 1
+# The pages, on a port that was free: another run's server is not this one.
+start_page_server "$tests/pages" "$work/server.log"
+pids+=("$page_server")
+port="$page_port"
 mkdir -p "$work/files"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
     ZEBKIT_TEST_FILES="$work/files" run bridge "$bin/bridge" "${engine_switches[@]}"
@@ -738,10 +968,10 @@ finished offscreen "the off-screen test"
 # Frames as a prototype viewer has them, input from the application; on Linux
 # again in the engine's own window, input from the X server.
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
-    run frames-input "$bin/frames-input" "${engine_switches[@]/profile/profile-frames}"
+    run frames-input "$bin/frames-input" "${engine_switches[@]}"
 finished frames-input "the frames' input test"
 ZEBKIT_TEST_SCALE=2 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_OTHER="http://localhost:$port" \
-    run frames-input-scaled "$bin/frames-input" "${engine_switches[@]/profile/profile-frames-scaled}"
+    run frames-input-scaled "$bin/frames-input" "${engine_switches[@]}"
 finished frames-input-scaled "the frames' input test at twice the pixels"
 if [[ "$ZEBKIT_HOST" == linux ]] && selected frames-input-window && command -v Xvfb > /dev/null; then
     exec 8< <(Xvfb -displayfd 1 -screen 0 1600x1200x24 -nolisten tcp 2> /dev/null)
@@ -758,6 +988,8 @@ if [[ "$ZEBKIT_HOST" == linux ]] && selected frames-input-window && command -v X
     fi
     kill "$frames_xvfb" 2>/dev/null || true
     exec 8<&-
+elif [[ "$ZEBKIT_HOST" == linux ]]; then
+    command -v Xvfb > /dev/null || skip "no Xvfb" frames-input-window
 fi
 if [[ "$ZEBKIT_HOST" != windows ]]; then
 run offscreen-host "$bin/offscreen-show" --renderer="$bin/offscreen-render" \
@@ -785,112 +1017,117 @@ run user-agent-clients env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindin
 run user-agent-native env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/user_agent_native.py"
 run offscreen-scale "$bin/offscreen-scale" "${engine_switches[@]}"
-run automation-python env ZEBKIT_DIR="$package" python3 -I "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
-run html-in-canvas env ZEBKIT_DIR="$package" python3 -I "$tests/html_in_canvas.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
+run automation-python env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/automation_python.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
+run html-in-canvas env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/html_in_canvas.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
 # What reached the system without the application's decision: File System Access,
 # protocol handlers, pointer and keyboard lock (docs/SYSTEM_INTEGRATION.md, phase 2).
-run system-holes env ZEBKIT_DIR="$package" python3 -I "$tests/system_holes.py" "${engine_switches[@]/profile/profile-holes}"
+run system-holes env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/system_holes.py" "${engine_switches[@]}"
 # HTTP authentication without a function: the engine's sign-in dialog with a window (9).
-run sign-in env ZEBKIT_DIR="$package" python3 -I "$tests/sign_in.py" "${engine_switches[@]/profile/profile-sign-in}"
+run sign-in env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/sign_in.py" "${engine_switches[@]}"
 # A page's prompt() and confirm(): Chromium's views dialog with a window (9).
-run js-dialogs env ZEBKIT_DIR="$package" python3 -I "$tests/js_dialogs.py" "${engine_switches[@]/profile/profile-js-dialogs}"
+run js-dialogs env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/js_dialogs.py" "${engine_switches[@]}"
 # A page's context menu: default items, commands on the captured context (8).
-run context-menu env ZEBKIT_DIR="$package" python3 -I "$tests/context_menu.py" "${engine_switches[@]/profile/profile-context-menu}"
+run context-menu env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/context_menu.py" "${engine_switches[@]}"
 # The menu's items' state by id (docs/SYSTEM_INTEGRATION.md, 8).
-run menu-state env ZEBKIT_DIR="$package" python3 -I "$tests/menu_state.py" "${engine_switches[@]/profile/profile-menu}"
+run menu-state env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/menu_state.py" "${engine_switches[@]}"
 # Screens, keeping awake, opening URLs with the system's handler (13, 14).
-run system-services env ZEBKIT_DIR="$package" python3 -I "$tests/system_services.py" "${engine_switches[@]/profile/profile-services}"
+run system-services env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/system_services.py" "${engine_switches[@]}"
 # Accessibility trees when an assistive technology asks (macOS: AXManualAccessibility).
-run accessibility env ZEBKIT_DIR="$package" python3 -I "$tests/accessibility.py" "${engine_switches[@]/profile/profile-a11y}"
+run accessibility env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/accessibility.py" "${engine_switches[@]}"
 # Pages following the system's appearance: a fake XDG portal on a private bus (Linux).
 if [[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && python3 -c "import dbus.mainloop.glib" 2> /dev/null; then
-    run appearance-follow env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/appearance.py" follow \
-        "${engine_switches[@]/profile/profile-appearance}"
-    run appearance-fixed env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/appearance.py" fixed \
-        "${engine_switches[@]/profile/profile-appearance-fixed}"
+    run appearance-follow env ZEBKIT_DIR="$package" dbus-run-session -- "${python_run[@]}" "$tests/appearance.py" follow \
+        "${engine_switches[@]}"
+    run appearance-fixed env ZEBKIT_DIR="$package" dbus-run-session -- "${python_run[@]}" "$tests/appearance.py" fixed \
+        "${engine_switches[@]}"
     # Web notifications to the desktop's service, and the tray's StatusNotifierItem (12).
-    run notifications env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/notifications.py" \
-        "${engine_switches[@]/profile/profile-notifications}"
-    run tray env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/tray.py" \
-        "${engine_switches[@]/profile/profile-tray}"
+    run notifications env ZEBKIT_DIR="$package" dbus-run-session -- "${python_run[@]}" "$tests/notifications.py" \
+        "${engine_switches[@]}"
+    run tray env ZEBKIT_DIR="$package" dbus-run-session -- "${python_run[@]}" "$tests/tray.py" \
+        "${engine_switches[@]}"
     # The session's lock, from the desktop's screen saver (14).
-    run session-lock env ZEBKIT_DIR="$package" dbus-run-session -- python3 -I "$tests/session_lock.py" \
-        "${engine_switches[@]/profile/profile-lock}"
-else
-    log "appearance: skipped (no dbus-run-session or dbus-python)"
+    run session-lock env ZEBKIT_DIR="$package" dbus-run-session -- "${python_run[@]}" "$tests/session_lock.py" \
+        "${engine_switches[@]}"
+elif [[ "$ZEBKIT_HOST" == linux ]]; then
+    skip "no dbus-run-session or dbus-python" appearance-follow appearance-fixed notifications tray session-lock
 fi
 # getDisplayMedia() through the media access hook: the view itself as the source (10).
-run display-capture env ZEBKIT_DIR="$package" python3 -I "$tests/display_capture.py" "${engine_switches[@]/profile/profile-capture}"
+run display-capture env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/display_capture.py" "${engine_switches[@]}"
 # The Python binding's later families: contexts, scripts, off-screen views,
 # page dialogs, print and drag, media capture, the rest of PDF.
 # PDFium's test files: the Chromium tree's here, the bundle's copy (--build-only) elsewhere.
 pdf_resources="$SRC_DIR/third_party/pdfium/testing/resources"
 [[ -n "$prebuilt" ]] && pdf_resources="$bin/pdf-resources"
-run python-parity env ZEBKIT_DIR="$package" ZEBKIT_PDF_RESOURCES="$pdf_resources" python3 -I "$tests/python_parity.py" \
-    "${engine_switches[@]/profile/profile-python-parity}"
+run view-lifetime env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/view_lifetime.py" "${engine_switches[@]}"
+# A service worker's clients.openWindow() from a notification click, and the popup policy.
+run sw-open-window env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/sw_open_window.py" "${engine_switches[@]}"
+run python-declarations "${python_run[@]}" "$tests/python_declarations.py"
+run python-parity env ZEBKIT_DIR="$package" ZEBKIT_PDF_RESOURCES="$pdf_resources" "${python_run[@]}" "$tests/python_parity.py" \
+    "${engine_switches[@]}"
 # WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
-run device-chooser env ZEBKIT_DIR="$package" python3 -I "$tests/device_chooser.py" "${engine_switches[@]/profile/profile-devices}"
+run device-chooser env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/device_chooser.py" "${engine_switches[@]}"
 # The application's icon in the Dock or on the taskbar (12); the launcher's signal on Linux's private bus.
 dock_bus=()
 [[ "$ZEBKIT_HOST" == linux ]] && command -v dbus-run-session > /dev/null && dock_bus=(dbus-run-session --)
-run dock env ZEBKIT_DIR="$package" "${dock_bus[@]}" python3 -I "$tests/dock.py" "${engine_switches[@]/profile/profile-dock}"
+run dock env ZEBKIT_DIR="$package" "${dock_bus[@]}" "${python_run[@]}" "$tests/dock.py" "${engine_switches[@]}"
 # A view's window made with options (<zebkit/window.h>): without a window here,
 # with one under Xvfb and labwc below.
-run window-frame env ZEBKIT_DIR="$package" python3 -I "$tests/window_frame.py" "${engine_switches[@]/profile/profile-window-frame}"
+run window-frame env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/window_frame.py" "${engine_switches[@]}"
 if [[ "$ZEBKIT_HOST" == linux ]]; then
     # LANG is the system's locale on Linux only; macOS and Windows have the user's settings.
     run system-locale env ZEBKIT_DIR="$package" LANG=ja_JP.UTF-8 LC_ALL=ja_JP.UTF-8 \
-        python3 -I "$tests/system_locale.py" ja-JP "${engine_switches[@]/profile/profile-locale-ja}"
+        "${python_run[@]}" "$tests/system_locale.py" ja-JP "${engine_switches[@]}"
     run system-locale-none env ZEBKIT_DIR="$package" LANG=C LC_ALL=C \
-        python3 -I "$tests/system_locale.py" en-US "${engine_switches[@]/profile/profile-locale-c}"
+        "${python_run[@]}" "$tests/system_locale.py" en-US "${engine_switches[@]}"
 fi
-pw_node=(node)
-command -v mise > /dev/null && pw_node=(mise exec node@24 -- node)
+pw_node=("${node_cmd[@]}")
 engine_test_node_ready=false
 if "${pw_node[@]}" --version > /dev/null 2>&1; then
     engine_test_node_ready=true
     run certificate-h2 env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
         python3 "$tests/certificate_h2.py" "${pw_node[@]}"
 else
-    log "certificate-h2: skipped (no Node.js)"
+    skip "no Node.js" certificate-h2
 fi
 run certificate-c python3 "$tests/certificate_c.py" "$bin/certificate"
 run http-auth-c python3 "$tests/http_auth_c.py" "$bin/http_auth"
-if [[ -d "$CACHE_DIR/playwright-tools/node_modules/playwright-core" ]] && "$engine_test_node_ready"; then
+if npm_has "$CACHE_DIR/playwright-tools" "playwright-core@$PLAYWRIGHT_CORE_VERSION" && "$engine_test_node_ready"; then
     run playwright-connect "${pw_node[@]}" "$tests/playwright_connect.mjs" "$CACHE_DIR/playwright-tools/node_modules/playwright-core" \
         "$bin/tools/zebkit-run" --no-sandbox --headless --user-data-dir="$work/profile-connect"
 else
-    log "playwright-connect: skipped (no Node.js or playwright-core)"
+    skip "no Node.js or playwright-core $PLAYWRIGHT_CORE_VERSION: engine-test.sh --fetch" playwright-connect
 fi
 # Real CDP clients, Chrome's results as the reference (tests/engine/cdp_clients.mjs).
-cdp_clients="$CACHE_DIR/cdp-clients"
 if selected cdp-clients && "$engine_test_node_ready" && [[ "$ZEBKIT_HOST" == linux ]]; then
-    if [[ "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/puppeteer-core/package.json" 2> /dev/null | head -n 1)" != "$PUPPETEER_CORE_VERSION" \
-        || "$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$cdp_clients/node_modules/playwright-core/package.json" 2> /dev/null | head -n 1)" != "$PLAYWRIGHT_CORE_VERSION" ]]; then
-        pw_npm=(npm)
-        command -v mise > /dev/null && pw_npm=(mise exec node@24 -- npm)
-        log "installing puppeteer-core $PUPPETEER_CORE_VERSION and playwright-core $PLAYWRIGHT_CORE_VERSION"
-        mkdir -p "$cdp_clients"
-        (cd "$cdp_clients" && "${pw_npm[@]}" install --silent --no-audit --no-fund --no-save --ignore-scripts \
-            "puppeteer-core@$PUPPETEER_CORE_VERSION" "playwright-core@$PLAYWRIGHT_CORE_VERSION") || log "cdp-clients: the install failed"
-    fi
     # Unless named, the Chromium Playwright installed for itself, as it finds it:
     # in the user's cache, which lib.sh's XDG_CACHE_HOME would hide (its ffmpeg too).
-    cdp_chrome="${CHROME:-$(cd "$cdp_clients" && env -u XDG_CACHE_HOME "${pw_node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())" 2> /dev/null)}"
-    if [[ ! -x "$cdp_chrome" ]]; then
-        log "cdp-clients: skipped (no Chrome)"
-    elif [[ -d "$cdp_clients/node_modules/puppeteer-core" ]]; then
+    cdp_chrome="${CHROME:-}"
+    if npm_has "$cdp_clients" "${cdp_clients_packages[@]}" && [[ -z "$cdp_chrome" ]]; then
+        cdp_chrome="$(cd "$cdp_clients" && env -u XDG_CACHE_HOME "${pw_node[@]}" -e "console.log(require('playwright-core').chromium.executablePath())" 2> /dev/null | tr -d '\r' || true)"
+    fi
+    if ! npm_has "$cdp_clients" "${cdp_clients_packages[@]}"; then
+        skip "no ${cdp_clients_packages[*]}: engine-test.sh --fetch" cdp-clients
+    elif [[ ! -x "$cdp_chrome" ]]; then
+        skip "no Chrome" cdp-clients
+    else
         # Not run(): two browsers, one after the other, take longer than its limit.
         log cdp-clients
+        mark_ran cdp-clients
+        need "$bin/tools/zebkit-run"
         if ! nice -n 19 ionice -c3 timeout -k 10 2400 env -u XDG_CACHE_HOME "${pw_node[@]}" "$tests/cdp_clients.mjs" "$cdp_clients" "$tests/cdp_clients_expected.txt" \
             --zebkit "$bin/tools/zebkit-run" --chrome "$cdp_chrome" --work "$work/cdp-clients" \
             > "$work/cdp-clients.log" 2> "$work/cdp-clients.err"; then
             failed=1
+            cat "$work/cdp-clients.log"
+            echo "FAIL cdp-clients: it did not exit 0"
+            echo "it printed on stderr:"; tail -20 "$work/cdp-clients.err"
+        else
+            cat "$work/cdp-clients.log"
         fi
-        cat "$work/cdp-clients.log"
+        collect_skips cdp-clients
     fi
-else
-    selected cdp-clients && log "cdp-clients: skipped (no Node.js)"
+elif [[ "$ZEBKIT_HOST" == linux ]]; then
+    skip "no Node.js" cdp-clients
 fi
 # On macOS the engine starts on the main thread only (<zebkit/zebkit.h>).
 late_load_owners=(main worker)
@@ -902,37 +1139,44 @@ for owner in "${late_load_owners[@]}"; do
 done
 # tools/zebkit-mcp, built against this package, with the official client and the
 # conformance suite as development dependencies (upstream.lock); not shipped.
-if [[ -z "$prebuilt" ]] && command -v cargo > /dev/null && "$engine_test_node_ready"; then
-    mcp_tools="$CACHE_DIR/mcp-tools"
-    if [[ ! -d "$mcp_tools/node_modules/@modelcontextprotocol/sdk" ]]; then
-        log "installing the MCP client $MCP_SDK_VERSION and conformance suite $MCP_CONFORMANCE_VERSION"
-        mkdir -p "$mcp_tools"
-        (cd "$mcp_tools" && "${pw_node[@]/%node/npm}" install --silent --no-save \
-            "@modelcontextprotocol/sdk@$MCP_SDK_VERSION" "@modelcontextprotocol/conformance@$MCP_CONFORMANCE_VERSION") || true
-    fi
+mcp_tests=(mcp-server mcp-conformance mcp-agent-run)
+mcp_selected=
+for mcp_test in "${mcp_tests[@]}"; do selected "$mcp_test" && mcp_selected=1; done
+if [[ -z "$mcp_selected" ]]; then
+    :
+elif [[ -n "$prebuilt" ]]; then
+    # Built with cargo from tools/, which the bundle does not have; on Linux the
+    # checkout's run has them.
+    [[ "$ZEBKIT_HOST" == linux ]] && skip "not in the bundle (--prebuilt): run from a checkout" "${mcp_tests[@]}"
+elif ! command -v cargo > /dev/null; then
+    skip "no cargo" "${mcp_tests[@]}"
+elif ! "$engine_test_node_ready"; then
+    skip "no Node.js" "${mcp_tests[@]}"
+elif ! npm_has "$mcp_tools" "${mcp_tools_packages[@]}"; then
+    skip "no ${mcp_tools_packages[*]}: engine-test.sh --fetch" "${mcp_tests[@]}"
+else
     log "building tools/zebkit-mcp"
-    if (cd "$ZEBKIT_ROOT/tools/zebkit-mcp" && ZEBKIT_DIR="$package" cargo build -q --locked --target-dir "$work/mcp-target"); then
-        zebkit_mcp="$work/mcp-target/debug/zebkit-mcp"
-        if [[ -d "$mcp_tools/node_modules/@modelcontextprotocol/sdk" ]]; then
+    if (cd "$ZEBKIT_ROOT/tools/zebkit-mcp" && ZEBKIT_DIR="$package" cargo build -q --locked --target-dir "$cargo_dir/mcp"); then
+        zebkit_mcp="$cargo_dir/mcp/debug/zebkit-mcp"
+        if selected mcp-server; then
             # Over standard input and HTTP, every tool twice: longer than the rest.
             log mcp-server
+            mark_ran mcp-server
             if ! limited 900 "${pw_node[@]}" "$tests/mcp_server.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox > "$work/mcp-server.log" 2>&1; then
                 failed=1
                 grep -v '^ok' "$work/mcp-server.log" | tail -40
+                echo "FAIL mcp-server: it did not exit 0"
             fi
             tail -1 "$work/mcp-server.log"
-            grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-server.log" || { echo "FAIL the MCP server's test did not finish"; failed=1; }
-            run mcp-conformance "${pw_node[@]}" "$tests/mcp_conformance.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
-            run mcp-agent-run "${pw_node[@]}" "$tests/mcp_agent_run.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
-            ! selected mcp-agent-run || grep -q '^\([0-9]*\) of \1 checks passed$' "$work/mcp-agent-run.log" || { echo "FAIL the scripted MCP run did not finish"; failed=1; }
-        else
-            log "mcp-server: skipped (the MCP client could not be installed)"
+            collect_skips mcp-server
+            finished mcp-server "the MCP server's test"
         fi
+        run mcp-conformance "${pw_node[@]}" "$tests/mcp_conformance.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
+        run mcp-agent-run "${pw_node[@]}" "$tests/mcp_agent_run.mjs" "$mcp_tools" "$zebkit_mcp" --no-sandbox
+        finished mcp-agent-run "the scripted MCP run"
     else
         echo "FAIL tools/zebkit-mcp did not build"; failed=1
     fi
-else
-    log "mcp-server: skipped (prebuilt, or no cargo or Node.js)"
 fi
 run view-settings env ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
     python3 "$tests/view_settings.py" "http://127.0.0.1:$port" "${engine_switches[@]}"
@@ -986,7 +1230,7 @@ for clock_mode in hls hls-discontinuity webm off unknown; do
         ZEBKIT_MEDIA_PROBE="$bin/media-probe" \
         python3 "$tests/media_clock.py" "http://127.0.0.1:$port" "$clock_mode" "${engine_switches[@]}"
 done
-ZEBKIT_MEDIA_PROBE="$bin/media-probe" run cdp-page python3 -I "$tests/cdp_page.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
+ZEBKIT_MEDIA_PROBE="$bin/media-probe" run cdp-page "${python_run[@]}" "$tests/cdp_page.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
     "$work/page-files" --no-sandbox --headless --user-data-dir="$work/profile-cdp"
 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" run popup "$bin/popup" "${engine_switches[@]}"
 finished popup "the popup test"
@@ -997,59 +1241,61 @@ finished media "the media test"
 # zebkit_media_keep_history(), in an engine of its own.
 mkdir -p "$work/media-history-files"
 ZEBKIT_TEST_HISTORY=1 ZEBKIT_TEST_BASE="http://127.0.0.1:$port" ZEBKIT_TEST_FILES="$work/media-history-files" \
-    run media-history "$bin/media" "${engine_switches[@]/profile/profile-history}" \
+    run media-history "$bin/media" "${engine_switches[@]}" \
     --autoplay-policy=no-user-gesture-required
 finished media-history "the media history test"
-run cdp-browser python3 -I "$tests/cdp_browser.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
+run cdp-browser "${python_run[@]}" "$tests/cdp_browser.py" "$bin/tools/zebkit-run" "http://127.0.0.1:$port" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-browser"
 # What CDP changes at runtime, by what the page and a server saw (docs/ROADMAP.md).
-run cdp-overrides python3 -I "$tests/cdp_overrides.py" "$bin/tools/zebkit-run" \
+run cdp-overrides "${python_run[@]}" "$tests/cdp_overrides.py" "$bin/tools/zebkit-run" \
     --no-sandbox --headless --user-data-dir="$work/profile-cdp-overrides"
 finished cdp-overrides "the CDP overrides test"
-run pdf-in-page env ZEBKIT_TEST_REAL_PDF="$real_pdf" python3 -I "$tests/pdf_in_page.py" "$bin/tools/zebkit-run" \
+run pdf-in-page env ZEBKIT_TEST_REAL_PDF="$real_pdf" "${python_run[@]}" "$tests/pdf_in_page.py" "$bin/tools/zebkit-run" \
     --no-sandbox --headless --user-data-dir="$work/profile-pdf-in-page"
 finished pdf-in-page "the PDF in pages test"
+[[ -f "$real_pdf" ]] || skip "its long real document: engine-test.sh --fetch" pdf-in-page
 # The PDF pane of the native hosts: built apart (examples/native-host/README.md) on Linux.
 if [[ "$ZEBKIT_HOST" == linux ]] && command -v Xvfb > /dev/null; then
     for pdf_host in "$OUT_DIR/examples/gtk-host" "$OUT_DIR/examples/qt-host" \
         "$ZEBKIT_ROOT/examples/native-host/winit/target/debug/zebkit-winit-host"; do
-        [[ -x "$pdf_host" ]] || { log "native-host-pdf: no $pdf_host"; continue; }
+        [[ -x "$pdf_host" ]] || { skip "no ${pdf_host#"$ZEBKIT_ROOT"/}: examples/native-host/README.md builds it" "native-host-pdf-$(basename "$pdf_host")"; continue; }
         # winit drops XTest's wheel: that host wheels itself.
         self_driven=()
         pdf_document="$([[ -f "$real_pdf" ]] && echo "$real_pdf" || echo generated)"
         # It is a debug build, and wheels by itself: the generated document is long enough.
         run_limit=180
         [[ "$pdf_host" == *winit* ]] && { self_driven=(--self); pdf_document=generated; run_limit=450; }
-        run "native-host-pdf-$(basename "$pdf_host")" env LD_LIBRARY_PATH="$CACHE_DIR/native-toolkits/usr/lib/x86_64-linux-gnu" python3 -I "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
+        run "native-host-pdf-$(basename "$pdf_host")" env LD_LIBRARY_PATH="$CACHE_DIR/native-toolkits/usr/lib/x86_64-linux-gnu" "${python_run[@]}" "$tests/native_host_pdf_scroll.py" "${self_driven[@]}" "$pdf_host" \
             "$pdf_document" --no-sandbox --disable-gpu
     done
+    run_limit=180
 elif [[ "$ZEBKIT_HOST" == macos && -n "${ENGINE_TEST_WINDOWS:-}" ]]; then
     run_limit=450
-    run native-host-appkit-pdf python3 -I "$tests/native_host_pdf_scroll.py" --self "$bin/native-host-appkit" \
+    run native-host-appkit-pdf "${python_run[@]}" "$tests/native_host_pdf_scroll.py" --self "$bin/native-host-appkit" \
         generated:40 --no-sandbox
     run_limit=180
 fi
 
 if [[ "$ZEBKIT_HOST" == linux ]]; then
-    run sandbox-startup python3 -I "$tests/sandbox_startup.py" "$bin/tools/zebkit-run"
+    run sandbox-startup "${python_run[@]}" "$tests/sandbox_startup.py" "$bin/tools/zebkit-run"
 fi
-run cookie-host python3 -I "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
-run cookie-file python3 -I "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
-run cookie-file-options python3 -I "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
+run cookie-host "${python_run[@]}" "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
+run cookie-file "${python_run[@]}" "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
+run cookie-file-options "${python_run[@]}" "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
 
-run webauthn-plain-headless python3 -I "$tests/webauthn.py" "$webauthn_host" \
+run webauthn-plain-headless "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view
-run webauthn-host-ui python3 -I "$tests/webauthn_ui.py" "$webauthn_host" --no-sandbox
-run webauthn python3 -I "$tests/webauthn.py" "$webauthn_host" --no-sandbox --headless
-run webauthn-unfocused python3 -I "$tests/webauthn.py" "$webauthn_host" \
+run webauthn-host-ui "${python_run[@]}" "$tests/webauthn_ui.py" "$webauthn_host" --no-sandbox
+run webauthn "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" --no-sandbox --headless
+run webauthn-unfocused "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-authentication-ui
-run webauthn-no-activation python3 -I "$tests/webauthn.py" "$webauthn_host" \
+run webauthn-no-activation "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-authentication-ui --test-focused
 
 # Cookie encryption uses the real OS key store. Headless Linux builders
 # without a desktop keyring can opt into this integration test explicitly.
 if [[ "$ZEBKIT_HOST" == macos || "$ZEBKIT_HOST" == windows || "${ENGINE_TEST_PERSISTENT_COOKIES:-0}" == 1 ]]; then
-    run cookies python3 -I "$tests/cookies.py" "$bin/tools/zebkit-run" --no-sandbox --headless
+    run cookies "${python_run[@]}" "$tests/cookies.py" "$bin/tools/zebkit-run" --no-sandbox --headless
 fi
 
 mkdir -p "$work/scheme-files"
@@ -1085,43 +1331,64 @@ finished runtime-settings-python "the Python runtime settings test"
 run runtime-settings-javascript python3 "$tests/runtime_settings.py" javascript \
     "$bin/tools/zebkit-js" @switches@ "$tests/script/runtime_settings.mjs"
 finished runtime-settings-javascript "the JavaScript runtime settings test"
-rust_hook_program=
-rust_settings_program=
+# The Rust examples (rust_examples): built here into the suite's cargo
+# directory, or from the bundle (--build-only).
+rust_tests=(runtime-settings-rust certificate-bindings http-auth-bindings user-agent-bindings)
+for hook_group in "${hook_groups[@]}"; do rust_tests+=("hook-rust-$hook_group"); done
+rust_selected=
+for rust_test in "${rust_tests[@]}"; do selected "$rust_test" && rust_selected=1; done
+rust_dir=
 if [[ -n "$prebuilt" ]]; then
-    [[ -x "$bin/rust/hook_policies" || -x "$bin/rust/hook_policies.exe" ]] && rust_hook_program="$bin/rust/hook_policies"
-    [[ -x "$bin/rust/runtime_settings" || -x "$bin/rust/runtime_settings.exe" ]] && rust_settings_program="$bin/rust/runtime_settings"
-elif command -v cargo > /dev/null; then
-    log "building the Rust hook program"
-    if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" cargo build -q -p zebkit --example hook_policies --example runtime_settings); then
-        rust_hook_program="$ZEBKIT_ROOT/bindings/rust/target/debug/examples/hook_policies"
-        rust_settings_program="$ZEBKIT_ROOT/bindings/rust/target/debug/examples/runtime_settings"
+    [[ -x "$bin/rust/hook_policies" || -x "$bin/rust/hook_policies.exe" ]] && rust_dir="$bin/rust"
+elif [[ -n "$rust_selected" ]] && command -v cargo > /dev/null; then
+    log "building the Rust examples"
+    if (cd "$ZEBKIT_ROOT/bindings/rust" && ZEBKIT_DIR="$package" CARGO_TARGET_DIR="$cargo_dir/host" \
+        cargo build -q -p zebkit $(printf -- '--example %s ' "${rust_examples[@]}")); then
+        rust_dir="$cargo_dir/host/debug/examples"
     else
-        echo "FAIL the Rust hook program did not build"; failed=1
+        echo "FAIL the Rust examples did not build"; failed=1
     fi
 fi
-if [[ -n "$rust_hook_program" ]]; then
+# rust_example <name>: its path, if it is there.
+rust_example() {
+    [[ -n "$rust_dir" ]] && [[ -x "$rust_dir/$1" || -x "$rust_dir/$1.exe" ]] && echo "$rust_dir/$1"
+    return 0
+}
+if [[ -n "$(rust_example hook_policies)" ]]; then
     for hook_group in "${hook_groups[@]}"; do
         run "hook-rust-$hook_group" env LD_LIBRARY_PATH="$package" PYTHONPATH="$tests" python3 "$tests/hook_policies.py" \
-            "rust:$hook_group" "$rust_hook_program"
+            "rust:$hook_group" "$(rust_example hook_policies)"
     done
 else
-    log "hook-rust: skipped (no program)"
+    for hook_group in "${hook_groups[@]}"; do skip "no Rust hook program (cargo)" "hook-rust-$hook_group"; done
 fi
-if [[ -n "$rust_settings_program" ]]; then
-    run runtime-settings-rust env LD_LIBRARY_PATH="$package" python3 "$tests/runtime_settings.py" rust "$rust_settings_program" @switches@
+if [[ -n "$(rust_example runtime_settings)" ]]; then
+    run runtime-settings-rust env LD_LIBRARY_PATH="$package" python3 "$tests/runtime_settings.py" rust "$(rust_example runtime_settings)" @switches@
     finished runtime-settings-rust "the Rust runtime settings test"
+else
+    skip "no Rust settings program (cargo)" runtime-settings-rust
 fi
 
 run hooks-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-hooks-javascript" "$tests/script/hooks.mjs" "http://127.0.0.1:$port"
+finished_line hooks-javascript '^ok JavaScript native settings' "the hooks script"
 # The Go binding (bindings/golang): its four check programs against this
 # package. Built here on Linux; for macOS and Windows built into the bundle
 # (--build-only) and run from the package there, as an application runs beside
 # the engine, on Windows sandboxed.
 go_checks=(check check_hooks check_pdf check_automation)
 go_dir=
-if [[ -n "$prebuilt" && ( -f "$bin/go-check" || -f "$bin/go-check.exe" ) ]]; then
+go_selected=
+for go_check in "${go_checks[@]}"; do selected "go-$go_check" && go_selected=1; done
+if [[ -z "$go_selected" ]]; then
+    :
+elif [[ -n "$prebuilt" && ( -f "$bin/go-check" || -f "$bin/go-check.exe" ) ]]; then
     go_dir="$package"
-    for go_check in "${go_checks[@]}"; do cp "$bin/go-$go_check"* "$package/"; done
+    for go_check in "${go_checks[@]}"; do
+        for go_file in "$bin/go-$go_check"*; do
+            cp "$go_file" "$package/"
+            package_copies+=("$package/$(basename "$go_file")")
+        done
+    done
     go_resources="$bin/pdf-resources"
 elif [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; then
     log "building the Go binding's checks"
@@ -1133,7 +1400,7 @@ elif [[ -z "$prebuilt" && ${#go_cmd[@]} -gt 0 && "$ZEBKIT_HOST" == linux ]]; the
         || { echo "FAIL the Go binding did not build"; failed=1; go_dir=; }
     go_resources="$SRC_DIR/third_party/pdfium/testing/resources"
 else
-    log "go-binding: skipped (no Go, or no checks in the bundle)"
+    for go_check in "${go_checks[@]}"; do skip "no Go, or no checks in the bundle" "go-$go_check"; done
 fi
 if [[ -n "$go_dir" ]]; then
     for go_check in "${go_checks[@]}"; do
@@ -1144,7 +1411,7 @@ if [[ -n "$go_dir" ]]; then
                 --headless --user-data-dir="$work/profile-go-$go_check"
         else
             run "go-$go_check" env ZEBKIT_MEDIA_DIR="$tests/pages/media" "$go_dir/go-$go_check" "${go_args[@]}" \
-                "${engine_switches[@]/profile/profile-go-$go_check}"
+                "${engine_switches[@]}"
         fi
     done
 fi
@@ -1152,21 +1419,43 @@ fi
 # the canvas over pixels; page.h and off-screen views; automation and media.
 js_font=
 [[ -f "$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf" ]] && js_font="$SRC_DIR/third_party/pdfium/testing/resources/fonts/ahem/Ahem.ttf"
+run lifetimes-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --zebkit-scheme=jsfail,standard,secure,fetch \
+    --user-data-dir="$work/profile-lifetimes-javascript" "$tests/script/lifetimes.mjs" "http://127.0.0.1:$port"
+finished_line lifetimes-javascript '^ok JavaScript lifetimes and orders' "the lifetimes script"
 run views-more-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --zebkit-scheme=jsapp,standard,secure,fetch \
     --user-data-dir="$work/profile-views-more-javascript" "$tests/script/views_more.mjs" "http://127.0.0.1:$port" $js_font
+finished_line views-more-javascript '^ok JavaScript views, contexts' "the views script"
 run page-offscreen-javascript "$bin/tools/zebkit-js" --no-sandbox --headless \
     --user-data-dir="$work/profile-page-offscreen-javascript" "$tests/script/page_offscreen.mjs" "http://127.0.0.1:$port"
+finished_line page-offscreen-javascript '^ok JavaScript page dialogs' "the page and off-screen script"
 run automation-media-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --autoplay-policy=no-user-gesture-required \
     --user-data-dir="$work/profile-automation-media-javascript" "$tests/script/automation_media.mjs" "http://127.0.0.1:$port" \
     "$tests/pages/media/clip.mp4" "$work"
+finished_line automation-media-javascript '^ok JavaScript automation, media capture' "the automation and media script"
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
-run certificate-bindings python3 "$tests/certificate_bindings.py" "$bin/tools/zebkit-js"
-run http-auth-bindings python3 "$tests/http_auth_bindings.py" "$bin/tools/zebkit-js"
-run user-agent-bindings python3 "$tests/user_agent_bindings.py" "$bin/tools/zebkit-js"
+finished_line system-javascript '^ok JavaScript system services' "the system services script"
+# Host JavaScript, and Rust where the example is there: then required
+# (ZEBKIT_TEST_REQUIRE_RUST), so that the test cannot pass without its Rust half.
+# bindings_test <name> <script> <variable> <example>
+bindings_test() {
+    local name="$1" script="$2" variable="$3" example
+    example="$(rust_example "$4")"
+    if [[ -n "$example" ]]; then
+        run "$name" env "$variable=$example" ZEBKIT_TEST_REQUIRE_RUST=1 LD_LIBRARY_PATH="$package" \
+            python3 "$tests/$script" "$bin/tools/zebkit-js"
+    else
+        # The test says "skip rust: ..." itself, which run collects.
+        run "$name" python3 "$tests/$script" "$bin/tools/zebkit-js"
+    fi
+}
+bindings_test certificate-bindings certificate_bindings.py ZEBKIT_CERTIFICATE_RUST_EXAMPLE certificate_policy
+bindings_test http-auth-bindings http_auth_bindings.py ZEBKIT_HTTP_AUTH_RUST_EXAMPLE http_auth
+bindings_test user-agent-bindings user_agent_bindings.py ZEBKIT_UA_RUST_EXAMPLE user_agent
 run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
-! selected window-open-javascript || grep -q '^ok JavaScript original popup adoption' "$work/window-open-javascript.log" || { echo "FAIL window-open script did not finish"; failed=1; }
+finished_line window-open-javascript '^ok JavaScript original popup adoption' "the window-open script"
 run native-window-javascript-headless "$bin/tools/zebkit-js" --no-sandbox --headless \
     --user-data-dir="$work/profile-native-window-js-headless" "$tests/script/native_window.mjs" none
+finished_line native-window-javascript-headless '^ok JavaScript native window platform type' "the native window script (headless)"
 run script "$bin/tools/zebkit-js" "${engine_switches[@]}" "$tests/script/app.mjs" \
     "http://127.0.0.1:$port" "$work/script-files"
 # It ends by itself once idle; ending before its last line is a failure.
@@ -1185,7 +1474,9 @@ ZEBKIT_DIR="$package" PYTHONPATH="$ZEBKIT_ROOT/bindings/python" \
 
 if selected cdp-command-line; then
 log "CDP from the command line"
-"${launch[@]}" "$bin/tools/zebkit-run" "${engine_switches[@]}" --remote-debugging-port=0 about:blank \
+mark_ran cdp-command-line
+need "$bin/tools/zebkit-run"
+"${launch[@]}" "$bin/tools/zebkit-run" --no-sandbox --headless --user-data-dir="$work/profile-cdp-command-line" --remote-debugging-port=0 about:blank \
     > /dev/null 2> "$work/run.err" &
 pids+=($!)
 url=""
@@ -1209,7 +1500,7 @@ else
     else
         echo "FAIL /json/version: $version"; failed=1
     fi
-    if curl -fsS "http://127.0.0.1:$port/json/list" | grep -q '"type": *"page"'; then
+    if grep -q '"type": *"page"' <<< "$(curl -fsS "http://127.0.0.1:$port/json/list" || true)"; then
         echo "ok   /json/list has the page"
     else
         echo "FAIL /json/list has no page"; failed=1
@@ -1231,5 +1522,31 @@ if [[ "$ZEBKIT_HOST" == windows ]]; then
         echo "ok   nothing written in %LOCALAPPDATA%"
     fi
 fi
-(( failed )) && die "engine tests failed"
-log "engine tests passed"
+# What was not run, and why; what passed while printing failures. Under
+# --strict a skip fails the run unless ENGINE_TEST_EXPECTED_SKIPS names it.
+unexpected=()
+if (( ${#skipped[@]} )); then
+    log "skipped, ${#skipped[@]}:"
+    for entry in "${skipped[@]}"; do
+        if expected_skip "$entry"; then
+            echo "  $entry (expected here)"
+        else
+            echo "  $entry"
+            unexpected+=("$entry")
+        fi
+    done
+fi
+if (( ${#unsure[@]} )); then
+    log "exited 0 but printed FAIL lines: ${unsure[*]}"
+fi
+if (( ran == 0 )); then
+    if [[ -n "$only" ]] && (( ${#skipped[@]} == 0 )); then
+        die "--only '$only' matches no test"
+    fi
+    die "no test ran"
+fi
+(( failed )) && die "engine tests failed ($ran run)"
+if [[ -n "$strict" ]] && (( ${#unexpected[@]} )); then
+    die "${#unexpected[@]} skipped that --strict (ENGINE_TEST_STRICT=1) does not allow (not in ENGINE_TEST_EXPECTED_SKIPS); $ran passed"
+fi
+log "engine tests passed: $ran run, ${#skipped[@]} skipped${strict:+ (strict)}"

@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "base/functional/callback.h"
+#include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "content/public/browser/javascript_dialog_manager.h"
 
@@ -49,6 +50,8 @@ class JavaScriptDialogManagerImpl : public JavaScriptDialogManager {
 
  private:
   std::unique_ptr<JavaScriptDialog> dialog_;
+  // The page the dialog is of.
+  base::WeakPtr<WebContents> dialog_contents_;
 #endif
 };
 

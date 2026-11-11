@@ -38,6 +38,7 @@
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
@@ -427,7 +428,7 @@ class Call {
         func_(func),
         data_(data) {
     if (std::optional<double> timeout = params_.FindDouble("timeout"))
-      timeout_ms_ = static_cast<int>(*timeout);
+      timeout_ms_ = base::saturated_cast<int>(*timeout);  // NaN is 0, none
     if (timeout_ms_ > 0) {
       deadline_ = base::TimeTicks::Now() + base::Milliseconds(timeout_ms_);
       timer_.Start(FROM_HERE, base::Milliseconds(timeout_ms_),
@@ -11344,10 +11345,6 @@ void Automation::Download(Call* call) {
   Downloads::Get()->Command(call);
 }
 
-char* Copy(const std::string& text) {
-  return strdup(text.c_str());
-}
-
 // ---- Contexts and pages: commands of no page ------------------------------
 
 // The pages and contexts automation made or was given, by their ids.
@@ -11357,6 +11354,8 @@ struct Registry {
   int next = 0;
 
   std::string IdOf(zebkit_view* view) {
+    // Closed pages go, so that this stays the size of what is open.
+    std::erase_if(pages, [](const auto& entry) { return !entry.second; });
     for (auto& [id, page] : pages) {
       if (page.get() == view)
         return id;
@@ -11468,7 +11467,7 @@ void VisitOrigins(content::BrowserContext* profile,
                   base::OnceCallback<void(OriginValues)> done) {
   zebkit_context* context = ContextOfProfile(profile);
   zebkit_view* view = origins.empty() ? nullptr : zebkit_view_new_offscreen_in(context, nullptr, 800, 600, 1);
-  if (!view || !view->web_contents()) {
+  if (!zebkit::LiveView(view) || !view->web_contents()) {
     std::move(done).Run(OriginValues());
     return;
   }
@@ -12465,7 +12464,16 @@ void zebkit_automation_call(zebkit_view* view,
                             const char* params,
                             zebkit_automation_func func,
                             void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // The engine's thread only, in release builds too (zebkit.h, "Threads").
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
+  // NULL is for the commands of no page; a view that has closed is not
+  // touched, by those either: callers may keep its address.
+  if (view && !zebkit::LiveView(view)) {
+    if (func)
+      func(view, nullptr, zebkit::kClosed, data);
+    return;
+  }
   using zebkit::Automation;
   std::optional<base::Value> parsed = base::JSONReader::Read(
       params && *params ? params : "{}", base::JSON_PARSE_RFC);
@@ -12499,7 +12507,8 @@ void zebkit_automation_call(zebkit_view* view,
       func(view, nullptr, ("zebkit: no command " + name).c_str(), data);
     return;
   }
-  Automation* automation = view ? Automation::For(view) : nullptr;
+  // A view that has closed is not touched: callers may keep its address.
+  Automation* automation = zebkit::LiveView(view) ? Automation::For(view) : nullptr;
   if (!automation) {
     if (func)
       func(view, nullptr, zebkit::kClosed, data);
@@ -12516,7 +12525,8 @@ void zebkit_automation_screenshot_pixels(zebkit_view* view,
                                          const char* params,
                                          zebkit_automation_pixels_func func,
                                          void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   using zebkit::Automation;
   auto fail = [&](const std::string& error) {
     if (func)
@@ -12533,7 +12543,7 @@ void zebkit_automation_screenshot_pixels(zebkit_view* view,
     fail("params: expected a JSON object");
     return;
   }
-  Automation* automation = view ? Automation::For(view) : nullptr;
+  Automation* automation = zebkit::LiveView(view) ? Automation::For(view) : nullptr;
   if (!automation) {
     fail(zebkit::kClosed);
     return;
@@ -12547,26 +12557,34 @@ void zebkit_automation_screenshot_pixels(zebkit_view* view,
 void zebkit_automation_on_event(zebkit_view* view,
                                 zebkit_automation_event_func func,
                                 void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   if (zebkit::Automation* automation =
-          view ? zebkit::Automation::For(view) : nullptr) {
+          zebkit::LiveView(view) ? zebkit::Automation::For(view) : nullptr) {
     automation->SetEventHandler(func, data);
   }
 }
 
 zebkit_view* zebkit_automation_page(const char* page) {
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   return page ? zebkit::Registered().Page(page) : nullptr;
 }
 
 char* zebkit_automation_page_id(zebkit_view* view) {
-  return zebkit::Copy(view ? zebkit::Registered().IdOf(view) : std::string());
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
+  // NULL for NULL or a closed view, as the C API's rule has it.
+  return zebkit::LiveView(view) ? strdup(zebkit::Registered().IdOf(view).c_str()) : nullptr;
 }
 
 char* zebkit_automation_commands(void) {
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   base::ListValue names;
   for (const auto& [name, handler] : zebkit::Automation::Handlers())
     names.Append(name);
   for (const auto& [name, handler] : zebkit::GlobalHandlers())
     names.Append(name);
-  return zebkit::Copy(zebkit::Json(base::Value(std::move(names))));
+  return strdup(zebkit::Json(base::Value(std::move(names))).c_str());
 }

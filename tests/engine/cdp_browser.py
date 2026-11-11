@@ -17,13 +17,12 @@ drives it, from tools/zebkit-run serving CDP (pages/browser.html):
 import os
 import re
 import socket
-import subprocess
 import sys
 import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cdp_page import Cdp, check  # noqa: E402
+from cdp_page import Cdp, check, launch_engine  # noqa: E402
 import cdp_page  # noqa: E402
 
 
@@ -44,35 +43,23 @@ def check_origins(run, switches, url):
     check(upgrade_status(url, "https://evil.example") == 403, "CDP refuses an Origin, as Chrome without --remote-allow-origins")
     check(upgrade_status(url) == 101, "CDP takes a client without an Origin")
     other = [s + "-origins" if "user-data-dir" in s else s for s in switches]
-    engine = subprocess.Popen([run, *other, "--remote-debugging-port=0", "--remote-allow-origins=https://good.example", "about:blank"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    engine = launch_engine([run, *other, "--remote-allow-origins=https://good.example"])
     try:
-        allowed = None
-        end = time.time() + 30
-        while time.time() < end and allowed is None:
-            found = re.search(r"ws://\S+", engine.stderr.readline())
-            allowed = found.group(0) if found else None
+        allowed = engine.url
         check(allowed and upgrade_status(allowed, "https://good.example") == 101, "--remote-allow-origins lets that origin in")
         check(allowed and upgrade_status(allowed, "https://evil.example") == 403, "and no other")
     finally:
-        engine.kill()
-        engine.wait()
+        engine.stop(not allowed)
 
 
 def main():
     run, base = sys.argv[1:3]
     switches = sys.argv[3:]
-    engine = subprocess.Popen([run, *switches, "--remote-debugging-port=0", "about:blank"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    url = None
-    end = time.time() + 30
-    while time.time() < end and url is None:
-        found = re.search(r"ws://\S+", engine.stderr.readline())
-        if found:
-            url = found.group(0)
+    engine = launch_engine([run, *switches])
+    url = engine.url
     check(url is not None, "the engine serves CDP", url)
     if not url:
-        engine.kill()
+        engine.stop(True)
         return 1
     try:
         check_origins(run, switches, url)
@@ -87,7 +74,7 @@ def main():
             value = None
             end = time.time() + 15
             while time.time() < end and not (value or {}).get("done"):
-                time.sleep(0.2)
+                time.sleep(0.01)
                 value = cdp.call("Runtime.evaluate", {"expression": "window.results", "returnByValue": True},
                                  session=session).get("result", {}).get("value")
             return value or {}
@@ -160,11 +147,7 @@ def main():
         check(watched.get("webdriver") is True, "navigator.webdriver as Chrome sets it with port 0",
               watched.get("webdriver"))
     finally:
-        engine.terminate()
-        try:
-            engine.wait(5)
-        except subprocess.TimeoutExpired:
-            engine.kill()
+        engine.stop(bool(cdp_page.failures))
     print(f"{cdp_page.checks - len(cdp_page.failures)} of {cdp_page.checks} checks passed")
     return 1 if cdp_page.failures else 0
 

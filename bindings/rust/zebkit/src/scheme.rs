@@ -100,11 +100,21 @@ pub fn handle<F: FnMut(Request) + 'static>(scheme: &str, function: F) {
     HANDLERS.with(|handlers| handlers.borrow_mut().push(slot));
 }
 
+/// Stops answering `scheme`'s requests: they fail as not found. The
+/// function [`handle`] gave is kept, as it may be running.
+pub fn stop(scheme: &str) {
+    require_engine_thread("scheme::stop()");
+    unsafe { sys::zebkit_scheme_handle(c_string(scheme).as_ptr(), None, std::ptr::null_mut()) }
+}
+
 unsafe extern "C" fn on_request(request: *mut sys::zebkit_request, data: *mut c_void) {
     let slot = &*data.cast::<RefCell<HandlerFunction>>();
     let request = Request { raw: request };
     match slot.try_borrow_mut() {
-        Ok(mut function) => function(request),
+        // A request a panicking handler drops is answered 404.
+        Ok(mut function) => {
+            crate::guard(|| function(request));
+        }
         Err(_) => request.respond(500, "", b"the handler is already running"),
     }
 }

@@ -4,10 +4,12 @@
 
 #include <utility>
 
+#include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -99,8 +101,10 @@ void NotificationService::Display(const std::string& id, bool persistent, const 
   if (TheHost().func) {
     description.Set("event", "show");
     Tell(std::move(description));
-  } else {
-    ShowSystemNotification(id, description);
+  } else if (!ShowSystemNotification(id, description)) {
+    // No presenter: closed after its show, not "shown" for ever.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&SystemNotificationClosed, id, false));
   }
   if (!persistent)
     content::NotificationEventDispatcher::GetInstance()->DispatchNonPersistentShowEvent(id);
@@ -209,7 +213,7 @@ void SystemNotificationClosed(const std::string& id, bool by_user) {
     service->Closed(id, by_user);
 }
 
-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_COOKIES_USE_DBUS))
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_USE_DBUS))
 // No system presenter here yet: the application's function shows them.
 bool ShowSystemNotification(const std::string& id, const base::DictValue& notification) {
   return false;

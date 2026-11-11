@@ -7,10 +7,13 @@ happens when the application says nothing, how the application takes it
 over, and what is missing. This document is the design those decisions
 follow, and the inventory against which "complete" is measured.
 
-Status: a design, 2026-11-08. Statements about today's behaviour are
-checked against `main` (zebkit 0.2.1, Chromium 155) and the Chromium 157
-branch, and name the file and symbol that show it; line numbers drift,
-symbols do not. Everything under "Design" is proposed and not yet built.
+Status: implemented in 0.4.0 (Chromium 157), all seven phases of section
+17. The document was written as the design, on 2026-11-08, and is kept as
+the description of what was built and why: where a section still says
+"Design" or speaks of what "will" be, that is how it was built, and what is
+not done is listed in section 5 and in section 19. Statements about the
+engine's behaviour name the file and symbol that show it; line numbers
+drift, symbols do not.
 
 Related: `docs/ROADMAP_HOOKS.md` (how a decision is handed to the
 application; this document does not replace it), `docs/UI.md` (`zebkit.ui`,
@@ -231,7 +234,7 @@ configure), **gap** (missing or refused for lack of an implementation).
 |---|---|---|
 | `appearance.color-scheme` | light by default, as before; with the startup setting `appearance.follow` the system's colour scheme, contrast and forced colours and their changes (`NativeTheme`, on Linux the XDG portal's `color-scheme`, `appearance.cc`); per view `colorScheme` and `contrast` in `zebkit_view_set_settings` still win; `zebkit_get_environment()` and `zebkit_on_environment_changed()` | done |
 | `appearance.reduced-motion`, forced colours | through automation's media emulation only | partial |
-| `locale` | the system's, from Chromium 157 on (`patches/1083`); `Accept-Language` from it | done (157 branch) |
+| `locale` | the system's, from Chromium 157 on (`patches/1083`); `Accept-Language` from it | done |
 | `accessibility.platform` | the trees when an assistive technology asks: on macOS VoiceOver's `AXEnhancedUserInterface`, `AXManualAccessibility` and a read of the application's role (`application_mac.mm`, as Chrome's), also in an application's own `NSApplication` when it owns the loop, elsewhere content's detection; the environment's `accessibility` says which; no client reads AT-SPI, NSAccessibility or UI Automation on the test machines | partial: the trees' reading is not tested |
 
 ### 5.8 Files, other programs, network
@@ -356,8 +359,8 @@ per surface:
   "default": "the system's picker; write access refused",
   "control": ["decide", "present", "off"],
   "platforms": {"linux": "done", "macos": "done", "windows": "done"},
-  "tests": ["tests/engine/file_system_access.py"],
-  "status": "gap"
+  "tests": ["tests/engine/system_holes.py"],
+  "status": "done"
 }
 ```
 
@@ -679,6 +682,11 @@ opener, POST data and `window.closed` (the reason
 
 ### 7.9 Files
 
+The files as planned; as built, the frame is drawn in `window_views.cc` and
+`window_mac.mm` (there is no `window_frame_views.cc`), the bindings are in
+`bindings/rust/` and `bindings/python/`, and the test is
+`tests/engine/window_frame.py`.
+
 | Area | Files |
 |---|---|
 | C contract | new `src/engine/include/zebkit/window.h`; `zebkit.ver`, `mac/exports.txt` and the Windows export list |
@@ -686,8 +694,8 @@ opener, POST data and `window.closed` (the reason
 | Platform interface | `window_platform.h`: `Create(window, options)`, `Show`, `Hide`, `GetState`, `PerformAction`, `SetAppearance`, `SetDragRegions`, a capabilities query; typed values, no JSON |
 | macOS | `window_mac.mm`; an `NSView` subclass for the drag hit test if the content view cannot take it |
 | Views | `window_views.cc`, new `window_frame_views.cc` (the `FrameView` and its buttons) |
-| Bindings | `rust/zebkit-rs` (raw), `rust/zebkit` (`ViewBuilder`, `WindowOptions`, `WindowState`, `WindowAction`), `bindings/python/zebkit`, `script.cc` (`new zebkit.View({window: ...})`) |
-| Tests | `tests/engine/window_options.c` (validation, headless), `tests/engine/window_frame.py` (each frame, state, actions, events, regions; real windows), the same cases in Rust and host JavaScript |
+| Bindings | `bindings/rust/zebkit-rs` (raw), `bindings/rust/zebkit` (`View::new_with_options`, `window`, `set_window`, `window_action`, `on_window_state`, `set_drag_regions`, `zebkit::capabilities`, the options and state as JSON), `bindings/python/zebkit`, `script.cc` (`new zebkit.View({window: ...})`) |
+| Tests | a C test of the options (validation, headless; not written as a file of its own), `tests/engine/window_frame.py` (each frame, state, actions, events, regions; real windows), the same cases in Rust and host JavaScript |
 | Example | `examples/custom-titlebar/`: a page with tabs in an `overlay` title bar, CSS regions, in C and JavaScript |
 | Docs | `docs/API.md` (the reference), `docs/MACOS.md`, `docs/WINDOWS.md` |
 
@@ -946,7 +954,7 @@ passed.
 | 4. Appearance and accessibility | following the system's theme and its changes; the environment query; the platform tree on demand; real-tree tests | a page follows the system's dark mode live; a screen reader's API finds and presses a button on each system |
 | 5. Menus and dialogs | menu item state by id; the default context menu and running its commands; `zebkit.ui` defaults for JavaScript dialogs, sign-in and certificates on Linux and Windows; the eye dropper | each item of 8 and 9 in tests, with the default, a hook, and no window |
 | 6. Notifications and desktop | web notifications; tray; Dock and taskbar; Web Share; `open_external`, `show_in_folder` | a notification shown by the system and clicked back to the page on each system; capability `false` where the desktop lacks a service |
-| 7. Capture, devices, power | the screen-capture picker; device choosers; displays; power events; print dialog | `getDisplayMedia()` through the system's picker; a USB device chosen in a test with a virtual device where the system has one |
+| 7. Capture, devices, power | screen capture through the media access hook; device choosers; displays; power events (the system's picker and a print dialog were declined, section 19) | `getDisplayMedia()` answered by the application's choice of source; a USB device chosen in a test with a virtual device where the system has one |
 
 Phase 1 and 2 come before anything new, because they make the rest
 measurable and close what reaches the system today without the

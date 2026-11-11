@@ -7,7 +7,9 @@
 #
 # Runs the whole pipeline, each step of which does nothing when it is up to
 # date: Chromium's source with the patches, the engine, the package. The
-# first build takes hours; later ones minutes.
+# first build takes hours; later ones minutes. dist/<kind> is copied from the
+# package anew every time, so that nothing a release added to it (the tools,
+# their notices) is there twice.
 #
 # "debug" is not an unoptimized build: it is slim with debug information
 # and without the link-time optimization pass (profiles/slim-dev.gn), which

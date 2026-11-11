@@ -63,6 +63,7 @@
 #include "zebkit/engine/automation_network.h"
 #include "zebkit/engine/automation_scripts.h"
 #include "zebkit/engine/automation_trace.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/include/zebkit/automation.h"
 #include "zebkit/engine/include/zebkit/hooks.h"
@@ -5903,7 +5904,12 @@ class Socket : public net::HttpServer::Delegate {
   }
 
   // net::HttpServer::Delegate
-  void OnConnect(int connection) override {}
+  // HttpServer's 1 MiB is too little for a full-page screenshot or a route's
+  // body: DevTools' own handler's limits.
+  void OnConnect(int connection) override {
+    server_->SetSendBufferSize(connection, 256 * 1024 * 1024);
+    server_->SetReceiveBufferSize(connection, 100 * 1024 * 1024);
+  }
   void OnHttpRequest(int connection, const net::HttpServerRequestInfo&) override {
     server_->Send404(connection, kAnnotation);
   }
@@ -5945,19 +5951,29 @@ class Endpoint {
   }
 
   void Listen(int port, zebkit_automation_listen_func func, void* data) {
-    if (thread_) {
+    if (port < 0 || port > 65535) {
+      if (func)
+        func(nullptr, "zebkit: a port is from 0 to 65535", data);
+      return;
+    }
+    // Listening: its url. Starting: told with the first caller.
+    if (port_) {
       const std::string url = Url();
       if (func)
         func(url.c_str(), nullptr, data);
       return;
     }
-    thread_ = std::make_unique<base::Thread>("zebkit-playwright");
-    base::Thread::Options options(base::MessagePumpType::IO, 0);
-    if (!thread_->StartWithOptions(std::move(options))) {
-      thread_.reset();
-      if (func)
-        func(nullptr, "zebkit: the endpoint's thread could not start", data);
+    waiting_.emplace_back(func, data);
+    if (socket_)
       return;
+    if (!thread_) {
+      thread_ = std::make_unique<base::Thread>("zebkit-playwright");
+      base::Thread::Options options(base::MessagePumpType::IO, 0);
+      if (!thread_->StartWithOptions(std::move(options))) {
+        thread_.reset();
+        Tell(0);
+        return;
+      }
     }
     path_ = "/" + base::UnguessableToken::Create().ToString();
     socket_ = new Socket(
@@ -5969,22 +5985,30 @@ class Endpoint {
         FROM_HERE,
         base::BindOnce([](Socket* socket, int port) { return socket->Listen(port); },
                        socket_, port),
-        base::BindOnce(
-            [](Endpoint* self, zebkit_automation_listen_func func, void* data, int port) {
-              self->port_ = port;
-              if (!func)
-                return;
-              if (!port) {
-                func(nullptr, "zebkit: the endpoint could not listen", data);
-                return;
-              }
-              const std::string url = self->Url();
-              func(url.c_str(), nullptr, data);
-            },
-            base::Unretained(this), func, data));
+        base::BindOnce(&Endpoint::Tell, base::Unretained(this)));
   }
 
  private:
+  // The port listened on, or 0: every caller waiting is told. After a failed
+  // listen nothing is left of it, and a later call tries again.
+  void Tell(int port) {
+    port_ = port;
+    if (!port && socket_) {
+      thread_->task_runner()->DeleteSoon(FROM_HERE, socket_.get());
+      socket_ = nullptr;
+    }
+    const std::string url = port ? Url() : std::string();
+    for (auto [func, data] : std::exchange(waiting_, {})) {
+      if (!func)
+        continue;
+      if (port)
+        func(url.c_str(), nullptr, data);
+      else
+        func(nullptr, thread_ ? "zebkit: the endpoint could not listen"
+                              : "zebkit: the endpoint's thread could not start", data);
+    }
+  }
+
   std::string Url() const {
     return "ws://127.0.0.1:" + base::NumberToString(port_) + path_;
   }
@@ -6013,6 +6037,7 @@ class Endpoint {
   // Lives on the thread, as long as the engine.
   raw_ptr<Socket> socket_ = nullptr;
   int port_ = 0;
+  std::vector<std::pair<zebkit_automation_listen_func, void*>> waiting_;
   // Random, in the url the host is given: launchServer()'s wsPath.
   std::string path_;
   std::map<int, std::unique_ptr<Connection>> connections_;
@@ -6023,6 +6048,7 @@ class Endpoint {
 }  // namespace zebkit
 
 void zebkit_automation_listen(int port, zebkit_automation_listen_func func, void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   zebkit::Endpoint::Get()->Listen(port, func, data);
 }

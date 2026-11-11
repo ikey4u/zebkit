@@ -81,12 +81,12 @@ Built on Linux, the same API: [docs/WINDOWS.md](WINDOWS.md).
 | `slim` | The product: the engine as a library, without what an embedder does not need, optimized for speed where speed is spent (`docs/SIZE_AND_SPEED.md`) |
 | `slim-macos` | `slim` for macOS on arm64; without PGO until Chromium's macOS profile is fetched |
 | `slim-macos-native` | macOS on arm64 with installed Xcode, without ML inlining or ThinLTO |
-| `slim-macos-native-dev` | The native macOS profile with debug information |
+| `slim-macos-native-dev` | The native macOS profile with debug information and DCHECKs |
 | `slim-windows` | `slim` for Windows x64, built on Linux (`docs/WINDOWS.md`) |
 | `slim-windows-sandbox` | `zebkit_sandbox.lib` for the application's executable on Windows, without link-time optimization |
 | `slim-speed` | `slim` compiled for speed: `-O2` throughout, no size-trained inliner; 7 to 11% less CPU at layout and on animated pages, 30 MiB larger, 20 to 50 MB more memory a page (`docs/SIZE_AND_SPEED.md`) |
 | `slim-dev` | `slim` with debug information and without the link-time optimization pass, for debuggers and profilers (`mise run d`) |
-| `baseline` | Chromium's content shell with its release defaults, the "before" of every measurement |
+| `slim-chrome` | `slim` compiled as Google compiles Chrome, as far as a library allows; for measuring how much of the gap to Chrome's own build is how `slim` is compiled |
 
 `profiles/_common.gn` supplies the defaults: an official release build,
 not a component build, without symbols, with linker maps (for
@@ -101,8 +101,13 @@ and why. Numbering:
 
 | Range | For |
 |---|---|
-| `1xxx` | Chromium for zebkit: size and speed (relocations, optimization levels by directory, V8), the engine in the build, PDFium additions, the shell's hooks for an embedder, FFmpeg's configuration |
-| `0013`, `0014` | macOS: what upstream does not build without Dawn and without test support |
+| `1xxx` | Chromium for zebkit: size and speed (relocations, optimization levels by directory, V8), the engine in the build, PDFium additions, content's and Blink's hooks for an embedder, FFmpeg's configuration |
+| `0013` | macOS: what upstream does not build without Dawn |
+
+A patch is named `NNNN-short-description.patch`
+(`1085-serial-ports-without-a-platform-bluetooth.patch`), begins with what it
+does and why, and what it saves if it is for size, and is listed in
+`patches/series` (`patches/README.md`).
 
 Every patch has to be carried to each Chromium release, so a build switch
 in a profile is preferred to a patch wherever one exists.
@@ -114,6 +119,50 @@ in a profile is preferred to a patch wherever one exists.
 | `scripts/engine-test.sh <profile>` | What the engine exports; the libraries (`tests/engine/vendor.c`, `vendor.cc`), services, PDF, the C API, a page's `zebkit.*`, off-screen views and their frames in another process (`tests/engine/offscreen.c`, `examples/offscreen-host`; `ENGINE_TEST_SHOTS=<dir>` keeps their pictures), dialogs, printing to PDF and drag and drop from the C API and over CDP (`tests/engine/page.c`, `cdp_page.py`), URL schemes, script outside a page, `zebkit.ui`, Python, and CDP read back over HTTP. Headless and without the sandbox, as build machines need |
 | `scripts/glibc-test.sh <profile>` | The C tests (libraries, services, PDF, the C API, `zebkit.*`, dialogs, popups, media capture, URL schemes) on glibc 2.17 and CentOS 7's libraries, every process of the engine included, without a container: CentOS 7 unpacked once into `out/blink/glibc-2.17/` |
 | `cd bindings/rust && cargo test` | The Rust crates against the real engine |
+| `bindings/golang`: `go run ./internal/check --headless` and the other checks in `internal/` | The Go binding against the real engine (`bindings/golang/README.md`); `engine-test.sh` builds and runs them, on macOS and Windows from the bundle |
+| `scripts/check-bindings.py` | That Rust, Python, Go and host JavaScript each reach every function the headers export, and that each package's `LICENSE` is a copy of `LICENSE` |
+| `scripts/check-surfaces.py` | That `src/engine/surfaces.json`, the registry of what the engine shows the person or asks of the system, matches the code (`docs/SYSTEM_INTEGRATION.md`) |
+| `scripts/check.sh` (`mise run check`) | What a release is published after: the static checks, `engine-test.sh --fetch`, the suite in strict mode, `glibc-test.sh`, `web-bench.sh --check`; a pass is recorded for these sources in `out/blink/check/` (`--profile`, default `slim`) |
+| `scripts/check.sh --static` (`mise run check:static`) | What needs no build: `bash -n` of the scripts, the Python files' syntax, `check-bindings.py` |
+
+`engine-test.sh` takes:
+
+- `--only REGEX`: the tests whose names match, and only the programs they
+  run built; one that matches no test fails at once.
+- `--fetch`: what some tests take from the network, into `.cache`: the long
+  real PDF, and the npm packages of the CDP clients (installed with
+  `--ignore-scripts`: no browser), of the MCP client and Playwright's, at
+  `upstream.lock`'s versions. Then it exits; the run itself uses no network.
+- `--strict`, or `ENGINE_TEST_STRICT=1`: a skip is a failure, of a whole
+  test (no tool, no download) or of a part of one (a `skip <part>: <why>` or
+  `narrowed: ...` line in its log, which the suite collects), and so is a
+  test that exits 0 after printing `FAIL` lines. `ENGINE_TEST_EXPECTED_SKIPS`
+  names skips it accepts: extended regular expressions, one a line, on the
+  entries of the list the suite prints at the end, `<test>: <why>` or
+  `<test>: <part>: <why>`.
+- `--build-only DIR` and `--prebuilt DIR/programs`: the bundle for a machine
+  with no compiler, and its run there (`docs/MACOS.md`, `docs/WINDOWS.md`).
+
+`scripts/check.sh` runs the suite strict with its own list of expected
+skips, what a Linux build machine (this one, the container below) cannot
+avoid, written out in the script: the device choosers with no USB, HID or
+serial device; `cdp-clients` and `network-stages`' comparison with no
+Chrome; the native hosts' PDF tests while the hosts are not built
+(`examples/native-host/README.md`); and parts only a Mac or Windows run has
+with a person's screen (their clipboard, the Local Network grant, a
+window's focus). Any other skip fails it. Its record,
+`out/blink/check/passed-<key>`, holds the sources' key (`lib.sh`'s
+`source_tree_key`), the profile, whether the run was strict and the tested
+package's stamp (`out/blink/<profile>/package.stamp`); `release.sh
+--publish` publishes only when all of them match: a strict pass, of `slim`,
+of the package as it is now. `ZEBKIT_RELEASE_UNCHECKED=1` publishes without
+and says so.
+
+Heavy steps (builds, syncs, the release's cargo builds) run one at a time at
+the lowest priority, under the lock `ZEBKIT_HEAVY_LOCK` (default
+`.cache/heavy.lock`; point checkouts that share a machine at one file), and
+on Linux wait while the load is above `ZEBKIT_HEAVY_MAX_LOAD` (30);
+`ZEBKIT_JOBS` (12) is how many jobs they run.
 
 ## Measuring
 
@@ -135,7 +184,13 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 | Task | What it does |
 |---|---|
 | `mise run r` | `scripts/release.sh`: the release packages with the tools, Linux in `dist/release`, macOS in `dist/release-macos` and Windows in `dist/release-windows` (cross-built, `docs/MACOS.md`, `docs/WINDOWS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
-| `mise run r:github` | The same, then the GitHub release `v<version>` with the archives (`gh`, logged in; the tree committed) |
+| `mise run r:github` | The same, then the GitHub release `v<version>` with the archives (`gh`, logged in; the tree committed and pushed; `mise run check` passed, strict, on the same sources and package) |
+| `scripts/release.sh --publish-only` | Publishes what an earlier run built into `dist/`, building nothing: what the release lacks is uploaded, what it has must be the same bytes |
+| `mise run check` | `scripts/check.sh`: the checks a release needs (above); records the pass `r:github` looks for |
+| `mise run check:static` | `scripts/check.sh --static`: the checks that need no build |
+| `mise run r:crate` | `scripts/publish-crates.sh`: the Rust crates at `VERSION` to crates.io (`CARGO_REGISTRY_TOKEN`; `--dry-run` to check only) |
+| `mise run r:python` | `scripts/publish-python.sh`: the Python binding at `VERSION` to PyPI (`UV_PUBLISH_TOKEN` or `PYPI_TOKEN`; `--dry-run` to check only) |
+| `mise run bench:web` | `scripts/web-bench.sh`: what web pages cost in zebkit against Electron; `--check` fails on a regression past `tests/bench/web/limits.json` |
 | `mise run d` | `scripts/dist.sh debug`: the platform's development profile into `dist/debug`, with debug information |
 | `mise example:linux:basic` | Builds and runs `examples/window.c` against `dist/release` (a URL after `--`) |
 | `mise example:macos:basic` | Builds and runs the C embedding demo against the macOS framework |
@@ -153,7 +208,16 @@ A release is one archive per system, `x86_64-unknown-linux-gnu`,
 `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`, all built on Linux, whose SHA-256 goes
 into `bindings/rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
 downloads; the crates and the engine share the version in `VERSION`. Build
-(`mise run r`), commit `engines.txt`, then publish (`mise run r:github`).
+(`mise run r`), check (`mise run check`), commit and push `engines.txt`, then
+publish (`mise run r:github`, or `scripts/release.sh --publish-only` to
+upload what was built without building again). A version whose tag
+`v<version>` exists, here or on origin, and whose release has archives is
+published: `release.sh` stops before building and asks for a new `VERSION`,
+and never rewrites that version's lines of `engines.txt`; only
+`--publish-only` goes on, to upload archives the release lacks with the bytes
+it names. An interrupted upload can leave a draft release without a tag: the
+next run says so, and the draft is deleted (`gh release delete v<version>`)
+before running again.
 Crates download only from a release anyone can read, so the repository
 has to be public for that.
 
@@ -181,23 +245,41 @@ Windows they take part in Chromium's sandbox (`docs/WINDOWS.md`).
 `zebkit-build` leaves the tools out of what it copies beside an
 application.
 
-The tools add to an archive, unpacked / as `.tar.xz` (0.2.0's engine,
-2026-11-07): Linux 1.1 / 0.4 MiB, macOS 0.9 / 0.35 MiB, Windows 4.8 / 1.0
-MiB (the C tools carry the sandbox's 1.2 MiB each there).
+The tools add to an archive, unpacked / as `.tar.xz`, as last measured with
+0.2.0's engine on 2026-11-07: Linux 1.1 / 0.4 MiB, macOS 0.9 / 0.35 MiB,
+Windows 4.8 / 1.0 MiB (the C tools carry the sandbox's 1.2 MiB each there).
 
 ### In a container
 
 `docker/Dockerfile` is a machine for the whole release: Debian 13 with
-what Chromium's tools call from the system, and mise. Its entry builds
-both systems, runs `engine-test.sh` and `glibc-test.sh`, and publishes.
+what Chromium's tools call from the system, what the tests drive the engine
+with (Xvfb, labwc, a session bus, xdotool, `x11-utils`), Rust with the
+macOS and Windows targets, and mise. Its entry, `docker/publish.sh`:
+
+1. lays out both SDKs once, when `.cache/sdk` (or `ZEBKIT_SDK_DIR`) has
+   neither: `scripts/fetch-upstream.sh`, Apple's SDK copied from the `/macos`
+   mount, then `scripts/zsdk-create.sh all`, which also downloads MSVC and the
+   Windows SDK from Microsoft (that accepts Microsoft's licence terms;
+   `docs/WINDOWS.md`);
+2. runs `mise run r` (all three systems built and packed, their checksums
+   written into `engines.txt`), then `mise run check` (`scripts/check.sh`,
+   strict);
+3. with `--no-publish`, stops there. Otherwise it stops too while the tree has
+   changes (`engines.txt` with the new checksums): commit and push them and
+   run it again;
+4. a run on a clean tree whose `dist/` archives are those `engines.txt` names
+   and whose sources have a strict pass of the checks recorded builds
+   nothing: it runs `scripts/release.sh --publish-only` (`GH_TOKEN` needed).
+   When the sources changed after the build, it builds and checks again
+   instead.
 
 ```sh
 docker build -t zebkit-release --build-arg UID="$(id -u)" docker
 run=(docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise
      -v ~/MacOSX:/macos:ro)
-"${run[@]}" zebkit-release --no-publish
-git commit -am "<version>: ..."   # engines.txt has the new checksums
-"${run[@]}" -e GH_TOKEN zebkit-release
+"${run[@]}" -e GH_TOKEN zebkit-release   # build, check; stops for the commit
+git commit -am "<version>: ..." && git push   # engines.txt has the new checksums
+"${run[@]}" -e GH_TOKEN zebkit-release   # publishes what was built and checked
 ```
 
 The repository is mounted at the same path as outside, so the Chromium

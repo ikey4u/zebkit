@@ -1,11 +1,9 @@
 """Rejected CDP client hints must preserve both renderer and network overrides."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import re
-import subprocess
 import sys
 import threading
-from cdp_page import Cdp
+from cdp_page import Cdp, launch_engine
 
 received = []
 class Server(BaseHTTPRequestHandler):
@@ -22,15 +20,11 @@ class Server(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(('127.0.0.1', 0), Server)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
-engine = subprocess.Popen([sys.argv[1], *sys.argv[2:], '--remote-debugging-port=0', 'about:blank'],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+engine = launch_engine([sys.argv[1], *sys.argv[2:]])
+passed = False
 try:
-    while True:
-        line = engine.stderr.readline()
-        assert line, 'engine exited before publishing CDP endpoint'
-        match = re.search(r'ws://\S+', line)
-        if match: break
-    cdp = Cdp(match.group(0))
+    assert engine.url, 'the engine published no CDP endpoint in time'
+    cdp = Cdp(engine.url)
     target = cdp.call('Target.createTarget', {'url':'about:blank'})['targetId']
     session = cdp.call('Target.attachToTarget', {'targetId':target,'flatten':True})['sessionId']
     cdp.call('Page.enable', session=session)
@@ -77,8 +71,7 @@ try:
         for header in ('User-Agent', 'Accept-Language', 'sec-ch-ua', 'sec-ch-ua-platform', 'sec-ch-ua-mobile'):
             assert navigated['headers'].get(header) == before['headers'].get(header), (header, navigated)
     print('ok CDP user-agent metadata rejection is atomic for network and renderer',flush=True)
+    passed = True
 finally:
-    engine.terminate()
-    try: engine.wait(timeout=15)
-    except subprocess.TimeoutExpired: engine.kill(); engine.wait(timeout=15)
+    engine.stop(not passed)
     server.shutdown(); server.server_close(); thread.join()

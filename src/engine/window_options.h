@@ -91,6 +91,7 @@ struct WindowCapabilities {
   bool actions = false;   // minimize, maximize, fullscreen.
   bool controls_drawn_by_engine = false;  // Windows, Linux; macOS draws its own.
   bool controls_height = false;           // A title bar taller than the system's.
+  bool appearance = false;  // The "appearance" option's light or dark frame (macOS).
 };
 
 struct WindowGeometry {

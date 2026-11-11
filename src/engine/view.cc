@@ -13,6 +13,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <tuple>
@@ -26,6 +28,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -36,6 +39,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/command_line.h"
+#include "components/embedder_support/switches.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
@@ -43,9 +48,11 @@
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_user_data.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/render_process_host_observer.h"
 #include "zebkit/engine/profile.h"
 #include "zebkit/engine/window.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -55,6 +62,7 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
+#include "zebkit/engine/device_choosers.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/permissions.h"
 #include "zebkit/engine/certificate_hooks.h"
@@ -64,6 +72,7 @@
 #include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/settings.h"
 #include "zebkit/engine/pdf_script.h"
+#include "zebkit/engine/webauthn.h"
 
 namespace {
 
@@ -138,7 +147,8 @@ constexpr char kBridgeScript[] = R"js((() => {
     // [ok, the result's JSON or the message, its bytes]
     const answer = await native(module, method, json, parts);
     if (!answer[0]) throw new Error(answer[1]);
-    const value = parse(answer[1]);
+    // An empty answer is undefined (zebkit_call_resolve(call, NULL)).
+    const value = answer[1] === '' ? undefined : parse(answer[1]);
     return answer[2] ? decode(value, answer[2]) : value;
   };
   const api = (module, methods) => Object.freeze(Object.fromEntries(
@@ -162,24 +172,46 @@ constexpr char kBridgeScript[] = R"js((() => {
     pathForFile: (file) => {
       if (!(file instanceof File)) return '';
       if (filePaths.has(file)) return filePaths.get(file);
-      const path = dropped.find((p) => (p.split(/[\\/]/).pop() || p) === file.name) || '';
-      if (path) filePaths.set(file, path);
-      return path;
+      // By name, each path given once: two files of one name from two
+      // folders get a path each, in the order they are asked for.
+      const index = dropped.findIndex((p, i) => !taken.has(i) && (p.split(/[\\/]/).pop() || p) === file.name);
+      if (index < 0) return '';
+      taken.add(index);
+      filePaths.set(file, dropped[index]);
+      return dropped[index];
     },
   };
   const filePaths = new WeakMap();
   let dropped = [];
+  let taken = new Set();
   Object.defineProperty(globalThis, '__zebkit_dropped', {
-    value: (paths) => { dropped = Array.isArray(paths) ? paths.map(String) : []; },
+    value: (paths) => { dropped = Array.isArray(paths) ? paths.map(String) : []; taken = new Set(); },
   });
   Object.defineProperty(globalThis, 'zebkit', {value: Object.freeze(zebkit), enumerable: false});
 })();)js";
+
+// The page's view, for ViewOf() without a walk of every view.
+class ViewOfContents : public content::WebContentsUserData<ViewOfContents> {
+ public:
+  zebkit_view* view() const { return view_; }
+
+ private:
+  friend class content::WebContentsUserData<ViewOfContents>;
+  ViewOfContents(content::WebContents* contents, zebkit_view* view)
+      : content::WebContentsUserData<ViewOfContents>(*contents), view_(view) {}
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+
+  const raw_ptr<zebkit_view> view_;
+};
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(ViewOfContents);
 
 }  // namespace
 
 zebkit_view::zebkit_view(zebkit::Window* window)
     : content::WebContentsObserver(window->web_contents()) {
   Views().insert(this);
+  ViewOfContents::CreateForWebContents(window->web_contents(), this);
 }
 
 zebkit_view::~zebkit_view() {
@@ -191,7 +223,8 @@ zebkit_view::~zebkit_view() {
   zebkit::CancelPageHookRequests(this);
   Views().erase(this);
   zebkit::ClosePdfsOf(this);
-  zebkit::DetachView(this);
+  zebkit::DetachView(this, /*restore=*/false);
+  zebkit::CloseViewsAttachedTo(this);
   zebkit::ForgetAttachedNative(this);
   if (devtools_)
     devtools_->DetachClient(this);
@@ -583,12 +616,8 @@ void zebkit_view::Grant(const std::string& origin,
     grants_.erase(origin);
     return;
   }
-  base::FilePath root;
-  if (!files_root.empty()) {
-    base::ScopedAllowBlockingForTesting allow_blocking;
-    root = base::MakeAbsoluteFilePath(zebkit::PathFromUTF8(files_root));
-  }
-  grants_[origin] = {allow, root};
+  // As given: zebkit.fs resolves it where it reads files, off this thread.
+  grants_[origin] = {allow, zebkit::PathFromUTF8(files_root)};
   InstallBridge();
 }
 
@@ -816,6 +845,7 @@ void zebkit_view::TakeCall(content::RenderFrameHost* frame,
       origin.scheme() == "file" ? std::string("file://") : origin.Serialize();
   const GrantEntry* grant = GrantFor(origin);
   call.allow = grant ? grant->allow : 0;
+  call.document = frame->GetWeakDocumentPtr();
   if (grant)
     call.files_root = grant->files_root;
   zebkit::HandlePageCall(std::move(call));
@@ -1023,6 +1053,7 @@ void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
     if (!weak) return;
     zebkit::PageHooksFrameGone(this, nullptr);
     if (!weak) return;
+    zebkit::ClosePdfsOfGoneDocuments(this);
   }
   if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
     return;
@@ -1043,6 +1074,7 @@ void zebkit_view::DidFinishNavigation(content::NavigationHandle* navigation) {
 void zebkit_view::RenderFrameDeleted(content::RenderFrameHost* frame) {
   zebkit::PermissionFrameDeleted(this, frame);
   zebkit::PageHooksFrameGone(this, frame);
+  zebkit::ClosePdfsOfGoneDocuments(this, frame);
 }
 
 void zebkit_view::DidFinishLoad(content::RenderFrameHost* frame,
@@ -1081,6 +1113,16 @@ void zebkit_view::WebContentsDestroyed() {
   on_authentication_ = nullptr;
   on_authentication_data_ = nullptr;
   FailPending("the view was closed");
+  // Only here: FailPending() also runs while the view stays open (its
+  // initialization failing, its page target going away).
+  while (!cancels_.empty()) {
+    std::map<int, base::OnceClosure> cancels;
+    cancels.swap(cancels_);
+    for (auto& [id, cancel] : cancels)
+      std::move(cancel).Run();
+  }
+  zebkit::DestroyOffscreen(this);
+  web_contents()->RemoveUserData(ViewOfContents::UserDataKey());
   Observe(nullptr);
   if (on_close_)
     on_close_(this, on_close_data_);
@@ -1182,11 +1224,8 @@ PopupHoldFunc& PopupHoldHook() {
 }
 
 zebkit_view* ViewOf(content::WebContents* contents) {
-  for (zebkit_view* view : zebkit_view::Views()) {
-    if (view->web_contents() == contents)
-      return view;
-  }
-  return nullptr;
+  ViewOfContents* found = contents ? ViewOfContents::FromWebContents(contents) : nullptr;
+  return found ? found->view() : nullptr;
 }
 
 bool HandleNewWindow(content::WebContents* opener, const GURL& url) {
@@ -1250,7 +1289,7 @@ class ViewDelegate : public content::WebContentsViewDelegate {
     // No function of the application's took it: the engine's default menu,
     // with the system's look, where there is a window (context_menu.cc).
     zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(&render_frame_host));
-    if (!view || !view->web_contents())
+    if (!zebkit::LiveView(view) || !view->web_contents())
       return;
     const uint64_t id = zebkit::CaptureContextMenu(view, render_frame_host, params);
     if (const zebkit::CapturedContextMenu* menu = zebkit::FindContextMenu(view, id))
@@ -1304,37 +1343,113 @@ std::unique_ptr<content::WebContentsViewDelegate> WrapViewDelegate(
   return std::make_unique<ViewDelegate>(contents, std::move(inner));
 }
 
+namespace {
+
 // What Chrome's ProfileDestroyer does: a closed context's profile goes when its
-// pages and their processes have, which is after they are closed, as content wants
-// it until then. @tries, at 100 ms: a process that does not go keeps the profile
-// (never deleted under it), and a task the engine's end drops loses only memory.
-void DestroyProfileWhenUnused(Profile* profile, int tries) {
-  bool used = false;
-  for (Window* window : Window::windows()) {
-    if (window->web_contents() && window->web_contents()->GetBrowserContext() == profile)
-      used = true;
+// pages and their processes have, which is after they are closed, as content
+// wants it until then. Never under a process still using it; at the engine's
+// end in any case (DestroyClosedProfiles()).
+class ClosedProfile : public content::RenderProcessHostObserver {
+ public:
+  explicit ClosedProfile(Profile* profile) : profile_(profile) {}
+  ~ClosedProfile() override {
+    for (content::RenderProcessHost* host : hosts_)
+      host->RemoveObserver(this);
+    ForgetAutomationContext(profile_);
+    ForgetContextCookies(profile_);
+    ForgetWorkerPolicy(profile_);
+    ForgetDeviceGrants(profile_);
+    Profile* profile = profile_;
+    profile_ = nullptr;
+    delete profile;
   }
-  if (!used) {
+
+  // True when nothing uses the profile any more.
+  bool Unused() {
+    for (Window* window : Window::windows()) {
+      if (window->web_contents() && window->web_contents()->GetBrowserContext() == profile_)
+        return false;
+    }
     // Lets go of the processes' keep-alives and of a spare.
-    profile->NotifyWillBeDestroyed();
+    profile_->NotifyWillBeDestroyed();
+    bool used = false;
     for (auto hosts = content::RenderProcessHost::AllHostsIterator(); !hosts.IsAtEnd();
          hosts.Advance()) {
-      if (hosts.GetCurrentValue()->GetBrowserContext() == profile)
-        used = true;
+      content::RenderProcessHost* host = hosts.GetCurrentValue();
+      if (host->GetBrowserContext() != profile_)
+        continue;
+      used = true;
+      if (hosts_.insert(host).second)
+        host->AddObserver(this);
     }
+    return !used;
   }
-  if (!used) {
-    ForgetAutomationContext(profile);
-    ForgetContextCookies(profile);
-    ForgetWorkerPolicy(profile);
-    delete profile;
-    return;
-  }
-  if (tries > 0) {
+
+  // Asked again when one of its processes goes (CheckSoon()), else every
+  // 100 ms while its pages close: one such chain, however many checks come.
+  void CheckLater() {
+    if (check_posted_)
+      return;
+    check_posted_ = true;
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, base::BindOnce(&DestroyProfileWhenUnused, profile, tries - 1),
+        FROM_HERE,
+        base::BindOnce(&ClosedProfile::Check, weak_factory_.GetWeakPtr(), /*polled=*/true),
         base::Milliseconds(100));
   }
+  void CheckSoon() {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&ClosedProfile::Check, weak_factory_.GetWeakPtr(), /*polled=*/false));
+  }
+
+ private:
+  void Check(bool polled);
+
+  // content::RenderProcessHostObserver
+  void RenderProcessHostDestroyed(content::RenderProcessHost* host) override {
+    host->RemoveObserver(this);
+    hosts_.erase(host);
+    // Not now: the host is still among all hosts while it is destroyed.
+    CheckSoon();
+  }
+
+  raw_ptr<Profile> profile_;
+  std::set<raw_ptr<content::RenderProcessHost>> hosts_;
+  bool check_posted_ = false;
+  base::WeakPtrFactory<ClosedProfile> weak_factory_{this};
+};
+
+std::map<Profile*, std::unique_ptr<ClosedProfile>>& ClosedProfiles() {
+  static base::NoDestructor<std::map<Profile*, std::unique_ptr<ClosedProfile>>> profiles;
+  return *profiles;
+}
+
+void CheckClosedProfile(Profile* profile) {
+  auto it = ClosedProfiles().find(profile);
+  if (it == ClosedProfiles().end())
+    return;
+  if (it->second->Unused())
+    ClosedProfiles().erase(it);
+  else
+    it->second->CheckLater();
+}
+
+void ClosedProfile::Check(bool polled) {
+  if (polled)
+    check_posted_ = false;
+  // May delete this.
+  CheckClosedProfile(profile_);
+}
+
+}  // namespace
+
+void DestroyProfileWhenUnused(Profile* profile) {
+  ClosedProfiles()[profile] = std::make_unique<ClosedProfile>(profile);
+  CheckClosedProfile(profile);
+}
+
+void DestroyClosedProfiles() {
+  ClosedProfiles().clear();
 }
 
 }  // namespace zebkit
@@ -1342,7 +1457,8 @@ void DestroyProfileWhenUnused(Profile* profile, int tries) {
 extern "C" {
 
 zebkit_context* zebkit_context_new(void) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread() || zebkit::Window::IsShutDown())
+    return nullptr;
   auto* context = new zebkit_context;
   context->profile =
       std::make_unique<zebkit::Profile>(/*off_the_record=*/true);
@@ -1351,19 +1467,28 @@ zebkit_context* zebkit_context_new(void) {
 }
 
 void zebkit_context_close(zebkit_context* context) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!context)
+  if (!zebkit::CurrentlyOnEngineThread() || !context)
     return;
-  std::vector<zebkit_view*> views;
+  std::vector<base::WeakPtr<zebkit_view>> views;
   for (zebkit_view* view : zebkit_view::Views()) {
     if (view->web_contents() &&
         view->web_contents()->GetBrowserContext() == context->profile.get()) {
-      views.push_back(view);
+      views.push_back(view->GetWeakPtr());
     }
   }
-  for (zebkit_view* view : views)
-    view->Close();
-  zebkit::DestroyProfileWhenUnused(context->profile.release(), 300);
+  // As a task, as zebkit_view_close(): the caller may be in a callback of one
+  // of these pages, which must not be destroyed while it notifies.
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](std::vector<base::WeakPtr<zebkit_view>> views) {
+                       for (const auto& view : views) {
+                         if (view)
+                           view->Close();
+                       }
+                     },
+                     std::move(views)));
+  // Deleted once those have gone, or at the engine's end.
+  zebkit::DestroyProfileWhenUnused(context->profile.release());
   delete context;
 }
 
@@ -1388,7 +1513,8 @@ zebkit_view* NewView(zebkit_context* context,
                      int height,
                      Window::Kind kind,
                      const WindowOptions* options) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!CurrentlyOnEngineThread())
+    return nullptr;
   if (context && !context->profile)
     return nullptr;
   const bool sized = width > 0 && height > 0;
@@ -1414,21 +1540,32 @@ bool HasNoDisplay(content::WebContents* contents) {
   return window && window->kind() == Window::Kind::kOffscreen;
 }
 
+bool CurrentlyOnEngineThread() {
+  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
+}
+
+bool LiveView(const zebkit_view* view) {
+  return CurrentlyOnEngineThread() && view &&
+         zebkit_view::Views().contains(const_cast<zebkit_view*>(view));
+}
+
 }  // namespace zebkit
 
 extern "C" {
 
 void zebkit_view_load_url(zebkit_view* view, const char* url) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->LoadUrl(GURL(url ? url : "about:blank"));
 }
 
-void zebkit_view_attach(zebkit_view* view,
+bool zebkit_view_attach(zebkit_view* view,
                         zebkit_view* parent,
                         int x,
                         int y,
                         int width,
                         int height) {
-  zebkit::AttachView(view, parent, gfx::Rect(x, y, width, height));
+  return zebkit::LiveView(view) && zebkit::LiveView(parent) &&
+         zebkit::AttachView(view, parent, gfx::Rect(x, y, width, height));
 }
 
 void zebkit_view_set_bounds(zebkit_view* view,
@@ -1436,11 +1573,13 @@ void zebkit_view_set_bounds(zebkit_view* view,
                             int y,
                             int width,
                             int height) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (!zebkit::SetAttachedNativeBounds(view, gfx::Rect(x, y, width, height)))
     zebkit::SetAttachedBounds(view, gfx::Rect(x, y, width, height));
 }
 
 void zebkit_view_set_visible(zebkit_view* view, bool visible) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (!zebkit::SetAttachedNativeVisible(view, visible))
     zebkit::SetAttachedVisible(view, visible);
 }
@@ -1455,7 +1594,7 @@ bool zebkit_view_attach_native(zebkit_view* view,
   std::string failure;
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
     failure = "call it on the thread that started the engine";
-  else if (!view || !view->web_contents())
+  else if (!zebkit::LiveView(view) || !view->web_contents())
     failure = "the view is closed";
   else if (!native_parent)
     failure = "no window was given";
@@ -1473,7 +1612,7 @@ bool zebkit_view_get_native_window(zebkit_view* view, zebkit_native_window* wind
     return false;
   *window = {};
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
-      !view || !view->web_contents() || view->offscreen_view_ || zebkit_is_headless())
+      !zebkit::LiveView(view) || !view->web_contents() || view->offscreen_view_ || zebkit_is_headless())
     return false;
   const auto result = zebkit::NativeWindowForView(view);
   if (result.kind == ZEBKIT_NATIVE_WINDOW_NONE || !result.handle)
@@ -1485,7 +1624,7 @@ bool zebkit_view_get_native_window(zebkit_view* view, zebkit_native_window* wind
 bool zebkit_view_export_native_window(zebkit_view* view,
                                       zebkit_native_window_export_func callback,
                                       void* data) {
-  if (!callback || !view ||
+  if (!callback || !zebkit::LiveView(view) ||
       !content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
     return false;
   // Once, after this returns, on this thread, also when the platform drops
@@ -1507,23 +1646,22 @@ bool zebkit_view_export_native_window(zebkit_view* view,
 }
 
 bool zebkit_view_detach_native(zebkit_view* view) {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) && view &&
-         zebkit::DetachViewNative(view);
+  return zebkit::LiveView(view) && zebkit::DetachViewNative(view);
 }
 
 void zebkit_view_set_title(zebkit_view* view, const char* title) {
-  if (title)
-    view->window_title_ = title;
-  else
-    view->window_title_.reset();
-  if (zebkit::Window* window = view->window())
-    window->UpdateTitle();
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  if (zebkit::Window* window = view->window()) {
+    window->SetTitle(title ? std::optional<std::u16string>(base::UTF8ToUTF16(title))
+                           : std::nullopt);
+  }
 }
 
 void zebkit_view_set_size_limits(zebkit_view* view,
                                  int min_width,
                                  int min_height,
                                  bool resizable) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::Window* window = view->window()) {
     zebkit::SetWindowSizeLimits(
         window, gfx::Size(std::max(min_width, 0), std::max(min_height, 0)),
@@ -1532,6 +1670,7 @@ void zebkit_view_set_size_limits(zebkit_view* view,
 }
 
 void zebkit_view_focus(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::Window* window = view->window();
   if (!window)
     return;
@@ -1544,12 +1683,14 @@ void zebkit_view_focus(zebkit_view* view) {
 void zebkit_view_on_new_window(zebkit_view* view,
                                zebkit_url_func func,
                                void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_new_window_ = func;
   view->on_new_window_data_ = data;
 }
 
 char* zebkit_view_get_target_id(zebkit_view* view) {
-  if (!view || !view->web_contents())
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
+  if (!view->web_contents())
     return nullptr;
   return strdup(content::DevToolsAgentHost::GetOrCreateFor(view->web_contents())
                     ->GetId().c_str());
@@ -1558,30 +1699,36 @@ char* zebkit_view_get_target_id(zebkit_view* view) {
 void zebkit_view_on_window_open(zebkit_view* view,
                                 zebkit_window_open_func func,
                                 void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_window_open_ = func;
   view->on_window_open_data_ = data;
 }
 
 void zebkit_view_on_drop(zebkit_view* view, zebkit_drop_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_drop_ = func;
   view->on_drop_data_ = data;
 }
 
 void zebkit_view_add_script(zebkit_view* view, const char* source) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (source && *source)
     view->AddScript(source);
 }
 
 void zebkit_view_stop(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (view->web_contents())
     view->web_contents()->Stop();
 }
 
 bool zebkit_view_is_loading(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return view->web_contents() && view->web_contents()->IsLoading();
 }
 
 void zebkit_view_set_user_agent(zebkit_view* view, const char* user_agent) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   // For the view's session, as Chrome's own override for a tab: its
   // requests, navigator.userAgent and workers.
   view->SetUserAgent(user_agent);
@@ -1590,7 +1737,7 @@ void zebkit_view_set_user_agent(zebkit_view* view, const char* user_agent) {
 bool zebkit_view_set_user_agent_override(zebkit_view* view, const char* json,
                                          zebkit_result_func func, void* data) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) return false;
-  if (!view || !view->web_contents()) {
+  if (!zebkit::LiveView(view) || !view->web_contents()) {
     // Told, as for every other failure: its callers release what they gave it there.
     if (func) func(view, nullptr, "the view is closed", data);
     return false;
@@ -1628,6 +1775,9 @@ bool zebkit_view_set_user_agent_override(zebkit_view* view, const char* json,
 void zebkit_view_capture(zebkit_view* view,
                          zebkit_capture_func func,
                          void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  if (!func)
+    return;
   base::DictValue params;
   params.Set("format", "png");
   view->Send(
@@ -1650,17 +1800,20 @@ void zebkit_view_capture(zebkit_view* view,
 }
 
 void zebkit_view_reload(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (view->web_contents())
     view->web_contents()->GetController().Reload(content::ReloadType::NORMAL,
                                                  false);
 }
 
 void zebkit_view_go_back(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (view->web_contents() && view->web_contents()->GetController().CanGoBack())
     view->web_contents()->GetController().GoBack();
 }
 
 void zebkit_view_go_forward(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (view->web_contents() &&
       view->web_contents()->GetController().CanGoForward()) {
     view->web_contents()->GetController().GoForward();
@@ -1668,6 +1821,7 @@ void zebkit_view_go_forward(zebkit_view* view) {
 }
 
 void zebkit_view_resize(zebkit_view* view, int width, int height) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::SetAttachedNativeSize(view, gfx::Size(width, height)))
     return;
   if (zebkit::Window* window = view->window())
@@ -1675,6 +1829,7 @@ void zebkit_view_resize(zebkit_view* view, int width, int height) {
 }
 
 void zebkit_view_close(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   // As a task: the caller may be in a callback of the page, which must not
   // be destroyed while it notifies.
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -1687,18 +1842,21 @@ void zebkit_view_close(zebkit_view* view) {
 }
 
 char* zebkit_view_get_url(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
   return Copy(view->web_contents()
                   ? view->web_contents()->GetLastCommittedURL().spec()
                   : std::string());
 }
 
 char* zebkit_view_get_title(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
   return Copy(view->web_contents()
                   ? base::UTF16ToUTF8(view->web_contents()->GetTitle())
                   : std::string());
 }
 
 void zebkit_view_on_load(zebkit_view* view, zebkit_load_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_load_ = func;
   view->on_load_data_ = data;
 }
@@ -1706,11 +1864,13 @@ void zebkit_view_on_load(zebkit_view* view, zebkit_load_func func, void* data) {
 void zebkit_view_on_title(zebkit_view* view,
                           zebkit_title_func func,
                           void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_title_ = func;
   view->on_title_data_ = data;
 }
 
 void zebkit_view_on_close(zebkit_view* view, zebkit_view_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->on_close_ = func;
   view->on_close_data_ = data;
 }
@@ -1719,7 +1879,7 @@ void zebkit_view_evaluate(zebkit_view* view,
                           const char* script,
                           zebkit_result_func func,
                           void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   view->Evaluate(script, func, data);
 }
 
@@ -1727,7 +1887,7 @@ void zebkit_view_grant(zebkit_view* view,
                        const char* origin,
                        unsigned allow,
                        const char* files_root) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (!origin)
     return;
   view->Grant(origin, allow & ZEBKIT_ALLOW_ALL, files_root ? files_root : "");
@@ -1737,14 +1897,31 @@ void zebkit_view_bind(zebkit_view* view,
                       const char* name,
                       zebkit_bind_func func,
                       void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (name && *name)
     view->Bind(name, func, data);
 }
 
 void zebkit_call_resolve(zebkit_call* call, const char* json) {
+  if (!call)
+    return;
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    zebkit::PostEngineTask(
+        base::BindOnce(
+            [](zebkit_call* call, std::optional<std::string> json) {
+              zebkit_call_resolve(call, json ? json->c_str() : nullptr);
+            },
+            call, json ? std::optional<std::string>(json) : std::nullopt),
+        base::TimeDelta());
+    return;
+  }
   if (!json) {
-    std::move(call->reply).Run(true, base::Value());
+    // No JSON is undefined, as zebkit.h says: the bridge script reads an
+    // empty answer as that, where base::Value() would be null.
+    if (call->text_reply)
+      std::move(call->text_reply).Run(true, std::string_view());
+    else
+      std::move(call->reply).Run(true, base::Value());
     delete call;
     return;
   }
@@ -1753,6 +1930,22 @@ void zebkit_call_resolve(zebkit_call* call, const char* json) {
 
 void zebkit_call_resolve_json(zebkit_call* call, const char* json,
                               size_t length) {
+  if (!call)
+    return;
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    // On the engine's thread, which the reply's page state is of.
+    zebkit::PostEngineTask(
+        base::BindOnce(
+            [](zebkit_call* call, std::optional<std::string> json) {
+              if (json)
+                zebkit_call_resolve_json(call, json->data(), json->size());
+              else
+                zebkit_call_resolve(call, nullptr);
+            },
+            call, json ? std::optional<std::string>(std::string(json, length)) : std::nullopt),
+        base::TimeDelta());
+    return;
+  }
   if (!json) {
     zebkit_call_resolve(call, nullptr);
     return;
@@ -1777,9 +1970,72 @@ void zebkit_call_resolve_json(zebkit_call* call, const char* json,
 }
 
 void zebkit_call_reject(zebkit_call* call, const char* message) {
+  if (!call)
+    return;
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    zebkit::PostEngineTask(
+        base::BindOnce([](zebkit_call* call, std::string message) {
+                         zebkit_call_reject(call, message.c_str());
+                       },
+                       call, std::string(message ? message : "rejected")),
+        base::TimeDelta());
+    return;
+  }
   std::move(call->reply).Run(false,
                              base::Value(message ? message : "rejected"));
   delete call;
+}
+
+// Which window.open()s a view's pages get (BrowserClient::CanCreateWindow()).
+bool zebkit_view_set_popup_policy(zebkit_view* view, zebkit_popup_policy policy) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
+  if (!view->web_contents() ||
+      (policy != ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE &&
+       policy != ZEBKIT_POPUP_POLICY_ALLOW && policy != ZEBKIT_POPUP_POLICY_BLOCK))
+    return false;
+  view->popup_policy_ = policy;
+  return true;
+}
+
+zebkit_popup_policy zebkit_view_get_popup_policy(zebkit_view* view) {
+  // NULL, a closed view or another thread: the engine's policy, the view
+  // untouched.
+  if (zebkit::LiveView(view) && view->popup_policy_)
+    return *view->popup_policy_;
+  if (auto engine = zebkit::EnginePopupPolicy())
+    return *engine;
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(embedder_support::kDisablePopupBlocking)
+      ? ZEBKIT_POPUP_POLICY_ALLOW : ZEBKIT_POPUP_POLICY_BLOCK_WITHOUT_GESTURE;
+}
+
+void zebkit_view_on_popup_blocked(zebkit_view* view, zebkit_popup_blocked_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  view->on_popup_blocked_ = func;
+  view->on_popup_blocked_data_ = data;
+}
+
+// WebAuthn's (webauthn.cc), for every kind of view.
+bool zebkit_view_on_authentication(zebkit_view* view,
+                                   zebkit_authentication_func func,
+                                   void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
+  zebkit::AuthenticationHandlerChanged(view);
+  view->on_authentication_ = func;
+  view->on_authentication_data_ = data;
+  return true;
+}
+
+bool zebkit_view_authentication_action(zebkit_view* view, const char* json) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
+  return json && zebkit::AuthenticationAction(view, json);
+}
+
+bool zebkit_view_set_authentication_ui(zebkit_view* view, bool enabled) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
+  view->authentication_ui_enabled_ = enabled;
+  if (!enabled)
+    zebkit::AuthenticationPolicyDisabled(view);
+  return true;
 }
 
 }  // extern "C"
@@ -1788,7 +2044,7 @@ extern "C" bool zebkit_view_add_world_script(zebkit_view* view, const char* worl
                                              const char* source, bool main_frame_only,
                                              char** error) {
   auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
-  if (!view || !view->web_contents()) return fail("the view is closed");
+  if (!zebkit::LiveView(view) || !view->web_contents()) return fail("the view is closed");
   if (!source || !base::IsStringUTF8(source)) return fail("the script must be UTF-8");
   const std::string name = world ? world : "";
   if (name.size() > 256 || !base::IsStringUTF8(name)) return fail("a world's name is UTF-8 of at most 256 bytes");
@@ -1797,7 +2053,7 @@ extern "C" bool zebkit_view_add_world_script(zebkit_view* view, const char* worl
 }
 
 extern "C" void zebkit_view_on_console(zebkit_view* view, zebkit_console_func function, void* data) {
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents()) return;
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->console_generation_;
   view->console_pending_ = 0; view->console_dropped_ = 0;
   view->on_console_ = function; view->on_console_data_ = data;

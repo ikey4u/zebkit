@@ -12,14 +12,12 @@ The locale is Japanese: zebkit's ICU has English and CJK only, by its size budge
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-import re
-import subprocess
 import sys
 import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cdp_page import Cdp, check  # noqa: E402
+from cdp_page import Cdp, check, launch_engine  # noqa: E402
 import cdp_page  # noqa: E402
 
 seen = []
@@ -63,17 +61,11 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
-    engine = subprocess.Popen([run, *switches, "--remote-debugging-port=0", "about:blank"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    url = None
-    end = time.time() + 30
-    while time.time() < end and url is None:
-        found = re.search(r"ws://\S+", engine.stderr.readline())
-        if found:
-            url = found.group(0)
+    engine = launch_engine([run, *switches])
+    url = engine.url
     check(url is not None, "the engine serves CDP", url)
     if not url:
-        engine.kill()
+        engine.stop(True)
         return 1
     try:
         cdp = Cdp(url)
@@ -257,11 +249,7 @@ def main():
         # A method the engine does not serve, or an answer of the wrong shape, is said.
         check(False, "the test went on", repr(error))
     finally:
-        engine.terminate()
-        try:
-            engine.wait(5)
-        except subprocess.TimeoutExpired:
-            engine.kill()
+        engine.stop(bool(cdp_page.failures))
     print(f"{cdp_page.checks - len(cdp_page.failures)} of {cdp_page.checks} checks passed")
     return 1 if cdp_page.failures else 0
 

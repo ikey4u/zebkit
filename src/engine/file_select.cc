@@ -4,6 +4,7 @@
 
 #include "zebkit/engine/file_select.h"
 
+#include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -79,7 +80,18 @@ struct FileSelectHelper::ActiveDirectoryEnumeration {
   std::unique_ptr<net::DirectoryLister> lister_;
   const base::FilePath path_;
   std::vector<base::FilePath> results_;
+  // More files than kMaxDirectoryFiles: the choice is cancelled at the end.
+  bool too_many_ = false;
 };
+
+namespace {
+// More files than this in a dropped or chosen folder: the choice is cancelled
+// rather than handed to the page. It does not bound the listing's own memory:
+// net::DirectoryLister reads the whole folder on a worker thread and then
+// delivers every entry, and the end, in one task, so there is no stopping it
+// part way; what it bounds is the copy kept here and what the page is sent.
+constexpr size_t kMaxDirectoryFiles = 100000;
+}  // namespace
 
 // static
 void FileSelectHelper::RunFileChooser(
@@ -237,6 +249,15 @@ void FileSelectHelper::StartNewEnumeration(const base::FilePath& path) {
 
 void FileSelectHelper::OnListFile(
     const net::DirectoryLister::DirectoryListerData& data) {
+  // The page gone, or more files than a page is given: the rest is not kept,
+  // and OnListDone(), which comes in the same task, cancels the choice.
+  if (!directory_enumeration_ || directory_enumeration_->too_many_ || !web_contents_)
+    return;
+  if (directory_enumeration_->results_.size() >= kMaxDirectoryFiles) {
+    directory_enumeration_->too_many_ = true;
+    directory_enumeration_->results_.clear();
+    return;
+  }
   // Directory upload only cares about files.
   if (data.info.IsDirectory()) {
     return;
@@ -257,13 +278,10 @@ void FileSelectHelper::OnListDone(int error) {
   // This entry needs to be cleaned up when this function is done.
   std::unique_ptr<ActiveDirectoryEnumeration> entry =
       std::move(directory_enumeration_);
-  if (error) {
+  if (error || !entry || entry->too_many_) {
     FileSelectionCanceled();
     return;
   }
-
-  std::vector<ui::SelectedFileInfo> selected_files =
-      ui::FilePathListToSelectedFileInfoList(entry->results_);
 
   std::vector<blink::mojom::FileChooserFileInfoPtr> chooser_files;
   for (const auto& file_path : entry->results_) {

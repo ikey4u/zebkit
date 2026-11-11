@@ -9,7 +9,9 @@ target_os = "win"
 target_cpu = "x64"
 
 # Linux's alone: packed ELF relocations applied by the engine, and the
-# thread-local model of an ELF library.
+# local-dynamic thread-local model of an ELF library. zebkit_tls_initial_exec
+# stays as slim sets it, and overrides that (patches/1040): initial-exec is
+# what Chromium uses on Windows anyway, for an executable or a DLL.
 zebkit_pack_relocations = false
 zebkit_v8_tls_local_dynamic = false
 
@@ -29,8 +31,9 @@ use_ml_inliner = false
 enable_library_cdms = true
 
 # V8's instance types and object layouts from Torque, its other way, instead of
-# from metagen, which reads the build graph again with gn desc and so without
-# the root that scripts/build.sh gives gn gen (as on macOS).
+# from metagen, which reads the build graph again with gn desc: kept as on
+# macOS (where scripts/build.sh gives gn gen a root, which gn desc would not
+# have), although scripts/build.sh gives Windows no root.
 v8_use_metagen = false
 
 # No CFI: Chrome has none here, and slim turns it on only for its Linux

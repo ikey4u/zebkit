@@ -53,6 +53,10 @@ bool ShowSystemShareSheet(content::WebContents* contents, const std::string& tit
   if (!items.count)
     return false;
   static ZebkitShareDelegate* delegate = nil;
+  // One sheet's delegate at a time: the share before this one, still
+  // unanswered, is answered as not shared rather than never.
+  if (delegate)
+    [delegate answer:false];
   delegate = [[ZebkitShareDelegate alloc] init];
   delegate.done = std::make_shared<base::OnceCallback<void(bool)>>(std::move(done));
   NSSharingServicePicker* picker = [[NSSharingServicePicker alloc] initWithItems:items];

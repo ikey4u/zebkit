@@ -2,21 +2,29 @@
 
 What zebkit weighs, where the bytes go, what was taken out and what was
 kept, and how the compiler is set between size and speed. Numbers are for
-Linux x86-64 and Chromium 155.0.8059.84, from `scripts/measure.sh` (the
-package), `scripts/mapsize.py` (the engine's linker map) and
-`scripts/bench.sh`, unless said otherwise. Where the usual advice for
+Linux x86-64, from `scripts/measure.sh` (the package), `scripts/mapsize.py`
+(the engine's linker map), `scripts/bench.sh` and
+`scripts/electron-compare.sh`. "Now" and the first table of "Against
+Electron" are Chromium 157.0.8103.38 (the engine of 0.3.0 and 0.4.0); every
+other section says its date, and before 2026-11-08 the engine was Chromium
+155.0.8059.84. Where the usual advice for
 slimming Chromium disagrees with what was measured, the measurement wins.
 
 ## Now
 
 | | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| zebkit `slim`, 2026-11-06 | **171.2 MiB** | **59.4 MiB** | **79.5 MiB** |
+| zebkit `slim`, Chromium 157, 2026-11-08 | **174.1 MiB** | **60.5 MiB** | **81.0 MiB** |
 | Electron 45.2.1, trimmed (the baseline) | 260.5 MiB | 87.1 MiB | 114.8 MiB |
-| zebkit of Electron | 66% | 68% | 69% |
+| zebkit of Electron | 67% | 69% | 71% |
 
 As an application ships it (`scripts/electron-compare.sh`'s size series:
-the package without the headers, with the thin host). 2026-11-02: 160.8,
+the package without the headers, with the thin host;
+`docs/reports/electron-compare.md`). As published, with the headers, 182.6,
+61.9 and 83.0 MiB. 0.4.0's Linux archive, with the tools, is 184.1 MiB
+unpacked and 62.5 MiB as `.tar.xz` (`docs/releases/0.4.0.md`).
+
+History. 2026-11-06, Chromium 155: 171.2, 59.4 and 79.5 MiB. 2026-11-02: 160.8,
 54.9 and 73.1 MiB; since then CFI on virtual calls (+1.8%), on indirect
 calls (+1.15%) and the size model's cutoff (+2.1%) for speed (below), and the engine's own additions.
 
@@ -25,10 +33,11 @@ of its browser classes. Package 168,729,926 to 168,590,133 bytes, the library 14
 to 146,791,048: 0.08% less. Almost nothing, as what the shell linked was mostly needed;
 Chrome's origin trial policy in place of the shell's costs a page (4 KiB) of it.
 
-The engine library is 138.9 MiB of it; ICU's data 6.5 MiB, SwiftShader
-with its Vulkan loader 3.6 MiB, the headers an application builds against
-7.6 MiB, V8's snapshots, the resource pack and ANGLE the rest
-(`docs/reports/slim.md`).
+Where the package's bytes go, as `scripts/measure.sh` last wrote it
+(`docs/reports/slim.md`, 2026-10-28, Chromium 155): the engine library
+138.9 MiB; ICU's data 6.5 MiB, SwiftShader 3.3 MiB with its Vulkan loader 0.6 MiB,
+the headers an application builds against 7.6 MiB, V8's snapshots, the
+resource pack and ANGLE the rest.
 
 There was a limit of 150 MiB (owner, 2026-10-19), under which the engine
 was 147.1 MiB with PDFium and FFmpeg's additions. On 2026-10-21 the owner
@@ -39,16 +48,38 @@ Electron.
 
 ## Against Electron, measured the same way
 
-`scripts/electron-compare.sh`, 2026-11-06, zebkit `slim` (Chromium
-155.0.8059.84; CFI on indirect calls and the size model's cutoff of that
-day, built in an experiment directory with `slim`'s arguments) against
-Electron 45.2.1 (Chromium 156.0.8078.75), the latest stable release on npm
-when it was chosen, on Linux x86-64 (a 12-core Ryzen with SMT). Every
-measure, the median of 5 runs (7 for startup and layout) with the lowest and
-highest run, is in `docs/reports/electron-compare.md`; a result is within
-noise when those ranges overlap. Losses are shown as wins are. Startup and
-size were measured again on 2026-11-07, with the cold-start read-ahead
-below, 9 runs each.
+`scripts/electron-compare.sh`, 2026-11-08, zebkit `slim` (Chromium
+157.0.8103.38, the engine released as 0.3.0; 0.4.0 left its hot paths as they
+were) against Electron 45.2.1, on Linux x86-64; medians of 5 runs (7 for
+startup and layout), each with its lowest and highest in
+`docs/reports/electron-compare.md`:
+
+| | zebkit | Electron 45.2.1 | Less |
+|---|---:|---:|---|
+| Size as published, MiB (`.tar.xz`, `.zip`) | 182.6 (61.9, 83.0) | 273.4 (88.7, 117.6) | zebkit, 33% (30%, 29%) |
+| Size as an application ships it | 174.1 (60.5, 81.0) | 260.5 (87.1, 114.8) | zebkit, 33% (30%, 29%) |
+| Start, cold (files out of the cache), to first paint, ms | 2329 | 5769 | zebkit, 60% |
+| Start, warm, to first paint, ms | 124 | 236 | zebkit, 47% |
+| Start, warm, CPU until the first frame, s | 0.23 | 0.47 | zebkit, 51% |
+| Memory, a blank page, MB | 181 | 250 | zebkit, 27% |
+| Processes, a page | 7 | 6 | **Electron**: zebkit runs storage in a process of its own, as Chrome does (below) |
+| Text layout, ms a layout | 7.5 | 7.4 | Electron, 1%, within noise |
+| Text layout, renderer's CPU, ms a layout | 10.8 | 10.2 | Electron, 6%, within noise |
+| JavaScript and DOM, ms, all ten | 1086 | 1161 | zebkit, 6% |
+| DOM (20,000 elements made and laid out), ms | 253 | 276 | zebkit, 8%, within noise |
+| A call from the page to the host and back, 64 bytes / 64 KiB, ms | 0.1 / 0.4 | 0.1 / 0.4 | level |
+| The same with 1 MiB / 16 MiB, ms | 3.3 / 56.5 | 4.2 / 71.6 | zebkit, 21% / 21% |
+| Long document (200,000 words), to its first frame, ms | 165 | 155 | Electron, 6%, within noise |
+| Long document, longest task, ms | 179 | 170 | Electron, 5%, within noise |
+| Long document, CPU of all processes, s / memory, MB | 3.47 / 264 | 4.13 / 333 | zebkit, 16% / 21% |
+| A 756-page PDF in each one's PDF viewer: CPU loading, s / memory, MB / renderers | 0.73 / 264 / 1 | 1.59 / 400 / 3 | zebkit, 54% / 34% |
+| Four local pages and the PDF (five, summed): CPU loading, s / at rest, % of a core / memory, MB | 3.0 / 6.4 / 1171 | 4.9 / 5.6 / 1571 | zebkit / Electron / zebkit |
+| Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 18.3 / 119.6 / 4495 | 19.8 / 130.6 / 4661 | zebkit, 8% / 8% / 4% |
+
+Losses: one process more a page; memory on YouTube (678 against 574 MB);
+within noise, the long document's first frame and longest task, text
+layout, memory and CPU while loading on The New York Times and The Verge;
+CPU at rest on the animated page.
 
 What was held the same: one harness (`tests/bench/equal/compare.py`) that
 does not know which engine it runs; one page set, served by the harness;
@@ -73,6 +104,20 @@ both. The machine's disk is a spinning one shared with other work, which
 is what makes cold starts slow here, and other work on it during a run
 slows it severalfold (one Electron run of 9 on 2026-11-07, 16.9 s).
 
+### History: 2026-11-06, Chromium 155
+
+`scripts/electron-compare.sh`, 2026-11-06, zebkit `slim` (Chromium
+155.0.8059.84; CFI on indirect calls and the size model's cutoff of that
+day, built in an experiment directory with `slim`'s arguments) against
+Electron 45.2.1 (Chromium 156.0.8078.75), the latest stable release on npm
+when it was chosen, on Linux x86-64 (a 12-core Ryzen with SMT). Every
+measure, the median of 5 runs (7 for startup and layout) with the lowest and
+highest run, was in `docs/reports/electron-compare.md` until the run of
+2026-11-08 replaced it (the commits have it); a result is within noise when
+those ranges overlap. Losses are shown as wins are. Startup and
+size were measured again on 2026-11-07, with the cold-start read-ahead
+below, 9 runs each.
+
 | | zebkit | Electron 45.2.1 | Less |
 |---|---:|---:|---|
 | Size as published, MiB (`.tar.xz`, `.zip`) | 179.6 (60.9, 81.5) | 273.4 (88.7, 117.6) | zebkit, 34% (31%, 31%) |
@@ -93,7 +138,7 @@ slows it severalfold (one Electron run of 9 on 2026-11-07, 16.9 s).
 | Long document, scrolling frames p50 / p95 / max | 16.7 / 17.3 / 17.7 | 16.7 / 17.4 / 18.1 | level |
 | Long document, CPU of all processes, s / memory, MB | 3.46 / 260 | 4.33 / 333 | zebkit, 20% / 22% |
 | A 756-page PDF in each one's PDF viewer: CPU loading, s / memory, MB / renderers | 0.75 / 261 / 1 | 1.6 / 399 / 3 | zebkit, 53% / 35% |
-| Five local pages and the PDF: CPU loading, s / at rest, % of a core / memory, MB | 3.0 / 5.6 / 1156 | 4.8 / 5.6 / 1572 | zebkit / level / zebkit |
+| Four local pages and the PDF (five, summed): CPU loading, s / at rest, % of a core / memory, MB | 3.0 / 5.6 / 1156 | 4.8 / 5.6 / 1572 | zebkit / level / zebkit |
 | Ten sites: CPU loading, s / at rest, % of a core / memory, MB | 21.7 / 150 / 4756 | 25.2 / 161 / 5060 | zebkit, 14% / 6% / 6% |
 
 - **Wins**: size; cold and warm startup; memory on every local page and
@@ -105,7 +150,9 @@ slows it severalfold (one Electron run of 9 on 2026-11-07, 16.9 s).
   2026-11-02, 280 against 278 now), the long document's first frame and
   longest task (were 16 to 19% slower), text layout within noise (was 9%
   slower, 12% in CPU). What closed it is below: CFI on indirect calls and
-  the size model kept off more of the code the profile has.
+  the size model kept off more of the code the profile has. (CFI had been
+  off in the size build of 2026-10, "How the size came down" below; it is on
+  since 2026-11-06, for the PGO profile's match.)
 - **Losses**: one process more a page; the memory of two sites, YouTube
   (684 against 583 MB) and The Verge (801 against 686, within noise),
   where the advertising and the video decide. The cold start, lost on
@@ -193,9 +240,9 @@ the same harness before and after (the commits have the runs):
   (`BlockLayoutAlgorithm::Layout`, `HandleInflow`) were compiled with no
   profile at all (in `block_layout_algorithm.cc`, 172 functions with a
   profile against 224; the warnings that would say so are off in
-  Chromium's build). slim now has CFI on virtual calls (`is_cfi`, not on
-  calls through function pointers, which reach the application's
-  callbacks): DOM 346 to 280 ms, text layout 8.6 to 8.1 ms (CPU 12.1 to
+  Chromium's build). slim then got CFI on virtual calls (`is_cfi`; calls
+  through function pointers followed on 2026-11-06, the next item, with
+  `patches/1078` keeping the application's callbacks out): DOM 346 to 280 ms, text layout 8.6 to 8.1 ms (CPU 12.1 to
   11.2), the long document's longest task 213 to 201 ms, for 3.1 MB (+1.8%
   of the package). What is left to Chrome (280 against 252 ms on the DOM,
   8.1 against 7.6 on text layout) is mostly size optimisation and the
@@ -246,11 +293,6 @@ the same harness before and after (the commits have the runs):
   `tests/engine/vendor.c` calls the libraries with an application's
   allocators, destroy, font and unicode functions, which a missing entry
   would stop with a trap.
-- **Moving to Chromium 156** would take Electron's version: about 14 ms
-  of the long document's first layout, nothing on the DOM or text layout.
-  It is a new pin, the 76 patches carried over and every platform built
-  again (about seven hours of building here, a day or two of porting).
-  It belongs with the next Chromium update rather than on its own.
 - **`page.screenshot`** (native 30 to 41 ms since 2026-11-01): the move to
   `Page.captureScreenshot` waits for a fresh frame, and the PNG encoder,
   Skia's in Rust, was compiled at opt-level s: the encoding crossed a frame
@@ -319,7 +361,7 @@ does, runs it, and counts it as `scripts/measure.sh` counts zebkit.
 | 44.9.0 as shipped | 283.3 | 87.1 | 117.2 |
 | 44.9.0 trimmed: one locale, no licence file | **255.7** | **85.3** | **112.6** |
 | 45.0.0-beta.5 as shipped | 273.9 | 88.9 | 117.8 |
-| 45.0.0-beta.5 trimmed | 261.0 | 87.3 | 115.0 |
+| 45.0.0-beta.5 trimmed (`docs/reports/electron-45.0.0-beta.5.md`) | 261.0 | 87.3 | 115.0 |
 | 45.2.1 as shipped (2026-11-02, the latest stable) | 273.4 | 88.7 | 117.6 |
 | **45.2.1 trimmed: the baseline since 2026-11-02** | **260.5** | **87.1** | **114.8** |
 
@@ -350,7 +392,7 @@ layer
 | `net/`, `services/network`, BoringSSL | HTTP/1 to 3, QUIC, cache, cookies, TLS | Kept |
 | `media/`, FFmpeg, libvpx, dav1d | `<video>`, `<audio>`, MSE, EME with Clear Key | Kept, decoders only; FFmpeg with what applications need too |
 | PDFium | Chrome's PDF library | Added: a content embedder has none (`docs/API.md`, PDF) |
-| Dawn (WebGPU), WebXR, WebNN back ends, device APIs, CUPS, Kerberos, GTK and Qt shims | | Removed |
+| Dawn (WebGPU), WebXR, WebNN back ends, CUPS, Kerberos, GTK and Qt shims | | Removed |
 | WebRTC | | Still linked: Blink's platform library depends on it |
 
 Blink cannot be embedded alone: it runs inside `content/`'s renderer
@@ -385,14 +427,17 @@ What each change is (`profiles/slim.gn`, `patches/`):
   (`scripts/build-icu-data.sh`): 9.2 to 6.5 MiB. The 2 to 4 MiB often
   quoted holds only without CJK, whose dictionaries and collation data are
   most of what stays.
-- **No CFI checks**, which are hardening and not a feature.
+- **No CFI checks**, which are hardening and not a feature (reversed
+  2026-11-06: CFI is on, for the PGO profile's match, about +3% of the
+  package; "Against Electron" above).
 - **Features out by switch**: Dawn, WebNN back ends, JPEG XL, AV1 encoding,
   CUPS, Kerberos, GTK, Qt, BlueZ, Widevine, WebXR, media remoting, Cast
   streaming, report delivery, VA-API, the OpenH264 encoder, PipeWire
   capture.
-- **No web-test harness and no test support** in the shell
-  (`patches/1006`, `1009`), which also runs the engine with Chromium's
-  default features instead of its testing field trials.
+- **No web-test harness and no test support** in the shell (two patches,
+  gone with the content shell on 2026-11-01: the engine's own embedder links
+  neither), which also runs the engine with Chromium's default features
+  instead of its testing field trials.
 - **No on-device model service** in the utility process (`patches/1010`),
   which took Dawn (3.0 MiB) and the SPIR-V tools with it.
 - **The size-trained inliner** that Chromium uses for 32-bit Android, for
@@ -426,7 +471,7 @@ as a reader does, when it was decided (2026-10-21):
 | **and link-time optimization (`zebkit_lto_optimize`): adopted** | **8.7** | **157.3** |
 | and without the size-trained inliner at the link | 8.2 | 171.4, not taken |
 
-Now, 0.0.1-alpha.11 (2026-10-27): `scripts/layout-bench.sh` lays out a
+History, 0.0.1-alpha.11 (2026-10-27; today's numbers are in "Against Electron" above): `scripts/layout-bench.sh` lays out a
 chapter of about 9,000 words in columns a page wide, again after each
 change of its width by a pixel, as a reader does when its window is
 resized; the median of 50 layouts, the median of 5 runs, in each engine.
@@ -492,14 +537,16 @@ and the packed relocations cost only at load. `slim` stays the release
 speed is not an improvement, and `slim-speed` costs 19% in size for 7 to
 11% in speed.
 
-What remains is not zebkit's: Google's own build of Chromium 155 takes 8%
+What remained then was not zebkit's: Google's own build of Chromium 155 took 8%
 more CPU per layout than Electron's Chromium 152, and `slim-speed` is
 within 4% of Google's build. Beating Electron on this test means
 beating Chrome 155 at Chromium 155, which is a change of Chromium, not of
 the build.
 
-### Web pages
+### Web pages (history, 2026-10, Electron 44.9.0)
 
+The current comparison of pages is the "Sites" part of
+`docs/reports/electron-compare.md` (summed in "Against Electron" above).
 What pages cost to load and to keep showing, against Electron 44.9.0 on
 the same display, with the same user agent, measured by
 `scripts/web-bench.sh --sites` (`docs/reports/web-bench.md` has every page).

@@ -14,7 +14,14 @@ fn main() {
         .find(|arg| !arg.starts_with("--"))
         .unwrap_or_else(|| "https://example.com/".into());
     std::process::exit(zebkit::run(move || {
-        let view = View::new(Some(&url), 1024, 768);
+        let view = match View::try_new(Some(&url), 1024, 768) {
+            Ok(view) => view,
+            Err(error) => {
+                eprintln!("no window: {error}");
+                zebkit::quit();
+                return;
+            }
+        };
         view.on_load(|event, url| {
             if event != LoadEvent::Started {
                 eprintln!("{event:?}: {url}")

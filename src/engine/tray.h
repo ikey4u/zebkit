@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "base/memory/weak_ptr.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "zebkit/engine/app.h"
 
@@ -39,7 +40,9 @@ class Tray {
   const SkBitmap& image() const { return image_; }
   const std::u16string& tooltip() const { return tooltip_; }
   const std::vector<MenuItem>& menu() const { return menu_; }
-  // From the platform: the icon clicked, an item of its menu chosen.
+  // From the platform: the icon clicked, an item of its menu chosen. The
+  // application hears of it in a task of its own, where it may close the
+  // tray or change its menu with no platform menu code on the stack.
   void Clicked();
   void Chosen(const std::string& id);
 
@@ -50,6 +53,7 @@ class Tray {
   base::RepeatingCallback<void(const std::string&)> chosen_;
   base::RepeatingClosure click_;
   std::unique_ptr<TrayPlatform> platform_;
+  base::WeakPtrFactory<Tray> weak_factory_{this};
 };
 
 // tray_linux.cc, tray_mac.mm, tray_win.cc; null where there is none.

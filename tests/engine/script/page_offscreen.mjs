@@ -2,19 +2,9 @@
 // answered, printing to PDF, closing, drag and drop from the application;
 // off-screen views with their frames, pixels and input. Argument: the local
 // server's base URL.
+import {finish, loaded, until, verify as check, within} from './helpers.mjs';
+
 const [base] = zebkit.args;
-let failures = 0;
-const check = (ok, what, detail) => {
-  console.log((ok ? 'ok   ' : 'FAIL ') + what + (ok || detail === undefined ? '' : ': ' + JSON.stringify(detail)));
-  if (!ok) failures++;
-};
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const within = (promise, ms, what) => Promise.race([promise, sleep(ms).then(() => { throw new Error('timed out: ' + what); })]);
-const loaded = (view) => new Promise((resolve) => view.on('load', (event) => { if (event === 'finished') resolve(); }));
-const until = async (condition, ms = 10000) => {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(20)) if (await condition()) return true;
-  return false;
-};
 
 // ---- page.h ----
 const view = new zebkit.View('', {width: 400, height: 420});
@@ -113,6 +103,5 @@ check(await until(() => frames.some((f) => f.width === 400 && f.height === 200))
 off.imeCancel();
 off.close();
 
-if (failures) throw new Error(`${failures} checks failed`);
-console.log('ok JavaScript page dialogs, PDF, drag and drop, off-screen frames and input');
+finish('JavaScript page dialogs, PDF, drag and drop, off-screen frames and input');
 zebkit.quit();

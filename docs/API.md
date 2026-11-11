@@ -2,19 +2,24 @@
 
 What an application gets from the engine. How it works inside is
 `docs/ARCHITECTURE.md`; what is still to come, `docs/ROADMAP.md`. The engine is
-`libzebkit.so.1`, with `zebkit-helper` beside it for the renderer, GPU and
-utility processes, and the headers in the package's `include/`.
+`libzebkit.so.1` on Linux, `Zebkit.framework` on macOS and `zebkit.dll` on
+Windows; on Linux and macOS a helper beside it (`zebkit-helper`, `Zebkit
+Helper.app`) is the renderer, GPU and utility processes, and on Windows the
+application's own executable is ([WINDOWS.md](WINDOWS.md#the-sandbox)). The
+headers are in the package's `include/`.
 
 ```sh
-cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>
+cc app.c -I<package>/include -L<package> -l:libzebkit.so.1 -Wl,-rpath,<package>   # Linux
+cc app.c -I<package>/include -F<package> -framework Zebkit -Wl,-rpath,<package>   # macOS
+clang-cl /MT app.c /I<package>\include <package>\zebkit.dll.lib <package>\zebkit_sandbox.lib   # Windows
 ```
 
 | Layer | Header | What |
 |---|---|---|
-| 0. Core | `<zebkit/zebkit.h>`, `<zebkit/offscreen.h>`, `<zebkit/page.h>` | Start the engine, run its loop, views, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; views drawn off-screen into shared surfaces; dialogs, printing to PDF, drag and drop |
+| 0. Core | `<zebkit/zebkit.h>`, `<zebkit/window.h>`, `<zebkit/hooks.h>`, `<zebkit/offscreen.h>`, `<zebkit/page.h>`, `<zebkit/automation.h>`, `<zebkit/win_sandbox.h>` | Start the engine, run its loop, views and their windows, script in pages and outside them, native interface (`zebkit.ui`), CDP, calls between the page and the application; the hooks; views drawn off-screen into shared surfaces; dialogs, printing to PDF, drag and drop; Playwright's API; Windows' sandbox |
 | 1. Libraries | `<zebkit/vendor/<library>.h>` | The C libraries inside the engine, with their own APIs |
-| 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>`, `<zebkit/canvas.h>`, `<zebkit/text.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, 2D drawing and shaping text, over Chromium's own code |
-| 3. Bindings | `rust/`, `bindings/python/zebkit` | Layers 0 and 2 for Rust and Python |
+| 2. Services | `<zebkit/services.h>`, `<zebkit/pdf.h>`, `<zebkit/canvas.h>`, `<zebkit/text.h>`, `<zebkit/media.h>`, `<zebkit/media_tap.h>`, `<zebkit/media_tools.h>` | Compression, cryptography, URLs, images, ICU's data, HTTP, PDF, 2D drawing and shaping text, media, over Chromium's own code |
+| 3. Bindings | `bindings/rust/`, `bindings/python/zebkit`, `bindings/golang/`, `tools/zebkit-js` | All of the C API for Rust, Python, Go and host JavaScript (`scripts/check-bindings.py` checks it) |
 | 4. JavaScript | `zebkit.*` in a page | Layers 0 and 2 for the page's script, as the application grants it |
 
 `scripts/engine-test.sh <profile>` tests every layer from programs built
@@ -25,6 +30,45 @@ Cookie encryption supports the built-in OS and private-file backends through
 The file backend is implemented by Zebkit for every host/binding. Advanced
 hosts can still provide their own key with `zebkit_set_cookie_encryption_key()`;
 see [storage and compatibility rules](COOKIE_PERSISTENCE.md#built-in-storage-backends).
+
+## Contents
+
+- [0. The core](#0-the-core)
+- [The window: <zebkit/window.h>](#the-window-zebkitwindowh)
+  - [Borrowing a view's system window](#borrowing-a-views-system-window)
+- [The desktop, the system and the page's choosers](#the-desktop-the-system-and-the-pages-choosers)
+- [Runtime view preferences](#runtime-view-preferences)
+- [Runtime settings of the engine and of a view](#runtime-settings-of-the-engine-and-of-a-view)
+- [Runtime document permissions](#runtime-document-permissions)
+- [Runtime document navigation policy](#runtime-document-navigation-policy)
+- [Views: popups, console, certificates, user agent, sign-in](#views-popups-console-certificates-user-agent-sign-in)
+  - [Adopting a site's authorization popup](#adopting-a-sites-authorization-popup)
+  - [New-window decisions and creation metadata](#new-window-decisions-and-creation-metadata)
+  - [Native document-console events](#native-document-console-events)
+  - [Document certificate errors](#document-certificate-errors)
+  - [Atomic user agent and client hints](#atomic-user-agent-and-client-hints)
+  - [HTTP authentication](#http-authentication)
+  - [What a page asks of its window, and its network](#what-a-page-asks-of-its-window-and-its-network)
+- [1. The libraries inside the engine](#1-the-libraries-inside-the-engine)
+- [2. Services](#2-services)
+  - [PDF](#pdf)
+  - [A PDF in a page](#a-pdf-in-a-page)
+  - [Annotations](#annotations)
+  - [Hooks](#hooks)
+  - [Canvas and text](#canvas-and-text)
+- [3. Bindings](#3-bindings)
+- [4. JavaScript in the page](#4-javascript-in-the-page)
+- [Script outside any page](#script-outside-any-page)
+- [Native interface: zebkit.ui](#native-interface-zebkitui)
+- [Off-screen views](#off-screen-views)
+  - [Another process](#another-process)
+  - [In a host window](#in-a-host-window)
+- [Dialogs, PDF, drag and drop](#dialogs-pdf-drag-and-drop)
+- [Media: what a page plays, saved as it plays](#media-what-a-page-plays-saved-as-it-plays)
+  - [Native media processing tools](#native-media-processing-tools)
+- [Automation: a screenshot's pixels](#automation-a-screenshots-pixels)
+- [Loading the library](#loading-the-library)
+- [Switches that are not an application's](#switches-that-are-not-an-applications)
 
 ## 0. The core
 
@@ -42,10 +86,10 @@ Call `zebkit_shutdown()` outside engine callbacks to close views and stop
 the engine while the application's loop continues. Shutdown waits for any
 wakeup callback in progress and prevents later ones. Both pump and shutdown
 reject another thread or recursive calls. Initialization is once per process,
-including after shutdown; the two entry points cannot be mixed. Existing
-Rust and Python bindings provide lifecycle and wakeup functions; the Rust
+including after shutdown; the two entry points cannot be mixed. The
+Rust, Python and Go bindings provide lifecycle and wakeup functions; the Rust
 `embedded` example and Python lifecycle test use deadline-based host loops.
-Toolkit adapters and native widget examples remain in progress.
+`examples/native-host` has hosts in GTK, Qt, AppKit and winit.
 
 `zebkit_init_with_settings(argc, argv, json, &error)` validates startup
 settings before initialization or file IO. Unknown fields, invalid types
@@ -230,61 +274,6 @@ reference:
 | `zebkit_cdp_listen`, `_get_port`, `_get_url`, `_stop` | The DevTools endpoint |
 | `zebkit_scheme_register`, `_handle`, `zebkit_request_url`, `_method`, `_headers`, `_body`, `zebkit_request_respond`, `_respond_file` | URL schemes of the application's own |
 
-## 1. The libraries inside the engine
-
-The application includes the library's header and writes the library's own
-API. Every function is exported from the engine as
-`zebkit_vendor_<library>_<function>`, and the header maps the one name to
-the other, so the engine exports none of the libraries' own names: another
-copy of a library in the process, a system one or the application's, is a
-different one and does no harm. In C++ the API is also in the namespace
-`zebkit::vendor::<library>`.
-
-```c
-#include <zebkit/vendor/sqlite.h>
-#include <zebkit/vendor/zstd.h>
-
-sqlite3 *db;
-sqlite3_open("app.db", &db);
-size_t size = ZSTD_compress(out, capacity, data, length, 19);
-```
-
-| Library | Header | Functions | Notes |
-|---|---|---:|---|
-| zlib | `zlib.h` | 88 | Chromium's fork, with its SIMD |
-| Zstandard | `zstd.h` | 68 | Compression and decompression |
-| Brotli | `brotli.h` | 32 | Encoder and decoder |
-| BoringSSL | `boringssl.h` | 2,960 | `libcrypto` and `libssl`; its C++ helpers are left out (`BORINGSSL_NO_CXX`) |
-| SQLite | `sqlite.h` | 263 | Built as Chromium builds it: call `sqlite3_initialize()` first (no automatic initialization); exclusive locking by default (`PRAGMA locking_mode=NORMAL` to share a file); no JSON functions, no extensions |
-| ICU | `icu.h` | 955 | The C API; call `zebkit_icu_init()` first when the engine is not running. Its data is English, Chinese, Japanese and Korean |
-| HarfBuzz | `harfbuzz.h` | 484 | Shaping, OpenType tables, subsetting |
-| LevelDB | `leveldb.h` | see `leveldb/c.h` | Key-value storage through LevelDB's own C API, with or without the engine running: a database, batches, snapshots, iterators. Compactions run on threads of their own until the engine starts; paths are their bytes |
-| FreeType | `freetype.h` | 189 | The engine's 2.14.3 build; fonts, glyphs and outlines; create an independent `FT_Library`. Legacy Carbon APIs are not built |
-| libxml2 | `libxml.h` | 1,008 | XML and HTML parsing, the tree, XPath, the reader and writer |
-| libwebp | `libwebp.h` | 105 | Decoding, encoding, demuxing, muxing |
-| libjpeg-turbo | `libjpeg.h` | 63 | The libjpeg API |
-| FFmpeg | `ffmpeg.h` | 611 | zebkit's configuration (`src/ffmpeg`, `scripts/ffmpeg-config.sh`): Chrome's demuxers and decoders, and for applications libswresample, libswscale, the file protocol, the MP4, MOV, Matroska and WebM muxers, VP8 and VP9 through the engine's libvpx; no encoders |
-| dav1d | `dav1d.h` | 19 | AV1 decoding |
-| Opus | `opus.h` | 71 | Encoding and decoding |
-| libvpx | `libvpx.h` | 37 | VP8 and VP9, decoding and encoding |
-| PDFium | `pdfium.h` | 468 | Chromium's, without XFA forms and its JavaScript; call `FPDF_InitLibrary()` first, or use `<zebkit/pdf.h>` |
-
-7,421 functions across 16 libraries in the current Linux slim build (counts
-vary with platform/configuration), and the engine exports nothing else but zebkit's
-own API (`scripts/engine-test.sh` checks both). Only the headers the
-library's header reaches are shipped, not the library's internals.
-
-What is there is what the engine is built with: a function is exposed when
-the library's public headers declare it and the library's compiled objects
-define it. `src/engine/vendor/gen_vendor.py` finds them in the build, at
-the end of it, and writes the entry points and the headers; nothing is
-listed by hand. Chromium renames some libraries' functions (zlib's
-`Cr_z_`, SQLite's `chrome_sqlite3_`, ICU's version suffix,
-libjpeg-turbo's `chromium_`) with macros in their headers; the generator
-follows them. FreeType's macro header names use package-qualified paths,
-so `#include FT_OUTLINE_H` works with the package's include directory alone.
-The shipped configuration headers match the engine's build.
-
 ## The window: `<zebkit/window.h>`
 
 A view's window made with options before the system's window exists, its
@@ -333,6 +322,49 @@ means asked; the state event says what the system did. A press in a drag
 region is the system's drag (snapping, the system menu on Windows, moving
 on Wayland from the press itself); a double click there does what the
 system's title bar does.
+
+### Borrowing a view's system window
+
+`zebkit_view_get_native_window(view, &window)` returns a borrowed
+`zebkit_native_window {kind, handle}`. AppKit's handle is an `NSWindow*`,
+not the `NSView*` accepted by `zebkit_view_attach_native`. Windows returns
+an HWND; X11 returns a window ID. It is always a top-level window, the one a
+dialog can be made transient for: after attachment, the top-level window that
+contains the application's parent (on X11 the client window its window manager
+manages, not the manager's frame). The handle is not owned or retained and becomes invalid when its
+window closes. Do not destroy or release it; query again after attachment or
+detachment. Calls must run on the engine thread.
+
+Rust exposes `View::native_window() -> Option<NativeWindow>` with `X11`,
+`Win32` and `AppKit` variants. Python's `View.native_window()` returns a dict
+with `kind` (`x11`, `win32`, `appkit`) and integer `handle`, or `None` when
+unavailable. Host JavaScript's `view.nativeWindow` returns the same fields,
+with the handle as a BigInt (convert explicitly when serializing JSON), or
+`null`. This trusted-host API is not exposed through a page bridge.
+
+Headless and off-screen views return no system window, and neither does
+Wayland, which has no global window ids.
+
+`zebkit_view_export_native_window(view, callback, data)` names the window as
+the XDG Desktop Portal's `parent_window` does, so that a portal's dialog (a
+file chooser, a screen share) is the window's own: `"x11:<XID>"` of the same
+top-level window, or on Wayland `"wayland:<handle>"`, the toplevel exported
+through xdg-foreign, as Chrome's own portal dialogs ask for it. Wayland answers
+asynchronously, so the callback runs once, on the engine thread, after the call
+returns, also when the request is dropped; its string is the callback's to copy,
+and NULL means there is none (headless, off-screen, a compositor without
+xdg-foreign, the view closed; always on Windows and macOS, whose handle is the
+one above). Rust has `View::export_native_window(|handle| ...)`, Python
+`View.export_native_window(function)`, host JavaScript a promise,
+`await view.exportNativeWindow()`.
+
+zebkit's windows on Linux are X11's unless the application passes
+`--ozone-platform=wayland`. On Wayland, off-screen views beside windows are not
+done yet: `zebkit_view_new_offscreen()` returns NULL there (under `--headless`
+they work). A C query returns false and clears a supplied output to
+NONE/0 when unavailable, for a NULL view or on the wrong thread. A NULL output
+is rejected. A stale, already-freed C view pointer remains invalid, as with the
+other C view APIs. Python and JavaScript keep their normal closed-view checks.
 
 ## The desktop, the system and the page's choosers
 
@@ -476,6 +508,262 @@ inherit native initialization scripts and the host's UA override before their
 own scripts execute. Script registrations have view-owned opaque identifiers;
 removal clears both current target registrations and future replay state.
 See [the hooks contract](ROADMAP_HOOKS.md#each-hook).
+
+## Views: popups, console, certificates, user agent, sign-in
+
+What a view decides about its popups, its console, certificates, its user agent and HTTP sign-in, beside the hooks of `<zebkit/hooks.h>`.
+
+### Adopting a site's authorization popup
+
+Use `zebkit_view_on_window_open()` to receive Chromium's actual popup and
+`zebkit_view_get_target_id()` to attach a CDP client to it. The returned
+identifier is freed with `zebkit_free()`. Rust exposes `View::target_id()`
+and `clear_new_window_handler()`. Python exposes `View.target_id()`.
+A URL-only `on_new_window` callback cancels the original operation and cannot
+preserve a form's POST or `window.opener`; see
+[the integration regression](GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup).
+
+### New-window decisions and creation metadata
+
+The native `<zebkit/hooks.h>` extension adds
+`zebkit_view_on_window_open_event(view, callback, data)` as an asynchronous
+JSON observer. `phase: "decision"` reports the actual Chromium URL, frame name,
+gesture, disposition, container type, source origin, opener/top URLs, referrer,
+opener suppression and the policy result. `features` contains `bounds`, explicit
+`hasX`, `hasY`, `hasWidth`, `hasHeight` flags, `popup` and `alwaysOnTop`.
+An explicitly requested zero coordinate differs from an omitted coordinate.
+These are Chromium's requested window parameters, not measured host bounds.
+
+`phase: "created"` identifies the actual new view with `targetId` and reports
+its creation URL, frame name, disposition, features, gesture and opener origins.
+Use the existing `zebkit_view_on_window_open` callback to receive that view.
+`zebkit_view_get_window_open_info(child)` returns the same creation snapshot as
+owned JSON, freed with `zebkit_free`; it remains unchanged after navigation.
+Ordinary views return `{}`; invalid or non-UI-thread calls return NULL.
+The old blocked event retains exactly `url`, `frameName` and `userGesture`.
+`zebkit_view_on_popup` continues to describe off-screen select widgets.
+
+Python exposes `on_window_open(child, url)`, `on_window_open_event(dict)` and
+`window_open_info`. Rust adds `on_window_open_event`, its clear method and
+`window_open_info` alongside its existing child-view callback. Host JavaScript
+adds `windowOpenInfo` and the `window-open` event; its created event has `view`,
+an adopted `zebkit.View` for the original window, or null if it closed before
+event delivery. The child has its own lifetime
+and can remain open after its parent closes.
+
+This extension is undergoing runtime validation. Linux and macOS native
+compilation checks, Rust checks and JavaScript syntax checks pass; real window
+behavior checks remain pending. This status does not imply macOS runtime validation.
+
+### Native document-console events
+
+`zebkit_view_on_console(view, callback, data)` observes Chromium document
+console messages without evaluating page objects. Its borrowed JSON includes
+`level` (`debug`, `info`, `warning`, `error`), `message`, `source`, `line`,
+`frameId`, `mainFrame`, `origin` and optional `stackTrace` (null when absent).
+The stack is Chromium's untrusted exception text, not structured JavaScript
+frames; it is generally unavailable. Worker and DevTools-only console events
+are outside this hook.
+
+Delivery is asynchronous on the engine thread. Replacement, removal and view
+closure cancel queued reports. Each view queues at most 256 messages; `dropped`
+is a decimal string counting skipped reports since the previous delivery.
+Message/source/stack limits are 65536/16384/65536 UTF-16 code units, without
+splitting a surrogate pair; `truncated` reports clipping. Linux compilation and
+Python test syntax checks pass. Python `View.on_console`, Rust `View::on_console`
+and `clear_console_handler`, and Host JavaScript's `console` view event expose
+this observer. Linux native and binding runtime regressions pass, including
+callback replacement, closure, frame isolation and bounded output. Worker
+console coverage remains separate work.
+
+### Document certificate errors
+
+`zebkit_view_on_certificate` receives an opaque single-use request and borrowed
+JSON. Default handling denies the TLS error. `zebkit_certificate_request_info`
+returns owned JSON while pending; `zebkit_certificate_respond(request, allow)`
+returns false for stale/expired requests or attempts to ignore a strict error.
+A rejected strict-error bypass leaves the request pending so the application
+can deny it. There is no remembered exception in this API.
+
+Metadata includes a decimal-string `id`, URL, `mainFrame`, numeric error and
+`errorName`, `strictEnforcement`, `canIgnore`, certificate subject/issuer,
+validity dates, status bits, `knownRoot`, and a PEM `certificateChain`.
+The chain is limited to 16 certificates/1 MiB and reports `chainTruncated`.
+Metadata also includes `state`, `timeoutMs` and `deadlineUnixMs`; deadlines use
+a monotonic clock. At most 1024 requests wait. The default deadline is 30000 ms;
+`zebkit_view_set_certificate_timeout` accepts 1..300000 for future requests.
+Top-level navigation, closure, stopping the corresponding navigation and
+handler replacement invalidate pending requests. Outcome events contain
+`continued`/`denied` and a reason. Calls and replies run on the engine thread.
+
+Python exposes `CertificateRequest`, `View.on_certificate`,
+`on_certificate_result` and `set_certificate_timeout`. Rust exposes the
+corresponding `CertificateRequest`, View methods and clear methods. Host
+JavaScript uses `onCertificate`, `setCertificateTimeout` and the
+`certificate-result` view event. A JavaScript request has `metadata`, `info`
+and `respond(allow = false)`.
+
+This is the document-error hook. Chromium's CDP certificate handling may
+consume an error first. Client certificate selection, requests without a
+WebContents and finer subframe cancellation remain separate work. Certificate
+metadata is not a trust verdict. Real Linux TLS tests pass through C, Rust,
+Python and host JavaScript, including strict-error denial, deadlines and
+callback lifetime. Pooled HTTP/1.1 and HTTP/2 tests verify denied requests send
+no headers or body. The complete glibc 2.17 suite also includes real C TLS
+requests. Mac compilation evidence does not establish Mac runtime behavior.
+
+### Atomic user agent and client hints
+
+`zebkit_view_set_user_agent_override(view, json, callback, data)` accepts a JSON
+object with required string `userAgent` and optional `acceptLanguage`, `platform`
+and `userAgentMetadata`, using Chromium's `Emulation.setUserAgentOverride`
+parameter format. The input is limited to 65536 UTF-8 bytes; unknown top-level
+options are rejected. The return value reports whether the command was queued,
+not whether Chromium accepted its values. Completion receives `{}` and no error
+on success, or a null value and an error. Syntax/schema rejection can complete
+synchronously. Call on the engine thread.
+
+Chromium validates metadata before it is saved for future targets. Invalid
+updates leave the previous renderer/network override and replay state intact.
+Loads wait for completion; a navigation selected inside the completion replaces
+an older waiting URL. Closing completes pending callbacks with an error before
+the view's close notification. An empty `userAgent` with no metadata clears this
+session's override. Independent external CDP sessions retain Chromium's scope;
+the last command across different sessions is not guaranteed to win.
+
+Python provides `View.set_user_agent_override(options, function=None)`, with a
+dictionary or JSON string and completion `(value, error)`. Rust's corresponding
+View method accepts JSON and a `FnOnce(Result<String, Error>)`; host JavaScript's
+`view.setUserAgentOverride(options)` returns a promise. Existing string-only
+`zebkit_view_set_user_agent` remains available and ignores invalid HTTP-header
+values without changing saved settings.
+
+Linux tests cover document-first-script UA, brands, high-entropy metadata,
+request headers after Accept-CH, worker metadata, reset, rejected updates,
+completion-triggered navigation and closure. Rust and host JavaScript runtime
+tests also pass. Mac syntax evidence remains distinct from runtime validation.
+
+### HTTP authentication
+
+`zebkit_view_on_http_auth` receives an engine-owned opaque request token and
+borrowed JSON for an HTTP or proxy challenge. Reply once on the engine thread
+with `zebkit_http_auth_respond(request, username, password)`; both NULL cancel,
+while two non-NULL strings provide credentials, including empty strings. Each
+string must be valid UTF-8 and at most 65536 bytes. Invalid replies leave the
+request pending. `zebkit_http_auth_request_info` returns owned JSON while pending
+and NULL after settlement; free returned strings with `zebkit_free`.
+
+Metadata contains `id`, `url`, `realm`, `scheme`, `challenger`, `host`, `port`,
+`proxy`, `navigation`, `mainFrame`, `firstAttempt`, `metadataTruncated`, `state`,
+`timeoutMs` and `deadlineUnixMs`. `mainFrame` identifies a primary-main-frame
+navigation, rather than an inferred fetch initiator. URL userinfo is redacted;
+credentials supplied in replies are not added to metadata or result JSON.
+
+`zebkit_view_set_http_auth_timeout` accepts 1..300000 ms for future challenges,
+default 30000. Monotonic deadlines, navigation, stopping, closing and handler
+replacement invalidate requests. `zebkit_view_on_http_auth_result` observes
+asynchronous outcome metadata with `provided` and a reason. Closing cancels
+pending reports. At most 1024 challenges wait.
+
+Python exposes `HttpAuthRequest`, `View.on_http_auth`, `on_http_auth_result` and
+`set_http_auth_timeout`; requests provide `info` and `respond(user, password)`
+or `respond()` to cancel. Rust exposes `HttpAuthRequest::provide`, `cancel`,
+`info` and corresponding View registration, clear and timeout methods. Host
+JavaScript uses `onHttpAuth`, `setHttpAuthTimeout`, the `http-auth-result` event,
+and request `metadata`, `info`, `respond(user, password)` or `respond()`.
+
+An installed native view handler takes precedence at the browser login delegate.
+Without one, existing automation/shell handling remains. Chromium's context auth
+cache and earlier CDP interception retain their native scopes. Requests without
+a WebContents remain separate work. Real Linux HTTP 401/proxy 407 tests and
+Python/Rust/host JavaScript callback lifetime tests pass; this does not establish
+Mac runtime behavior.
+
+### What a page asks of its window, and its network
+
+`<zebkit/hooks.h>` has the details of each. Requests are single-use, on the engine
+thread, with a deadline of 1..300000 ms (default 30000): a function may answer later,
+replace itself or close the view. A popup's opener decides until the popup has its own
+function, and once that opener closed, the popup is refused.
+
+| Hook | C | Python | Rust | Host JavaScript | Unanswered |
+|---|---|---|---|---|---|
+| Links to other programs | `zebkit_view_on_external_protocol` | `on_external_protocol` | `on_external_protocol` | `onExternalProtocol` | told only |
+| Downloads | `zebkit_view_on_download`, `_progress`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `DownloadRequest.respond('save', path)` | `on_download`, `DownloadRequest::save`, `cancel` | `onDownload`, `respond('save', path)` | cancelled |
+| Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond`, `zebkit_client_certificate_choose` | `on_client_certificate`, `respond('provide', pem, key)`, `choose(index)` | `on_client_certificate`, `provide`, `respond`, `choose` | `onClientCertificate`, `respond('provide', pem, key)`, `respond('choose', index)` | request fails |
+| Isolated worlds | `zebkit_view_add_world_script` | `add_world_script(source, world, main_frame_only)` | `add_world_script` | `addWorldScript(source, {world, mainFrameOnly})` | not asked |
+| File choosers | `zebkit_view_on_file_chooser`, `zebkit_file_chooser_respond` | `on_file_chooser`, `respond([paths])` | `on_file_chooser`, `respond(&[paths])` | `onFileChooser`, `respond([paths])` | cancelled |
+| Camera, microphone | `zebkit_view_on_media_access`, `zebkit_media_access_respond` | `on_media_access`, `respond(allow)` | `on_media_access`, `respond(allow, None, None)` | `onMediaAccess`, `respond(allow)` | refused |
+| Keys | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | `set_reserved_keys`, `on_reserved_key` | same | `setReservedKeys`, `onReservedKey` | not asked |
+| Context menu | `zebkit_view_on_context_menu` | `on_context_menu` | `on_context_menu` | `onContextMenu` | told only |
+| Fullscreen | `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `setFullscreenPolicy`, `onFullscreen` | not asked |
+| Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
+
+Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
+Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` stages see what the
+network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
+that hold fail closed (`<zebkit/hooks.h>`).
+
+Client certificates come from the application, or, with the engine setting
+`clientCertificateStores`, from the operating system's store: the request's `identities` (subject,
+issuer, validity, SHA-256, the PEM certificate) of the user's NSS database on Linux, Keychain on
+macOS and the user's `MY` store on Windows, of which `choose(index)` answers with one; its key stays
+in the store, which signs. Limits are in `docs/ROADMAP_HOOKS.md`.
+
+## 1. The libraries inside the engine
+
+The application includes the library's header and writes the library's own
+API. Every function is exported from the engine as
+`zebkit_vendor_<library>_<function>`, and the header maps the one name to
+the other, so the engine exports none of the libraries' own names: another
+copy of a library in the process, a system one or the application's, is a
+different one and does no harm. In C++ the API is also in the namespace
+`zebkit::vendor::<library>`.
+
+```c
+#include <zebkit/vendor/sqlite.h>
+#include <zebkit/vendor/zstd.h>
+
+sqlite3 *db;
+sqlite3_open("app.db", &db);
+size_t size = ZSTD_compress(out, capacity, data, length, 19);
+```
+
+| Library | Header | Functions | Notes |
+|---|---|---:|---|
+| zlib | `zlib.h` | 88 | Chromium's fork, with its SIMD |
+| Zstandard | `zstd.h` | 68 | Compression and decompression |
+| Brotli | `brotli.h` | 32 | Encoder and decoder |
+| BoringSSL | `boringssl.h` | 2,960 | `libcrypto` and `libssl`; its C++ helpers are left out (`BORINGSSL_NO_CXX`) |
+| SQLite | `sqlite.h` | 263 | Built as Chromium builds it: call `sqlite3_initialize()` first (no automatic initialization); exclusive locking by default (`PRAGMA locking_mode=NORMAL` to share a file); no JSON functions, no extensions |
+| ICU | `icu.h` | 955 | The C API; call `zebkit_icu_init()` first when the engine is not running. Its data is English, Chinese, Japanese and Korean |
+| HarfBuzz | `harfbuzz.h` | 484 | Shaping, OpenType tables, subsetting |
+| LevelDB | `leveldb.h` | see `leveldb/c.h` | Key-value storage through LevelDB's own C API, with or without the engine running: a database, batches, snapshots, iterators. Compactions run on threads of their own until the engine starts; paths are their bytes |
+| FreeType | `freetype.h` | 189 | The engine's 2.14.3 build; fonts, glyphs and outlines; create an independent `FT_Library`. Legacy Carbon APIs are not built |
+| libxml2 | `libxml.h` | 1,008 | XML and HTML parsing, the tree, XPath, the reader and writer |
+| libwebp | `libwebp.h` | 105 | Decoding, encoding, demuxing, muxing |
+| libjpeg-turbo | `libjpeg.h` | 63 | The libjpeg API |
+| FFmpeg | `ffmpeg.h` | 611 | zebkit's configuration (`src/ffmpeg`, `scripts/ffmpeg-config.sh`): Chrome's demuxers and decoders, and for applications libswresample, libswscale, the file protocol, the MP4, MOV, Matroska and WebM muxers, VP8 and VP9 through the engine's libvpx; no encoders |
+| dav1d | `dav1d.h` | 19 | AV1 decoding |
+| Opus | `opus.h` | 71 | Encoding and decoding |
+| libvpx | `libvpx.h` | 37 | VP8 and VP9, decoding and encoding |
+| PDFium | `pdfium.h` | 468 | Chromium's, without XFA forms and its JavaScript; call `FPDF_InitLibrary()` first, or use `<zebkit/pdf.h>` |
+
+7,421 functions across 16 libraries in the current Linux slim build (counts
+vary with platform/configuration), and the engine exports nothing else but zebkit's
+own API (`scripts/engine-test.sh` checks both). Only the headers the
+library's header reaches are shipped, not the library's internals.
+
+What is there is what the engine is built with: a function is exposed when
+the library's public headers declare it and the library's compiled objects
+define it. `src/engine/vendor/gen_vendor.py` finds them in the build, at
+the end of it, and writes the entry points and the headers; nothing is
+listed by hand. Chromium renames some libraries' functions (zlib's
+`Cr_z_`, SQLite's `chrome_sqlite3_`, ICU's version suffix,
+libjpeg-turbo's `chromium_`) with macros in their headers; the generator
+follows them. FreeType's macro header names use package-qualified paths,
+so `#include FT_OUTLINE_H` works with the package's include directory alone.
+The shipped configuration headers match the engine's build.
 
 ## 2. Services
 
@@ -679,7 +967,7 @@ zebkit.main(ready)
 
 It finds the engine in `$ZEBKIT_DIR`.
 
-`rust/` is the same for Rust: `zebkit-rs` declares the C API, and the
+`bindings/rust/` is the same for Rust: `zebkit-rs` declares the C API, and the
 `zebkit` crate is safe Rust over it, with closures for callbacks and the
 engine's thread enforced by the types (`bindings/rust/README.md`):
 
@@ -688,17 +976,31 @@ std::process::exit(zebkit::run(|| {
     let view = zebkit::View::new(Some("https://example.com/"), 1024, 768);
     view.grant("https://example.com", zebkit::Allow::APP, None);
     view.bind("greet", |call| {
-        let answer = format!("\"hello, {}\"", call.args_json());
-        call.resolve(&answer)
+        // The arguments are a JSON array, the answer a JSON value (serde_json here).
+        let args: Vec<String> = serde_json::from_str(call.args_json()).unwrap_or_default();
+        let name = args.first().map(String::as_str).unwrap_or("");
+        call.resolve(&serde_json::to_string(&format!("hello, {name}")).unwrap());
     });
     view.on_close(zebkit::quit);
 }));
 ```
 
-`bindings/golang` is a Go binding over cgo: the engine, views, pages'
-calls, the application's schemes, the page hooks of 0.4.0 and the system's
-services, on Linux and macOS (`bindings/golang/README.md` lists what it covers
-and what is still C, Rust and Python only).
+`bindings/golang` is a Go binding over cgo: all of the C API, on Linux,
+macOS and Windows (programs for Windows cross-built with its `cmd/zebkit-cc`;
+`bindings/golang/README.md`). The tables in this document name C, Python, Rust
+and host JavaScript; Go's names come from C's by these rules: the prefix
+`zebkit_` goes; a function of an object is a method of its Go type
+(`zebkit_view_on_load(view, ...)` is `view.OnLoad(...)`); a function of the
+package puts its verb first (`zebkit_app_set_badge(text)` is
+`zebkit.SetAppBadge(text)`, and so `SetAppMenu`, `UpdateAppMenuItem`,
+`RegisterScheme`, `HandleScheme`, `ListenCDP`, `StopCDP`), one that makes an
+object is `New...` (`NewView`, `NewTray`), one that reads is the noun
+(`AppMenu`, `EngineSettings`, `CDPPort`) and one that sets a callback starts
+with `On` (`OnAppReopen`); the rest is in Go's case, initialisms in capitals
+(`CDP`, `PDF`, `URL`).
+
+`scripts/check-bindings.py` checks that Rust, Python, Go and host JavaScript
+each reach every function the headers export.
 
 ## 4. JavaScript in the page
 
@@ -1235,229 +1537,6 @@ In Rust, `zebkit::media`: `keep_history`, `View::media_list`, `View::media_at`,
 `View::media_capture_start` and `MediaCapture` (`on_progress`, `on_done`,
 `stop`, `status`; dropped, it is let go).
 
-## Loading the library
-
-An application is linked with `libzebkit.so.1`, or loads it with `dlopen()`
-(Python's `ctypes` does). The engine applies its own packed relocations
-when it is loaded (`patches/1005`). Loading after host threads already
-exist is supported on Linux: patch 1045 removes initialized TLS pointers
-that could be copied before those relocations, including the thread-type
-manager's vtable. The ELF audit and C/Python regressions cover main-thread
-and pre-existing worker-thread engine loops; C runtime checks also pass on
-glibc 2.17. Keep the library loaded until process exit; unloading Chromium
-and starting it again is not supported.
-
-Every child process is `zebkit-helper`, beside the library, whatever the
-application's executable is.
-
-## Size and speed
-
-Exporting the libraries and the API cost 0.8 MiB of the engine over the
-content shell it replaced, the headers 7.6 MiB of the package; speed is the
-same within the spread of `scripts/bench.sh`. The engine's size and speed
-as a whole are `docs/SIZE_AND_SPEED.md`.
-
-
-### Adopting a site's authorization popup
-
-Use `zebkit_view_on_window_open()` to receive Chromium's actual popup and
-`zebkit_view_get_target_id()` to attach a CDP client to it. The returned
-identifier is freed with `zebkit_free()`. Rust exposes `View::target_id()`
-and `clear_new_window_handler()`. Python exposes `View.target_id()`.
-A URL-only `on_new_window` callback cancels the original operation and cannot
-preserve a form's POST or `window.opener`; see
-[the integration regression](GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup).
-
-
-### New-window decisions and creation metadata
-
-The native `<zebkit/hooks.h>` extension adds
-`zebkit_view_on_window_open_event(view, callback, data)` as an asynchronous
-JSON observer. `phase: "decision"` reports the actual Chromium URL, frame name,
-gesture, disposition, container type, source origin, opener/top URLs, referrer,
-opener suppression and the policy result. `features` contains `bounds`, explicit
-`hasX`, `hasY`, `hasWidth`, `hasHeight` flags, `popup` and `alwaysOnTop`.
-An explicitly requested zero coordinate differs from an omitted coordinate.
-These are Chromium's requested window parameters, not measured host bounds.
-
-`phase: "created"` identifies the actual new view with `targetId` and reports
-its creation URL, frame name, disposition, features, gesture and opener origins.
-Use the existing `zebkit_view_on_window_open` callback to receive that view.
-`zebkit_view_get_window_open_info(child)` returns the same creation snapshot as
-owned JSON, freed with `zebkit_free`; it remains unchanged after navigation.
-Ordinary views return `{}`; invalid or non-UI-thread calls return NULL.
-The old blocked event retains exactly `url`, `frameName` and `userGesture`.
-`zebkit_view_on_popup` continues to describe off-screen select widgets.
-
-Python exposes `on_window_open(child, url)`, `on_window_open_event(dict)` and
-`window_open_info`. Rust adds `on_window_open_event`, its clear method and
-`window_open_info` alongside its existing child-view callback. Host JavaScript
-adds `windowOpenInfo` and the `window-open` event; its created event has `view`,
-an adopted `zebkit.View` for the original window, or null if it closed before
-event delivery. The child has its own lifetime
-and can remain open after its parent closes.
-
-This extension is undergoing runtime validation. Linux and macOS native
-compilation checks, Rust checks and JavaScript syntax checks pass; real window
-behavior checks remain pending. This status does not imply macOS runtime validation.
-
-
-### Native document-console events
-
-`zebkit_view_on_console(view, callback, data)` observes Chromium document
-console messages without evaluating page objects. Its borrowed JSON includes
-`level` (`debug`, `info`, `warning`, `error`), `message`, `source`, `line`,
-`frameId`, `mainFrame`, `origin` and optional `stackTrace` (null when absent).
-The stack is Chromium's untrusted exception text, not structured JavaScript
-frames; it is generally unavailable. Worker and DevTools-only console events
-are outside this hook.
-
-Delivery is asynchronous on the engine thread. Replacement, removal and view
-closure cancel queued reports. Each view queues at most 256 messages; `dropped`
-is a decimal string counting skipped reports since the previous delivery.
-Message/source/stack limits are 65536/16384/65536 UTF-16 code units, without
-splitting a surrogate pair; `truncated` reports clipping. Linux compilation and
-Python test syntax checks pass. Python `View.on_console`, Rust `View::on_console`
-and `clear_console_handler`, and Host JavaScript's `console` view event expose
-this observer. Linux native and binding runtime regressions pass, including
-callback replacement, closure, frame isolation and bounded output. Worker
-console coverage remains separate work.
-
-
-### Document certificate errors
-
-`zebkit_view_on_certificate` receives an opaque single-use request and borrowed
-JSON. Default handling denies the TLS error. `zebkit_certificate_request_info`
-returns owned JSON while pending; `zebkit_certificate_respond(request, allow)`
-returns false for stale/expired requests or attempts to ignore a strict error.
-A rejected strict-error bypass leaves the request pending so the application
-can deny it. There is no remembered exception in this API.
-
-Metadata includes a decimal-string `id`, URL, `mainFrame`, numeric error and
-`errorName`, `strictEnforcement`, `canIgnore`, certificate subject/issuer,
-validity dates, status bits, `knownRoot`, and a PEM `certificateChain`.
-The chain is limited to 16 certificates/1 MiB and reports `chainTruncated`.
-Metadata also includes `state`, `timeoutMs` and `deadlineUnixMs`; deadlines use
-a monotonic clock. At most 1024 requests wait. The default deadline is 30000 ms;
-`zebkit_view_set_certificate_timeout` accepts 1..300000 for future requests.
-Top-level navigation, closure, stopping the corresponding navigation and
-handler replacement invalidate pending requests. Outcome events contain
-`continued`/`denied` and a reason. Calls and replies run on the engine thread.
-
-Python exposes `CertificateRequest`, `View.on_certificate`,
-`on_certificate_result` and `set_certificate_timeout`. Rust exposes the
-corresponding `CertificateRequest`, View methods and clear methods. Host
-JavaScript uses `onCertificate`, `setCertificateTimeout` and the
-`certificate-result` view event. A JavaScript request has `metadata`, `info`
-and `respond(allow = false)`.
-
-This is the document-error hook. Chromium's CDP certificate handling may
-consume an error first. Client certificate selection, requests without a
-WebContents and finer subframe cancellation remain separate work. Certificate
-metadata is not a trust verdict. Real Linux TLS tests pass through C, Rust,
-Python and host JavaScript, including strict-error denial, deadlines and
-callback lifetime. Pooled HTTP/1.1 and HTTP/2 tests verify denied requests send
-no headers or body. The complete glibc 2.17 suite also includes real C TLS
-requests. Mac compilation evidence does not establish Mac runtime behavior.
-
-### Atomic user agent and client hints
-
-`zebkit_view_set_user_agent_override(view, json, callback, data)` accepts a JSON
-object with required string `userAgent` and optional `acceptLanguage`, `platform`
-and `userAgentMetadata`, using Chromium's `Emulation.setUserAgentOverride`
-parameter format. The input is limited to 65536 UTF-8 bytes; unknown top-level
-options are rejected. The return value reports whether the command was queued,
-not whether Chromium accepted its values. Completion receives `{}` and no error
-on success, or a null value and an error. Syntax/schema rejection can complete
-synchronously. Call on the engine thread.
-
-Chromium validates metadata before it is saved for future targets. Invalid
-updates leave the previous renderer/network override and replay state intact.
-Loads wait for completion; a navigation selected inside the completion replaces
-an older waiting URL. Closing completes pending callbacks with an error before
-the view's close notification. An empty `userAgent` with no metadata clears this
-session's override. Independent external CDP sessions retain Chromium's scope;
-the last command across different sessions is not guaranteed to win.
-
-Python provides `View.set_user_agent_override(options, function=None)`, with a
-dictionary or JSON string and completion `(value, error)`. Rust's corresponding
-View method accepts JSON and a `FnOnce(Result<String, Error>)`; host JavaScript's
-`view.setUserAgentOverride(options)` returns a promise. Existing string-only
-`zebkit_view_set_user_agent` remains available and ignores invalid HTTP-header
-values without changing saved settings.
-
-Linux tests cover document-first-script UA, brands, high-entropy metadata,
-request headers after Accept-CH, worker metadata, reset, rejected updates,
-completion-triggered navigation and closure. Rust and host JavaScript runtime
-tests also pass. Mac syntax evidence remains distinct from runtime validation.
-
-### HTTP authentication
-
-`zebkit_view_on_http_auth` receives an engine-owned opaque request token and
-borrowed JSON for an HTTP or proxy challenge. Reply once on the engine thread
-with `zebkit_http_auth_respond(request, username, password)`; both NULL cancel,
-while two non-NULL strings provide credentials, including empty strings. Each
-string must be valid UTF-8 and at most 65536 bytes. Invalid replies leave the
-request pending. `zebkit_http_auth_request_info` returns owned JSON while pending
-and NULL after settlement; free returned strings with `zebkit_free`.
-
-Metadata contains `id`, `url`, `realm`, `scheme`, `challenger`, `host`, `port`,
-`proxy`, `navigation`, `mainFrame`, `firstAttempt`, `metadataTruncated`, `state`,
-`timeoutMs` and `deadlineUnixMs`. `mainFrame` identifies a primary-main-frame
-navigation, rather than an inferred fetch initiator. URL userinfo is redacted;
-credentials supplied in replies are not added to metadata or result JSON.
-
-`zebkit_view_set_http_auth_timeout` accepts 1..300000 ms for future challenges,
-default 30000. Monotonic deadlines, navigation, stopping, closing and handler
-replacement invalidate requests. `zebkit_view_on_http_auth_result` observes
-asynchronous outcome metadata with `provided` and a reason. Closing cancels
-pending reports. At most 1024 challenges wait.
-
-Python exposes `HttpAuthRequest`, `View.on_http_auth`, `on_http_auth_result` and
-`set_http_auth_timeout`; requests provide `info` and `respond(user, password)`
-or `respond()` to cancel. Rust exposes `HttpAuthRequest::provide`, `cancel`,
-`info` and corresponding View registration, clear and timeout methods. Host
-JavaScript uses `onHttpAuth`, `setHttpAuthTimeout`, the `http-auth-result` event,
-and request `metadata`, `info`, `respond(user, password)` or `respond()`.
-
-An installed native view handler takes precedence at the browser login delegate.
-Without one, existing automation/shell handling remains. Chromium's context auth
-cache and earlier CDP interception retain their native scopes. Requests without
-a WebContents remain separate work. Real Linux HTTP 401/proxy 407 tests and
-Python/Rust/host JavaScript callback lifetime tests pass; this does not establish
-Mac runtime behavior.
-
-### What a page asks of its window, and its network
-
-`<zebkit/hooks.h>` has the details of each. Requests are single-use, on the engine
-thread, with a deadline of 1..300000 ms (default 30000): a function may answer later,
-replace itself or close the view. A popup's opener decides until the popup has its own
-function, and once that opener closed, the popup is refused.
-
-| Hook | C | Python | Rust | Host JavaScript | Unanswered |
-|---|---|---|---|---|---|
-| Links to other programs | `zebkit_view_on_external_protocol` | `on_external_protocol` | `on_external_protocol` | `onExternalProtocol` | told only |
-| Downloads | `zebkit_view_on_download`, `_progress`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `DownloadRequest.respond('save', path)` | `on_download`, `DownloadRequest::save`, `cancel` | `onDownload`, `respond('save', path)` | cancelled |
-| Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond`, `zebkit_client_certificate_choose` | `on_client_certificate`, `respond('provide', pem, key)`, `choose(index)` | `on_client_certificate`, `provide`, `respond`, `choose` | `onClientCertificate`, `respond('provide', pem, key)`, `respond('choose', index)` | request fails |
-| Isolated worlds | `zebkit_view_add_world_script` | `add_world_script(source, world, main_frame_only)` | `add_world_script` | `addWorldScript(source, {world, mainFrameOnly})` | not asked |
-| File choosers | `zebkit_view_on_file_chooser`, `zebkit_file_chooser_respond` | `on_file_chooser`, `respond([paths])` | `on_file_chooser`, `respond(&[paths])` | `onFileChooser`, `respond([paths])` | cancelled |
-| Camera, microphone | `zebkit_view_on_media_access`, `zebkit_media_access_respond` | `on_media_access`, `respond(allow)` | `on_media_access`, `respond(allow, None, None)` | `onMediaAccess`, `respond(allow)` | refused |
-| Keys | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | `set_reserved_keys`, `on_reserved_key` | same | `setReservedKeys`, `onReservedKey` | not asked |
-| Context menu | `zebkit_view_on_context_menu` | `on_context_menu` | `on_context_menu` | `onContextMenu` | told only |
-| Fullscreen | `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `setFullscreenPolicy`, `onFullscreen` | not asked |
-| Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
-
-Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
-Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` stages see what the
-network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
-that hold fail closed (`<zebkit/hooks.h>`).
-
-Client certificates come from the application, or, with the engine setting
-`clientCertificateStores`, from the operating system's store: the request's `identities` (subject,
-issuer, validity, SHA-256, the PEM certificate) of the user's NSS database on Linux, Keychain on
-macOS and the user's `MY` store on Windows, of which `choose(index)` answers with one; its key stays
-in the store, which signs. Limits are in `docs/ROADMAP_HOOKS.md`.
-
 ### Native media processing tools
 
 For application-level FFmpeg/ffprobe functions (probe, remux, PCM extraction and
@@ -1465,7 +1544,7 @@ RGBA frame export), see [MEDIA_TOOLS.md](MEDIA_TOOLS.md). These synchronous
 C/Rust/Python functions use the built-in FFmpeg without an external executable
 or engine loop. The lower-level vendor API remains available.
 
-### A screenshot's pixels
+## Automation: a screenshot's pixels
 
 Playwright's commands run natively through `<zebkit/automation.h>`
 ([AUTOMATION.md](AUTOMATION.md)); `Page.screenshot` answers with a PNG,
@@ -1486,53 +1565,28 @@ an element's. Python: `await page.screenshot_pixels(full_page=True)` (also
 `Pixels { width, height, stride, data }`. This is zebkit's own, not
 Playwright's API, which is unchanged.
 
+## Loading the library
+
+An application is linked with `libzebkit.so.1`, or loads it with `dlopen()`
+(Python's `ctypes` does). The engine applies its own packed relocations
+when it is loaded (`patches/1005`). Loading after host threads already
+exist is supported on Linux: patch 1045 removes initialized TLS pointers
+that could be copied before those relocations, including the thread-type
+manager's vtable. The ELF audit and C/Python regressions cover main-thread
+and pre-existing worker-thread engine loops; C runtime checks also pass on
+glibc 2.17. On macOS late loading on the main thread passes on a Mac
+(`docs/MACOS.md`). Keep the library loaded until process exit; unloading
+Chromium and starting it again is not supported.
+
+On Linux and macOS every child process is `zebkit-helper` (`Zebkit
+Helper.app`), beside the library, whatever the application's executable is.
+On Windows the children are the application's own executable, which calls
+`zebkit_win_startup()` first (`<zebkit/win_sandbox.h>`, [WINDOWS.md](WINDOWS.md#the-sandbox));
+`zebkit-helper.exe` only with `--no-sandbox`.
+
 ## Switches that are not an application's
 
 `--use-fake-device-for-media-stream` and `--use-fake-ui-for-media-stream` are
 Chromium's test switches: with them a page gets a fake camera and microphone with no
 permission asked. `--isolated-context-origins` gives the origins it lists Chromium's
 Isolated Context. An application should not pass on any of them from outside.
-
-
-### Borrowing a view's system window
-
-`zebkit_view_get_native_window(view, &window)` returns a borrowed
-`zebkit_native_window {kind, handle}`. AppKit's handle is an `NSWindow*`,
-not the `NSView*` accepted by `zebkit_view_attach_native`. Windows returns
-an HWND; X11 returns a window ID. It is always a top-level window, the one a
-dialog can be made transient for: after attachment, the top-level window that
-contains the application's parent (on X11 the client window its window manager
-manages, not the manager's frame). The handle is not owned or retained and becomes invalid when its
-window closes. Do not destroy or release it; query again after attachment or
-detachment. Calls must run on the engine thread.
-
-Rust exposes `View::native_window() -> Option<NativeWindow>` with `X11`,
-`Win32` and `AppKit` variants. Python's `View.native_window()` returns a dict
-with `kind` (`x11`, `win32`, `appkit`) and integer `handle`, or `None` when
-unavailable. Host JavaScript's `view.nativeWindow` returns the same fields,
-with the handle as a BigInt (convert explicitly when serializing JSON), or
-`null`. This trusted-host API is not exposed through a page bridge.
-
-Headless and off-screen views return no system window, and neither does
-Wayland, which has no global window ids.
-
-`zebkit_view_export_native_window(view, callback, data)` names the window as
-the XDG Desktop Portal's `parent_window` does, so that a portal's dialog (a
-file chooser, a screen share) is the window's own: `"x11:<XID>"` of the same
-top-level window, or on Wayland `"wayland:<handle>"`, the toplevel exported
-through xdg-foreign, as Chrome's own portal dialogs ask for it. Wayland answers
-asynchronously, so the callback runs once, on the engine thread, after the call
-returns, also when the request is dropped; its string is the callback's to copy,
-and NULL means there is none (headless, off-screen, a compositor without
-xdg-foreign, the view closed; always on Windows and macOS, whose handle is the
-one above). Rust has `View::export_native_window(|handle| ...)`, Python
-`View.export_native_window(function)`, host JavaScript a promise,
-`await view.exportNativeWindow()`.
-
-zebkit's windows on Linux are X11's unless the application passes
-`--ozone-platform=wayland`. On Wayland, off-screen views beside windows are not
-done yet: `zebkit_view_new_offscreen()` returns NULL there (under `--headless`
-they work). A C query returns false and clears a supplied output to
-NONE/0 when unavailable, for a NULL view or on the wrong thread. A NULL output
-is rejected. A stale, already-freed C view pointer remains invalid, as with the
-other C view APIs. Python and JavaScript keep their normal closed-view checks.

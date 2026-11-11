@@ -4,7 +4,7 @@
 //! written again.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, Metadata};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use zebkit::services::{url_part, UrlPart};
@@ -100,7 +100,7 @@ impl Bounds {
         match fs::symlink_metadata(&real) {
             Ok(meta) if meta.file_type().is_symlink() => Err(format!("{path}: a symbolic link; refused")),
             Ok(meta) if !meta.is_file() => Err(format!("{path}: not a regular file")),
-            Ok(meta) if many_links(&meta) => Err(format!("{path}: has other hard links; refused")),
+            Ok(meta) if many_links(&real, &meta) => Err(format!("{path}: has other hard links; refused")),
             _ => Ok(real),
         }
     }
@@ -291,8 +291,8 @@ fn recheck(file: &File, real: &Path, roots: &[PathBuf], path: &str) -> Result<()
     if !inside(&again, roots) {
         return Err(format!("{path}: outside the directories granted"));
     }
-    let (opened, named) = (file.metadata().map_err(|e| e.to_string())?, fs::metadata(&again).map_err(|e| e.to_string())?);
-    if !opened.is_file() || !same_file(&opened, &named) {
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    if !opened.is_file() || !same_file(file, &again).map_err(|e| e.to_string())? {
         return Err(format!("{path}: changed while it was opened; refused"));
     }
     Ok(())
@@ -404,46 +404,65 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// O_NOFOLLOW and O_NONBLOCK (a pipe swapped in must not block the open): std
+// has no names for them, and their values differ by system and architecture.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+const NO_FOLLOW_FLAGS: i32 = 0x100 | 0x4;
+#[cfg(all(any(target_os = "linux", target_os = "android"),
+          any(target_arch = "x86_64", target_arch = "x86", target_arch = "riscv64", target_arch = "loongarch64", target_arch = "s390x")))]
+const NO_FOLLOW_FLAGS: i32 = 0o400000 | 0o4000;
+#[cfg(all(any(target_os = "linux", target_os = "android"),
+          any(target_arch = "aarch64", target_arch = "arm", target_arch = "powerpc", target_arch = "powerpc64")))]
+const NO_FOLLOW_FLAGS: i32 = 0o100000 | 0o4000;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",
+          all(any(target_os = "linux", target_os = "android"),
+              any(target_arch = "x86_64", target_arch = "x86", target_arch = "riscv64", target_arch = "loongarch64",
+                  target_arch = "s390x", target_arch = "aarch64", target_arch = "arm", target_arch = "powerpc",
+                  target_arch = "powerpc64"))))))]
+compile_error!("O_NOFOLLOW and O_NONBLOCK are not known for this target: add them to bounds.rs");
+
 #[cfg(unix)]
 fn open_no_follow(path: &Path, write: bool, create_new: bool) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    // O_NOFOLLOW and O_NONBLOCK (a pipe swapped in must not block the open):
-    // std has no names for them.
-    #[cfg(target_os = "macos")]
-    const FLAGS: i32 = 0x100 | 0x4;
-    #[cfg(not(target_os = "macos"))]
-    const FLAGS: i32 = 0o400000 | 0o4000;
-    let mut options = OpenOptions::new();
-    options.read(!write).write(write).create_new(create_new).custom_flags(FLAGS);
+    let mut options = fs::OpenOptions::new();
+    options.read(!write).write(write).create_new(create_new).custom_flags(NO_FOLLOW_FLAGS);
     if write {
         options.mode(0o600);
     }
     options.open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn open_no_follow(path: &Path, write: bool, create_new: bool) -> std::io::Result<File> {
-    OpenOptions::new().read(!write).write(write).create_new(create_new).open(path)
+    crate::win::open_no_follow(path, write, create_new)
 }
 
+/// Whether file, opened, is the file at path.
 #[cfg(unix)]
-fn same_file(a: &Metadata, b: &Metadata) -> bool {
+fn same_file(file: &File, path: &Path) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
+    let (a, b) = (file.metadata()?, fs::metadata(path)?);
+    Ok(a.dev() == b.dev() && a.ino() == b.ino())
 }
 
-#[cfg(not(unix))]
-fn same_file(a: &Metadata, b: &Metadata) -> bool {
-    a.len() == b.len()
+#[cfg(windows)]
+fn same_file(file: &File, path: &Path) -> std::io::Result<bool> {
+    let (a, b) = (crate::win::identity(file)?, crate::win::identity_at(path)?);
+    Ok(!b.reparse && a.volume == b.volume && a.index == b.index)
 }
 
+/// Whether the file at path has other names (hard links).
 #[cfg(unix)]
-fn many_links(meta: &Metadata) -> bool {
+fn many_links(_path: &Path, meta: &Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     meta.nlink() > 1
 }
 
-#[cfg(not(unix))]
-fn many_links(_meta: &Metadata) -> bool {
-    false
+#[cfg(windows)]
+fn many_links(path: &Path, _meta: &Metadata) -> bool {
+    // What cannot be told is refused.
+    crate::win::identity_at(path).map_or(true, |identity| identity.links > 1)
 }
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("the bounds' file checks are written for unix and Windows");

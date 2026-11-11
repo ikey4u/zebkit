@@ -28,6 +28,13 @@ const sdk = loadSdk(toolsDir);
 const engine = ['--', ...switches];
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zebkit-mcp-test-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// How long a negative check gives what must not happen: one short constant for all of them.
+const SETTLE = 700;
+// Whether test() became true within ms.
+const until = async (test, ms = 10000, step = 20) => {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(step)) if (await test()) return true;
+  return !!(await test());
+};
 const transcript = [];
 
 // ---- What the pages reach ----------------------------------------------------
@@ -408,11 +415,11 @@ async function everyTool(label, c) {
   const sw = await call('page_evaluate', { page, script: "typeof navigator.serviceWorker + ' ' + typeof SharedWorker" });
   check(sw.structured.value === 'undefined undefined', say('a page has no service or shared workers'), sw.text);
   await call('page_evaluate', { page, script: `setTimeout(() => { location = '${OUTSIDE}/location'; }, 0); 1` });
-  await sleep(1000);
+  await sleep(SETTLE);
   const stayed = await call('page_list', {});
   check(stayed.structured.pages.find(item => item.page === page).url === `${SITE}/page`, say('a page cannot navigate itself outside'), stayed.text);
   await call('page_evaluate', { page, script: `setTimeout(() => { location = 'file:///etc/passwd'; }, 0); 1` });
-  await sleep(300);
+  await sleep(SETTLE);
   check(hits.length === hitsBefore, say('nothing reached the disallowed origin'), hits.slice(hitsBefore));
   const redirected = await call('page_navigate', { page, url: `${SITE}/to-outside` });
   check(redirected.isError && /outside the origins/.test(redirected.text) && hits.length === hitsBefore, say('a redirect out is stopped'), redirected.text);
@@ -1090,7 +1097,7 @@ async function defaults() {
 
 async function reviewed() {
   const named = `http://localhost:${sitePort}`;
-  const quiet = async (c, page, script, what, wait = 700) => {
+  const quiet = async (c, page, script, what, wait = SETTLE) => {
     const before = hits.length;
     const answer = await c.call('page_evaluate', { page, script });
     await sleep(wait);
@@ -1119,18 +1126,20 @@ async function reviewed() {
     const pinging = (await c.call('page_open', { url: `${named}/ping` })).structured.page;
     const beforePing = hits.length;
     await c.call('page_click', { page: pinging, selector: '#link' });
-    await sleep(700);
+    await sleep(SETTLE);
     check(hits.length === beforePing, '<a ping> is held', hits.slice(beforePing));
     const iframe = await c.call('page_evaluate', { page, script: "const e = document.createElement('iframe'); document.body.append(e); typeof e.contentWindow.SharedWorker + ' ' + typeof e.contentWindow.navigator.serviceWorker" });
     check(iframe.structured.value === 'undefined undefined', 'a new frame has no service or shared workers', iframe.text);
-    await c.call('page_evaluate', { page, script: `const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:127.0.0.1:${stun.address().port}'}]}); pc.createDataChannel('x'); pc.createOffer().then(o => pc.setLocalDescription(o)); 1` });
-    await sleep(2000);
-    check(stunHits === 0, 'WebRTC sends no UDP of its own', stunHits);
+    await c.call('page_evaluate', { page, script: `window.pc = new RTCPeerConnection({iceServers: [{urls: 'stun:127.0.0.1:${stun.address().port}'}]}); pc.createDataChannel('x'); pc.createOffer().then(o => pc.setLocalDescription(o)); 1` });
+    // Its candidates gathered: what it would have sent, it has.
+    const gathered = await until(async () => (await c.call('page_evaluate', { page, script: 'pc.iceGatheringState' })).structured?.value === 'complete', 15000, 100);
+    check(gathered && stunHits === 0, 'WebRTC sends no UDP of its own', { gathered, stunHits });
 
     // ---- The logs, whose size a page chooses.
     await c.call('page_evaluate', { page, script: `console.log('x'.repeat(60000)); fetch('/second?' + 'q'.repeat(100000)); new Image().src = 'http://localhost:${outsidePort}/?' + 'r'.repeat(100000); 1` });
-    await sleep(500);
-    const logged = await c.call('page_network', { page });
+    // Logged once the requests have been made: wait for the cut one.
+    let logged = null;
+    await until(async () => (logged = await c.call('page_network', { page })).structured?.refusedByBounds?.some(item => item.url.includes('(cut)')), 5000, 50);
     check(logged.structured.items.length > 0 && logged.structured.items.every(item => item.url.length < 9000) && logged.structured.refusedByBounds.every(item => item.url.length < 9000) && logged.structured.refusedByBounds.some(item => item.url.includes('(cut)')), 'long addresses are cut in the logs', logged.text.length);
     const consoled = await c.call('page_console', { page });
     check(consoled.text.length < 20000, 'long console messages are cut', consoled.text.length);

@@ -2,6 +2,7 @@
 #pragma allow_unsafe_buffers
 #endif
 #include "zebkit/engine/permissions.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/permission_types.h"
 #include "zebkit/engine/view.h"
 #include <stdlib.h>
@@ -98,7 +99,7 @@ bool Scope(const char* text, bool wildcard, std::string* key, std::optional<url:
 }
 std::optional<Status> ViewRule(zebkit_view* view, const url::Origin& requesting,
                                 const url::Origin& embedding, Type type) {
-  if (!view || !view->web_contents()) return std::nullopt;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return std::nullopt;
   const auto revision = content::GetEmbedderContextPermissionRevision(
       view->web_contents()->GetBrowserContext(), requesting, embedding, type);
   const std::string keys[] = {RememberKey(requesting, embedding), requesting.Serialize(), "*"};
@@ -428,7 +429,7 @@ bool zebkit_view_set_permission(zebkit_view* view, const char* origin, const cha
                                 zebkit_permission_state state, char** error) {
   using namespace zebkit;
   auto fail = [&](const std::string& message) { if (error) *error = strdup(message.c_str()); return false; };
-  if (!Ready() || !view || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
   if (auto code = NamedCode(permission ? permission : "")) {
     if (!ValidState(state)) return fail("unknown permission or state");
     std::string key; std::optional<url::Origin> parsed;
@@ -452,7 +453,7 @@ bool zebkit_view_set_permission(zebkit_view* view, const char* origin, const cha
 }
 zebkit_permission_state zebkit_view_get_permission(zebkit_view* view, const char* origin, const char* permission) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents()) return ZEBKIT_PERMISSION_INVALID;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return ZEBKIT_PERMISSION_INVALID;
   if (auto code = NamedCode(permission ? permission : "")) {
     std::string key; std::optional<url::Origin> parsed;
     auto* main = view->web_contents()->GetPrimaryMainFrame();
@@ -489,7 +490,7 @@ zebkit_permission_state zebkit_view_get_permission(zebkit_view* view, const char
 bool zebkit_view_reset_permissions(zebkit_view* view, const char* origin, char** error) {
   using namespace zebkit;
   auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
-  if (!Ready() || !view || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
   std::optional<std::string> key;
   if (origin) {
     std::string parsed_key; std::optional<url::Origin> parsed;
@@ -511,13 +512,13 @@ bool zebkit_view_reset_permissions(zebkit_view* view, const char* origin, char**
 }
 bool zebkit_view_set_permission_timeout(zebkit_view* view, uint32_t milliseconds) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
   view->permission_timeout_ms_ = milliseconds;
   return true;
 }
 void zebkit_view_on_permission(zebkit_view* view, zebkit_permission_func function, void* data) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents()) return;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   if (view->on_permission_ == function && view->on_permission_data_ == data) return;
   Expire(nullptr, view);
   auto weak = view->GetWeakPtr();
@@ -531,7 +532,7 @@ void zebkit_view_on_permission(zebkit_view* view, zebkit_permission_func functio
 }
 void zebkit_view_on_permission_result(zebkit_view* view, zebkit_permission_result_func function, void* data) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents()) return;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   view->on_permission_result_ = function; view->on_permission_result_data_ = data;
 }
 char* zebkit_permission_request_info(zebkit_permission_request* handle) {

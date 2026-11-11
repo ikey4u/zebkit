@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Draw zebkit's logo: docs/images/logo-mark.svg (the mark, a globe banded
 like a zebra) and docs/images/logo.svg (the mark and the name, which follows
 GitHub's light and dark themes).

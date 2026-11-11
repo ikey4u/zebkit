@@ -12,7 +12,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "zebkit/engine/dock.h"
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
 #include "dbus/bus.h"
 #include "dbus/exported_object.h"
@@ -26,7 +26,7 @@ namespace {
 
 bool g_urgent = false;
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 void Send(const DockState& state) {
   scoped_refptr<dbus::Bus> bus = dbus_thread_linux::GetSharedSessionBus();
   static dbus::ExportedObject* object =
@@ -66,14 +66,14 @@ DockState& Last() {
 
 void ApplyDockState(const DockState& state) {
   Last() = state;
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   Send(state);
 #endif
 }
 
 void RequestDockAttention(bool critical) {
   g_urgent = true;
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   Send(Last());
 #endif
   g_urgent = false;

@@ -7,7 +7,7 @@
 #   scripts/playwright-sources.sh [playwright checkout]
 #
 # Without a checkout, Playwright is fetched at the pin into .cache/playwright.
-# Needs Node.js (mise's node@24) and the network once, for esbuild.
+# Needs Node.js (at mise.toml's pin) and the network once, for esbuild.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -26,18 +26,9 @@ fi
 head="$(git -C "$checkout" rev-parse HEAD)"
 [[ "$head" == "$PLAYWRIGHT_COMMIT" ]] || die "$checkout is at $head, not the pinned $PLAYWRIGHT_COMMIT"
 
-node=(node)
-command -v mise > /dev/null && node=(mise exec node@24 -- node)
+node=("${node_cmd[@]}")
 tools="$CACHE_DIR/playwright-tools"
-if [[ ! -d "$tools/node_modules/esbuild" || ! -d "$tools/node_modules/yaml" ]]; then
-    log "installing esbuild $PLAYWRIGHT_ESBUILD_VERSION and yaml $PLAYWRIGHT_YAML_VERSION"
-    mkdir -p "$tools"
-    # With playwright-core, which the directory holds for the tests and the
-    # benchmark: an install without --save removes what it is not given.
-    (cd "$tools" && "${node[@]/%node/npm}" install --silent --no-save \
-        "esbuild@$PLAYWRIGHT_ESBUILD_VERSION" "yaml@$PLAYWRIGHT_YAML_VERSION" \
-        "playwright-core@$PLAYWRIGHT_CORE_VERSION")
-fi
+ensure_npm "$tools" "${playwright_tools[@]}"
 
 "${node[@]}" "$ZEBKIT_ROOT/scripts/playwright-sources.mjs" "$checkout" "$tools/node_modules/esbuild" "$PLAYWRIGHT_COMMIT"
 cp "$checkout/LICENSE" "$ZEBKIT_ROOT/src/engine/playwright/LICENSE"

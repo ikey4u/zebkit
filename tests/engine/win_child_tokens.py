@@ -3,6 +3,10 @@
     win_child_tokens.py <program name>
 
 Prints one line per process of that name; the first has no parent of the name.
+
+A diagnostic, run by hand on a Windows machine while a sandboxed program runs
+(for instance win-host-sandbox in scripts/engine-test.sh's work directory, with
+ENGINE_TEST_KEEP_WORK=1), not a test the suite runs: it checks nothing itself.
 """
 
 import ctypes

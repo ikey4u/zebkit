@@ -2,24 +2,21 @@
 //! programs, downloads, client certificates, file choosers, media, keys, the
 //! context menu and fullscreen. Requests are engine-thread, single-use objects.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::ffi::{c_char, c_void, CString};
 use std::rc::Rc;
 
 use zebkit_rs as sys;
 
-use crate::view::{Inner, View};
+use crate::view::{hold, View};
+use crate::Slot;
 use crate::Error;
 
 fn text(json: *const c_char) -> String {
-    if json.is_null() { return String::new(); }
-    unsafe { std::ffi::CStr::from_ptr(json) }.to_string_lossy().into_owned()
+    unsafe { crate::string_from(json) }.unwrap_or_default()
 }
 fn owned(raw: *mut c_char) -> Option<String> {
-    if raw.is_null() { return None; }
-    let value = text(raw);
-    unsafe { sys::zebkit_free(raw.cast()) };
-    Some(value)
+    unsafe { crate::take_string(raw) }
 }
 fn cstring(value: &str) -> Result<CString, Error> {
     CString::new(value).map_err(|_| Error::new("a string contains NUL"))
@@ -28,17 +25,18 @@ fn optional(value: &Option<CString>) -> *const c_char {
     value.as_ref().map_or(std::ptr::null(), |value| value.as_ptr())
 }
 
-// A function and how many times it was replaced, so that one a handler replaced
-// from inside itself is not put back.
-pub(crate) struct Hook<T: ?Sized> {
-    function: RefCell<Option<Box<T>>>,
-    generation: Cell<u64>,
-}
-impl<T: ?Sized> Default for Hook<T> {
-    fn default() -> Self {
-        Hook { function: RefCell::new(None), generation: Cell::new(0) }
+/// A call that sets `char **error` when it fails: `Err` with what the
+/// engine said, or `fallback`.
+fn answered(fallback: &str, call: impl FnOnce(*mut *mut c_char) -> bool) -> Result<(), Error> {
+    let mut error = std::ptr::null_mut();
+    if call(&mut error) {
+        Ok(())
+    } else {
+        Err(unsafe { crate::take_error(error, fallback) })
     }
 }
+
+type Hook<T> = Slot<T>;
 type Asked<T> = Hook<dyn FnMut(T)>;
 type Told = Hook<dyn FnMut(&str)>;
 type NetworkBody = Hook<dyn FnMut(&str, &[u8], bool, bool)>;
@@ -53,9 +51,9 @@ macro_rules! slots {
         }
         impl Slots {
             pub(crate) fn clear(&self) {
-                $(self.$asked.function.borrow_mut().take();)*
-                $(self.$told.function.borrow_mut().take();)*
-                self.network_body.function.borrow_mut().take();
+                $(self.$asked.set(None);)*
+                $(self.$told.set(None);)*
+                self.network_body.set(None);
             }
         }
     };
@@ -104,14 +102,29 @@ slots!(network: NetworkRequest, download: DownloadRequest, client_certificate: C
        eye_dropper_result, device_chooser_result, share_result, external_protocol, download_progress, client_certificate_result, file_chooser_result,
        media_access_result, network_event, reserved_key, context_menu, fullscreen);
 
+// The methods that answer with a bool are older than their `try_` forms,
+// which give what the engine said when it refused.
+
 impl DownloadRequest {
-    /// Save at an absolute path; false when stale or invalid.
+    /// Save at an absolute path; false when stale or invalid ([`DownloadRequest::try_save`] says why).
     pub fn save(&self, path: &str) -> Result<bool, Error> {
         let path = cstring(path)?;
-        Ok(unsafe { sys::zebkit_download_respond(self.raw, 0, path.as_ptr(), std::ptr::null_mut()) })
+        Ok(self.respond(0, path.as_ptr()).is_ok())
     }
     pub fn cancel(&self) -> bool {
-        unsafe { sys::zebkit_download_respond(self.raw, 1, std::ptr::null(), std::ptr::null_mut()) }
+        self.respond(1, std::ptr::null()).is_ok()
+    }
+    /// [`DownloadRequest::save`], with the engine's reason when it refuses.
+    pub fn try_save(&self, path: &str) -> Result<(), Error> {
+        let path = cstring(path)?;
+        self.respond(0, path.as_ptr())
+    }
+    /// [`DownloadRequest::cancel`], with the engine's reason when it refuses.
+    pub fn try_cancel(&self) -> Result<(), Error> {
+        self.respond(1, std::ptr::null())
+    }
+    fn respond(&self, action: std::os::raw::c_int, path: *const c_char) -> Result<(), Error> {
+        answered("the download was not answered", |error| unsafe { sys::zebkit_download_respond(self.raw, action, path, error) })
     }
 }
 
@@ -125,18 +138,36 @@ pub enum ClientCertificateAction {
 
 impl ClientCertificateRequest {
     pub fn respond(&self, action: ClientCertificateAction) -> bool {
-        let action = if action == ClientCertificateAction::None { 0 } else { 2 };
-        unsafe { sys::zebkit_client_certificate_respond(self.raw, action, std::ptr::null(), std::ptr::null(), std::ptr::null_mut()) }
+        self.try_respond(action).is_ok()
     }
     /// A PEM chain, leaf first, with its PEM private key.
     pub fn provide(&self, certificate_pem: &str, key_pem: &str) -> Result<bool, Error> {
         let (certificate, key) = (cstring(certificate_pem)?, cstring(key_pem)?);
-        Ok(unsafe { sys::zebkit_client_certificate_respond(self.raw, 1, certificate.as_ptr(), key.as_ptr(), std::ptr::null_mut()) })
+        Ok(self.answer(1, certificate.as_ptr(), key.as_ptr()).is_ok())
     }
     /// One of the metadata's `identities`, the system store's (the engine
     /// setting `clientCertificateStores`): its key stays in the store.
     pub fn choose(&self, index: usize) -> bool {
-        unsafe { sys::zebkit_client_certificate_choose(self.raw, index, std::ptr::null_mut()) }
+        self.try_choose(index).is_ok()
+    }
+    /// [`ClientCertificateRequest::respond`], with the engine's reason when it refuses.
+    pub fn try_respond(&self, action: ClientCertificateAction) -> Result<(), Error> {
+        let action = if action == ClientCertificateAction::None { 0 } else { 2 };
+        self.answer(action, std::ptr::null(), std::ptr::null())
+    }
+    /// [`ClientCertificateRequest::provide`], with the engine's reason when it refuses.
+    pub fn try_provide(&self, certificate_pem: &str, key_pem: &str) -> Result<(), Error> {
+        let (certificate, key) = (cstring(certificate_pem)?, cstring(key_pem)?);
+        self.answer(1, certificate.as_ptr(), key.as_ptr())
+    }
+    /// [`ClientCertificateRequest::choose`], with the engine's reason when it refuses.
+    pub fn try_choose(&self, index: usize) -> Result<(), Error> {
+        answered("the certificate was not chosen", |error| unsafe { sys::zebkit_client_certificate_choose(self.raw, index, error) })
+    }
+    fn answer(&self, action: std::os::raw::c_int, certificate: *const c_char, key: *const c_char) -> Result<(), Error> {
+        answered("the certificate request was not answered", |error| unsafe {
+            sys::zebkit_client_certificate_respond(self.raw, action, certificate, key, error)
+        })
     }
 }
 
@@ -144,8 +175,18 @@ impl FileChooserRequest {
     /// Absolute paths; none cancels.
     pub fn respond(&self, paths: &[&str]) -> Result<bool, Error> {
         let owned = paths.iter().map(|path| cstring(path)).collect::<Result<Vec<_>, _>>()?;
-        let pointers: Vec<_> = owned.iter().map(|path| path.as_ptr()).collect();
-        Ok(unsafe { sys::zebkit_file_chooser_respond(self.raw, pointers.as_ptr(), pointers.len(), std::ptr::null_mut()) })
+        Ok(self.answer(&owned).is_ok())
+    }
+    /// [`FileChooserRequest::respond`], with the engine's reason when it refuses.
+    pub fn try_respond(&self, paths: &[&str]) -> Result<(), Error> {
+        let owned = paths.iter().map(|path| cstring(path)).collect::<Result<Vec<_>, _>>()?;
+        self.answer(&owned)
+    }
+    fn answer(&self, paths: &[CString]) -> Result<(), Error> {
+        let pointers: Vec<_> = paths.iter().map(|path| path.as_ptr()).collect();
+        answered("the file chooser was not answered", |error| unsafe {
+            sys::zebkit_file_chooser_respond(self.raw, pointers.as_ptr(), pointers.len(), error)
+        })
     }
 }
 
@@ -181,25 +222,51 @@ impl ShareRequest {
 }
 
 impl NetworkRequest {
-    /// A reply as `<zebkit/hooks.h>` says, as JSON; false when stale or invalid.
+    /// A reply as `<zebkit/hooks.h>` says, as JSON; false when stale or invalid
+    /// ([`NetworkRequest::try_respond`] says why).
     pub fn respond(&self, reply_json: &str, body: &[u8]) -> Result<bool, Error> {
         let reply = cstring(reply_json)?;
-        Ok(unsafe { sys::zebkit_network_respond(self.raw, reply.as_ptr(), body.as_ptr().cast(), body.len(), std::ptr::null_mut()) })
+        Ok(self.answer(&reply, body).is_ok())
     }
     /// Fulfills from an absolute path; `reply_json` is `{status, headers}`.
     pub fn respond_file(&self, reply_json: &str, path: &str) -> Result<bool, Error> {
         let (reply, path) = (cstring(reply_json)?, cstring(path)?);
-        Ok(unsafe { sys::zebkit_network_respond_file(self.raw, reply.as_ptr(), path.as_ptr(), std::ptr::null_mut()) })
+        Ok(self.answer_file(&reply, &path).is_ok())
     }
     /// Fulfills with what the stream is given; None when stale or invalid.
     pub fn respond_stream(&self, reply_json: &str) -> Result<Option<NetworkStream>, Error> {
         let reply = cstring(reply_json)?;
-        let raw = unsafe { sys::zebkit_network_respond_stream(self.raw, reply.as_ptr(), std::ptr::null_mut()) };
-        Ok((!raw.is_null()).then(|| NetworkStream {
-            raw: Cell::new(raw),
-            writable: Box::new(RefCell::new(None)),
-            _thread: std::marker::PhantomData,
-        }))
+        Ok(self.answer_stream(&reply).ok())
+    }
+    /// [`NetworkRequest::respond`], with the engine's reason when it refuses.
+    pub fn try_respond(&self, reply_json: &str, body: &[u8]) -> Result<(), Error> {
+        self.answer(&cstring(reply_json)?, body)
+    }
+    /// [`NetworkRequest::respond_file`], with the engine's reason when it refuses.
+    pub fn try_respond_file(&self, reply_json: &str, path: &str) -> Result<(), Error> {
+        self.answer_file(&cstring(reply_json)?, &cstring(path)?)
+    }
+    /// [`NetworkRequest::respond_stream`], with the engine's reason when it refuses.
+    pub fn try_respond_stream(&self, reply_json: &str) -> Result<NetworkStream, Error> {
+        self.answer_stream(&cstring(reply_json)?)
+    }
+    fn answer(&self, reply: &CString, body: &[u8]) -> Result<(), Error> {
+        answered("the request was not answered", |error| unsafe {
+            sys::zebkit_network_respond(self.raw, reply.as_ptr(), body.as_ptr().cast(), body.len(), error)
+        })
+    }
+    fn answer_file(&self, reply: &CString, path: &CString) -> Result<(), Error> {
+        answered("the request was not answered", |error| unsafe {
+            sys::zebkit_network_respond_file(self.raw, reply.as_ptr(), path.as_ptr(), error)
+        })
+    }
+    fn answer_stream(&self, reply: &CString) -> Result<NetworkStream, Error> {
+        let mut error = std::ptr::null_mut();
+        let raw = unsafe { sys::zebkit_network_respond_stream(self.raw, reply.as_ptr(), &mut error) };
+        if raw.is_null() {
+            return Err(unsafe { crate::take_error(error, "the request was not answered") });
+        }
+        Ok(NetworkStream { raw: Cell::new(raw), writable: Box::default(), _thread: std::marker::PhantomData })
     }
 }
 
@@ -208,7 +275,7 @@ impl NetworkRequest {
 pub struct NetworkStream {
     raw: Cell<*mut sys::zebkit_network_stream>,
     // Boxed: the engine has its address.
-    writable: Box<RefCell<Option<Box<dyn FnMut()>>>>,
+    writable: Box<Slot<dyn FnMut()>>,
     _thread: std::marker::PhantomData<Rc<()>>,
 }
 impl NetworkStream {
@@ -220,16 +287,13 @@ impl NetworkStream {
     /// Once after a write that returned false: it fits, or `is_open` is false.
     pub fn on_writable<F: FnMut() + 'static>(&self, function: F) {
         unsafe extern "C" fn trampoline(_: *mut sys::zebkit_network_stream, data: *mut c_void) {
-            let slot = &*data.cast_const().cast::<RefCell<Option<Box<dyn FnMut()>>>>();
-            let Some(mut function) = slot.borrow_mut().take() else { return };
-            function();
-            let mut current = slot.borrow_mut();
-            if current.is_none() { *current = Some(function); }
+            let slot = &*data.cast_const().cast::<Slot<dyn FnMut()>>();
+            slot.call(|function| function());
         }
         let raw = self.raw.get();
         if raw.is_null() { return; }
-        *self.writable.borrow_mut() = Some(Box::new(function));
-        let data = (&*self.writable as *const RefCell<Option<Box<dyn FnMut()>>>).cast_mut().cast::<c_void>();
+        self.writable.set(Some(Box::new(function)));
+        let data = (&*self.writable as *const Slot<dyn FnMut()>).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_network_stream_on_writable(raw, Some(trampoline), data) };
     }
     pub fn is_open(&self) -> bool {
@@ -256,21 +320,12 @@ macro_rules! asked {
         impl View {
             pub fn $on<F: FnMut($request) + 'static>(&self, function: F) {
                 unsafe extern "C" fn trampoline(_: *mut sys::zebkit_view, raw: *mut $raw, json: *const c_char, data: *mut c_void) {
-                    let pointer = data.cast_const().cast::<Inner>();
-                    Rc::increment_strong_count(pointer);
-                    let inner = Rc::from_raw(pointer);
-                    let hook = &inner.hooks.$slot;
-                    let generation = hook.generation.get();
-                    let Some(mut function) = hook.function.borrow_mut().take() else { return };
-                    function($request { raw, metadata: text(json), _thread: std::marker::PhantomData });
-                    if hook.generation.get() == generation && !inner.raw.get().is_null() {
-                        *hook.function.borrow_mut() = Some(function);
-                    }
+                    let inner = hold(data);
+                    let metadata = text(json);
+                    inner.hooks.$slot.call(|function| function($request { raw, metadata, _thread: std::marker::PhantomData }));
                 }
                 let Some(raw) = self.raw() else { return };
-                let hook = &self.inner.hooks.$slot;
-                hook.generation.set(hook.generation.get().wrapping_add(1));
-                *hook.function.borrow_mut() = Some(Box::new(function));
+                self.inner.hooks.$slot.set(Some(Box::new(function)));
                 unsafe { $setter(raw, None, std::ptr::null_mut()) };
                 let Some(raw) = self.raw() else { return };
                 let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
@@ -278,9 +333,7 @@ macro_rules! asked {
             }
             pub fn $clear(&self) {
                 let Some(raw) = self.raw() else { return };
-                let hook = &self.inner.hooks.$slot;
-                hook.generation.set(hook.generation.get().wrapping_add(1));
-                hook.function.borrow_mut().take();
+                self.inner.hooks.$slot.set(None);
                 unsafe { $setter(raw, None, std::ptr::null_mut()) };
             }
         }
@@ -291,29 +344,18 @@ macro_rules! told {
         impl View {
             pub fn $on<F: FnMut(&str) + 'static>(&self, function: F) {
                 unsafe extern "C" fn trampoline(_: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-                    let pointer = data.cast_const().cast::<Inner>();
-                    Rc::increment_strong_count(pointer);
-                    let inner = Rc::from_raw(pointer);
-                    let hook = &inner.hooks.$slot;
-                    let generation = hook.generation.get();
-                    let Some(mut function) = hook.function.borrow_mut().take() else { return };
-                    function(&text(json));
-                    if hook.generation.get() == generation && !inner.raw.get().is_null() {
-                        *hook.function.borrow_mut() = Some(function);
-                    }
+                    let inner = hold(data);
+                    let json = text(json);
+                    inner.hooks.$slot.call(|function| function(&json));
                 }
                 let Some(raw) = self.raw() else { return };
-                let hook = &self.inner.hooks.$slot;
-                hook.generation.set(hook.generation.get().wrapping_add(1));
-                *hook.function.borrow_mut() = Some(Box::new(function));
+                self.inner.hooks.$slot.set(Some(Box::new(function)));
                 let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
                 unsafe { $setter(raw, Some(trampoline), data) };
             }
             pub fn $clear(&self) {
                 let Some(raw) = self.raw() else { return };
-                let hook = &self.inner.hooks.$slot;
-                hook.generation.set(hook.generation.get().wrapping_add(1));
-                hook.function.borrow_mut().take();
+                self.inner.hooks.$slot.set(None);
                 unsafe { $setter(raw, None, std::ptr::null_mut()) };
             }
         }
@@ -345,40 +387,38 @@ impl View {
     /// `function(request id, bytes, end, truncated)` for what a rule with `body: true` matches.
     pub fn on_network_body<F: FnMut(&str, &[u8], bool, bool) + 'static>(&self, function: F) {
         unsafe extern "C" fn trampoline(_: *mut sys::zebkit_view, id: *const c_char, bytes: *const c_void, size: usize, end: bool, truncated: bool, data: *mut c_void) {
-            let pointer = data.cast_const().cast::<Inner>();
-            Rc::increment_strong_count(pointer);
-            let inner = Rc::from_raw(pointer);
-            let hook = &inner.hooks.network_body;
-            let generation = hook.generation.get();
-            let Some(mut function) = hook.function.borrow_mut().take() else { return };
+            let inner = hold(data);
             let chunk = if size == 0 { &[][..] } else { std::slice::from_raw_parts(bytes.cast::<u8>(), size) };
-            function(&text(id), chunk, end, truncated);
-            if hook.generation.get() == generation && !inner.raw.get().is_null() {
-                *hook.function.borrow_mut() = Some(function);
-            }
+            let id = text(id);
+            inner.hooks.network_body.call(|function| function(&id, chunk, end, truncated));
         }
         let Some(raw) = self.raw() else { return };
-        let hook = &self.inner.hooks.network_body;
-        hook.generation.set(hook.generation.get().wrapping_add(1));
-        *hook.function.borrow_mut() = Some(Box::new(function));
+        self.inner.hooks.network_body.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_network_body(raw, Some(trampoline), data) };
     }
     pub fn clear_network_body_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        let hook = &self.inner.hooks.network_body;
-        hook.generation.set(hook.generation.get().wrapping_add(1));
-        hook.function.borrow_mut().take();
+        self.inner.hooks.network_body.set(None);
         unsafe { sys::zebkit_view_on_network_body(raw, None, std::ptr::null_mut()) };
     }
     /// This view's filter also decides for its profile's shared and service workers.
     pub fn set_network_filter_for_workers(&self, on: bool) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_network_filter_for_workers(raw, on) })
     }
-    /// A JSON array of rules, as `<zebkit/hooks.h>` says.
+    /// A JSON array of rules, as `<zebkit/hooks.h>` says; false when refused
+    /// ([`View::try_set_network_filter`] says why).
     pub fn set_network_filter(&self, rules_json: &str) -> Result<bool, Error> {
         let rules = cstring(rules_json)?;
-        Ok(self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_network_filter(raw, rules.as_ptr(), std::ptr::null_mut()) }))
+        Ok(self.network_filter(&rules).is_ok())
+    }
+    /// [`View::set_network_filter`], with the engine's reason when it refuses.
+    pub fn try_set_network_filter(&self, rules_json: &str) -> Result<(), Error> {
+        self.network_filter(&cstring(rules_json)?)
+    }
+    fn network_filter(&self, rules: &CString) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        answered("network filter rejected", |error| unsafe { sys::zebkit_view_set_network_filter(raw, rules.as_ptr(), error) })
     }
     pub fn set_network_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_network_timeout(raw, milliseconds) })
@@ -417,7 +457,7 @@ impl View {
         if unsafe { sys::zebkit_view_context_menu_run(raw, menu_id, command.as_ptr(), &mut error) } {
             Ok(())
         } else {
-            Err(Error::new(owned(error).unwrap_or_else(|| "the context menu's command was refused".into())))
+            Err(unsafe { crate::take_error(error, "the context menu's command was refused") })
         }
     }
     /// Shows a menu where menu `menu_id` was asked for: the default items
@@ -426,7 +466,8 @@ impl View {
     pub fn context_menu_show<F: FnOnce(&str) + 'static>(&self, menu_id: u64, items_json: Option<&str>, function: Option<F>) -> Result<(), Error> {
         unsafe extern "C" fn trampoline<F: FnOnce(&str)>(_: *mut sys::zebkit_view, item: *const c_char, data: *mut c_void) {
             let function = Box::from_raw(data.cast::<F>());
-            function(&text(item));
+            let item = text(item);
+            crate::guard(|| function(&item));
         }
         let items = items_json.map(cstring).transpose()?;
         let Some(raw) = self.raw() else { return Err(Error::new("the view is closed")) };
@@ -441,21 +482,39 @@ impl View {
             if !data.is_null() {
                 drop(unsafe { Box::from_raw(data.cast::<F>()) });
             }
-            Err(Error::new(owned(error).unwrap_or_else(|| "the context menu was refused".into())))
+            Err(unsafe { crate::take_error(error, "the context menu was refused") })
         }
     }
     /// A script before the page's, in the named isolated world or (None) the page's.
     pub fn add_world_script(&self, source: &str, world: Option<&str>, main_frame_only: bool) -> Result<bool, Error> {
         let source = cstring(source)?;
         let world = world.map(cstring).transpose()?;
-        Ok(self.raw().is_some_and(|raw| unsafe {
-            sys::zebkit_view_add_world_script(raw, optional(&world), source.as_ptr(), main_frame_only, std::ptr::null_mut())
-        }))
+        Ok(self.world_script(&source, &world, main_frame_only).is_ok())
+    }
+    /// [`View::add_world_script`], with the engine's reason when it refuses.
+    pub fn try_add_world_script(&self, source: &str, world: Option<&str>, main_frame_only: bool) -> Result<(), Error> {
+        let source = cstring(source)?;
+        let world = world.map(cstring).transpose()?;
+        self.world_script(&source, &world, main_frame_only)
+    }
+    fn world_script(&self, source: &CString, world: &Option<CString>, main_frame_only: bool) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        answered("script or world name rejected", |error| unsafe {
+            sys::zebkit_view_add_world_script(raw, optional(world), source.as_ptr(), main_frame_only, error)
+        })
     }
     /// Keys the page does not get, as a JSON array of "Ctrl+Shift+KeyI".
     pub fn set_reserved_keys(&self, keys_json: &str) -> Result<bool, Error> {
         let keys = cstring(keys_json)?;
-        Ok(self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_reserved_keys(raw, keys.as_ptr(), std::ptr::null_mut()) }))
+        Ok(self.reserved_keys(&keys).is_ok())
+    }
+    /// [`View::set_reserved_keys`], with the engine's reason when it refuses.
+    pub fn try_set_reserved_keys(&self, keys_json: &str) -> Result<(), Error> {
+        self.reserved_keys(&cstring(keys_json)?)
+    }
+    fn reserved_keys(&self, keys: &CString) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        answered("reserved keys rejected", |error| unsafe { sys::zebkit_view_set_reserved_keys(raw, keys.as_ptr(), error) })
     }
     pub fn set_fullscreen_policy(&self, policy: FullscreenPolicy) -> bool {
         let policy = if policy == FullscreenPolicy::Allow { 0 } else { 1 };

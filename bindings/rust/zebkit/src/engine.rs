@@ -7,11 +7,19 @@ use std::os::raw::{c_char, c_int};
 use std::time::Duration;
 
 type WakeupFunction = dyn Fn(Duration) + Send + Sync;
-static WAKEUP: std::sync::Mutex<Option<Box<WakeupFunction>>> = std::sync::Mutex::new(None);
+static WAKEUP: std::sync::Mutex<Option<std::sync::Arc<WakeupFunction>>> = std::sync::Mutex::new(None);
+
+fn wakeup_slot() -> std::sync::MutexGuard<'static, Option<std::sync::Arc<WakeupFunction>>> {
+    // Nothing panics while holding it, but a poisoned lock still holds the function.
+    WAKEUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 unsafe extern "C" fn on_wakeup(delay_ms: i64, _data: *mut std::ffi::c_void) {
-    let wakeup = WAKEUP.lock().expect("wakeup callback lock");
-    if let Some(function) = wakeup.as_ref() {
+    // Out of the lock while it runs; it may run on any thread, so a panic
+    // in it is not resumed (it would be lost there): the process aborts,
+    // as the documentation of set_wakeup() says.
+    let function = wakeup_slot().clone();
+    if let Some(function) = function {
         function(Duration::from_millis(delay_ms.max(0) as u64));
     }
 }
@@ -20,11 +28,14 @@ unsafe extern "C" fn on_wakeup(delay_ms: i64, _data: *mut std::ffi::c_void) {
 /// The callback may run on any engine thread: only queue a host event/timer;
 /// never call zebkit or block. Keep the earliest outstanding deadline, then
 /// consume it before calling [`pump`]. The callback is retained until shutdown.
+/// It must not panic: a panic there aborts the process.
 pub fn set_wakeup<F: Fn(Duration) + Send + Sync + 'static>(function: F) -> bool {
+    // In place before the engine may call it.
+    let previous = wakeup_slot().replace(std::sync::Arc::new(function));
     if !unsafe { sys::zebkit_set_wakeup(Some(on_wakeup), std::ptr::null_mut()) } {
+        *wakeup_slot() = previous;
         return false;
     }
-    *WAKEUP.lock().expect("wakeup callback lock") = Some(Box::new(function));
     true
 }
 
@@ -33,13 +44,31 @@ pub fn clear_wakeup() -> bool {
     if !unsafe { sys::zebkit_set_wakeup(None, std::ptr::null_mut()) } {
         return false;
     }
-    WAKEUP.lock().expect("wakeup callback lock").take();
+    wakeup_slot().take();
     true
 }
 
 thread_local! {
     /// Whether this thread is the engine's: the one in [`run`].
     static ENGINE_THREAD: Cell<bool> = const { Cell::new(false) };
+    /// Whether [`run`]'s loop is running, which a panic ends.
+    static IN_RUN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// After a callback panicked ([`crate::guard`]): [`run`]'s loop ends, and
+/// resumes the panic; an application's own loop gets it from its next
+/// [`pump`] (or [`shutdown`]), which the [`set_wakeup`] function, when there
+/// is one, is asked for at once, as for work that is due now.
+pub(crate) fn stop_after_panic() {
+    if IN_RUN.with(Cell::get) {
+        unsafe { sys::zebkit_quit() }
+        return;
+    }
+    // Out of the lock while it runs, as on_wakeup() calls it.
+    let function = wakeup_slot().clone();
+    if let Some(function) = function {
+        function(Duration::ZERO);
+    }
 }
 
 /// Panics unless this is the engine's thread, for what the engine does on
@@ -93,7 +122,8 @@ pub fn set_cookie_encryption_key(key: Option<&[u8; 32]>) -> bool {
 
 /// Starts the engine with the program's arguments, calls `ready` once views
 /// can be made, and runs until [`quit`]. Returns the exit code for the
-/// process.
+/// process. A closure the engine called that panicked ends the loop, and
+/// its panic is resumed here.
 ///
 /// Chromium's switches among the arguments are honoured:
 /// `--remote-debugging-port=9222` (CDP, as Chrome serves it),
@@ -126,8 +156,21 @@ where
 
 /// Processes currently ready engine and native events without waiting.
 /// False on the wrong thread, outside the engine's life, or inside a callback.
+///
+/// # Panics
+///
+/// With the panic of a closure the engine called, during this pump or
+/// since the last one (a closure can be called outside a pump: a page's call
+/// answered, a view closed). When it panicked, the [`set_wakeup`] function is
+/// asked for a pump at once, so that a host that pumps on its wakeups gets
+/// the panic without waiting for other work; a host that pumps on a timer
+/// gets it at its next tick. Only the first panic is kept until then: closures
+/// that panic after it, before it is resumed, have their panics dropped (each
+/// panic's message is still printed by the panic hook as it happens).
 pub fn pump() -> bool {
-    unsafe { sys::zebkit_pump() }
+    let pumped = unsafe { sys::zebkit_pump() };
+    crate::resume_panic();
+    pumped
 }
 
 /// Initializes with strict JSON startup settings, overriding matching argv
@@ -161,7 +204,9 @@ pub fn shutdown() -> bool {
         return false;
     }
     ENGINE_THREAD.with(|engine| engine.set(false));
-    WAKEUP.lock().expect("wakeup callback lock").take();
+    wakeup_slot().take();
+    crate::view::release_automation_closures();
+    crate::resume_panic();
     true
 }
 
@@ -186,14 +231,18 @@ where
     };
     let trampoline = call_once_for(&ready);
     let data = Box::into_raw(Box::new(ready));
+    let was_running = IN_RUN.with(|running| running.replace(true));
     let result = unsafe { sys::zebkit_main(argc, argv.as_mut_ptr(), Some(trampoline), data.cast()) };
+    IN_RUN.with(|running| running.set(was_running));
     if called.get() {
         ENGINE_THREAD.with(|engine| engine.set(false));
+        crate::view::release_automation_closures();
     } else {
         // A failed/rejected startup never transferred the closure to the
         // trampoline. Reclaim it without changing an existing engine's flag.
         drop(unsafe { Box::from_raw(data) });
     }
+    crate::resume_panic();
     result
 }
 
@@ -219,17 +268,23 @@ pub fn quit() {
     unsafe { sys::zebkit_quit() }
 }
 
-/// Runs `function` on the engine's thread. Any thread may call it.
+/// Runs `function` on the engine's thread. Any thread may call it. Before
+/// the engine has started and once it has stopped, `function` is dropped
+/// and never runs.
 pub fn post<F: FnOnce() + Send + 'static>(function: F) {
     let data = Box::into_raw(Box::new(function));
-    unsafe { sys::zebkit_post_task(call_once::<F>, data.cast()) }
+    if !unsafe { sys::zebkit_post_task(call_once::<F>, data.cast()) } {
+        drop(unsafe { Box::from_raw(data) });
+    }
 }
 
 /// Runs `function` on the engine's thread `delay` from now. Any thread may
-/// call it.
+/// call it; as [`post`], it never runs outside the engine's life.
 pub fn post_after<F: FnOnce() + Send + 'static>(delay: Duration, function: F) {
     let data = Box::into_raw(Box::new(function));
-    unsafe { sys::zebkit_post_delayed_task(call_once::<F>, data.cast(), milliseconds(delay)) }
+    if !unsafe { sys::zebkit_post_delayed_task(call_once::<F>, data.cast(), milliseconds(delay)) } {
+        drop(unsafe { Box::from_raw(data) });
+    }
 }
 
 /// Runs `function`, which need not be `Send`, `delay` from now. On the
@@ -237,7 +292,9 @@ pub fn post_after<F: FnOnce() + Send + 'static>(delay: Duration, function: F) {
 pub fn after<F: FnOnce() + 'static>(delay: Duration, function: F) {
     require_engine_thread("after()");
     let data = Box::into_raw(Box::new(function));
-    unsafe { sys::zebkit_post_delayed_task(call_once::<F>, data.cast(), milliseconds(delay)) }
+    if !unsafe { sys::zebkit_post_delayed_task(call_once::<F>, data.cast(), milliseconds(delay)) } {
+        drop(unsafe { Box::from_raw(data) });
+    }
 }
 
 fn milliseconds(delay: Duration) -> u32 {

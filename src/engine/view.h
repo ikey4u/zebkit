@@ -20,6 +20,7 @@
 #include "base/values.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "url/gurl.h"
@@ -64,6 +65,10 @@ struct PageCall {
 
   // The page's view, for zebkit.app; null for the application's script.
   zebkit_view* view = nullptr;
+  // The page's document, and the application's script that called: what they
+  // open (zebkit.pdf) is theirs alone, and goes with them.
+  content::WeakDocumentPtr document;
+  const void* script = nullptr;
   CallReply reply;
   // Set beside reply for a page's call; either answers it.
   TextReply text_reply;
@@ -94,6 +99,12 @@ std::optional<std::string> GetBytes(const base::Value* value);
 // closed with it.
 void CallPdf(PageCall call);
 void ClosePdfsOf(const zebkit_view* view);
+// Those of a view's documents that have gone (navigated away, frame deleted).
+// While RenderFrameDeleted(@frame), that frame's too.
+void ClosePdfsOfGoneDocuments(const zebkit_view* view,
+                              const content::RenderFrameHost* frame = nullptr);
+// Those an application's script opened, when it ends.
+void ClosePdfsOfScript(const void* script);
 
 // The view of a page, or null.
 zebkit_view* ViewOf(content::WebContents* contents);
@@ -113,6 +124,12 @@ void HandlePopup(content::WebContents* opener,
 // window.open's features ask for when they do, else its opener's.
 void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup,
                        const blink::mojom::WindowFeatures& features);
+// The application's ZEBKIT_MODIFIER_* as Blink's (offscreen.cc), for
+// off-screen input and drags.
+int BlinkModifiers(unsigned modifiers);
+// A closing view's off-screen state goes before its on_close, so that what
+// it tells the application (a popup closing) has the view still alive.
+void DestroyOffscreen(zebkit_view* view);
 // Whether a window.open() waits, in the opener's script, for its popup's
 // DevTools session (automation holds popups as Chromium's DevTools does with
 // Target.setAutoAttach, so their first script has the context's scripts).
@@ -209,6 +226,17 @@ struct zebkit_view : public content::WebContentsObserver,
     return weak_factory_.GetWeakPtr();
   }
 
+  // One rule for what the application waits for: its callback is called
+  // once, by the operation, or as the view closes, by @cancel, with the view
+  // still alive and before on_close. AddCancel() gives the id the operation's
+  // answer passes to TakeCancel(), true while it is still to answer.
+  int AddCancel(base::OnceClosure cancel) {
+    const int id = next_cancel_++;
+    cancels_[id] = std::move(cancel);
+    return id;
+  }
+  bool TakeCancel(int id) { return cancels_.erase(id) > 0; }
+
   // content::DevToolsAgentHostClient
   void DispatchProtocolMessage(content::DevToolsAgentHost* agent_host,
                                base::span<const uint8_t> message) override;
@@ -244,8 +272,6 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_title_data_ = nullptr;
   zebkit_view_func on_close_ = nullptr;
   void* on_close_data_ = nullptr;
-  // The window's title, when the application gave one.
-  std::optional<std::string> window_title_;
   zebkit_url_func on_new_window_ = nullptr;
   void* on_new_window_data_ = nullptr;
   zebkit_window_open_func on_window_open_ = nullptr;
@@ -424,6 +450,8 @@ struct zebkit_view : public content::WebContentsObserver,
   scoped_refptr<content::DevToolsAgentHost> devtools_;
   int next_id_ = 1;
   std::map<int, Reply> pending_;
+  std::map<int, base::OnceClosure> cancels_;
+  int next_cancel_ = 1;
   // A tab session survives primary-frame swaps. Commands are routed only to
   // the page target that was primary when the host issued them.
   std::map<std::string, std::string> protocol_sessions_;

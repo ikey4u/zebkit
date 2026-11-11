@@ -46,17 +46,37 @@ func wait(condition func() bool, seconds float64) bool {
 	return condition()
 }
 
+// evaluate runs script and waits for its JSON result; "timeout" when none
+// came, "error: ..." for what the page threw.
 func evaluate(view *zebkit.View, script string) string {
-	var result string
+	result := "timeout"
 	done := false
-	view.Evaluate(script, func(value string, err error) {
+	view.Evaluate(script, func(value json.RawMessage, err error) {
 		if err != nil {
-			value = "error: " + err.Error()
+			result, done = "error: "+err.Error(), true
+			return
 		}
-		result, done = value, true
+		result, done = string(value), true
 	})
 	wait(func() bool { return done }, 15)
 	return result
+}
+
+func mustView(view *zebkit.View, err error) *zebkit.View {
+	if err != nil {
+		fail("a view: " + err.Error())
+	}
+	return view
+}
+
+// directory is the checks' scratch directory, removed however they end.
+var directory string
+
+// fail ends the checks, as a failure.
+func fail(why string) {
+	fmt.Println("FAIL " + why)
+	os.RemoveAll(directory)
+	os.Exit(1)
 }
 
 // activated runs script once the evaluation's user activation has reached
@@ -70,8 +90,24 @@ func load(view *zebkit.View, url string) bool {
 	return wait(func() bool { return evaluate(view, "location.href + document.readyState") == `"`+url+`complete"` }, 15)
 }
 
+// scratchParent is where the checks' scratch directory goes: beside the
+// profile (--user-data-dir) when there is one, else the system's.
+func scratchParent() string {
+	for _, arg := range os.Args[1:] {
+		if dir, ok := strings.CutPrefix(arg, "--user-data-dir="); ok {
+			return filepath.Dir(dir)
+		}
+	}
+	return ""
+}
+
 func main() {
-	directory, _ := os.MkdirTemp("", "zebkit-go-hooks-")
+	var err error
+	directory, err = os.MkdirTemp(scratchParent(), "zebkit-go-hooks-")
+	if err != nil {
+		fmt.Println("FAIL a scratch directory:", err)
+		os.Exit(1)
+	}
 	defer os.RemoveAll(directory)
 
 	mux := http.NewServeMux()
@@ -113,14 +149,16 @@ func main() {
 
 	// Before the engine starts.
 	var wakeups atomic.Int64
-	check(zebkit.SetWakeup(func(time.Duration) { wakeups.Add(1) }), "SetWakeup before starting")
-	check(!zebkit.SetCookieEncryptionKey(make([]byte, 31)), "a cookie key of the wrong size is refused")
-	check(zebkit.SetCookieStorage(zebkit.CookieStorageFile, ""), "SetCookieStorage before starting")
+	check(zebkit.SetWakeup(func(time.Duration) { wakeups.Add(1) }) == nil, "SetWakeup before starting")
+	check(zebkit.SetCookieEncryptionKey(make([]byte, 31)) != nil, "a cookie key of the wrong size is refused")
+	check(zebkit.SetCookieStorage(zebkit.CookieStorageFile, "") == nil, "SetCookieStorage before starting")
+	_, err = zebkit.NewView("", 10, 10)
+	check(err == zebkit.ErrNotStarted && zebkit.Post(func() {}) == zebkit.ErrNotStarted, "views and Post before the engine starts are refused")
 	if err := zebkit.InitWithSettings(map[string]any{}, os.Args[1:]...); err != nil {
-		fmt.Println("FAIL InitWithSettings:", err)
-		os.Exit(1)
+		fail("InitWithSettings: " + err.Error())
 	}
-	view := zebkit.NewView("", 640, 480)
+	check(zebkit.SetWakeup(func(time.Duration) {}) != nil, "SetWakeup after starting is refused")
+	view := mustView(zebkit.NewView("", 640, 480))
 	check(load(view, base+"/"), "a page loads")
 	check(wakeups.Load() > 0, "the engine asked for pumps (SetWakeup)", wakeups.Load())
 	check(view.TargetID() != "", "TargetID")
@@ -128,26 +166,34 @@ func main() {
 	// Settings.
 	check(view.SetSettings(map[string]any{"colorScheme": "dark"}) == nil &&
 		evaluate(view, "matchMedia('(prefers-color-scheme: dark)').matches") == "true", "SetSettings: a dark page")
-	check(view.Settings()["colorScheme"] == "dark", "Settings", view.Settings())
-	check(view.SetSettings(map[string]any{"colorScheme": nil}) == nil && len(view.Settings()) == 0, "a setting reset")
+	settings, err := view.Settings()
+	check(err == nil && settings["colorScheme"] == "dark", "Settings", settings, err)
+	check(view.SetSettings(`{"colorScheme": null}`) == nil, "a setting reset, as JSON text")
+	settings, err = view.Settings()
+	check(err == nil && len(settings) == 0, "the setting is gone", settings)
 	check(view.SetSettings(map[string]any{"noSuchSetting": 1}) != nil, "an unknown setting is refused")
-	check(view.SetRuntimeSettings(map[string]any{"downloads": "deny"}) == nil &&
-		view.RuntimeSettings()["explicit"].(map[string]any)["downloads"] == "deny", "runtime settings", view.RuntimeSettings())
+	check(view.SetSettings(nil) != nil && view.SetSettings("not json") != nil, "settings that are null or not JSON are refused")
+	var runtime map[string]any
+	check(view.SetRuntimeSettings(map[string]any{"downloads": "deny"}) == nil, "SetRuntimeSettings")
+	runtime, err = view.RuntimeSettings()
+	explicit, _ := runtime["explicit"].(map[string]any)
+	check(err == nil && explicit["downloads"] == "deny", "runtime settings", runtime)
 	check(view.SetRuntimeSettings(map[string]any{"downloads": nil}) == nil, "a runtime setting reset")
-	check(zebkit.EngineSettings()["effective"] != nil && zebkit.SetEngineSettings(map[string]any{}) == nil, "engine settings")
+	engine, err := zebkit.EngineSettings()
+	check(err == nil && engine["effective"] != nil && zebkit.SetEngineSettings(map[string]any{}) == nil, "engine settings")
 
 	// The permission table.
 	check(view.SetPermission(base, "geolocation", zebkit.PermissionGranted) == nil &&
 		view.Permission(base, "geolocation") == zebkit.PermissionGranted, "SetPermission and Permission")
 	check(view.ResetPermissions("") == nil && view.Permission(base, "geolocation") != zebkit.PermissionGranted, "ResetPermissions")
-	check(view.SetPermissionTimeout(5000) && !view.SetPermissionTimeout(0), "SetPermissionTimeout's range")
+	check(view.SetPermissionTimeout(5000) == nil && view.SetPermissionTimeout(0) != nil, "SetPermissionTimeout's range")
 	permissionResults := 0
 	view.OnPermissionResult(func(map[string]any) { permissionResults++ })
 	view.OnPermission(func(r *zebkit.PermissionRequest) { r.Respond(zebkit.PermissionDenied, false) })
 	activated(view, "new Promise(r => navigator.geolocation.getCurrentPosition(() => r(1), () => r(0)))")
 	check(wait(func() bool { return permissionResults > 0 }, 5), "OnPermissionResult")
 	view.OnPermission(nil)
-	check(view.SetNavigationFailClosed(false) && view.SetNavigationTimeout(5000), "navigation deadline settings")
+	check(view.SetNavigationFailClosed(false) == nil && view.SetNavigationTimeout(5000) == nil, "navigation deadline settings")
 
 	// The network: fulfil, redirect, block, a stream, events and bodies.
 	// Nothing is asked until a filter says what: hold these, observe and read the others.
@@ -161,7 +207,7 @@ func main() {
 	view.OnNetworkEvent(func(map[string]any) { events++ })
 	view.OnNetworkBody(func(id string, bytes []byte, end, truncated bool) { bodies += len(bytes) })
 	view.OnNetwork(func(r *zebkit.NetworkRequest) {
-		url, _ := r.Metadata["url"].(string)
+		url, _ := r.Metadata()["url"].(string)
 		switch {
 		case strings.HasSuffix(url, "/fulfil"):
 			r.Respond(map[string]any{"action": "fulfill", "status": 200,
@@ -191,7 +237,7 @@ func main() {
 	check(fetch("/stream") == `"one two"`, "RespondStream", fetch("/stream"))
 	check(fetch("/data") == `"from the server"`, "OnNetwork continues")
 	check(wait(func() bool { return events > 0 && bodies > 0 }, 5), "OnNetworkEvent and OnNetworkBody", events, bodies)
-	check(view.SetNetworkTimeout(5000) && view.SetNetworkFilterForWorkers(true) && view.SetNetworkFilterForWorkers(false),
+	check(view.SetNetworkTimeout(5000) == nil && view.SetNetworkFilterForWorkers(true) == nil && view.SetNetworkFilterForWorkers(false) == nil,
 		"network settings")
 	view.SetNetworkFilter([]any{})
 	view.OnNetwork(nil)
@@ -214,7 +260,7 @@ func main() {
 	view.OnDownload(func(r *zebkit.DownloadRequest) { cancelled = r.Cancel() == nil })
 	view.Load(base + "/download")
 	check(wait(func() bool { return cancelled }, 15), "a download cancelled")
-	check(!view.CancelDownload("no-such-download"), "CancelDownload of none")
+	check(view.CancelDownload("no-such-download") != nil, "CancelDownload of none")
 	view.OnDownload(nil)
 
 	// A certificate the application accepts.
@@ -258,8 +304,9 @@ func main() {
 	check(view.SetReservedKeys([]string{"Ctrl+Shift+KeyI"}) == nil && view.SetReservedKeys([]string{"nonsense+"}) != nil,
 		"SetReservedKeys checks its keys")
 	view.OnReservedKey(func(map[string]any) {})
-	check(view.SetFullscreenPolicy(zebkit.FullscreenDeny), "SetFullscreenPolicy")
-	check(activated(view, "document.body.requestFullscreen().then(() => 'full', e => e.name)") != `"full"`, "fullscreen denied")
+	check(view.SetFullscreenPolicy(zebkit.FullscreenDeny) == nil, "SetFullscreenPolicy")
+	denied := activated(view, "document.body.requestFullscreen().then(() => 'full', e => e.name)")
+	check(denied == `"TypeError"`, "fullscreen denied, with the page's TypeError", denied)
 	view.SetFullscreenPolicy(zebkit.FullscreenAllow)
 	var console map[string]any
 	view.OnConsole(func(event map[string]any) { console = event })
@@ -269,7 +316,7 @@ func main() {
 		evaluate(view, "window.fromWorld") == "7", "AddWorldScript")
 
 	// Popups.
-	check(view.SetPopupPolicy(zebkit.PopupBlock) && view.PopupPolicy() == zebkit.PopupBlock, "SetPopupPolicy and PopupPolicy")
+	check(view.SetPopupPolicy(zebkit.PopupBlock) == nil && view.PopupPolicy() == zebkit.PopupBlock, "SetPopupPolicy and PopupPolicy")
 	blocked := false
 	view.OnPopupBlocked(func(map[string]any) { blocked = true })
 	activated(view, "window.open('/data'), 1")
@@ -280,8 +327,17 @@ func main() {
 	activated(view, "window.open('/target'), 1")
 	check(wait(func() bool { return opened != nil }, 10), "OnWindowOpen gives a view")
 	if opened != nil {
-		check(opened.WindowOpenInfo()["url"] != nil, "WindowOpenInfo", opened.WindowOpenInfo())
+		info, err := opened.WindowOpenInfo()
+		check(err == nil && info["url"] != nil, "WindowOpenInfo", info, err)
+		same, err := zebkit.ViewByPageID(opened.AutomationPageID())
+		check(err == nil && same == opened, "one View for one view, however it is found", err)
+		// The opener's page closes it.
+		openedClosed := false
+		opened.OnClose(func() { openedClosed = true })
+		evaluate(opened, "window.close(), 1")
+		check(wait(func() bool { return openedClosed }, 10) && opened.IsClosed(), "a popup closed by its page")
 		opened.Close()
+		check(opened.TargetID() == "" && opened.SetSettings(map[string]any{}) == zebkit.ErrClosed, "its methods after")
 	}
 	view.OnWindowOpen(nil)
 	var newURL string
@@ -294,7 +350,7 @@ func main() {
 	// The user agent.
 	var agentDone bool
 	var agentErr error
-	check(view.SetUserAgentOverride(map[string]any{"userAgent": "GoAgent/1"}, func(_ string, err error) { agentDone, agentErr = true, err }),
+	check(view.SetUserAgentOverride(map[string]any{"userAgent": "GoAgent/1"}, func(_ json.RawMessage, err error) { agentDone, agentErr = true, err }) == nil,
 		"SetUserAgentOverride queued")
 	check(wait(func() bool { return agentDone }, 10) && agentErr == nil && evaluate(view, "navigator.userAgent") == `"GoAgent/1"`,
 		"the user agent overridden", agentErr)
@@ -311,33 +367,42 @@ func main() {
 	_, _, hasWindow := view.NativeWindow()
 	check(!hasWindow == zebkit.IsHeadless() || hasWindow, "NativeWindow")
 	exported := false
-	if view.ExportNativeWindow(func(string, bool) { exported = true }) {
+	if view.ExportNativeWindow(func(string, bool) { exported = true }) == nil {
 		check(wait(func() bool { return exported }, 5), "ExportNativeWindow answers")
 	}
-	check(view.OnAuthentication(func(map[string]any) {}) && view.OnAuthentication(nil), "OnAuthentication set and removed")
+	check(view.OnAuthentication(func(map[string]any) {}) == nil && view.OnAuthentication(nil) == nil, "OnAuthentication set and removed")
 	view.OnDrop(func([]string) {})
 	view.OnDrop(nil)
-	check(view.ContextMenuRun(999999, "copy") != nil, "ContextMenuRun of no menu is refused")
-	zebkit.AppOnOpenFiles(func([]string) {})
-	zebkit.AppOnReopen(func() {})
-	zebkit.AppOnQuitRequest(func() {})
-	zebkit.AppOnOpenFiles(nil)
-	zebkit.AppOnReopen(nil)
-	zebkit.AppOnQuitRequest(nil)
+	check(view.RunContextMenuCommand(999999, "copy") != nil, "RunContextMenuCommand of no menu is refused")
+	check(view.ShowContextMenu(999999, nil, func(string) {}) != nil, "ShowContextMenu of no menu is refused")
+	zebkit.OnAppOpenFiles(func([]string) {})
+	zebkit.OnAppReopen(func() {})
+	zebkit.OnAppQuitRequest(func() {})
+	zebkit.OnAppOpenFiles(nil)
+	zebkit.OnAppReopen(nil)
+	zebkit.OnAppQuitRequest(nil)
 
 	// A context of its own: cookies kept apart.
 	evaluate(view, "document.cookie = 'k=main', 1")
-	context := zebkit.NewContext()
-	other := context.NewView(base+"/", 320, 240)
+	context, err := zebkit.NewContext()
+	check(err == nil, "NewContext", err)
+	other := mustView(context.NewView(base+"/", 320, 240))
 	check(wait(func() bool { return evaluate(other, "document.readyState") == `"complete"` }, 15) &&
 		evaluate(other, "document.cookie") == `""`, "a context's cookies are its own")
-	other.Close()
+	otherClosed := false
+	other.OnClose(func() { otherClosed = true })
 	context.Close()
+	check(wait(func() bool { return otherClosed }, 10) && other.IsClosed(), "a context's views close with it")
+	_, err = context.NewView("", 10, 10)
+	check(err == zebkit.ErrClosed, "a closed context makes no views", err)
 
 	// Script outside any page.
-	script := zebkit.NewScript("one")
+	script, err := zebkit.NewScript("one")
+	if err != nil {
+		fail("NewScript: " + err.Error())
+	}
 	var scriptResult string
-	script.Evaluate("zebkit.args.length + 40", func(value string, err error) { scriptResult = value })
+	script.Evaluate("zebkit.args.length + 40", func(value json.RawMessage, err error) { scriptResult = string(value) })
 	check(wait(func() bool { return scriptResult != "" }, 10) && scriptResult == "41", "Script.Evaluate", scriptResult)
 	module := filepath.Join(directory, "module.mjs")
 	os.WriteFile(module, []byte("globalThis.ran = 1;"), 0o600)
@@ -345,10 +410,13 @@ func main() {
 	var moduleErr error
 	script.RunModule(module, func(err error) { moduleDone, moduleErr = true, err })
 	check(wait(func() bool { return moduleDone }, 10) && moduleErr == nil, "Script.RunModule", moduleErr)
-	script.Destroy()
+	script.Close()
+	var closedErr error
+	script.Evaluate("1", func(_ json.RawMessage, err error) { closedErr = err })
+	check(closedErr == zebkit.ErrClosed, "a closed script answers ErrClosed")
 
 	// CDP.
-	port, err := zebkit.CDPListen("", 0)
+	port, err := zebkit.ListenCDP("", 0)
 	check(err == nil && port > 0 && zebkit.CDPPort() == port, "CDPListen", err)
 	var version map[string]any
 	go func() {
@@ -363,13 +431,14 @@ func main() {
 	}()
 	check(wait(func() bool { return version != nil }, 10) && strings.Contains(fmt.Sprint(version["Browser"]), "Chrome"), "CDP's /json/version", version)
 	check(strings.HasPrefix(zebkit.CDPURL(), "ws://"), "CDPURL", zebkit.CDPURL())
-	zebkit.CDPStop()
-	check(zebkit.CDPPort() == 0, "CDPStop")
+	zebkit.StopCDP()
+	check(zebkit.CDPPort() == 0, "StopCDP")
 
 	view.Close()
 	zebkit.Shutdown()
 	fmt.Printf("%d of %d checks passed\n", checks-failures, checks)
 	if failures > 0 {
+		os.RemoveAll(directory)
 		os.Exit(1)
 	}
 }

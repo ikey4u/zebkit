@@ -1,9 +1,10 @@
-# A machine that builds zebkit's release for Linux and macOS and publishes
-# it, and checks before publishing that the Linux engine runs on glibc 2.17.
+# A machine that builds zebkit's release for Linux, macOS and Windows and
+# publishes it, after scripts/check.sh: the engine's tests, the engine on
+# glibc 2.17, the web pages' limits (docker/publish.sh says what it cannot do).
 #
 #   docker build -t zebkit-release --build-arg UID="$(id -u)" docker
 #   docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise \
-#       -v ~/MacOSX:/macos:ro -e GH_TOKEN zebkit-release   # build, test, publish
+#       -v "$HOME/MacOSX:/macos:ro" -e GH_TOKEN zebkit-release   # build, test, publish
 #   docker run ... zebkit-release --no-publish            # build and test only
 #
 # The repository is mounted, not copied, and at the same path as outside:
@@ -21,13 +22,18 @@
 # CentOS 7's glibc 2.17 and libraries before anything is published.
 #
 # /macos holds Apple's SDK for the macOS build, made once on a Mac
-# (scripts/macos-toolchain.sh says how): MacOSX.sdk.tar.xz and version.plist.
+# (scripts/macos-toolchain.sh says how): MacOSX.sdk.tar.xz and version.plist,
+# copied into .cache/sdk/macos by the first run (scripts/zsdk-create.sh).
 
 FROM debian:13
 
 # What Chromium's tools and zebkit's scripts call from the system; the
 # compiler, sysroot, Rust, Node and ninja come with Chromium's checkout.
-# The libraries are what the engine loads, for the tests on this machine.
+# The libraries are what the engine loads, for the tests on this machine;
+# then what the tests drive it with: a private X server, a Wayland compositor,
+# a session bus with dbus-python, X11's headers, glib's, xdotool and xev
+# (x11-utils), wtype (a keyboard for the compositor's seat) and OpenSSL.
+# Node.js and Go come from mise (mise.toml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bison bzip2 ca-certificates curl file flex git gperf binutils \
         build-essential patch perl pkg-config python3 unzip xz-utils zip \
@@ -35,6 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
         libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
         libxfixes3 libxkbcommon0 libxrandr2 rustup \
+        xvfb labwc dbus dbus-x11 python3-dbus python3-gi libx11-dev \
+        libglib2.0-dev xdotool wtype openssl x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # mise, which brings gh and xz at the versions mise.toml pins.

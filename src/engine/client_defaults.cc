@@ -92,22 +92,6 @@ using performance_manager::PerformanceManagerRegistry;
 
 BrowserClient* g_browser_client = nullptr;
 
-// --isolated-context-origins, as content's isolation level reads it.
-base::flat_set<url::Origin> IsolatedContextOrigins() {
-  base::flat_set<url::Origin> origins;
-  for (std::string_view text : base::SplitStringPiece(
-           base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-               "isolated-context-origins"),
-           ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
-    url::Origin origin = url::Origin::Create(GURL(text));
-    if (!origin.opaque())
-      origins.insert(origin);
-    else
-      LOG(ERROR) << "Error parsing IsolatedContext origin: " << text;
-  }
-  return origins;
-}
-
 void BindNetworkHintsHandler(
     content::RenderFrameHost* frame,
     mojo::PendingReceiver<network_hints::mojom::NetworkHintsHandler> receiver) {
@@ -186,20 +170,6 @@ BrowserClient::CreateURLLoaderThrottles(
   return result;
 }
 
-bool BrowserClient::AreIsolatedWebAppsEnabled(content::BrowserContext* browser_context) {
-  return base::FeatureList::IsEnabled(features::kIsolatedWebApps);
-}
-
-bool BrowserClient::ShouldUrlUseApplicationIsolationLevel(
-    content::BrowserContext* browser_context,
-    const GURL& url) {
-  static const base::NoDestructor<base::flat_set<url::Origin>> origins(
-      IsolatedContextOrigins());
-  GURL::Replacements replacements;
-  replacements.ClearPort();
-  return origins->contains(url::Origin::Create(url.ReplaceComponents(replacements)));
-}
-
 device::GeolocationSystemPermissionManager*
 BrowserClient::GetGeolocationSystemPermissionManager() {
 #if BUILDFLAG(IS_MAC)
@@ -258,13 +228,28 @@ void BrowserClient::RegisterBrowserInterfaceBindersForFrame(
 void BrowserClient::OpenURL(content::SiteInstance* site_instance,
                             const content::OpenURLParams& params,
                             base::OnceCallback<void(content::WebContents*)> callback) {
-  // A service worker's clients.openWindow(), which has no page behind it: a view
-  // of a page in its context, its policy and kind that page's; none with no page.
+  // A service worker's clients.openWindow(), which has no page behind it: a
+  // view of a page of the worker's origin in its context, whose kind, popup
+  // options, handler and popup policy are used; none without such a page.
   content::BrowserContext* context = site_instance->GetBrowserContext();
+  if (!params.initiator_origin) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+  const url::Origin& worker = *params.initiator_origin;
   for (zebkit_view* view : zebkit_view::Views()) {
     content::WebContents* source = view->web_contents();
-    if (!source || source->GetBrowserContext() != context)
+    if (!source || source->GetBrowserContext() != context ||
+        !source->GetPrimaryMainFrame()->GetLastCommittedOrigin().IsSameOriginWith(worker))
       continue;
+    // Only a view that blocks every popup refuses it: openWindow() carries no
+    // user gesture here (the worker's activation, from a notification click,
+    // is checked in the renderer before the request is sent), so "without a
+    // gesture" would refuse every one.
+    if (zebkit_view_get_popup_policy(view) == ZEBKIT_POPUP_POLICY_BLOCK) {
+      std::move(callback).Run(nullptr);
+      return;
+    }
     Window* window = Window::OpenFrom(source, nullptr, params.url, params.disposition,
                                       params.user_gesture);
     content::WebContents* opened = window ? window->web_contents() : nullptr;

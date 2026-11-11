@@ -74,7 +74,8 @@ unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    done(script_result(json, error));
+    let result = script_result(json, error);
+    crate::guard(|| done(result));
 }
 
 fn result_trampoline<F: FnOnce(Result<String, Error>)>(_done: &F) -> sys::zebkit_result_func {
@@ -85,6 +86,6 @@ unsafe extern "C" fn on_idle(data: *mut c_void) {
     let slot = &*data.cast::<IdleSlot>();
     let function = slot.borrow_mut().take();
     if let Some(function) = function {
-        function();
+        crate::guard(function);
     }
 }

@@ -66,12 +66,19 @@ fetch_pinned() {
                 ;;
             cipd) printf '@Subdir %s\n%s %s\n' "$(echo "$a" | tr / _)" "$b" "$c" >> "$ensure" ;;
             gcs)
-                if [[ ! -d "$windows/runtime" ]]; then
+                # The object DEPS names now, recorded with it: a Chromium bump
+                # that changes it fetches it again. Unpacked beside, then
+                # renamed: an interrupted run leaves no half of it.
+                if [[ "$(cat "$windows/runtime.object" 2> /dev/null)" != "$a $b" ]]; then
                     log "fetching $a"
                     curl -sSfLo "$windows/runtime.tar.xz" "https://commondatastorage.googleapis.com/chromium-browser-clang/$a"
                     [[ "$(sha256 "$windows/runtime.tar.xz" | cut -d' ' -f1)" == "$b" ]] || die "$a: wrong SHA-256"
-                    mkdir -p "$windows/runtime"
-                    tar -xJf "$windows/runtime.tar.xz" -C "$windows/runtime"
+                    rm -rf "$windows/runtime.new"
+                    mkdir -p "$windows/runtime.new"
+                    tar -xJf "$windows/runtime.tar.xz" -C "$windows/runtime.new"
+                    rm -rf "$windows/runtime"
+                    mv "$windows/runtime.new" "$windows/runtime"
+                    echo "$a $b" > "$windows/runtime.object"
                     rm "$windows/runtime.tar.xz"
                 fi
                 ;;
@@ -84,16 +91,19 @@ fetch_pinned() {
     # rc_linux hook fetches it.
     local rc_sha1
     rc_sha1="$(cat "$SRC_DIR/build/toolchain/win/rc/linux64/rc.sha1")"
-    if [[ ! -x "$windows/rc" ]]; then
+    if [[ ! -x "$windows/rc" || "$(cat "$windows/rc.sha1" 2> /dev/null)" != "$rc_sha1" ]]; then
         log "fetching the resource compiler"
         curl -sSfLo "$windows/rc.partial" "https://commondatastorage.googleapis.com/chromium-browser-clang/rc/$rc_sha1"
         [[ "$(sha1sum "$windows/rc.partial" | cut -d' ' -f1)" == "$rc_sha1" ]] || die "rc: wrong SHA-1"
         chmod +x "$windows/rc.partial"
         mv "$windows/rc.partial" "$windows/rc"
+        echo "$rc_sha1" > "$windows/rc.sha1"
     fi
 
     # Windows' PGO profile. Not with tools/update_pgo_profiles.py, which also
-    # deletes the profiles of other systems that it thinks are unused.
+    # deletes the profiles of other systems that it thinks are unused. Its name
+    # changes with the profile; Chromium records no checksum of it, so only a
+    # download that completed is kept.
     local profile
     profile="$(cat "$SRC_DIR/chrome/build/win64.pgo.txt")"
     if [[ ! -f "$windows/pgo/$profile" ]]; then

@@ -55,14 +55,20 @@ pub fn listen(config: Config) -> Result<u16, String> {
                 let _ = reply(&mut stream, 503, "application/json", &[], br#"{"error":"too many connections"}"#);
                 continue;
             }
-            let server = server.clone();
-            std::thread::spawn(move || {
-                handle(&server, stream);
-                server.connections.fetch_sub(1, Ordering::SeqCst);
-            });
+            let connection = Connection(server.clone());
+            std::thread::spawn(move || handle(&connection.0, stream));
         }
     });
     Ok(port)
+}
+
+/// A connection's place, given back however its thread ends, a panic included.
+struct Connection(Arc<Server>);
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.0.connections.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct Request {
@@ -262,7 +268,7 @@ fn answer(server: &Server, stream: &mut TcpStream, request: &Request, message: &
             return;
         }
     }
-    let result = rpc::dispatch(message, method, modern.is_some());
+    let result = rpc::dispatch_safely(message, method, modern.is_some());
     let status = match &result {
         Err(why) if why.code == rpc::METHOD_NOT_FOUND && modern.is_some() => 404,
         _ => 200,

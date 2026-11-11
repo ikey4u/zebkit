@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <utility>
@@ -223,10 +224,10 @@ constexpr char kBootstrap[] = R"js((function (native) {
           : native.viewNew(String(url), width, height, options);
       viewIds.set(this, this.#id);
       views.set(this.#id, this);
-      native.viewOn(this.#id, 'close', () => views.delete(this.#id));
+      // One function per name: a second 'close' would replace the first.
+      native.viewOn(this.#id, 'close', () => { views.delete(this.#id); this.#emit('close'); });
       native.viewOn(this.#id, 'load', (event, url) => this.#emit('load', event, url));
       native.viewOn(this.#id, 'title', (title) => this.#emit('title', title));
-      native.viewOn(this.#id, 'close', () => this.#emit('close'));
       native.viewOn(this.#id, 'popup-blocked', (event) => this.#emit('popup-blocked', event));
       native.viewOn(this.#id, 'permission-result', event => this.#emit('permission-result', event));
       native.viewOn(this.#id, 'navigation-result', event => this.#emit('navigation-result', event));
@@ -582,7 +583,15 @@ constexpr char kBootstrap[] = R"js((function (native) {
     // --zebkit-scheme=NAME,standard,secure,fetch,bypass-csp (before the
     // engine starts); handled here, each request answered once.
     scheme: Object.freeze({
-      handle: (name, fn) => native.more('scheme-handle', String(name), typeof fn === 'function' ? (raw) => fn(makeRequest(raw)) : null),
+      // A handler that throws or rejects answers 500, so that the page does
+      // not wait for ever; the error is still reported.
+      handle: (name, fn) => native.more('scheme-handle', String(name), typeof fn === 'function' ? (raw) => {
+        const request = makeRequest(raw);
+        const failed = (error) => { request.respond(500); throw error; };
+        let result;
+        try { result = fn(request); } catch (error) { failed(error); }
+        if (result && typeof result.then === 'function') result.then(undefined, failed);
+      } : null),
     }),
     // Playwright's API inside the engine (<zebkit/automation.h>); a view's
     // events are its 'automation' event.
@@ -833,6 +842,9 @@ struct zebkit_script {
     std::vector<std::unique_ptr<std::pair<base::WeakPtr<zebkit_script>,
                                           v8::Global<v8::Function>>>>
         bindings;
+    // The names bound: unbound when the script ends, since the view keeps
+    // the bindings' data, which the script frees.
+    std::set<std::string> bound;
   };
 
   // A promise the script waits for, settled from C++.
@@ -915,6 +927,8 @@ struct zebkit_script {
     int id = 0;
   };
   Target* NewTarget(const std::string& key, int id = 0);
+  // A target no C function holds any more, and the script's function of it.
+  void ForgetTarget(const std::string& key);
   void Deliver(const std::string& key, std::vector<v8::Local<v8::Value>> args);
   std::map<int, zebkit_context*> contexts_;
   int next_context_ = 1;
@@ -927,6 +941,11 @@ struct zebkit_script {
   int next_media_ = 1;
   std::vector<std::string> schemes_;
   std::vector<std::unique_ptr<Target>> targets_;
+  // Trays' menus and clicks ("tray-menu:<n>"), freed when the tray closes.
+  std::map<std::string, std::unique_ptr<Target>> tray_targets_;
+  // A network stream's onWritable: the script and the view's number, never
+  // the view's hook, which goes with the view while the stream may not.
+  std::map<uintptr_t, std::unique_ptr<Target>> stream_targets_;
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -969,9 +988,9 @@ struct zebkit_script {
   v8::Global<v8::Function> view_factory_;
   std::vector<std::string> args_;
 
-  std::map<int, v8::Global<v8::Module>> modules_by_hash_;
   std::map<std::string, v8::Global<v8::Module>> modules_;
-  std::map<int, std::string> module_paths_;
+  // Paths by identity hash, which two modules may share: modules_ tells.
+  std::multimap<int, std::string> module_paths_;
 
   std::map<int, Timer> timers_;
   int next_timer_ = 1;
@@ -1000,6 +1019,21 @@ struct zebkit_script {
 
   base::WeakPtrFactory<zebkit_script> weak_factory_{this};
 };
+
+namespace zebkit {
+
+// The application's menu and the Dock's are the process's, one of each: what
+// they call holds the script that set them last, weakly, and is never freed.
+struct MenuTarget {
+  base::WeakPtr<zebkit_script> script;
+};
+
+MenuTarget& MenuOwner(bool dock) {
+  static base::NoDestructor<MenuTarget> app_menu, dock_menu;
+  return dock ? *dock_menu : *app_menu;
+}
+
+}  // namespace zebkit
 
 zebkit_script::zebkit_script(std::vector<std::string> args)
     : args_(std::move(args)) {
@@ -1050,10 +1084,20 @@ zebkit_script::~zebkit_script() {
   if (system_functions_.contains("power")) zebkit_on_power_event(nullptr, nullptr);
   if (system_functions_.contains("displays")) zebkit_on_displays_changed(nullptr, nullptr);
   if (system_functions_.contains("notification")) zebkit_on_notification(nullptr, nullptr);
-  if (system_functions_.contains("app-menu")) zebkit_app_set_menu("[]", nullptr, nullptr, nullptr);
-  if (system_functions_.contains("dock-menu")) zebkit_app_set_dock_menu("[]", nullptr, nullptr, nullptr);
+  // The menus this script set last, whether or not it gave a function.
+  if (zebkit::MenuOwner(false).script.get() == this) zebkit_app_set_menu("[]", nullptr, nullptr, nullptr);
+  if (zebkit::MenuOwner(true).script.get() == this) zebkit_app_set_dock_menu("[]", nullptr, nullptr, nullptr);
   for (const auto& [id, tray] : trays_) zebkit_tray_close(tray);
   trays_.clear();
+  tray_targets_.clear();
+  for (const auto& [stream, target] : stream_targets_)
+    zebkit_network_stream_on_writable(reinterpret_cast<zebkit_network_stream*>(stream), nullptr, nullptr);
+  stream_targets_.clear();
+  // The PDF documents it opened, which no other script may use.
+  zebkit::ClosePdfsOfScript(this);
+  // Requests of its schemes it has not answered: the page is not left waiting.
+  for (const auto& [id, request] : requests_) zebkit_request_respond(request, 503, nullptr, nullptr, 0);
+  requests_.clear();
   // What the rest of the C API holds for it: media it captures and taps,
   // frames it keeps, its schemes and the application's events.
   for (const auto& [id, capture] : captures_) {
@@ -1074,11 +1118,13 @@ zebkit_script::~zebkit_script() {
   if (system_functions_.contains("app-quit-request")) zebkit_app_on_quit_request(nullptr, nullptr);
   // Its views stay, and must not wait on a handler that is gone: a pending
   // navigation would stall until its deadline. A setter can close a view.
-  std::vector<base::WeakPtr<zebkit_view>> kept;
+  std::vector<std::pair<base::WeakPtr<zebkit_view>, std::set<std::string>>> kept;
   for (const auto& [id, entry] : views_)
-    if (entry.view) kept.push_back(entry.view->GetWeakPtr());
+    if (entry.view) kept.emplace_back(entry.view->GetWeakPtr(), entry.bound);
   weak_factory_.InvalidateWeakPtrs();
-  for (const auto& view : kept) {
+  for (const auto& [view, bound] : kept) {
+    for (const std::string& name : bound)
+      if (view) zebkit_view_bind(view.get(), name.c_str(), nullptr, nullptr);
     if (view) zebkit_view_on_navigation(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_permission(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_certificate(view.get(), nullptr, nullptr);
@@ -1090,6 +1136,9 @@ zebkit_script::~zebkit_script() {
     if (view) zebkit_view_on_file_chooser(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_media_access(view.get(), nullptr, nullptr);
     if (view) zebkit_view_on_context_menu(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_share(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_eye_dropper(view.get(), nullptr, nullptr);
+    if (view) zebkit_view_on_device_chooser(view.get(), nullptr, nullptr);
   }
   ui_.reset();
   {
@@ -1099,12 +1148,13 @@ zebkit_script::~zebkit_script() {
     pending_.clear();
     views_.clear();
     modules_.clear();
-    modules_by_hash_.clear();
     // Every handle goes while the isolate is there: members destroyed after
     // this would release theirs into an isolate that is gone.
     ui_listener_.Reset();
     view_factory_.Reset();
     system_functions_.clear();
+    environment_function_.Reset();
+    unhandled_.clear();
     context_.Reset();
   }
   holder_.reset();
@@ -1337,6 +1387,7 @@ void zebkit_script::Call(const v8::FunctionCallbackInfo<v8::Value>& info) {
   if (args.is_list())
     call.args = std::move(args.GetList());
   call.origin = "the application";
+  call.script = self;
   call.allow = ZEBKIT_ALLOW_ALL & ~ZEBKIT_ALLOW_APP;
   call.files_root = zebkit::PathFromUTF8("/");
   call.reply = base::BindOnce(
@@ -1676,17 +1727,33 @@ void zebkit_script::System(const v8::FunctionCallbackInfo<v8::Value>& info) {
     return;
   }
   if (kind == "request-attention") { zebkit_app_request_attention(info[1]->IsTrue()); info.GetReturnValue().Set(true); return; }
-  if (kind == "set-menu") {
-    menu_function(2, "app-menu");
-    return finish(zebkit_app_set_menu(Utf8(isolate, info[1]).c_str(),
-                                      [](const char* id, void* data) { DeliverSystem(data, "app-menu", id, false); },
-                                      self, &error), "the menu was refused");
-  }
-  if (kind == "set-dock-menu") {
-    menu_function(2, "dock-menu");
-    return finish(zebkit_app_set_dock_menu(Utf8(isolate, info[1]).c_str(),
-                                           [](const char* id, void* data) { DeliverSystem(data, "dock-menu", id, false); },
-                                           self, &error), "the Dock's menu was refused");
+  if (kind == "set-menu" || kind == "set-dock-menu") {
+    const bool dock = kind == "set-dock-menu";
+    const std::string key = dock ? "dock-menu" : "app-menu";
+    // The menu's function holds a target that outlives this script, and none
+    // at all when the script gave no function.
+    const bool given = info[2]->IsFunction();
+    zebkit::MenuTarget* target = given ? &zebkit::MenuOwner(dock) : nullptr;
+    zebkit_menu_func func = nullptr;
+    if (given && dock) {
+      func = [](const char* id, void* data) {
+        auto* target = static_cast<zebkit::MenuTarget*>(data);
+        if (target->script) DeliverSystem(target->script.get(), "dock-menu", id, false);
+      };
+    } else if (given) {
+      func = [](const char* id, void* data) {
+        auto* target = static_cast<zebkit::MenuTarget*>(data);
+        if (target->script) DeliverSystem(target->script.get(), "app-menu", id, false);
+      };
+    }
+    const std::string json = Utf8(isolate, info[1]);
+    const bool ok = dock ? zebkit_app_set_dock_menu(json.c_str(), func, target, &error)
+                         : zebkit_app_set_menu(json.c_str(), func, target, &error);
+    if (ok) {
+      menu_function(2, key);
+      zebkit::MenuOwner(dock).script = self->weak_factory_.GetWeakPtr();
+    }
+    return finish(ok, dock ? "the Dock's menu was refused" : "the menu was refused");
   }
   if (kind == "update-menu-item")
     return finish(zebkit_app_update_menu_item(Utf8(isolate, info[1]).c_str(), Utf8(isolate, info[2]).c_str(), &error),
@@ -1722,29 +1789,36 @@ void zebkit_script::System(const v8::FunctionCallbackInfo<v8::Value>& info) {
     if (!found) return;
     // One function of each per tray, by the tray's number.
     const std::string key = kind + ":" + base::NumberToString(static_cast<uint64_t>(info[1].As<v8::Number>()->Value()));
-    struct Target { base::WeakPtr<zebkit_script> script; std::string key; };
-    static base::NoDestructor<std::map<std::string, Target>> targets;
     menu_function(kind == "tray-menu" ? 3 : 2, key);
-    Target& target = (*targets)[key];
-    target = {self->weak_factory_.GetWeakPtr(), key};
+    // This script's, as long as the tray is: the tray's own calls are posted
+    // and stop with it.
+    std::unique_ptr<Target>& slot = self->tray_targets_[key];
+    if (!slot) slot = std::make_unique<Target>(Target{self->weak_factory_.GetWeakPtr(), key});
+    Target* target = slot.get();
     if (kind == "tray-click") {
       zebkit_tray_on_click(found, [](void* data) {
         auto* target = static_cast<Target*>(data);
         if (target->script) DeliverSystem(target->script.get(), target->key, "", false);
-      }, &target);
+      }, target);
       info.GetReturnValue().Set(true);
       return;
     }
     return finish(zebkit_tray_set_menu(found, Utf8(isolate, info[2]).c_str(), [](const char* id, void* data) {
       auto* target = static_cast<Target*>(data);
       if (target->script) DeliverSystem(target->script.get(), target->key, id, false);
-    }, &target, &error), "the menu was refused");
+    }, target, &error), "the menu was refused");
   }
   if (kind == "tray-close") {
     zebkit_tray* found = tray();
     if (!found) return;
     zebkit_tray_close(found);
-    self->trays_.erase(static_cast<uint64_t>(info[1].As<v8::Number>()->Value()));
+    const uint64_t id = static_cast<uint64_t>(info[1].As<v8::Number>()->Value());
+    self->trays_.erase(id);
+    for (const char* name : {"tray-menu:", "tray-click:"}) {
+      const std::string key = name + base::NumberToString(id);
+      self->tray_targets_.erase(key);
+      self->system_functions_.erase(key);
+    }
     info.GetReturnValue().Set(true);
     return;
   }
@@ -1828,6 +1902,10 @@ const char* const kDialogPolicies[] = {"default", "hold", "accept", "dismiss"};
 const char* const kPopupPolicies[] = {"block-without-gesture", "allow", "block"};
 
 }  // namespace
+
+void zebkit_script::ForgetTarget(const std::string& key) {
+  std::erase_if(targets_, [&](const std::unique_ptr<Target>& target) { return target->key == key; });
+}
 
 zebkit_script::Target* zebkit_script::NewTarget(const std::string& key, int id) {
   targets_.push_back(std::make_unique<Target>(Target{weak_factory_.GetWeakPtr(), key, id}));
@@ -1953,10 +2031,15 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     const std::string key = "scheme:" + scheme;
     if (!function_at(2, key)) {
       zebkit_scheme_handle(scheme.c_str(), nullptr, nullptr);
+      self->ForgetTarget(key);
       std::erase(self->schemes_, scheme);
       return;
     }
+    // The handler's target replaces the one before it.
     Target* target = self->NewTarget(key);
+    std::erase_if(self->targets_, [&](const std::unique_ptr<Target>& other) {
+      return other->key == key && other.get() != target;
+    });
     zebkit_scheme_handle(scheme.c_str(), [](zebkit_request* request, void* data) {
       auto* target = static_cast<Target*>(data);
       zebkit_script* script = target->script.get();
@@ -2179,8 +2262,14 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     } else if (kind == "capture-status") {
       set_json(zebkit_media_capture_status(it->second));
     } else {
+      const std::string key = base::NumberToString(it->first);
       zebkit_media_capture_free(it->second);
       self->captures_.erase(it);
+      // Its functions are not called any more (media.h).
+      for (const std::string& name : {"capture-progress:" + key, "capture-done:" + key}) {
+        self->ForgetTarget(name);
+        self->system_functions_.erase(name);
+      }
     }
   } else if (kind == "media-tap") {
     // (view, media id, options, function(info, bytes))
@@ -2204,6 +2293,7 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
         },
         self->NewTarget(key), &error);
     if (!tap) {
+      self->ForgetTarget(key);
       self->system_functions_.erase(key);
       return take_error(error, "the tap did not start");
     }
@@ -2216,8 +2306,11 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     if (kind == "tap-stop") {
       zebkit_media_tap_stop(it->second);
     } else {
+      const std::string key = "tap:" + base::NumberToString(it->first);
       zebkit_media_tap_free(it->second);
       self->taps_.erase(it);
+      self->ForgetTarget(key);
+      self->system_functions_.erase(key);
     }
   } else if (kind == "frame") {
     // (op, id): a frame of an off-screen view, held until released.
@@ -2261,6 +2354,10 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     } else {
       zebkit_app_on_quit_request(set ? +plain : nullptr, target);
     }
+    // The target before this one is not called any more.
+    std::erase_if(self->targets_, [&](const std::unique_ptr<Target>& other) {
+      return other->key == kind && other.get() != target;
+    });
   } else {
     fail("unknown call");
   }
@@ -3290,11 +3387,17 @@ void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info
       PermissionTypeError(isolate, "invalid stream");
       return;
     }
+    std::unique_ptr<Target>& target = self->stream_targets_[static_cast<uintptr_t>(handle)];
+    target = std::make_unique<Target>(Target{self->weak_factory_.GetWeakPtr(), std::string(), entry->hook ? static_cast<ViewHook*>(entry->hook)->id : 0});
     zebkit_network_stream_on_writable(reinterpret_cast<zebkit_network_stream*>(static_cast<uintptr_t>(handle)),
                                       [](zebkit_network_stream* stream, void* data) {
-      const std::string json = "\"" + base::NumberToString(reinterpret_cast<uintptr_t>(stream)) + "\"";
-      DeliverHook(data, "network-stream-writable", json.c_str());
-    }, entry->hook);
+      auto* target = static_cast<Target*>(data);
+      zebkit_script* script = target->script.get();
+      if (!script) return;
+      Scope scope(script);
+      const std::string id = base::NumberToString(reinterpret_cast<uintptr_t>(stream));
+      script->ViewEvent(target->id, "network-stream-writable", {String8(script->isolate(), id)});
+    }, target.get());
     info.GetReturnValue().Set(true);
     return;
   } else if (kind == "reserved-keys") {
@@ -3354,6 +3457,8 @@ void zebkit_script::NetworkStreamCall(const v8::FunctionCallbackInfo<v8::Value>&
     info.GetReturnValue().Set(zebkit_network_stream_is_open(stream));
   } else if (action == "end") {
     zebkit_network_stream_end(stream, info[2]->IsTrue());
+    // Its writable function is not called after the end.
+    From(info)->stream_targets_.erase(static_cast<uintptr_t>(handle));
     info.GetReturnValue().Set(true);
   }
 }
@@ -3633,11 +3738,14 @@ void zebkit_script::ViewEvaluate(
     const v8::FunctionCallbackInfo<v8::Value>& info) {
   zebkit_script* self = From(info);
   ViewEntry* entry = self->FindView(info);
-  if (!entry)
-    return;
   v8::Local<v8::Promise> promise;
   const int id = self->NewPromise(&promise);
   info.GetReturnValue().Set(promise);
+  // A closed view's evaluation rejects: the engine would not answer it.
+  if (!entry || !zebkit::LiveView(entry->view)) {
+    self->SettleJson(id, nullptr, "the view is closed");
+    return;
+  }
   auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
   zebkit_view_evaluate(
       entry->view, Utf8(info.GetIsolate(), info[1]).c_str(),
@@ -3653,11 +3761,14 @@ void zebkit_script::ViewEvaluate(
 void zebkit_script::ViewExportNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {
   zebkit_script* self = From(info);
   ViewEntry* entry = self->FindView(info);
-  if (!entry)
-    return;
   v8::Local<v8::Promise> promise;
   const int id = self->NewPromise(&promise);
   info.GetReturnValue().Set(promise);
+  // A closed view has no window: null, as for one without.
+  if (!entry || !zebkit::LiveView(entry->view)) {
+    self->SettleJson(id, "null", nullptr);
+    return;
+  }
   auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
   auto settle = [](void* data, const char* handle) {
     std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
@@ -3694,10 +3805,13 @@ void zebkit_script::ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& 
 void zebkit_script::ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Value>& info) {
   zebkit_script* self = From(info);
   ViewEntry* entry = self->FindView(info);
-  if (!entry) return;
   v8::Local<v8::Promise> promise;
   const int id = self->NewPromise(&promise);
   info.GetReturnValue().Set(promise);
+  if (!entry || !zebkit::LiveView(entry->view)) {
+    self->SettleJson(id, nullptr, "the view is closed");
+    return;
+  }
   if (!info[1]->IsString() || info[1].As<v8::String>()->Length() > 65536) {
     self->SettleJson(id, nullptr, "expected user agent options, at most 65536 UTF-8 bytes");
     return;
@@ -3768,8 +3882,10 @@ void zebkit_script::ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info) {
       v8::Global<v8::Function>(isolate, info[2].As<v8::Function>()));
   void* data = binding.get();
   entry->bindings.push_back(std::move(binding));
+  const std::string name = Utf8(isolate, info[1]);
+  entry->bound.insert(name);
   zebkit_view_bind(
-      entry->view, Utf8(isolate, info[1]).c_str(),
+      entry->view, name.c_str(),
       [](zebkit_view*, const char* origin, const char* args_json,
          zebkit_call* call, void* data) {
         auto* binding = static_cast<std::pair<base::WeakPtr<zebkit_script>,
@@ -3951,7 +4067,7 @@ v8::MaybeLocal<v8::Module> zebkit_script::LoadModule(
   if (!v8::ScriptCompiler::CompileModule(isolate(), &source).ToLocal(&module))
     return {};
   modules_[zebkit::PathToUTF8(path)].Reset(isolate(), module);
-  module_paths_[module->GetIdentityHash()] = zebkit::PathToUTF8(path);
+  module_paths_.emplace(module->GetIdentityHash(), zebkit::PathToUTF8(path));
   return module;
 }
 
@@ -3965,8 +4081,15 @@ v8::MaybeLocal<v8::Module> zebkit_script::Resolve(
           1, v8::kEmbedderDataTypeTagDefault));
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
   const std::string name = Utf8(isolate, specifier);
-  auto from = self->module_paths_.find(referrer->GetIdentityHash());
-  if (from == self->module_paths_.end() ||
+  // The referrer's path: of the modules with its hash, the one it is.
+  const std::string* from = nullptr;
+  auto [first, last] = self->module_paths_.equal_range(referrer->GetIdentityHash());
+  for (auto it = first; it != last && !from; ++it) {
+    auto module = self->modules_.find(it->second);
+    if (module != self->modules_.end() && module->second == referrer)
+      from = &it->second;
+  }
+  if (!from ||
       !(name.starts_with("./") || name.starts_with("../") ||
         name.starts_with("/"))) {
     isolate->ThrowException(v8::Exception::Error(String8(
@@ -3976,7 +4099,7 @@ v8::MaybeLocal<v8::Module> zebkit_script::Resolve(
   }
   base::FilePath path = name.starts_with("/")
                             ? zebkit::PathFromUTF8(name)
-                            : zebkit::PathFromUTF8(from->second).DirName().Append(zebkit::PathFromUTF8(name));
+                            : zebkit::PathFromUTF8(*from).DirName().Append(zebkit::PathFromUTF8(name));
   base::FilePath absolute;
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
@@ -4129,8 +4252,10 @@ void zebkit_script::Evaluate(const std::string& source,
 
 extern "C" {
 
+// The engine's thread only (zebkit.h, "Threads"), in release builds too.
 zebkit_script* zebkit_script_new(int argc, const char* const* argv) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   std::vector<std::string> args;
   for (int i = 0; argv && i < argc; ++i)
     args.push_back(argv[i] ? argv[i] : "");
@@ -4141,7 +4266,8 @@ void zebkit_script_run_module(zebkit_script* script,
                               const char* path,
                               zebkit_result_func func,
                               void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread() || !script)
+    return;
   script->RunModule(path ? path : "", func, data);
 }
 
@@ -4149,17 +4275,22 @@ void zebkit_script_evaluate(zebkit_script* script,
                             const char* source,
                             zebkit_result_func func,
                             void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread() || !script)
+    return;
   script->Evaluate(source ? source : "", func, data);
 }
 
 void zebkit_script_on_idle(zebkit_script* script,
                            zebkit_task_func func,
                            void* data) {
+  if (!zebkit::CurrentlyOnEngineThread() || !script)
+    return;
   script->OnIdle(func, data);
 }
 
 void zebkit_script_destroy(zebkit_script* script) {
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   delete script;
 }
 

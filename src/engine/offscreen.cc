@@ -63,6 +63,7 @@
 #include "base/numerics/clamped_math.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/input/native_web_keyboard_event.h"
@@ -72,6 +73,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/embedder_widget_hooks.h"
 #include "content/public/browser/gpu_data_manager.h"
+#include "content/public/browser/gpu_data_manager_observer.h"
 #include "gpu/config/gpu_info.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -131,6 +133,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include <IOSurface/IOSurfaceRef.h>
+#include <mach/kern_return.h>
 
 #include <deque>
 
@@ -170,6 +173,12 @@ class Buffer : public base::RefCountedThreadSafe<Buffer> {
   base::WritableSharedMemoryMapping writable_mapping;
   int fd = -1;
   void* handle = nullptr;  // Windows' file mapping, in place of fd.
+  // Where the pixels start in a GPU handle's shared memory, and its rows'
+  // stride (0: the frame's own).
+  size_t offset = 0;
+  size_t stride = 0;
+  // When a frame last came in it (FrameStream::BufferFor()).
+  uint64_t used = 0;
   // A GPU buffer: an IOSurface, or a dmabuf's planes.
   gfx::GpuMemoryBufferHandle gpu;
 
@@ -192,6 +201,13 @@ class Buffer : public base::RefCountedThreadSafe<Buffer> {
   friend class base::RefCountedThreadSafe<Buffer>;
   ~Buffer() = default;
 };
+
+// @buffer used now, for the eviction of the least recently used.
+const scoped_refptr<Buffer>& Used(const scoped_refptr<Buffer>& buffer) {
+  static uint64_t clock = 0;
+  buffer->used = ++clock;
+  return buffer;
+}
 
 uint64_t NextBufferId() {
   static uint64_t next = 0;
@@ -230,11 +246,13 @@ struct Surface {
 
 // The frames of one widget, the view's page or a popup: a capturer on its
 // frame sink, and what the application holds of them.
-class FrameStream : public viz::mojom::FrameSinkVideoConsumer {
+class FrameStream : public viz::mojom::FrameSinkVideoConsumer,
+                    public content::GpuDataManagerObserver {
  public:
   FrameStream(Offscreen* owner, zebkit_frame_layer layer)
       : owner_(owner), layer_(layer) {}
   ~FrameStream() override {
+    WatchGpu(false);
     if (capturer_)
       capturer_->StopAndResetConsumer();
     // Frames the application holds outlive the stream; a held one is let go.
@@ -282,6 +300,14 @@ class FrameStream : public viz::mojom::FrameSinkVideoConsumer {
       const media::CaptureVersion& capture_version) override {}
   void OnFrameWithEmptyRegionCapture() override {}
   void OnStopped() override;
+  // content::GpuDataManagerObserver: GPU buffers asked for follow what the
+  // GPU process turned out to be.
+  void OnGpuInfoUpdate() override { ApplyBuffers(); }
+  void OnGpuProcessCrashed() override { ApplyBuffers(); }
+  void WatchGpu(bool watch);
+  // Starts the capturer, or starts it again when the buffers it should use
+  // have changed.
+  void ApplyBuffers();
   void OnLog(const std::string& message) override {
     // What the capturer says, for --enable-logging --v=1.
     VLOG(1) << "zebkit: off-screen frames: " << message;
@@ -306,6 +332,10 @@ class FrameStream : public viz::mojom::FrameSinkVideoConsumer {
   std::unique_ptr<viz::ClientFrameSinkVideoCapturer> capturer_;
   viz::mojom::BufferFormatPreference preference_ =
       viz::mojom::BufferFormatPreference::kDefault;
+  zebkit_frame_buffers buffers_asked_ = ZEBKIT_BUFFERS_AUTO;
+  bool watching_gpu_ = false;
+  // capturer_ has been started.
+  bool capturing_ = false;
   gfx::Size pixel_size_;
   gfx::Rect bounds_css_;
   uint64_t sequence_ = 0;
@@ -403,6 +433,8 @@ class Offscreen : public content::WebContentsObserver,
   // the caret follow it.
   void AttachMainWidget();
   void ClosePopup();
+  // The forced frames after a resize (SetSize()).
+  void RefreshAfterResize();
   void CaretChanged();
   void PlaceWindow();
   gfx::Size PixelSize(content::RenderWidgetHostView* view) const;
@@ -439,12 +471,12 @@ class Offscreen : public content::WebContentsObserver,
   // A view's scale on Windows (ApplyScale()).
   void ApplyScale();
 #endif
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   float own_scale_ = 1;
-#endif
 #if BUILDFLAG(IS_LINUX)
   std::optional<display::Display> own_display_;
 #endif
+  base::OneShotTimer refresh_timer_;
+  int refresh_step_ = 0;
   base::WeakPtrFactory<Offscreen> weak_factory_{this};
 };
 
@@ -468,37 +500,69 @@ void FrameStream::Start(content::RenderWidgetHostView* view,
   if (!pixel_size_.IsEmpty())
     capturer_->SetResolutionConstraints(pixel_size_, pixel_size_, false);
   SetFrameRate(fps);
+  buffers_asked_ = buffers;
+  WatchGpu(buffers == ZEBKIT_BUFFERS_GPU);
+  ApplyBuffers();
+}
+
+void FrameStream::WatchGpu(bool watch) {
+  if (watch == watching_gpu_)
+    return;
+  watching_gpu_ = watch;
+  if (watch)
+    content::GpuDataManager::GetInstance()->AddObserver(this);
+  else
+    content::GpuDataManager::GetInstance()->RemoveObserver(this);
+}
+
+void FrameStream::ApplyBuffers() {
+  if (!capturer_)
+    return;
   // IOSurfaces on macOS, which the GPU draws into; on Linux shared memory
   // by default, which every system has: a dmabuf needs a GPU that makes
   // them, and a host that imports them.
-  bool gpu = buffers == ZEBKIT_BUFFERS_GPU;
-  // Without a GPU (SwiftShader, software compositing) there are no GPU
-  // buffers to ask for: viz would stop on the request.
-  if (!content::GpuDataManager::GetInstance()->HardwareAccelerationEnabled())
+  bool gpu = buffers_asked_ == ZEBKIT_BUFFERS_GPU;
+  // Only once the GPU process has said what it is, and it is a GPU: without
+  // one (SwiftShader, software compositing) a request for GPU buffers makes
+  // each GPU process die, and Chromium ends the engine after a few. Until
+  // then, and after a fall back, shared memory (OnGpuInfoUpdate() asks again).
+  content::GpuDataManager* gpu_data = content::GpuDataManager::GetInstance();
+  if (!gpu_data->IsEssentialGpuInfoAvailable() || !gpu_data->HardwareAccelerationEnabled())
     gpu = false;
 #if BUILDFLAG(IS_WIN)
   // viz asks for a shared texture the GPU process cannot make where D3D's shared
   // images are not there, as under VMware's display adapter, and the GPU process
   // dies on it.
-  if (!content::GpuDataManager::GetInstance()->GetGPUInfo().shared_image_d3d)
+  if (!gpu_data->GetGPUInfo().shared_image_d3d)
     gpu = false;
 #endif
+  const auto preference =
+      gpu ? viz::mojom::BufferFormatPreference::kPreferMappableSharedImage
+          : viz::mojom::BufferFormatPreference::kDefault;
+  const bool restart = capturing_;
+  if (restart && preference == preference_)
+    return;
+  if (restart) {
+    VLOG(1) << "zebkit: off-screen frames: GPU buffers " << (gpu ? "usable" : "not usable") << " now";
+    capturer_->StopAndResetConsumer();
+  }
 #if BUILDFLAG(IS_MAC)
   // IOSurfaces by default: the GPU's read back, copied into surfaces of
   // the engine's. viz's own IOSurfaces (ZEBKIT_BUFFERS_GPU) come only for
   // a page in a window on the screen for now.
-  copy_to_surface_ = !gpu && buffers != ZEBKIT_BUFFERS_SHARED_MEMORY;
+  copy_to_surface_ = !gpu && buffers_asked_ != ZEBKIT_BUFFERS_SHARED_MEMORY;
   surfaces_.clear();
   history_.clear();
 #endif
-  preference_ = gpu
-                    ? viz::mojom::BufferFormatPreference::kPreferMappableSharedImage
-                    : viz::mojom::BufferFormatPreference::kDefault;
+  preference_ = preference;
   force_next_ = true;
+  capturing_ = true;
   capturer_->Start(this, preference_);
 }
 
 void FrameStream::Stop() {
+  WatchGpu(false);
+  capturing_ = false;
   if (!capturer_)
     return;
   capturer_->StopAndResetConsumer();
@@ -555,7 +619,7 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
       return nullptr;
     key = "shm:" + region.GetGUID().ToString();
     if (auto it = buffers_.find(key); it != buffers_.end())
-      return it->second;
+      return Used(it->second);
     buffer->read_only = std::move(region);
     buffer->read_only_mapping = buffer->read_only.Map();
     if (!buffer->read_only_mapping.IsValid())
@@ -571,7 +635,7 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
       return nullptr;
     key = "shm:" + region.GetGUID().ToString();
     if (auto it = buffers_.find(key); it != buffers_.end())
-      return it->second;
+      return Used(it->second);
     buffer->writable = std::move(region);
     buffer->writable_mapping = buffer->writable.Map();
     if (!buffer->writable_mapping.IsValid())
@@ -585,12 +649,15 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
     gfx::GpuMemoryBufferHandle& handle = data->get_gpu_memory_buffer_handle();
     switch (handle.type) {
       case gfx::SHARED_MEMORY_BUFFER: {
+        // Before the region is moved out of the handle.
+        buffer->offset = handle.offset;
+        buffer->stride = handle.stride;
         base::UnsafeSharedMemoryRegion region = std::move(handle).region();
         if (!region.IsValid())
           return nullptr;
         key = "shm:" + region.GetGUID().ToString();
         if (auto it = buffers_.find(key); it != buffers_.end())
-          return it->second;
+          return Used(it->second);
         buffer->writable = std::move(region);
         buffer->writable_mapping = buffer->writable.Map();
         if (!buffer->writable_mapping.IsValid())
@@ -609,7 +676,7 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
           return nullptr;
         key = "iosurface:" + std::to_string(IOSurfaceGetID(surface));
         if (auto it = buffers_.find(key); it != buffers_.end())
-          return it->second;
+          return Used(it->second);
         buffer->gpu = std::move(handle);
         break;
       }
@@ -620,7 +687,7 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
           return nullptr;
         key = "dxgi:" + dxgi.token().ToString();
         if (auto it = buffers_.find(key); it != buffers_.end())
-          return it->second;
+          return Used(it->second);
         buffer->gpu = std::move(handle);
         break;
       }
@@ -635,7 +702,7 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
         key = "dmabuf:" + std::to_string(info.st_dev) + ":" +
               std::to_string(info.st_ino);
         if (auto it = buffers_.find(key); it != buffers_.end())
-          return it->second;
+          return Used(it->second);
         buffer->gpu = std::move(handle);
         break;
       }
@@ -648,10 +715,15 @@ scoped_refptr<Buffer> FrameStream::BufferFor(
   }
   buffer->id = NextBufferId();
   // A pool is recreated when the size changes: buffers of an old one are
-  // not seen again. Keep a pool's worth.
-  if (buffers_.size() >= 16)
-    buffers_.clear();
-  buffers_[key] = buffer;
+  // not seen again. Keep a pool's worth, the least recently used going
+  // first, so that a live buffer keeps its id (the application's cache).
+  if (buffers_.size() >= 16) {
+    auto oldest = std::min_element(buffers_.begin(), buffers_.end(), [](const auto& a, const auto& b) {
+      return a.second->used < b.second->used;
+    });
+    buffers_.erase(oldest);
+  }
+  buffers_[key] = Used(buffer);
   return buffer;
 }
 
@@ -714,15 +786,9 @@ void FrameStream::OnFrameCaptured(
       info->strides ? info->strides->stride_by_plane[0]
                     : static_cast<size_t>(info->coded_size.width()) * 4;
   if (const uint8_t* memory = buffer->memory()) {
-    size_t base_offset = 0;
-    if (buffer->gpu.type == gfx::SHARED_MEMORY_BUFFER)
-      base_offset = buffer->gpu.offset;
     out.kind = ZEBKIT_FRAME_SHARED_MEMORY;
-    out.stride = buffer->gpu.type == gfx::SHARED_MEMORY_BUFFER &&
-                         buffer->gpu.stride
-                     ? buffer->gpu.stride
-                     : stride;
-    out.offset = base_offset + visible.y() * out.stride + visible.x() * 4;
+    out.stride = buffer->stride ? buffer->stride : stride;
+    out.offset = buffer->offset + visible.y() * out.stride + visible.x() * 4;
     out.size = buffer->size();
     out.pixels = memory + out.offset;
     out.fd = buffer->fd;
@@ -848,7 +914,9 @@ void FrameStream::CopyToSurface(Frame* frame) {
   region.Intersect(gfx::Rect(size));
 
   IOSurfaceRef ref = surface->ref.get();
-  IOSurfaceLock(ref, 0, nullptr);
+  // Not locked: the frame goes as shared memory, as it came.
+  if (IOSurfaceLock(ref, 0, nullptr) != KERN_SUCCESS)
+    return;
   uint8_t* base = static_cast<uint8_t*>(IOSurfaceGetBaseAddress(ref));
   const size_t row_bytes = IOSurfaceGetBytesPerRow(ref);
   for (int y = region.y(); y < region.bottom(); ++y) {
@@ -929,17 +997,8 @@ void InstallHooks() {
   content::SetEmbedderWidgetHooks(hooks);
 }
 
-// Legacy platforms without a per-view backend still share their display scale.
-#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
-float g_scale = 1;
-#endif
-
 float Offscreen::scale() const {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   return own_scale_;
-#else
-  return g_scale;
-#endif
 }
 
 Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
@@ -958,19 +1017,8 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
   // page, rather than a menu of the system's.
   std::ignore = web_contents()->ForbidExternalPopupMenus().Release();
 #endif
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
-#else
-  const bool rescale = scale > 0 && scale != g_scale;
-  if (scale > 0)
-    g_scale = scale;
-  UpdateDisplay();
-  if (rescale) {
-    for (auto& [other, offscreen] : All())
-      offscreen->PlaceWindow();
-  }
-#endif
   PlaceWindow();
   AttachMainWidget();
 #if BUILDFLAG(IS_WIN)
@@ -1066,14 +1114,10 @@ void Offscreen::UpdateDisplay() {
   // does not fit below its <select> in the view still opens below it.
   largest.Enlarge(1024, 1024);
   display::Display display = display::Screen::Get()->GetPrimaryDisplay();
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   // Preserve the native density of unrelated headless/window views. Owned
   // widgets get their independent density through OnScreenInfos, on Windows
   // through ApplyScale(), instead.
   const float backing_scale = display.device_scale_factor();
-#else
-  const float backing_scale = g_scale;
-#endif
   headless::SetDisplayGeometry(
       display, gfx::Rect(gfx::ScaleToCeiledSize(largest, backing_scale)),
       gfx::Insets(), backing_scale);
@@ -1122,7 +1166,6 @@ void Offscreen::ApplyScale() {
 void Offscreen::SetSize(const gfx::Size& size, float scale) {
   if (!size.IsEmpty())
     size_ = size;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (scale > 0) own_scale_ = scale;
 #if BUILDFLAG(IS_WIN)
   // The scale first: the window's new size is then laid out and drawn at it, in one
@@ -1145,35 +1188,22 @@ void Offscreen::SetSize(const gfx::Size& size, float scale) {
   if (auto* main = MainWidget())
     main->SynchronizeVisualProperties();
 #endif
-#else
-  // A new scale is every off-screen view's on this platform.
-  const bool rescale = scale > 0 && scale != g_scale;
-  if (scale > 0)
-    g_scale = scale;
-  UpdateDisplay();
-  if (rescale) {
-    for (auto& [view, offscreen] : All())
-      offscreen->PlaceWindow();
-  } else {
-    PlaceWindow();
-  }
-#endif
   main_.SetPixelSize(gfx::ScaleToCeiledSize(size_, this->scale()));
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   // The page's last frame at the new size can come before the capturer has it, and
-  // an idle page sends no other.
-  for (int ms : {150, 500, 1200}) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(
-            [](base::WeakPtr<Offscreen> self) {
-              if (self)
-                self->main_.RequestFrame();
-            },
-            weak_factory_.GetWeakPtr()),
-        base::Milliseconds(ms));
-  }
+  // an idle page sends no other: a forced frame 150, 500 and 1200 ms after the
+  // last resize, one timer however many resizes there are.
+  refresh_step_ = 0;
+  refresh_timer_.Start(FROM_HERE, base::Milliseconds(150), this, &Offscreen::RefreshAfterResize);
 #endif
+}
+
+void Offscreen::RefreshAfterResize() {
+  main_.RequestFrame();
+  static constexpr int kNext[] = {350, 700};
+  if (refresh_step_ < static_cast<int>(std::size(kNext)))
+    refresh_timer_.Start(FROM_HERE, base::Milliseconds(kNext[refresh_step_++]), this,
+                         &Offscreen::RefreshAfterResize);
 }
 
 void Offscreen::AttachMainWidget() {
@@ -1271,6 +1301,9 @@ void Offscreen::SetBuffers(zebkit_frame_buffers buffers) {
   buffers_ = buffers;
   if (main_.started())
     main_.Start(MainView(), PixelSize(MainView()), buffers_, fps_);
+  // An open popup's frames in the new kind too.
+  if (popup_frames_ && popup_frames_->started() && popup_ && popup_->GetView())
+    popup_frames_->Start(popup_->GetView(), PixelSize(popup_->GetView()), buffers_, fps_);
 }
 
 void Offscreen::RequestFrame() {
@@ -1438,6 +1471,8 @@ void Offscreen::WebContentsDestroyed() {
 
 // ---- Input -----------------------------------------------------------------
 
+}  // namespace
+
 int BlinkModifiers(unsigned modifiers) {
   int out = 0;
   if (modifiers & ZEBKIT_MODIFIER_SHIFT)
@@ -1464,6 +1499,8 @@ int BlinkModifiers(unsigned modifiers) {
     out |= blink::WebInputEvent::kIsAutoRepeat;
   return out;
 }
+
+namespace {
 
 blink::WebPointerProperties::Button BlinkButton(zebkit_mouse_button button) {
   using Button = blink::WebPointerProperties::Button;
@@ -1808,6 +1845,10 @@ void OnPopupShown(content::WebContents* contents,
 
 }  // namespace
 
+void DestroyOffscreen(zebkit_view* view) {
+  delete Offscreen::Of(view);
+}
+
 void MakeOffscreenLike(zebkit_view* opener, zebkit_view* popup,
                        const blink::mojom::WindowFeatures& features) {
   Offscreen* offscreen = Offscreen::Of(opener);
@@ -1843,7 +1884,8 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
                                           int width,
                                           int height,
                                           float scale) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
 #if BUILDFLAG(IS_WIN)
   if (!zebkit_is_headless()) {
     LOG(ERROR) << "zebkit: off-screen views are for a process without "
@@ -1872,6 +1914,7 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
 }
 
 bool zebkit_view_is_offscreen(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return Offscreen::Of(view) != nullptr;
 }
 
@@ -1879,6 +1922,7 @@ void zebkit_view_set_size(zebkit_view* view,
                           int width,
                           int height,
                           float scale) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view)) {
     offscreen->SetSize(gfx::Size(std::max(width, 0), std::max(height, 0)),
                        scale);
@@ -1888,6 +1932,7 @@ void zebkit_view_set_size(zebkit_view* view,
 }
 
 void zebkit_view_on_frame(zebkit_view* view, zebkit_frame_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SetOnFrame(func, data);
 }
@@ -1910,22 +1955,26 @@ void zebkit_frame_release(const zebkit_frame* frame) {
 }
 
 void zebkit_view_set_frame_rate(zebkit_view* view, double fps) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SetFrameRate(fps);
 }
 
 void zebkit_view_set_max_frames_in_flight(zebkit_view* view, int count) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SetMaxInFlight(count);
 }
 
 void zebkit_view_set_frame_buffers(zebkit_view* view,
                                    zebkit_frame_buffers buffers) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SetBuffers(buffers);
 }
 
 void zebkit_view_request_frame(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->RequestFrame();
 }
@@ -1945,6 +1994,7 @@ void zebkit_view_send_mouse(zebkit_view* view,
                             zebkit_mouse_button button,
                             int click_count,
                             unsigned modifiers) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SendMouse(type, x, y, button, click_count, modifiers);
 }
@@ -1957,17 +2007,20 @@ void zebkit_view_send_wheel(zebkit_view* view,
                             bool precise,
                             zebkit_wheel_phase phase,
                             unsigned modifiers) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view))
     offscreen->SendWheel(x, y, delta_x, delta_y, precise, phase, modifiers);
 }
 
 void zebkit_view_send_key(zebkit_view* view, const zebkit_key_event* event) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view); offscreen && event)
     offscreen->SendKey(*event);
 }
 
 bool zebkit_view_send_key_with_commands(zebkit_view* view, const zebkit_key_event* event,
                                         const zebkit_edit_command* commands, size_t count) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   Offscreen* offscreen = Offscreen::Of(view);
   if (!offscreen || !event || count > 128 || (count && (!commands || event->type != ZEBKIT_KEY_DOWN)))
     return false;
@@ -1985,6 +2038,7 @@ void zebkit_view_ime_set_composition(zebkit_view* view,
                                      const char* text,
                                      int selection_start,
                                      int selection_end) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   const std::u16string composition = base::UTF8ToUTF16(text ? text : "");
   const int length = static_cast<int>(composition.size());
   base::DictValue params;
@@ -1997,12 +2051,14 @@ void zebkit_view_ime_set_composition(zebkit_view* view,
 }
 
 void zebkit_view_ime_commit(zebkit_view* view, const char* text) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   base::DictValue params;
   params.Set("text", text ? text : "");
   view->Send("Input.insertText", std::move(params));
 }
 
 void zebkit_view_ime_cancel(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   // An empty composition takes the composition away.
   base::DictValue params;
   params.Set("text", "");
@@ -2012,43 +2068,22 @@ void zebkit_view_ime_cancel(zebkit_view* view) {
 }
 
 void zebkit_view_on_caret(zebkit_view* view, zebkit_caret_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view)) {
     offscreen->SetOnCaret(func, data);
   }
 }
 
 void zebkit_view_set_focus(zebkit_view* view, bool focused) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view)) {
     view->offscreen_focused_ = focused;
     offscreen->SetFocus(focused);
   }
 }
 
-bool zebkit_view_on_authentication(zebkit_view* view,
-                                   zebkit_authentication_func func,
-                                   void* data) {
-  if (!view)
-    return false;
-  zebkit::AuthenticationHandlerChanged(view);
-  view->on_authentication_ = func;
-  view->on_authentication_data_ = data;
-  return true;
-}
-
-bool zebkit_view_authentication_action(zebkit_view* view, const char* json) {
-  return view && json && zebkit::AuthenticationAction(view, json);
-}
-
-bool zebkit_view_set_authentication_ui(zebkit_view* view, bool enabled) {
-  if (!view)
-    return false;
-  view->authentication_ui_enabled_ = enabled;
-  if (!enabled)
-    zebkit::AuthenticationPolicyDisabled(view);
-  return true;
-}
-
 void zebkit_view_on_cursor(zebkit_view* view, zebkit_cursor_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view)) {
     offscreen->on_cursor_ = func;
     offscreen->on_cursor_data_ = data;
@@ -2056,6 +2091,7 @@ void zebkit_view_on_cursor(zebkit_view* view, zebkit_cursor_func func, void* dat
 }
 
 void zebkit_view_on_popup(zebkit_view* view, zebkit_popup_func func, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (Offscreen* offscreen = Offscreen::Of(view)) {
     offscreen->on_popup_ = func;
     offscreen->on_popup_data_ = data;

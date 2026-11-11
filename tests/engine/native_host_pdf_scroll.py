@@ -6,6 +6,7 @@
 A private Xvfb. What the pane did is its own report (NATIVE_HOST_PDF_REPORT=1):
 positions, pages rendered and kept, a checksum of the pane's pixels.
 """
+import atexit
 import ctypes as C
 import os
 from pathlib import Path
@@ -74,6 +75,8 @@ def main():
         generated.write(long_pdf(int(document.partition(":")[2] or 300)))
         generated.close()
         document = generated.name
+        # A 300-page PDF a run: gone with the test, whatever its end.
+        atexit.register(os.unlink, document)
     if self_drive:
         return self_driven(host, document, sys.argv[3:])
     switches = sys.argv[3:]
@@ -146,7 +149,10 @@ def main():
                 print(log_path.read_text(errors="replace")[-800:])
                 raise SystemExit(1)
             # Down through the whole document, as far as it goes.
-            end = time.monotonic() + float(os.environ.get("PDF_SCROLL_LIMIT", 180))
+            limit = os.environ.get("ZEBKIT_TEST_PDF_SCROLL_LIMIT")
+            if limit:
+                print("narrowed: ZEBKIT_TEST_PDF_SCROLL_LIMIT=%s seconds of scrolling" % limit, flush=True)
+            end = time.monotonic() + float(limit or 180)
             last = lines()[-1]
             while time.monotonic() < end and int(last[1]) + 900 < int(last[2]) - 1:
                 notch(True, 40, .005)

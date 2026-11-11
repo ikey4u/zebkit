@@ -104,8 +104,6 @@ Window::Window(std::unique_ptr<WebContents> web_contents, Kind kind)
   windows_.push_back(this);
 }
 
-// Device capture follows the same controller as navigator.permissions and
-// embedder prompts. Display/tab capture needs a chooser and is not granted here.
 namespace {
 Window::EmbedderHooks* g_embedder_hooks = nullptr;
 }  // namespace
@@ -263,7 +261,6 @@ void Window::SetMainMessageLoopQuitClosure(base::OnceClosure quit_closure) {
   GetMainMessageLoopQuitClosure() = std::move(quit_closure);
 }
 
-// static
 namespace {
 Window::NewWindowHandler& NewWindowHandlerForEmbedder() {
   static base::NoDestructor<Window::NewWindowHandler> handler;
@@ -337,8 +334,15 @@ void Window::Shutdown() {
 
   DevToolsAgentHost::DetachAllClients();
 
-  while (!Window::windows().empty())
+  while (!Window::windows().empty()) {
+    const size_t count = Window::windows().size();
     Window::windows().back()->Close();
+    // A close that did not happen would loop for ever.
+    if (Window::windows().size() >= count) {
+      LOG(ERROR) << "A window did not close at the engine's end";
+      break;
+    }
+  }
 
   ShutdownPlatforms();
 
@@ -354,6 +358,11 @@ void Window::Shutdown() {
   base::RunLoop().RunUntilIdle();
 }
 
+// static
+bool Window::IsShutDown() {
+  return g_shut_down;
+}
+
 gfx::Size Window::AdjustWindowSize(const gfx::Size& initial_size) {
   if (!initial_size.IsEmpty())
     return initial_size;
@@ -367,6 +376,8 @@ Window* Window::Create(BrowserContext* browser_context,
                        const gfx::Size& initial_size,
                        Kind kind,
                        const WindowOptions* options) {
+  if (g_shut_down)
+    return nullptr;
   WebContents::CreateParams create_params(browser_context, site_instance);
   Window* window = CreateForContents(WebContents::Create(create_params),
                                      AdjustWindowSize(initial_size), kind, options);
@@ -407,6 +418,8 @@ WebContents* Window::AddNewContents(
     controller->Show();
   }
 
+  if (g_shut_down)
+    return nullptr;
   base::WeakPtr<WebContents> result = new_contents->GetWeakPtr();
   // What an off-screen view opens is off-screen too.
   // The opener's options for its popups (zebkit_view_set_popup_window_options),
@@ -440,6 +453,8 @@ Window* Window::OpenFrom(WebContents* source,
   Window* window = Create(source->GetBrowserContext(), GURL(), site_instance,
                           gfx::Size(), opener ? opener->kind() : Kind::kNative,
                           opener && opener->popup_options_ ? &*opener->popup_options_ : nullptr);
+  if (!window)
+    return nullptr;
   base::WeakPtr<WebContents> contents = window->web_contents()->GetWeakPtr();
   if (const PopupHandler& handler = PopupHandlerForEmbedder(); handler) {
     handler.Run(source, window, url, disposition, blink::mojom::WindowFeatures(),
@@ -527,9 +542,6 @@ bool Window::IsFullscreenForTabOrPending(const WebContents* web_contents) {
 
 blink::mojom::DisplayMode Window::GetDisplayMode(
     const WebContents* web_contents) {
-  // TODO: should return blink::mojom::DisplayModeFullscreen wherever user puts
-  // a browser window into fullscreen (not only in case of renderer-initiated
-  // fullscreen mode): crbug.com/476874.
   if (IsFullscreenForTabOrPending(web_contents))
     return blink::mojom::DisplayMode::kFullscreen;
   // A window in fullscreen, by the application or the person, as Chrome's.
@@ -565,16 +577,10 @@ void Window::RegisterProtocolHandler(RenderFrameHost* requesting_frame,
   if (registry->SilentlyHandleRegisterHandlerRequest(handler))
     return;
 
-  if (!user_gesture && !windows_.empty()) {
-    // TODO(jfernandez): This is not strictly needed, but we need a way to
-    // inform the observers in browser tests that the request has been
-    // cancelled, to avoid timeouts. Chrome just holds the handler as pending in
-    // the PageContentSettingsDelegate, but we don't have such thing in the
-    // Content Window.
-    registry->OnDenyRegisterProtocolHandler(handler);
-    return;
-  }
-
+  // Without a gesture too: the application is asked, with user_gesture in the
+  // request's details, rather than the handler being recorded as refused
+  // (OnDenyRegisterProtocolHandler() registers it, and a later call with a
+  // gesture is then handled silently, never asked).
   // FencedFrames can not register to handle any protocols.
   if (requesting_frame->IsNestedWithinFencedFrame()) {
     registry->OnIgnoreRegisterProtocolHandler(handler);
@@ -699,12 +705,16 @@ void Window::BeforeUnloadFired(WebContents* web_contents,
   *proceed_to_fire_unload = proceed;
 }
 
-bool Window::CanOverscrollContent() {
-#if defined(USE_AURA)
-  return true;
-#else
+bool Window::TakeFocus(WebContents* source, bool reverse) {
+  // The page keeps it, wrapping to its first element, as in a window that
+  // has only the page: there is no browser UI to move to, and an attached
+  // view's application takes focus back with its own events.
   return false;
-#endif
+}
+
+bool Window::CanOverscrollContent() {
+  // No history swipe or overscroll glow of a browser's in an application.
+  return false;
 }
 
 JavaScriptDialogManager* Window::GetJavaScriptDialogManager(
@@ -804,10 +814,16 @@ void Window::UpdateTitle() {
   if (!web_contents())
     return;
   // The application's, when it gave one.
-  zebkit_view* view = ViewOf(web_contents());
-  platform_->SetTitle(this, view && view->window_title_
-                                ? base::UTF8ToUTF16(*view->window_title_)
-                                : web_contents()->GetTitle());
+  platform_->SetTitle(this, options_.title ? *options_.title : web_contents()->GetTitle());
+}
+
+void Window::SetTitle(std::optional<std::u16string> title) {
+  if (title)
+    options_.given.Set("title", base::UTF16ToUTF8(*title));
+  else
+    options_.given.Remove("title");
+  options_.title = std::move(title);
+  UpdateTitle();
 }
 
 void WindowPlatform::Activate(Window* window) {

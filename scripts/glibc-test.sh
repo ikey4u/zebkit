@@ -180,10 +180,10 @@ for owner in main worker; do
 done
 
 
-port="${ENGINE_TEST_PORT:-8797}"
-python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$tests/pages" "$port" > "$work/server.log" 2>&1 &
-pids+=($!)
-sleep 1
+# On a port that was free, and that this server answers on.
+start_page_server "$tests/pages" "$work/server.log"
+pids+=("$page_server")
+port="$page_port"
 base="http://127.0.0.1:$port"
 mkdir -p "$work/files" "$work/page-files" "$work/media-files" "$work/scheme-files"
 ZEBKIT_TEST_BASE="$base" ZEBKIT_TEST_OTHER="http://localhost:$port" ZEBKIT_TEST_FILES="$work/files" \

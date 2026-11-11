@@ -160,8 +160,9 @@ pub fn serve(streams: Streams) {
                 running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string());
                 let (output, in_flight, running, cancelled) = (output.clone(), in_flight.clone(), running.clone(), cancelled.clone());
                 std::thread::spawn(move || {
-                    let answer = rpc::dispatch(&message, &method, modern.is_some());
-                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    let slot = rpc::Slot(in_flight);
+                    let answer = rpc::dispatch_safely(&message, &method, modern.is_some());
+                    drop(slot);
                     // A cancelled request gets no further messages. In this order, so
                     // that one seen running is seen here.
                     let dropped = {

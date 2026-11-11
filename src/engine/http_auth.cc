@@ -1,4 +1,5 @@
 #include "zebkit/engine/http_auth.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 #include <string.h>
@@ -124,6 +125,12 @@ void CancelHttpAuthRequests(zebkit_view* view, const char* reason) {
     if (pending.view.get() == view) ids.push_back(id);
   for (auto id : ids) Finish(id, std::nullopt, reason);
 }
+// At most 1024 waiting for each view, so that one page cannot use up another's.
+static bool TooMany(zebkit_view* view) {
+  size_t count = 0;
+  for (const auto& [id, pending] : Store().pending) count += pending.view.get() == view;
+  return count >= 1024;
+}
 std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
     const net::AuthChallengeInfo& challenge, content::WebContents* contents,
     const GURL& url, bool primary_main_frame, bool navigation, bool first_attempt,
@@ -133,7 +140,7 @@ std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
   if (!Ready() || !view || (decider && !decider->on_http_auth_)) return nullptr;
   auto delegate = std::make_unique<HttpAuthDelegate>(std::move(callback));
   auto runner = base::SingleThreadTaskRunner::GetCurrentDefault();
-  if (!decider || Store().pending.size() >= 1024 || Store().next == std::numeric_limits<uintptr_t>::max()) {
+  if (!decider || TooMany(view) || Store().next == std::numeric_limits<uintptr_t>::max()) {
     runner->PostTask(FROM_HERE, base::BindOnce(&HttpAuthDelegate::Cancel, delegate->GetWeakPtr()));
     return delegate;
   }
@@ -169,7 +176,7 @@ std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
 extern "C" {
 void zebkit_view_on_http_auth(zebkit_view* view, zebkit_http_auth_func function, void* data) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents()) return;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   if (view->on_http_auth_ == function && view->on_http_auth_data_ == data) return;
   auto weak = view->GetWeakPtr();
   CancelHttpAuthRequests(view, "handler-changed");
@@ -177,12 +184,12 @@ void zebkit_view_on_http_auth(zebkit_view* view, zebkit_http_auth_func function,
   view->on_http_auth_ = function; view->on_http_auth_data_ = data;
 }
 void zebkit_view_on_http_auth_result(zebkit_view* view, zebkit_http_auth_result_func function, void* data) {
-  if (!zebkit::Ready() || !view || !view->web_contents()) return;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->http_auth_result_generation_;
   view->on_http_auth_result_ = function; view->on_http_auth_result_data_ = data;
 }
 bool zebkit_view_set_http_auth_timeout(zebkit_view* view, uint32_t milliseconds) {
-  if (!zebkit::Ready() || !view || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
   view->http_auth_timeout_ms_ = milliseconds; return true;
 }
 char* zebkit_http_auth_request_info(zebkit_http_auth_request* request) {

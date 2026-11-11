@@ -111,23 +111,7 @@ DocumentPermissionHooks& DocumentHooks() {
   static base::NoDestructor<DocumentPermissionHooks> hooks;
   return *hooks;
 }
-PermissionManager::EmbedderDecision& EmbedderDecisionForShell() {
-  static base::NoDestructor<PermissionManager::EmbedderDecision> decision;
-  return *decision;
-}
-
-std::optional<blink::mojom::PermissionStatus> EmbedderStatus(
-    PermissionType permission,
-    const GURL& requesting_origin) {
-  const PermissionManager::EmbedderDecision& decision =
-      EmbedderDecisionForShell();
-  return decision ? decision.Run(permission, requesting_origin) : std::nullopt;
-}
 }  // namespace
-
-void PermissionManager::SetEmbedderDecision(EmbedderDecision decision) {
-  EmbedderDecisionForShell() = std::move(decision);
-}
 
 void PermissionManager::SetDocumentPermissionHooks(DocumentStatus status, DocumentRequest request) {
   DocumentHooks().status = std::move(status);
@@ -148,30 +132,11 @@ void PermissionManager::RequestPermissionsFromCurrentDocument(
       DocumentHooks().request.Run(render_frame_host, request_description, &callback))
     return;
   std::vector<PermissionResult> result;
-  blink::PermissionType permission_type;
   for (const auto& permission : request_description.permissions) {
-    permission_type = blink::PermissionDescriptorToPermissionType(permission);
-    if (std::optional<blink::mojom::PermissionStatus> status = EmbedderStatus(
-            permission_type,
-            render_frame_host->GetLastCommittedOrigin().GetURL())) {
-      result.emplace_back(*status);
-      continue;
-    }
-    // When the `ApproximateGeolocationPermission` feature is enabled, granting
-    // geolocation requires more granular control via `GeolocationSetting`.
-    if (base::FeatureList::IsEnabled(
-            content_settings::features::kApproximateGeolocationPermission) &&
-        permission_type == blink::PermissionType::GEOLOCATION &&
-        IsAllowlistedPermissionType(permission_type)) {
-      GeolocationSetting setting = {PermissionOption::kAllowed,
-                                    PermissionOption::kAllowed};
-      result.emplace_back(blink::mojom::PermissionStatus::GRANTED,
-                          PermissionStatusSource::UNSPECIFIED, setting);
-    } else {
-      result.emplace_back(IsAllowlistedPermissionType(permission_type)
-                              ? blink::mojom::PermissionStatus::GRANTED
-                              : blink::mojom::PermissionStatus::DENIED);
-    }
+    result.emplace_back(
+        IsAllowlistedPermissionType(blink::PermissionDescriptorToPermissionType(permission))
+            ? blink::mojom::PermissionStatus::GRANTED
+            : blink::mojom::PermissionStatus::DENIED);
   }
   std::move(callback).Run(result);
 }
@@ -180,23 +145,8 @@ blink::mojom::PermissionStatus PermissionManager::GetPermissionStatus(
     const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
     const GURL& requesting_origin,
     const GURL& embedding_origin) {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   const auto permission_type =
       blink::PermissionDescriptorToPermissionType(permission_descriptor);
-
-  if ((permission_type == PermissionType::AUDIO_CAPTURE ||
-       permission_type == PermissionType::VIDEO_CAPTURE) &&
-      command_line->HasSwitch(switches::kUseFakeDeviceForMediaStream) &&
-      command_line->HasSwitch(switches::kUseFakeUIForMediaStream) &&
-      command_line->GetSwitchValueASCII(
-          switches::kUseFakeDeviceForMediaStream) != "deny") {
-    return blink::mojom::PermissionStatus::GRANTED;
-  }
-
-  if (std::optional<blink::mojom::PermissionStatus> status =
-          EmbedderStatus(permission_type, requesting_origin)) {
-    return *status;
-  }
 
   // zebkit: what the person has not decided reads as not decided ("prompt"),
   // as in Chrome, not as refused: no browser shows a site every permission

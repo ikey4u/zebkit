@@ -303,9 +303,12 @@ await check('request and response events', async () => {
 await check('setInputFiles', async () => {
   const file = path.join(os.tmpdir(), `zebkit-connect-${process.pid}.txt`);
   fs.writeFileSync(file, 'hello');
-  await page.locator('#file').setInputFiles(file);
-  equal(await page.locator('#file').evaluate(e => e.files[0].name), path.basename(file));
-  fs.unlinkSync(file);
+  try {
+    await page.locator('#file').setInputFiles(file);
+    equal(await page.locator('#file').evaluate(e => e.files[0].name), path.basename(file));
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 });
 await check('waitForSelector', async () => {
   page.evaluate(() => setTimeout(() => document.body.append(Object.assign(document.createElement('p'), { id: 'late', textContent: 'late' })), 50));
@@ -323,11 +326,14 @@ await check('screenshot', async () => {
 });
 await check('tracing', async () => {
   const file = path.join(os.tmpdir(), `zebkit-connect-${process.pid}.zip`);
-  await context.tracing.start({ screenshots: true });
-  await page.locator('#go').click();
-  await context.tracing.stop({ path: file });
-  equal(fs.readFileSync(file).subarray(0, 2).toString(), 'PK');
-  fs.unlinkSync(file);
+  try {
+    await context.tracing.start({ screenshots: true });
+    await page.locator('#go').click();
+    await context.tracing.stop({ path: file });
+    equal(fs.readFileSync(file).subarray(0, 2).toString(), 'PK');
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 });
 await check('real network timing and encoded transfer sizes', async () => {
   const body = '<!doctype html><title>Network metrics</title>' + 'measured '.repeat(2000);

@@ -50,6 +50,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "url/gurl.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/hook_requests.h"
 #include "zebkit/engine/network_hooks.h"
 
@@ -83,10 +84,6 @@ void Tell(zebkit_view* view, base::DictValue event) {
           },
           view->GetWeakPtr(), decider->GetWeakPtr(), decider->*kGeneration,
           base::WriteJson(event).value_or("{}")));
-}
-
-bool SetTold(zebkit_view* view) {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) && view && view->web_contents();
 }
 
 // A request a document made goes with the document.
@@ -184,9 +181,13 @@ std::map<uintptr_t, DocumentOf>& EyeDropperDocuments() {
 class HookEyeDropper : public content::EyeDropper {
  public:
   explicit HookEyeDropper(content::EyeDropperListener* listener) : listener_(listener) {}
+  // Content is destroying this: the request ends without its reply, which
+  // would call the listener from here.
   ~HookEyeDropper() override {
-    if (id_ && EyeDropperRequests::Get().Pending(id_))
-      EyeDropperRequests::Get().Settle(id_, EyeDropperTraits::Decision(), "cancelled");
+    if (!id_)
+      return;
+    EyeDropperDocuments().erase(id_);
+    EyeDropperRequests::Get().Abandon(id_);
   }
   void set_id(uintptr_t id) { id_ = id; }
   void Answer(EyeDropperTraits::Decision decision) {
@@ -778,17 +779,20 @@ bool HandleFileChooserHook(content::RenderFrameHost* frame,
 
 extern "C" {
 void zebkit_view_on_external_protocol(zebkit_view* view, zebkit_external_protocol_func function, void* data) {
-  if (!zebkit::SetTold(view)) return;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->external_protocol_generation_;
   view->on_external_protocol_ = function; view->on_external_protocol_data_ = data;
 }
 void zebkit_view_on_file_chooser(zebkit_view* view, zebkit_file_chooser_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::FileRequests::Get().Install(view, function, data);
 }
 void zebkit_view_on_file_chooser_result(zebkit_view* view, zebkit_file_chooser_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::FileRequests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_file_chooser_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::FileRequests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_file_chooser_request_info(zebkit_file_chooser_request* request) {
@@ -819,12 +823,15 @@ bool zebkit_file_chooser_respond(zebkit_file_chooser_request* request, const cha
   return true;
 }
 void zebkit_view_on_device_chooser(zebkit_view* view, zebkit_device_chooser_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DeviceRequests::Get().Install(view, function, data);
 }
 void zebkit_view_on_device_chooser_result(zebkit_view* view, zebkit_device_chooser_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DeviceRequests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_device_chooser_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::DeviceRequests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_device_chooser_request_info(zebkit_device_chooser_request* request) {
@@ -855,12 +862,15 @@ bool zebkit_device_chooser_respond(zebkit_device_chooser_request* request, const
   return true;
 }
 void zebkit_view_on_eye_dropper(zebkit_view* view, zebkit_eye_dropper_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::EyeDropperRequests::Get().Install(view, function, data);
 }
 void zebkit_view_on_eye_dropper_result(zebkit_view* view, zebkit_eye_dropper_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::EyeDropperRequests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_eye_dropper_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::EyeDropperRequests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_eye_dropper_request_info(zebkit_eye_dropper_request* request) {
@@ -883,12 +893,15 @@ bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request* request, const char*
   return true;
 }
 void zebkit_view_on_media_access(zebkit_view* view, zebkit_media_access_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::MediaRequests::Get().Install(view, function, data);
 }
 void zebkit_view_on_media_access_result(zebkit_view* view, zebkit_media_access_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::MediaRequests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_media_access_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::MediaRequests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_media_access_request_info(zebkit_media_access_request* request) {
@@ -911,7 +924,7 @@ bool zebkit_media_access_respond(zebkit_media_access_request* request, bool allo
 }
 bool zebkit_view_set_reserved_keys(zebkit_view* view, const char* keys_json, char** error) {
   auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
-  if (!zebkit::SetTold(view)) return fail("the view is closed");
+  if (!zebkit::LiveView(view) || !view->web_contents()) return fail("the view is closed");
   std::optional<base::Value> parsed = base::JSONReader::Read(keys_json ? keys_json : "", base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_list() || parsed->GetList().size() > 256)
     return fail("keys are a JSON array of at most 256 strings");
@@ -925,24 +938,24 @@ bool zebkit_view_set_reserved_keys(zebkit_view* view, const char* keys_json, cha
   return true;
 }
 void zebkit_view_on_reserved_key(zebkit_view* view, zebkit_reserved_key_func function, void* data) {
-  if (!zebkit::SetTold(view)) return;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->reserved_key_generation_;
   view->on_reserved_key_ = function; view->on_reserved_key_data_ = data;
 }
 void zebkit_view_on_context_menu(zebkit_view* view, zebkit_context_menu_func function, void* data) {
-  if (!zebkit::SetTold(view)) return;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->context_menu_generation_;
   view->on_context_menu_ = function; view->on_context_menu_data_ = data;
 }
 bool zebkit_view_set_fullscreen_policy(zebkit_view* view, zebkit_fullscreen_policy policy) {
-  if (!zebkit::SetTold(view) || (policy != ZEBKIT_FULLSCREEN_ALLOW && policy != ZEBKIT_FULLSCREEN_DENY)) return false;
+  if (!zebkit::LiveView(view) || !view->web_contents() || (policy != ZEBKIT_FULLSCREEN_ALLOW && policy != ZEBKIT_FULLSCREEN_DENY)) return false;
   view->fullscreen_policy_ = policy;
   if (policy == ZEBKIT_FULLSCREEN_DENY && view->web_contents()->IsFullscreen())
     view->web_contents()->ExitFullscreen(true);
   return true;
 }
 void zebkit_view_on_fullscreen(zebkit_view* view, zebkit_fullscreen_func function, void* data) {
-  if (!zebkit::SetTold(view)) return;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->fullscreen_generation_;
   view->on_fullscreen_ = function; view->on_fullscreen_data_ = data;
 }

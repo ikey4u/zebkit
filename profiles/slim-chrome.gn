@@ -4,8 +4,9 @@
 # everywhere, no size-trained inliner, V8 at the level it chooses, vtables
 # as pointers, Chrome's CFI and zeroed locals. What slim leaves out stays
 # out; the allocator stays the host's (a library cannot take malloc over).
-# A profile to measure with: what of the gap to Chrome 155 is how slim is
-# compiled.
+# A profile to measure with: what of the gap to Chrome's own build is how
+# slim is compiled. slim-speed is the narrower one: only optimize_for_size
+# and the inliner changed.
 
 optimize_for_size = false
 use_ml_inliner = false

@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 /* Strict startup validation is repeatable and precedes profile/key/log IO. */
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #include <zebkit/zebkit.h>
 #include <limits.h>
 #include <stdio.h>
@@ -8,8 +9,13 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <ftw.h>
+#endif
 
 static int failures, evaluated;
+/* The directory made here when the suite gave none, removed at the end. */
+static char made[PATH_MAX];
 static void check(int ok, const char *what) {
     printf("%s %s\n", ok ? "ok  " : "FAIL", what);
     fflush(stdout);
@@ -20,6 +26,30 @@ static void result(zebkit_view *view, const char *json, const char *error, void 
     check(!error && json && strcmp(json, "\"Zebkit Startup Settings\"") == 0,
           "a page sees the API's user agent");
     evaluated = 1;
+}
+
+#ifndef _WIN32
+static int remove_one(const char *path, const struct stat *info, int kind, struct FTW *walk) {
+    (void)info; (void)kind; (void)walk;
+    return remove(path);
+}
+#endif
+static void remove_made(void) {
+    if (!*made)
+        return;
+#ifdef _WIN32
+    /* The path with Windows' separators, not rmdir's switches. */
+    char path[PATH_MAX], command[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s", made);
+    for (char *c = path; *c; ++c)
+        if (*c == '/')
+            *c = '\\';
+    snprintf(command, sizeof(command), "rmdir /s /q \"%s\"", path);
+    if (system(command) != 0)
+        fprintf(stderr, "could not remove %s\n", made);
+#else
+    nftw(made, remove_one, 16, FTW_DEPTH | FTW_PHYS);
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -51,8 +81,13 @@ int main(int argc, char **argv) {
     char temporary[] = "/tmp/zebkit-settings-XXXXXX";
 #endif
     const char *root = getenv("ZEBKIT_TEST_SETTINGS_DIR");
-    if (!root)
+    if (!root) {
         root = mkdtemp(temporary);
+        if (root) {
+            snprintf(made, sizeof(made), "%s", root);
+            atexit(remove_made);
+        }
+    }
     if (!root)
         return 1;
     char profile[PATH_MAX], keys[PATH_MAX], config[PATH_MAX * 3];

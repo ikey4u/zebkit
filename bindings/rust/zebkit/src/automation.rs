@@ -23,8 +23,6 @@
 //! the engine has are [`commands`].
 
 use crate::{c_string, script_result, sys, take_string, Error, View};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::os::raw::{c_char, c_void};
 use std::rc::Rc;
 
@@ -59,7 +57,8 @@ unsafe extern "C" fn on_done<F: FnOnce(Result<String, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    done(script_result(json, error));
+    let result = script_result(json, error);
+    crate::guard(|| done(result));
 }
 
 /// A screenshot's pixels, unencoded (zebkit's own, beyond Playwright's
@@ -103,51 +102,58 @@ unsafe extern "C" fn on_pixels<F: FnOnce(Result<Pixels, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    if let Some(message) = crate::string_from(error) {
-        done(Err(Error::new(message)));
-        return;
-    }
-    if pixels.is_null() || width <= 0 || height <= 0 || stride < width * 4 {
-        done(Err(Error::new("no pixels")));
-        return;
-    }
-    let size = stride as usize * height as usize;
-    done(Ok(Pixels {
-        width: width as u32,
-        height: height as u32,
-        stride: stride as usize,
-        data: std::slice::from_raw_parts(pixels, size).to_vec(),
-    }));
-}
-
-type EventFunction = Box<dyn FnMut(&str, &str)>;
-
-thread_local! {
-    static EVENTS: RefCell<HashMap<usize, Rc<RefCell<EventFunction>>>> = RefCell::new(HashMap::new());
+    let result = if let Some(message) = crate::string_from(error) {
+        Err(Error::new(message))
+    } else if pixels.is_null() || width <= 0 || height <= 0 || stride < width * 4 {
+        Err(Error::new("no pixels"))
+    } else {
+        let size = stride as usize * height as usize;
+        Ok(Pixels {
+            width: width as u32,
+            height: height as u32,
+            stride: stride as usize,
+            data: std::slice::from_raw_parts(pixels, size).to_vec(),
+        })
+    };
+    crate::guard(|| done(result));
 }
 
 /// Calls `function(event, json)` for the page's events, as Playwright's
 /// protocol names them ("Page.request", "BrowserContext.dialog", ...).
+/// One function a view; it is let go after the view's last events, once the
+/// view has closed (or, when the engine stops first, once it has stopped).
 pub fn on_event<F: FnMut(&str, &str) + 'static>(view: &View, function: F) {
     let Some(raw) = view.raw() else { return };
-    EVENTS.with(|events| {
-        events.borrow_mut().insert(raw as usize, Rc::new(RefCell::new(Box::new(function))));
-    });
-    unsafe { sys::zebkit_automation_on_event(raw, Some(on_event_raw), std::ptr::null_mut()) }
+    view.inner.automation_event.set(Some(Box::new(function)));
+    let data = Rc::as_ptr(&view.inner).cast_mut().cast::<c_void>();
+    unsafe { sys::zebkit_automation_on_event(raw, Some(on_event_raw), data) }
+}
+
+/// Stops [`on_event`]'s function.
+pub fn clear_event_handler(view: &View) {
+    if let Some(raw) = view.raw() {
+        unsafe { sys::zebkit_automation_on_event(raw, None, std::ptr::null_mut()) }
+    }
+    view.inner.automation_event.set(None);
+}
+
+/// The id of `view`'s page, as `BrowserContext.pages` and the events name it.
+pub fn page_id(view: &View) -> Option<String> {
+    let raw = view.raw()?;
+    unsafe { take_string(sys::zebkit_automation_page_id(raw)) }
 }
 
 unsafe extern "C" fn on_event_raw(
-    view: *mut sys::zebkit_view,
+    _view: *mut sys::zebkit_view,
     event: *const c_char,
     json: *const c_char,
-    _data: *mut c_void,
+    data: *mut c_void,
 ) {
-    let Some(function) = EVENTS.with(|events| events.borrow().get(&(view as usize)).cloned()) else { return };
+    // The view's state stays until a task after it closed (view.rs).
+    let inner = crate::view::hold(data);
     let event = crate::string_from(event).unwrap_or_default();
     let json = crate::string_from(json).unwrap_or_else(|| "{}".to_string());
-    if let Ok(mut function) = function.try_borrow_mut() {
-        function(&event, &json);
-    };
+    inner.automation_event.call(|function| function(&event, &json));
 }
 
 /// Runs a command that names no view: "Browser.newContext" and a
@@ -220,11 +226,86 @@ impl BrowserContext {
     }
 }
 
+/// The string member `key` of the JSON object `json`, at its top level.
 fn string_member(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{key}\":\"");
-    let start = json.find(&pattern)? + pattern.len();
-    let end = json[start..].find('"')? + start;
-    Some(json[start..end].to_string())
+    let mut chars = json.trim_start().strip_prefix('{')?.chars().peekable();
+    let skip_space = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+    };
+    loop {
+        skip_space(&mut chars);
+        if chars.next()? != '"' {
+            return None;
+        }
+        let name = json_string_body(&mut chars)?;
+        skip_space(&mut chars);
+        if chars.next()? != ':' {
+            return None;
+        }
+        skip_space(&mut chars);
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            let value = json_string_body(&mut chars)?;
+            if name == key {
+                return Some(value);
+            }
+        } else {
+            skip_json_value(&mut chars)?;
+        }
+        skip_space(&mut chars);
+        match chars.next()? {
+            ',' => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// The rest of a JSON string after its opening quote, unescaped.
+fn json_string_body(chars: &mut impl Iterator<Item = char>) -> Option<String> {
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'u' => {
+                    let hex: String = chars.take(4).collect();
+                    let unit = u32::from_str_radix(&hex, 16).ok()?;
+                    // Pairs of surrogates are not needed for the ids this reads.
+                    out.push(char::from_u32(unit).unwrap_or('\u{fffd}'));
+                }
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+}
+
+/// Skips a JSON value that is not a string: a number, a literal, or a
+/// nested object or array (strings inside it included).
+fn skip_json_value(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<()> {
+    let mut depth = 0usize;
+    loop {
+        match chars.peek().copied()? {
+            '{' | '[' => depth += 1,
+            '}' | ']' if depth == 0 => return Some(()),
+            '}' | ']' => depth -= 1,
+            ',' if depth == 0 => return Some(()),
+            '"' => {
+                chars.next();
+                json_string_body(chars)?;
+                continue;
+            }
+            _ => {}
+        }
+        chars.next();
+    }
 }
 
 /// Serves Playwright's own protocol on 127.0.0.1:`port` (0 picks one), what
@@ -242,10 +323,11 @@ unsafe extern "C" fn on_listen<F: FnOnce(Result<String, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    match crate::string_from(url) {
-        Some(url) => done(Ok(url)),
-        None => done(Err(Error::new(crate::string_from(error).unwrap_or_default()))),
-    }
+    let result = match crate::string_from(url) {
+        Some(url) => Ok(url),
+        None => Err(Error::new(crate::string_from(error).unwrap_or_default())),
+    };
+    crate::guard(|| done(result));
 }
 
 /// `text` as a JSON string.
@@ -560,5 +642,20 @@ impl Locator {
             if members.is_empty() { String::new() } else { format!(",{members}") }
         );
         self.command("Frame.expect", &options, done);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::string_member;
+
+    #[test]
+    fn string_member_reads_json_as_it_is_written() {
+        assert_eq!(string_member(r#"{"context":"x1"}"#, "context").as_deref(), Some("x1"));
+        assert_eq!(string_member(r#"{ "context" : "x1" }"#, "context").as_deref(), Some("x1"));
+        assert_eq!(string_member(r#"{"a": {"context": "no"}, "b": [1, "]"], "context": "x\"2"}"#, "context").as_deref(), Some("x\"2"));
+        assert_eq!(string_member(r#"{"n": 3, "page": "p2"}"#, "page").as_deref(), Some("p2"));
+        assert_eq!(string_member(r#"{"page": 3}"#, "page"), None);
+        assert_eq!(string_member("[]", "page"), None);
     }
 }

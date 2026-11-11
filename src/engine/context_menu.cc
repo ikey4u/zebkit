@@ -239,7 +239,7 @@ bool zebkit_view_context_menu_run(zebkit_view* view, uint64_t menu_id, const cha
   };
   if (error)
     *error = nullptr;
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents())
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !zebkit::LiveView(view) || !view->web_contents())
     return fail("a live view on the engine's thread");
   const zebkit::CapturedContextMenu* menu = zebkit::FindContextMenu(view, menu_id);
   if (!menu)
@@ -258,7 +258,7 @@ bool zebkit_view_context_menu_show(zebkit_view* view, uint64_t menu_id, const ch
   };
   if (error)
     *error = nullptr;
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents())
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !zebkit::LiveView(view) || !view->web_contents())
     return fail("a live view on the engine's thread");
   const zebkit::CapturedContextMenu* menu = zebkit::FindContextMenu(view, menu_id);
   if (!menu)

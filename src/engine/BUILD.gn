@@ -30,7 +30,9 @@ config("implementation") {
     "ZEBKIT_VERSION=\"$_version\"",
   ]
   if (is_linux && use_dbus) {
-    defines += [ "ZEBKIT_COOKIES_USE_DBUS" ]
+    # D-Bus for the engine's services (cookies' key store, the appearance
+    # portal, IBus, notifications, the dock and desktop actions).
+    defines += [ "ZEBKIT_USE_DBUS" ]
 
     # libdbus itself, for IBus's own bus (ime_ibus_linux.cc).
     configs = [ "//build/config/linux/dbus" ]

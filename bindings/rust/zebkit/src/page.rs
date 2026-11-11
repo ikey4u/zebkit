@@ -137,16 +137,13 @@ pub(crate) struct Slots {
 
 impl Slots {
     pub(crate) fn clear(&self) {
-        self.on_dialog.borrow_mut().take();
-        self.on_dialog_closed.borrow_mut().take();
-        self.on_drag_start.borrow_mut().take();
-        self.on_drag_end.borrow_mut().take();
+        self.on_dialog.set(None);
+        self.on_dialog_closed.set(None);
+        self.on_drag_start.set(None);
+        self.on_drag_end.set(None);
     }
 }
 
-fn slots<'a>(data: *mut c_void) -> &'a Slots {
-    unsafe { &(*data.cast::<crate::view::Inner>()).page }
-}
 
 impl View {
     fn page_data(&self) -> *mut c_void {
@@ -158,7 +155,7 @@ impl View {
     /// answer with [`View::respond_dialog`].
     pub fn on_dialog<F: FnMut(&Dialog) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.page.on_dialog.borrow_mut() = Some(Box::new(function));
+        self.inner.page.on_dialog.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_dialog(raw, Some(on_dialog), self.page_data()) }
     }
 
@@ -166,14 +163,14 @@ impl View {
     pub fn stop_dialogs(&self) {
         let Some(raw) = self.raw() else { return };
         unsafe { sys::zebkit_view_on_dialog(raw, None, std::ptr::null_mut()) }
-        self.inner.page.on_dialog.borrow_mut().take();
+        self.inner.page.on_dialog.set(None);
     }
 
     /// Calls `function(id, accepted, user_input)` when a dialog closes,
     /// however it was answered.
     pub fn on_dialog_closed<F: FnMut(u64, bool, &str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.page.on_dialog_closed.borrow_mut() = Some(Box::new(function));
+        self.inner.page.on_dialog_closed.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_dialog_closed(raw, Some(on_dialog_closed), self.page_data()) }
     }
 
@@ -242,14 +239,14 @@ impl View {
     /// [`View::drag_source_end`].
     pub fn on_drag_start<F: FnMut(&Drag) -> bool + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.page.on_drag_start.borrow_mut() = Some(Box::new(function));
+        self.inner.page.on_drag_start.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_drag_start(raw, Some(on_drag_start), self.page_data()) }
     }
 
     /// Calls `function` with what was done when the page's drag ends.
     pub fn on_drag_end<F: FnMut(u32) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.page.on_drag_end.borrow_mut() = Some(Box::new(function));
+        self.inner.page.on_drag_end.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_drag_end(raw, Some(on_drag_end), self.page_data()) }
     }
 
@@ -312,7 +309,7 @@ unsafe extern "C" fn on_dialog(_view: *mut sys::zebkit_view, dialog: *const sys:
         is_reload: raw.is_reload,
         held: raw.held,
     };
-    call_slot(&slots(data).on_dialog, |function| function(&dialog));
+    call_slot(&crate::view::hold(data).page.on_dialog, |function| function(&dialog));
 }
 
 unsafe extern "C" fn on_dialog_closed(
@@ -323,7 +320,7 @@ unsafe extern "C" fn on_dialog_closed(
     data: *mut c_void,
 ) {
     let input = string_from(user_input).unwrap_or_default();
-    call_slot(&slots(data).on_dialog_closed, |function| function(id, accepted, &input));
+    call_slot(&crate::view::hold(data).page.on_dialog_closed, |function| function(id, accepted, &input));
 }
 
 unsafe extern "C" fn on_pdf<F: FnOnce(Result<Vec<u8>, Error>)>(
@@ -334,11 +331,12 @@ unsafe extern "C" fn on_pdf<F: FnOnce(Result<Vec<u8>, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    if pdf.is_null() {
-        done(Err(Error::new(string_from(error).unwrap_or_else(|| "printing failed".to_string()))));
+    let result = if pdf.is_null() {
+        Err(Error::new(string_from(error).unwrap_or_else(|| "printing failed".to_string())))
     } else {
-        done(Ok(std::slice::from_raw_parts(pdf, size).to_vec()));
-    }
+        Ok(std::slice::from_raw_parts(pdf, size).to_vec())
+    };
+    crate::guard(|| done(result));
 }
 
 unsafe extern "C" fn on_drag_start(_view: *mut sys::zebkit_view, drag: *const sys::zebkit_drag, data: *mut c_void) -> bool {
@@ -364,15 +362,15 @@ unsafe extern "C" fn on_drag_start(_view: *mut sys::zebkit_view, drag: *const sy
         image,
     };
     let mut taken = false;
-    call_slot(&slots(data).on_drag_start, |function| taken = function(&drag));
+    call_slot(&crate::view::hold(data).page.on_drag_start, |function| taken = function(&drag));
     taken
 }
 
 unsafe extern "C" fn on_drag_end(_view: *mut sys::zebkit_view, operation: c_uint, data: *mut c_void) {
-    call_slot(&slots(data).on_drag_end, |function| function(operation));
+    call_slot(&crate::view::hold(data).page.on_drag_end, |function| function(operation));
 }
 
 unsafe extern "C" fn on_operation<F: FnOnce(u32)>(_view: *mut sys::zebkit_view, operation: c_uint, data: *mut c_void) {
     let done = Box::from_raw(data.cast::<F>());
-    done(operation);
+    crate::guard(|| done(operation));
 }

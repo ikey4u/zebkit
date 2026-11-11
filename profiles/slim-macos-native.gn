@@ -4,6 +4,9 @@
 # The cross-built release profile remains slim-macos.
 use_system_xcode = true
 is_official_build = false
+# This is what scripts/dist.sh release builds on a Mac (dist/release): without
+# DCHECKs, which Chromium turns on by default for a build that is not official.
+dcheck_always_on = false
 
 # The Linux release's ML inliner is unavailable in the macOS toolchain.
 # Avoid ThinLTO for local iterations and keep linking within desktop RAM.

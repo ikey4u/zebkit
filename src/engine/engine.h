@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/run_loop.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/memory_system/memory_system.h"
 #include "content/public/app/content_main_delegate.h"
@@ -186,9 +187,6 @@ class BrowserClient : public content::ContentBrowserClient {
       std::optional<int64_t> navigation_id) override;
   bool HasCustomSchemeHandler(content::BrowserContext* browser_context,
                               const std::string& scheme) override;
-  bool AreIsolatedWebAppsEnabled(content::BrowserContext* browser_context) override;
-  bool ShouldUrlUseApplicationIsolationLevel(content::BrowserContext* browser_context,
-                                             const GURL& url) override;
   device::GeolocationSystemPermissionManager*
   GetGeolocationSystemPermissionManager() override;
   std::string GetDefaultDownloadName() override;
@@ -441,7 +439,24 @@ content::BrowserContext* ProfileOf(zebkit_context* context);
 void ConfigureContext(content::BrowserContext* profile);
 // A closed context's profile, deleted when nothing uses it (view.cc), and what the
 // engine keeps of it: automation's, the cookie setting's, the worker policy's.
-void DestroyProfileWhenUnused(Profile* profile, int tries);
+void DestroyProfileWhenUnused(Profile* profile);
+// At the engine's end: the closed profiles still waiting for their processes.
+void DestroyClosedProfiles();
+// To the engine thread from any thread (zebkit_post_task()); false when the
+// engine has no loop, before it starts or once it stops.
+bool PostEngineTask(base::OnceClosure task, base::TimeDelta delay);
+
+// The C API's one rule (zebkit.h, "Threads"): a function is for the engine's
+// thread and a view that has not closed; called otherwise it does nothing and
+// returns its failure value (false, NULL), never touching @view.
+bool CurrentlyOnEngineThread();
+bool LiveView(const zebkit_view* view);
+// That rule at the top of a C API function: returns the failure value given.
+#define ZEBKIT_LIVE_VIEW_OR_RETURN(view, ...) \
+  do {                                         \
+    if (!zebkit::LiveView(view))               \
+      return __VA_ARGS__;                      \
+  } while (0)
 void ForgetAutomationContext(content::BrowserContext* profile);
 void ForgetContextCookies(content::BrowserContext* profile);
 void ForgetWorkerPolicy(content::BrowserContext* profile);
@@ -477,7 +492,11 @@ void SetWindowSizeLimits(Window* window,
 bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds);
 void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds);
 void SetAttachedVisible(zebkit_view* view, bool visible);
-void DetachView(zebkit_view* view);
+// Out of the parent's window; @restore puts the page back in its own window
+// and shows that (Linux, Windows; macOS moves the page itself, see there).
+void DetachView(zebkit_view* view, bool restore = true);
+// The views attached to @parent close with it (posted).
+void CloseViewsAttachedTo(zebkit_view* parent);
 
 // The same in a window of the application's (attach.cc; engine_mac.mm). The
 // others are false when the view is not in one, and leave it to their callers.

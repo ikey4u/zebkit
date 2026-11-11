@@ -698,7 +698,8 @@ void zebkit_fetch(const char* method,
                   size_t body_size,
                   zebkit_response_func func,
                   void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = GURL(url ? url : "");
   request->method = method && *method ? method : "GET";

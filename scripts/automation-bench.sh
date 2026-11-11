@@ -16,7 +16,7 @@
 # The report goes to docs/reports/automation-bench.md and .json. --check
 # fails when a native command is slower than Playwright over CDP on the
 # same build (docs/AUTOMATION.md, "How it is checked"), and writes no
-# report. Needs Python 3, Node.js (mise's node@24) and the package
+# report. Needs Python 3, Node.js (at mise.toml's pin) and the package
 # (scripts/package.sh); playwright-core is installed into .cache once.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -41,17 +41,9 @@ mkdir -p "$work"
 build_against_package "$package" "$work/automation" "$ZEBKIT_ROOT/tests/engine/automation.c"
 build_against_package "$package" "$work/zebkit-run" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
 
-node=(node)
-command -v mise > /dev/null && node=(mise exec node@24 -- node)
+node=("${node_cmd[@]}")
 tools="$CACHE_DIR/playwright-tools"
-if [[ ! -d "$tools/node_modules/playwright-core" ]]; then
-    log "installing playwright-core $PLAYWRIGHT_CORE_VERSION"
-    mkdir -p "$tools"
-    # The directory's other packages too: an install without --save removes what
-    # it is not given (scripts/playwright-sources.sh's esbuild and yaml).
-    (cd "$tools" && "${node[@]/%node/npm}" install --silent --no-save "playwright-core@$PLAYWRIGHT_CORE_VERSION" \
-        "esbuild@$PLAYWRIGHT_ESBUILD_VERSION" "yaml@$PLAYWRIGHT_YAML_VERSION")
-fi
+ensure_npm "$tools" "${playwright_tools[@]}"
 
 port=$(( 20000 + RANDOM % 20000 ))
 python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$ZEBKIT_ROOT/tests/bench/automation" "$port" > "$work/server.log" 2>&1 &

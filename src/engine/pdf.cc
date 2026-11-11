@@ -35,6 +35,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -756,9 +757,11 @@ static uint8_t* RenderPage(zebkit_pdf* pdf,
   double page_height = FPDF_GetPageHeightF(page.get());
   if (quarter_turns % 2)
     std::swap(page_width, page_height);
-  const int full_width = std::max(1, static_cast<int>(page_width * scale + 0.5));
+  // Saturated: a page's scale may be huge, or not a number, which a plain
+  // cast does not survive; the size limit below then refuses it.
+  const int full_width = std::max(1, base::saturated_cast<int>(page_width * scale + 0.5));
   const int full_height =
-      std::max(1, static_cast<int>(page_height * scale + 0.5));
+      std::max(1, base::saturated_cast<int>(page_height * scale + 0.5));
   int tile_x = 0, tile_y = 0, tile_width = full_width, tile_height = full_height;
   if (options.width > 0 && options.height > 0) {
     tile_x = options.x;
@@ -1220,6 +1223,10 @@ uint8_t* zebkit_pdf_image_data(zebkit_pdf* pdf,
     const unsigned long length =
         FPDFImageObj_GetImageDataRaw(object, nullptr, 0);
     auto* bytes = static_cast<uint8_t*>(malloc(std::max(length, 1ul)));
+    if (!bytes) {
+      Fail(error, "not enough memory for the image");
+      return nullptr;
+    }
     FPDFImageObj_GetImageDataRaw(object, bytes, length);
     *size = length;
     if (jpeg)

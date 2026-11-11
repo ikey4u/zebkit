@@ -1,35 +1,16 @@
 package zebkit
 
 /*
-#include "bridge_b.h"
+#include "bridge.h"
 */
 import "C"
 
-import (
-	"runtime/cgo"
-	"unsafe"
-)
+import "strings"
 
 // What the engine has for applications besides views (<zebkit/services.h>):
 // compression, digests and encryption, URLs, images, ICU and HTTP. None of
-// it needs the engine running but Fetch; any goroutine may call it.
-
-// bytesArg points at b's bytes for the length of a call, or is nil.
-func bytesArg(b []byte) unsafe.Pointer {
-	if len(b) == 0 {
-		return nil
-	}
-	return unsafe.Pointer(unsafe.SliceData(b))
-}
-
-// takeBytes copies an engine-allocated buffer, and frees it.
-func takeBytes(p *C.uint8_t, size C.size_t) []byte {
-	if p == nil {
-		return nil
-	}
-	defer C.zebkit_free(unsafe.Pointer(p))
-	return C.GoBytes(unsafe.Pointer(p), C.int(size))
-}
+// it needs the engine running but Fetch, which is the engine thread's; any
+// goroutine may call the rest.
 
 // Compression is a compressed format.
 type Compression int
@@ -79,30 +60,30 @@ const (
 // Size is the digest's length in bytes: 20, 32, 48 or 64; 0 for an unknown one.
 func (d Digest) Size() int { return int(C.zebkit_digest_size(C.zebkit_digest(d))) }
 
-// ComputeDigest is the digest of data; nil for an unknown digest.
-func ComputeDigest(d Digest, data []byte) []byte {
+// ComputeDigest is the digest of data.
+func ComputeDigest(d Digest, data []byte) ([]byte, error) {
 	out := make([]byte, d.Size())
 	if len(out) == 0 || !C.zebkit_digest_compute(C.zebkit_digest(d), bytesArg(data), C.size_t(len(data)), (*C.uint8_t)(bytesArg(out))) {
-		return nil
+		return nil, refused("no such digest")
 	}
-	return out
+	return out, nil
 }
 
-// HMAC is the HMAC of data with key; nil for an unknown digest.
-func HMAC(d Digest, key, data []byte) []byte {
+// HMAC is the HMAC of data with key.
+func HMAC(d Digest, key, data []byte) ([]byte, error) {
 	out := make([]byte, d.Size())
 	if len(out) == 0 || !C.zebkit_hmac(C.zebkit_digest(d), bytesArg(key), C.size_t(len(key)), bytesArg(data), C.size_t(len(data)),
 		(*C.uint8_t)(bytesArg(out))) {
-		return nil
+		return nil, refused("no such digest")
 	}
-	return out
+	return out, nil
 }
 
 // RandomBytes is size bytes from the system's secure random source.
 func RandomBytes(size int) ([]byte, error) {
 	out := make([]byte, size)
 	if size > 0 && !C.zebkit_random_bytes(bytesArg(out), C.size_t(size)) {
-		return nil, &Error{"no random bytes"}
+		return nil, refused("no random bytes")
 	}
 	return out, nil
 }
@@ -130,9 +111,7 @@ func AESGCMOpen(key, nonce, ad, sealed []byte) ([]byte, error) {
 	if out == nil {
 		return nil, takeError(message, "not opened")
 	}
-	if size == 0 {
-		return []byte{}, nil
-	}
+	// An empty plaintext is still a buffer of the engine's to free.
 	return takeBytes(out, size), nil
 }
 
@@ -185,6 +164,11 @@ type Pixels struct {
 	RGBA          []byte
 }
 
+// complete says whether the pixels are as many as the size says.
+func (p *Pixels) complete() bool {
+	return p != nil && p.Width > 0 && p.Height > 0 && uint64(len(p.RGBA)) >= uint64(p.Width)*uint64(p.Height)*4
+}
+
 // ImageFormat is a format EncodeImage writes.
 type ImageFormat int
 
@@ -203,14 +187,14 @@ func DecodeImage(data []byte) (*Pixels, error) {
 	if out == nil {
 		return nil, takeError(message, "not decoded")
 	}
-	return &Pixels{Width: int(width), Height: int(height), RGBA: takeBytes(out, C.size_t(width*height*4))}, nil
+	return &Pixels{Width: int(width), Height: int(height), RGBA: takeBytes(out, rgbaSize(width, height))}, nil
 }
 
 // EncodeImage encodes pixels. quality 0-100 is for JPEG and lossy WebP; 101
 // asks WebP for lossless; PNG ignores it.
 func EncodeImage(format ImageFormat, image *Pixels, quality int) ([]byte, error) {
-	if image == nil || len(image.RGBA) < image.Width*image.Height*4 {
-		return nil, &Error{"fewer pixels than the size says"}
+	if !image.complete() {
+		return nil, refused("fewer pixels than the size says")
 	}
 	var size C.size_t
 	var message *C.char
@@ -224,7 +208,7 @@ func EncodeImage(format ImageFormat, image *Pixels, quality int) ([]byte, error)
 
 // ICUInit loads ICU's data so that ICU can be used without the engine
 // running; calling it again, or with the engine running, does no harm.
-func ICUInit() bool { return bool(C.zebkit_icu_init()) }
+func ICUInit() error { return check(C.zebkit_icu_init(), "ICU's data was not found") }
 
 // FetchResponse is what Fetch got: Err is set when the request or its body
 // failed, and Status is 0 when there was no response.
@@ -236,18 +220,40 @@ type FetchResponse struct {
 	Err     error
 }
 
+// HeaderList is Headers parsed: name and value pairs, trimmed, in their
+// order, a header given more than once (Set-Cookie) as often as it was.
+func (r *FetchResponse) HeaderList() [][2]string {
+	var list [][2]string
+	for _, line := range strings.Split(r.Headers, "\r\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if name = strings.TrimSpace(name); ok && name != "" {
+			list = append(list, [2]string{name, strings.TrimSpace(value)})
+		}
+	}
+	return list
+}
+
 // Fetch sends a request through the engine's network stack (its HTTP/1.1,
 // 2 and 3, cache, cookies and proxy), as the browser makes one of its own:
 // no CORS, no page. method "" is GET; headers are "Name: value" lines
-// separated by "\r\n", or ""; redirects are followed. done is called on the
-// engine's thread; the engine must be running.
-func Fetch(method, url, headers string, body []byte, done func(*FetchResponse)) {
+// separated by "\r\n", or ""; redirects are followed. done is called once,
+// on the engine's thread; the engine must be running.
+func Fetch(method, url, headers string, body []byte, done func(*FetchResponse)) error {
+	onEngineThread()
+	if !started.Load() {
+		return ErrNotStarted
+	}
 	cmethod := optionalString(method)
 	defer free(cmethod)
 	curl := cString(url)
 	defer free(curl)
 	cheaders := optionalString(headers)
 	defer free(cheaders)
-	h := C.uintptr_t(cgo.NewHandle(done))
-	C.zebkit_fetch(cmethod, curl, cheaders, bytesArg(body), C.size_t(len(body)), C.zebkit_response_func(C.zkb_fetch), data(h))
+	h := onceHandle(func(response *FetchResponse) {
+		if done != nil {
+			done(response)
+		}
+	})
+	C.zebkit_fetch(cmethod, curl, cheaders, bytesArg(body), C.size_t(len(body)), C.zebkit_response_func(C.zk_fetch), data(h))
+	return nil
 }

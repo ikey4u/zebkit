@@ -24,6 +24,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace zebkit {
@@ -305,13 +306,16 @@ bool zebkit_app_set_menu(const char* json,
                          zebkit_menu_func func,
                          void* data,
                          char** error) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  std::optional<base::Value> parsed = base::JSONReader::Read(
-      json ? json : "", base::JSON_PARSE_CHROMIUM_EXTENSIONS);
-  std::string problem = "the menu is not a JSON array";
-  std::optional<std::vector<zebkit::MenuItem>> menu;
-  if (parsed && parsed->is_list())
-    menu = zebkit::ParseItems(parsed->GetList(), problem);
+  if (error)
+    *error = nullptr;
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    if (error)
+      *error = strdup("the menu is set on the engine's thread");
+    return false;
+  }
+  std::string problem;
+  // As the tray's and the Dock's menus: plain JSON.
+  std::optional<std::vector<zebkit::MenuItem>> menu = zebkit::ParseMenuItems(json ? json : "", &problem);
   if (!menu) {
     if (error)
       *error = strdup(problem.c_str());
@@ -328,7 +332,6 @@ bool zebkit_app_set_menu(const char* json,
 }
 
 bool zebkit_app_update_menu_item(const char* id, const char* json, char** error) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   auto fail = [&](const char* message) {
     if (error)
       *error = strdup(message);
@@ -336,6 +339,8 @@ bool zebkit_app_update_menu_item(const char* id, const char* json, char** error)
   };
   if (error)
     *error = nullptr;
+  if (!zebkit::CurrentlyOnEngineThread())
+    return fail("the menu is changed on the engine's thread");
   if (!id || !*id)
     return fail("a menu item's id");
   std::optional<base::Value> parsed = base::JSONReader::Read(json ? json : "", base::JSON_PARSE_RFC);
@@ -371,12 +376,14 @@ bool zebkit_app_update_menu_item(const char* id, const char* json, char** error)
 }
 
 char* zebkit_app_get_menu(void) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   return strdup(base::WriteJson(zebkit::ItemsValue(zebkit::TheApp().menu)).value_or("[]").c_str());
 }
 
 void zebkit_app_on_open_files(zebkit_paths_func func, void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   zebkit::App& app = zebkit::TheApp();
   app.on_open = func;
   app.on_open_data = data;
@@ -385,13 +392,15 @@ void zebkit_app_on_open_files(zebkit_paths_func func, void* data) {
 }
 
 void zebkit_app_on_reopen(zebkit_app_func func, void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   zebkit::TheApp().on_reopen = func;
   zebkit::TheApp().on_reopen_data = data;
 }
 
 void zebkit_app_on_quit_request(zebkit_app_func func, void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!zebkit::CurrentlyOnEngineThread())
+    return;
   zebkit::TheApp().on_quit = func;
   zebkit::TheApp().on_quit_data = data;
 }

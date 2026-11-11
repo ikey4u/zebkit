@@ -66,6 +66,8 @@ class Window : public content::WebContentsDelegate,
   // Closes all windows, pumps teardown tasks and signals the main message loop
   // to quit.
   static void Shutdown();  // Idempotent, can be called twice.
+  // From Shutdown() on: no window is made, the platforms being gone.
+  static bool IsShutDown();
 
   static Window* Create(content::BrowserContext* browser_context,
                         const GURL& url,
@@ -83,6 +85,8 @@ class Window : public content::WebContentsDelegate,
   // Runtime options, already validated: to the platform, the page's display
   // mode and its title bar area.
   void SetOptions(WindowOptions options);
+  // zebkit_view_set_title(): the "title" option; none for the page's.
+  void SetTitle(std::optional<std::u16string> title);
   // For the windows pages of this one open; none: the system's frame.
   void SetPopupOptions(std::optional<WindowOptions> options) { popup_options_ = std::move(options); }
   WindowGeometry Geometry();
@@ -132,7 +136,7 @@ class Window : public content::WebContentsDelegate,
   // a key the page did not take goes to the embedder first, which
   // returns true when it takes it (the application menu's keys).
   using KeyboardEventHandler = base::RepeatingCallback<bool(
-      Window* shell,
+      Window* window,
       const input::NativeWebKeyboardEvent& event)>;
   static void SetKeyboardEventHandler(KeyboardEventHandler handler);
 
@@ -144,14 +148,14 @@ class Window : public content::WebContentsDelegate,
       const blink::mojom::FileChooserParams& params)>;
   static void SetFileChooserHandler(FileChooserHandler handler);
 
-  // decisions of the embedder's, before the shell's own.
+  // decisions of the embedder's, before the window's own.
   class EmbedderHooks {
    public:
     virtual ~EmbedderHooks() = default;
     // True: the page does not get this key.
     virtual bool KeyBeforePage(content::WebContents* contents,
                                const input::NativeWebKeyboardEvent& event) = 0;
-    // True: no menu of the shell's.
+    // True: no menu of the window's.
     virtual bool ContextMenu(content::RenderFrameHost& frame,
                              const content::ContextMenuParams& params) = 0;
     virtual bool CanEnterFullscreen(content::RenderFrameHost* frame) = 0;
@@ -226,6 +230,8 @@ class Window : public content::WebContentsDelegate,
                          bool proceed,
                          bool* proceed_to_fire_unload) override;
   bool CanOverscrollContent() override;
+  // window.focus (surfaces.json): Tab past the page's last element.
+  bool TakeFocus(content::WebContents* source, bool reverse) override;
   content::JavaScriptDialogManager* GetJavaScriptDialogManager(
       content::WebContents* source) override;
   bool HandleKeyboardEvent(content::WebContents* source,

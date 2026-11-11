@@ -86,7 +86,9 @@ empty there (`src/engine/win/sandbox_startup.cc`).
   screen are laid out by Chromium itself, and a window takes a scale only when resized.
 
 - **JavaScript dialogs.** A window's `alert()`, `confirm()` and beforeunload with no
-  handler are a message box, and `prompt()` gives null. This has not been run yet.
+  handler are a message box (`MessageBoxW`), and `prompt()` is Chromium's views dialog
+  (`js_dialog_views.cc`, `docs/SYSTEM_INTEGRATION.md`, section 5.4); `js-dialogs` passes
+  on Windows in 0.4.0.
 - **Frames.** `zebkit_frame.handle` is a file mapping's `HANDLE`, and `fd` is -1.
   `ZEBKIT_BUFFERS_GPU` asks for `ZEBKIT_FRAME_D3D11`, an NT handle to a shared texture.
   That path has never run: the test machine's display adapter has no D3D shared images,
@@ -126,6 +128,9 @@ then differ from the one Remote Desktop had, which the tests take from the page
 (`devicePixelRatio`), not from a fixed 100%.
 
 ## State
+
+0.4.0's engine tests pass on Windows 10 (x64) (`docs/releases/0.4.0.md`). The run
+below, of 2026-11-02, is the last one described here in detail.
 
 Run the suite on NTFS. A shared folder has no ACLs, and there file key storage rightly refuses
 to start and copies can arrive with a wrong bit.
@@ -169,9 +174,11 @@ under it. Not tried here. Chrome decides it in its own code, not by the default.
 
 ## Left
 
-- `zebkit.ui` beyond its script's test; printing through the system's dialog.
+- `zebkit.ui` beyond its script's test. Printing through the system's dialog is decided
+  against (`docs/SYSTEM_INTEGRATION.md`, section 19); printing to PDF stays.
 - The example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
 
-`zebkit.dll` is 184.9 MiB, `zebkit_sandbox.lib` 29.4 MiB, the package 239.7 MiB; as `.tar.xz`
-without that library, which an application does not ship, 68.0 MiB (Linux's: 54.9 MiB, 160.9 MiB unpacked).
+The 0.4.0 archive is 252.6 MiB unpacked and 75.7 MiB as `.tar.xz`, against Linux's 184.1
+and 62.5 MiB (`docs/releases/0.4.0.md`); `zebkit_sandbox.lib`, which an application links
+but does not ship, is in it.

@@ -3,15 +3,9 @@
 // and measuring. Run with --zebkit-scheme=jsapp,standard,secure,fetch.
 // Arguments: the local server's base URL, and a TrueType font to measure
 // with (optional).
+import {finish, loaded, sleep, until, verify as check, within} from './helpers.mjs';
+
 const [base, fontPath] = zebkit.args;
-let failures = 0;
-const check = (ok, what, detail) => {
-  console.log((ok ? 'ok   ' : 'FAIL ') + what + (ok || detail === undefined ? '' : ': ' + JSON.stringify(detail)));
-  if (!ok) failures++;
-};
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const within = (promise, ms, what) => Promise.race([promise, sleep(ms).then(() => { throw new Error('timed out: ' + what); })]);
-const loaded = (view) => new Promise((resolve) => view.on('load', (event) => { if (event === 'finished') resolve(); }));
 const open = async (url, options = {}) => {
   const view = new zebkit.View('', options);
   const done = loaded(view);
@@ -68,8 +62,10 @@ view.stop();
 
 // A view in another's place, attached and detached.
 const child = new zebkit.View('about:blank', {width: 100, height: 100});
-child.attach(view, 10, 10, 100, 100);
-check(true, 'attach');
+child.attach(view, 10, 10, 120, 80);
+const childSize = () => child.evaluate('innerWidth + "x" + innerHeight');
+check(await until(async () => await childSize() === '120x80', 5000), 'attach: the child takes the bounds given',
+      await childSize());
 
 // new-window: the application takes the URL.
 const asked = new Promise((resolve) => view.on('new-window', resolve));
@@ -86,8 +82,10 @@ check(await inside.evaluate("localStorage.getItem('kept')") === 'inside' &&
       await outside.evaluate("localStorage.getItem('kept')") === null, 'a context keeps its storage');
 const offscreenInside = zebkit.View.offscreen('about:blank', {width: 50, height: 50, context});
 check(offscreenInside !== null && offscreenInside.isOffscreen, 'an off-screen view in a context');
+let insideClosed = false;
+inside.on('close', () => { insideClosed = true; });
 context.close();
-check(await sleep(300).then(() => true), 'Context.close');
+check(await until(() => insideClosed, 5000), 'Context.close closes the views in it');
 
 // The application's scheme.
 let requested = null;
@@ -117,10 +115,10 @@ zebkit.app.onQuitRequest(() => {});
 zebkit.app.onOpenFiles(null);
 zebkit.app.onReopen(null);
 zebkit.app.onQuitRequest(null);
-check(true, 'app.onOpenFiles, onReopen, onQuitRequest');
+// What they do is not to be seen here (the system's events): set and cleared
+// without an exception, and not counted as a check.
 
 for (const v of [view, child, outside, schemeView, inside]) v.close();
 if (offscreenInside) offscreenInside.close();
-if (failures) throw new Error(`${failures} checks failed`);
-console.log('ok JavaScript views, contexts, schemes, CDP, AES-GCM and the canvas over pixels');
+finish('JavaScript views, contexts, schemes, CDP, AES-GCM and the canvas over pixels');
 zebkit.quit();

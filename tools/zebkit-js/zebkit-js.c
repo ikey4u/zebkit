@@ -68,6 +68,34 @@ static char **windows_utf8_argv(int *argc) {
 }
 #endif
 
+/* Opens a file named in UTF-8 for reading: on Windows through the wide
+ * path, as fopen() reads the name in the system's code page. */
+static FILE *open_utf8(const char *path) {
+#ifdef _WIN32
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (size <= 0)
+        return NULL;
+    wchar_t *wide = malloc(sizeof(wchar_t) * (size_t)size);
+    if (!wide)
+        return NULL;
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, size);
+    FILE *file = NULL;
+    if (_wfopen_s(&file, wide, L"rb") != 0)
+        file = NULL;
+    free(wide);
+    return file;
+#else
+    return fopen(path, "rb");
+#endif
+}
+
+/* Clears a secret, in a way the compiler keeps. */
+static void wipe(void *secret, size_t size) {
+    volatile unsigned char *bytes = secret;
+    while (size--)
+        *bytes++ = 0;
+}
+
 int main(int argc, char **argv) {
 #if defined(_WIN32) && defined(ZEBKIT_WIN_SANDBOX)
     int child_code;
@@ -100,15 +128,20 @@ int main(int argc, char **argv) {
         if (strncmp(argv[i], prefix, sizeof prefix - 1) != 0)
             continue;
         unsigned char key[33];
-        FILE *file = fopen(argv[i] + sizeof prefix - 1, "rb");
+        FILE *file = open_utf8(argv[i] + sizeof prefix - 1);
+        /* Unbuffered, before the first read: no copy of the key is left in
+         * stdio's buffer, which fclose() frees without wiping. */
+        if (file)
+            setvbuf(file, NULL, _IONBF, 0);
         const size_t size = file ? fread(key, 1, sizeof key, file) : 0;
         if (file)
             fclose(file);
-        if (size != 32 || !zebkit_set_cookie_encryption_key(key, 32)) {
+        const bool set = size == 32 && zebkit_set_cookie_encryption_key(key, 32);
+        wipe(key, sizeof key);
+        if (!set) {
             fprintf(stderr, "zebkit-js: %s holds no 32-byte key\n", argv[i] + sizeof prefix - 1);
             return 2;
         }
-        memset(key, 0, sizeof key);
     }
     int code = zebkit_main(argc, argv, ready, NULL);
     return failed ? 1 : code;

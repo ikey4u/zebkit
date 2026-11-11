@@ -12,6 +12,8 @@ mod rpc;
 mod schema;
 mod stdio;
 mod tools;
+#[cfg(windows)]
+mod win;
 
 use bounds::Bounds;
 use std::collections::BTreeSet;
@@ -119,7 +121,9 @@ Transports (standard input and output when neither is given):
   --http-insecure-remote      Allow that.
   --http-token-file FILE      The bearer token: read from FILE, private to its owner,
                               or generated into it. Without it, one is generated
-                              and printed once on standard error.
+                              and printed once on standard error. On Windows a file
+                              made here is its owner's only; the access of one that
+                              is there is not checked.
   --http-allow-origin ORIGIN  A web client's Origin to accept. By default a request
                               with an Origin other than this server's own is refused.
   --http-allow-host NAME      A Host name besides the loopback names.
@@ -130,8 +134,12 @@ Bounds (everything is denied that is not given):
   --deny-tools LIST           Tools or groups taken away from those.
   --allow-origin ORIGIN       A web origin pages and net_fetch may reach, for every
                               request: https://example.com, https://*.example.com, or *
-                              for all public ones (not this machine or private
-                              addresses). Repeatable. None: no page can load anything.
+                              for all public ones: not this machine's or private
+                              names and addresses. A public name whose DNS answer
+                              is a private address (DNS rebinding) is not caught:
+                              with *, keep the server where private services do
+                              not trust its address. Repeatable. None: no page can
+                              load anything.
   --allow-read DIRECTORY      Files may be read under it. Repeatable. None: none.
   --allow-write DIRECTORY     Files may be read and written under it. Repeatable.
   --windows                   Pages and zebkit.ui have real windows. Default: none.
@@ -144,7 +152,9 @@ Bounds (everything is denied that is not given):
 The engine:
   --profile DIRECTORY         Its data, kept. Default: a private temporary directory.
   -- SWITCHES                 Chromium's switches, after --, as --no-sandbox. Those
-                              that would pass the bounds are refused.
+                              known to pass the bounds are refused; the list is a
+                              guard for the operator, not a boundary: give only
+                              switches you understand.
 
   --list-tools                Print the tools as JSON and exit.
   --version, --help
@@ -239,10 +249,24 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
     for switch in &options.engine_switches {
         // Chromium takes `-name` as it takes `--name`; anything without a dash is
         // not a switch. Programs it would start count too.
+        // Prefixes, so that each takes its variants (remote-debugging-port and
+        // -pipe and -address, ignore-certificate-errors-spki-list, ...):
         let refused = [
-            "remote-debugging", "remote-allow-origins", "host-resolver-rules", "host-rules", "user-data-dir", "disable-web-security", "proxy-", "no-proxy-server", "playwright-port",
+            // Another way in: CDP, Playwright, the profile, the network's routing.
+            "remote-debugging", "remote-allow-origins", "host-resolver-rules", "host-rules", "user-data-dir", "proxy-", "no-proxy-server", "playwright-port",
+            // The web's own bounds: the same-origin policy, site isolation, V8.
+            "disable-web-security", "disable-site-isolation", "single-process", "js-flags", "allow-file-access",
+            // Features the bounds do not know: MojoJS (enable-blink-features=MojoJS)
+            // gives pages the browser's own interfaces.
+            "disable-features", "enable-features", "enable-blink-features", "force-webrtc-ip-handling-policy",
+            // TLS and mixed content: certificates not checked, http taken for a
+            // secure origin, http inside https pages, localhost's certificates.
+            "ignore-certificate-errors", "unsafely-treat-insecure-origin-as-secure", "allow-running-insecure-content", "allow-insecure-localhost",
+            // Files the engine would write outside --allow-write: the network's
+            // log, TLS keys, its log, its cache.
+            "log-net-log", "ssl-key-log-file", "log-file", "disk-cache-dir",
+            // Code the engine would load or programs it would start.
             "load-extension", "disable-extensions-except", "renderer-cmd-prefix", "utility-cmd-prefix", "gpu-launcher", "zygote-cmd-prefix", "browser-subprocess-path",
-            "disable-features", "force-webrtc-ip-handling-policy", "enable-features",
         ];
         let name = switch.trim_start_matches('-').to_ascii_lowercase();
         if !switch.starts_with('-') || refused.iter().any(|refused| name.starts_with(refused)) {
@@ -326,9 +350,10 @@ fn write_private(path: &str, text: &str) -> std::io::Result<()> {
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?.write_all(text.as_bytes())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn write_private(path: &str, text: &str) -> std::io::Result<()> {
-    std::fs::write(path, text)
+    use std::io::Write;
+    win::create_private(std::path::Path::new(path))?.write_all(text.as_bytes())
 }
 
 /// SIGTERM and SIGINT end the engine's loop, so that a temporary profile, which has
@@ -383,6 +408,15 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut bounds = Bounds::default();
     let mut options = parse(&args, &mut bounds);
+    // The engine's data: the operator's profile, or here. Its own temporary
+    // files come here in any case: a browser context keeps what pages stored in
+    // a directory of the system's temporary one, which it would leave behind at
+    // the end. TMPDIR is set while this is the process's only thread (setting
+    // the environment with other threads running is unsound); every refusal
+    // from here on removes the directory (fail).
+    KEEPS_PROFILE.store(options.profile.is_some(), std::sync::atomic::Ordering::SeqCst);
+    let temporary = make_temporary();
+    std::env::set_var("TMPDIR", &temporary);
     #[cfg(unix)]
     quit_on_signals();
 
@@ -399,13 +433,6 @@ fn main() {
         (config, generated)
     });
 
-    // Last of what can refuse before the engine, the rest removes it. The engine's
-    // data: the operator's profile, or here. Its own temporary files come here in
-    // any case: a browser context keeps what pages stored in a directory of the
-    // system's temporary one, which it would leave behind at the end.
-    KEEPS_PROFILE.store(options.profile.is_some(), std::sync::atomic::Ordering::SeqCst);
-    let temporary = make_temporary();
-    std::env::set_var("TMPDIR", &temporary);
     let profile = options.profile.clone().unwrap_or_else(|| temporary.join("profile").display().to_string());
 
     let mut engine_args = vec!["zebkit-mcp".to_string(), format!("--user-data-dir={profile}"), format!("--host-resolver-rules={rules}")];

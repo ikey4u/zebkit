@@ -107,6 +107,9 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
       TargetType target_type,
       bool new_window) override {
     Window* window = Window::Create(browser_context_, url, nullptr, Window::DefaultSize());
+    // None while the engine stops: CDP's callers answer that it failed.
+    if (!window || !window->web_contents())
+      return nullptr;
     return target_type == kTab
                ? content::DevToolsAgentHost::GetOrCreateForTab(window->web_contents())
                : content::DevToolsAgentHost::GetOrCreateFor(window->web_contents());

@@ -16,11 +16,13 @@ The services work without the engine running:
     zebkit.url_part("../b", "https://example.com/a/", "spec")
 
 The library is libzebkit.so.1 (Zebkit.framework on macOS, zebkit.dll on Windows) in $ZEBKIT_DIR,
-or beside this package, or in the zebkit repository's package of the slim
-profile (slim-macos on macOS).
+or inside this package's directory, or in the zebkit repository's package
+of the slim profile (slim-macos on macOS).
 
-Threads: everything is for the thread that called main(), and callbacks
-run on it; post() runs a function there from any thread.
+Threads: everything is for the thread that called main() (or init()), and
+callbacks run on it; post() runs a function there from any thread. Views,
+contexts, scripts and the application's functions raise Error on another
+thread once the engine has started.
 """
 
 import ctypes
@@ -28,6 +30,7 @@ import json
 import os
 import pathlib
 import sys
+import threading
 
 __all__ = [
     "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "NetworkStream", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless", "set_engine_settings", "engine_settings",
@@ -43,6 +46,10 @@ __all__ = [
     "SCHEME_STANDARD", "SCHEME_SECURE", "SCHEME_FETCH", "SCHEME_BYPASS_CSP",
     "app_set_menu", "app_update_menu_item", "app_menu", "app_set_badge", "app_set_progress",
     "app_request_attention", "app_set_dock_menu", "app_on_open_files", "app_on_reopen", "app_on_quit_request",
+    "Tray", "DeviceChooserRequest", "EyeDropperRequest", "ShareRequest", "UNDEFINED",
+    "environment", "on_environment_changed", "capabilities", "displays", "on_displays_changed",
+    "on_notification", "notification_clicked", "notification_closed", "on_power_event",
+    "prevent_sleep", "allow_sleep", "open_external", "show_in_folder",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -58,6 +65,16 @@ _URL_PART = {"spec": 0, "scheme": 1, "username": 2, "password": 3, "host": 4, "p
 
 class Error(Exception):
     """What the engine reports when something it was asked to do fails."""
+
+
+class _Undefined:
+    def __repr__(self):
+        return "zebkit.UNDEFINED"
+
+
+# What a function bound with View.bind() returns to resolve the page's
+# promise with undefined rather than a JSON value.
+UNDEFINED = _Undefined()
 
 
 def _find_library():
@@ -85,7 +102,6 @@ def _find_library():
 
 _lib = ctypes.CDLL(_find_library())
 
-_c_char_p_p = ctypes.POINTER(ctypes.c_char_p)
 _TASK = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 _LOAD = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
 _TITLE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
@@ -128,8 +144,8 @@ _wakeup_callback = None
 _pump = _declare("zebkit_pump", _B)
 _shutdown = _declare("zebkit_shutdown", _B)
 _quit = _declare("zebkit_quit", None)
-_post = _declare("zebkit_post_task", None, _TASK, _P)
-_post_delayed = _declare("zebkit_post_delayed_task", None, _TASK, _P, ctypes.c_uint32)
+_post = _declare("zebkit_post_task", _B, _TASK, _P)
+_post_delayed = _declare("zebkit_post_delayed_task", _B, _TASK, _P, ctypes.c_uint32)
 _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
@@ -247,14 +263,14 @@ _view_on_download = _declare("zebkit_view_on_download", None, _V, _ASKED, _P)
 _view_on_download_progress = _declare("zebkit_view_on_download_progress", None, _V, _TOLD, _P)
 _view_download_timeout = _declare("zebkit_view_set_download_timeout", _B, _V, ctypes.c_uint32)
 _download_info = _declare("zebkit_download_request_info", _P, _P)
-_download_respond = _declare("zebkit_download_respond", _B, _P, _I, _S, _P)
+_download_respond = _declare("zebkit_download_respond", _B, _P, _I, _S, _EP)
 _view_cancel_download = _declare("zebkit_view_cancel_download", _B, _V, _S)
 _view_on_client_certificate = _declare("zebkit_view_on_client_certificate", None, _V, _ASKED, _P)
 _view_on_client_certificate_result = _declare("zebkit_view_on_client_certificate_result", None, _V, _TOLD, _P)
 _view_client_certificate_timeout = _declare("zebkit_view_set_client_certificate_timeout", _B, _V, ctypes.c_uint32)
 _client_certificate_info = _declare("zebkit_client_certificate_request_info", _P, _P)
-_client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, _P, _I, _S, _S, _P)
-_client_certificate_choose = _declare("zebkit_client_certificate_choose", _B, _P, ctypes.c_size_t, _P)
+_client_certificate_respond = _declare("zebkit_client_certificate_respond", _B, _P, _I, _S, _S, _EP)
+_client_certificate_choose = _declare("zebkit_client_certificate_choose", _B, _P, ctypes.c_size_t, _EP)
 _view_attach_native = _declare("zebkit_view_attach_native", _B, _V, ctypes.c_size_t, _I, _I, _I, _I, _EP)
 _view_detach_native = _declare("zebkit_view_detach_native", _B, _V)
 
@@ -267,7 +283,7 @@ _view_get_native_window = _declare("zebkit_view_get_native_window", _B, _V, ctyp
 _NATIVE_WINDOW_EXPORT = ctypes.CFUNCTYPE(None, _P, _S)
 _view_export_native_window = _declare("zebkit_view_export_native_window", _B, _V, _NATIVE_WINDOW_EXPORT, _P)
 _view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
-_view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _P)
+_view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _EP)
 _view_on_file_chooser = _declare("zebkit_view_on_file_chooser", None, _V, _ASKED, _P)
 _view_on_file_chooser_result = _declare("zebkit_view_on_file_chooser_result", None, _V, _TOLD, _P)
 _view_file_chooser_timeout = _declare("zebkit_view_set_file_chooser_timeout", _B, _V, ctypes.c_uint32)
@@ -287,13 +303,13 @@ _view_on_share_result = _declare("zebkit_view_on_share_result", None, _V, _TOLD,
 _view_share_timeout = _declare("zebkit_view_set_share_timeout", _B, _V, ctypes.c_uint32)
 _share_info = _declare("zebkit_share_request_info", _P, _P)
 _share_respond = _declare("zebkit_share_respond", _B, _P, _B)
-_file_chooser_respond = _declare("zebkit_file_chooser_respond", _B, _P, ctypes.POINTER(ctypes.c_char_p), _Z, _P)
+_file_chooser_respond = _declare("zebkit_file_chooser_respond", _B, _P, ctypes.POINTER(ctypes.c_char_p), _Z, _EP)
 _view_on_media_access = _declare("zebkit_view_on_media_access", None, _V, _ASKED, _P)
 _view_on_media_access_result = _declare("zebkit_view_on_media_access_result", None, _V, _TOLD, _P)
 _view_media_access_timeout = _declare("zebkit_view_set_media_access_timeout", _B, _V, ctypes.c_uint32)
 _media_access_info = _declare("zebkit_media_access_request_info", _P, _P)
 _media_access_respond = _declare("zebkit_media_access_respond", _B, _P, _B, _S, _S)
-_view_set_reserved_keys = _declare("zebkit_view_set_reserved_keys", _B, _V, _S, _P)
+_view_set_reserved_keys = _declare("zebkit_view_set_reserved_keys", _B, _V, _S, _EP)
 _view_on_reserved_key = _declare("zebkit_view_on_reserved_key", None, _V, _TOLD, _P)
 _view_on_context_menu = _declare("zebkit_view_on_context_menu", None, _V, _TOLD, _P)
 _CONTEXT_MENU_ITEM = ctypes.CFUNCTYPE(None, _V, _S, _P)
@@ -302,17 +318,17 @@ _view_context_menu_show = _declare("zebkit_view_context_menu_show", _B, _V, ctyp
                                    _CONTEXT_MENU_ITEM, _P, _EP)
 _view_set_fullscreen_policy = _declare("zebkit_view_set_fullscreen_policy", _B, _V, _I)
 _view_on_fullscreen = _declare("zebkit_view_on_fullscreen", None, _V, _TOLD, _P)
-_view_set_network_filter = _declare("zebkit_view_set_network_filter", _B, _V, _S, _P)
+_view_set_network_filter = _declare("zebkit_view_set_network_filter", _B, _V, _S, _EP)
 _view_on_network = _declare("zebkit_view_on_network", None, _V, _ASKED, _P)
 _view_on_network_event = _declare("zebkit_view_on_network_event", None, _V, _TOLD, _P)
 _view_network_timeout = _declare("zebkit_view_set_network_timeout", _B, _V, ctypes.c_uint32)
 _network_info = _declare("zebkit_network_request_info", _P, _P)
-_network_respond = _declare("zebkit_network_respond", _B, _P, _S, ctypes.c_char_p, _Z, _P)
+_network_respond = _declare("zebkit_network_respond", _B, _P, _S, ctypes.c_char_p, _Z, _EP)
 _view_network_for_workers = _declare("zebkit_view_set_network_filter_for_workers", _B, _V, _B)
 _NETWORK_BODY = ctypes.CFUNCTYPE(None, _V, _S, _P, _Z, _B, _B, _P)
 _view_on_network_body = _declare("zebkit_view_on_network_body", None, _V, _NETWORK_BODY, _P)
-_network_respond_file = _declare("zebkit_network_respond_file", _B, _P, _S, _S, _P)
-_network_respond_stream = _declare("zebkit_network_respond_stream", _P, _P, _S, _P)
+_network_respond_file = _declare("zebkit_network_respond_file", _B, _P, _S, _S, _EP)
+_network_respond_stream = _declare("zebkit_network_respond_stream", _P, _P, _S, _EP)
 _network_stream_write = _declare("zebkit_network_stream_write", _B, _P, ctypes.c_char_p, _Z)
 _STREAM_WRITABLE = ctypes.CFUNCTYPE(None, _P, _P)
 _network_stream_on_writable = _declare("zebkit_network_stream_on_writable", None, _P, _STREAM_WRITABLE, _P)
@@ -321,12 +337,24 @@ _network_stream_end = _declare("zebkit_network_stream_end", None, _P, _B)
 
 
 class _Request:
-    """An engine-thread request with a deadline: metadata stays, info ends with it."""
+    """An engine-thread request with a deadline: metadata stays, info ends with it.
+    When an answer returns False, error is what the engine said of it."""
     _info = None
+    error = None
 
     def __init__(self, handle, metadata):
         self._handle = handle
         self.metadata = metadata
+
+    def _answer(self, function, *args):
+        """function(handle, *args, char **error): True, or False with self.error."""
+        _require_thread("a request")
+        error = _P()
+        if function(self._handle, *args, ctypes.byref(error)):
+            self.error = None
+            return True
+        self.error = _refused(error, "refused")
+        return False
 
     @property
     def info(self):
@@ -342,7 +370,7 @@ class DownloadRequest(_Request):
         if action not in ("save", "cancel"):
             raise ValueError("a download is saved or cancelled")
         encoded = None if path is None else os.fsencode(path)
-        return bool(_download_respond(self._handle, 0 if action == "save" else 1, encoded, None))
+        return self._answer(_download_respond, 0 if action == "save" else 1, encoded)
 
 
 class EyeDropperRequest(_Request):
@@ -380,13 +408,13 @@ class ClientCertificateRequest(_Request):
         actions = {"none": 0, "provide": 1, "cancel": 2}
         if action not in actions:
             raise ValueError("a client certificate is none, provide or cancel")
-        return bool(_client_certificate_respond(self._handle, actions[action],
-                                                 None if certificate is None else certificate.encode(),
-                                                 None if key is None else key.encode(), None))
+        return self._answer(_client_certificate_respond, actions[action],
+                            None if certificate is None else certificate.encode(),
+                            None if key is None else key.encode())
 
     def choose(self, index):
         """One of metadata['identities'], the system store's (clientCertificateStores)."""
-        return bool(_client_certificate_choose(self._handle, int(index), None))
+        return self._answer(_client_certificate_choose, int(index))
 
 
 class FileChooserRequest(_Request):
@@ -398,7 +426,7 @@ class FileChooserRequest(_Request):
             raise TypeError("paths is a list")
         encoded = [os.fsencode(path) for path in paths]
         array = (ctypes.c_char_p * len(encoded))(*encoded)
-        return bool(_file_chooser_respond(self._handle, array, len(encoded), None))
+        return self._answer(_file_chooser_respond, array, len(encoded))
 
 
 class MediaAccessRequest(_Request):
@@ -417,28 +445,61 @@ class NetworkRequest(_Request):
         """respond('continue', headers=[...]), respond('block', error='failed'),
         respond('redirect', url=...), respond('fulfill', body=bytes, status=200, headers=[...])."""
         reply = dict(fields, action=action)
-        return bool(_network_respond(self._handle, json.dumps(reply).encode(), bytes(body), len(body), None))
+        body = bytes(body)
+        return self._answer(_network_respond, json.dumps(reply).encode(), body, len(body))
 
     def respond_file(self, path, **fields):
         """Fulfill from an absolute path: respond_file(path, status=200, headers=[...])."""
-        return bool(_network_respond_file(self._handle, json.dumps(fields).encode(), os.fsencode(path), None))
+        return self._answer(_network_respond_file, json.dumps(fields).encode(), os.fsencode(path))
 
     def respond_stream(self, **fields):
-        """Fulfill with what is written: a NetworkStream, or None when invalid or stale."""
-        handle = _network_respond_stream(self._handle, json.dumps(fields).encode(), None)
-        return NetworkStream(handle) if handle else None
+        """Fulfill with what is written: a NetworkStream, or None when invalid or
+        stale (error says which)."""
+        _require_thread("a request")
+        error = _P()
+        handle = _network_respond_stream(self._handle, json.dumps(fields).encode(), ctypes.byref(error))
+        if not handle:
+            self.error = _refused(error, "refused")
+            return None
+        self.error = None
+        return NetworkStream(handle)
 
 
 class NetworkStream:
-    """An answer written as it goes, on the engine thread; end() frees it."""
+    """An answer written as it goes, on the engine thread; end() frees it.
+    Open until then; one that is collected open ends as failed, a body cut
+    short, as Rust's does when dropped (on the engine's thread: posted there
+    when it is collected on another)."""
     def __init__(self, handle):
         self._handle = handle
+        # The engine holds on_writable's callback until end(): that is kept
+        # (_alive), not the stream, which may be collected.
         self._writable = None
 
+    def __del__(self):
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        self._handle = None
+        writable, self._writable = self._writable, None
+
+        def end():
+            _network_stream_end(handle, True)
+            _alive.discard(writable)
+            _retire(writable)
+        if _engine_thread is not None and threading.get_ident() == _engine_thread:
+            end()
+        elif not post(end):
+            # The engine has stopped: the stream went with it.
+            _alive.discard(writable)
+
     def write(self, data):
-        """False when it does not fit (at most 1 MiB waits) or nobody reads any more."""
+        """True when the stream took all of data. False is not an error: it
+        does not fit now (at most 1 MiB waits; on_writable says when it does)
+        or nobody reads any more (is_open says which)."""
         if self._handle is None:
             return False
+        _require_thread("NetworkStream.write()")
         data = bytes(data)
         return bool(_network_stream_write(self._handle, data, len(data)))
 
@@ -446,17 +507,31 @@ class NetworkStream:
         """function() once after a write that returned false: it fits, or is_open is false."""
         if self._handle is None:
             return
+        _require_thread("NetworkStream.on_writable()")
+        previous = self._writable
         self._writable = _STREAM_WRITABLE(_guard(lambda stream, data: function())) if function else _STREAM_WRITABLE()
+        _alive.add(self._writable)
         _network_stream_on_writable(self._handle, self._writable, None)
+        if previous is not None:
+            _alive.discard(previous)
+            _retire(previous)
 
     @property
     def is_open(self):
-        return self._handle is not None and bool(_network_stream_is_open(self._handle))
+        if self._handle is None:
+            return False
+        _require_thread("NetworkStream.is_open")
+        return bool(_network_stream_is_open(self._handle))
 
     def end(self, failed=False):
-        if self._handle is not None:
+        if getattr(self, "_handle", None) is not None:
+            _require_thread("NetworkStream.end()")
             handle, self._handle = self._handle, None
             _network_stream_end(handle, bool(failed))
+            if self._writable is not None:
+                _alive.discard(self._writable)
+                _retire(self._writable)
+            self._writable = None
 
 
 class HttpAuthRequest:
@@ -615,9 +690,30 @@ def _string(pointer):
     if not pointer:
         return None
     try:
-        return ctypes.string_at(pointer).decode()
+        return ctypes.string_at(pointer).decode(errors="replace")
     finally:
         _free(pointer)
+
+
+def _text(value, default=""):
+    """A string the engine lent to a callback (bytes, or None for NULL)."""
+    return default if value is None else value.decode(errors="replace")
+
+
+def _retire(callback):
+    """Keeps a callback the engine was given until a task after this one:
+    it may be the one running now, which replacing it must not free."""
+    if callback is not None:
+        post(lambda: callback)
+
+
+# The thread that started the engine (main() or init()); None before.
+_engine_thread = None
+
+
+def _require_thread(what="this"):
+    if _engine_thread is not None and threading.get_ident() != _engine_thread:
+        raise Error(f"{what} is for the engine's thread, the one that started it; post() runs a function there")
 
 
 def _buffer(pointer, size):
@@ -631,6 +727,11 @@ def _buffer(pointer, size):
 def _raise(error, fallback):
     message = _string(error.value) if error.value else fallback
     raise Error(message)
+
+
+def _refused(error, fallback):
+    """What the engine said when it refused (freed), or fallback."""
+    return (_string(error.value) if error.value else None) or fallback
 
 
 def _guard(function):
@@ -656,6 +757,7 @@ def engine_version():
 def environment():
     """What the system says of how things should look: colorScheme, contrast,
     forcedColors, locale, accessibility, following."""
+    _require_thread("environment()")
     value = _string(_get_environment())
     return json.loads(value) if value else None
 
@@ -663,22 +765,27 @@ def environment():
 def on_environment_changed(function):
     """function(dict) on each change of environment(); None stops."""
     global _environment_callback
+    _require_thread("on_environment_changed()")
+    previous = _environment_callback
     if function is None:
         _environment_callback = None
         _on_environment_changed(_ENVIRONMENT(), None)
-        return
-    _environment_callback = _ENVIRONMENT(_guard(lambda payload, d: function(json.loads(payload.decode()))))
-    _on_environment_changed(_environment_callback, None)
+    else:
+        _environment_callback = _ENVIRONMENT(_guard(lambda payload, d: function(json.loads(_text(payload, "{}")))))
+        _on_environment_changed(_environment_callback, None)
+    _retire(previous)
 
 
 def _json_event(kind, setter, function):
+    _require_thread()
+    previous = _system_callbacks.pop(kind, None)
     if function is None:
-        _system_callbacks.pop(kind, None)
         setter(_JSON_EVENT(), None)
-        return
-    callback = _JSON_EVENT(_guard(lambda payload, d: function(json.loads(payload.decode()))))
-    _system_callbacks[kind] = callback
-    setter(callback, None)
+    else:
+        callback = _JSON_EVENT(_guard(lambda payload, d: function(json.loads(_text(payload, "{}")))))
+        _system_callbacks[kind] = callback
+        setter(callback, None)
+    _retire(previous)
 
 
 def on_notification(function):
@@ -688,10 +795,12 @@ def on_notification(function):
 
 
 def notification_clicked(notification_id, action=-1):
+    _require_thread("notification_clicked()")
     return bool(_notification_clicked(notification_id.encode(), int(action)))
 
 
 def notification_closed(notification_id, by_user=True):
+    _require_thread("notification_closed()")
     return bool(_notification_closed(notification_id.encode(), bool(by_user)))
 
 
@@ -702,6 +811,7 @@ def on_power_event(function):
 
 def displays():
     """The screens: [{id, bounds, workArea, scale, rotation, primary}]."""
+    _require_thread("displays()")
     value = _string(_get_displays())
     return json.loads(value) if value else []
 
@@ -712,15 +822,18 @@ def on_displays_changed(function):
 
 def prevent_sleep(reason, keep_display_on=False):
     """Keeps the system awake until allow_sleep(token)."""
+    _require_thread("prevent_sleep()")
     return int(_prevent_sleep(bool(keep_display_on), reason.encode()))
 
 
 def allow_sleep(token):
+    _require_thread("allow_sleep()")
     return bool(_allow_sleep(int(token)))
 
 
 def open_external(url):
     """The system's handler for url."""
+    _require_thread("open_external()")
     error = _P()
     if not _open_external(url.encode(), ctypes.byref(error)):
         _raise(error, "the URL was not opened")
@@ -728,6 +841,7 @@ def open_external(url):
 
 def show_in_folder(path):
     """The file manager, with path selected."""
+    _require_thread("show_in_folder()")
     error = _P()
     if not _show_in_folder(os.fsencode(path), ctypes.byref(error)):
         _raise(error, "the file was not shown")
@@ -737,46 +851,65 @@ class Tray:
     """The application's icon in the system's tray (png: bytes of a PNG)."""
 
     def __init__(self, png, tooltip=""):
+        _require_thread("Tray()")
         error = _P()
         self._handle = _tray_new(png, len(png), tooltip.encode(), ctypes.byref(error))
         if not self._handle:
             _raise(error, "the tray was not made")
         self._callbacks = {}
+        # Up until close(), with the functions the engine calls: kept here.
+        _alive.add(self)
+
+    def _check(self):
+        _require_thread("a tray icon")
+        if not self._handle:
+            raise Error("the tray icon is closed")
+        return self._handle
 
     def set_icon(self, png):
         error = _P()
-        if not _tray_set_icon(self._handle, png, len(png), ctypes.byref(error)):
+        if not _tray_set_icon(self._check(), png, len(png), ctypes.byref(error)):
             _raise(error, "the icon was refused")
 
     def set_tooltip(self, tooltip):
-        _tray_set_tooltip(self._handle, tooltip.encode())
+        _tray_set_tooltip(self._check(), tooltip.encode())
 
     def set_menu(self, menu, function):
         """Items as app_set_menu's; function(id) for one chosen."""
-        callback = _TRAY_MENU(_guard(lambda item, d: function(item.decode())))
+        handle = self._check()
+        callback = _TRAY_MENU(_guard(lambda item, d: function(_text(item))))
         error = _P()
-        if not _tray_set_menu(self._handle, json.dumps(menu).encode(), callback, None, ctypes.byref(error)):
+        if not _tray_set_menu(handle, json.dumps(menu).encode(), callback, None, ctypes.byref(error)):
             _raise(error, "the menu was refused")
+        _retire(self._callbacks.get("menu"))
         self._callbacks["menu"] = callback
 
     def on_click(self, function):
+        handle = self._check()
         callback = _TRAY_CLICK(_guard(lambda d: function())) if function else _TRAY_CLICK()
+        _tray_on_click(handle, callback, None)
+        _retire(self._callbacks.get("click"))
         self._callbacks["click"] = callback
-        _tray_on_click(self._handle, callback, None)
 
     def close(self):
         if self._handle:
             _tray_close(self._handle)
             self._handle = None
+            for callback in self._callbacks.values():
+                _retire(callback)
+            self._callbacks = {}
+        _alive.discard(self)
 
 
 def capabilities():
     """What this build can do on this system and display (<zebkit/window.h>)."""
+    _require_thread("capabilities()")
     value = _string(_get_capabilities())
     return json.loads(value) if value else None
 
 
 def is_headless():
+    _require_thread("is_headless()")
     return bool(_is_headless())
 
 
@@ -784,10 +917,12 @@ def main(ready, argv=None):
     """Start the engine, call ready() once views can be made, run until
     quit(); returns the exit code. Chromium's switches in argv (by default
     sys.argv) are honoured, such as --remote-debugging-port=9222."""
+    global _engine_thread
     argv = list(sys.argv if argv is None else argv) or ["python"]
     array = (ctypes.c_char_p * (len(argv) + 1))(*[a.encode() for a in argv], None)
     callback = _TASK(_guard(lambda data: ready()))
     _alive.add(callback)
+    _engine_thread = threading.get_ident()
     try:
         return _main(len(argv), array, callback, None)
     finally:
@@ -801,22 +936,27 @@ def init(argv=None, *, settings=None):
     explanation. Use set_wakeup for event-driven pumping, or a toolkit timer;
     call shutdown outside callbacks when the engine is no longer needed.
     """
+    global _engine_thread
     argv = list(sys.argv if argv is None else argv) or ["python"]
     array = (ctypes.c_char_p * (len(argv) + 1))(*[a.encode() for a in argv], None)
     if settings is None:
-        return _init(len(argv), array)
-    source = settings if isinstance(settings, str) else json.dumps(settings)
-    error = ctypes.c_void_p()
-    code = _init_settings(len(argv), array, source.encode(), ctypes.byref(error))
-    message = _string(error.value)
-    if code:
-        raise Error(message or f"engine startup failed: {code}")
+        code = _init(len(argv), array)
+    else:
+        source = settings if isinstance(settings, str) else json.dumps(settings)
+        error = ctypes.c_void_p()
+        code = _init_settings(len(argv), array, source.encode(), ctypes.byref(error))
+        message = _string(error.value)
+        if code:
+            raise Error(message or f"engine startup failed: {code}")
+    if code == 0:
+        _engine_thread = threading.get_ident()
     return code
 
 
 def set_engine_settings(settings):
     """What zebkit decides for the whole engine (<zebkit/hooks.h>): thirdPartyCookies,
     spareRenderer, dialogs, downloads, newWindows. All of it applies or none."""
+    _require_thread("set_engine_settings()")
     source = settings if isinstance(settings, str) else json.dumps(settings)
     if '\0' in source:
         raise Error("runtime settings contain NUL")
@@ -827,11 +967,14 @@ def set_engine_settings(settings):
 
 def engine_settings():
     """{"explicit": ..., "effective": ...}."""
+    _require_thread("engine_settings()")
     return json.loads(_string(_get_engine_settings()))
 
 
 def pump():
-    """Process ready engine/native events without waiting; False if invalid."""
+    """Process ready engine/native events without waiting; False before
+    init, after shutdown and inside a callback (a nested pump)."""
+    _require_thread("pump()")
     return bool(_pump())
 
 
@@ -841,6 +984,7 @@ def set_wakeup(function):
     Keep the earliest deadline and consume it before pump(). None removes it.
     """
     global _wakeup_callback
+    _require_thread("set_wakeup()")
     callback = _WAKEUP(_guard(lambda delay, data: function(delay))) if function else _WAKEUP()
     if not _set_wakeup(callback, None):
         return False
@@ -852,28 +996,36 @@ def shutdown():
     """Close views and stop the engine on its initializing thread, outside callbacks.
     Returns False if invalid. The engine cannot be restarted after shutdown.
     """
-    global _wakeup_callback
+    global _wakeup_callback, _engine_thread
+    _require_thread("shutdown()")
     if not _shutdown():
         return False
     _wakeup_callback = None
+    _engine_thread = None
     return True
 
 
 def quit():  # noqa: A001
+    _require_thread("quit()")
     _quit()
 
 
 def post(function, delay_ms=0):
-    """Run function() on the engine's thread; any thread may call this."""
+    """Run function() on the engine's thread; any thread may call this.
+    Before the engine has started and once it has stopped, function never
+    runs (False)."""
     def run(data):
         _alive.discard(callback)
         function()
     callback = _TASK(_guard(run))
     _alive.add(callback)
     if delay_ms:
-        _post_delayed(callback, None, int(delay_ms))
+        posted = _post_delayed(callback, None, int(delay_ms))
     else:
-        _post(callback, None)
+        posted = _post(callback, None)
+    if not posted:
+        _alive.discard(callback)
+    return bool(posted)
 
 
 class View:
@@ -884,6 +1036,7 @@ class View:
         it is made, such as {"frame": "overlay", "show": False}; width and
         height go into them. context: a Context of its own cookies and
         storage, else the default one."""
+        _require_thread("View()")
         context_handle = context._check() if context is not None else None
         if options is None and context_handle:
             self._handle = _view_new_in(context_handle, url.encode() if url else None, width, height)
@@ -927,11 +1080,8 @@ class View:
 
     def on_window_state(self, function):
         """function(dict) for every change of the window's state; None removes it."""
-        if function is None:
-            self._callbacks.pop("window-state", None)
-            _view_on_window_state(self._check(), _WINDOW_STATE(), None)
-            return
-        callback = _WINDOW_STATE(_guard(lambda h, payload, d: function(json.loads(payload.decode()))))
+        callback = _WINDOW_STATE(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
+            if function is not None else _WINDOW_STATE()
         self._set("window-state", callback, _view_on_window_state)
 
     def set_drag_regions(self, regions):
@@ -958,21 +1108,39 @@ class View:
     def _initialize_callbacks(self):
         self._callbacks = {}
         self._on_close_user = None
+        self._close_hooks = []
         self._closed = False
-        self._set("close", _VIEW(_guard(self._closed_by_engine)), _view_on_close)
+        callback = _VIEW(_guard(self._closed_by_engine))
+        self._callbacks["close"] = callback
+        _view_on_close(self._handle, callback, None)
         _alive.add(self)
 
     def _set(self, kind, callback, setter):
+        """Gives the engine callback (a NULL one removes it) for kind. The
+        one it replaces lives until a task after this one: it may be the
+        one running."""
+        handle = self._check()
+        previous = self._callbacks.get(kind)
+        setter(handle, callback, None)
         self._callbacks[kind] = callback
-        setter(self._handle, callback, None)
+        _retire(previous)
 
     def _closed_by_engine(self, handle, data):
         self._closed = True
         _alive.discard(self)
-        if self._on_close_user:
-            self._on_close_user()
+        try:
+            if self._on_close_user:
+                self._on_close_user()
+        finally:
+            for hook in self._close_hooks:
+                hook()
+            self._close_hooks = []
+            # What the callbacks hold may hold the view; this one is running.
+            callbacks, self._callbacks = self._callbacks, {}
+            _retire(callbacks)
 
     def _check(self):
+        _require_thread("a view")
         if self._closed:
             raise Error("the view is closed")
         return self._handle
@@ -1089,120 +1257,67 @@ class View:
 
     def set_permission_timeout(self, milliseconds):
         """Deadline for future prompts, from 1 to 300000 milliseconds."""
-        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError("permission timeout must be an integer from 1 to 300000")
-        if not _view_permission_timeout(self._check(), milliseconds):
-            raise Error("permission timeout rejected")
+        self._deadline(_view_permission_timeout, milliseconds, "permission timeout")
 
     def on_permission(self, function):
         """function(PermissionRequest); None restores the default permission policy."""
-        self._check()
-        previous = self._callbacks.get("permission")
-        callback = _PERMISSION(_guard(lambda h, request, payload, d:
-                    function(PermissionRequest(request, json.loads(payload))))) if function else _PERMISSION()
-        self._set("permission", callback, _view_on_permission)
-        if previous is not None:
-            # A handler can replace itself while its trampoline is executing.
-            post(lambda previous=previous: None)
+        self._asked("permission", _view_on_permission, PermissionRequest, function, _PERMISSION)
 
     def on_permission_result(self, function):
         """function(dict) receives asynchronous outcomes; None removes it."""
-        self._check()
-        previous = self._callbacks.get("permission-result")
-        callback = _PERMISSION_RESULT(_guard(lambda h, payload, d: function(json.loads(payload)))) if function else _PERMISSION_RESULT()
-        self._set("permission-result", callback, _view_on_permission_result)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._told("permission-result", _view_on_permission_result, function, _PERMISSION_RESULT)
 
     def set_certificate_timeout(self, milliseconds):
         """Deadline for future certificate decisions, from 1 to 300000 milliseconds."""
-        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError("certificate timeout must be an integer from 1 to 300000")
-        if not _view_certificate_timeout(self._check(), milliseconds):
-            raise Error("certificate timeout rejected")
+        self._deadline(_view_certificate_timeout, milliseconds, "certificate timeout")
 
     def on_certificate(self, function):
         """function(CertificateRequest); None denies pending requests and removes it."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("certificate handler must be callable or None")
-        previous = self._callbacks.get('certificate')
-        callback = _CERTIFICATE(_guard(lambda h, request, payload, d:
-                    function(CertificateRequest(request, json.loads(payload))))) if function is not None else _CERTIFICATE()
-        self._set('certificate', callback, _view_on_certificate)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._asked("certificate", _view_on_certificate, CertificateRequest, function, _CERTIFICATE)
 
     def on_certificate_result(self, function):
         """function(dict) observes asynchronous outcomes; None removes it."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("certificate result observer must be callable or None")
-        previous = self._callbacks.get('certificate-result')
-        callback = _CERTIFICATE_RESULT(_guard(lambda h, payload, d:
-                    function(json.loads(payload)))) if function is not None else _CERTIFICATE_RESULT()
-        self._set('certificate-result', callback, _view_on_certificate_result)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._told("certificate-result", _view_on_certificate_result, function, _CERTIFICATE_RESULT)
 
     def set_http_auth_timeout(self, milliseconds):
         """Deadline for future HTTP challenges, from 1 to 300000 milliseconds."""
-        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError("HTTP authentication timeout must be an integer from 1 to 300000")
-        if not _view_http_auth_timeout(self._check(), milliseconds):
-            raise Error("HTTP authentication timeout rejected")
+        self._deadline(_view_http_auth_timeout, milliseconds, "HTTP authentication timeout")
 
     def on_http_auth(self, function):
         """function(HttpAuthRequest); None cancels pending challenges and removes it."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("HTTP authentication handler must be callable or None")
-        previous = self._callbacks.get('http-auth')
-        callback = _HTTP_AUTH(_guard(lambda h, request, payload, d:
-                    function(HttpAuthRequest(request, json.loads(payload))))) if function is not None else _HTTP_AUTH()
-        self._set('http-auth', callback, _view_on_http_auth)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._asked("http-auth", _view_on_http_auth, HttpAuthRequest, function, _HTTP_AUTH)
 
     def on_http_auth_result(self, function):
         """function(dict) observes credential provision/cancellation, not HTTP success."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("HTTP authentication result observer must be callable or None")
-        previous = self._callbacks.get('http-auth-result')
-        callback = _HTTP_AUTH_RESULT(_guard(lambda h, payload, d:
-                    function(json.loads(payload)))) if function is not None else _HTTP_AUTH_RESULT()
-        self._set('http-auth-result', callback, _view_on_http_auth_result)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._told("http-auth-result", _view_on_http_auth_result, function, _HTTP_AUTH_RESULT)
 
-    def _asked(self, kind, setter, request_type, function):
+    def _asked(self, kind, setter, request_type, function, kind_type=None):
+        """function(request_type) for what the page asks; None removes it."""
+        kind_type = kind_type or _ASKED
         self._check()
         if function is not None and not callable(function):
             raise TypeError(kind + " handler must be callable or None")
-        previous = self._callbacks.get(kind)
-        callback = _ASKED(_guard(lambda h, request, payload, d:
-                    function(request_type(request, json.loads(payload))))) if function is not None else _ASKED()
+        callback = kind_type(_guard(lambda h, request, payload, d:
+                    function(request_type(request, json.loads(_text(payload, "{}")))))) \
+            if function is not None else kind_type()
         self._set(kind, callback, setter)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
-    def _told(self, kind, setter, function):
+    def _told(self, kind, setter, function, kind_type=None):
+        """function(dict) for what the engine tells; None removes it."""
+        kind_type = kind_type or _TOLD
         self._check()
         if function is not None and not callable(function):
             raise TypeError(kind + " observer must be callable or None")
-        previous = self._callbacks.get(kind)
-        callback = _TOLD(_guard(lambda h, payload, d:
-                    function(json.loads(payload)))) if function is not None else _TOLD()
+        callback = kind_type(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
+            if function is not None else kind_type()
         self._set(kind, callback, setter)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
-    def _deadline(self, setter, milliseconds):
+    def _deadline(self, setter, milliseconds, what=None):
         if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError("a deadline is an integer from 1 to 300000")
+            raise ValueError(f"{what} must be an integer from 1 to 300000" if what
+                             else "a deadline is an integer from 1 to 300000")
         if not setter(self._check(), milliseconds):
-            raise Error("deadline rejected")
+            raise Error(f"{what or 'deadline'} rejected")
 
     def on_external_protocol(self, function):
         """function(dict): a link to another program. The engine opens nothing."""
@@ -1233,9 +1348,10 @@ class View:
 
     def add_world_script(self, source, world=None, main_frame_only=False):
         """A script before the page's, in the named isolated world or the page's."""
+        error = _P()
         if not _view_add_world_script(self._check(), None if world is None else world.encode(),
-                                      source.encode(), bool(main_frame_only), None):
-            raise Error("script or world name rejected")
+                                      source.encode(), bool(main_frame_only), ctypes.byref(error)):
+            _raise(error, "script or world name rejected")
 
     def on_file_chooser(self, function):
         """function(FileChooserRequest); None cancels pending ones and removes it."""
@@ -1282,8 +1398,9 @@ class View:
 
     def set_reserved_keys(self, keys):
         """Keys the page does not get, as ['Ctrl+Shift+KeyI']."""
-        if not _view_set_reserved_keys(self._check(), json.dumps(list(keys)).encode(), None):
-            raise Error("reserved keys rejected")
+        error = _P()
+        if not _view_set_reserved_keys(self._check(), json.dumps(list(keys)).encode(), ctypes.byref(error)):
+            _raise(error, "reserved keys rejected")
 
     def on_reserved_key(self, function):
         self._told('reserved-key', _view_on_reserved_key, function)
@@ -1303,13 +1420,15 @@ class View:
         """Shows a menu where it was asked for: the default items (None) or a
         list mixing default ids and the application's own; function(id) for
         an item of the application's ("" when none is chosen)."""
+        handle = self._check()
         error = _P()
-        callback = _CONTEXT_MENU_ITEM(_guard(lambda h, item, d: function(item.decode()))) if function else \
+        callback = _CONTEXT_MENU_ITEM(_guard(lambda h, item, d: function(_text(item)))) if function else \
             _CONTEXT_MENU_ITEM()
-        self._callbacks["context-menu-item"] = callback
         text = json.dumps(items).encode() if items is not None else None
-        if not _view_context_menu_show(self._check(), int(menu_id), text, callback, None, ctypes.byref(error)):
+        if not _view_context_menu_show(handle, int(menu_id), text, callback, None, ctypes.byref(error)):
             _raise(error, "the context menu was not shown")
+        _retire(self._callbacks.get("context-menu-item"))
+        self._callbacks["context-menu-item"] = callback
 
     def set_fullscreen_policy(self, policy):
         if policy not in ("allow", "deny"):
@@ -1322,8 +1441,9 @@ class View:
 
     def set_network_filter(self, rules):
         """A list of rules, as <zebkit/hooks.h> says; [] holds and tells nothing."""
-        if not _view_set_network_filter(self._check(), json.dumps(rules).encode(), None):
-            raise Error("network filter rejected")
+        error = _P()
+        if not _view_set_network_filter(self._check(), json.dumps(rules).encode(), ctypes.byref(error)):
+            _raise(error, "network filter rejected")
 
     def on_network(self, function):
         """function(NetworkRequest) for what a hold rule holds."""
@@ -1341,13 +1461,10 @@ class View:
         self._check()
         if function is not None and not callable(function):
             raise TypeError("network-body observer must be callable or None")
-        previous = self._callbacks.get('network-body')
         callback = _NETWORK_BODY(_guard(lambda h, request_id, data, size, end, truncated, d:
                     function(request_id.decode(), ctypes.string_at(data, size) if size else b"",
                              bool(end), bool(truncated)))) if function is not None else _NETWORK_BODY()
         self._set('network-body', callback, _view_on_network_body)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
     def set_network_timeout(self, milliseconds):
         self._deadline(_view_network_timeout, milliseconds)
@@ -1355,33 +1472,19 @@ class View:
     def set_navigation_fail_closed(self, fail_closed):
         """With True, an unanswered navigation is cancelled instead of continued."""
         if not _view_navigation_fail_closed(self._check(), bool(fail_closed)):
-            raise RuntimeError("cannot set the navigation policy of this view")
+            raise Error("cannot set the navigation policy of this view")
 
     def set_navigation_timeout(self, milliseconds):
         """Deadline for future navigation decisions, from 1 to 300000 milliseconds."""
-        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError("navigation timeout must be an integer from 1 to 300000")
-        if not _view_navigation_timeout(self._check(), milliseconds):
-            raise Error("navigation timeout rejected")
+        self._deadline(_view_navigation_timeout, milliseconds, "navigation timeout")
 
     def on_navigation(self, function):
         """function(NavigationRequest); None continues pending requests and removes policy."""
-        self._check()
-        previous = self._callbacks.get('navigation')
-        callback = _NAVIGATION(_guard(lambda h, request, payload, d:
-                    function(NavigationRequest(request, json.loads(payload))))) if function else _NAVIGATION()
-        self._set('navigation', callback, _view_on_navigation)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._asked("navigation", _view_on_navigation, NavigationRequest, function, _NAVIGATION)
 
     def on_navigation_result(self, function):
         """function(dict) observes asynchronous decisions; None removes it."""
-        self._check()
-        previous = self._callbacks.get('navigation-result')
-        callback = _NAVIGATION_RESULT(_guard(lambda h, payload, d: function(json.loads(payload)))) if function else _NAVIGATION_RESULT()
-        self._set('navigation-result', callback, _view_on_navigation_result)
-        if previous is not None:
-            post(lambda previous=previous: None)
+        self._told("navigation-result", _view_on_navigation_result, function, _NAVIGATION_RESULT)
 
     def set_popup_policy(self, policy):
         """Set block-without-gesture, allow or block for future new windows."""
@@ -1407,45 +1510,33 @@ class View:
         self._check()
         if function is not None and not callable(function):
             raise TypeError("window handler must be callable or None")
-        previous = self._callbacks.get('window-open')
         callback = _WINDOW_OPEN(_guard(lambda h, child, url, d:
-                    function(View._adopt(child), url.decode()))) if function is not None else _WINDOW_OPEN()
+                    function(View._adopt(child), _text(url)))) if function is not None else _WINDOW_OPEN()
         self._set('window-open', callback, _view_on_window_open)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
     def on_window_open_event(self, function):
         """function(dict) observes decision/created metadata; None removes it."""
         self._check()
         if function is not None and not callable(function):
             raise TypeError("window observer must be callable or None")
-        previous = self._callbacks.get('window-open-event')
         callback = _WINDOW_OPEN_EVENT(_guard(lambda h, payload, d:
                     function(json.loads(payload)))) if function is not None else _WINDOW_OPEN_EVENT()
         self._set('window-open-event', callback, _view_on_window_open_event)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
     def on_console(self, function):
         """function(dict) observes native document-console messages; None removes it."""
         self._check()
         if function is not None and not callable(function):
             raise TypeError("console observer must be callable or None")
-        previous = self._callbacks.get('console')
         callback = _CONSOLE(_guard(lambda h, payload, d:
                     function(json.loads(payload)))) if function is not None else _CONSOLE()
         self._set('console', callback, _view_on_console)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
     def on_popup_blocked(self, function):
         """Report a blocked popup as a dict, after the decision; None removes it."""
         self._check()
-        previous = self._callbacks.get("popup-blocked")
         callback = _POPUP_BLOCKED(_guard(lambda view, event, data: function(json.loads(event)))) if function else _POPUP_BLOCKED()
         self._set("popup-blocked", callback, _view_on_popup_blocked)
-        if previous is not None:
-            post(lambda previous=previous: None)
 
     def on_authentication(self, function):
         """Receive host-owned Passkey events as dictionaries; None restores native UI.
@@ -1454,15 +1545,11 @@ class View:
         opt into authentication UI. See docs/PASSKEYS.md for the schema.
         """
         handle = self._check()
-        _view_on_authentication(handle, _AUTHENTICATION(), None)
-        previous = self._callbacks.pop("authentication", None)
-        if previous is not None:
-            # A handler may unregister itself; keep the ctypes trampoline
-            # alive until its native invocation has returned.
-            post(lambda previous=previous: None)
+        # Cleared first: that cancels the outstanding requests.
+        self._set("authentication", _AUTHENTICATION(), _view_on_authentication)
         if function is None:
             return True
-        callback = _AUTHENTICATION(_guard(lambda h, event, data: function(json.loads(event))))
+        callback = _AUTHENTICATION(_guard(lambda h, event, data: function(json.loads(_text(event, "{}")))))
         self._callbacks["authentication"] = callback
         return bool(_view_on_authentication(handle, callback, None))
 
@@ -1488,27 +1575,31 @@ class View:
 
     def on_load(self, function):
         """function(event, url), event one of LOAD_STARTED, LOAD_COMMITTED,
-        LOAD_FINISHED and LOAD_FAILED."""
-        self._set("load", _LOAD(_guard(lambda h, e, u, d: function(e, u.decode()))), _view_on_load)
+        LOAD_FINISHED and LOAD_FAILED; None removes it."""
+        callback = _LOAD(_guard(lambda h, e, u, d: function(e, _text(u)))) if function is not None else _LOAD()
+        self._set("load", callback, _view_on_load)
 
     def on_title(self, function):
-        self._set("title", _TITLE(_guard(lambda h, t, d: function(t.decode()))), _view_on_title)
+        """function(title) whenever the page's title changes; None removes it."""
+        callback = _TITLE(_guard(lambda h, t, d: function(_text(t)))) if function is not None else _TITLE()
+        self._set("title", callback, _view_on_title)
 
     def on_close(self, function):
         self._on_close_user = function
 
     def evaluate(self, script, function=None):
         """Run script in the page; function(value, error), value as from JSON."""
-        def done(handle, result, error, data):
+        handle = self._check()
+        def done(view, result, error, data):
             _alive.discard(callback)
             if function:
                 if error is not None:
-                    function(None, error.decode())
+                    function(None, _text(error))
                 else:
-                    function(json.loads(result.decode()) if result else None, None)
+                    function(json.loads(_text(result)) if result else None, None)
         callback = _RESULT(_guard(done))
         _alive.add(callback)
-        _view_evaluate(self._check(), script.encode(), callback, None)
+        _view_evaluate(handle, script.encode(), callback, None)
 
     def set_user_agent_override(self, options, function=None):
         """Set UA/client hints together; function(value, error) reports validation."""
@@ -1519,13 +1610,17 @@ class View:
         encoded = source.encode('utf-8')
         if b'\0' in encoded:
             raise ValueError("user agent options must not contain a literal NUL")
-        def done(handle, result, error, data):
+        def done(view, result, error, data):
             _alive.discard(callback)
             if function is not None:
-                function(json.loads(result) if result else None, error.decode() if error else None)
+                function(json.loads(result) if result else None, _text(error, None))
         callback = _RESULT(_guard(done))
         _alive.add(callback)
-        return bool(_view_user_agent_override(handle, encoded, callback, None))
+        if not _view_user_agent_override(handle, encoded, callback, None):
+            # Refused at once: it calls nothing back.
+            _alive.discard(callback)
+            return False
+        return True
 
     def grant(self, origin, allow, files_root=None):
         """Give pages of origin the zebkit.* capabilities in allow (ALLOW_*)."""
@@ -1538,21 +1633,36 @@ class View:
         page's promise resolves with; an exception rejects it."""
         def called(handle, origin, args, call, data):
             try:
-                result = function(*json.loads(args.decode()), origin=origin.decode())
+                result = function(*json.loads(_text(args, "[]")), origin=_text(origin))
+                if result is UNDEFINED:
+                    _call_resolve(call, None)
+                    return
                 answer = json.dumps(result).encode()
                 _call_resolve_json(call, answer, len(answer))
             except Exception as e:  # noqa: BLE001
                 _call_reject(call, str(e).encode())
-        if function is None:
-            self._callbacks.pop("bind:" + name, None)
-            _view_bind(self._check(), name.encode(), _BIND(), None)
-            return
-        callback = _BIND(called)
-        self._callbacks["bind:" + name] = callback
-        _view_bind(self._check(), name.encode(), callback, None)
+        handle = self._check()
+        callback = _BIND(called) if function is not None else _BIND()
+        _view_bind(handle, name.encode(), callback, None)
+        _retire(self._callbacks.pop("bind:" + name, None))
+        if function is not None:
+            self._callbacks["bind:" + name] = callback
+
+    # The three of <zebkit/hooks.h> the binding had declared and not given.
+    def on_eye_dropper_result(self, function):
+        """function(dict): how an EyeDropper.open() ended."""
+        self._told('eye-dropper-result', _view_on_eye_dropper_result, function)
+
+    def set_eye_dropper_timeout(self, milliseconds):
+        self._deadline(_view_eye_dropper_timeout, milliseconds)
+
+    def on_share_result(self, function):
+        """function(dict): how a navigator.share() ended."""
+        self._told('share-result', _view_on_share_result, function)
 
 
 def cdp_listen(address=None, port=0):
+    _require_thread("cdp_listen()")
     error = ctypes.c_void_p()
     bound = _cdp_listen(address.encode() if address else None, port, ctypes.byref(error))
     if not bound:
@@ -1561,34 +1671,41 @@ def cdp_listen(address=None, port=0):
 
 
 def cdp_port():
+    _require_thread("cdp_port()")
     return _cdp_get_port()
 
 
 def cdp_url():
+    _require_thread("cdp_url()")
     return _string(_cdp_get_url())
 
 
 def cdp_stop():
+    _require_thread("cdp_stop()")
     _cdp_stop()
 
 
 def fetch(url, function, method="GET", headers=None, body=None):
     """Request url through the engine's network stack; function(response)
-    gets a dict: status, url, headers (a dict), body (bytes), error."""
+    gets a dict: status, url, headers (a dict: of a repeated header, such as
+    Set-Cookie, the last), header_list (every header, as (name, value)
+    pairs in order), body (bytes), error."""
+    _require_thread("fetch()")
     def done(response, data):
         _alive.discard(callback)
         r = response.contents
-        headers_out = {}
-        for line in (r.headers or b"").decode().split("\r\n"):
-            if ": " in line:
-                name, value = line.split(": ", 1)
-                headers_out[name] = value
+        header_list = []
+        for line in _text(r.headers).split("\r\n"):
+            name, colon, value = line.partition(":")
+            if colon and name.strip():
+                header_list.append((name.strip(), value.strip()))
         function({
             "status": r.status,
-            "url": (r.url or b"").decode(),
-            "headers": headers_out,
+            "url": _text(r.url),
+            "headers": dict(header_list),
+            "header_list": header_list,
             "body": ctypes.string_at(r.body, r.body_size) if r.body_size else b"",
-            "error": r.error.decode() if r.error else None,
+            "error": _text(r.error, None),
         })
     callback = _RESPONSE(_guard(done))
     _alive.add(callback)
@@ -1768,27 +1885,35 @@ class Pdf:
             _pdf_close(self._handle)
             self._handle = None
 
+    def _check(self):
+        if not getattr(self, "_handle", None):
+            raise Error("the document is closed")
+        return self._handle
+
     def _json(self, function, *args, fallback="failed"):
         error = ctypes.c_void_p()
-        out = function(self._handle, *args, ctypes.byref(error))
+        out = function(self._check(), *args, ctypes.byref(error))
         if not out:
             _raise(error, fallback)
         return json.loads(_string(out))
 
     def _ok(self, function, *args, fallback="failed"):
         error = ctypes.c_void_p()
-        if not function(self._handle, *args, ctypes.byref(error)):
+        if not function(self._check(), *args, ctypes.byref(error)):
             _raise(error, fallback)
 
     def info(self):
-        return json.loads(_string(_pdf_info(self._handle)))
+        value = _string(_pdf_info(self._check()))
+        if value is None:
+            raise Error("the document has no information")
+        return json.loads(value)
 
     def set_metadata(self, **entries):
         self._ok(_pdf_set_metadata, json.dumps(entries).encode())
 
     @property
     def page_count(self):
-        return _pdf_page_count(self._handle)
+        return _pdf_page_count(self._check())
 
     def page(self, index):
         return self._json(_pdf_page, index, fallback="no page")
@@ -1798,7 +1923,7 @@ class Pdf:
         """(width, height, RGBA bytes) of a page, or of a tile of it."""
         options = _RenderOptions(scale, rotation, flags, background, x, y, width, height)
         out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
-        out = _pdf_render(self._handle, index, ctypes.byref(options), ctypes.byref(out_width),
+        out = _pdf_render(self._check(), index, ctypes.byref(options), ctypes.byref(out_width),
                           ctypes.byref(out_height), ctypes.byref(error))
         if not out:
             _raise(error, "the page cannot be rendered")
@@ -1809,7 +1934,7 @@ class Pdf:
         normal, 1 rollover, 2 down), or None when it has no such appearance."""
         options = _RenderOptions(scale, rotation, 0, background, 0, 0, 0, 0)
         out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
-        out = _pdf_render_annotation(self._handle, index, annotation, mode, ctypes.byref(options),
+        out = _pdf_render_annotation(self._check(), index, annotation, mode, ctypes.byref(options),
                                      ctypes.byref(out_width), ctypes.byref(out_height), ctypes.byref(error))
         if not out:
             message = _string(error.value) if error.value else "the annotation cannot be rendered"
@@ -1820,7 +1945,7 @@ class Pdf:
 
     def text(self, index):
         error = ctypes.c_void_p()
-        out = _pdf_text(self._handle, index, ctypes.byref(error))
+        out = _pdf_text(self._check(), index, ctypes.byref(error))
         if not out:
             _raise(error, "no text")
         return _string(out)
@@ -1832,7 +1957,7 @@ class Pdf:
         return self._json(_pdf_text_rects, index, start, count)
 
     def char_at(self, index, x, y, tolerance=2.0):
-        found = _pdf_char_at(self._handle, index, x, y, tolerance)
+        found = _pdf_char_at(self._check(), index, x, y, tolerance)
         return None if found < 0 else found
 
     def search(self, query, match_case=False, whole_word=False, first=0, limit=0):
@@ -1854,7 +1979,7 @@ class Pdf:
 
     def add_annotation(self, index, annotation):
         error = ctypes.c_void_p()
-        added = _pdf_annotation_add(self._handle, index, json.dumps(annotation).encode(), ctypes.byref(error))
+        added = _pdf_annotation_add(self._check(), index, json.dumps(annotation).encode(), ctypes.byref(error))
         if added < 0:
             _raise(error, "the annotation cannot be made")
         return added
@@ -1873,7 +1998,7 @@ class Pdf:
 
     def attachment(self, index):
         size, error = ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_attachment(self._handle, index, ctypes.byref(size), ctypes.byref(error))
+        out = _pdf_attachment(self._check(), index, ctypes.byref(size), ctypes.byref(error))
         if not out:
             _raise(error, "no attachment")
         return _buffer(out, size.value)
@@ -1887,7 +2012,7 @@ class Pdf:
 
     def save(self, incremental=False, no_security=False):
         size, error = ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_save(self._handle, (1 if incremental else 0) | (2 if no_security else 0), ctypes.byref(size),
+        out = _pdf_save(self._check(), (1 if incremental else 0) | (2 if no_security else 0), ctypes.byref(size),
                         ctypes.byref(error))
         if not out:
             _raise(error, "the document cannot be saved")
@@ -1915,10 +2040,10 @@ class Request:
 
     def __init__(self, handle):
         self._handle = handle
-        self.url = _request_url(handle).decode()
-        self.method = _request_method(handle).decode()
+        self.url = _text(_request_url(handle))
+        self.method = _text(_request_method(handle))
         self.headers = {}
-        for line in _request_headers(handle).decode().split("\r\n"):
+        for line in _text(_request_headers(handle)).split("\r\n"):
             name, _, value = line.partition(":")
             if name:
                 self.headers[name.strip()] = value.strip()
@@ -1931,6 +2056,12 @@ class Request:
         if not handle:
             raise Error("the request is answered already")
         return handle
+
+    def __del__(self):
+        # Nobody answered it, and nobody can now: not found, so that the page
+        # does not wait for good.
+        if getattr(self, "_handle", None):
+            _request_respond(self._take(), 404, None, b"", 0)
 
     def respond(self, status=200, body=b"", headers=None):
         body = _bytes(body)
@@ -1947,11 +2078,28 @@ def scheme_register(scheme, flags=SCHEME_STANDARD | SCHEME_SECURE | SCHEME_FETCH
     return bool(_scheme_register(scheme.encode(), flags))
 
 
+_scheme_callbacks = {}
+
+
 def scheme_handle(scheme, function):
-    """function(Request) answers the scheme's requests, on the engine's thread."""
-    callback = _SCHEME(_guard(lambda handle, data: function(Request(handle))))
-    _alive.add(callback)
+    """function(Request) answers the scheme's requests, on the engine's thread;
+    None stops. A request function raises on, unanswered, is answered 500; one
+    dropped unanswered, 404."""
+    _require_thread("scheme_handle()")
+
+    def handle(pointer, data):
+        request = Request(pointer)
+        try:
+            function(request)
+        except Exception:  # noqa: BLE001
+            if request._handle:
+                request.respond(500, b"the application's handler failed", {"Content-Type": "text/plain"})
+            raise
+    callback = _SCHEME(_guard(handle)) if function is not None else _SCHEME()
     _scheme_handle(scheme.encode(), callback, None)
+    _retire(_scheme_callbacks.pop(scheme, None))
+    if function is not None:
+        _scheme_callbacks[scheme] = callback
 
 
 # ---- The application ---------------------------------------------------
@@ -1976,29 +2124,34 @@ _app_callbacks = {}
 def app_set_badge(text):
     """The badge on the application's icon in the Dock or on the taskbar; a
     number on Linux's launcher docks; "" or None for none."""
+    _require_thread("app_set_badge()")
     return bool(_app_set_badge((text or "").encode()))
 
 
 def app_set_progress(progress):
     """A progress from 0 to 1 on the application's icon; None (or below 0)
     for none."""
+    _require_thread("app_set_progress()")
     return bool(_app_set_progress(-1.0 if progress is None else float(progress)))
 
 
 def app_request_attention(critical=False):
     """The Dock's bounce (critical: until the application is active) or the
     taskbar button's flash; urgent on Linux's launcher docks."""
+    _require_thread("app_request_attention()")
     _app_request_attention(bool(critical))
 
 
 def app_set_dock_menu(items, function):
     """The Dock's menu (macOS): items as app_set_menu's; function(id) for one
     chosen. Raises elsewhere."""
+    _require_thread("app_set_dock_menu()")
     text = items if isinstance(items, str) else json.dumps(items)
-    callback = _MENU(_guard(lambda item, data: function(item.decode())))
+    callback = _MENU(_guard(lambda item, data: function(_text(item))))
     error = ctypes.c_void_p()
     if not _app_set_dock_menu(text.encode(), callback, None, ctypes.byref(error)):
         _raise(error, "the Dock's menu was refused")
+    _retire(_app_callbacks.get("dock"))
     _app_callbacks["dock"] = callback
 
 
@@ -2008,17 +2161,21 @@ def app_set_menu(menu, function):
     {"title", "items"} or {"separator": True}; function(id) is called when
     an item with an id is chosen. The menu bar on macOS; elsewhere the
     items' keys work in the application's windows. On the engine's thread."""
+    _require_thread("app_set_menu()")
     text = menu if isinstance(menu, str) else json.dumps(menu)
-    callback = _MENU(_guard(lambda item, data: function(item.decode())))
+    callback = _MENU(_guard(lambda item, data: function(_text(item))))
     error = ctypes.c_void_p()
     if not _app_set_menu(text.encode(), callback, None, ctypes.byref(error)):
         _raise(error, "the menu was refused")
+    # The one replaced may be running: a menu item that sets a new menu.
+    _retire(_app_callbacks.get("menu"))
     _app_callbacks["menu"] = callback
 
 
 def app_update_menu_item(item_id, **state):
     """Changes the menu item item_id without a new menu: enabled, checked,
     title; checking one of a radioGroup unchecks the others."""
+    _require_thread("app_update_menu_item()")
     error = ctypes.c_void_p()
     if not _app_update_menu_item(item_id.encode(), json.dumps(state).encode(), ctypes.byref(error)):
         _raise(error, "the menu item was not changed")
@@ -2026,30 +2183,36 @@ def app_update_menu_item(item_id, **state):
 
 def app_menu():
     """The menu with its items' state."""
+    _require_thread("app_menu()")
     value = _string(_app_get_menu())
     return json.loads(value) if value else []
 
 
+def _app_on(kind, setter, callback):
+    _require_thread()
+    setter(callback, None)
+    _retire(_app_callbacks.get(kind))
+    _app_callbacks[kind] = callback
+
+
 def app_on_open_files(function):
     """function(paths) for files the system asks the running application to
-    open (macOS: the Finder and the Dock); elsewhere they are arguments."""
-    callback = _PATHS(_guard(lambda paths, data: function(json.loads(paths.decode()))))
-    _app_callbacks["open"] = callback
-    _app_on_open_files(callback, None)
+    open (macOS: the Finder and the Dock); elsewhere they are arguments.
+    None stops."""
+    _app_on("open", _app_on_open_files, _PATHS(_guard(lambda paths, data: function(json.loads(_text(paths, "[]")))))
+            if function is not None else _PATHS())
 
 
 def app_on_reopen(function):
-    """function() when the application's icon in the Dock is clicked with no window shown."""
-    callback = _APP(_guard(lambda data: function()))
-    _app_callbacks["reopen"] = callback
-    _app_on_reopen(callback, None)
+    """function() when the application's icon in the Dock is clicked with no
+    window shown; None stops."""
+    _app_on("reopen", _app_on_reopen, _APP(_guard(lambda data: function())) if function is not None else _APP())
 
 
 def app_on_quit_request(function):
-    """function() when the user asks the application to quit; it calls quit() or not."""
-    callback = _APP(_guard(lambda data: function()))
-    _app_callbacks["quit"] = callback
-    _app_on_quit_request(callback, None)
+    """function() when the user asks the application to quit; it calls quit()
+    or not. None: zebkit quits."""
+    _app_on("quit", _app_on_quit_request, _APP(_guard(lambda data: function())) if function is not None else _APP())
 
 
 def set_cookie_encryption_key(key):
@@ -2099,6 +2262,11 @@ _canvas_text_path = _declare("zebkit_canvas_text_path", _B, _P, _S, ctypes.c_dou
 _canvas_measure_text = _declare("zebkit_canvas_measure_text", ctypes.c_double, _P, _S)
 _canvas_draw_image = _declare("zebkit_canvas_draw_image", _B, _P, _P, _I, _I, *([ctypes.c_double] * 4))
 _canvas_set_blend = _declare("zebkit_canvas_set_blend", _B, _P, _S)
+_canvas_set_line_cap = _declare("zebkit_canvas_set_line_cap", None, _P, _I)
+_canvas_set_line_join = _declare("zebkit_canvas_set_line_join", None, _P, _I)
+_canvas_arc = _declare("zebkit_canvas_arc", None, _P, *([ctypes.c_double] * 5), _B)
+_canvas_fill = _declare("zebkit_canvas_fill", None, _P, _B)
+_canvas_clip = _declare("zebkit_canvas_clip", None, _P, _B)
 _canvas_set_dash = _declare("zebkit_canvas_set_dash", None, _P, ctypes.POINTER(ctypes.c_double), _I, ctypes.c_double)
 _canvas_linear = _declare("zebkit_canvas_set_linear_gradient", _B, _P, *([ctypes.c_double] * 4),
                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint32), _I)
@@ -2242,10 +2410,10 @@ class Canvas:
     clear = _color_call("zebkit_canvas_clear")
 
     def set_line_cap(self, cap):
-        _declare("zebkit_canvas_set_line_cap", None, _P, _I)(self._handle, cap)
+        _canvas_set_line_cap(self._handle, cap)
 
     def set_line_join(self, join):
-        _declare("zebkit_canvas_set_line_join", None, _P, _I)(self._handle, join)
+        _canvas_set_line_join(self._handle, join)
 
     def set_blend(self, mode):
         return _canvas_set_blend(self._handle, mode.encode())
@@ -2265,17 +2433,18 @@ class Canvas:
                                                    (ctypes.c_uint32 * n)(*colors), n)
 
     def arc(self, x, y, radius, start, end, counterclockwise=False):
-        _declare("zebkit_canvas_arc", None, _P, *([ctypes.c_double] * 5), _B)(
-            self._handle, x, y, radius, start, end, counterclockwise)
+        _canvas_arc(self._handle, x, y, radius, start, end, counterclockwise)
 
     def fill(self, even_odd=False):
-        _declare("zebkit_canvas_fill", None, _P, _B)(self._handle, even_odd)
+        _canvas_fill(self._handle, even_odd)
 
     def clip(self, even_odd=False):
-        _declare("zebkit_canvas_clip", None, _P, _B)(self._handle, even_odd)
+        _canvas_clip(self._handle, even_odd)
 
     def draw_image(self, rgba, width, height, x, y, dest_width=None, dest_height=None):
-        rgba = bytes(rgba)
+        if not isinstance(rgba, bytes):
+            # bytes are passed as they are; others (a bytearray, a memoryview) copied once.
+            rgba = bytes(rgba)
         if len(rgba) != width * height * 4:
             return False
         return _canvas_draw_image(self._handle, rgba, width, height, x, y,
@@ -2586,7 +2755,7 @@ def _pdf_more(cls):
     def annotation_at(self, index, x, y, tolerance=2.0):
         """The top annotation at a point, or None."""
         error = ctypes.c_void_p()
-        at = _pdf_annotation_at(self._handle, index, x, y, tolerance, ctypes.byref(error))
+        at = _pdf_annotation_at(self._check(), index, x, y, tolerance, ctypes.byref(error))
         if at < 0 and error.value:
             _raise(error, "no page")
         return None if at < 0 else at
@@ -2597,7 +2766,7 @@ def _pdf_more(cls):
     def copy_annotation(self, index, annotation, target=None, target_page=0):
         error = ctypes.c_void_p()
         target_handle = (target or self)._handle
-        at = _pdf_annotation_copy(self._handle, index, annotation, target_handle, target_page, ctypes.byref(error))
+        at = _pdf_annotation_copy(self._check(), index, annotation, target_handle, target_page, ctypes.byref(error))
         if at < 0:
             _raise(error, "the annotation cannot be copied")
         return at
@@ -2617,7 +2786,7 @@ def _pdf_more(cls):
     def annotation_file(self, index, annotation):
         """(name, bytes) of a file attachment annotation's file."""
         name, size, error = ctypes.c_void_p(), ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_annotation_file(self._handle, index, annotation, ctypes.byref(name), ctypes.byref(size),
+        out = _pdf_annotation_file(self._check(), index, annotation, ctypes.byref(name), ctypes.byref(size),
                                    ctypes.byref(error))
         if not out:
             _raise(error, "the annotation has no file")
@@ -2633,7 +2802,7 @@ def _pdf_more(cls):
 
     def export_annotations(self, format="xfdf", page=-1, index=-1):
         size, error = ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_annotations_export(self._handle, 1 if format == "fdf" else 0, page, index, ctypes.byref(size),
+        out = _pdf_annotations_export(self._check(), 1 if format == "fdf" else 0, page, index, ctypes.byref(size),
                                       ctypes.byref(error))
         if not out:
             _raise(error, "the annotations cannot be written")
@@ -2642,7 +2811,7 @@ def _pdf_more(cls):
     def import_annotations(self, data, format="xfdf"):
         data = bytes(data)
         error = ctypes.c_void_p()
-        count = _pdf_annotations_import(self._handle, 1 if format == "fdf" else 0, data, len(data), ctypes.byref(error))
+        count = _pdf_annotations_import(self._check(), 1 if format == "fdf" else 0, data, len(data), ctypes.byref(error))
         if count < 0:
             _raise(error, "the annotations cannot be read")
         return count
@@ -2660,7 +2829,7 @@ def _pdf_more(cls):
 
     def filter_input(self, tool, points, options=None):
         error = ctypes.c_void_p()
-        out = _pdf_filter_input(self._handle, tool.encode(), json.dumps(points).encode(),
+        out = _pdf_filter_input(self._check(), tool.encode(), json.dumps(points).encode(),
                                 json.dumps(options).encode() if options is not None else None, ctypes.byref(error))
         if not out:
             _raise(error, "the points cannot be filtered")
@@ -2685,7 +2854,7 @@ _context_new = _declare("zebkit_context_new", _P)
 _context_close = _declare("zebkit_context_close", None, _P)
 _view_new_in = _declare("zebkit_view_new_in", _V, _P, _S, _I, _I)
 _view_set_size_limits = _declare("zebkit_view_set_size_limits", None, _V, _I, _I, _B)
-_view_attach = _declare("zebkit_view_attach", None, _V, _V, _I, _I, _I, _I)
+_view_attach = _declare("zebkit_view_attach", _B, _V, _V, _I, _I, _I, _I)
 _view_set_visible = _declare("zebkit_view_set_visible", None, _V, _B)
 _view_set_title = _declare("zebkit_view_set_title", None, _V, _S)
 _view_add_script = _declare("zebkit_view_add_script", None, _V, _S)
@@ -2713,6 +2882,7 @@ class Context:
             raise Error("cannot create a context")
 
     def _check(self):
+        _require_thread("a context")
         if not self._handle:
             raise Error("the context is closed")
         return self._handle
@@ -2741,6 +2911,7 @@ class Script:
             raise Error("cannot create a script runtime")
 
     def _check(self):
+        _require_thread("a script runtime")
         if not self._handle:
             raise Error("the script runtime is closed")
         return self._handle
@@ -2750,7 +2921,7 @@ class Script:
             _alive.discard(callback)
             if function:
                 if error is not None:
-                    function(None, error.decode())
+                    function(None, _text(error))
                 else:
                     function(value_from(result), None)
         callback = _RESULT(_guard(done))
@@ -2760,22 +2931,25 @@ class Script:
     def run_module(self, path, function=None):
         """Runs the ES module at path; function(None, error_or_None) when it
         has finished, its promises included."""
+        handle = self._check()
         callback = self._result(function, lambda result: None)
-        _script_run_module(self._check(), os.fspath(path).encode(), callback, None)
+        _script_run_module(handle, os.fspath(path).encode(), callback, None)
 
     def evaluate(self, source, function=None):
         """Evaluates source; function(value, error), value as from JSON."""
-        callback = self._result(function, lambda result: json.loads(result.decode()) if result else None)
-        _script_evaluate(self._check(), source.encode(), callback, None)
+        handle = self._check()
+        callback = self._result(function, lambda result: json.loads(_text(result)) if result else None)
+        _script_evaluate(handle, source.encode(), callback, None)
 
     def on_idle(self, function):
         """function() once nothing is left to run: no timers, no pending work."""
+        handle = self._check()
         def idle(data):
             _alive.discard(callback)
             function()
         callback = _TASK(_guard(idle))
         _alive.add(callback)
-        _script_on_idle(self._check(), callback, None)
+        _script_on_idle(handle, callback, None)
 
     def close(self):
         handle, self._handle = self._handle, None
@@ -2795,8 +2969,11 @@ def _view_core(cls):
         _view_set_size_limits(self._check(), min_width, min_height, bool(resizable))
 
     def attach(self, parent, x, y, width, height):
-        """Shows this view inside parent's window, at (x, y), width by height."""
-        _view_attach(self._check(), parent._check(), x, y, width, height)
+        """Shows this view inside parent's window, at (x, y), width by height.
+        Raises Error for the view itself as parent, or a parent without a
+        window to be in."""
+        if not _view_attach(self._check(), parent._check(), x, y, width, height):
+            raise Error("the view was not attached: it is the parent, or the parent has no window to be in")
 
     def set_visible(self, visible):
         _view_set_visible(self._check(), bool(visible))
@@ -2822,32 +2999,29 @@ def _view_core(cls):
 
     def capture(self, function):
         """function(png_bytes, error): a PNG of what the view shows."""
+        handle = self._check()
         def done(view, png, size, error, data):
             _alive.discard(callback)
             if error is not None:
-                function(None, error.decode())
+                function(None, _text(error))
             else:
                 function(ctypes.string_at(png, size) if png and size else b"", None)
         callback = _CAPTURE(_guard(done))
         _alive.add(callback)
-        _view_capture(self._check(), callback, None)
+        _view_capture(handle, callback, None)
 
     def on_new_window(self, function):
         """function(url) for a link or window.open() the page wanted in a new
         window, when no on_window_open takes it; None removes it."""
         if function is None:
-            self._callbacks.pop("new-window", None)
-            _view_on_new_window(self._check(), _URL(), None)
-            return
-        self._set("new-window", _URL(_guard(lambda h, url, d: function(url.decode()))), _view_on_new_window)
+            return self._set("new-window", _URL(), _view_on_new_window)
+        self._set("new-window", _URL(_guard(lambda h, url, d: function(_text(url)))), _view_on_new_window)
 
     def on_drop(self, function):
         """function(paths): files the person dropped on the view's window."""
         if function is None:
-            self._callbacks.pop("drop", None)
-            _view_on_drop(self._check(), _DROP(), None)
-            return
-        self._set("drop", _DROP(_guard(lambda h, paths, d: function(json.loads(paths.decode())))), _view_on_drop)
+            return self._set("drop", _DROP(), _view_on_drop)
+        self._set("drop", _DROP(_guard(lambda h, paths, d: function(json.loads(_text(paths, "[]"))))), _view_on_drop)
 
     for function in (set_size_limits, attach, set_visible, set_title, add_script, stop, is_loading,
                      set_user_agent, capture, on_new_window, on_drop):
@@ -2972,6 +3146,18 @@ class Frame:
             return None
         return ctypes.string_at(frame.pixels, frame.stride * (frame.height - 1) + frame.width * 4)
 
+    def memory(self):
+        """The shared memory frame's pixels without a copy, as pixels()
+        has them: a read-only memoryview valid until release(), which must
+        not be used after it; None for a GPU buffer or once released."""
+        if not self._pointer:
+            return None
+        frame = self._pointer.contents
+        if frame.kind != FRAME_SHARED_MEMORY or not frame.pixels or frame.height <= 0:
+            return None
+        size = frame.stride * (frame.height - 1) + frame.width * 4
+        return memoryview((ctypes.c_char * size).from_address(frame.pixels)).toreadonly()
+
     def iosurface_mach_port(self):
         """macOS: a send right to the frame's IOSurface, for another process; 0 elsewhere."""
         return _frame_mach_port(self._pointer) if self._pointer else 0
@@ -3025,9 +3211,7 @@ def _view_offscreen(cls):
         """function(Frame) for each frame; the frame is released when the
         Frame is dropped or released. None stops."""
         if function is None:
-            self._callbacks.pop("frame", None)
-            _view_on_frame(self._check(), _FRAME(), None)
-            return
+            return self._set("frame", _FRAME(), _view_on_frame)
 
         def frame(handle, pointer, data):
             given = Frame(pointer)
@@ -3089,9 +3273,7 @@ def _view_offscreen(cls):
     def on_caret(self, function):
         """function(rect_or_None): where the text caret is, in CSS pixels."""
         if function is None:
-            self._callbacks.pop("caret", None)
-            _view_on_caret(self._check(), _CARET(), None)
-            return
+            return self._set("caret", _CARET(), _view_on_caret)
         self._set("caret", _CARET(_guard(lambda h, rect, d: function(_rect(rect.contents) if rect else None))),
                   _view_on_caret)
 
@@ -3106,17 +3288,13 @@ def _view_offscreen(cls):
                            "width": i.width, "height": i.height, "hotX": i.hot_x, "hotY": i.hot_y, "scale": i.scale}
             function(name.decode() if name else "", picture)
         if function is None:
-            self._callbacks.pop("cursor", None)
-            _view_on_cursor(self._check(), _CURSOR(), None)
-            return
+            return self._set("cursor", _CURSOR(), _view_on_cursor)
         self._set("cursor", _CURSOR(_guard(cursor)), _view_on_cursor)
 
     def on_popup(self, function):
         """function(shown, bounds_or_None): a popup (a <select>'s list) over the view."""
         if function is None:
-            self._callbacks.pop("popup", None)
-            _view_on_popup(self._check(), _POPUP(), None)
-            return
+            return self._set("popup", _POPUP(), _view_on_popup)
         self._set("popup", _POPUP(_guard(lambda h, shown, rect, d: function(bool(shown),
                                                                             _rect(rect.contents) if rect else None))),
                   _view_on_popup)
@@ -3186,17 +3364,13 @@ def _view_page(cls):
                       "defaultPrompt": text(d.default_prompt), "url": text(d.url),
                       "isReload": bool(d.is_reload), "held": bool(d.held)})
         if function is None:
-            self._callbacks.pop("dialog", None)
-            _view_on_dialog(self._check(), _DIALOG(), None)
-            return
+            return self._set("dialog", _DIALOG(), _view_on_dialog)
         self._set("dialog", _DIALOG(_guard(dialog)), _view_on_dialog)
 
     def on_dialog_closed(self, function):
         """function(dialog_id, accepted, user_input_or_None)."""
         if function is None:
-            self._callbacks.pop("dialog-closed", None)
-            _view_on_dialog_closed(self._check(), _DIALOG_CLOSED(), None)
-            return
+            return self._set("dialog-closed", _DIALOG_CLOSED(), _view_on_dialog_closed)
         self._set("dialog-closed", _DIALOG_CLOSED(_guard(
             lambda h, dialog_id, accepted, text, d: function(dialog_id, bool(accepted),
                                                              text.decode() if text is not None else None))),
@@ -3227,15 +3401,16 @@ def _view_page(cls):
     def print_to_pdf(self, function, options=None):
         """function(pdf_bytes, error): the page printed, as Chrome's
         Page.printToPDF, with its options (landscape, paperWidth, ...)."""
+        handle = self._check()
         def done(view, pdf, size, error, data):
             _alive.discard(callback)
             if error is not None:
-                function(None, error.decode())
+                function(None, _text(error))
             else:
                 function(ctypes.string_at(pdf, size) if pdf and size else b"", None)
         callback = _PDF_DONE(_guard(done))
         _alive.add(callback)
-        _view_print_to_pdf(self._check(), json.dumps(options).encode() if options is not None else None,
+        _view_print_to_pdf(handle, json.dumps(options).encode() if options is not None else None,
                            callback, None)
 
     def on_drag_start(self, function):
@@ -3257,17 +3432,13 @@ def _view_page(cls):
                 sys.excepthook(*sys.exc_info())
                 return False
         if function is None:
-            self._callbacks.pop("drag-start", None)
-            _view_on_drag_start(self._check(), _DRAG(), None)
-            return
+            return self._set("drag-start", _DRAG(), _view_on_drag_start)
         self._set("drag-start", _DRAG(drag), _view_on_drag_start)
 
     def on_drag_end(self, function):
         """function(operation): what the page's drag ended with (DRAG_*)."""
         if function is None:
-            self._callbacks.pop("drag-end", None)
-            _view_on_drag_end(self._check(), _DRAG_OPERATION(), None)
-            return
+            return self._set("drag-end", _DRAG_OPERATION(), _view_on_drag_end)
         self._set("drag-end", _DRAG_OPERATION(_guard(lambda h, operation, d: function(operation))),
                   _view_on_drag_end)
 
@@ -3347,14 +3518,20 @@ class MediaCapture:
         self._callbacks = {}
         _alive.add(self)
 
+    def _check(self):
+        _require_thread("a media capture")
+        if not self._handle:
+            raise Error("the capture is closed")
+        return self._handle
+
     def _on(self, kind, setter, function):
-        if function is None:
-            self._callbacks.pop(kind, None)
-            setter(self._handle, _MEDIA_CAPTURE(), None)
-            return
-        callback = _MEDIA_CAPTURE(_guard(lambda capture, text, data: function(json.loads(text.decode()))))
-        self._callbacks[kind] = callback
-        setter(self._handle, callback, None)
+        handle = self._check()
+        callback = _MEDIA_CAPTURE(_guard(lambda capture, text, data: function(json.loads(_text(text, "{}"))))) \
+            if function is not None else _MEDIA_CAPTURE()
+        setter(handle, callback, None)
+        _retire(self._callbacks.pop(kind, None))
+        if function is not None:
+            self._callbacks[kind] = callback
 
     def on_progress(self, function):
         """function(progress) as it writes."""
@@ -3378,6 +3555,9 @@ class MediaCapture:
         handle, self._handle = getattr(self, "_handle", None), None
         if handle:
             _media_capture_free(handle)
+            for callback in getattr(self, "_callbacks", {}).values():
+                _retire(callback)
+            self._callbacks = {}
         _alive.discard(self)
 
 
@@ -3386,9 +3566,9 @@ def _view_media(cls):
         def done(view, result, error, data):
             _alive.discard(callback)
             if error is not None:
-                function(None, error.decode())
+                function(None, _text(error))
             else:
-                function(json.loads(result.decode()) if result else None, None)
+                function(json.loads(_text(result)) if result else None, None)
         callback = _RESULT(_guard(done))
         _alive.add(callback)
         return callback
@@ -3460,7 +3640,7 @@ def _pdf_rest(cls):
     def image_data(self, index, image):
         """(bytes, jpeg): the image as stored (a JPEG file) or decoded (RGBA)."""
         size, jpeg, error = ctypes.c_size_t(), ctypes.c_bool(), _P()
-        out = _pdf_image_data(self._handle, index, image, ctypes.byref(size), ctypes.byref(jpeg), ctypes.byref(error))
+        out = _pdf_image_data(self._check(), index, image, ctypes.byref(size), ctypes.byref(jpeg), ctypes.byref(error))
         if not out:
             _raise(error, "no such image")
         return _buffer(out, size.value), bool(jpeg.value)
@@ -3472,7 +3652,7 @@ def _pdf_rest(cls):
     def signature_contents(self, index):
         """Signature index's DER-encoded PKCS#7 or time stamp."""
         size, error = ctypes.c_size_t(), _P()
-        out = _pdf_signature_contents(self._handle, index, ctypes.byref(size), ctypes.byref(error))
+        out = _pdf_signature_contents(self._check(), index, ctypes.byref(size), ctypes.byref(error))
         if not out:
             _raise(error, "no such signature")
         return _buffer(out, size.value)
@@ -3490,7 +3670,7 @@ def _pdf_rest(cls):
         redaction marks) out of the page for good, with a box of fill
         (0xRRGGBBAA, 0 for none) over each. The number of areas."""
         error = _P()
-        count = _pdf_redact(self._handle, index, json.dumps(areas).encode() if areas is not None else None,
+        count = _pdf_redact(self._check(), index, json.dumps(areas).encode() if areas is not None else None,
                             fill, ctypes.byref(error))
         if count < 0:
             _raise(error, "the page cannot be redacted")

@@ -83,6 +83,16 @@ class Server(http.server.BaseHTTPRequestHandler):
             body, kind = (MEDIA / self.path[len("/media/"):]).read_bytes(), "video/mp4"
         elif self.path == "/video":
             body, kind = VIDEO, "text/html"
+        elif self.path == "/cookies":
+            # A header given twice (the engine keeps Set-Cookie to itself).
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("X-Twice", "a=1")
+            self.send_header("X-Twice", "b=2")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
         else:
             body, kind = PAGE, "text/html"
         self.send_response(200)
@@ -129,9 +139,18 @@ def check_core(url):
     check(wait(lambda: shots, 15) and shots[0][0][:8] == b"\x89PNG\r\n\x1a\n", "capture",
           shots[0][1] if shots else None)
     child = zebkit.View(None, 100, 100)
-    child.attach(view, 0, 0, 100, 100)
+    # In the parent's window (headless too, where views have windows of
+    # their own); refused, with an Error, only for a parent without one.
+    try:
+        child.attach(view, 0, 0, 100, 100)
+    except zebkit.Error:
+        pass
+    try:
+        child.attach(child, 0, 0, 10, 10)
+        check(False, "attach refuses the view as its own parent")
+    except zebkit.Error:
+        check(True, "attach refuses the view as its own parent")
     child.close()
-    check(True, "attach")
     view.on_drop(lambda paths: None)
     view.on_drop(None)
     opened = []
@@ -333,7 +352,14 @@ def check_pdf():
             check(True, "Pdf.signature_contents refuses a signature it has not")
         stamp = pdf.add_annotation(0, {"type": "stamp", "rect": [100, 100, 140, 140]})
         pdf.set_annotation_image(0, stamp, bytes([0, 0, 255, 255]), 1, 1)
-        check(True, "Pdf.set_annotation_image")
+        shown = pdf.render_annotation(0, stamp)
+        middle = None
+        if shown:
+            width, height, rgba = shown
+            at = ((height // 2) * width + width // 2) * 4
+            middle = tuple(rgba[at:at + 4])
+        check(middle is not None and middle[2] > 200 and middle[0] < 60 and middle[1] < 60,
+              "Pdf.set_annotation_image: the stamp shows the image", middle)
         pdf.rotate_page(0, 90)
         check(pdf.page(0).get("rotation") == 90, "Pdf.rotate_page", pdf.page(0))
         pdf.insert_page(1, 300, 400)
@@ -363,6 +389,168 @@ def check_pdf():
             check(form.form_fields()[0]["value"] != "from Python", "Pdf.reset_form")
 
 
+def check_review_fixes(url):
+    """What the review of 2026-11-10 found in the binding, fixed."""
+    view = zebkit.View(url, 400, 300)
+    check(loaded(view, url), "a view for the fixes loads")
+
+    # The engine's thread only: another thread gets an Error, not a crash.
+    caught = []
+
+    def elsewhere():
+        try:
+            view.load(url)
+        except zebkit.Error as error:
+            caught.append(str(error))
+    worker = threading.Thread(target=elsewhere)
+    worker.start()
+    worker.join()
+    check(caught and "engine's thread" in caught[0], "a view used from another thread raises Error", caught)
+
+    # A title function that replaces itself, then one that removes itself.
+    titles = []
+
+    def second(title):
+        titles.append(("second", title))
+        view.on_title(None)
+
+    def first(title):
+        titles.append(("first", title))
+        view.on_title(second)
+    view.on_title(first)
+    for name in ("one", "two", "three"):
+        ev(view, "document.title = %r; 1" % name)
+        wait(lambda: False, .3)
+    check(titles[:2] == [("first", "one"), ("second", "two")] and len(titles) == 2,
+          "on_title replaced and removed from inside itself", titles)
+    seen_loads = []
+    view.on_load(lambda event, at: seen_loads.append(event))
+    view.on_load(None)
+    view.load(url + "?unseen")
+    wait(lambda: ev(view, "location.search + document.readyState") == "?unseencomplete", 15)
+    check(not seen_loads and ev(view, "location.search") == "?unseen", "on_load(None) stops on_load", seen_loads)
+
+    # What is for the engine's thread raises Error on another (pump, CDP,
+    # is_headless, set_wakeup, ...), rather than run there.
+    refused = []
+
+    def off_thread():
+        for name, call in (("pump", zebkit.pump), ("is_headless", zebkit.is_headless),
+                           ("cdp_listen", lambda: zebkit.cdp_listen(None, 0)), ("cdp_stop", zebkit.cdp_stop),
+                           ("set_wakeup", lambda: zebkit.set_wakeup(None))):
+            try:
+                call()
+            except zebkit.Error:
+                refused.append(name)
+    worker = threading.Thread(target=off_thread)
+    worker.start()
+    worker.join()
+    check(len(refused) == 5, "engine-thread functions raise Error on another thread", refused)
+
+    # The three hooks the binding had declared and not given.
+    results = []
+    view.on_eye_dropper_result(results.append)
+    view.set_eye_dropper_timeout(1000)
+    view.on_share_result(results.append)
+    view.on_eye_dropper_result(None)
+    view.on_share_result(None)
+    try:
+        view.set_eye_dropper_timeout(0)
+        check(False, "set_eye_dropper_timeout refuses 0")
+    except ValueError:
+        check(True, "on_eye_dropper_result, set_eye_dropper_timeout, on_share_result")
+
+    # The engine's own reason for a refused filter.
+    try:
+        view.set_network_filter([{"mode": "sometimes"}])
+        check(False, "a bad network filter raises")
+    except zebkit.Error as error:
+        check(str(error) and str(error) != "network filter rejected", "a refused network filter says why", str(error))
+
+    # A stream let go open ends as failed, as Rust's does when dropped.
+    streamed = []
+
+    def asked(request):
+        stream = request.respond_stream(status=200, headers=[{"name": "Content-Type", "value": "text/plain"}])
+        streamed.append(bool(stream and stream.write(b"part")))
+        # Not ended, and not kept: collected here, it ends as failed.
+    view.set_network_filter([{"url": "**/streamed"}])
+    view.on_network(asked)
+    got = ev(view, "fetch('/streamed').then(r => r.text()).then(t => 'read ' + t, e => 'failed')")
+    view.on_network(None)
+    view.set_network_filter([])
+    check(streamed == [True] and got == "failed", "a NetworkStream let go open ends as failed", (streamed, got))
+
+    # Every header of a response, repeated ones too.
+    responses = []
+    zebkit.fetch(url + "cookies", responses.append)
+    wait(lambda: responses, 15)
+    response = responses[0] if responses else {}
+    cookies = [value for name, value in response.get("header_list", []) if name.lower() == "x-twice"]
+    check(cookies == ["a=1", "b=2"] and response["headers"], "fetch's header_list keeps repeated headers",
+          response.get("header_list"))
+
+    # A bound function that answers undefined.
+    view.grant("*", zebkit.ALLOW_APP)
+    view.bind("nothing", lambda origin=None: zebkit.UNDEFINED)
+    view.reload()
+    loaded(view, url)
+    # zebkit_call_resolve(NULL): undefined, as <zebkit/zebkit.h> says (the
+    # engine gives null so far, as it does for Rust's Call::resolve_undefined).
+    answer = ev(view, "zebkit.app.nothing().then(v => v == null)")
+    check(answer is True, "UNDEFINED resolves with nothing", answer)
+    view.bind("nothing", None)
+
+    # An automation page's event function is let go after its view closes.
+    page = zebkit.automation.Page(view)
+    callback = page._event_callback
+    check(id(callback) in zebkit._alive, "an automation page's events are kept while its view is open")
+    closed = []
+    view.on_close(lambda: closed.append(True))
+    view.close()
+    wait(lambda: closed, 10)
+    wait(lambda: False, .3)
+    check(id(callback) not in zebkit._alive and page._event_callback is None,
+          "an automation page's events are let go after its view closes")
+    try:
+        view.on_load(lambda event, url: None)
+        check(False, "on_load on a closed view raises")
+    except zebkit.Error:
+        check(True, "on_load on a closed view raises Error")
+
+    # A frame's pixels without a copy.
+    offscreen = zebkit.View.offscreen(url, 120, 80, 1.0)
+    offscreen.set_frame_buffers(zebkit.BUFFERS_SHARED_MEMORY)
+    seen = []
+
+    def frame(given):
+        memory = given.memory()
+        if memory is not None and not seen:
+            seen.append((bytes(memory) == given.pixels(), memory.readonly))
+        given.release()
+        if seen:
+            check(given.memory() is None, "Frame.memory() is None once released")
+            offscreen.on_frame(None)
+    offscreen.on_frame(frame)
+    loaded(offscreen, url)
+    offscreen.request_frame()
+    check(wait(lambda: seen, 10) and seen[0] == (True, True), "Frame.memory(): the pixels, read-only", seen)
+    offscreen.close()
+
+    # A closed document raises Error.
+    document = zebkit.Pdf.new()
+    document.close()
+    try:
+        document.info()
+        check(False, "a closed Pdf raises")
+    except zebkit.Error:
+        check(True, "a closed Pdf raises Error")
+
+    # What the module says it has, it has.
+    check(all(hasattr(zebkit, name) for name in zebkit.__all__) and "Tray" in zebkit.__all__,
+          "__all__ names what the module has", [n for n in zebkit.__all__ if not hasattr(zebkit, n)])
+
+
 def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -380,6 +568,7 @@ def main():
         view.close()
         check_media(base)
         check_pdf()
+        check_review_fixes(url)
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()

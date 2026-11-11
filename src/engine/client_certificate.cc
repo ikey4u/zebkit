@@ -223,12 +223,15 @@ bool ParseIdentity(const char* certificate_pem, const char* key_pem,
 
 extern "C" {
 void zebkit_view_on_client_certificate(zebkit_view* view, zebkit_client_certificate_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::Requests::Get().Install(view, function, data);
 }
 void zebkit_view_on_client_certificate_result(zebkit_view* view, zebkit_client_certificate_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::Requests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_client_certificate_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::Requests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_client_certificate_request_info(zebkit_client_certificate_request* request) {

@@ -15,32 +15,10 @@ import ctypes
 import ctypes.util
 import os
 import sys
-import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
-
-failures = []
-checks = 0
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
+from harness import check, finish, wait, zebkit  # noqa: E402
 
 
 def ask_like_an_assistive_client():
@@ -85,8 +63,7 @@ def main():
         check(False, "the test ran to the end", repr(error))
     finally:
         zebkit.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

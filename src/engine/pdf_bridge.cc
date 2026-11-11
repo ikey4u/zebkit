@@ -39,11 +39,30 @@ struct Document {
   // the page's origin.
   const zebkit_view* owner = nullptr;
   std::string origin;
+  // The page's document that opened it, or the script; nothing else uses it.
+  content::WeakDocumentPtr document;
+  const void* script = nullptr;
 };
 
 std::map<int, Document>& Documents() {
   static base::NoDestructor<std::map<int, Document>> documents;
   return *documents;
+}
+
+// The application's scripts that have called zebkit.pdf and not ended, each
+// with a number of its own: an open() that completes after its script ended
+// (ClosePdfsOfScript()) closes what it opened, also when a later script has
+// the same address.
+std::map<const void*, uint64_t>& LiveScripts() {
+  static base::NoDestructor<std::map<const void*, uint64_t>> scripts;
+  return *scripts;
+}
+uint64_t ScriptNumber(const void* script) {
+  static uint64_t next = 1;
+  auto [it, added] = LiveScripts().try_emplace(script, next);
+  if (added)
+    ++next;
+  return it->second;
 }
 
 // PDFium does one thing at a time: one sequence for all of it, which also
@@ -70,10 +89,12 @@ Answer Failed(char* error, const std::string& fallback) {
   return {false, base::Value(message)};
 }
 
-// A JSON answer from <zebkit/pdf.h>, as a value.
-Answer Json(char* json, char* error, const std::string& fallback) {
+// A JSON answer from <zebkit/pdf.h>, as a value. @error is read here, after
+// the call that sets it has run: as an argument beside that call it could be
+// read first, the order of arguments being unspecified.
+Answer Json(char* json, char** error, const std::string& fallback) {
   if (!json)
-    return Failed(error, fallback);
+    return Failed(error ? *error : nullptr, fallback);
   std::optional<base::Value> value =
       base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   free(json);
@@ -198,7 +219,7 @@ Answer Work(zebkit_pdf* pdf,
             base::ListValue args) {
   char* error = nullptr;
   if (method == "formFields")
-    return Json(zebkit_pdf_form_fields(pdf, &error), error, "no form");
+    return Json(zebkit_pdf_form_fields(pdf, &error), &error, "no form");
   if (method == "setField") {
     if (!zebkit_pdf_form_set(pdf, StringArg(args, 0).c_str(),
                              StringArg(args, 1).c_str(), &error)) {
@@ -254,7 +275,7 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(base::Value());
   }
   if (method == "page")
-    return Json(zebkit_pdf_page(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_page(pdf, IntArg(args, 0), &error), &error,
                 "no page");
   if (method == "pages") {
     // Every page's page(), in one call.
@@ -262,7 +283,7 @@ Answer Work(zebkit_pdf* pdf,
     const int count = zebkit_pdf_page_count(pdf);
     for (int index = 0; index < count; ++index) {
       Answer page =
-          Json(zebkit_pdf_page(pdf, index, &error), error, "no page");
+          Json(zebkit_pdf_page(pdf, index, &error), &error, "no page");
       if (!page.ok)
         return page;
       pages.Append(std::move(page.value));
@@ -369,12 +390,12 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(std::move(value));
   }
   if (method == "textLayout")
-    return Json(zebkit_pdf_text_layout(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_text_layout(pdf, IntArg(args, 0), &error), &error,
                 "no text");
   if (method == "textRects") {
     return Json(zebkit_pdf_text_rects(pdf, IntArg(args, 0), IntArg(args, 1),
                                       IntArg(args, 2), &error),
-                error, "no text");
+                &error, "no text");
   }
   if (method == "charAt") {
     return Ok(base::Value(zebkit_pdf_char_at(pdf, IntArg(args, 0),
@@ -386,12 +407,12 @@ Answer Work(zebkit_pdf* pdf,
     return Json(zebkit_pdf_search(pdf, StringArg(args, 0).c_str(),
                                   static_cast<unsigned>(IntArg(args, 1)),
                                   IntArg(args, 2), IntArg(args, 3), &error),
-                error, "the search failed");
+                &error, "the search failed");
   }
   if (method == "signatures") {
     // With each one's contents, the PKCS#7 it holds, as bytes.
     Answer answer =
-        Json(zebkit_pdf_signatures(pdf, &error), error, "no signatures");
+        Json(zebkit_pdf_signatures(pdf, &error), &error, "no signatures");
     if (!answer.ok || !answer.value.is_list())
       return answer;
     int index = 0;
@@ -412,15 +433,15 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(base::Value());
   }
   if (method == "outline")
-    return Json(zebkit_pdf_outline(pdf, &error), error, "no outline");
+    return Json(zebkit_pdf_outline(pdf, &error), &error, "no outline");
   if (method == "links")
-    return Json(zebkit_pdf_links(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_links(pdf, IntArg(args, 0), &error), &error,
                 "no links");
   if (method == "textLines")
-    return Json(zebkit_pdf_text_lines(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_text_lines(pdf, IntArg(args, 0), &error), &error,
                 "no text");
   if (method == "images")
-    return Json(zebkit_pdf_images(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_images(pdf, IntArg(args, 0), &error), &error,
                 "no images");
   if (method == "imageData") {
     size_t size = 0;
@@ -437,13 +458,13 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(base::Value(std::move(image)));
   }
   if (method == "annotations")
-    return Json(zebkit_pdf_annotations(pdf, IntArg(args, 0), &error), error,
+    return Json(zebkit_pdf_annotations(pdf, IntArg(args, 0), &error), &error,
                 "no annotations");
   if (method == "annotationsOfPages") {
     // annotations() of each page given, in one call.
     base::ListValue pages;
     for (int index : IntList(args, 0)) {
-      Answer page = Json(zebkit_pdf_annotations(pdf, index, &error), error,
+      Answer page = Json(zebkit_pdf_annotations(pdf, index, &error), &error,
                          "no annotations");
       if (!page.ok)
         return page;
@@ -513,7 +534,7 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(base::Value(redacted));
   }
   if (method == "attachments")
-    return Json(zebkit_pdf_attachments(pdf, &error), error, "no attachments");
+    return Json(zebkit_pdf_attachments(pdf, &error), &error, "no attachments");
   if (method == "attachment") {
     size_t size = 0;
     uint8_t* data = zebkit_pdf_attachment(pdf, IntArg(args, 0), &size, &error);
@@ -598,7 +619,7 @@ Answer Work(zebkit_pdf* pdf,
     return Ok(base::Value());
   }
   if (method == "annotationAction")
-    return Json(zebkit_pdf_annotation_action(pdf, IntArg(args, 0), IntArg(args, 1), &error), error, "no action");
+    return Json(zebkit_pdf_annotation_action(pdf, IntArg(args, 0), IntArg(args, 1), &error), &error, "no action");
   if (method == "exportAnnotations") {
     size_t size = 0;
     uint8_t* data = zebkit_pdf_annotations_export(
@@ -637,10 +658,10 @@ Answer Work(zebkit_pdf* pdf,
     const std::string options = args.size() > 2 && !args[2].is_none() ? JsonArg(args, 2) : std::string();
     return Json(zebkit_pdf_filter_input(pdf, StringArg(args, 0).c_str(), JsonArg(args, 1).c_str(),
                                         options.empty() ? nullptr : options.c_str(), &error),
-                error, "the points cannot be filtered");
+                &error, "the points cannot be filtered");
   }
   if (method == "pageData")
-    return Json(zebkit_pdf_page_data(pdf, IntArg(args, 0), StringArg(args, 1).c_str(), &error), error, "no data");
+    return Json(zebkit_pdf_page_data(pdf, IntArg(args, 0), StringArg(args, 1).c_str(), &error), &error, "no data");
   if (method == "registerKind") {
     // A script's kind: the file's side of it; its check and drawing are the script's.
     const std::string name = StringArg(args, 0), prefix = StringArg(args, 1), subtype = StringArg(args, 2);
@@ -750,9 +771,36 @@ Urgency UrgencyOf(const std::string& method) {
   return kSoon;
 }
 
+// Calls that only read a document; any other may change it.
+bool OnlyReads(const std::string& method) {
+  static constexpr const char* kReads[] = {
+      "annotationAction", "annotationAt", "annotationFile", "annotations",
+      "annotationsOfPages", "attachment", "attachments", "charAt",
+      "exportAnnotations", "formFields", "imageData", "images", "info", "links",
+      "outline", "page", "pageData", "pages", "render", "renderAnnotation",
+      "renderAnnotations", "save", "search", "signatures", "text", "textLayout",
+      "textLines", "textRects"};
+  for (const char* name : kReads) {
+    if (method == name)
+      return true;
+  }
+  return false;
+}
+
+// A call waiting, with the documents it uses: one that changes a document
+// is never overtaken by a later call on it, nor overtakes an earlier one, so
+// that apply(); render() renders the change and save(); apply() saves without.
+struct PdfCall {
+  uint64_t order = 0;
+  std::vector<const zebkit_pdf*> documents;
+  bool changes = false;
+  base::OnceClosure work;
+};
+
 struct Waiting {
   base::Lock lock;
-  std::array<base::circular_deque<base::OnceClosure>, kUrgencies> calls;
+  uint64_t next = 0;
+  std::array<base::circular_deque<PdfCall>, kUrgencies> calls;
 };
 
 Waiting& Calls() {
@@ -760,16 +808,36 @@ Waiting& Calls() {
   return *waiting;
 }
 
+// Whether @call has to wait for an earlier one on a document they share.
+bool Held(const Waiting& waiting, const PdfCall& call) {
+  for (const auto& calls : waiting.calls) {
+    for (const PdfCall& other : calls) {
+      if (other.order >= call.order || (!other.changes && !call.changes))
+        continue;
+      for (const zebkit_pdf* document : call.documents) {
+        if (std::ranges::contains(other.documents, document))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 void RunSoonest() {
   base::OnceClosure work;
   {
     base::AutoLock lock(Calls().lock);
+    // The soonest that nothing earlier holds back; the earliest of all never is.
     for (auto& calls : Calls().calls) {
-      if (!calls.empty()) {
-        work = std::move(calls.front());
-        calls.pop_front();
-        break;
+      for (auto it = calls.begin(); it != calls.end(); ++it) {
+        if (!Held(Calls(), *it)) {
+          work = std::move(it->work);
+          calls.erase(it);
+          break;
+        }
       }
+      if (work)
+        break;
     }
   }
   if (work)
@@ -778,10 +846,14 @@ void RunSoonest() {
 
 // One task on the sequence for each call waiting: each runs the soonest
 // call there is when it runs. Calls of the same urgency keep their order.
-void Enqueue(Urgency urgency, base::OnceClosure work) {
+void Enqueue(Urgency urgency,
+             std::vector<const zebkit_pdf*> documents,
+             bool changes,
+             base::OnceClosure work) {
   {
     base::AutoLock lock(Calls().lock);
-    Calls().calls[urgency].push_back(std::move(work));
+    Calls().calls[urgency].push_back(
+        PdfCall{Calls().next++, std::move(documents), changes, std::move(work)});
   }
   PdfSequence()->PostTask(FROM_HERE, base::BindOnce(&RunSoonest));
 }
@@ -789,7 +861,7 @@ void Enqueue(Urgency urgency, base::OnceClosure work) {
 // After every call already waiting for the document: last of all, and
 // none can come for it after (it is no longer among Documents()).
 void CloseOnSequence(zebkit_pdf* pdf) {
-  Enqueue(kLater, base::BindOnce(
+  Enqueue(kLater, {pdf}, /*changes=*/true, base::BindOnce(
                       [](zebkit_pdf* document) {
                         RecordedOperations().erase(document);
                         ScriptHooks().erase(document);
@@ -826,28 +898,35 @@ void CallPdf(PageCall call) {
     base::WeakPtr<zebkit_view> view =
         call.view ? call.view->GetWeakPtr() : nullptr;
     const bool from_page = call.view != nullptr;
+    const uint64_t script_number = call.script ? ScriptNumber(call.script) : 0;
     PdfSequence()->PostTaskAndReplyWithResult(
         FROM_HERE,
         base::BindOnce(&Open, create, std::move(bytes), std::move(path),
                        std::move(password)),
         base::BindOnce(
             [](base::WeakPtr<zebkit_view> view, bool from_page,
-               std::string origin, CallReply reply, Opened opened) {
+               std::string origin, content::WeakDocumentPtr document,
+               const void* script, uint64_t script_number, CallReply reply,
+               Opened opened) {
               if (!opened.pdf) {
                 std::move(reply).Run(false, base::Value(opened.error));
                 return;
               }
-              // The page's view went while the document opened.
-              if (from_page && !view) {
+              // The page's view, or its document, or the script, went while
+              // it opened.
+              auto live = script ? LiveScripts().find(script) : LiveScripts().end();
+              if ((from_page && (!view || !document.AsRenderFrameHostIfValid())) ||
+                  (script && (live == LiveScripts().end() || live->second != script_number))) {
                 CloseOnSequence(opened.pdf);
                 return;
               }
               static int next_id = 1;
               const int id = next_id++;
-              Documents()[id] = {opened.pdf, view.get(), std::move(origin)};
+              Documents()[id] = {opened.pdf, view.get(), std::move(origin), document, script};
               std::move(reply).Run(true, base::Value(id));
             },
-            std::move(view), from_page, call.origin, std::move(call.reply)));
+            std::move(view), from_page, call.origin, call.document, call.script,
+            script_number, std::move(call.reply)));
     return;
   }
 
@@ -857,8 +936,14 @@ void CallPdf(PageCall call) {
         id && id->is_int() ? Documents().find(id->GetInt()) : Documents().end();
     if (document == Documents().end() ||
         document->second.owner != call.view ||
-        (call.view && document->second.origin != call.origin)) {
+        (call.view && document->second.origin != call.origin) ||
+        document->second.script != call.script) {
       return nullptr;
+    }
+    if (call.view) {
+      content::RenderFrameHost* opener = document->second.document.AsRenderFrameHostIfValid();
+      if (!opener || opener != call.document.AsRenderFrameHostIfValid())
+        return nullptr;
     }
     return document->second.pdf;
   };
@@ -890,7 +975,10 @@ void CallPdf(PageCall call) {
   if (other)
     args.Insert(args.begin(), base::Value());
   const Urgency urgency = UrgencyOf(call.method);
-  Enqueue(urgency,
+  std::vector<const zebkit_pdf*> documents = {pdf};
+  if (other)
+    documents.push_back(other);
+  Enqueue(urgency, std::move(documents), !OnlyReads(call.method),
           base::BindOnce(
               [](zebkit_pdf* pdf, zebkit_pdf* other, std::string method,
                  base::ListValue args,
@@ -904,6 +992,32 @@ void CallPdf(PageCall call) {
               pdf, other, call.method, std::move(args),
               base::SequencedTaskRunner::GetCurrentDefault(),
               std::move(call.reply)));
+}
+
+void ClosePdfsOfGoneDocuments(const zebkit_view* view,
+                              const content::RenderFrameHost* frame) {
+  for (auto it = Documents().begin(); it != Documents().end();) {
+    // While RenderFrameDeleted(@frame) runs its document is still valid.
+    content::RenderFrameHost* opener = it->second.document.AsRenderFrameHostIfValid();
+    if (it->second.owner == view && (!opener || opener == frame)) {
+      CloseOnSequence(it->second.pdf);
+      it = Documents().erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void ClosePdfsOfScript(const void* script) {
+  LiveScripts().erase(script);
+  for (auto it = Documents().begin(); it != Documents().end();) {
+    if (!it->second.owner && it->second.script == script) {
+      CloseOnSequence(it->second.pdf);
+      it = Documents().erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void ClosePdfsOf(const zebkit_view* view) {

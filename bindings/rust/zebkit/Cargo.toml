@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+documentation = "https://docs.rs/zebkit"
 build = "build.rs"
 # So that an application's build script is told where the engine is
 # (DEP_ZEBKIT_ENGINE_DIR), which is what zebkit-build works from.

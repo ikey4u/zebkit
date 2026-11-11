@@ -11,53 +11,17 @@ chooses Reload in it. Exit 0 when every check passes.
 
 import os
 import shutil
-import subprocess
 import sys
-import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
+from harness import (check, ev, finish, refused, wait, x11_focused, x11_new_window,  # noqa: E402
+                     x11_windows, xdotool, zebkit)
 
-failures = []
-checks = 0
 PAGE = ("data:text/html,<title>Menus</title><body style='margin:0'>"
         "<a id=a href='https://example.com/' style='position:absolute;left:10px;top:10px'>a link</a>"
         "<input id=f value='some words' style='position:absolute;left:10px;top:60px;width:200px'>"
         "<script>window.loads=(+window.name||0)+1;window.name=loads</script>")
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
-
-
-def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append(value))
-    wait(lambda: box)
-    return box[0] if box else None
-
-
-def refused(function):
-    try:
-        function()
-    except zebkit.Error as error:
-        return str(error)
-    return None
 
 
 def headless_checks():
@@ -102,20 +66,27 @@ def headless_checks():
 
 
 def windowed_default():
+    # headless_checks()'s page has the same title: the new window is this view's.
+    before = x11_windows()
     view = zebkit.View(PAGE, 400, 300)
     wait(lambda: ev(view, "document.readyState") == "complete")
     view.focus()
-    wait(lambda: False, 0.5)
-    found = subprocess.run(["xdotool", "search", "--name", "^Menus$"], capture_output=True, text=True)
-    window = (found.stdout.split() or [None])[-1]
+    window = x11_new_window(before)
+    if not check(window is not None and x11_focused(window), "the view's X11 window, with the focus", window):
+        view.close()
+        return
     loads = ev(view, "loads")
-    subprocess.run(["xdotool", "mousemove", "--window", window, "300", "200", "click", "3"], check=False)
-    wait(lambda: False, 1)
-    # The page's menu: Back and Forward disabled, Reload the first enabled.
-    subprocess.run(["xdotool", "key", "Down", "Return"], check=False)
-    wait(lambda: (ev(view, "window.loads") or 0) > loads, 5)
-    check((ev(view, "window.loads") or 0) > loads, "without a function, the default menu is shown, and Reload reloads",
-          (loads, ev(view, "window.loads")))
+    before = x11_windows()
+    xdotool("mousemove", "--window", window, "300", "200", "click", "3")
+    # The menu is a window of its own (override-redirect, without a name).
+    menu = x11_new_window(before)
+    if check(menu is not None, "a right click opens the default menu's window", menu):
+        # The page's menu: Back and Forward disabled, Reload the first enabled.
+        xdotool("key", "Down", "Return")
+        wait(lambda: isinstance(ev(view, "window.loads"), int) and ev(view, "window.loads") > loads, 5)
+        now = ev(view, "window.loads")
+        check(isinstance(now, int) and now > loads, "without a function, the default menu is shown, and Reload reloads",
+              (loads, now))
     view.close()
 
 
@@ -132,8 +103,7 @@ def main():
         check(False, "the test ran to the end", repr(error))
     finally:
         zebkit.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

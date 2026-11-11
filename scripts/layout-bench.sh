@@ -37,12 +37,10 @@ cp -a "$electron_dir" "$work/electron"
 rm -rf "$work/electron/resources/app"
 cp -a "$bench/electron-app" "$work/electron/resources/app"
 
-display=:$((90 + RANDOM % 9))
-Xvfb "$display" -screen 0 1920x1080x24 > /dev/null 2>&1 &
-xvfb=$!
-trap 'kill $xvfb 2>/dev/null || true' EXIT
-sleep 1
-export DISPLAY="$display"
+# The first free display, from Xvfb itself.
+start_xvfb 7 1920x1080x24
+trap 'kill $xvfb_pid 2>/dev/null || true' EXIT
+export DISPLAY="$xvfb_display"
 unset WAYLAND_DISPLAY
 export BENCH_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_VERSION%%.*}.0.0.0 Safari/537.36"
 
@@ -73,10 +71,13 @@ median() { sort -g | awk '{ v[NR] = $1 } END { print (NR % 2) ? v[(NR + 1) / 2] 
 zebkit=() electron=()
 for i in $(seq "$runs"); do
     rm -rf "$work/profile-zebkit" "$work/profile-electron"
-    zebkit+=("$(run 9421 "$work/zebkit-run" --no-sandbox --remote-debugging-port=9421 \
+    # CDP on ports that were free.
+    port="$(free_port)"
+    zebkit+=("$(run "$port" "$work/zebkit-run" --no-sandbox --remote-debugging-port="$port" \
         --user-data-dir="$work/profile-zebkit" --window-size=1280,800 "$url")")
-    electron+=("$(BENCH_URL="$url" run 9422 "$work/electron/electron" --no-sandbox --ozone-platform=x11 \
-        --remote-debugging-port=9422 --user-data-dir="$work/profile-electron")")
+    port="$(free_port)"
+    electron+=("$(BENCH_URL="$url" run "$port" "$work/electron/electron" --no-sandbox --ozone-platform=x11 \
+        --remote-debugging-port="$port" --user-data-dir="$work/profile-electron")")
     log "run $i of $runs: zebkit ${zebkit[-1]} ms, Electron ${electron[-1]} ms"
 done
 z="$(printf '%s\n' "${zebkit[@]}" | median)"

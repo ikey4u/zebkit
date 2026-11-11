@@ -25,7 +25,6 @@
 
 use crate::view::{call_slot, Slot};
 use crate::{c_string, script_result, string_from, sys, take_error, take_string, Error, View};
-use std::cell::RefCell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
@@ -79,6 +78,11 @@ impl View {
     /// or the element loads other media), and reported to
     /// [`MediaCapture::on_done`].
     pub fn media_capture_start(&self, media_id: &str, path: impl AsRef<Path>, options_json: &str) -> Result<MediaCapture, Error> {
+        self.media_capture(media_id, path, options_json)
+    }
+
+    /// [`View::media_capture_start`], by the name the other bindings give it.
+    pub fn media_capture(&self, media_id: &str, path: impl AsRef<Path>, options_json: &str) -> Result<MediaCapture, Error> {
         let Some(raw) = self.raw() else {
             return Err(Error::new("the view is closed"));
         };
@@ -109,7 +113,7 @@ impl View {
 #[derive(Default)]
 struct Slots {
     on_progress: Slot<dyn FnMut(&str)>,
-    on_done: RefCell<Option<Box<dyn FnOnce(&str)>>>,
+    on_done: Slot<dyn FnOnce(&str)>,
 }
 
 /// A capture of what a media element plays. Dropping it lets it go: a
@@ -127,14 +131,14 @@ impl MediaCapture {
     /// while it runs: `state`, `bytes`, `packets`, `duration`, `ranges`
     /// (the media's times captured), `tracks`.
     pub fn on_progress<F: FnMut(&str) + 'static>(&self, function: F) {
-        *self.slots.on_progress.borrow_mut() = Some(Box::new(function));
+        self.slots.on_progress.set(Some(Box::new(function)));
     }
 
     /// `function` gets the capture's end once its files are written:
     /// `reason`, `error` (when it failed), `ranges`, and `files` (`path`,
     /// `format`, `start`, `duration`, `bytes`, `gaps`, `tracks`).
     pub fn on_done<F: FnOnce(&str) + 'static>(&self, function: F) {
-        *self.slots.on_done.borrow_mut() = Some(Box::new(function));
+        self.slots.on_done.set(Some(Box::new(function)));
     }
 
     /// Stops the capture and writes its files.
@@ -163,7 +167,8 @@ unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    done(script_result(json, error));
+    let result = script_result(json, error);
+    crate::guard(|| done(result));
 }
 
 /// The capture's slots, held while its function runs: the engine calls
@@ -189,12 +194,13 @@ unsafe extern "C" fn on_progress(_capture: *mut sys::zebkit_media_capture, json:
 unsafe extern "C" fn on_done(_capture: *mut sys::zebkit_media_capture, json: *const c_char, data: *mut c_void) {
     let slots = slots_of(data);
     let json = string_from(json).unwrap_or_default();
-    let function = slots.on_done.borrow_mut().take();
-    if let Some(function) = function {
-        function(&json);
+    if let Some(function) = slots.on_done.take() {
+        crate::guard(|| function(&json));
     }
 }
 
+
+type TapSlot = Slot<dyn FnMut(&str, &[u8])>;
 
 /// A native media tap: encoded packets, sampled RGBA frames, planar f32 PCM,
 /// and optionally an encoded file. All callbacks run on the engine thread.
@@ -203,7 +209,7 @@ unsafe extern "C" fn on_done(_capture: *mut sys::zebkit_media_capture, json: *co
 pub struct MediaTap {
     raw: *mut sys::zebkit_media_tap,
     // A callback may drop the handle; the trampoline holds its own Rc.
-    _callback: Rc<Slot<dyn FnMut(&str, &[u8])>>,
+    _callback: Rc<TapSlot>,
 }
 
 impl View {
@@ -220,7 +226,8 @@ impl View {
         let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
         let id = CString::new(media_id).map_err(|_| Error::new("the media id has a zero byte"))?;
         let options = CString::new(options_json).map_err(|_| Error::new("the options have a zero byte"))?;
-        let slot: Rc<Slot<dyn FnMut(&str, &[u8])>> = Rc::new(RefCell::new(Some(Box::new(callback))));
+        let slot: Rc<TapSlot> = Rc::new(Slot::new());
+        slot.set(Some(Box::new(callback)));
         let mut error = std::ptr::null_mut();
         let tap = unsafe { sys::zebkit_media_tap_start(raw, id.as_ptr(), options.as_ptr(),
             Some(on_tap), Rc::as_ptr(&slot).cast_mut().cast(), &mut error) };
@@ -239,7 +246,7 @@ impl Drop for MediaTap {
 }
 unsafe extern "C" fn on_tap(_tap: *mut sys::zebkit_media_tap, json: *const c_char,
     bytes: *const u8, size: usize, data: *mut c_void) {
-    let ptr = data.cast_const().cast::<Slot<dyn FnMut(&str, &[u8])>>();
+    let ptr = data.cast_const().cast::<TapSlot>();
     Rc::increment_strong_count(ptr);
     let slot = Rc::from_raw(ptr);
     let json = string_from(json).unwrap_or_default();

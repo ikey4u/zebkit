@@ -2,6 +2,7 @@
 #pragma allow_unsafe_buffers
 #endif
 #include "zebkit/engine/navigation_hooks.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 #include <stdlib.h>
@@ -277,7 +278,9 @@ void Deliver(uintptr_t id) {
   if (base::TimeTicks::Now() >= it->second.deadline) { Timeout(id); return; }
   auto view = it->second.view;
   zebkit_view* decider = view->Decider(&zebkit_view::on_navigation_);
-  if (!decider || !decider->on_navigation_) { Finish(id, Unanswered(view.get()), "handler-changed"); return; }
+  // As HookRequests says it: a popup whose opener has gone, or no function.
+  if (!decider) { Finish(id, ZEBKIT_NAVIGATION_CANCEL, "opener-closed"); return; }
+  if (!decider->on_navigation_) { Finish(id, Unanswered(view.get()), "handler-changed"); return; }
   const auto json = base::WriteJson(it->second.metadata).value_or("{}");
   auto function = decider->on_navigation_; void* data = decider->on_navigation_data_;
   function(view.get(), reinterpret_cast<zebkit_navigation_request*>(id), json.c_str(), data);
@@ -320,7 +323,7 @@ void CancelNavigationRequests(zebkit_view* view, const char* reason) {
 extern "C" {
 void zebkit_view_on_navigation(zebkit_view* view, zebkit_navigation_func function, void* data) {
   using namespace zebkit;
-  if (!Ready() || !view || !view->web_contents()) return;
+  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   if (view->on_navigation_ == function && view->on_navigation_data_ == data) return;
   auto weak = view->GetWeakPtr();
   Expire(view);
@@ -328,18 +331,19 @@ void zebkit_view_on_navigation(zebkit_view* view, zebkit_navigation_func functio
   view->on_navigation_ = function; view->on_navigation_data_ = data;
   std::vector<uintptr_t> ids;
   for (const auto& [id, request] : Store().pending) if (request.view.get() == view) ids.push_back(id);
-  for (auto id : ids) Finish(id, ZEBKIT_NAVIGATION_CONTINUE, "handler-changed");
+  // What an unanswered navigation does: let through, or not when fail-closed.
+  for (auto id : ids) Finish(id, Unanswered(view), "handler-changed");
 }
 void zebkit_view_on_navigation_result(zebkit_view* view, zebkit_navigation_result_func function, void* data) {
-  if (!zebkit::Ready() || !view || !view->web_contents()) return;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   view->on_navigation_result_ = function; view->on_navigation_result_data_ = data;
 }
 bool zebkit_view_set_navigation_timeout(zebkit_view* view, uint32_t milliseconds) {
-  if (!zebkit::Ready() || !view || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
   view->navigation_timeout_ms_ = milliseconds; return true;
 }
 bool zebkit_view_set_navigation_fail_closed(zebkit_view* view, bool fail_closed) {
-  if (!zebkit::Ready() || !view || !view->web_contents()) return false;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return false;
   view->navigation_fail_closed_ = fail_closed; return true;
 }
 char* zebkit_navigation_request_info(zebkit_navigation_request* request) {

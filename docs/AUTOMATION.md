@@ -87,8 +87,10 @@ counted with `DEBUG=pw:protocol`:
 
 ### What it costs
 
-Medians over 50 runs (20 for `goto` and `screenshot`), Playwright 1.56 in
-Node 24, a local page, headless, the same machine:
+History: measured before zebkit's own API, on 2026-10-27; what it costs now
+is section 6 and `docs/reports/automation-bench.md`. Medians over 50 runs
+(20 for `goto` and `screenshot`), Playwright 1.56 in Node 24, a local page,
+headless, the same machine:
 
 | Operation | zebkit 155 over CDP | Chromium 156 (Playwright's) |
 |---|---|---|
@@ -129,8 +131,9 @@ What this says:
    (section 4.6).
 3. **The Node process is a second runtime** next to the engine's own V8,
    with its own heap, for every application that automates a page.
-4. **`goto` is twice as slow on zebkit as on Chromium 156.** That is the
-   engine's (navigation, not CDP) and is tracked as its own item.
+4. **`goto` was twice as slow on zebkit as on Chromium 156.** That was the
+   engine's (navigation, not CDP); since fixed, `goto` takes 11.15 ms over
+   CDP against Chrome's 18.24 (section 6).
 
 ## 2. What zebkit does instead
 
@@ -472,12 +475,12 @@ Section 6 has what it saves.
 | Playwright | zebkit |
 |---|---|
 | `Dialog`, `page.on('dialog')` | `Page.updateSubscription {event: "dialog"}` holds the page's dialogs (`dialog.cc`'s `DialogObserver`); `BrowserContext.dialog`, `Dialog.accept`, `Dialog.dismiss` |
-| `FileChooser`, `page.on('filechooser')` | `patches/1035` gives the embedder the page's file choosers: `Page.fileChooser`, `FileChooser.setFiles` answers as the person's choice |
+| `FileChooser`, `page.on('filechooser')` | the engine's own file chooser (`file_select.cc`) gives the embedder the page's file choosers: `Page.fileChooser`, `FileChooser.setFiles` answers as the person's choice |
 | `Download` | saved into a directory of the engine's without asking (`acceptDownloads`); `Page.download`, `Artifact.pathAfterFinished`, `saveAs`, `failure`, `cancel`, `delete` |
 | `exposeBinding`, `exposeFunction` | 4.1; `BrowserContext.bindingCall`, `BindingCall.resolve`, `reject` |
 | cookies, `storageState` | the profile's cookie manager (`automation_context.cc`); the local storage of the origins the page shows |
 | `APIRequestContext.fetch` | `SimpleURLLoader` through the profile's network, its cookies. `maxRedirects`, 0 for the redirect itself as the answer; `Authorization`, `Proxy-Authorization` and `Cookie` a caller gave stay behind at another origin; `maxBodySize`, up to 256 MiB, zebkit's own |
-| `grantPermissions`, `clearPermissions` | `patches/1037` lets the embedder answer for a permission at an origin; granted ones granted, the others denied, as CDP's `Browser.grantPermissions` |
+| `grantPermissions`, `clearPermissions` | the engine's permission manager (`permission_manager.cc`) lets the embedder answer for a permission at an origin; granted ones granted, the others denied, as CDP's `Browser.grantPermissions` |
 | `clock` | Playwright's clock (`injected/src/clock.ts`, `playwright/clock_script.js`) installed and driven as `server/clock.ts` does |
 | `emulateMedia` | the page's preferences: color scheme, reduced motion, contrast, forced colors |
 | `screenshot` | `Page.captureScreenshot` of the page's own DevTools session, as `crPage.ts` asks it (a clip in the document, beyond the viewport, the visual viewport's scale), so a fresh frame of the page's newest surface; the viewport of a page that emulates no viewport without a clip (the view's surface as it is); PNG at deflate level 1 with the Up filter (`optimizeForSpeed`); `zebkit-raw` for the pixels (`patches/1081`) |

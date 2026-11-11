@@ -30,13 +30,9 @@ struct SelectedFileInfo;
 namespace zebkit {
 
 
-// This class handles file-selection requests coming from renderer processes.
-// It implements both the initialisation and listener functions for
-// file-selection dialogs.
-//
-// Since FileSelectHelper listens to observations of a widget, it needs to
-// live on and be destroyed on the UI thread. References to
-// FileSelectHelper may be passed on to other threads.
+// A page's file chooser, and a folder dropped on an <input webkitdirectory>
+// listed: the system's dialog or the listing, then the page's answer. It
+// lives on the UI thread, kept alive by itself until the answer.
 class FileSelectHelper
     : public base::RefCountedThreadSafe<FileSelectHelper,
                                         BrowserThread::DeleteOnUIThread>,

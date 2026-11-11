@@ -230,8 +230,11 @@ assert len(spare) == 1, spare
 # the frame commits (PrepareForFutureRequests). A process that was told to go can take a
 # moment, so look a moment later.
 fresh = opened(OTHER + '/plain')
-time.sleep(1)
-assert spare <= renderers(), 'the spare was used, not dropped'
+end = time.monotonic() + 1
+while time.monotonic() < end:
+    assert spare <= renderers(), 'the spare was used, not dropped'
+    zebkit.pump()
+    time.sleep(.02)
 wait(lambda: zebkit.engine_settings()['effective']['spareRendererRunning'], 'another spare after the load')
 zebkit.set_engine_settings({'spareRenderer': False})
 assert not zebkit.engine_settings()['effective']['spareRendererRunning']

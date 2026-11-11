@@ -29,7 +29,7 @@
 #include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
 #include "components/os_crypt/async/browser/freedesktop_secret_key_provider.h"
 #endif
@@ -39,9 +39,13 @@ namespace {
 using KeyProvider = os_crypt_async::KeyProvider;
 using KeyProviders = std::vector<std::pair<size_t, std::unique_ptr<KeyProvider>>>;
 
+// zebkit_set_cookie_encryption_key()'s: the application's own key.
+constexpr int kCookieStorageHostKey = 2;
+
 struct HostCookieKey {
   std::optional<std::array<uint8_t, 32>> key;
   bool locked = false;
+  // A zebkit_cookie_storage, or kCookieStorageHostKey.
   int mode = ZEBKIT_COOKIE_STORAGE_OS;
   std::string directory;
 };
@@ -79,7 +83,7 @@ class CookieCrypt {
   CookieEncryptionProviderImpl provider_;
 };
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 class DesktopKeyProvider : public os_crypt_async::KeyProvider {
  public:
   DesktopKeyProvider()
@@ -111,7 +115,7 @@ class DesktopKeyProvider : public os_crypt_async::KeyProvider {
 
 #if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
 std::unique_ptr<os_crypt_async::KeyProvider> CreateCookieKeyProvider() {
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   return std::make_unique<DesktopKeyProvider>();
 #else
   return nullptr;
@@ -132,10 +136,20 @@ static std::string PathArgument(const base::FilePath& path) {
 #endif
 }
 
+void LockCookieStorage() {
+  HostKey().locked = true;
+}
+
 bool PrepareCookieStorage(const std::vector<std::string>& args) {
   auto& state = HostKey();
   if (state.locked)
     return false;
+  // A start refused here leaves the settings as they were, for another try.
+  const HostCookieKey before = state;
+  auto fail = [&state, &before] {
+    state = before;
+    return false;
+  };
 #if BUILDFLAG(IS_WIN)
   base::CommandLine::StringVector wide_args;
   for (const std::string& arg : args)
@@ -148,8 +162,7 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
     std::string mode = command.GetSwitchValueASCII("zebkit-cookie-storage");
     if (mode != "os" && mode != "file") {
       fprintf(stderr, "zebkit: unknown cookie storage mode\n");
-      state.locked = true;
-      return false;
+      return fail();
     }
     std::string directory =
         command.HasSwitch("zebkit-cookie-key-directory")
@@ -161,8 +174,7 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
                            : ZEBKIT_COOKIE_STORAGE_OS,
             directory.empty() ? nullptr : directory.c_str())) {
       fprintf(stderr, "zebkit: invalid cookie storage configuration\n");
-      state.locked = true;
-      return false;
+      return fail();
     }
   } else if (command.HasSwitch("zebkit-cookie-key-directory")) {
     std::string directory = PathArgument(
@@ -171,18 +183,16 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
         !zebkit_set_cookie_storage(ZEBKIT_COOKIE_STORAGE_FILE,
                                    directory.c_str())) {
       fprintf(stderr, "zebkit: key directory requires file cookie storage\n");
-      state.locked = true;
-      return false;
+      return fail();
     }
   }
-  state.locked = true;
   if (state.mode != ZEBKIT_COOKIE_STORAGE_FILE)
     return true;
   auto profile = command.GetSwitchValuePath("user-data-dir");
   if (profile.empty()) {
     fprintf(stderr,
             "zebkit: file cookie storage requires a profile directory\n");
-    return false;
+    return fail();
   }
   std::error_code ec;
   auto path = std::filesystem::absolute(
@@ -200,7 +210,7 @@ bool PrepareCookieStorage(const std::vector<std::string>& args) {
   if (!loaded) {
     fprintf(stderr, "zebkit: cookie file storage unavailable: %s\n",
             error.c_str());
-    return false;
+    return fail();
   }
   state.key = key;
   return true;
@@ -247,7 +257,7 @@ extern "C" bool zebkit_set_cookie_encryption_key(const uint8_t* key,
     std::array<uint8_t, 32> copy;
     std::copy_n(key, copy.size(), copy.begin());
     state.key = copy;
-    state.mode = 2;
+    state.mode = zebkit::kCookieStorageHostKey;
     state.directory.clear();
   } else {
     state.key.reset();

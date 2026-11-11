@@ -19,20 +19,9 @@ import time
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "bindings", "python"))
+sys.path.insert(0, HERE)
 
-import zebkit  # noqa: E402
-
-failures = []
-checks = 0
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
+from harness import check, finish, wait, zebkit  # noqa: E402
 
 
 def png(size=22):
@@ -41,16 +30,6 @@ def png(size=22):
     chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
             chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
 
 
 def gdbus(*args):
@@ -110,8 +89,7 @@ def main():
         finally:
             zebkit.shutdown()
             watcher.terminate()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

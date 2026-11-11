@@ -6,6 +6,8 @@
 #define ZEBKIT_ENGINE_PROFILE_H_
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
@@ -41,14 +43,20 @@ class NotificationService;
 inline constexpr int kUserDataPath = 18600;
 inline constexpr char kUserDataDirSwitch[] = "user-data-dir";
 void RegisterUserDataPath();
+// Before the engine starts: the directory --user-data-dir says made, or, when
+// there is no home to have given one, a new private one in the temporary
+// directory, deleted at the end (DeleteTemporaryUserData()). False with
+// @error when the one given cannot be made.
+bool PrepareUserDataDirectory(std::vector<std::string>* args, std::string* error);
+// Deletes that private directory, at once, on this thread: when the start
+// fails after PrepareUserDataDirectory(), and once Chromium has shut down
+// (its threads stopped and child processes gone), not before.
+void DeleteTemporaryUserData();
 
 // A browser context: a profile, on disk or, off the record, in memory.
 class Profile : public content::BrowserContext {
  public:
-  // If |delay_services_creation| is true, the owner is responsible for calling
-  // CreateBrowserContextServices() for this BrowserContext.
-  Profile(bool off_the_record,
-                      bool delay_services_creation = false);
+  explicit Profile(bool off_the_record);
 
   Profile(const Profile&) = delete;
   Profile& operator=(const Profile&) = delete;
@@ -84,8 +92,6 @@ class Profile : public content::BrowserContext {
   content::OriginTrialsControllerDelegate* GetOriginTrialsControllerDelegate() override;
 
  protected:
-  bool ignore_certificate_errors() const { return ignore_certificate_errors_; }
-
   std::unique_ptr<EngineDownloadManagerDelegate> download_manager_delegate_;
   std::unique_ptr<content::PermissionControllerDelegate> permission_manager_;
   std::unique_ptr<FileSystemAccessContext> file_system_access_;
@@ -98,13 +104,7 @@ class Profile : public content::BrowserContext {
       origin_trials_controller_delegate_;
 
  private:
-  // Performs initialization of the Profile while IO is still
-  // allowed on the current thread.
-  void InitWhileIOAllowed();
-  void FinishInitWhileIOAllowed();
-
   const bool off_the_record_;
-  bool ignore_certificate_errors_ = false;
   base::FilePath path_;
   std::unique_ptr<SimpleFactoryKey> key_;
   raw_ptr<content::ClientHintsControllerDelegate> client_hints_controller_delegate_ =

@@ -603,7 +603,7 @@ static void ready(void *data) {
     const char *base = getenv("ZEBKIT_TEST_BASE");
     shots = getenv("ZEBKIT_TEST_SHOTS");
     char url[512];
-    snprintf(url, sizeof(url), "%s/offscreen.html", base ? base : "http://127.0.0.1:8796");
+    snprintf(url, sizeof(url), "%s/offscreen.html", base);
     view = zebkit_view_new_offscreen(url, 400, 300, 1);
     check(view != NULL, "zebkit_view_new_offscreen", NULL);
     if (!view) {
@@ -637,6 +637,10 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;

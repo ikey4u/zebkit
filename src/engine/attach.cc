@@ -10,15 +10,18 @@
 #include <memory>
 #include <string>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "content/public/browser/web_contents.h"
 #include "zebkit/engine/window.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
 #if BUILDFLAG(IS_LINUX)
 #include "ui/aura/window_tree_host.h"
@@ -28,8 +31,6 @@
 #include "zebkit/engine/view.h"
 
 #if defined(ZEBKIT_X11)
-#include "base/functional/bind.h"
-#include "base/task/single_thread_task_runner.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host_platform.h"
 #include "ui/gfx/x/connection.h"
@@ -55,7 +56,10 @@ namespace {
 
 struct Attached {
   base::WeakPtr<zebkit_view> parent;
-  raw_ptr<views::WebView> host = nullptr;
+  // The WebView in the parent's window; it goes with that window.
+  std::unique_ptr<views::ViewTracker> host;
+  // The view's own window's WebView, emptied while the page is elsewhere.
+  std::unique_ptr<views::ViewTracker> own;
 };
 
 std::map<const zebkit_view*, Attached>& AttachedViews() {
@@ -94,13 +98,18 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
   if (!contents)
     return false;
   DetachViewNative(view);
-  DetachView(view);
+  // Moved from one parent to another: its own window's WebView stays empty.
+  std::unique_ptr<views::ViewTracker> own_web_view;
+  if (auto it = AttachedViews().find(view); it != AttachedViews().end())
+    own_web_view = std::move(it->second.own);
+  DetachView(view, /*restore=*/false);
   // Out of its own window's WebView first: a page's window has one parent.
   views::Widget* own = WidgetOf(view);
-  if (own && own->GetRootView()) {
+  if (!own_web_view && own && own->GetRootView()) {
     if (views::WebView* old =
             WebViewShowing(own->GetRootView(), view->web_contents())) {
       old->SetWebContents(nullptr);
+      own_web_view = std::make_unique<views::ViewTracker>(old);
     }
   }
   auto host = std::make_unique<views::WebView>(
@@ -112,33 +121,58 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
   added->SetBoundsRect(bounds);
   if (own)
     own->Hide();
-  AttachedViews()[view] = {parent->GetWeakPtr(), added};
+  Attached& attached = AttachedViews()[view];
+  attached.parent = parent->GetWeakPtr();
+  attached.host = std::make_unique<views::ViewTracker>(added);
+  attached.own = std::move(own_web_view);
   return true;
 }
 
 void SetAttachedBounds(zebkit_view* view, const gfx::Rect& bounds) {
   auto it = AttachedViews().find(view);
-  if (it != AttachedViews().end() && it->second.parent)
-    it->second.host->SetBoundsRect(bounds);
+  if (it != AttachedViews().end() && it->second.parent && it->second.host->view())
+    it->second.host->view()->SetBoundsRect(bounds);
 }
 
 void SetAttachedVisible(zebkit_view* view, bool visible) {
   auto it = AttachedViews().find(view);
-  if (it != AttachedViews().end() && it->second.parent)
-    it->second.host->SetVisible(visible);
+  if (it != AttachedViews().end() && it->second.parent && it->second.host->view())
+    it->second.host->view()->SetVisible(visible);
 }
 
-void DetachView(zebkit_view* view) {
+void DetachView(zebkit_view* view, bool restore) {
   auto it = AttachedViews().find(view);
   if (it == AttachedViews().end())
     return;
-  // The host goes with its parent's window when that closes first.
-  if (it->second.parent && it->second.host->parent()) {
-    views::WebView* host = it->second.host;
-    host->SetWebContents(nullptr);
-    host->parent()->RemoveChildViewT(host);
+  // The host is gone already when its parent's window closed first.
+  if (views::View* host = it->second.host->view()) {
+    static_cast<views::WebView*>(host)->SetWebContents(nullptr);
+    if (host->parent())
+      host->parent()->RemoveChildViewT(host);
   }
+  views::View* own = it->second.own ? it->second.own->view() : nullptr;
   AttachedViews().erase(it);
+  // In its own window again, which shows it.
+  if (restore && own && view->web_contents()) {
+    static_cast<views::WebView*>(own)->SetWebContents(view->web_contents());
+    if (views::Widget* widget = own->GetWidget(); widget && !widget->IsVisible())
+      widget->ShowInactive();
+  }
+}
+
+void CloseViewsAttachedTo(zebkit_view* parent) {
+  for (const auto& [view, attached] : AttachedViews()) {
+    if (attached.parent.get() != parent)
+      continue;
+    // Not now: the parent is inside its own teardown.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<zebkit_view> view) {
+                         if (view)
+                           view->Close();
+                       },
+                       const_cast<zebkit_view*>(view)->GetWeakPtr()));
+  }
 }
 
 #if defined(ZEBKIT_X11)

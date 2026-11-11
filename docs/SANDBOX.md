@@ -1,14 +1,18 @@
-# The sandbox on Linux
+# The sandbox
 
-Pages run in sandboxed processes. Chromium's Linux sandbox needs one of two things
+Pages run in sandboxed processes, on every system, as in Chrome. What each
+system needs differs: on Linux something of the system's, on macOS nothing,
+on Windows a call in the application's executable. `--no-sandbox` turns it
+off on each, and is never silent.
+
+## Linux
+
+Chromium's Linux sandbox needs one of two things
 from the system: unprivileged user namespaces, or a set-user-ID helper. Containers
 and build machines often have neither. The answer (owner, 2026-10-31) is both of the
 following, and running without a sandbox is never silent.
 
-macOS has its own sandbox (`docs/MACOS.md`), which needs nothing installed. Windows has
-Chromium's, with a call in the application's executable (`docs/WINDOWS.md`).
-
-## What the engine does
+### What the engine does
 
 At the start of the browser process, in this order:
 
@@ -23,7 +27,7 @@ At the start of the browser process, in this order:
 
 As root Chromium supports no sandbox: the engine refuses and names `--no-sandbox`.
 
-## The choices
+### The choices
 
 **Allow user namespaces.** Nothing of zebkit's to install. On Ubuntu 23.10 and later an
 AppArmor profile for the application, or `sysctl
@@ -49,15 +53,36 @@ then run with everything the process has. In a container that runs as root it is
 choice Chromium has. `tools/zebkit-mcp` takes it after `--`, stated by whoever runs the
 server: `zebkit-mcp ... -- --no-sandbox`. It is never its default.
 
-## The tools
+### The tools
 
 `scripts/engine-test.sh` passes `--no-sandbox` by name to each program, for the machines it
 runs on, and `tests/engine/sandbox_startup.py` runs without it to check the refusal.
 The MCP server, `zebkit-run`, `zebkit-js` and the examples start with the sandbox unless told
 otherwise.
 
-## What has been tested
+### What has been tested
 
 The refusal, its message and `--no-sandbox` run in the suite. The helper itself cannot run on
 the build machine, where no root is to be had; **it has not been run from this package**. See
 `docs/ROADMAP.md`.
+
+## macOS
+
+The helper, `Zebkit Helper.app` inside the framework, enters the seatbelt sandbox
+itself, as Chrome's helpers do; nothing is installed and the application does
+nothing for it (`docs/MACOS.md`). With the release archive the renderer, GPU and
+utility processes run sandboxed (checked on 2026-11-09). The test suite runs with
+`--no-sandbox` on a Mac: in its test bundle, signed ad hoc, the helpers crashed at
+their start on 2026-11-01, for a cause not found (`docs/MACOS.md`, "Not run").
+
+## Windows
+
+Chromium's sandbox writes into a child at addresses from its own image, so the
+process that starts the children and the children must be one executable: the
+application links `zebkit_sandbox.lib`, with the static C runtime (`/MT`), and calls
+`zebkit_win_startup()` first in `main()` (`<zebkit/win_sandbox.h>`). Without the call
+the engine does not start, and says what to do; with `--no-sandbox` the children are
+`zebkit-helper.exe`. Renderers run at untrusted integrity and the GPU process at low,
+each in a job; the network service is not sandboxed, as upstream's default. The
+release archive's tools are built this way. The details: `docs/WINDOWS.md`, "The
+sandbox" and "The network service".

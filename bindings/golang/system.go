@@ -6,15 +6,16 @@ package zebkit
 import "C"
 
 import (
-	"encoding/json"
+	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
 // Displays are the screens: [{id, bounds, workArea, scale, rotation, primary}].
-func Displays() []map[string]any {
+func Displays() ([]map[string]any, error) {
+	onEngineThread()
 	var value []map[string]any
-	takeJSON(C.zebkit_get_displays(), &value)
-	return value
+	return value, takeJSON(C.zebkit_get_displays(), &value, "no displays")
 }
 
 var powerSlot, displaysSlot, notificationSlot slot
@@ -22,171 +23,187 @@ var powerSlot, displaysSlot, notificationSlot slot
 // OnPowerEvent calls function with {"event": "suspend" | "resume" | "lock" |
 // "unlock"} and {"event": "power-source", "onBattery"}; nil stops.
 func OnPowerEvent(function func(map[string]any)) {
+	onEngineThread()
 	if function == nil {
 		C.zebkit_on_power_event(nil, nil)
 		powerSlot.clear()
 		return
 	}
 	h := powerSlot.set(jsonFunc(function))
-	C.zebkit_on_power_event(C.zebkit_system_event_func(C.zk_json), data(h))
+	C.zebkit_on_power_event(C.zebkit_system_event_func(C.zk_text), data(h))
 }
 
-// OnDisplaysChanged calls function with {"event": "displays", "displays": [...]}.
+// OnDisplaysChanged calls function with {"event": "displays", "displays": [...]};
+// nil stops.
 func OnDisplaysChanged(function func(map[string]any)) {
+	onEngineThread()
 	if function == nil {
 		C.zebkit_on_displays_changed(nil, nil)
 		displaysSlot.clear()
 		return
 	}
 	h := displaysSlot.set(jsonFunc(function))
-	C.zebkit_on_displays_changed(C.zebkit_system_event_func(C.zk_json), data(h))
+	C.zebkit_on_displays_changed(C.zebkit_system_event_func(C.zk_text), data(h))
 }
 
 // PreventSleep keeps the system awake (and the display on, with
 // keepDisplayOn) until AllowSleep(token).
 func PreventSleep(reason string, keepDisplayOn bool) (uint64, error) {
+	onEngineThread()
 	creason := cString(reason)
 	defer free(creason)
 	token := uint64(C.zebkit_prevent_sleep(C.bool(keepDisplayOn), creason))
 	if token == 0 {
-		return 0, &Error{"the system was not kept awake"}
+		return 0, refused("the system was not kept awake")
 	}
 	return token, nil
 }
 
-func AllowSleep(token uint64) bool { return bool(C.zebkit_allow_sleep(C.uint64_t(token))) }
+// AllowSleep ends PreventSleep's token.
+func AllowSleep(token uint64) error {
+	onEngineThread()
+	return check(C.zebkit_allow_sleep(C.uint64_t(token)), "no such token")
+}
 
 // OpenExternal gives url to the system's handler, never through a shell.
 func OpenExternal(url string) error {
+	onEngineThread()
 	curl := cString(url)
 	defer free(curl)
 	var message *C.char
-	if !C.zebkit_open_external(curl, &message) {
-		return takeError(message, "the URL was not opened")
-	}
-	return nil
+	return failed(C.zebkit_open_external(curl, &message), message, "the URL was not opened")
 }
 
 // ShowInFolder shows path, absolute, selected in the file manager.
 func ShowInFolder(path string) error {
+	onEngineThread()
 	cpath := cString(path)
 	defer free(cpath)
 	var message *C.char
-	if !C.zebkit_show_in_folder(cpath, &message) {
-		return takeError(message, "the file was not shown")
-	}
-	return nil
+	return failed(C.zebkit_show_in_folder(cpath, &message), message, "the file was not shown")
 }
 
 // OnNotification makes the application show the pages' notifications:
 // function gets {"event": "show", ...} and {"event": "close", "id"}; nil gives
 // them back to the system.
 func OnNotification(function func(map[string]any)) {
+	onEngineThread()
 	if function == nil {
 		C.zebkit_on_notification(nil, nil)
 		notificationSlot.clear()
 		return
 	}
 	h := notificationSlot.set(jsonFunc(function))
-	C.zebkit_on_notification(C.zebkit_notification_func(C.zk_json), data(h))
+	C.zebkit_on_notification(C.zebkit_notification_func(C.zk_text), data(h))
 }
 
 // NotificationClicked tells the page its notification id was clicked
 // (action: the button's index, or -1).
-func NotificationClicked(id string, action int) bool {
+func NotificationClicked(id string, action int) error {
+	onEngineThread()
 	cid := cString(id)
 	defer free(cid)
-	return bool(C.zebkit_notification_clicked(cid, C.int(action)))
+	return check(C.zebkit_notification_clicked(cid, C.int(action)), "no such notification")
 }
 
-func NotificationClosed(id string, byUser bool) bool {
+// NotificationClosed tells the page its notification id was closed.
+func NotificationClosed(id string, byUser bool) error {
+	onEngineThread()
 	cid := cString(id)
 	defer free(cid)
-	return bool(C.zebkit_notification_closed(cid, C.bool(byUser)))
+	return check(C.zebkit_notification_closed(cid, C.bool(byUser)), "no such notification")
 }
 
 var appMenuSlot, dockMenuSlot slot
 
-func menuJSON(items any) (*C.char, error) {
-	if text, ok := items.(string); ok {
-		return cString(text), nil
+// menuFunction is the handle of a menu's function, 0 for none.
+func menuFunction(function func(id string)) C.uintptr_t {
+	if function == nil {
+		return 0
 	}
-	text, err := json.Marshal(items)
-	if err != nil {
-		return nil, err
-	}
-	return cString(string(text)), nil
+	return handle(function)
 }
 
-// AppSetMenu sets the application's menu: a list of {"title", "items"},
+// SetAppMenu sets the application's menu, JSON: a list of {"title", "items"},
 // where an item is {"title", "id", "key", "modifiers", "enabled", "checked",
 // "radioGroup"}, {"role"}, {"title", "items"} or {"separator": true};
 // function gets a chosen item's id. The menu bar on macOS; elsewhere the
 // items' keys work in the application's windows.
-func AppSetMenu(items any, function func(id string)) error {
-	text, err := menuJSON(items)
+func SetAppMenu(items any, function func(id string)) error {
+	onEngineThread()
+	text, err := jsonArg(items)
 	if err != nil {
 		return err
 	}
 	defer free(text)
+	h := menuFunction(function)
 	var message *C.char
-	h := appMenuSlot.set(function)
-	if !C.zebkit_app_set_menu(text, C.zebkit_menu_func(C.zk_menu), data(h), &message) {
+	if !C.zebkit_app_set_menu(text, C.zebkit_menu_func(C.zk_text), data(h), &message) {
+		// The engine keeps the menu it had, with its function.
+		release(h)
 		return takeError(message, "the menu was refused")
 	}
+	appMenuSlot.replace(h)
 	return nil
 }
 
-// AppUpdateMenuItem changes an item in place: {"enabled", "checked", "title"}.
-func AppUpdateMenuItem(id string, state map[string]any) error {
-	text, err := json.Marshal(state)
+// UpdateAppMenuItem changes an item in place, JSON: {"enabled", "checked", "title"}.
+func UpdateAppMenuItem(id string, state any) error {
+	onEngineThread()
+	text, err := jsonArg(state)
 	if err != nil {
 		return err
 	}
-	cid, cstate := cString(id), cString(string(text))
+	defer free(text)
+	cid := cString(id)
 	defer free(cid)
-	defer free(cstate)
 	var message *C.char
-	if !C.zebkit_app_update_menu_item(cid, cstate, &message) {
-		return takeError(message, "the menu item was not changed")
-	}
-	return nil
+	return failed(C.zebkit_app_update_menu_item(cid, text, &message), message, "the menu item was not changed")
 }
 
 // AppMenu is the menu with its items' state.
-func AppMenu() []map[string]any {
+func AppMenu() ([]map[string]any, error) {
+	onEngineThread()
 	var value []map[string]any
-	takeJSON(C.zebkit_app_get_menu(), &value)
-	return value
+	return value, takeJSON(C.zebkit_app_get_menu(), &value, "no menu")
 }
 
-// AppSetBadge sets the badge on the application's icon; "" clears it.
-func AppSetBadge(text string) bool {
+// SetAppBadge sets the badge on the application's icon; "" clears it.
+func SetAppBadge(text string) error {
+	onEngineThread()
 	ctext := cString(text)
 	defer free(ctext)
-	return bool(C.zebkit_app_set_badge(ctext))
+	return check(C.zebkit_app_set_badge(ctext), "the badge was refused")
 }
 
-// AppSetProgress shows a progress from 0 to 1 on the icon; below 0 clears it.
-func AppSetProgress(progress float64) bool {
-	return bool(C.zebkit_app_set_progress(C.double(progress)))
+// SetAppProgress shows a progress from 0 to 1 on the icon; below 0 clears it.
+func SetAppProgress(progress float64) error {
+	onEngineThread()
+	return check(C.zebkit_app_set_progress(C.double(progress)), "a progress is at most 1")
 }
 
-// AppRequestAttention bounces the Dock icon or flashes the taskbar button.
-func AppRequestAttention(critical bool) { C.zebkit_app_request_attention(C.bool(critical)) }
+// RequestAppAttention bounces the Dock icon or flashes the taskbar button.
+func RequestAppAttention(critical bool) {
+	onEngineThread()
+	C.zebkit_app_request_attention(C.bool(critical))
+}
 
-// AppSetDockMenu sets the Dock's menu (macOS); elsewhere it is refused.
-func AppSetDockMenu(items any, function func(id string)) error {
-	text, err := menuJSON(items)
+// SetDockMenu sets the Dock's menu (macOS), JSON as SetAppMenu's; elsewhere it
+// is refused.
+func SetDockMenu(items any, function func(id string)) error {
+	onEngineThread()
+	text, err := jsonArg(items)
 	if err != nil {
 		return err
 	}
 	defer free(text)
+	h := menuFunction(function)
 	var message *C.char
-	h := dockMenuSlot.set(function)
-	if !C.zebkit_app_set_dock_menu(text, C.zebkit_menu_func(C.zk_menu), data(h), &message) {
+	if !C.zebkit_app_set_dock_menu(text, C.zebkit_menu_func(C.zk_text), data(h), &message) {
+		release(h)
 		return takeError(message, "the Dock's menu was refused")
 	}
+	dockMenuSlot.replace(h)
 	return nil
 }
 
@@ -196,61 +213,68 @@ type Tray struct {
 	menu, click slot
 }
 
-func bytesPointer(b []byte) (*C.uint8_t, C.size_t, func()) {
-	if len(b) == 0 {
-		return nil, 0, func() {}
-	}
-	p := C.CBytes(b)
-	return (*C.uint8_t)(p), C.size_t(len(b)), func() { C.free(p) }
-}
-
 // NewTray shows png (PNG bytes) with tooltip.
 func NewTray(png []byte, tooltip string) (*Tray, error) {
-	p, n, done := bytesPointer(png)
-	defer done()
+	onEngineThread()
 	ctooltip := cString(tooltip)
 	defer free(ctooltip)
 	var message *C.char
-	tray := C.zebkit_tray_new(p, n, ctooltip, &message)
+	tray := C.zebkit_tray_new((*C.uint8_t)(bytesArg(png)), C.size_t(len(png)), ctooltip, &message)
 	if tray == nil {
 		return nil, takeError(message, "the tray was refused")
 	}
 	return &Tray{tray: tray}, nil
 }
 
+// SetIcon changes the icon, PNG bytes.
 func (t *Tray) SetIcon(png []byte) error {
-	p, n, done := bytesPointer(png)
-	defer done()
-	var message *C.char
-	if !C.zebkit_tray_set_icon(t.tray, p, n, &message) {
-		return takeError(message, "the icon was refused")
+	if t.tray == nil {
+		return ErrClosed
 	}
-	return nil
+	onEngineThread()
+	var message *C.char
+	return failed(C.zebkit_tray_set_icon(t.tray, (*C.uint8_t)(bytesArg(png)), C.size_t(len(png)), &message), message,
+		"the icon was refused")
 }
 
+// SetTooltip changes the tooltip.
 func (t *Tray) SetTooltip(tooltip string) {
+	if t.tray == nil {
+		return
+	}
+	onEngineThread()
 	ctooltip := cString(tooltip)
 	defer free(ctooltip)
 	C.zebkit_tray_set_tooltip(t.tray, ctooltip)
 }
 
-// SetMenu takes AppSetMenu's items; function gets a chosen item's id.
+// SetMenu takes SetAppMenu's items; function gets a chosen item's id.
 func (t *Tray) SetMenu(items any, function func(id string)) error {
-	text, err := menuJSON(items)
+	if t.tray == nil {
+		return ErrClosed
+	}
+	onEngineThread()
+	text, err := jsonArg(items)
 	if err != nil {
 		return err
 	}
 	defer free(text)
+	h := menuFunction(function)
 	var message *C.char
-	h := t.menu.set(function)
-	if !C.zebkit_tray_set_menu(t.tray, text, C.zebkit_menu_func(C.zk_menu), data(h), &message) {
+	if !C.zebkit_tray_set_menu(t.tray, text, C.zebkit_menu_func(C.zk_text), data(h), &message) {
+		release(h)
 		return takeError(message, "the menu was refused")
 	}
+	t.menu.replace(h)
 	return nil
 }
 
-// OnClick calls function when the icon is clicked.
+// OnClick calls function when the icon is clicked; nil stops.
 func (t *Tray) OnClick(function func()) {
+	if t.tray == nil {
+		return
+	}
+	onEngineThread()
 	if function == nil {
 		C.zebkit_tray_on_click(t.tray, nil, nil)
 		t.click.clear()
@@ -265,13 +289,14 @@ func (t *Tray) Close() {
 	if t.tray == nil {
 		return
 	}
+	onEngineThread()
 	C.zebkit_tray_close(t.tray)
 	t.tray = nil
 	t.menu.clear()
 	t.click.clear()
 }
 
-// SchemeFlags say what an application's URL scheme is (SchemeRegister).
+// SchemeFlags say what an application's URL scheme is (RegisterScheme).
 type SchemeFlags uint
 
 const (
@@ -281,64 +306,130 @@ const (
 	SchemeBypassCSP SchemeFlags = 1 << 3
 )
 
-// SchemeRegister makes scheme ("app") one of the application's, before Main
+// RegisterScheme makes scheme ("app") one of the application's, before Main
 // or Init.
-func SchemeRegister(scheme string, flags SchemeFlags) bool {
+func RegisterScheme(scheme string, flags SchemeFlags) error {
+	onEngineThread()
 	cscheme := cString(scheme)
 	defer free(cscheme)
-	return bool(C.zebkit_scheme_register(cscheme, C.uint(flags)))
+	return check(C.zebkit_scheme_register(cscheme, C.uint(flags)), "the scheme is the engine's already, or it is too late")
 }
 
+// schemeSlots, as every slot of the package, is the engine thread's: the
+// functions that change it check that thread first.
 var schemeSlots = map[string]*slot{}
 
-// SchemeHandle answers the scheme's requests with function, on the engine's
-// thread.
-func SchemeHandle(scheme string, function func(*Request)) {
+// HandleScheme answers the scheme's requests with function, on the engine's
+// thread; nil stops (requests then fail as not found).
+func HandleScheme(scheme string, function func(*Request)) {
+	onEngineThread()
+	cscheme := cString(scheme)
+	defer free(cscheme)
 	s, ok := schemeSlots[scheme]
 	if !ok {
 		s = &slot{}
 		schemeSlots[scheme] = s
 	}
+	if function == nil {
+		C.zebkit_scheme_handle(cscheme, nil, nil)
+		s.clear()
+		delete(schemeSlots, scheme)
+		return
+	}
 	h := s.set(function)
-	cscheme := cString(scheme)
-	defer free(cscheme)
 	C.zebkit_scheme_handle(cscheme, C.zebkit_scheme_func(C.zk_scheme), data(h))
 }
 
-// Request is a request to an application's scheme; respond to it once.
-type Request struct{ request *C.zebkit_request }
+// Request is a request to an application's scheme. Answer it once, with
+// Respond or RespondFile, from any goroutine; its methods do nothing once it
+// is answered. A Request the program lets go unanswered is answered 404 once
+// the garbage collector finds it, as Rust's on Drop and Python's when it is
+// collected, through Post on the engine's thread; that can be late, or never
+// (no collection, or the engine stopped first), so answer every request.
+type Request struct {
+	request unsafe.Pointer // *C.zebkit_request, atomically
+}
 
-func (r *Request) URL() string     { return goString(C.zebkit_request_url(r.request)) }
-func (r *Request) Method() string  { return goString(C.zebkit_request_method(r.request)) }
-func (r *Request) Headers() string { return goString(C.zebkit_request_headers(r.request)) }
+func newRequest(request *C.zebkit_request) *Request {
+	r := &Request{}
+	atomic.StorePointer(&r.request, unsafe.Pointer(request))
+	runtime.SetFinalizer(r, (*Request).dropped)
+	return r
+}
 
+// dropped answers a Request let go unanswered: not found.
+func (r *Request) dropped() {
+	request := (*C.zebkit_request)(atomic.SwapPointer(&r.request, nil))
+	if request == nil {
+		return
+	}
+	// Post fails only once the engine has stopped, and the request with it.
+	_ = Post(func() { C.zebkit_request_respond(request, 404, nil, nil, 0) })
+}
+
+func (r *Request) load() *C.zebkit_request {
+	return (*C.zebkit_request)(atomic.LoadPointer(&r.request))
+}
+
+// URL is what was asked for.
+func (r *Request) URL() string {
+	if request := r.load(); request != nil {
+		return goString(C.zebkit_request_url(request))
+	}
+	return ""
+}
+
+// Method is the request's method.
+func (r *Request) Method() string {
+	if request := r.load(); request != nil {
+		return goString(C.zebkit_request_method(request))
+	}
+	return ""
+}
+
+// Headers are the request's headers: "Name: value" lines separated by "\r\n".
+func (r *Request) Headers() string {
+	if request := r.load(); request != nil {
+		return goString(C.zebkit_request_headers(request))
+	}
+	return ""
+}
+
+// Body is the body sent with the request, or nil.
 func (r *Request) Body() []byte {
-	var size C.size_t
-	body := C.zebkit_request_body(r.request, &size)
-	if body == nil || size == 0 {
+	request := r.load()
+	if request == nil {
 		return nil
 	}
-	return C.GoBytes(unsafe.Pointer(body), C.int(size))
+	var size C.size_t
+	body := C.zebkit_request_body(request, &size)
+	return goBytes(unsafe.Pointer(body), size)
 }
 
 // Respond answers with status, headers ("Name: value" lines separated by
-// "\r\n", or "") and body.
-func (r *Request) Respond(status int, headers string, body []byte) {
+// "\r\n", or "") and body; ErrClosed once answered.
+func (r *Request) Respond(status int, headers string, body []byte) error {
+	request := (*C.zebkit_request)(atomic.SwapPointer(&r.request, nil))
+	if request == nil {
+		return ErrClosed
+	}
 	cheaders := optionalString(headers)
 	defer free(cheaders)
-	var p unsafe.Pointer
-	if len(body) > 0 {
-		p = C.CBytes(body)
-		defer C.free(p)
-	}
-	C.zebkit_request_respond(r.request, C.int(status), cheaders, p, C.size_t(len(body)))
+	C.zebkit_request_respond(request, C.int(status), cheaders, bytesArg(body), C.size_t(len(body)))
+	return nil
 }
 
-// RespondFile answers with the file at path, in ranges for media.
-func (r *Request) RespondFile(path, headers string) {
+// RespondFile answers with the file at path, in ranges for media; ErrClosed
+// once answered.
+func (r *Request) RespondFile(path, headers string) error {
+	request := (*C.zebkit_request)(atomic.SwapPointer(&r.request, nil))
+	if request == nil {
+		return ErrClosed
+	}
 	cpath := cString(path)
 	defer free(cpath)
 	cheaders := optionalString(headers)
 	defer free(cheaders)
-	C.zebkit_request_respond_file(r.request, cpath, cheaders)
+	C.zebkit_request_respond_file(request, cpath, cheaders)
+	return nil
 }

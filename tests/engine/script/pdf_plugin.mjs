@@ -3,13 +3,9 @@
 // comes last in zebkit.args.
 
 import {samplePlugin} from '../../../examples/pdf-plugin/plugin.mjs';
+import {finish, verify} from './helpers.mjs';
 
-let failures = 0, checks = 0;
-const check = (ok, what, detail = '') => {
-  ++checks;
-  if (!ok) ++failures;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${detail === '' ? '' : `: ${detail}`}`);
-};
+const check = (ok, what, detail = '') => verify(ok, what, detail === '' ? undefined : detail);
 const refuses = async (promise, what) => {
   try {
     await promise;
@@ -291,5 +287,5 @@ try {
   check(false, 'an exception', e.stack || String(e));
 }
 
-console.log(`${checks - failures} of ${checks} checks passed`);
+finish();
 zebkit.quit();

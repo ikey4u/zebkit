@@ -66,6 +66,10 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
   std::string GetEmbedderOriginString() override { return kEmbedderOrigin; }
 
   void PostMessage(base::DictValue message) override {
+    // Bounded while the viewer's script is not there to take them, which may
+    // be never (no isolated world's context).
+    if (receive_.IsEmpty() && pending_.size() >= 4096)
+      return;
     pending_.push_back(std::move(message));
     PostFlush();
   }
@@ -102,7 +106,11 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
         base::BindOnce(&ViewerClient::Open, weak_factory_.GetWeakPtr()));
   }
 
+  // One flush waiting at a time: it takes every message there is.
   void PostFlush() {
+    if (flush_posted_)
+      return;
+    flush_posted_ = true;
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(&ViewerClient::Flush, weak_factory_.GetWeakPtr()));
@@ -195,6 +203,7 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
   }
 
   void Flush() {
+    flush_posted_ = false;
     if (receive_.IsEmpty() || !PluginContainer() ||
         blink::WebScriptForbiddenScope::IsForbidden()) {
       return;
@@ -252,6 +261,7 @@ class ViewerClient final : public pdf::PdfViewWebPluginClient {
   const raw_ptr<content::RenderFrame> frame_;
   v8::Global<v8::Function> receive_;
   std::vector<base::DictValue> pending_;
+  bool flush_posted_ = false;
   base::WeakPtrFactory<ViewerClient> weak_factory_{this};
 };
 

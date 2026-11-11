@@ -86,6 +86,14 @@ def wait(condition, label='navigation condition', timeout=15):
     assert condition(), label
 
 
+def pump(seconds):
+    """The engine run for a while: before a check that something did not happen."""
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        assert zebkit.pump()
+        time.sleep(.001)
+
+
 def evaluate(view, code):
     answers = []
     view.evaluate(code, lambda value, error: answers.append((value, error)))
@@ -331,7 +339,11 @@ try:
     mode = 'hold'
     first.load(base + '/fail-closed')
     wait(lambda: any('/fail-closed' in event['url'] for _, event in requests), 'the fail-closed stage')
-    time.sleep(.5)
+    token = next(token for token, event in requests if '/fail-closed' in event['url'])
+    # Settled by its 100 ms deadline; fail closed, it went nowhere.
+    wait(lambda: info(token) is None, 'the unanswered navigation reaches its deadline')
+    # A request it made would take a moment to reach the server: the engine pumped meanwhile.
+    pump(.5)
     assert not any('/fail-closed' in entry[1] for entry in received), 'an unanswered navigation went on'
     first.set_navigation_fail_closed(False)
     first.set_navigation_timeout(5000)

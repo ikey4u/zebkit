@@ -13,6 +13,13 @@ order Rust, Python, Go, then the others. JAVASCRIPT_REACHED lists what
 zebkit-js reaches otherwise than by a function's name, and how. --list names
 what each lacks; each package's LICENSE is checked to be a copy of LICENSE.
 Exit 0 when nothing is missing.
+
+What it checks is that a binding names the function outside a comment (a
+line that is only a comment is not read): for Rust, its declaration in
+zebkit-rs, the crate the safe one is over, not a call from the safe crate;
+for Python, Go and JavaScript, the name anywhere in the code, a string
+included (Python declares its functions by name). It is a check that nothing
+was forgotten, not that each is called or works: the tests are for that.
 """
 
 import pathlib
@@ -25,8 +32,12 @@ HEADERS = ROOT / "src/engine/include/zebkit"
 EXEMPT = {"zebkit_win_set_sandbox", "zebkit_helper_main"}
 
 
+COMMENT = re.compile(r"^\s*(#|//|/\*|\*)")
+
+
 def text(*patterns):
-    return "\n".join(p.read_text(errors="replace") for pattern in patterns for p in sorted(ROOT.glob(pattern)))
+    return "\n".join(line for pattern in patterns for p in sorted(ROOT.glob(pattern))
+                     for line in p.read_text(errors="replace").splitlines() if not COMMENT.match(line))
 
 
 BINDINGS = {

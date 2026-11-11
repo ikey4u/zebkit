@@ -50,6 +50,7 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_security_policy.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 struct zebkit_request {
@@ -466,8 +467,7 @@ bool zebkit_scheme_register(const char* scheme, unsigned flags) {
 void zebkit_scheme_handle(const char* scheme,
                           zebkit_scheme_func func,
                           void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!scheme)
+  if (!scheme || !zebkit::CurrentlyOnEngineThread())
     return;
   zebkit::Handlers()[base::ToLowerASCII(scheme)] = {func, data};
 }

@@ -3,3 +3,6 @@
 symbol_level = 1
 blink_symbol_level = 1
 v8_symbol_level = 1
+# For development, unlike slim-macos-native (the release a Mac's dist.sh
+# makes): Chromium's DCHECKs on, as in any build that is not official.
+dcheck_always_on = true

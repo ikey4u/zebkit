@@ -527,13 +527,9 @@ bool Finite(double a, double b = 0, double c = 0, double d = 0, double e = 0,
          std::isfinite(d) && std::isfinite(e) && std::isfinite(f);
 }
 
-char* Copy(const std::string& text) {
-  return strdup(text.c_str());
-}
-
 void Failed(char** error, const std::string& message) {
   if (error)
-    *error = Copy(message);
+    *error = strdup(message.c_str());
 }
 
 }  // namespace

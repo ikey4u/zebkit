@@ -160,10 +160,8 @@ class NativePlatform : public WindowPlatform {
           [ns_window standardWindowButton:kind].hidden = YES;
       }
     }
-    // The smallest it may be without the view bindings wrecked; in window
-    // coordinates. zebkit_view_set_size_limits() has another.
-    ns_window.contentMinSize =
-        [ns_window.contentView convertSize:NSMakeSize(400, 300) toView:nil];
+    // No minimum of the engine's, as on the other systems:
+    // zebkit_view_set_size_limits() and minWidth/minHeight give one.
     ns_window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
     // The delegate cleans up rather than the window as it closes, from the
     // autorelease pool, so that the Window is not on the stack during it (a
@@ -209,8 +207,27 @@ class NativePlatform : public WindowPlatform {
   void CleanUp(Window* window) override { windows_.erase(window); }
 
   bool Destroy(Window* window) override {
-    [windows_[window].window performClose:nil];
-    return true;  // performClose: destroys the Window.
+    auto it = windows_.find(window);
+    if (it == windows_.end())
+      return false;
+    ZebkitWindowDelegate* delegate = it->second;
+    NSWindow* ns_window = delegate.window;
+    if (!ns_window)
+      return false;
+    // Not performClose:, which only beeps when a sheet (a file panel, a
+    // dialog) is attached, and leaves the Window: its sheets ended, then
+    // what the close button does, which destroys the Window.
+    // A few passes, for sheets on sheets: one that does not end (its owner
+    // refuses) does not hold the close up for ever.
+    for (int pass = 0; pass < 8; ++pass) {
+      NSWindow* sheet = ns_window.attachedSheet;
+      if (!sheet)
+        break;
+      [ns_window endSheet:sheet];
+    }
+    [delegate windowShouldClose:ns_window];
+    [ns_window close];
+    return true;
   }
 
   void Activate(Window* window) override {
@@ -246,6 +263,7 @@ class NativePlatform : public WindowPlatform {
     capabilities.actions = true;
     capabilities.controls_drawn_by_engine = false;
     capabilities.controls_height = true;
+    capabilities.appearance = true;
     return capabilities;
   }
 
@@ -361,6 +379,9 @@ class NativePlatform : public WindowPlatform {
       ns_window.backgroundColor = skia::SkColorToSRGBNSColor(*options.background);
       if (content::RenderWidgetHostView* view = window->web_contents()->GetRenderWidgetHostView())
         view->SetBackgroundColor(*options.background);
+    } else {
+      // null: the system's colour again, as on views.
+      ns_window.backgroundColor = NSColor.windowBackgroundColor;
     }
     switch (options.appearance) {
       case WindowOptions::Appearance::kSystem: ns_window.appearance = nil; break;

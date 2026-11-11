@@ -1,6 +1,5 @@
 # Expected differences between zebkit and Chrome under tests/engine/cdp_clients.mjs:
 # "<client>: <case> | <reason>", one a line. A case listed here is still run and
-# reported; it fails no run, and one that stops differing is reported.
-puppeteer: raw: screencast frames | Page.screencastFrame's metadata.monotonicTimestamp is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
-puppeteer: raw: DevTools HTTP endpoints seen by a target | /json/version's File-Path-Style is newer than Chromium 155: the reference is Playwright's Chrome, a major version ahead
+# reported; it fails no run, and one that stops differing is reported. A case
+# that fails alike in both fails the run unless it is listed here too.
 playwright: emulation: context options | (1234.5).toLocaleString() in de-DE: the package's ICU data holds English and CJK only (the size budget); navigator.language is de-DE as on Chrome

@@ -2,14 +2,16 @@
 // file manager's org.freedesktop.FileManager1 for showing a file.
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/files/file_util.h"
+#include "base/process/kill.h"
 #include "base/process/launch.h"
 #include "net/base/filename_util.h"
 #include "zebkit/engine/desktop_actions.h"
 
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
 #include "components/dbus/thread_linux/dbus_thread_linux.h"
 #include "components/dbus/utils/call_method.h"
 #include "dbus/bus.h"
@@ -25,10 +27,13 @@ bool Launch(std::vector<std::string> argv, std::string* error) {
   // Its own process group, not the engine's: it outlives it, as a desktop's
   // program does.
   options.new_process_group = true;
-  if (!base::LaunchProcess(argv, options).IsValid()) {
+  base::Process process = base::LaunchProcess(argv, options);
+  if (!process.IsValid()) {
     *error = "could not run " + argv[0];
     return false;
   }
+  // Waited for when it ends, so that it leaves no zombie behind.
+  base::EnsureProcessGetsReaped(std::move(process));
   return true;
 }
 
@@ -39,7 +44,7 @@ bool OpenWithSystem(const GURL& url, std::string* error) {
 }
 
 bool ShowInFileManager(const base::FilePath& path, std::string* error) {
-#if defined(ZEBKIT_COOKIES_USE_DBUS)
+#if defined(ZEBKIT_USE_DBUS)
   // The file selected in its folder, where the file manager has the interface.
   scoped_refptr<dbus::Bus> bus = dbus_thread_linux::GetSharedSessionBus();
   dbus::ObjectProxy* proxy =

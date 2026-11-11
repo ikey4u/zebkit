@@ -2,6 +2,9 @@
 
 python3 tests/engine/native_host_input.py /path/to/gtk-host [engine switches...]
 Uses a private Xvfb server; never sends input to the user's display.
+
+Run by hand, not by scripts/engine-test.sh: the hosts are built apart, and
+examples/native-host/README.md has the commands for the GTK, Qt and winit hosts.
 """
 import ctypes as C
 import os

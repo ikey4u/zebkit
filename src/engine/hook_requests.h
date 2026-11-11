@@ -24,6 +24,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "content/public/browser/browser_thread.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -76,7 +77,9 @@ class HookRequests {
     if (count >= 1024)
       return false;
     const uintptr_t id = next_++;
-    const uint32_t timeout = view->*(Traits::kTimeout);
+    // The deadline of the view that decides, a popup's opener's included.
+    zebkit_view* decider = view->Decider(Traits::kHandler);
+    const uint32_t timeout = (decider ? decider : view)->*(Traits::kTimeout);
     metadata.Set("id", base::NumberToString(id));
     metadata.Set("state", "pending");
     metadata.Set("timeoutMs", static_cast<int>(timeout));
@@ -147,7 +150,7 @@ class HookRequests {
 
   // zebkit_view_on_<hook>: replacing a function ends what it was asked.
   void Install(zebkit_view* view, auto function, void* data) {
-    if (!Ready() || !view || !view->web_contents())
+    if (!Ready() || !zebkit::LiveView(view) || !view->web_contents())
       return;
     if (view->*(Traits::kHandler) == function && view->*(Traits::kData) == data)
       return;
@@ -162,7 +165,7 @@ class HookRequests {
   }
 
   void Observe(zebkit_view* view, auto function, void* data) {
-    if (!Ready() || !view || !view->web_contents())
+    if (!Ready() || !zebkit::LiveView(view) || !view->web_contents())
       return;
     ++(view->*(Traits::kGeneration));
     view->*(Traits::kResult) = function;
@@ -170,7 +173,7 @@ class HookRequests {
   }
 
   bool SetTimeout(zebkit_view* view, uint32_t milliseconds) {
-    if (!Ready() || !view || !view->web_contents() || !milliseconds || milliseconds > 300000)
+    if (!Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000)
       return false;
     view->*(Traits::kTimeout) = milliseconds;
     return true;
@@ -226,20 +229,26 @@ class HookRequests {
     function(view.get(), reinterpret_cast<typename Traits::Request*>(id), json.c_str(), data);
   }
 
+  // To the view's result function, or that of the opener it inherits from,
+  // as Tell<> (page_hooks.cc) tells.
   static void Report(base::WeakPtr<zebkit_view> view, base::DictValue event) {
-    if (!view || !(view.get()->*(Traits::kResult)))
+    if (!view)
+      return;
+    zebkit_view* teller = view->Decider(Traits::kResult);
+    if (!teller || !(teller->*(Traits::kResult)))
       return;
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
-            [](base::WeakPtr<zebkit_view> view, uint64_t generation, std::string json) {
-              if (!view || view.get()->*(Traits::kGeneration) != generation ||
-                  !(view.get()->*(Traits::kResult)))
+            [](base::WeakPtr<zebkit_view> view, base::WeakPtr<zebkit_view> teller, uint64_t generation,
+               std::string json) {
+              if (!view || !teller || teller.get()->*(Traits::kGeneration) != generation ||
+                  !(teller.get()->*(Traits::kResult)))
                 return;
-              auto function = view.get()->*(Traits::kResult);
-              function(view.get(), json.c_str(), view.get()->*(Traits::kResultData));
+              auto function = teller.get()->*(Traits::kResult);
+              function(view.get(), json.c_str(), teller.get()->*(Traits::kResultData));
             },
-            view, view.get()->*(Traits::kGeneration),
+            view, teller->GetWeakPtr(), teller->*(Traits::kGeneration),
             base::WriteJson(event).value_or("{}")));
   }
 

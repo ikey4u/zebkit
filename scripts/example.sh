@@ -108,6 +108,8 @@ case "$example" in
         # With nothing named, the sample beside the example.
         (( $# )) || set -- "$ZEBKIT_ROOT/examples/sample.mp3"
         (( $# > 1 )) || set -- "$1" "$out/$(basename "${1%.*}").wav"
+        # Named as the caller meant them, from where they called this.
+        set -- "$(caller_path "$1")" "$(caller_path "$2")" "${@:3}"
         ;;
 esac
 

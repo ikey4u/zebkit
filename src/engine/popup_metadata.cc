@@ -1,4 +1,5 @@
 #include "zebkit/engine/popup_metadata.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 #include "url/origin.h"
 #include <stdlib.h>
@@ -83,12 +84,12 @@ void SetWindowOpenInfo(zebkit_view* opener, zebkit_view* popup, const GURL& url,
 
 extern "C" {
 void zebkit_view_on_window_open_event(zebkit_view* view, zebkit_window_open_event_func function, void* data) {
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents()) return;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->window_open_event_generation_;
   view->on_window_open_event_ = function; view->on_window_open_event_data_ = data;
 }
 char* zebkit_view_get_window_open_info(zebkit_view* view) {
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !view || !view->web_contents()) return nullptr;
+  if (!zebkit::LiveView(view) || !view->web_contents()) return nullptr;
   return strdup(base::WriteJson(view->window_open_info_).value_or("{}").c_str());
 }
 }

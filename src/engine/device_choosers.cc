@@ -51,6 +51,16 @@ namespace {
 class Grants {
  public:
   using Key = std::pair<content::BrowserContext*, url::Origin>;
+  Grants() { All().insert(this); }
+  ~Grants() { All().erase(this); }
+  // Every kind's, for a profile that goes: another at its address gets none.
+  static std::set<Grants*>& All() {
+    static base::NoDestructor<std::set<Grants*>> all;
+    return *all;
+  }
+  void Forget(content::BrowserContext* profile) {
+    std::erase_if(granted_, [&](const auto& entry) { return entry.first.first == profile; });
+  }
   void Add(const Key& key, const std::string& id) { granted_[key].insert(id); }
   bool Has(const Key& key, const std::string& id) const {
     auto it = granted_.find(key);
@@ -819,6 +829,11 @@ class SerialPorts : public content::SerialDelegate, public device::mojom::Serial
 };
 
 }  // namespace
+
+void ForgetDeviceGrants(content::BrowserContext* profile) {
+  for (Grants* grants : Grants::All())
+    grants->Forget(profile);
+}
 
 content::UsbDelegate* UsbChooserDelegate() {
   static base::NoDestructor<UsbDevices> delegate;

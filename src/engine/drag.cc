@@ -62,6 +62,7 @@
 #include "ui/gfx/geometry/vector2d.h"
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/page_internal.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -95,24 +96,6 @@ blink::DragOperationsMask ToMask(unsigned operations) {
   return static_cast<blink::DragOperationsMask>(operations & ZEBKIT_DRAG_ALL);
 }
 
-int BlinkModifiers(unsigned modifiers) {
-  int out = 0;
-  if (modifiers & ZEBKIT_MODIFIER_SHIFT)
-    out |= blink::WebInputEvent::kShiftKey;
-  if (modifiers & ZEBKIT_MODIFIER_CONTROL)
-    out |= blink::WebInputEvent::kControlKey;
-  if (modifiers & ZEBKIT_MODIFIER_ALT)
-    out |= blink::WebInputEvent::kAltKey;
-  if (modifiers & ZEBKIT_MODIFIER_META)
-    out |= blink::WebInputEvent::kMetaKey;
-  if (modifiers & ZEBKIT_MODIFIER_LEFT_BUTTON)
-    out |= blink::WebInputEvent::kLeftButtonDown;
-  if (modifiers & ZEBKIT_MODIFIER_MIDDLE_BUTTON)
-    out |= blink::WebInputEvent::kMiddleButtonDown;
-  if (modifiers & ZEBKIT_MODIFIER_RIGHT_BUTTON)
-    out |= blink::WebInputEvent::kRightButtonDown;
-  return out;
-}
 
 // What a drag carries, to and from JSON (<zebkit/page.h>).
 std::string DropDataToJson(const content::DropData& data) {
@@ -659,7 +642,7 @@ DragState* StateOf(content::WebContents* contents) {
 }
 
 DragState* StateOf(zebkit_view* view) {
-  return view ? StateOf(view->web_contents()) : nullptr;
+  return zebkit::LiveView(view) ? StateOf(view->web_contents()) : nullptr;
 }
 
 bool OnDragStarted(content::WebContents* contents,
@@ -709,6 +692,27 @@ void NoteMousePosition(zebkit_view* view, float x, float y) {
     state->mouse = gfx::PointF(x, y);
 }
 
+// The application's answer for a drag over or a drop, called once: with the
+// operation, or with none as the view closes, before on_close
+// (zebkit_view::AddCancel()).
+base::OnceCallback<void(unsigned)> DragAnswer(zebkit_view* view,
+                                              zebkit_drag_operation_func func,
+                                              void* data) {
+  const int id = view->AddCancel(base::BindOnce(
+      [](zebkit_view* view, zebkit_drag_operation_func func, void* data) {
+        if (func)
+          func(view, ZEBKIT_DRAG_NONE, data);
+      },
+      base::Unretained(view), func, data));
+  return base::BindOnce(
+      [](base::WeakPtr<zebkit_view> view, int id, zebkit_drag_operation_func func,
+         void* data, unsigned operation) {
+        if (view && view->TakeCancel(id) && func)
+          func(view.get(), operation, data);
+      },
+      view->GetWeakPtr(), id, func, data);
+}
+
 }  // namespace zebkit
 
 using zebkit::StateOf;
@@ -718,6 +722,7 @@ extern "C" {
 void zebkit_view_on_drag_start(zebkit_view* view,
                                zebkit_drag_func func,
                                void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::InstallDragHook();
   if (zebkit::DragState* state = StateOf(view)) {
     state->on_start = func;
@@ -728,6 +733,7 @@ void zebkit_view_on_drag_start(zebkit_view* view,
 void zebkit_view_on_drag_end(zebkit_view* view,
                              zebkit_drag_end_func func,
                              void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::DragState* state = StateOf(view)) {
     state->on_end = func;
     state->on_end_data = data;
@@ -735,6 +741,7 @@ void zebkit_view_on_drag_end(zebkit_view* view,
 }
 
 bool zebkit_view_is_dragging(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   zebkit::DragState* state = StateOf(view);
   return state && state->source.has_value();
 }
@@ -745,6 +752,7 @@ void zebkit_view_drag_enter(zebkit_view* view,
                             float y,
                             unsigned operations,
                             unsigned modifiers) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DragState* state = StateOf(view);
   if (!state)
     return;
@@ -762,22 +770,17 @@ void zebkit_view_drag_over(zebkit_view* view,
                            unsigned modifiers,
                            zebkit_drag_operation_func func,
                            void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DragState* state = StateOf(view);
   if (!state)
     return;
   state->target.operations = zebkit::ToMask(operations);
   state->Over(gfx::PointF(x, y), zebkit::BlinkModifiers(modifiers),
-              base::BindOnce(
-                  [](base::WeakPtr<zebkit_view> view,
-                     zebkit_drag_operation_func func, void* data,
-                     unsigned operation) {
-                    if (view && func)
-                      func(view.get(), operation, data);
-                  },
-                  view->GetWeakPtr(), func, data));
+              zebkit::DragAnswer(view, func, data));
 }
 
 void zebkit_view_drag_leave(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::DragState* state = StateOf(view))
     state->Leave();
 }
@@ -788,16 +791,11 @@ void zebkit_view_drop(zebkit_view* view,
                       unsigned modifiers,
                       zebkit_drag_operation_func func,
                       void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DragState* state = StateOf(view);
   if (!state)
     return;
-  auto done = base::BindOnce(
-      [](base::WeakPtr<zebkit_view> view, zebkit_drag_operation_func func,
-         void* data, unsigned operation) {
-        if (view && func)
-          func(view.get(), operation, data);
-      },
-      view->GetWeakPtr(), func, data);
+  auto done = zebkit::DragAnswer(view, func, data);
   const gfx::PointF point(x, y);
   const int blink = zebkit::BlinkModifiers(modifiers);
   const std::vector<ui::FileInfo>& files = state->target.data.filenames;
@@ -835,6 +833,7 @@ void zebkit_view_drag_source_end(zebkit_view* view,
                                  float x,
                                  float y,
                                  unsigned operation) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::DragState* state = StateOf(view);
   if (!state || !state->source)
     return;

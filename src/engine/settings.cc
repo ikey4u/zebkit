@@ -3,6 +3,7 @@
 #pragma allow_unsafe_buffers
 #endif
 #include "zebkit/engine/settings.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 #include <stdlib.h>
 #include <string.h>
@@ -146,7 +147,7 @@ void ApplyViewSettings(content::WebContents* contents, Preferences* prefs) {
 extern "C" {
 bool zebkit_view_set_settings(zebkit_view* view, const char* json, char** error) {
   auto fail = [&](const std::string& message) { if (error) *error = strdup(message.c_str()); return false; };
-  if (!view || !view->web_contents()) return fail("the view is closed");
+  if (!zebkit::LiveView(view) || !view->web_contents()) return fail("the view is closed");
   if (!json || strlen(json) > 65536) return fail("view settings must be a JSON object of at most 64 KiB");
   auto parsed = base::JSONReader::Read(json, 0);
   if (!parsed || !parsed->is_dict()) return fail("view settings are not a JSON object");
@@ -161,6 +162,6 @@ bool zebkit_view_set_settings(zebkit_view* view, const char* json, char** error)
   return true;
 }
 char* zebkit_view_get_settings(zebkit_view* view) {
-  return view && view->web_contents() ? strdup(base::WriteJson(view->settings_).value_or("{}").c_str()) : nullptr;
+  return zebkit::LiveView(view) && view->web_contents() ? strdup(base::WriteJson(view->settings_).value_or("{}").c_str()) : nullptr;
 }
 }

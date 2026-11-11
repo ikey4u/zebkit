@@ -695,8 +695,12 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env ? env : "http://127.0.0.1:8000");
+    snprintf(base, sizeof(base), "%s", env);
     const char *runs = getenv("ZEBKIT_AUTOMATION_BENCH");
     if (runs && *runs) {
         benchmark = 1;

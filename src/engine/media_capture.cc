@@ -50,6 +50,7 @@
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/media_capture.mojom.h"
 #include "zebkit/engine/media_capture_writer.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -528,6 +529,24 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
   return capture;
 }
 
+// @func's answer, called once: with the JSON, or with null as the view
+// closes, before on_close (zebkit_view::AddCancel()).
+MediaJsonCallback OnceForView(zebkit_view* view, zebkit_result_func func, void* data) {
+  const int id = view->AddCancel(base::BindOnce(
+      [](zebkit_view* view, zebkit_result_func func, void* data) {
+        if (func)
+          func(view, nullptr, "the view was closed", data);
+      },
+      base::Unretained(view), func, data));
+  return base::BindOnce(
+      [](base::WeakPtr<zebkit_view> view, int id, zebkit_result_func func,
+         void* data, std::string json) {
+        if (view && view->TakeCancel(id) && func)
+          func(view.get(), json.c_str(), nullptr, data);
+      },
+      view->GetWeakPtr(), id, func, data);
+}
+
 }  // namespace zebkit
 
 extern "C" {
@@ -539,16 +558,10 @@ void zebkit_media_keep_history(bool keep) {
 void zebkit_view_media_list(zebkit_view* view,
                             zebkit_result_func func,
                             void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::ListMedia(
       view->web_contents(),
-      base::BindOnce(
-          [](base::WeakPtr<zebkit_view> view, zebkit_result_func func,
-             void* data, std::string json) {
-            if (func) {
-              func(view.get(), json.c_str(), nullptr, data);
-            }
-          },
-          view->GetWeakPtr(), func, data));
+      zebkit::OnceForView(view, func, data));
 }
 
 void zebkit_view_media_at(zebkit_view* view,
@@ -556,16 +569,10 @@ void zebkit_view_media_at(zebkit_view* view,
                           float y,
                           zebkit_result_func func,
                           void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::MediaAt(
       view->web_contents(), x, y,
-      base::BindOnce(
-          [](base::WeakPtr<zebkit_view> view, zebkit_result_func func,
-             void* data, std::string json) {
-            if (func) {
-              func(view.get(), json.c_str(), nullptr, data);
-            }
-          },
-          view->GetWeakPtr(), func, data));
+      zebkit::OnceForView(view, func, data));
 }
 
 zebkit_media_capture* zebkit_media_capture_start(zebkit_view* view,
@@ -576,9 +583,13 @@ zebkit_media_capture* zebkit_media_capture_start(zebkit_view* view,
   if (error) {
     *error = nullptr;
   }
+  if (!zebkit::LiveView(view)) {
+    SetError(error, "the view is closed, or this is not the engine's thread");
+    return nullptr;
+  }
   std::string problem;
   zebkit_media_capture* capture = zebkit::StartMediaCapture(
-      view ? view->web_contents() : nullptr, media_id ? media_id : "",
+      view->web_contents(), media_id ? media_id : "",
       path ? path : "", options_json ? options_json : "", &problem);
   if (!capture) {
     SetError(error, problem);
@@ -589,7 +600,8 @@ zebkit_media_capture* zebkit_media_capture_start(zebkit_view* view,
 void zebkit_media_capture_on_progress(zebkit_media_capture* capture,
                                       zebkit_media_capture_func func,
                                       void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!capture || !zebkit::CurrentlyOnEngineThread())
+    return;
   capture->on_progress = func;
   capture->progress_data = data;
 }
@@ -597,24 +609,26 @@ void zebkit_media_capture_on_progress(zebkit_media_capture* capture,
 void zebkit_media_capture_on_done(zebkit_media_capture* capture,
                                   zebkit_media_capture_func func,
                                   void* data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!capture || !zebkit::CurrentlyOnEngineThread())
+    return;
   capture->on_done = func;
   capture->done_data = data;
 }
 
 void zebkit_media_capture_stop(zebkit_media_capture* capture) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!capture || !zebkit::CurrentlyOnEngineThread())
+    return;
   capture->Stop("stopped", std::string());
 }
 
 char* zebkit_media_capture_status(zebkit_media_capture* capture) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!capture || !zebkit::CurrentlyOnEngineThread())
+    return nullptr;
   return Duplicate(capture->Status());
 }
 
 void zebkit_media_capture_free(zebkit_media_capture* capture) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!capture) {
+  if (!capture || !zebkit::CurrentlyOnEngineThread()) {
     return;
   }
   capture->released = true;

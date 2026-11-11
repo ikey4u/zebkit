@@ -3,7 +3,7 @@
  * available in <zebkit/media.h>. */
 #ifndef ZEBKIT_MEDIA_TAP_H
 #define ZEBKIT_MEDIA_TAP_H
-#include <zebkit/zebkit.h>
+#include "zebkit.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

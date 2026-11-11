@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import zebkit
+from harness import activated
 
 env = os.environ
 MODE, BASE, TLS = env['ZEBKIT_HOOK_MODE'], env['ZEBKIT_HOOK_BASE'], env['ZEBKIT_HOOK_TLS']
@@ -437,7 +438,8 @@ def menu(mode):
     view.close()
 
 
-FULL = "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)"
+# Once the evaluation's user activation has reached the browser (harness.py).
+FULL = activated("document.documentElement.requestFullscreen()") + ".then(() => 'in', e => e.name)"
 
 
 def fullscreen(mode):
@@ -955,7 +957,7 @@ def popup(mode):
         # Its navigations are refused too; a link with download attribute is not one.
         ev(child, "const a = document.createElement('a'); a.href = '/download.bin'; a.download = ''; a.click(); 1")
         wait(lambda: any(e.get('state') == 'cancelled' and e.get('done') for e in progress), 'refused')
-        assert ev(child, "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)") == 'TypeError'
+        assert ev(child, FULL) == 'TypeError'
         child.close()
         wait(lambda: child_state['closed'], 'closed')
         return
@@ -1011,9 +1013,8 @@ def two_views(mode):
     assert target.stat().st_size == 65536
     assert ev(first, "fetch('/held').then(() => 'passed', () => 'failed')") == 'failed'
     assert ev(second, "fetch('/held').then(() => 'passed', () => 'failed')") == 'passed'
-    full = "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)"
     second.focus()
-    assert ev(first, full) == 'TypeError' and ev(second, full) == 'in'
+    assert ev(first, FULL) == 'TypeError' and ev(second, FULL) == 'in'
     first.close()
     second.close()
 

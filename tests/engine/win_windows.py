@@ -1,4 +1,10 @@
-"""On Windows: the visible top-level windows, by process, class and title."""
+"""On Windows: the visible top-level windows, by process, class and title.
+
+    python win_windows.py
+
+A diagnostic, run by hand on a Windows machine to see what windows a test left
+on the screen; not a test the suite runs: it checks nothing itself.
+"""
 
 import ctypes
 import ctypes.wintypes as w

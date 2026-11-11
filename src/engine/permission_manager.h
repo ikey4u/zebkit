@@ -27,21 +27,12 @@ class PermissionManager : public PermissionControllerDelegate {
 
   ~PermissionManager() override;
 
-  // zebkit: the embedder's answer for @permission at @requesting_origin,
-  // before the shell's own: granted, denied, or nullopt to leave it to the
-  // shell (Playwright's grantPermissions).
-  using EmbedderDecision =
-      base::RepeatingCallback<std::optional<blink::mojom::PermissionStatus>(
-          blink::PermissionType permission,
-          const GURL& requesting_origin)>;
-  static void SetEmbedderDecision(EmbedderDecision decision);
-
   using DocumentStatus = base::RepeatingCallback<
       std::optional<blink::mojom::PermissionStatus>(RenderFrameHost*,
           blink::PermissionType, const GURL&, const GURL&)>;
   using RequestReply = base::OnceCallback<void(const std::vector<PermissionResult>&)>;
   // Return true only after taking ownership of *reply. false preserves the
-  // normal shell decision. Called after fenced-frame rejection.
+  // engine's own decision. Called after fenced-frame rejection.
   using DocumentRequest = base::RepeatingCallback<bool(
       RenderFrameHost*, const PermissionRequestDescription&, RequestReply*)>;
   static void SetDocumentPermissionHooks(DocumentStatus status, DocumentRequest request);

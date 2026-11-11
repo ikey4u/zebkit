@@ -10,7 +10,9 @@ zebkit's own code (the engine's embedder in `src/`, the bindings in
 `bindings/`, the tools in `tools/`, the scripts) is under the **GNU Lesser
 General Public License, version 2.1 or later** (`LGPL-2.1-or-later`), in
 `LICENSE`. The Rust crates (`zebkit`, `zebkit-rs`, `zebkit-build`), the
-Python package and every release archive carry the same `LICENSE`.
+Python package and the Go module carry the same `LICENSE`, and so does every
+release archive from the release after 0.4.0 on (0.4.0's archives were made
+before `LICENSE` was added).
 
 ## What the engine contains
 
@@ -24,7 +26,8 @@ ICU, HarfBuzz, FreeType, zlib, Zstandard, Brotli, libjpeg-turbo, libwebp,
 libvpx, dav1d, Opus, BoringSSL (OpenSSL and ISC) and others; SQLite is in
 the public domain.
 
-Every release archive has three files at its top:
+From the release after 0.4.0 on, every release archive has three files at
+its top:
 
 | File | What it is |
 |---|---|
@@ -67,8 +70,8 @@ of it, in short:
    your changes under the LGPL as well.
 4. **Keep the license notices** in the files you received.
 
-The Rust and Python bindings are under the same license and are compiled or
-loaded into your program; the same four points apply.
+The bindings (Rust, Python, Go) and `zebkit-js` are under the same license
+and are compiled or loaded into your program; the same four points apply.
 
 ## Codecs
 

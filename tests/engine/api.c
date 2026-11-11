@@ -217,14 +217,6 @@ static void ready(void *data) {
     zebkit_free(error);
     char *url = zebkit_cdp_get_url();
     check(url && strncmp(url, "ws://127.0.0.1:", 15) == 0 && strstr(url, "/devtools/browser/"), "zebkit_cdp_get_url", url);
-    /* For the script that runs this, which checks the endpoint over HTTP. */
-    if (url && getenv("ZEBKIT_TEST_CDP_FILE")) {
-        FILE *file = fopen(getenv("ZEBKIT_TEST_CDP_FILE"), "w");
-        if (file) {
-            fprintf(file, "%u\n", port);
-            fclose(file);
-        }
-    }
     zebkit_free(url);
 
     /* The application's menu: checked, and taken. */

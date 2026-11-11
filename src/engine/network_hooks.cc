@@ -47,6 +47,7 @@
 #include "mojo/public/cpp/system/data_pipe_producer.h"
 #include "mojo/public/cpp/system/file_data_source.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/mime_sniffer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
@@ -70,6 +71,7 @@
 #include "third_party/re2/src/re2/re2.h"
 #include "url/gurl.h"
 #include "zebkit/engine/automation_network.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/hook_requests.h"
 
 namespace zebkit {
@@ -297,8 +299,18 @@ std::string RawResponseHeaders(const std::string& status_line,
   return net::HttpUtil::AssembleRawHeaders(raw + "\r\n");
 }
 
+// The view whose on_network_event function hears of @view's requests: its
+// own, or that of the opener a popup inherits from; null when none.
+zebkit_view* EventTeller(zebkit_view* view) {
+  zebkit_view* teller = view ? view->Decider(&zebkit_view::on_network_event_) : nullptr;
+  return teller && teller->on_network_event_ ? teller : nullptr;
+}
+
 // Told, without waiting. Bounded, and what was dropped is counted.
 void PostEvent(zebkit_view* view, base::DictValue event) {
+  zebkit_view* teller = EventTeller(view);
+  if (!teller)
+    return;
   if (view->network_events_pending_ >= 4096) {
     ++view->network_events_dropped_;
     return;
@@ -307,19 +319,20 @@ void PostEvent(zebkit_view* view, base::DictValue event) {
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(
-          [](base::WeakPtr<zebkit_view> view, uint64_t generation, base::DictValue event) {
+          [](base::WeakPtr<zebkit_view> view, base::WeakPtr<zebkit_view> teller, uint64_t generation,
+             base::DictValue event) {
             if (!view)
               return;
             --view->network_events_pending_;
-            if (view->network_generation_ != generation || !view->on_network_event_)
+            if (!teller || teller->network_generation_ != generation || !teller->on_network_event_)
               return;
             event.Set("dropped", base::NumberToString(view->network_events_dropped_));
             view->network_events_dropped_ = 0;
             const std::string json = base::WriteJson(event).value_or("{}");
-            auto function = view->on_network_event_;
-            function(view.get(), json.c_str(), view->on_network_event_data_);
+            auto function = teller->on_network_event_;
+            function(view.get(), json.c_str(), teller->on_network_event_data_);
           },
-          view->GetWeakPtr(), view->network_generation_, std::move(event)));
+          view->GetWeakPtr(), teller->GetWeakPtr(), teller->network_generation_, std::move(event)));
 }
 
 // A response's body on its way to the page. The next chunk is read only when the
@@ -599,6 +612,10 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
     description.Set("status", parsed->response_code());
     description.Set("statusText", parsed->GetStatusText());
     description.Set("responseHeaders", ResponseHeaderList(parsed.get()));
+    // The address the response came from, after DNS: a host's rules can see a
+    // public name that resolved to a private address.
+    if (endpoint.address().IsValid())
+      description.Set("remoteAddress", endpoint.ToStringWithoutPort());
     Tell(kHeadersReceived, description);
     received_ = std::move(callback);
     Requests::Reply reply = base::BindOnce(&HeaderWatch::ReceivedDecided, weak_factory_.GetWeakPtr());
@@ -636,7 +653,7 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
     bool refused = false;
     zebkit_view* view = PolicyViewFor(view_, profile_, worker_, &refused);
     zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
-    if (!decider || !view->on_network_event_ || !NetworkStageMatches(decider, stage, type_, url_, main_frame_, false))
+    if (!decider || !EventTeller(view) || !NetworkStageMatches(decider, stage, type_, url_, main_frame_, false))
       return;
     base::DictValue event = description.Clone();
     event.Set("kind", stage);
@@ -748,8 +765,13 @@ class Loader : public network::mojom::URLLoader,
   ~Loader() override {
     Loaders().erase(this);
     Requests::Get().Abandon(held_);
+    ForgetRequestId();
+  }
+
+  void ForgetRequestId() {
     if (network_request_id_ && target_->header_client)
       target_->header_client->Remove(*network_request_id_);
+    network_request_id_.reset();
   }
 
   void Start() { AskAtRequest(); }
@@ -938,6 +960,9 @@ class Loader : public network::mojom::URLLoader,
       // Ours to tell apart: a page chooses its request's number.
       options |= network::mojom::kURLLoadOptionUseHeaderClient;
       request_id = content::GlobalRequestID::MakeBrowserInitiated().request_id;
+      // A second send (a redirect the application made) leaves no entry of
+      // the first behind to reach this loader after it has gone.
+      ForgetRequestId();
       network_request_id_ = request_id;
       target_->header_client->Add(request_id, this);
     } else if (hold) {
@@ -1046,7 +1071,7 @@ class Loader : public network::mojom::URLLoader,
     bool refused = false;
     zebkit_view* view = PolicyView(&refused);
     zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
-    if (!decider || !view->on_network_event_)
+    if (!decider || !EventTeller(view))
       return;
     const bool response_kind = strcmp(kind, "request") != 0;
     if (!always && !Matches(decider, !response_kind, false))
@@ -1300,6 +1325,7 @@ class Loader : public network::mojom::URLLoader,
 
   // Nothing more from the network.
   void Drop() {
+    ForgetRequestId();
     network_client_.reset();
     network_.reset();
     follow_.reset();
@@ -1530,7 +1556,7 @@ class WebSocketHold {
       Refuse(net::ERR_BLOCKED_BY_CLIENT);
       return;
     }
-    if (view->on_network_event_ && RulesMatch(decider, kWebSocket, url_, main_frame, true, false, false)) {
+    if (EventTeller(view) && RulesMatch(decider, kWebSocket, url_, main_frame, true, false, false)) {
       base::DictValue event = description.Clone();
       event.Set("kind", "request");
       PostEvent(view, std::move(event));
@@ -1786,7 +1812,7 @@ extern "C" {
 bool zebkit_view_set_network_filter(zebkit_view* view, const char* json, char** error) {
   using namespace zebkit;
   auto fail = [&](const std::string& message) { if (error) *error = strdup(message.c_str()); return false; };
-  if (!Requests::Get().Ready() || !view || !view->web_contents()) return fail("the view is closed");
+  if (!Requests::Get().Ready() || !zebkit::LiveView(view) || !view->web_contents()) return fail("the view is closed");
   std::optional<base::Value> parsed = base::JSONReader::Read(json ? json : "", base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_list() || parsed->GetList().size() > 256)
     return fail("a filter is a JSON array of at most 256 rules");
@@ -1850,7 +1876,7 @@ bool zebkit_view_set_network_filter(zebkit_view* view, const char* json, char** 
 }
 bool zebkit_view_set_network_filter_for_workers(zebkit_view* view, bool on) {
   using namespace zebkit;
-  if (!Requests::Get().Ready() || !view || !view->web_contents()) return false;
+  if (!Requests::Get().Ready() || !zebkit::LiveView(view) || !view->web_contents()) return false;
   content::BrowserContext* profile = view->web_contents()->GetBrowserContext();
   auto& policies = WorkerPolicies();
   auto it = policies.find(profile);
@@ -1867,19 +1893,22 @@ bool zebkit_view_set_network_filter_for_workers(zebkit_view* view, bool on) {
 }
 void zebkit_view_on_network_body(zebkit_view* view, zebkit_network_body_func function, void* data) {
   using namespace zebkit;
-  if (!Requests::Get().Ready() || !view || !view->web_contents()) return;
+  if (!Requests::Get().Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   // Bodies under way are not told to a function that did not see their start.
   ++view->network_body_generation_;
   view->on_network_body_ = function;
   view->on_network_body_data_ = data;
 }
 void zebkit_view_on_network(zebkit_view* view, zebkit_network_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::Requests::Get().Install(view, function, data);
 }
 void zebkit_view_on_network_event(zebkit_view* view, zebkit_network_event_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::Requests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_network_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::Requests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_network_request_info(zebkit_network_request* request) {

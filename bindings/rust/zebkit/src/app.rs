@@ -3,18 +3,18 @@
 //! elsewhere, where windows have no menu bar, its keys work in the
 //! application's windows.
 
-use std::cell::RefCell;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void};
 
 use crate::engine::require_engine_thread;
-use crate::{c_string, sys, take_error, take_string, Error};
+use crate::{c_string, string_from, sys, take_error, take_string, Error, Slot};
 
+// Out of its slot while it runs: a menu item's function may set a new menu.
 thread_local! {
-    static ON_MENU: RefCell<Option<Box<dyn FnMut(&str)>>> = const { RefCell::new(None) };
-    static ON_DOCK_MENU: RefCell<Option<Box<dyn FnMut(&str)>>> = const { RefCell::new(None) };
-    static ON_OPEN: RefCell<Option<Box<dyn FnMut(&str)>>> = const { RefCell::new(None) };
-    static ON_REOPEN: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
-    static ON_QUIT: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    static ON_MENU: Slot<dyn FnMut(&str)> = const { Slot::new() };
+    static ON_DOCK_MENU: Slot<dyn FnMut(&str)> = const { Slot::new() };
+    static ON_OPEN: Slot<dyn FnMut(&str)> = const { Slot::new() };
+    static ON_REOPEN: Slot<dyn FnMut()> = const { Slot::new() };
+    static ON_QUIT: Slot<dyn FnMut()> = const { Slot::new() };
 }
 
 /// Sets the application's menu from `json` (see `zebkit_app_set_menu()` in
@@ -23,9 +23,10 @@ thread_local! {
 /// `function` gets an item's `id` when it is chosen. On the engine's thread.
 pub fn set_menu<F: FnMut(&str) + 'static>(json: &str, function: F) -> Result<(), Error> {
     require_engine_thread("app::set_menu()");
-    ON_MENU.with(|slot| *slot.borrow_mut() = Some(Box::new(function)));
     let mut error = std::ptr::null_mut();
     if unsafe { sys::zebkit_app_set_menu(c_string(json).as_ptr(), Some(on_menu), std::ptr::null_mut(), &mut error) } {
+        // Only now: a refused menu leaves the old one, with its function.
+        ON_MENU.with(|slot| slot.set(Some(Box::new(function))));
         Ok(())
     } else {
         Err(unsafe { take_error(error, "the menu was refused") })
@@ -75,9 +76,9 @@ pub fn request_attention(critical: bool) {
 /// `function` gets a chosen item's id.
 pub fn set_dock_menu<F: FnMut(&str) + 'static>(json: &str, function: F) -> Result<(), Error> {
     require_engine_thread("app::set_dock_menu()");
-    ON_DOCK_MENU.with(|slot| *slot.borrow_mut() = Some(Box::new(function)));
     let mut error = std::ptr::null_mut();
     if unsafe { sys::zebkit_app_set_dock_menu(c_string(json).as_ptr(), Some(on_dock_menu), std::ptr::null_mut(), &mut error) } {
+        ON_DOCK_MENU.with(|slot| slot.set(Some(Box::new(function))));
         Ok(())
     } else {
         Err(unsafe { take_error(error, "the Dock's menu was refused") })
@@ -89,15 +90,29 @@ pub fn set_dock_menu<F: FnMut(&str) + 'static>(json: &str, function: F) -> Resul
 /// kept until this is set). Elsewhere files come as program arguments.
 pub fn on_open_files<F: FnMut(&str) + 'static>(function: F) {
     require_engine_thread("app::on_open_files()");
-    ON_OPEN.with(|slot| *slot.borrow_mut() = Some(Box::new(function)));
+    ON_OPEN.with(|slot| slot.set(Some(Box::new(function))));
     unsafe { sys::zebkit_app_on_open_files(Some(on_open), std::ptr::null_mut()) }
+}
+
+/// Stops [`on_open_files`]; files then wait for the next function.
+pub fn clear_open_files() {
+    require_engine_thread("app::clear_open_files()");
+    unsafe { sys::zebkit_app_on_open_files(None, std::ptr::null_mut()) }
+    ON_OPEN.with(|slot| slot.set(None));
 }
 
 /// The application's icon in the Dock was clicked while no window was shown.
 pub fn on_reopen<F: FnMut() + 'static>(function: F) {
     require_engine_thread("app::on_reopen()");
-    ON_REOPEN.with(|slot| *slot.borrow_mut() = Some(Box::new(function)));
+    ON_REOPEN.with(|slot| slot.set(Some(Box::new(function))));
     unsafe { sys::zebkit_app_on_reopen(Some(on_reopen_call), std::ptr::null_mut()) }
+}
+
+/// Stops [`on_reopen`].
+pub fn clear_reopen() {
+    require_engine_thread("app::clear_reopen()");
+    unsafe { sys::zebkit_app_on_reopen(None, std::ptr::null_mut()) }
+    ON_REOPEN.with(|slot| slot.set(None));
 }
 
 /// The user asked the application to quit (⌘Q, the Dock, logging out):
@@ -105,59 +120,36 @@ pub fn on_reopen<F: FnMut() + 'static>(function: F) {
 /// quits.
 pub fn on_quit_request<F: FnMut() + 'static>(function: F) {
     require_engine_thread("app::on_quit_request()");
-    ON_QUIT.with(|slot| *slot.borrow_mut() = Some(Box::new(function)));
+    ON_QUIT.with(|slot| slot.set(Some(Box::new(function))));
     unsafe { sys::zebkit_app_on_quit_request(Some(on_quit), std::ptr::null_mut()) }
 }
 
+/// Stops [`on_quit_request`]: zebkit quits when asked to.
+pub fn clear_quit_request() {
+    require_engine_thread("app::clear_quit_request()");
+    unsafe { sys::zebkit_app_on_quit_request(None, std::ptr::null_mut()) }
+    ON_QUIT.with(|slot| slot.set(None));
+}
+
 unsafe extern "C" fn on_menu(id: *const c_char, _data: *mut c_void) {
-    let id = CStr::from_ptr(id).to_string_lossy();
-    ON_MENU.with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            if let Some(function) = slot.as_mut() {
-                function(&id);
-            }
-        }
-    });
+    let id = string_from(id).unwrap_or_default();
+    ON_MENU.with(|slot| slot.call(|function| function(&id)));
 }
 
 unsafe extern "C" fn on_dock_menu(id: *const c_char, _data: *mut c_void) {
-    let id = CStr::from_ptr(id).to_string_lossy();
-    ON_DOCK_MENU.with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            if let Some(function) = slot.as_mut() {
-                function(&id);
-            }
-        }
-    });
+    let id = string_from(id).unwrap_or_default();
+    ON_DOCK_MENU.with(|slot| slot.call(|function| function(&id)));
 }
 
 unsafe extern "C" fn on_open(paths: *const c_char, _data: *mut c_void) {
-    let paths = CStr::from_ptr(paths).to_string_lossy();
-    ON_OPEN.with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            if let Some(function) = slot.as_mut() {
-                function(&paths);
-            }
-        }
-    });
+    let paths = string_from(paths).unwrap_or_else(|| "[]".to_string());
+    ON_OPEN.with(|slot| slot.call(|function| function(&paths)));
 }
 
 unsafe extern "C" fn on_reopen_call(_data: *mut c_void) {
-    ON_REOPEN.with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            if let Some(function) = slot.as_mut() {
-                function();
-            }
-        }
-    });
+    ON_REOPEN.with(|slot| slot.call(|function| function()));
 }
 
 unsafe extern "C" fn on_quit(_data: *mut c_void) {
-    ON_QUIT.with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            if let Some(function) = slot.as_mut() {
-                function();
-            }
-        }
-    });
+    ON_QUIT.with(|slot| slot.call(|function| function()));
 }

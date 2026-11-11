@@ -528,7 +528,7 @@ def test_cdp(base, port):
 def test_chrome(base, engine_sent):
     chrome = os.environ.get('ZEBKIT_TEST_CHROME') or shutil.which('google-chrome') or shutil.which('chromium')
     if not chrome:
-        print('not run: no Chrome to compare with', flush=True)
+        print('skip the comparison with Chrome: no Chrome here', flush=True)
         return
     with tempfile.TemporaryDirectory(prefix='zebkit-stages-chrome-', ignore_cleanup_errors=True) as profile, socket.socket() as free:
         free.bind(('127.0.0.1', 0))

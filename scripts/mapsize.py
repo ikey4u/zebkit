@@ -84,10 +84,8 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__.strip().splitlines()[-1].strip())
     profile = sys.argv[1]
-    # The engine library's map, or the content shell's of an older build.
+    # The engine library's map.
     map_path = SRC / "out" / profile / "libzebkit.so.1.map.gz"
-    if not map_path.exists():
-        map_path = SRC / "out" / profile / "content_shell.map.gz"
     if not map_path.exists():
         sys.exit(f"error: {map_path} not found; build the profile with scripts/build.sh {profile}")
 

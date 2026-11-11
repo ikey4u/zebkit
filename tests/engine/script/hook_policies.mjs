@@ -1,4 +1,6 @@
 // The hooks through host JavaScript; run by tests/engine/hook_policies.py.
+import {activated} from './helpers.mjs';
+
 const env = JSON.parse(zebkit.args[0]);
 const {ZEBKIT_HOOK_MODE: mode, ZEBKIT_HOOK_BASE: base, ZEBKIT_HOOK_TLS: tls, ZEBKIT_HOOK_FILES: files,
        ZEBKIT_HOOK_DOWNLOADS: downloads, cert, key, otherKey} = env;
@@ -282,7 +284,9 @@ async function menu() {
 }
 
 async function fullscreen() {
-  const FULL = `document.documentElement.requestFullscreen().then(() => 'in', e => e.name)`;
+  // Once the evaluation's user activation has reached the browser (it goes on a
+  // pipe of its own, and the call consumes it there).
+  const FULL = activated(`document.documentElement.requestFullscreen()`) + `.then(() => 'in', e => e.name)`;
   await openPage();
   const told = [];
   view.onFullscreen(event => told.push(event));
@@ -611,7 +615,9 @@ async function network() {
   } else if (mode === 'net-timeout') {
     await until(() => events.some(e => e.reason === 'timeout'), 'timeout');
     must(kept.info === null && !kept.respond({action: 'block'}), 'late');
-  }
+  } else if (mode === 'net-post') must(r && r.status === 200, answer);
+  // net-replace: its checks are above, the request stale and the handler-changed event.
+  else if (mode !== 'net-replace') must(false, 'a network mode with nothing to check');
   view.close();
 }
 

@@ -6,7 +6,22 @@ import sys
 import tempfile
 from http_auth_fixture import AuthFixture
 
+
+def rust_example(variable):
+    """The Rust example's path from @variable; without one a visible skip, or a
+    failure when ZEBKIT_TEST_REQUIRE_RUST=1 (the suite built the examples)."""
+    path=os.environ.get(variable)
+    if path:
+        return path
+    if os.environ.get('ZEBKIT_TEST_REQUIRE_RUST')=='1':
+        print('FAIL rust: '+variable+' is not set, and ZEBKIT_TEST_REQUIRE_RUST=1',flush=True)
+        sys.exit(1)
+    print('skip rust: '+variable+' is not set',flush=True)
+    return None
+
+
 script=Path(__file__).parent/'script/http_auth.mjs'
+rust=rust_example('ZEBKIT_HTTP_AUTH_RUST_EXAMPLE')
 for mode in ('allow','cancel-handler','close-request','close-result'):
     with AuthFixture() as fixture,tempfile.TemporaryDirectory(prefix='zebkit-http-auth-bindings-') as profile:
         result=subprocess.run([sys.argv[1],'--no-sandbox','--headless','--disable-gpu','--no-proxy-server',
@@ -15,7 +30,6 @@ for mode in ('allow','cancel-handler','close-request','close-result'):
         print(result.stdout,end='');print(result.stderr,end='',file=sys.stderr)
         assert result.returncode==0,result.returncode
         assert 'ok JavaScript HTTP auth '+mode in result.stdout,'JavaScript did not finish'
-        rust=os.environ.get('ZEBKIT_HTTP_AUTH_RUST_EXAMPLE')
         if rust:
             result=subprocess.run([rust,'--no-sandbox','--headless','--disable-gpu','--no-proxy-server',
                                    '--user-data-dir='+profile+'/rust'],

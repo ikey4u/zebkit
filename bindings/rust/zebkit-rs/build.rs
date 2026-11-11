@@ -13,14 +13,16 @@
 //!    GitHub. It is downloaded once into a cache directory, checked against
 //!    the SHA-256 in `engines.txt`, and unpacked there.
 //!
-//! The download uses the system's `curl`, `sha256sum` (`shasum` on macOS),
-//! `tar` and `xz`, so that this crate needs no others to build.
+//! The download uses the system's `curl`, `sha256sum` (`shasum` on macOS,
+//! `certutil` on Windows), `tar` and `xz`, so that this crate needs no
+//! others to build.
 //!
 //! Environment:
 //!
 //! - `ZEBKIT_DIR`: see above.
 //! - `ZEBKIT_CACHE_DIR`: where downloads are kept. Default
-//!   `$XDG_CACHE_HOME/zebkit`, else `~/.cache/zebkit`.
+//!   `$XDG_CACHE_HOME/zebkit`, else `%LOCALAPPDATA%\zebkit` on Windows,
+//!   else `~/.cache/zebkit`.
 //! - `ZEBKIT_DOWNLOAD_URL`: where the archives are, for a mirror. Default
 //!   `https://github.com/ikey4u/zebkit/releases/download/v<version>`.
 
@@ -168,29 +170,12 @@ fn download(manifest: &Path) -> PathBuf {
     fs::create_dir_all(&scratch).unwrap_or_else(|error| fail(&format!("cannot create {}: {error}", scratch.display())));
     let archive = scratch.join("archive.tar.xz");
 
-    println!("cargo:warning=downloading zebkit {version} for {target} (about 45 MiB, once) from {url}");
+    println!("cargo:warning=downloading zebkit {version} for {target} (once) from {url}");
     run(
         Command::new("curl").args(["--fail", "--location", "--silent", "--show-error", "--retry", "3", "--output"]).arg(&archive).arg(&url),
         &format!("cannot download {url}.\nIf this machine has no access to it, download the file elsewhere, unpack it and set ZEBKIT_DIR to the directory"),
     );
-    // macOS has shasum where Linux has sha256sum; both print the sum first.
-    let mut sum = if cfg!(target_os = "macos") {
-        Command::new("shasum")
-    } else {
-        Command::new("sha256sum")
-    };
-    if cfg!(target_os = "macos") {
-        sum.args(["-a", "256"]);
-    }
-    let output = sum
-        .arg(&archive)
-        .output()
-        .unwrap_or_else(|error| fail(&format!("cannot compute the archive's SHA-256: {error}")));
-    let actual = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let actual = sha256(&archive);
     if actual != checksum {
         let _ = fs::remove_dir_all(&scratch);
         fail(&format!(
@@ -198,7 +183,7 @@ fn download(manifest: &Path) -> PathBuf {
         ));
     }
     run(
-        Command::new("tar").arg("-xJf").arg(&archive).arg("-C").arg(&scratch),
+        Command::new(tar_program()).arg("-xJf").arg(&archive).arg("-C").arg(&scratch),
         "cannot unpack the engine; this needs tar and xz",
     );
     let unpacked = scratch.join(&name);
@@ -213,6 +198,53 @@ fn download(manifest: &Path) -> PathBuf {
     directory
 }
 
+/// The tar to unpack with. On a Windows host, the system's own
+/// (%SystemRoot%\System32\tar.exe, bsdtar) when it is there: a GNU tar
+/// earlier in PATH (Git's, MSYS2's) takes the `C:` of a path for a remote
+/// host's name.
+fn tar_program() -> PathBuf {
+    if cfg!(windows) {
+        if let Some(root) = env::var_os("SystemRoot") {
+            let system = Path::new(&root).join("System32").join("tar.exe");
+            if system.is_file() {
+                return system;
+            }
+        }
+    }
+    PathBuf::from("tar")
+}
+
+/// The file's SHA-256, in lowercase hex, with the host's own tool: shasum
+/// on macOS, sha256sum elsewhere on Unix, certutil on Windows.
+fn sha256(file: &Path) -> String {
+    let mut sum = if cfg!(windows) {
+        let mut certutil = Command::new("certutil");
+        certutil.arg("-hashfile").arg(file).arg("SHA256");
+        certutil
+    } else if cfg!(target_os = "macos") {
+        let mut shasum = Command::new("shasum");
+        shasum.args(["-a", "256"]).arg(file);
+        shasum
+    } else {
+        let mut sha256sum = Command::new("sha256sum");
+        sha256sum.arg(file);
+        sha256sum
+    };
+    let output = sum.output().unwrap_or_else(|error| fail(&format!("cannot compute the archive's SHA-256: {error}")));
+    let text = String::from_utf8_lossy(&output.stdout);
+    if cfg!(windows) {
+        // "SHA256 hash of <file>:", the sum (spaced in pairs on older
+        // Windows), "CertUtil: -hashfile command completed successfully."
+        text.lines()
+            .map(|line| line.split_whitespace().collect::<String>().to_ascii_lowercase())
+            .find(|line| line.len() == 64 && line.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .unwrap_or_default()
+    } else {
+        // Both print the sum first.
+        text.split_whitespace().next().unwrap_or_default().to_string()
+    }
+}
+
 fn cache_directory() -> PathBuf {
     if let Some(given) = env::var_os("ZEBKIT_CACHE_DIR") {
         return PathBuf::from(given);
@@ -220,7 +252,12 @@ fn cache_directory() -> PathBuf {
     if let Some(cache) = env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         return PathBuf::from(cache).join("zebkit");
     }
-    match env::var_os("HOME") {
+    if cfg!(windows) {
+        if let Some(local) = env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+            return PathBuf::from(local).join("zebkit");
+        }
+    }
+    match env::var_os("HOME").filter(|value| !value.is_empty()) {
         Some(home) => PathBuf::from(home).join(".cache").join("zebkit"),
         None => fail("no place to keep the downloaded engine: set ZEBKIT_CACHE_DIR"),
     }

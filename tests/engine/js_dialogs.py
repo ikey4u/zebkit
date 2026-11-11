@@ -9,49 +9,26 @@ application's to answer (zebkit_view_on_eye_dropper).
 Exit 0 when every check passes.
 """
 
-import http.server
 import os
 import shutil
-import threading
-import subprocess
 import sys
-import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
-
-failures = []
-checks = 0
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
-
-
-def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append(value))
-    wait(lambda: box)
-    return box[0] if box else None
+from harness import (Server, activated, check, ev, finish, held, wait, x11_focused, x11_window,  # noqa: E402
+                     xdotool, zebkit)
 
 
 def keys(*args):
-    subprocess.run(["xdotool", *args], check=False)
+    xdotool(*args, seconds=15)
+
+
+def dialog_up(view, window, what):
+    """The view's window has the focus and the page is held by its dialog:
+    only then are keys typed (the views dialog is drawn in the window, no
+    X11 window of its own)."""
+    view.focus()
+    return check(x11_focused(window) and held(view), "%s: its dialog is up, in the focused window" % what)
 
 
 def main():
@@ -64,41 +41,31 @@ def main():
         ev(view, "window.answers = []; 1")
         windowed = not zebkit.is_headless() and shutil.which("xdotool") and os.environ.get("DISPLAY") and \
             not os.environ.get("WAYLAND_DISPLAY") and sys.platform.startswith("linux")
+        window = x11_window("Dialogs") if windowed else None
+        if windowed:
+            check(window is not None, "the view's X11 window")
         # Asked from a timer, so that the evaluation itself is not held.
         ev(view, "setTimeout(() => answers.push(prompt('Your name?', '')), 0); 1")
-        if windowed:
-            view.focus()
-            wait(lambda: False, 1.5)
+        if windowed and window and dialog_up(view, window, "prompt()"):
             keys("type", "--delay", "60", "zk")
             keys("key", "Return")
             wait(lambda: ev(view, "answers.length") == 1, 5)
             check(ev(view, "answers[0]") == "zk", "prompt(): the views dialog, typed into and accepted",
                   ev(view, "JSON.stringify(answers)"))
             ev(view, "setTimeout(() => answers.push(confirm('Sure?')), 0); 1")
-            wait(lambda: False, 1.5)
-            keys("key", "Escape")
-            wait(lambda: ev(view, "answers.length") == 2, 5)
-            check(ev(view, "answers[1]") is False, "confirm(): cancelled with Escape", ev(view, "JSON.stringify(answers)"))
-        else:
+            if dialog_up(view, window, "confirm()"):
+                keys("key", "Escape")
+                wait(lambda: ev(view, "answers.length") == 2, 5)
+                check(ev(view, "answers[1]") is False, "confirm(): cancelled with Escape",
+                      ev(view, "JSON.stringify(answers)"))
+        elif not windowed:
             wait(lambda: ev(view, "answers.length") == 1, 5)
             check(ev(view, "answers.length") == 1 and ev(view, "answers[0]") is None,
                   "without a window prompt() is suppressed, and nothing waits", ev(view, "JSON.stringify(answers)"))
         # EyeDropper.open(): cancelled without a function, the application's colour with one;
         # a secure context's (http://127.0.0.1).
-        class Page(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                body = b"<title>Picker</title>"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *args):
-                pass
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        secure = "http://127.0.0.1:%d/" % server.server_address[1]
+        server = Server({"/": b"<title>Picker</title>"})
+        secure = server.base + "/"
         view.load(secure)
         wait(lambda: ev(view, "location.href + document.readyState") == secure + "complete")
         # EyeDropper.open() wants its document focused.
@@ -106,7 +73,7 @@ def main():
         wait(lambda: ev(view, "document.hasFocus()") is True, 3)
         # After the evaluation's user activation has reached the browser
         # (device_chooser.py): EyeDropper.open() consumes it there.
-        pick = "new Promise(r => setTimeout(r, 200)).then(() => new EyeDropper().open()).then(r => r.sRGBHex, e => e.name)"
+        pick = activated("new EyeDropper().open()") + ".then(r => r.sRGBHex, e => e.name)"
         cancelled = ev(view, pick)
         check(cancelled == "AbortError", "EyeDropper.open() without a function is cancelled", cancelled)
         asked = []
@@ -119,8 +86,7 @@ def main():
         check(picked == "#336699" and asked and asked[0]["origin"] == secure.rstrip("/"),
               "with one, the page gets the application's colour", (picked, asked[:1]))
         # navigator.share(): cancelled without a function on Linux, the application's with one.
-        share = ("new Promise(r => setTimeout(r, 200)).then(() => navigator.share({title: 'A page', url: location.href}))"
-                 ".then(() => 'shared', e => e.name)")
+        share = activated("navigator.share({title: 'A page', url: location.href})") + ".then(() => 'shared', e => e.name)"
         if sys.platform.startswith("linux"):
             alone = ev(view, share)
             check(alone == "AbortError", "navigator.share() without a function is cancelled (Linux has no sheet)", alone)
@@ -134,12 +100,12 @@ def main():
         check(answered == "shared" and shares and shares[0]["title"] == "A page" and shares[0]["url"] == secure,
               "with one, the application shares it", (answered, shares[:1]))
         view.close()
+        server.close()
     except Exception as error:  # noqa: BLE001
         check(False, "the test ran to the end", repr(error))
     finally:
         zebkit.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

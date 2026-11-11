@@ -27,6 +27,8 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 failures = []
@@ -39,6 +41,65 @@ def check(ok, what, detail=None):
     print(f"{'ok  ' if ok else 'FAIL'} {what}" + (f": {detail}" if detail is not None else ""), flush=True)
     if not ok:
         failures.append(what)
+
+
+class Engine:
+    """The engine serving CDP on a free port: command plus
+    --remote-debugging-port=0 about:blank. Its standard error is drained by
+    a thread of its own into a file, so that the engine never blocks on a full
+    pipe and what it said is still there when a check fails; url is its
+    DevTools WebSocket, waited for with a real timeout (None when none came).
+
+        engine = Engine([run, *switches])
+        ...
+        engine.stop(failed)  # the log's end on standard error when failed
+    """
+
+    def __init__(self, command, seconds=30):
+        self.log = tempfile.NamedTemporaryFile(prefix="zebkit-cdp-engine-", suffix=".log", delete=False)
+        self.process = subprocess.Popen([*command, "--remote-debugging-port=0", "about:blank"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.url = None
+        found = threading.Event()
+
+        def drain():
+            for line in self.process.stderr:
+                self.log.write(line)
+                self.log.flush()
+                if not found.is_set():
+                    match = re.search(rb"ws://\S+", line)
+                    if match:
+                        self.url = match.group(0).decode()
+                        found.set()
+            found.set()
+        self.thread = threading.Thread(target=drain, daemon=True)
+        self.thread.start()
+        found.wait(seconds)
+
+    def poll(self):
+        return self.process.poll()
+
+    def tail(self, lines=40):
+        with open(self.log.name, "rb") as log:
+            return b"".join(log.readlines()[-lines:]).decode(errors="replace")
+
+    def stop(self, failed=False):
+        self.process.terminate()
+        try:
+            self.process.wait(10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.thread.join(5)
+        if failed:
+            sys.stderr.write("the engine's standard error, its end:\n" + self.tail())
+        self.log.close()
+        os.unlink(self.log.name)
+
+
+def launch_engine(command, seconds=30):
+    """Engine(command, seconds): see there."""
+    return Engine(command, seconds)
 
 
 class Cdp:
@@ -151,18 +212,11 @@ class Cdp:
 def main():
     run, base, files = sys.argv[1:4]
     switches = sys.argv[4:]
-    engine = subprocess.Popen([run, *switches, "--remote-debugging-port=0", "about:blank"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    url = None
-    end = time.time() + 30
-    while time.time() < end and url is None:
-        line = engine.stderr.readline()
-        found = re.search(r"ws://\S+", line)
-        if found:
-            url = found.group(0)
+    engine = launch_engine([run, *switches])
+    url = engine.url
     check(url is not None, "the engine serves CDP", url)
     if not url:
-        engine.kill()
+        engine.stop(True)
         return 1
     try:
         cdp = Cdp(url)
@@ -397,8 +451,12 @@ def main():
         cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"],
                                               "path": os.path.join(files, "cdp-blocked.mp4")}, session=blocked)
         cdp.call("Target.detachFromTarget", {"sessionId": blocked})
-        time.sleep(14)
-        check(engine.poll() is None and evaluate("1 + 1") == 2,
+        # The page answers once its 12 s block ends, after the start's 10 s
+        # timeout (media_capture.cc) has fired.
+        started = time.time()
+        answered = evaluate("1 + 1")
+        check(time.time() - started > 8, "the page was blocked past the start's timeout", time.time() - started)
+        check(engine.poll() is None and answered == 2,
               "a blocked page's capture, its session gone before the start times out: the engine goes on")
         try:
             cdp.call("Zebkit.mediaCaptureStart", {"mediaId": "1.2.3"}, session=session)
@@ -408,13 +466,9 @@ def main():
     except Exception as error:  # noqa: BLE001
         check(False, "the CDP session", repr(error))
     finally:
-        engine.terminate()
-        try:
-            engine.wait(10)
-        except subprocess.TimeoutExpired:
-            engine.kill()
+        engine.stop(bool(failures))
     print(f"{checks - len(failures)} of {checks} checks passed")
-    return 1 if failures else 0
+    return 1 if failures or not checks else 0
 
 
 if __name__ == "__main__":

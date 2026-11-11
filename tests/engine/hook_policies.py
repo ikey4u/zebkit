@@ -314,5 +314,12 @@ language, group = sys.argv[1].split(':')
 # More requests than may wait: what asks them is the same in every language.
 if group == 'network' and language == 'c':
     MODES[group].append('net-flood')
-for mode in (os.environ["ONLY"].split(",") if os.environ.get("ONLY") else MODES[group]):
+# ZEBKIT_TEST_HOOK_MODES=a,b: only those modes, for debugging; said, and a
+# failure under ENGINE_TEST_STRICT=1.
+only = os.environ.get('ZEBKIT_TEST_HOOK_MODES')
+if only:
+    print('narrowed: ZEBKIT_TEST_HOOK_MODES=' + only, flush=True)
+    if os.environ.get('ENGINE_TEST_STRICT') == '1':
+        sys.exit('FAIL narrowed under ENGINE_TEST_STRICT=1')
+for mode in (only.split(',') if only else MODES[group]):
     run(language, sys.argv[2:], mode)

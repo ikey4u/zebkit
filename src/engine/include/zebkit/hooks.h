@@ -1,4 +1,14 @@
-/* Host policy for a view. Defaults apply until explicitly replaced. */
+/*
+ * zebkit's hooks: the application's say over what a view's pages do. Asked
+ * hooks hold a request until the application answers or its deadline passes
+ * (navigation, permissions, certificates, HTTP authentication, the network's
+ * requests and responses, downloads, client certificates, file choosers,
+ * media access, the eye dropper, share, device choosers); told hooks report
+ * after the fact (console, popups, external protocols, results). Each
+ * outcome is told as JSON. The design and the reference: docs/ROADMAP_HOOKS.md.
+ *
+ * Host policy for a view. Defaults apply until explicitly replaced.
+ */
 #ifndef ZEBKIT_HOOKS_H
 #define ZEBKIT_HOOKS_H
 
@@ -226,13 +236,13 @@ ZEBKIT_API void zebkit_view_on_console(zebkit_view *view, zebkit_console_func fu
  * chainTruncated. It does not claim to be a certificate trust verdict.
  */
 typedef struct zebkit_certificate_request zebkit_certificate_request;
-typedef void (*zebkit_certificate_func)(zebkit_view*, zebkit_certificate_request*, const char *json, void *data);
-typedef void (*zebkit_certificate_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_certificate(zebkit_view*, zebkit_certificate_func, void *data);
-ZEBKIT_API void zebkit_view_on_certificate_result(zebkit_view*, zebkit_certificate_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_certificate_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_certificate_request_info(zebkit_certificate_request*);
-ZEBKIT_API bool zebkit_certificate_respond(zebkit_certificate_request*, bool allow);
+typedef void (*zebkit_certificate_func)(zebkit_view *view, zebkit_certificate_request *request, const char *json, void *data);
+typedef void (*zebkit_certificate_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_certificate(zebkit_view *view, zebkit_certificate_func func, void *data);
+ZEBKIT_API void zebkit_view_on_certificate_result(zebkit_view *view, zebkit_certificate_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_certificate_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_certificate_request_info(zebkit_certificate_request *request);
+ZEBKIT_API bool zebkit_certificate_respond(zebkit_certificate_request *request, bool allow);
 
 /* HTTP authentication challenges, including proxies. Installed handlers take
  * precedence over automation credentials at the browser login delegate. With
@@ -244,19 +254,19 @@ ZEBKIT_API bool zebkit_certificate_respond(zebkit_certificate_request*, bool all
  * do not free or dereference them. All methods require the engine thread.
  */
 typedef struct zebkit_http_auth_request zebkit_http_auth_request;
-typedef void (*zebkit_http_auth_func)(zebkit_view*, zebkit_http_auth_request*, const char *json, void *data);
-typedef void (*zebkit_http_auth_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_http_auth(zebkit_view*, zebkit_http_auth_func, void *data);
-ZEBKIT_API void zebkit_view_on_http_auth_result(zebkit_view*, zebkit_http_auth_result_func, void *data);
+typedef void (*zebkit_http_auth_func)(zebkit_view *view, zebkit_http_auth_request *request, const char *json, void *data);
+typedef void (*zebkit_http_auth_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_http_auth(zebkit_view *view, zebkit_http_auth_func func, void *data);
+ZEBKIT_API void zebkit_view_on_http_auth_result(zebkit_view *view, zebkit_http_auth_result_func func, void *data);
 /* Default 30000 ms; accepted range 1..300000. */
-ZEBKIT_API bool zebkit_view_set_http_auth_timeout(zebkit_view*, uint32_t milliseconds);
+ZEBKIT_API bool zebkit_view_set_http_auth_timeout(zebkit_view *view, uint32_t milliseconds);
 /* Owned JSON while pending; free with zebkit_free(). NULL for stale tokens. */
-ZEBKIT_API char *zebkit_http_auth_request_info(zebkit_http_auth_request*);
+ZEBKIT_API char *zebkit_http_auth_request_info(zebkit_http_auth_request *request);
 /* Both NULL cancel; both non-NULL provide credentials (empty strings allowed).
  * Each field is valid UTF-8, at most 65536 bytes. Invalid replies leave the
  * challenge pending. A request can be answered once before its deadline.
  */
-ZEBKIT_API bool zebkit_http_auth_respond(zebkit_http_auth_request*, const char *username, const char *password);
+ZEBKIT_API bool zebkit_http_auth_respond(zebkit_http_auth_request *request, const char *username, const char *password);
 
 /* Links to other programs: a navigation to a scheme the engine does not load
  * (mailto:, zoommtg:). The engine opens nothing, with or without a function; the
@@ -266,8 +276,8 @@ ZEBKIT_API bool zebkit_http_auth_respond(zebkit_http_auth_request*, const char *
  * allow-top-navigation-to-custom-protocols are not told. At most 256 reports of
  * this and the other told hooks wait per view; more are dropped. NULL removes it.
  */
-typedef void (*zebkit_external_protocol_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_external_protocol(zebkit_view*, zebkit_external_protocol_func, void *data);
+typedef void (*zebkit_external_protocol_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_external_protocol(zebkit_view *view, zebkit_external_protocol_func func, void *data);
 
 /* Downloads. Without a function they are saved in Downloads in the profile's
  * directory, a file already there kept ("report (1).bin"). With one, each is
@@ -284,23 +294,23 @@ typedef enum zebkit_download_action {
     ZEBKIT_DOWNLOAD_SAVE = 0,
     ZEBKIT_DOWNLOAD_CANCEL = 1
 } zebkit_download_action;
-typedef void (*zebkit_download_func)(zebkit_view*, zebkit_download_request*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_download(zebkit_view*, zebkit_download_func, void *data);
+typedef void (*zebkit_download_func)(zebkit_view *view, zebkit_download_request *request, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_download(zebkit_view *view, zebkit_download_func func, void *data);
 /* Default 30000 ms; accepted range 1..300000. */
-ZEBKIT_API bool zebkit_view_set_download_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_download_request_info(zebkit_download_request*);
+ZEBKIT_API bool zebkit_view_set_download_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_download_request_info(zebkit_download_request *request);
 /* Path only with SAVE. Invalid input leaves the request pending. */
-ZEBKIT_API bool zebkit_download_respond(zebkit_download_request*, zebkit_download_action action,
+ZEBKIT_API bool zebkit_download_respond(zebkit_download_request *request, zebkit_download_action action,
                                         const char *path, char **error);
 /* Told for this view's downloads, asked or not: the decision (state save or
  * cancelled with its reason), then downloadId, url, state (in-progress, complete,
  * cancelled, interrupted), path, receivedBytes, totalBytes, reason, done. A download
  * outlives its view, without reports. NULL removes it.
  */
-typedef void (*zebkit_download_progress_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_download_progress(zebkit_view*, zebkit_download_progress_func, void *data);
+typedef void (*zebkit_download_progress_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_download_progress(zebkit_view *view, zebkit_download_progress_func func, void *data);
 /* Cancels a download of this view by its downloadId; false when it has ended. */
-ZEBKIT_API bool zebkit_view_cancel_download(zebkit_view*, const char *download_id);
+ZEBKIT_API bool zebkit_view_cancel_download(zebkit_view *view, const char *download_id);
 
 /* Client certificates a TLS server asks for. Without a function, none is sent.
  * Metadata: host, port, proxy, certificateAuthorities (base64 DER names),
@@ -327,23 +337,23 @@ typedef enum zebkit_client_certificate_action {
     ZEBKIT_CLIENT_CERTIFICATE_PROVIDE = 1,
     ZEBKIT_CLIENT_CERTIFICATE_CANCEL = 2
 } zebkit_client_certificate_action;
-typedef void (*zebkit_client_certificate_func)(zebkit_view*, zebkit_client_certificate_request*, const char *json, void *data);
-typedef void (*zebkit_client_certificate_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_client_certificate(zebkit_view*, zebkit_client_certificate_func, void *data);
-ZEBKIT_API void zebkit_view_on_client_certificate_result(zebkit_view*, zebkit_client_certificate_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_client_certificate_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_client_certificate_request_info(zebkit_client_certificate_request*);
+typedef void (*zebkit_client_certificate_func)(zebkit_view *view, zebkit_client_certificate_request *request, const char *json, void *data);
+typedef void (*zebkit_client_certificate_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_client_certificate(zebkit_view *view, zebkit_client_certificate_func func, void *data);
+ZEBKIT_API void zebkit_view_on_client_certificate_result(zebkit_view *view, zebkit_client_certificate_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_client_certificate_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_client_certificate_request_info(zebkit_client_certificate_request *request);
 /* PEM only with PROVIDE. A key not matching the leaf, or anything invalid, leaves
  * the request pending and returns false with the reason in *error.
  */
-ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_request*,
+ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_request *request,
                                                   zebkit_client_certificate_action action,
                                                   const char *certificate_pem, const char *key_pem, char **error);
 /* Answers with metadata.identities[index], the system store's: true when taken;
  * the request then ends once the store has given its key (PROVIDE), or, when it
  * gives none, as CANCEL. False with the reason in *error otherwise.
  */
-ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_request*, size_t index,
+ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_request *request, size_t index,
                                                  char **error);
 
 /* A script before the page's own in every new document, and at once in those there
@@ -354,7 +364,7 @@ ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_reque
  * it in a block, so that its top-level let, const and class are not global.
  * False with a reason in *error on invalid input.
  */
-ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view*, const char *world, const char *source,
+ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view *view, const char *world, const char *source,
                                              bool main_frame_only, char **error);
 
 /* File choosers of a view: <input type=file> and File System Access's pickers
@@ -371,13 +381,13 @@ ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view*, const char *world, co
  * "file-system-write" or "file-system-read" permission (zebkit_view_on_permission).
  */
 typedef struct zebkit_file_chooser_request zebkit_file_chooser_request;
-typedef void (*zebkit_file_chooser_func)(zebkit_view*, zebkit_file_chooser_request*, const char *json, void *data);
-typedef void (*zebkit_file_chooser_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_file_chooser(zebkit_view*, zebkit_file_chooser_func, void *data);
-ZEBKIT_API void zebkit_view_on_file_chooser_result(zebkit_view*, zebkit_file_chooser_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_file_chooser_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_file_chooser_request_info(zebkit_file_chooser_request*);
-ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request*, const char *const *paths, size_t count,
+typedef void (*zebkit_file_chooser_func)(zebkit_view *view, zebkit_file_chooser_request *request, const char *json, void *data);
+typedef void (*zebkit_file_chooser_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_file_chooser(zebkit_view *view, zebkit_file_chooser_func func, void *data);
+ZEBKIT_API void zebkit_view_on_file_chooser_result(zebkit_view *view, zebkit_file_chooser_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_file_chooser_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_file_chooser_request_info(zebkit_file_chooser_request *request);
+ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request *request, const char *const *paths, size_t count,
                                             char **error);
 
 /* The page's EyeDropper.open(): a colour from the screen. Without a function, cancelled,
@@ -386,13 +396,13 @@ ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request*, const 
  * replaced, closed or a frame that has gone: cancelled.
  */
 typedef struct zebkit_eye_dropper_request zebkit_eye_dropper_request;
-typedef void (*zebkit_eye_dropper_func)(zebkit_view*, zebkit_eye_dropper_request*, const char *json, void *data);
-typedef void (*zebkit_eye_dropper_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_eye_dropper(zebkit_view*, zebkit_eye_dropper_func, void *data);
-ZEBKIT_API void zebkit_view_on_eye_dropper_result(zebkit_view*, zebkit_eye_dropper_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_eye_dropper_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_eye_dropper_request_info(zebkit_eye_dropper_request*);
-ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request*, const char *color);
+typedef void (*zebkit_eye_dropper_func)(zebkit_view *view, zebkit_eye_dropper_request *request, const char *json, void *data);
+typedef void (*zebkit_eye_dropper_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_eye_dropper(zebkit_view *view, zebkit_eye_dropper_func func, void *data);
+ZEBKIT_API void zebkit_view_on_eye_dropper_result(zebkit_view *view, zebkit_eye_dropper_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_eye_dropper_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_eye_dropper_request_info(zebkit_eye_dropper_request *request);
+ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request *request, const char *color);
 
 /*
  * A page's device chooser (docs/SYSTEM_INTEGRATION.md, 10):
@@ -407,13 +417,13 @@ ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request*, const ch
  * page gets none, as before; there is no chooser of the engine's own.
  */
 typedef struct zebkit_device_chooser_request zebkit_device_chooser_request;
-typedef void (*zebkit_device_chooser_func)(zebkit_view*, zebkit_device_chooser_request*, const char *json, void *data);
-typedef void (*zebkit_device_chooser_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_device_chooser(zebkit_view*, zebkit_device_chooser_func, void *data);
-ZEBKIT_API void zebkit_view_on_device_chooser_result(zebkit_view*, zebkit_device_chooser_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_device_chooser_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_device_chooser_request_info(zebkit_device_chooser_request*);
-ZEBKIT_API bool zebkit_device_chooser_respond(zebkit_device_chooser_request*, const char *device_id);
+typedef void (*zebkit_device_chooser_func)(zebkit_view *view, zebkit_device_chooser_request *request, const char *json, void *data);
+typedef void (*zebkit_device_chooser_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_device_chooser(zebkit_view *view, zebkit_device_chooser_func func, void *data);
+ZEBKIT_API void zebkit_view_on_device_chooser_result(zebkit_view *view, zebkit_device_chooser_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_device_chooser_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_device_chooser_request_info(zebkit_device_chooser_request *request);
+ZEBKIT_API bool zebkit_device_chooser_respond(zebkit_device_chooser_request *request, const char *device_id);
 
 /* The page's navigator.share(): the application answers it shared or not. Without a
  * function, the system's share sheet where there is one (macOS); otherwise cancelled
@@ -421,13 +431,13 @@ ZEBKIT_API bool zebkit_device_chooser_respond(zebkit_device_chooser_request*, co
  * origin. Unanswered, replaced or closed: cancelled.
  */
 typedef struct zebkit_share_request zebkit_share_request;
-typedef void (*zebkit_share_func)(zebkit_view*, zebkit_share_request*, const char *json, void *data);
-typedef void (*zebkit_share_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_share(zebkit_view*, zebkit_share_func, void *data);
-ZEBKIT_API void zebkit_view_on_share_result(zebkit_view*, zebkit_share_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_share_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_share_request_info(zebkit_share_request*);
-ZEBKIT_API bool zebkit_share_respond(zebkit_share_request*, bool shared);
+typedef void (*zebkit_share_func)(zebkit_view *view, zebkit_share_request *request, const char *json, void *data);
+typedef void (*zebkit_share_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_share(zebkit_view *view, zebkit_share_func func, void *data);
+ZEBKIT_API void zebkit_view_on_share_result(zebkit_view *view, zebkit_share_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_share_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_share_request_info(zebkit_share_request *request);
+ZEBKIT_API bool zebkit_share_respond(zebkit_share_request *request, bool shared);
 
 /* Camera and microphone (getUserMedia). Without a function, Chromium's permission
  * controller decides (zebkit_view_on_permission). With one it replaces that decision
@@ -438,13 +448,13 @@ ZEBKIT_API bool zebkit_share_respond(zebkit_share_request*, bool shared);
  * that does not exist fails as without hardware. Unanswered: refused.
  */
 typedef struct zebkit_media_access_request zebkit_media_access_request;
-typedef void (*zebkit_media_access_func)(zebkit_view*, zebkit_media_access_request*, const char *json, void *data);
-typedef void (*zebkit_media_access_result_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_media_access(zebkit_view*, zebkit_media_access_func, void *data);
-ZEBKIT_API void zebkit_view_on_media_access_result(zebkit_view*, zebkit_media_access_result_func, void *data);
-ZEBKIT_API bool zebkit_view_set_media_access_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_media_access_request_info(zebkit_media_access_request*);
-ZEBKIT_API bool zebkit_media_access_respond(zebkit_media_access_request*, bool allow, const char *audio_device_id,
+typedef void (*zebkit_media_access_func)(zebkit_view *view, zebkit_media_access_request *request, const char *json, void *data);
+typedef void (*zebkit_media_access_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_media_access(zebkit_view *view, zebkit_media_access_func func, void *data);
+ZEBKIT_API void zebkit_view_on_media_access_result(zebkit_view *view, zebkit_media_access_result_func func, void *data);
+ZEBKIT_API bool zebkit_view_set_media_access_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_media_access_request_info(zebkit_media_access_request *request);
+ZEBKIT_API bool zebkit_media_access_respond(zebkit_media_access_request *request, bool allow, const char *audio_device_id,
                                             const char *video_device_id);
 
 /* Keys the page does not get: a JSON array of "Ctrl+Shift+KeyI", modifiers Ctrl, Alt,
@@ -453,9 +463,9 @@ ZEBKIT_API bool zebkit_media_access_respond(zebkit_media_access_request*, bool a
  * asynchronously: combo, key, code, autoRepeat. A popup takes its opener's keys until
  * it has its own.
  */
-ZEBKIT_API bool zebkit_view_set_reserved_keys(zebkit_view*, const char *keys_json, char **error);
-typedef void (*zebkit_reserved_key_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_reserved_key(zebkit_view*, zebkit_reserved_key_func, void *data);
+ZEBKIT_API bool zebkit_view_set_reserved_keys(zebkit_view *view, const char *keys_json, char **error);
+typedef void (*zebkit_reserved_key_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_reserved_key(zebkit_view *view, zebkit_reserved_key_func func, void *data);
 
 /* With a function, the engine shows no context menu and tells what was asked: x, y,
  * linkUrl, linkText, srcUrl, mediaType, selectionText, editable, pageUrl, frameUrl,
@@ -472,11 +482,11 @@ ZEBKIT_API void zebkit_view_on_reserved_key(zebkit_view*, zebkit_reserved_key_fu
  * {id, title, enabled}; a default item chosen runs, the application's goes to @func
  * with its id ("" when the menu closes with none). False without a window.
  */
-typedef void (*zebkit_context_menu_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_context_menu(zebkit_view*, zebkit_context_menu_func, void *data);
-ZEBKIT_API bool zebkit_view_context_menu_run(zebkit_view*, uint64_t menu_id, const char *command, char **error);
-typedef void (*zebkit_context_menu_item_func)(zebkit_view*, const char *item_id, void *data);
-ZEBKIT_API bool zebkit_view_context_menu_show(zebkit_view*, uint64_t menu_id, const char *items_json,
+typedef void (*zebkit_context_menu_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_context_menu(zebkit_view *view, zebkit_context_menu_func func, void *data);
+ZEBKIT_API bool zebkit_view_context_menu_run(zebkit_view *view, uint64_t menu_id, const char *command, char **error);
+typedef void (*zebkit_context_menu_item_func)(zebkit_view *view, const char *item_id, void *data);
+ZEBKIT_API bool zebkit_view_context_menu_show(zebkit_view *view, uint64_t menu_id, const char *items_json,
                                               zebkit_context_menu_item_func func, void *data, char **error);
 
 /* Whether a page may go fullscreen; allowed by default. Denying leaves fullscreen if
@@ -489,9 +499,9 @@ typedef enum zebkit_fullscreen_policy {
     ZEBKIT_FULLSCREEN_ALLOW = 0,
     ZEBKIT_FULLSCREEN_DENY = 1
 } zebkit_fullscreen_policy;
-ZEBKIT_API bool zebkit_view_set_fullscreen_policy(zebkit_view*, zebkit_fullscreen_policy policy);
-typedef void (*zebkit_fullscreen_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view*, zebkit_fullscreen_func, void *data);
+ZEBKIT_API bool zebkit_view_set_fullscreen_policy(zebkit_view *view, zebkit_fullscreen_policy policy);
+typedef void (*zebkit_fullscreen_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view *view, zebkit_fullscreen_func func, void *data);
 
 /* Network requests and responses of a view's frames and of their dedicated workers:
  * a loader factory in front of the network's, and their WebSockets' handshakes.
@@ -511,7 +521,7 @@ ZEBKIT_API void zebkit_view_on_fullscreen(zebkit_view*, zebkit_fullscreen_func, 
  * resourceTypes matches it, with a ws: or wss: URL. A dedicated worker's is told as
  * its frame's, with worker false.
  */
-ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_json, char **error);
+ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view *view, const char *filter_json, char **error);
 /* This view's filter also decides for the shared and service workers of its profile,
  * running ones too, their scripts, fetches and WebSockets (a shared worker's first
  * script through its first client's frame included). False without a filter set: []
@@ -525,7 +535,7 @@ ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view*, const char *filter_
  * and with two such profiles they fail. Their requests answered from a service
  * worker's own cache never reach this, nor do background fetches.
  */
-ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on);
+ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view *view, bool on);
 /* What a hold rule holds is asked: stage, requestId (the same across redirects), url,
  * method, headers as the page gave them (at the request stage the network has yet to add Cookie,
  * Origin, Referer and more), resourceType, frameId, mainFrame, worker, workerType, navigation, initiator, hasBody,
@@ -545,7 +555,9 @@ ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on
  * sent: observe only (mode must say so), kind "sent": headers as sent, with Authorization,
  *   Proxy-Authorization and Host, which a transaction adds after sendHeaders; again for each
  *   attempt, as after a 401; none when the HTTP cache answers. As DevTools' ExtraInfo.
- * headersReceived: status, statusText, responseHeaders with Set-Cookie, before the cookie store.
+ * headersReceived: status, statusText, responseHeaders with Set-Cookie, before the cookie store,
+ *   and remoteAddress, the IP address the response came from ("127.0.0.1", "::1"; absent
+ *   when the network gives none, as through some proxies).
  *   Continue, with headers (a Set-Cookie left out is not stored), or block.
  * A rule at these fails closed: without a function, no policy left, too many held, no answer by
  * the deadline, or the function replaced, the request ends with ERR_BLOCKED_BY_CLIENT and
@@ -553,8 +565,8 @@ ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view*, bool on
  * true, resourceType "preflight", and no body. A rule must be set before a request starts to reach it.
  */
 typedef struct zebkit_network_request zebkit_network_request;
-typedef void (*zebkit_network_func)(zebkit_view*, zebkit_network_request*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_network(zebkit_view*, zebkit_network_func, void *data);
+typedef void (*zebkit_network_func)(zebkit_view *view, zebkit_network_request *request, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_network(zebkit_view *view, zebkit_network_func func, void *data);
 /* Reply once, JSON:
  * {action: "continue", headers: [{name, value}]}: all of them when given. Headers
  *   the network refuses a page are refused here. A response's change does not undo
@@ -568,7 +580,7 @@ ZEBKIT_API void zebkit_view_on_network(zebkit_view*, zebkit_network_func, void *
  * The original response's body cannot be changed in place; it can be read as it
  * passes (zebkit_view_on_network_body).
  */
-ZEBKIT_API bool zebkit_network_respond(zebkit_network_request*, const char *reply_json, const void *body,
+ZEBKIT_API bool zebkit_network_respond(zebkit_network_request *request, const char *reply_json, const void *body,
                                        size_t body_size, char **error);
 /* Fulfills from a file: a reply of {status, headers}, and an absolute path, which is
  * the application's decision and never a page's. Read off the engine's thread, through
@@ -577,7 +589,7 @@ ZEBKIT_API bool zebkit_network_respond(zebkit_network_request*, const char *repl
  * request with ERR_FILE_NOT_FOUND afterwards: this has answered by then, and
  * zebkit_view_on_network_event tells failed without a rule asking.
  */
-ZEBKIT_API bool zebkit_network_respond_file(zebkit_network_request*, const char *reply_json, const char *path,
+ZEBKIT_API bool zebkit_network_respond_file(zebkit_network_request *request, const char *reply_json, const char *path,
                                             char **error);
 /* Fulfills with what the application writes, the response going at once: {status,
  * headers}; give a Content-Type, since no bytes are there to sniff. NULL with the
@@ -585,7 +597,7 @@ ZEBKIT_API bool zebkit_network_respond_file(zebkit_network_request*, const char 
  * stream that is not ended leaves the page waiting. Engine thread only.
  */
 typedef struct zebkit_network_stream zebkit_network_stream;
-ZEBKIT_API zebkit_network_stream *zebkit_network_respond_stream(zebkit_network_request*, const char *reply_json,
+ZEBKIT_API zebkit_network_stream *zebkit_network_respond_stream(zebkit_network_request *request, const char *reply_json,
                                                                 char **error);
 /* Takes all the bytes or none: false when they do not fit in what waits, at most 1 MiB
  * (a larger write never fits; write parts), or when the page has gone or stopped
@@ -601,15 +613,15 @@ ZEBKIT_API bool zebkit_network_stream_is_open(zebkit_network_stream*);
  * pointer then does nothing; to be called also when the page has gone. */
 ZEBKIT_API void zebkit_network_stream_end(zebkit_network_stream*, bool failed);
 /* Default 30000 ms; accepted range 1..300000. */
-ZEBKIT_API bool zebkit_view_set_network_timeout(zebkit_view*, uint32_t milliseconds);
-ZEBKIT_API char *zebkit_network_request_info(zebkit_network_request*);
+ZEBKIT_API bool zebkit_view_set_network_timeout(zebkit_view *view, uint32_t milliseconds);
+ZEBKIT_API char *zebkit_network_request_info(zebkit_network_request *request);
 /* What an observe rule matches, holding nothing: kind request, response, redirect,
  * finished or failed (with error), and the fields above; dropped counts reports over
  * 4096 waiting. Outcomes of held requests too: state, reason. A WebSocket is told
  * request only. Bodies are not read.
  */
-typedef void (*zebkit_network_event_func)(zebkit_view*, const char *json, void *data);
-ZEBKIT_API void zebkit_view_on_network_event(zebkit_view*, zebkit_network_event_func, void *data);
+typedef void (*zebkit_network_event_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_network_event(zebkit_view *view, zebkit_network_event_func func, void *data);
 /* The body of a response a rule with body: true matches, told as it passes to the page
  * and never kept: @bytes for this call only, at most 64 KiB at a time, with @request_id
  * the requestId of its events; such a rule tells them as an observe rule at the
@@ -622,9 +634,9 @@ ZEBKIT_API void zebkit_view_on_network_event(zebkit_view*, zebkit_network_event_
  * started, nor after this function is replaced or the view has closed. Without a
  * function, nothing passes through here. NULL removes it.
  */
-typedef void (*zebkit_network_body_func)(zebkit_view*, const char *request_id, const void *bytes, size_t size,
+typedef void (*zebkit_network_body_func)(zebkit_view *view, const char *request_id, const void *bytes, size_t size,
                                          bool end, bool truncated, void *data);
-ZEBKIT_API void zebkit_view_on_network_body(zebkit_view*, zebkit_network_body_func, void *data);
+ZEBKIT_API void zebkit_view_on_network_body(zebkit_view *view, zebkit_network_body_func func, void *data);
 
 #ifdef __cplusplus
 }

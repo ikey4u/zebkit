@@ -134,8 +134,8 @@ try:
     before=len(requests);first.load(base+'/expired')
     wait(lambda:len(requests)>before,'expiring request')
     token=requests[-1][1]
-    time.sleep(.25)
-    assert not respond(token,True) and info(token) is None
+    wait(lambda:info(token) is None,'the request expires')
+    assert not respond(token,True)
     wait(lambda:any(event['id']==str(token) and event['reason']=='timeout' for _,event in outcomes),'monotonic timeout')
     assert set_timeout(first._check(),5000)
     before=len(requests);first.load(base+'/superseded')

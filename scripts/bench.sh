@@ -17,32 +17,24 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 (( $# )) || die "usage: $(basename "$0") <profile>|<label>=<package dir>..."
-port="${BENCH_PORT:-8775}"
-
 work="$(mktemp -d)"
-python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$ZEBKIT_ROOT/tests/bench" "$port" > "$work/server.log" 2>&1 &
-server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null; rm -r "$work"' EXIT
-sleep 1
+trap 'kill "${page_server:-}" 2>/dev/null; rm -r "$work"' EXIT
+# On a port that was free, and that this server answers on.
+start_page_server "$ZEBKIT_ROOT/tests/bench" "$work/server.log"
+port="$page_port"
 
 rows=()
 for arg in "$@"; do
     if [[ "$arg" == *=* ]]; then
-        label="${arg%%=*}" package="${arg#*=}"
+        label="${arg%%=*}" package="$(caller_path "${arg#*=}")"
     else
         require_profile "$arg"
         label="$arg" package="$OUT_DIR/$arg/package"
     fi
-    # A package of the engine library is driven by tools/zebkit-run, built
-    # against it; an older one is the content shell itself.
-    if [[ -f "$package/libzebkit.so.1" ]]; then
-        build_against_package "$package" "$work/run-$label" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
-        engine=("$work/run-$label" --headless)
-    elif [[ -x "$package/content_shell" ]]; then
-        engine=("$package/content_shell" --ozone-platform=headless)
-    else
-        die "no engine in $package; run scripts/package.sh first"
-    fi
+    # The engine library, driven by tools/zebkit-run built against it.
+    [[ -f "$package/libzebkit.so.1" ]] || die "no engine in $package; run scripts/package.sh first"
+    build_against_package "$package" "$work/run-$label" "$ZEBKIT_ROOT/tools/zebkit-run/zebkit-run.c"
+    engine=("$work/run-$label" --headless)
     log "benchmarking $label ($package)"
     for run in 1 2 3; do
         # The shell does not exit on its own: wait for the page's report,

@@ -2,9 +2,10 @@
 test: GetActive, and ActiveChanged whenever it changes. SIGUSR1 locks (the
 screen saver active), SIGUSR2 unlocks.
 
-    python3 tests/engine/fake_screensaver.py <ready file>
+    python3 tests/engine/fake_screensaver.py <ready file> [<asked file>]
 
-The ready file is written once the name is owned. Run under dbus-run-session.
+The ready file is written once the name is owned; the asked file, when given,
+once something has read the state (GetActive). Run under dbus-run-session.
 """
 
 import ctypes
@@ -21,12 +22,16 @@ PATH = "/org/freedesktop/ScreenSaver"
 
 
 class ScreenSaver(dbus.service.Object):
-    def __init__(self, bus):
+    def __init__(self, bus, asked):
         super().__init__(bus, PATH)
         self.active = False
+        self.asked = asked
 
     @dbus.service.method(NAME, in_signature="", out_signature="b")
     def GetActive(self):
+        if self.asked:
+            with open(self.asked, "a") as asked:
+                asked.write("GetActive\n")
         return self.active
 
     @dbus.service.signal(NAME, signature="b")
@@ -43,7 +48,7 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
     name = dbus.service.BusName(NAME, bus)
-    saver = ScreenSaver(bus)
+    saver = ScreenSaver(bus, sys.argv[2] if len(sys.argv) > 2 else None)
     wanted = []
     signal.signal(signal.SIGUSR1, lambda *args: wanted.append(True))
     signal.signal(signal.SIGUSR2, lambda *args: wanted.append(False))

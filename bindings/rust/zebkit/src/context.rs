@@ -47,6 +47,16 @@ impl Context {
         (!raw.is_null()).then(|| View::wrap(raw))
     }
 
+    /// A view in this context whose window is made with `options_json`, as
+    /// [`View::new_with_options`].
+    pub fn new_view_with_options(&self, url: Option<&str>, options_json: &str) -> Result<View, Error> {
+        require_engine_thread("Context::new_view_with_options()");
+        if self.raw().is_null() {
+            return Err(Error::new("the context is closed"));
+        }
+        View::new_with_options_in(self.raw(), url, options_json)
+    }
+
     /// An off-screen view in this context, as [`View::new_offscreen`].
     pub fn new_offscreen_view(&self, url: Option<&str>, width: u32, height: u32, scale: f32) -> Option<View> {
         require_engine_thread("Context::new_offscreen_view()");

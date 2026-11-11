@@ -27,15 +27,12 @@
 #include "ui/display/display.h"
 #include "ui/display/display_observer.h"
 #include "ui/display/screen.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace zebkit {
 
 namespace {
-
-bool OnEngineThread() {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
-}
 
 void Tell(zebkit_system_event_func func, void* data, base::DictValue event) {
   if (!func)
@@ -174,23 +171,23 @@ SleepBlocks& Blocks() {
 extern "C" {
 
 void zebkit_on_power_event(zebkit_system_event_func func, void* data) {
-  if (zebkit::OnEngineThread())
+  if (zebkit::CurrentlyOnEngineThread())
     zebkit::Power().Set(func, data);
 }
 
 char* zebkit_get_displays(void) {
-  if (!zebkit::OnEngineThread())
+  if (!zebkit::CurrentlyOnEngineThread())
     return nullptr;
   return strdup(base::WriteJson(zebkit::Displays()).value_or("[]").c_str());
 }
 
 void zebkit_on_displays_changed(zebkit_system_event_func func, void* data) {
-  if (zebkit::OnEngineThread())
+  if (zebkit::CurrentlyOnEngineThread())
     zebkit::DisplayWatch().Set(func, data);
 }
 
 uint64_t zebkit_prevent_sleep(bool keep_display_on, const char* reason) {
-  if (!zebkit::OnEngineThread())
+  if (!zebkit::CurrentlyOnEngineThread())
     return 0;
   auto& blocks = zebkit::Blocks();
   if (!blocks.provider)
@@ -208,7 +205,7 @@ uint64_t zebkit_prevent_sleep(bool keep_display_on, const char* reason) {
 }
 
 bool zebkit_allow_sleep(uint64_t token) {
-  if (!zebkit::OnEngineThread())
+  if (!zebkit::CurrentlyOnEngineThread())
     return false;
   auto& held = zebkit::Blocks().held;
   auto it = held.find(token);

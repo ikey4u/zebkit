@@ -56,7 +56,7 @@ impl BitOr for Allow {
     }
 }
 
-pub(crate) type Slot<T> = RefCell<Option<Box<T>>>;
+pub(crate) use crate::Slot;
 type LoadFunction = dyn FnMut(LoadEvent, &str);
 
 /// The policy for future new windows of one view.
@@ -202,50 +202,84 @@ impl HttpAuthRequest {
     }
 }
 
-pub(crate) struct Inner {
-    /// Null once the view is closed.
-    pub(crate) raw: Cell<*mut sys::zebkit_view>,
-    on_load: Slot<LoadFunction>,
-    on_title: Slot<dyn FnMut(&str)>,
-    on_close: Slot<dyn FnOnce()>,
-    on_new_window: Slot<dyn FnMut(&str)>,
-    on_window_open: Slot<dyn FnMut(View, &str)>,
-    on_popup_blocked: Slot<dyn FnMut(&str)>,
-    on_permission: Slot<dyn FnMut(PermissionRequest)>,
-    permission_generation: Cell<u64>,
-    on_permission_result: Slot<dyn FnMut(&str)>,
-    permission_result_generation: Cell<u64>,
-    on_navigation: Slot<dyn FnMut(NavigationRequest)>,
-    navigation_generation: Cell<u64>,
-    on_navigation_result: Slot<dyn FnMut(&str)>,
-    navigation_result_generation: Cell<u64>,
-    on_window_open_event: Slot<dyn FnMut(&str)>,
-    window_open_event_generation: Cell<u64>,
-    on_console: Slot<dyn FnMut(&str)>,
-    console_generation: Cell<u64>,
-    on_window_state: Slot<dyn FnMut(&str)>,
-    window_state_generation: Cell<u64>,
-    on_certificate: Slot<dyn FnMut(CertificateRequest)>,
-    certificate_generation: Cell<u64>,
-    on_certificate_result: Slot<dyn FnMut(&str)>,
-    certificate_result_generation: Cell<u64>,
-    pub(crate) hooks: crate::view_hooks::Slots,
-    on_http_auth: Slot<dyn FnMut(HttpAuthRequest)>,
-    http_auth_generation: Cell<u64>,
-    on_http_auth_result: Slot<dyn FnMut(&str)>,
-    http_auth_result_generation: Cell<u64>,
-    on_drop: Slot<dyn FnMut(&str)>,
-    /// What each bound name calls. Boxed, so that the address the engine
-    /// holds stays where it is.
-    bindings: RefCell<HashMap<String, Box<Binding>>>,
-    /// Bindings replaced or removed, kept until the view closes: one of them
-    /// may be running. Boxed: the engine held their addresses.
-    #[allow(clippy::vec_box)]
-    retired: RefCell<Vec<Box<Binding>>>,
-    /// An off-screen view's (offscreen.rs).
-    pub(crate) offscreen: crate::offscreen::Slots,
-    /// Dialogs, drags (page.rs).
-    pub(crate) page: crate::page::Slots,
+// The view's closures, each in a slot: written once here, so that closing
+// the view lets every one of them go.
+macro_rules! inner {
+    ($($slot:ident: $type:ty,)*) => {
+        pub(crate) struct Inner {
+            /// Null once the view is closed.
+            pub(crate) raw: Cell<*mut sys::zebkit_view>,
+            $(pub(crate) $slot: Slot<$type>,)*
+            pub(crate) hooks: crate::view_hooks::Slots,
+            /// What each bound name calls. Boxed, so that the address the engine
+            /// holds stays where it is.
+            bindings: RefCell<HashMap<String, Box<Binding>>>,
+            /// Bindings replaced or removed, kept until the view closes: one of them
+            /// may be running. Boxed: the engine held their addresses.
+            #[allow(clippy::vec_box)]
+            retired: RefCell<Vec<Box<Binding>>>,
+            /// An off-screen view's (offscreen.rs).
+            pub(crate) offscreen: crate::offscreen::Slots,
+            /// Dialogs, drags (page.rs).
+            pub(crate) page: crate::page::Slots,
+        }
+
+        impl Inner {
+            fn new(raw: *mut sys::zebkit_view) -> Inner {
+                Inner {
+                    raw: Cell::new(raw),
+                    $($slot: Slot::new(),)*
+                    hooks: Default::default(),
+                    bindings: RefCell::new(HashMap::new()),
+                    retired: RefCell::new(Vec::new()),
+                    offscreen: Default::default(),
+                    page: Default::default(),
+                }
+            }
+
+            /// Lets every closure go but the automation's (automation.rs):
+            /// what they hold may hold the view.
+            fn clear(&self) {
+                $(if stringify!($slot) != "automation_event" { self.$slot.set(None); })*
+                self.hooks.clear();
+                let bindings = std::mem::take(&mut *self.bindings.borrow_mut());
+                let retired = std::mem::take(&mut *self.retired.borrow_mut());
+                drop((bindings, retired));
+                self.offscreen.clear();
+                self.page.clear();
+            }
+        }
+    };
+}
+
+inner! {
+    on_load: LoadFunction,
+    on_title: dyn FnMut(&str),
+    on_close: dyn FnOnce(),
+    on_new_window: dyn FnMut(&str),
+    on_window_open: dyn FnMut(View, &str),
+    on_popup_blocked: dyn FnMut(&str),
+    on_permission: dyn FnMut(PermissionRequest),
+    on_permission_result: dyn FnMut(&str),
+    on_navigation: dyn FnMut(NavigationRequest),
+    on_navigation_result: dyn FnMut(&str),
+    on_window_open_event: dyn FnMut(&str),
+    on_console: dyn FnMut(&str),
+    on_window_state: dyn FnMut(&str),
+    on_certificate: dyn FnMut(CertificateRequest),
+    on_certificate_result: dyn FnMut(&str),
+    on_http_auth: dyn FnMut(HttpAuthRequest),
+    on_http_auth_result: dyn FnMut(&str),
+    on_drop: dyn FnMut(&str),
+    automation_event: dyn FnMut(&str, &str),
+}
+
+/// The view's state, held while a function the engine called runs: the
+/// closure it calls may close the view, letting the last other reference go.
+pub(crate) unsafe fn hold(data: *mut c_void) -> Rc<Inner> {
+    let pointer = data.cast_const().cast::<Inner>();
+    Rc::increment_strong_count(pointer);
+    Rc::from_raw(pointer)
 }
 
 struct Binding {
@@ -267,8 +301,21 @@ pub struct View {
 impl View {
     /// A view loading `url` (`None` for none, until [`View::load_url`]), `width` by `height`
     /// pixels, or a default size when either is 0.
+    ///
+    /// # Panics
+    ///
+    /// When the engine makes no view (its window could not be made); use
+    /// [`View::try_new`] to get that as an error.
     pub fn new(url: Option<&str>, width: u32, height: u32) -> View {
-        require_engine_thread("View::new()");
+        match View::try_new(url, width, height) {
+            Ok(view) => view,
+            Err(error) => panic!("View::new(): {error}"),
+        }
+    }
+
+    /// [`View::new`], with an error where the engine makes no view.
+    pub fn try_new(url: Option<&str>, width: u32, height: u32) -> Result<View, Error> {
+        require_engine_thread("View::try_new()");
         let url = url.map(c_string);
         let raw = unsafe {
             sys::zebkit_view_new(
@@ -277,7 +324,10 @@ impl View {
                 c_int::try_from(height).unwrap_or(c_int::MAX),
             )
         };
-        View::wrap(raw)
+        if raw.is_null() {
+            return Err(Error::new("the engine made no view (its window could not be made)"));
+        }
+        Ok(View::wrap(raw))
     }
 
     /// A view whose window is made with `options_json` (`<zebkit/window.h>`):
@@ -285,11 +335,16 @@ impl View {
     /// its place, colours and drag regions. Invalid options: an error, and no view.
     pub fn new_with_options(url: Option<&str>, options_json: &str) -> Result<View, Error> {
         require_engine_thread("View::new_with_options()");
+        View::new_with_options_in(std::ptr::null_mut(), url, options_json)
+    }
+
+    /// [`View::new_with_options`] in `context` (null: the engine's own).
+    pub(crate) fn new_with_options_in(context: *mut sys::zebkit_context, url: Option<&str>, options_json: &str) -> Result<View, Error> {
         let url = url.map(c_string);
         let mut error = std::ptr::null_mut();
         let raw = unsafe {
             sys::zebkit_view_new_with_options(
-                std::ptr::null_mut(),
+                context,
                 url.as_ref().map_or(std::ptr::null(), |url| url.as_ptr()),
                 c_string(options_json).as_ptr(),
                 &mut error,
@@ -327,16 +382,14 @@ impl View {
     /// Observe every change of the window's state, as JSON.
     pub fn on_window_state<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.window_state_generation.set(self.inner.window_state_generation.get().wrapping_add(1));
-        *self.inner.on_window_state.borrow_mut() = Some(Box::new(function));
+        self.inner.on_window_state.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_window_state(raw, Some(on_window_state), data); }
     }
     /// Remove the window state observer, including inside that observer.
     pub fn clear_window_state_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.window_state_generation.set(self.inner.window_state_generation.get().wrapping_add(1));
-        self.inner.on_window_state.borrow_mut().take();
+        self.inner.on_window_state.set(None);
         unsafe { sys::zebkit_view_on_window_state(raw, None, std::ptr::null_mut()); }
     }
 
@@ -361,43 +414,7 @@ impl View {
 
     /// The view the engine made, with the callbacks every view has.
     pub(crate) fn wrap(raw: *mut sys::zebkit_view) -> View {
-        let inner = Rc::new(Inner {
-            raw: Cell::new(raw),
-            on_load: RefCell::new(None),
-            on_title: RefCell::new(None),
-            on_close: RefCell::new(None),
-            on_new_window: RefCell::new(None),
-            on_window_open: RefCell::new(None),
-            on_popup_blocked: RefCell::new(None),
-            on_permission: RefCell::new(None),
-            permission_generation: Cell::new(0),
-            on_permission_result: RefCell::new(None),
-            permission_result_generation: Cell::new(0),
-            on_navigation: RefCell::new(None),
-            navigation_generation: Cell::new(0),
-            on_navigation_result: RefCell::new(None),
-            navigation_result_generation: Cell::new(0),
-            on_window_open_event: RefCell::new(None),
-            window_open_event_generation: Cell::new(0),
-            on_console: RefCell::new(None),
-            console_generation: Cell::new(0),
-            on_window_state: RefCell::new(None),
-            window_state_generation: Cell::new(0),
-            on_certificate: RefCell::new(None),
-            certificate_generation: Cell::new(0),
-            on_certificate_result: RefCell::new(None),
-            certificate_result_generation: Cell::new(0),
-            hooks: Default::default(),
-            on_http_auth: RefCell::new(None),
-            http_auth_generation: Cell::new(0),
-            on_http_auth_result: RefCell::new(None),
-            http_auth_result_generation: Cell::new(0),
-            on_drop: RefCell::new(None),
-            bindings: RefCell::new(HashMap::new()),
-            retired: RefCell::new(Vec::new()),
-            offscreen: Default::default(),
-            page: Default::default(),
-        });
+        let inner = Rc::new(Inner::new(raw));
         // The engine holds one reference until the view closes.
         let data = Rc::into_raw(inner.clone()).cast_mut().cast::<c_void>();
         unsafe {
@@ -490,18 +507,28 @@ impl View {
     /// Calls `function` with each step of every load and the URL it is of.
     /// Replaces what was given before.
     pub fn on_load<F: FnMut(LoadEvent, &str) + 'static>(&self, function: F) {
-        *self.inner.on_load.borrow_mut() = Some(Box::new(function));
+        self.inner.on_load.set(Some(Box::new(function)));
     }
 
     /// Calls `function` with the page's title whenever it changes.
     pub fn on_title<F: FnMut(&str) + 'static>(&self, function: F) {
-        *self.inner.on_title.borrow_mut() = Some(Box::new(function));
+        self.inner.on_title.set(Some(Box::new(function)));
+    }
+
+    /// Removes the [`View::on_load`] closure, including from inside it.
+    pub fn clear_load_handler(&self) {
+        self.inner.on_load.set(None);
+    }
+
+    /// Removes the [`View::on_title`] closure, including from inside it.
+    pub fn clear_title_handler(&self) {
+        self.inner.on_title.set(None);
     }
 
     /// Calls `function` when the view closes, whatever closed it: the last
     /// thing the view does.
     pub fn on_close<F: FnOnce() + 'static>(&self, function: F) {
-        *self.inner.on_close.borrow_mut() = Some(Box::new(function));
+        self.inner.on_close.set(Some(Box::new(function)));
     }
 
     /// The title of the view's window; `None` for the page's.
@@ -519,10 +546,21 @@ impl View {
     }
 
     /// Places this view inside `parent`'s window, over its page, at
-    /// (x, y), `width` by `height`; its own window is hidden.
+    /// (x, y), `width` by `height`; its own window is hidden. What the
+    /// engine refuses is ignored: [`View::try_attach`] says.
     pub fn attach(&self, parent: &View, x: i32, y: i32, width: i32, height: i32) {
-        if let (Some(raw), Some(parent)) = (self.raw(), parent.raw()) {
-            unsafe { sys::zebkit_view_attach(raw, parent, x, y, width, height) }
+        let _ = self.try_attach(parent, x, y, width, height);
+    }
+
+    /// [`View::attach`], failing for a closed view or parent, the view
+    /// itself as `parent`, or a parent without a window to be in.
+    pub fn try_attach(&self, parent: &View, x: i32, y: i32, width: i32, height: i32) -> Result<(), Error> {
+        let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
+        let parent = parent.raw().ok_or_else(|| Error::new("the parent view is closed"))?;
+        if unsafe { sys::zebkit_view_attach(raw, parent, x, y, width, height) } {
+            Ok(())
+        } else {
+            Err(Error::new("the view was not attached: it is the parent, or the parent has no window to be in"))
         }
     }
 
@@ -643,7 +681,7 @@ impl View {
         if let Some(raw) = self.raw() {
             unsafe { sys::zebkit_view_on_new_window(raw, None, std::ptr::null_mut()) }
         }
-        self.inner.on_new_window.borrow_mut().take();
+        self.inner.on_new_window.set(None);
     }
 
     /// The CDP target ID of this existing view; does not navigate or recreate it.
@@ -656,7 +694,7 @@ impl View {
     /// window is made.
     pub fn on_new_window<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.on_new_window.borrow_mut() = Some(Box::new(function));
+        self.inner.on_new_window.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_new_window(raw, Some(on_new_window), data) }
     }
@@ -724,8 +762,7 @@ impl View {
     /// Handle permission prompts. Replacing the handler settles its pending prompts.
     pub fn on_permission<F: FnMut(PermissionRequest) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.permission_generation.set(self.inner.permission_generation.get().wrapping_add(1));
-        *self.inner.on_permission.borrow_mut() = Some(Box::new(function));
+        self.inner.on_permission.set(Some(Box::new(function)));
         // Native callback/data remain the same when only the Rust closure changes.
         unsafe { sys::zebkit_view_on_permission(raw, None, std::ptr::null_mut()); }
         // Clearing settles pending prompts, whose handlers can close the view.
@@ -736,23 +773,20 @@ impl View {
     /// Restore default permission handling and settle this handler's pending prompts.
     pub fn clear_permission_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.permission_generation.set(self.inner.permission_generation.get().wrapping_add(1));
-        self.inner.on_permission.borrow_mut().take();
+        self.inner.on_permission.set(None);
         unsafe { sys::zebkit_view_on_permission(raw, None, std::ptr::null_mut()); }
     }
     /// Observe asynchronous permission outcomes as JSON.
     pub fn on_permission_result<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.permission_result_generation.set(self.inner.permission_result_generation.get().wrapping_add(1));
-        *self.inner.on_permission_result.borrow_mut() = Some(Box::new(function));
+        self.inner.on_permission_result.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_permission_result(raw, Some(on_permission_result), data); }
     }
     /// Remove the permission outcome observer, including from inside that observer.
     pub fn clear_permission_result_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.permission_result_generation.set(self.inner.permission_result_generation.get().wrapping_add(1));
-        self.inner.on_permission_result.borrow_mut().take();
+        self.inner.on_permission_result.set(None);
         unsafe { sys::zebkit_view_on_permission_result(raw, None, std::ptr::null_mut()); }
     }
 
@@ -763,8 +797,7 @@ impl View {
     /// Handle document certificate errors; the default is denial.
     pub fn on_certificate<F: FnMut(CertificateRequest) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.certificate_generation.set(self.inner.certificate_generation.get().wrapping_add(1));
-        *self.inner.on_certificate.borrow_mut() = Some(Box::new(function));
+        self.inner.on_certificate.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_certificate(raw, None, std::ptr::null_mut()); }
         // Cancelling a pending TLS request can synchronously close the view.
         let Some(raw) = self.raw() else { return };
@@ -774,23 +807,20 @@ impl View {
     /// Remove the handler and deny its outstanding requests.
     pub fn clear_certificate_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.certificate_generation.set(self.inner.certificate_generation.get().wrapping_add(1));
-        self.inner.on_certificate.borrow_mut().take();
+        self.inner.on_certificate.set(None);
         unsafe { sys::zebkit_view_on_certificate(raw, None, std::ptr::null_mut()); }
     }
     /// Observe document certificate outcomes as JSON.
     pub fn on_certificate_result<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.certificate_result_generation.set(self.inner.certificate_result_generation.get().wrapping_add(1));
-        *self.inner.on_certificate_result.borrow_mut() = Some(Box::new(function));
+        self.inner.on_certificate_result.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_certificate_result(raw, Some(on_certificate_result), data); }
     }
     /// Remove the result observer, including inside its callback.
     pub fn clear_certificate_result_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.certificate_result_generation.set(self.inner.certificate_result_generation.get().wrapping_add(1));
-        self.inner.on_certificate_result.borrow_mut().take();
+        self.inner.on_certificate_result.set(None);
         unsafe { sys::zebkit_view_on_certificate_result(raw, None, std::ptr::null_mut()); }
     }
 
@@ -801,8 +831,7 @@ impl View {
     /// Own HTTP/proxy challenges at the browser login delegate.
     pub fn on_http_auth<F: FnMut(HttpAuthRequest) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.http_auth_generation.set(self.inner.http_auth_generation.get().wrapping_add(1));
-        *self.inner.on_http_auth.borrow_mut() = Some(Box::new(function));
+        self.inner.on_http_auth.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_http_auth(raw, None, std::ptr::null_mut()); }
         let Some(raw) = self.raw() else { return };
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
@@ -811,23 +840,20 @@ impl View {
     /// Cancel pending challenges and remove the handler, including from its callback.
     pub fn clear_http_auth_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.http_auth_generation.set(self.inner.http_auth_generation.get().wrapping_add(1));
-        self.inner.on_http_auth.borrow_mut().take();
+        self.inner.on_http_auth.set(None);
         unsafe { sys::zebkit_view_on_http_auth(raw, None, std::ptr::null_mut()); }
     }
     /// Observe credential provision/cancellation as JSON, not HTTP success.
     pub fn on_http_auth_result<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.http_auth_result_generation.set(self.inner.http_auth_result_generation.get().wrapping_add(1));
-        *self.inner.on_http_auth_result.borrow_mut() = Some(Box::new(function));
+        self.inner.on_http_auth_result.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_http_auth_result(raw, Some(on_http_auth_result), data); }
     }
     /// Remove the outcome observer and cancel queued deliveries.
     pub fn clear_http_auth_result_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.http_auth_result_generation.set(self.inner.http_auth_result_generation.get().wrapping_add(1));
-        self.inner.on_http_auth_result.borrow_mut().take();
+        self.inner.on_http_auth_result.set(None);
         unsafe { sys::zebkit_view_on_http_auth_result(raw, None, std::ptr::null_mut()); }
     }
 
@@ -843,8 +869,7 @@ impl View {
     /// Unanswered stages continue. Replacing the handler continues its pending stages.
     pub fn on_navigation<F: FnMut(NavigationRequest) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.navigation_generation.set(self.inner.navigation_generation.get().wrapping_add(1));
-        *self.inner.on_navigation.borrow_mut() = Some(Box::new(function));
+        self.inner.on_navigation.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_navigation(raw, None, std::ptr::null_mut()); }
         // Clearing settles pending stages, whose handlers can close the view.
         let Some(raw) = self.raw() else { return };
@@ -854,55 +879,48 @@ impl View {
     /// Remove navigation policy and continue its pending stages.
     pub fn clear_navigation_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.navigation_generation.set(self.inner.navigation_generation.get().wrapping_add(1));
-        self.inner.on_navigation.borrow_mut().take();
+        self.inner.on_navigation.set(None);
         unsafe { sys::zebkit_view_on_navigation(raw, None, std::ptr::null_mut()); }
     }
     /// Observe asynchronous navigation decisions as JSON.
     pub fn on_navigation_result<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.navigation_result_generation.set(self.inner.navigation_result_generation.get().wrapping_add(1));
-        *self.inner.on_navigation_result.borrow_mut() = Some(Box::new(function));
+        self.inner.on_navigation_result.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_navigation_result(raw, Some(on_navigation_result), data); }
     }
     /// Remove the navigation outcome observer, including inside that observer.
     pub fn clear_navigation_result_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.navigation_result_generation.set(self.inner.navigation_result_generation.get().wrapping_add(1));
-        self.inner.on_navigation_result.borrow_mut().take();
+        self.inner.on_navigation_result.set(None);
         unsafe { sys::zebkit_view_on_navigation_result(raw, None, std::ptr::null_mut()); }
     }
 
     /// Observe asynchronous new-window decisions and creation metadata as JSON.
     pub fn on_window_open_event<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.window_open_event_generation.set(self.inner.window_open_event_generation.get().wrapping_add(1));
-        *self.inner.on_window_open_event.borrow_mut() = Some(Box::new(function));
+        self.inner.on_window_open_event.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_window_open_event(raw, Some(on_window_open_event), data); }
     }
     /// Remove the new-window metadata observer, including inside that observer.
     pub fn clear_window_open_event_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.window_open_event_generation.set(self.inner.window_open_event_generation.get().wrapping_add(1));
-        self.inner.on_window_open_event.borrow_mut().take();
+        self.inner.on_window_open_event.set(None);
         unsafe { sys::zebkit_view_on_window_open_event(raw, None, std::ptr::null_mut()); }
     }
 
     /// Observe asynchronous native document-console messages as JSON.
     pub fn on_console<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        self.inner.console_generation.set(self.inner.console_generation.get().wrapping_add(1));
-        *self.inner.on_console.borrow_mut() = Some(Box::new(function));
+        self.inner.on_console.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_console(raw, Some(on_console), data); }
     }
     /// Remove the console observer, including inside that observer.
     pub fn clear_console_handler(&self) {
         let Some(raw) = self.raw() else { return };
-        self.inner.console_generation.set(self.inner.console_generation.get().wrapping_add(1));
-        self.inner.on_console.borrow_mut().take();
+        self.inner.on_console.set(None);
         unsafe { sys::zebkit_view_on_console(raw, None, std::ptr::null_mut()); }
     }
 
@@ -929,9 +947,17 @@ impl View {
     /// navigate or close this view. It does not reopen the blocked popup.
     pub fn on_popup_blocked<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.on_popup_blocked.borrow_mut() = Some(Box::new(function));
+        self.inner.on_popup_blocked.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_popup_blocked(raw, Some(on_popup_blocked), data) }
+    }
+
+    /// Removes the [`View::on_popup_blocked`] closure, including from inside it.
+    pub fn clear_popup_blocked_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_popup_blocked(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.on_popup_blocked.set(None);
     }
 
     /// A window a page opens comes here as a view of its own, with the URL
@@ -942,18 +968,35 @@ impl View {
     /// instead.
     pub fn on_window_open<F: FnMut(View, &str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.on_window_open.borrow_mut() = Some(Box::new(function));
+        self.inner.on_window_open.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_window_open(raw, Some(on_window_open), data) }
+    }
+
+    /// Removes the [`View::on_window_open`] closure: windows the page opens
+    /// are the engine's again.
+    pub fn clear_window_open_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_window_open(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.on_window_open.set(None);
     }
 
     /// The paths of files dropped on the view, as a JSON array, before the
     /// page gets the drop.
     pub fn on_drop<F: FnMut(&str) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.on_drop.borrow_mut() = Some(Box::new(function));
+        self.inner.on_drop.set(Some(Box::new(function)));
         let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
         unsafe { sys::zebkit_view_on_drop(raw, Some(on_drop), data) }
+    }
+
+    /// Removes the [`View::on_drop`] closure, including from inside it.
+    pub fn clear_drop_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_drop(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.on_drop.set(None);
     }
 
     /// Runs `script` in the page's main frame, as the page's own script
@@ -1057,14 +1100,9 @@ impl Drop for Call {
 }
 
 /// Calls the closure in `slot` without holding it borrowed, so that the
-/// closure may replace it; put back unless it was.
+/// closure may replace or remove it ([`Slot::call`]).
 pub(crate) fn call_slot<T: ?Sized>(slot: &Slot<T>, call: impl FnOnce(&mut T)) {
-    let Some(mut function) = slot.borrow_mut().take() else { return };
-    call(&mut function);
-    let mut current = slot.borrow_mut();
-    if current.is_none() {
-        *current = Some(function);
-    }
+    slot.call(call);
 }
 
 unsafe extern "C" fn on_load(
@@ -1073,7 +1111,7 @@ unsafe extern "C" fn on_load(
     url: *const c_char,
     data: *mut c_void,
 ) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let event = match event {
         sys::ZEBKIT_LOAD_STARTED => LoadEvent::Started,
         sys::ZEBKIT_LOAD_COMMITTED => LoadEvent::Committed,
@@ -1081,45 +1119,69 @@ unsafe extern "C" fn on_load(
         _ => LoadEvent::Failed,
     };
     let url = string_from(url).unwrap_or_default();
-    call_slot(&inner.on_load, |function| function(event, &url));
+    inner.on_load.call(|function| function(event, &url));
 }
 
 unsafe extern "C" fn on_title(_view: *mut sys::zebkit_view, title: *const c_char, data: *mut c_void) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let title = string_from(title).unwrap_or_default();
-    call_slot(&inner.on_title, |function| function(&title));
+    inner.on_title.call(|function| function(&title));
 }
 
 unsafe extern "C" fn on_close(_view: *mut sys::zebkit_view, data: *mut c_void) {
     // The engine's reference, which this is the last use of.
     let inner = Rc::from_raw(data.cast_const().cast::<Inner>());
     inner.raw.set(std::ptr::null_mut());
-    let function = inner.on_close.borrow_mut().take();
-    if let Some(function) = function {
-        function();
+    if let Some(function) = inner.on_close.take() {
+        crate::guard(function);
     }
-    // What the closures hold may hold the view: let it go.
-    inner.on_load.borrow_mut().take();
-    inner.on_title.borrow_mut().take();
-    inner.on_new_window.borrow_mut().take();
-    inner.on_window_open.borrow_mut().take();
-    inner.on_popup_blocked.borrow_mut().take();
-    inner.on_permission.borrow_mut().take();
-    inner.on_permission_result.borrow_mut().take();
-    inner.on_navigation.borrow_mut().take();
-    inner.on_navigation_result.borrow_mut().take();
-    inner.on_window_open_event.borrow_mut().take();
-    inner.on_console.borrow_mut().take();
-    inner.on_certificate.borrow_mut().take();
-    inner.on_certificate_result.borrow_mut().take();
-    inner.hooks.clear();
-    inner.on_http_auth.borrow_mut().take();
-    inner.on_http_auth_result.borrow_mut().take();
-    inner.on_drop.borrow_mut().take();
-    inner.bindings.borrow_mut().clear();
-    inner.retired.borrow_mut().clear();
-    inner.offscreen.clear();
-    inner.page.clear();
+    inner.clear();
+    // The page's last automation events can come after this, until the task
+    // that closed the view has ended (<zebkit/automation.h>): the closure
+    // and what it is called with go in a task of their own, or, when the
+    // engine stops before that task runs, once it has stopped
+    // (release_automation_closures()).
+    if inner.automation_event.is_set() {
+        let id = CLOSING_AUTOMATION.with(|closing| {
+            let mut closing = closing.borrow_mut();
+            closing.0 += 1;
+            let id = closing.0;
+            closing.1.push((id, inner));
+            id
+        });
+        unsafe extern "C" fn release(data: *mut c_void) {
+            let id = data as usize;
+            let found = CLOSING_AUTOMATION.with(|closing| {
+                let mut closing = closing.borrow_mut();
+                let at = closing.1.iter().position(|(entry, _)| *entry == id);
+                at.map(|at| closing.1.swap_remove(at).1)
+            });
+            if let Some(inner) = found {
+                inner.automation_event.set(None);
+            }
+        }
+        if !sys::zebkit_post_task(release, id as *mut c_void) {
+            release(id as *mut c_void);
+        }
+    }
+}
+
+/// The views closed whose automation closure waits for its task: the last
+/// id given, and the views by id.
+type ClosingAutomation = (usize, Vec<(usize, Rc<Inner>)>);
+
+thread_local! {
+    static CLOSING_AUTOMATION: RefCell<ClosingAutomation> = const { RefCell::new((0, Vec::new())) };
+}
+
+/// Lets go the automation closures of closed views whose task the engine
+/// did not run before it stopped: called once it has (shutdown(), the end
+/// of run()). What those closures hold is dropped then, after the engine.
+pub(crate) fn release_automation_closures() {
+    let closing = CLOSING_AUTOMATION.with(|closing| std::mem::take(&mut closing.borrow_mut().1));
+    for (_, inner) in closing {
+        inner.automation_event.set(None);
+    }
 }
 
 unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
@@ -1130,147 +1192,81 @@ unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    if png.is_null() {
-        done(Err(Error::new(string_from(error).unwrap_or_else(|| "no picture".to_string()))));
+    let result = if png.is_null() {
+        Err(Error::new(string_from(error).unwrap_or_else(|| "no picture".to_string())))
     } else {
-        done(Ok(std::slice::from_raw_parts(png, size).to_vec()));
-    }
+        Ok(std::slice::from_raw_parts(png, size).to_vec())
+    };
+    crate::guard(|| done(result));
 }
 
 unsafe extern "C" fn on_native_window_export<F: FnOnce(Option<String>)>(data: *mut c_void, handle: *const c_char) {
     let done = Box::from_raw(data.cast::<F>());
-    done(string_from(handle));
+    let handle = string_from(handle);
+    crate::guard(|| done(handle));
 }
 
 unsafe extern "C" fn on_new_window(_view: *mut sys::zebkit_view, url: *const c_char, data: *mut c_void) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let url = string_from(url).unwrap_or_default();
-    call_slot(&inner.on_new_window, |function| function(&url));
+    inner.on_new_window.call(|function| function(&url));
 }
 
 unsafe extern "C" fn on_certificate(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_certificate_request, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.certificate_generation.get();
-    let Some(mut function) = inner.on_certificate.borrow_mut().take() else { return };
-    function(CertificateRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData });
-    if inner.certificate_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_certificate.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_certificate.call(|function| function(CertificateRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
 }
 unsafe extern "C" fn on_certificate_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.certificate_result_generation.get();
-    let Some(mut function) = inner.on_certificate_result.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.certificate_result_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_certificate_result.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_certificate_result.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_http_auth(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_http_auth_request, json: *const c_char, data: *mut c_void) {
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.http_auth_generation.get();
-    let Some(mut function) = inner.on_http_auth.borrow_mut().take() else { return };
-    function(HttpAuthRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData });
-    if inner.http_auth_generation.get() == generation && !inner.raw.get().is_null() {
-        *inner.on_http_auth.borrow_mut() = Some(function);
-    }
+    let inner = hold(data);
+    inner.on_http_auth.call(|function| function(HttpAuthRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
 }
 unsafe extern "C" fn on_http_auth_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.http_auth_result_generation.get();
-    let Some(mut function) = inner.on_http_auth_result.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.http_auth_result_generation.get() == generation && !inner.raw.get().is_null() {
-        *inner.on_http_auth_result.borrow_mut() = Some(function);
-    }
+    let inner = hold(data);
+    inner.on_http_auth_result.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_navigation(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_navigation_request, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.navigation_generation.get();
-    let Some(mut function) = inner.on_navigation.borrow_mut().take() else { return };
-    function(NavigationRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData });
-    if inner.navigation_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_navigation.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_navigation.call(|function| function(NavigationRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
 }
 unsafe extern "C" fn on_navigation_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.navigation_result_generation.get();
-    let Some(mut function) = inner.on_navigation_result.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.navigation_result_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_navigation_result.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_navigation_result.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_window_open_event(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.window_open_event_generation.get();
-    let Some(mut function) = inner.on_window_open_event.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.window_open_event_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_window_open_event.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_window_open_event.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_window_state(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.window_state_generation.get();
-    let Some(mut function) = inner.on_window_state.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.window_state_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_window_state.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_window_state.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_console(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.console_generation.get();
-    let Some(mut function) = inner.on_console.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.console_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_console.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_console.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_permission(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_permission_request, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.permission_generation.get();
-    let Some(mut function) = inner.on_permission.borrow_mut().take() else { return };
-    function(PermissionRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData });
-    if inner.permission_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_permission.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_permission.call(|function| function(PermissionRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
 }
 unsafe extern "C" fn on_permission_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    // The handler may close the view, releasing the last other reference.
-    let pointer = data.cast_const().cast::<Inner>();
-    Rc::increment_strong_count(pointer);
-    let inner = Rc::from_raw(pointer);
-    let generation = inner.permission_result_generation.get();
-    let Some(mut function) = inner.on_permission_result.borrow_mut().take() else { return };
-    function(&string_from(json).unwrap_or_default());
-    if inner.permission_result_generation.get() == generation && !inner.raw.get().is_null() { *inner.on_permission_result.borrow_mut() = Some(function); }
+    let inner = hold(data);
+    inner.on_permission_result.call(|function| function(&string_from(json).unwrap_or_default()));
 }
 
 unsafe extern "C" fn on_popup_blocked(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let json = string_from(json).unwrap_or_default();
-    call_slot(&inner.on_popup_blocked, |function| function(&json));
+    inner.on_popup_blocked.call(|function| function(&json));
 }
 
 unsafe extern "C" fn on_window_open(
@@ -1279,16 +1275,16 @@ unsafe extern "C" fn on_window_open(
     url: *const c_char,
     data: *mut c_void,
 ) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let url = string_from(url).unwrap_or_default();
     let opened = View::wrap(opened);
-    call_slot(&inner.on_window_open, |function| function(opened.clone(), &url));
+    inner.on_window_open.call(|function| function(opened.clone(), &url));
 }
 
 unsafe extern "C" fn on_drop(_view: *mut sys::zebkit_view, paths: *const c_char, data: *mut c_void) {
-    let inner = &*data.cast::<Inner>();
+    let inner = hold(data);
     let paths = string_from(paths).unwrap_or_else(|| "[]".to_string());
-    call_slot(&inner.on_drop, |function| function(&paths));
+    inner.on_drop.call(|function| function(&paths));
 }
 
 unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
@@ -1298,7 +1294,8 @@ unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
     data: *mut c_void,
 ) {
     let done = Box::from_raw(data.cast::<F>());
-    done(script_result(json, error));
+    let result = script_result(json, error);
+    crate::guard(|| done(result));
 }
 
 unsafe extern "C" fn on_call(
@@ -1315,7 +1312,10 @@ unsafe extern "C" fn on_call(
         args: string_from(args_json).unwrap_or_else(|| "[]".to_string()),
     };
     match binding.function.try_borrow_mut() {
-        Ok(mut function) => function(call),
+        // A call a panicking function drops is rejected.
+        Ok(mut function) => {
+            crate::guard(|| function(call));
+        }
         // The function called the page, which called it again.
         Err(_) => call.reject("the application's function is already running"),
     }

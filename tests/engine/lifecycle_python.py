@@ -60,7 +60,14 @@ def evaluated(value, error):
 page.evaluate("6 * 7", evaluated)
 
 def worker():
-    state["worker"] = not zebkit.pump() and not zebkit.shutdown()
+    # Off the engine's thread the binding refuses both, with an error.
+    refused = 0
+    for function in (zebkit.pump, zebkit.shutdown):
+        try:
+            function()
+        except zebkit.Error:
+            refused += 1
+    state["worker"] = refused == 2
     zebkit.post(lambda: state.update(posted=True))
 
 thread = threading.Thread(target=worker)

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cdp_page import Cdp  # noqa: E402
+from cdp_page import Cdp, launch_engine  # noqa: E402
 from pdf_long import long_pdf, real_pdf  # noqa: E402
 
 checks = passed = 0
@@ -92,26 +92,19 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 class Browser:
     def __init__(self, run, switches):
-        self.process = subprocess.Popen([run, *switches, "--remote-debugging-port=0", "about:blank"],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        url = None
-        end = time.time() + 30
-        while time.time() < end and not url:
-            found = re.search(r"ws://\S+", self.process.stderr.readline())
-            url = found.group(0) if found else None
-        threading.Thread(target=self.process.stderr.read, daemon=True).start()
-        self.cdp = Cdp(url)
+        self.engine = launch_engine([run, *switches])
+        self.process = self.engine.process
+        if not self.engine.url:
+            self.engine.stop(True)
+            raise RuntimeError("the engine served no CDP")
+        self.cdp = Cdp(self.engine.url)
 
     def page(self, url="about:blank"):
         target = self.cdp.call("Target.createTarget", {"url": url})["targetId"]
         return Page(self, target)
 
-    def close(self):
-        self.process.terminate()
-        try:
-            self.process.wait(10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
+    def close(self, failed=False):
+        self.engine.stop(failed)
 
 
 class Page:
@@ -184,6 +177,15 @@ class Page:
     def shot(self):
         data = self.call("Page.captureScreenshot", {"format": "png"})["data"]
         return hashlib.sha256(base64.b64decode(data)).hexdigest()
+
+    def new_shot(self, before, limit=5):
+        """The page's pixels once they differ from @before, or @before after @limit seconds."""
+        end = time.time() + limit
+        while True:
+            shot = self.shot()
+            if shot != before or time.time() > end:
+                return shot
+            time.sleep(.05)
 
     def wheel(self, dy, x=500, y=400):
         self.call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": dy})
@@ -299,16 +301,14 @@ def main():
     start = page.shot()
     page.wheel(1500)
     state = page.wait_viewer(lambda s: int(s.get("page", 1)) >= 2, "the wheel moves the document")
-    time.sleep(.5)
-    wheeled = page.shot()
+    wheeled = page.new_shot(start)
     check(wheeled != start, "pixels change on the wheel", state)
     before = int(page.viewer()["page"])
     for key, code, vk, moved in (("PageDown", "PageDown", 34, "PageDown"), (" ", "Space", 32, "Space"),
                                  ("ArrowDown", "ArrowDown", 40, "ArrowDown")):
         shot = page.shot()
         page.key(key, code, vk)
-        time.sleep(.8)
-        check(page.shot() != shot, f"{moved} scrolls", page.viewer())
+        check(page.new_shot(shot) != shot, f"{moved} scrolls", page.viewer())
     page.key("End", "End", 35)
     state = page.wait_viewer(lambda s: s.get("page") == "300", "End reaches the last page")
     check(state.get("page") == "300", "End", state)
@@ -325,9 +325,7 @@ def main():
     for _ in range(40):
         page.wheel(800)
         time.sleep(.02)
-    time.sleep(1.0)
-    state = page.viewer()
-    check(int(state.get("page", 0)) > 25, "smooth wheel steps pass many pages", state)
+    state = page.wait_viewer(lambda s: int(s.get("page", 0)) > 25, "smooth wheel steps pass many pages")
     check(int(state.get("loadedPages", 999)) <= 12, "pages behind are unloaded", state)
 
     # Zoom: the toolbar's, and Control with the wheel.
@@ -338,8 +336,7 @@ def main():
     page.mouse("mousePressed", x, y)
     page.mouse("mouseReleased", x, y, buttons=0)
     state = page.wait_viewer(lambda s: float(s["zoom"]) > zoom, "the zoom button zooms")
-    time.sleep(.5)
-    check(page.shot() != shot, "pixels change on zoom", state)
+    check(page.new_shot(shot) != shot, "pixels change on zoom", state)
     zoom = float(page.viewer()["zoom"])
     page.call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": 500, "y": 400, "deltaX": 0, "deltaY": -100, "modifiers": 2})
     state = page.wait_viewer(lambda s: float(s["zoom"]) > zoom, "Control and the wheel zoom")
@@ -392,14 +389,17 @@ def main():
     check(state.get("page") == "40", "an internal link", state)
 
     # Selection and copy, as a person: all of it, and what is on the clipboard.
-    # On a Mac the clipboard is the person's: not touched, and so not checked there.
-    if sys.platform != "darwin":
+    # Only where the clipboard is the engine's own: Linux, headless (in memory)
+    # or on the suite's private display. On a Mac and on Windows it is the
+    # person's: not touched, and so not checked there.
+    if not sys.platform.startswith("linux"):
+        print("skip Select All and Copy: the clipboard here is the person's", flush=True)
+    else:
         page.go(base + "/text.pdf")
         page.wait_viewer(lambda s: s.get("pages") == "3", "a small PDF")
         time.sleep(.5)
         page.key("a", "KeyA", 65, modifiers=2)
         page.key("c", "KeyC", 67, modifiers=2, commands=["copy"])
-        time.sleep(.3)
         page.go(base + "/blank", settle=0)
         page.cdp.call("Browser.grantPermissions", {"permissions": ["clipboardReadWrite"], "origin": base})
         page.call("Page.bringToFront")
@@ -409,7 +409,13 @@ def main():
             if page.evaluate("document.hasFocus()"):
                 break
             time.sleep(.05)
-        copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
+        # The copy reaches the clipboard on its own time.
+        end = time.time() + 5
+        while True:
+            copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
+            if "needle2" in (copied or "") or time.time() > end:
+                break
+            time.sleep(.05)
         check("needle2" in (copied or ""), "Select All and Copy give the text of the pages", copied)
 
     # Another type, a broken file, an attachment.
@@ -470,14 +476,19 @@ def main():
         time.sleep(.1)
         if hop % 8 == 0:
             resident.append(max((rss for _, rss in pdf_renderers(browser.process.pid)), default=0))
-    time.sleep(1)
-    state = page.viewer()
+    # Pages unload once the scroll has settled.
+    end = time.time() + 10
+    while True:
+        state = page.viewer()
+        if int(state.get("loadedPages", 999)) <= 16 or time.time() > end:
+            break
+        time.sleep(.1)
     print(f"note resident KiB of the PDF renderer during the scroll: {resident}; state {state}", flush=True)
     check(int(state.get("loadedPages", 999)) <= 16, "pages loaded at the end are few", state)
     check(int(state.get("paintedPages", 999)) < count / 2, "pages painted are what went by, not the document", state)
     check(resident and max(resident) < 1200 * 1024, "the renderer's memory is bounded under 1.2 GiB", resident)
 
-    browser.close()
+    browser.close(passed != checks)
 
     # The setting to download instead: pdfViewerEnabled false, as Chrome's "Download PDFs".
     browser = Browser(run, [s if "user-data-dir" not in s else s + "-off" for s in switches] + ["--disable-pdf-viewer"])
@@ -485,10 +496,10 @@ def main():
     page.go(base + "/blank", settle=0)
     check(page.evaluate("navigator.pdfViewerEnabled") is False, "--disable-pdf-viewer: pdfViewerEnabled is false")
     check(page.evaluate("navigator.plugins.length") == 0, "--disable-pdf-viewer: no plugins")
-    browser.close()
+    browser.close(passed != checks)
 
     print(f"{passed} of {checks} checks passed")
-    return 0 if passed == checks else 1
+    return 0 if checks and passed == checks else 1
 
 
 if __name__ == "__main__":

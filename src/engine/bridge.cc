@@ -142,11 +142,25 @@ std::optional<base::FilePath> Inside(const base::FilePath& root,
   return full;
 }
 
-Result Files(const base::FilePath& root,
+// The grant's directory with its links resolved, here on the thread pool
+// rather than on the UI thread when it is granted. Inside() compares real
+// paths against it.
+base::FilePath ResolvedRoot(const base::FilePath& given) {
+  if (given.empty())
+    return base::FilePath();
+#if BUILDFLAG(IS_WIN)
+  if (given.value() == FILE_PATH_LITERAL("/"))
+    return given;
+#endif
+  return base::MakeAbsoluteFilePath(given);
+}
+
+Result Files(const base::FilePath& given_root,
              const std::string& method,
              const std::string& path,
              std::optional<std::string> data,
              bool recursive) {
+  const base::FilePath root = ResolvedRoot(given_root);
   std::optional<base::FilePath> file = Inside(root, path);
   if (!file)
     return Error("not a path inside the directory zebkit.fs is given: " + path);

@@ -32,6 +32,17 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const HEADER_MISMATCH: i64 = -32020;
 pub const UNSUPPORTED_VERSION: i64 = -32022;
+pub const INTERNAL_ERROR: i64 = -32603;
+
+/// One in-flight request or connection, given back however its thread ends,
+/// a panic included.
+pub struct Slot(pub std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 pub fn response(id: &Value, result: Result<Value, RpcError>) -> Value {
     match result {
@@ -144,6 +155,13 @@ fn cacheable(mut result: Value, modern: bool) -> Value {
 }
 
 /// Answers a request whose era has been settled.
+/// dispatch, with a panic answered as an internal error instead of leaving the
+/// request unanswered.
+pub fn dispatch_safely(message: &Value, method: &str, modern: bool) -> Result<Value, RpcError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(message, method, modern)))
+        .unwrap_or_else(|_| Err(error(INTERNAL_ERROR, "internal error: the request failed unexpectedly")))
+}
+
 pub fn dispatch(message: &Value, method: &str, modern: bool) -> Result<Value, RpcError> {
     match method {
         "server/discover" => Ok(cacheable(
@@ -192,14 +210,22 @@ fn run(tool: &'static tools::Tool, arguments: Value) -> Outcome {
         tools::Run::Engine(function) => {
             let function = *function;
             let (sender, receiver) = mpsc::channel();
+            let failed = sender.clone();
             zebkit::post(move || {
-                function(
-                    crate::bounds(),
-                    arguments,
-                    Box::new(move |outcome| {
-                        let _ = sender.send(outcome);
-                    }),
-                );
+                // A panic on the engine's thread would end the process: it is
+                // the tool's failure instead.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    function(
+                        crate::bounds(),
+                        arguments,
+                        Box::new(move |outcome| {
+                            let _ = sender.send(outcome);
+                        }),
+                    );
+                }));
+                if ran.is_err() {
+                    let _ = failed.send(Err("the tool failed unexpectedly".to_string()));
+                }
             });
             receiver.recv_timeout(TOOL_TIMEOUT).unwrap_or_else(|_| Err("the tool did not answer in time".to_string()))
         }

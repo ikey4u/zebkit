@@ -8,63 +8,23 @@ fake_notifications.py); a click, from either, reaches the page's onclick.
 Exit 0 when every check passes.
 """
 
-import http.server
 import json
 import os
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "bindings", "python"))
+sys.path.insert(0, HERE)
 
-import zebkit  # noqa: E402
-
-failures = []
-checks = 0
+from harness import Server, check, ev, finish, wait, zebkit  # noqa: E402
 
 
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-class Page(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = (b"<title>Notes</title><script>window.clicks = 0; window.shown = 0;"
-                b"window.note = (title) => { const n = new Notification(title, {body: 'from the page'});"
-                b" n.onclick = () => clicks++; n.onshow = () => shown++; return 1; };</script>")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *args):
-        pass
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
-
-
-def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append(value))
-    wait(lambda: box)
-    return box[0] if box else None
+PAGE = (b"<title>Notes</title><script>window.clicks = 0; window.shown = 0;"
+        b"window.note = (title) => { const n = new Notification(title, {body: 'from the page'});"
+        b" n.onclick = () => clicks++; n.onshow = () => shown++; return 1; };</script>")
 
 
 def read(log):
@@ -76,9 +36,8 @@ def read(log):
 
 
 def main():
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = "http://127.0.0.1:%d/" % server.server_address[1]
+    server = Server({"/": PAGE})
+    url = server.base + "/"
     with tempfile.TemporaryDirectory(prefix="zebkit-notifications-") as directory:
         log, ready = os.path.join(directory, "log"), os.path.join(directory, "ready")
         daemon = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_notifications.py"), log, ready])
@@ -126,9 +85,8 @@ def main():
         finally:
             zebkit.shutdown()
             daemon.terminate()
-            server.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+            server.close()
+    return finish()
 
 
 if __name__ == "__main__":

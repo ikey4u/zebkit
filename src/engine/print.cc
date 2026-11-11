@@ -110,13 +110,6 @@ class PrintManager : public printing::PrintManager,
     mojo::ReportBadMessage("no print preview");
   }
 #endif
-#if BUILDFLAG(IS_ANDROID)
-  void SetupScriptedPrintAndroid(
-      SetupScriptedPrintAndroidCallback callback) override {
-    std::move(callback).Run();
-  }
-  void PdfWritingDone(int page_count) override {}
-#endif
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
@@ -260,24 +253,29 @@ void zebkit_view_print_to_pdf(zebkit_view* view,
                               const char* options_json,
                               zebkit_pdf_func func,
                               void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  // Closed first, the view tells it before on_close (zebkit_view::AddCancel()).
+  const int id = view->AddCancel(base::BindOnce(
+      [](zebkit_view* view, zebkit_pdf_func func, void* data) {
+        if (func)
+          func(view, nullptr, 0, "the view was closed", data);
+      },
+      base::Unretained(view), func, data));
   zebkit::PrintToPdf(
       view->web_contents(), options_json ? options_json : "",
       base::BindOnce(
-          [](base::WeakPtr<zebkit_view> view, zebkit_pdf_func func, void* data,
+          [](base::WeakPtr<zebkit_view> view, int id, zebkit_pdf_func func, void* data,
              scoped_refptr<base::RefCountedMemory> pdf,
              const std::string& error, bool invalid_params) {
-            if (!func)
+            if (!view || !view->TakeCancel(id) || !func)
               return;
-            // A view closed meanwhile is still the pointer the application
-            // has, and is told.
-            zebkit_view* raw = view.get();
             if (!pdf) {
-              func(raw, nullptr, 0, error.c_str(), data);
+              func(view.get(), nullptr, 0, error.c_str(), data);
               return;
             }
-            func(raw, pdf->data(), pdf->size(), nullptr, data);
+            func(view.get(), pdf->data(), pdf->size(), nullptr, data);
           },
-          view->GetWeakPtr(), func, data));
+          view->GetWeakPtr(), id, func, data));
 }
 
 }  // extern "C"

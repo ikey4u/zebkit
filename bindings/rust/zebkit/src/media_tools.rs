@@ -29,7 +29,17 @@ pub fn ffprobe(args: &[&str]) -> Result<String, Error> {
     else { result.ok_or_else(|| Error::new("probe returned no JSON")) }
 }
 
-pub fn probe(path: &str) -> Result<String, Error> { ffprobe(&["-i", path]) }
+/// Format and stream metadata of a local media file, as `ffprobe(&["-i", path])`.
+pub fn probe(path: &str) -> Result<String, Error> {
+    let path = CString::new(path).map_err(|_| Error::new("the path contains NUL"))?;
+    let mut json = std::ptr::null_mut();
+    let mut error = std::ptr::null_mut();
+    let code = unsafe { sys::zebkit_media_probe(path.as_ptr(), &mut json, &mut error) };
+    let message = unsafe { take_string(error) };
+    let result = unsafe { take_string(json) };
+    if code != 0 { Err(Error::new(message.unwrap_or_else(|| "media probe failed".into()))) }
+    else { result.ok_or_else(|| Error::new("probe returned no JSON")) }
+}
 
 /// Run a supported FFmpeg operation. The destination is published only on
 /// success. Unknown parameters fail, rather than being silently ignored.
@@ -64,17 +74,106 @@ pub fn ffmpeg_with_progress<F: FnMut(i64, Option<i64>) -> bool>(args: &[&str], p
 
 /// Copy audio/video into another container, without transcoding.
 pub fn remux(source: &str, destination: &str, overwrite: bool) -> Result<Completion, Error> {
-    ffmpeg(&[if overwrite { "-y" } else { "-n" }, "-i", source, "-c", "copy", "--", destination])
+    remux_with(source, destination, &RemuxOptions { overwrite, ..Default::default() }, |_, _| true)
 }
 
 /// Decode to interleaved PCM16 in a WAV container, optionally resampling.
 pub fn extract_audio(source: &str, destination: &str, rate: u32, channels: u32, overwrite: bool) -> Result<Completion, Error> {
-    ffmpeg(&[if overwrite { "-y" } else { "-n" }, "-i", source, "-c:a", "pcm_s16le",
-        "-ar", &rate.to_string(), "-ac", &channels.to_string(), "-f", "wav", "--", destination])
+    let options = AudioOptions { sample_rate: rate, channels, overwrite, ..Default::default() };
+    extract_audio_with(source, destination, &options, |_, _| true)
 }
 
 /// Decode and scale packed RGBA video frames; count must be positive.
 pub fn extract_video(source: &str, destination: &str, width: u32, height: u32, count: u32, overwrite: bool) -> Result<Completion, Error> {
-    ffmpeg(&[if overwrite { "-y" } else { "-n" }, "-i", source, "-c:v", "rawvideo",
-        "-s", &format!("{width}x{height}"), "-frames:v", &count.to_string(), "--", destination])
+    let options = VideoOptions { size: Some((width, height)), frames: Some(count), overwrite, ..Default::default() };
+    extract_video_with(source, destination, &options, |_, _| true)
+}
+
+/// What [`remux_with`] does beyond copying: the streams (indices of the
+/// source's; `None` for its audio and video) and the container's format.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemuxOptions {
+    pub streams: Option<Vec<u32>>,
+    pub format: Option<String>,
+    pub overwrite: bool,
+}
+
+/// What [`extract_audio_with`] makes: `raw` for headerless s16le instead of WAV.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioOptions {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub stream: Option<u32>,
+    pub raw: bool,
+    pub overwrite: bool,
+}
+
+impl Default for AudioOptions {
+    fn default() -> Self {
+        AudioOptions { sample_rate: 16000, channels: 1, stream: None, raw: false, overwrite: false }
+    }
+}
+
+/// What [`extract_video_with`] makes: frames scaled to `size`, at most `frames` of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoOptions {
+    pub size: Option<(u32, u32)>,
+    pub frames: Option<u32>,
+    pub stream: Option<u32>,
+    pub overwrite: bool,
+}
+
+fn run(mut args: Vec<String>, destination: &str, progress: impl FnMut(i64, Option<i64>) -> bool) -> Result<Completion, Error> {
+    args.push("--".into());
+    args.push(destination.into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    ffmpeg_with_progress(&args, progress)
+}
+
+fn start(source: &str, overwrite: bool) -> Vec<String> {
+    vec![if overwrite { "-y" } else { "-n" }.into(), "-i".into(), source.into()]
+}
+
+/// [`remux`] with its options and a progress function, as [`ffmpeg_with_progress`]'s.
+pub fn remux_with<F: FnMut(i64, Option<i64>) -> bool>(source: &str, destination: &str, options: &RemuxOptions, progress: F) -> Result<Completion, Error> {
+    let mut args = start(source, options.overwrite);
+    args.extend(["-c".into(), "copy".into()]);
+    if let Some(streams) = &options.streams {
+        if streams.is_empty() { return Err(Error::new("streams must not be empty")); }
+        for stream in streams {
+            args.extend(["-map".into(), format!("0:{stream}")]);
+        }
+    }
+    if let Some(format) = &options.format {
+        args.extend(["-f".into(), format.clone()]);
+    }
+    run(args, destination, progress)
+}
+
+/// [`extract_audio`] with its options and a progress function.
+pub fn extract_audio_with<F: FnMut(i64, Option<i64>) -> bool>(source: &str, destination: &str, options: &AudioOptions, progress: F) -> Result<Completion, Error> {
+    let mut args = start(source, options.overwrite);
+    args.extend(["-c:a".into(), "pcm_s16le".into(), "-ar".into(), options.sample_rate.to_string(),
+        "-ac".into(), options.channels.to_string(), "-f".into(), if options.raw { "s16le" } else { "wav" }.into()]);
+    if let Some(stream) = options.stream {
+        args.extend(["-map".into(), format!("0:{stream}")]);
+    }
+    run(args, destination, progress)
+}
+
+/// [`extract_video`] with its options and a progress function: packed RGBA
+/// frames, no headers ([`probe`] has the source's size).
+pub fn extract_video_with<F: FnMut(i64, Option<i64>) -> bool>(source: &str, destination: &str, options: &VideoOptions, progress: F) -> Result<Completion, Error> {
+    let mut args = start(source, options.overwrite);
+    args.extend(["-c:v".into(), "rawvideo".into(), "-f".into(), "rawvideo".into()]);
+    if let Some((width, height)) = options.size {
+        args.extend(["-s".into(), format!("{width}x{height}")]);
+    }
+    if let Some(frames) = options.frames {
+        args.extend(["-frames:v".into(), frames.to_string()]);
+    }
+    if let Some(stream) = options.stream {
+        args.extend(["-map".into(), format!("0:{stream}")]);
+    }
+    run(args, destination, progress)
 }

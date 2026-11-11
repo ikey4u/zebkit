@@ -9,6 +9,7 @@
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_thread.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
 
 namespace zebkit {
@@ -31,10 +32,6 @@ Menu& TheMenu() {
   return *menu;
 }
 
-bool OnEngineThread() {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
-}
-
 }  // namespace
 
 const std::vector<MenuItem>& DockMenu() {
@@ -46,7 +43,7 @@ void RunDockMenuItem(const std::string& id) {
     TheMenu().func(id.c_str(), TheMenu().data);
 }
 
-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_COOKIES_USE_DBUS))
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !(BUILDFLAG(IS_LINUX) && defined(ZEBKIT_USE_DBUS))
 // No dock to tell here.
 void ApplyDockState(const DockState& state) {}
 void RequestDockAttention(bool critical) {}
@@ -60,7 +57,7 @@ bool DockMenuSupported() {
 extern "C" {
 
 bool zebkit_app_set_badge(const char* text) {
-  if (!zebkit::OnEngineThread() || (text && strlen(text) > 64))
+  if (!zebkit::CurrentlyOnEngineThread() || (text && strlen(text) > 64))
     return false;
   zebkit::State().badge = text ? text : "";
   zebkit::ApplyDockState(zebkit::State());
@@ -68,7 +65,7 @@ bool zebkit_app_set_badge(const char* text) {
 }
 
 bool zebkit_app_set_progress(double progress) {
-  if (!zebkit::OnEngineThread() || std::isnan(progress) || progress > 1)
+  if (!zebkit::CurrentlyOnEngineThread() || std::isnan(progress) || progress > 1)
     return false;
   zebkit::State().progress = progress;
   zebkit::ApplyDockState(zebkit::State());
@@ -83,7 +80,7 @@ bool zebkit_app_set_dock_menu(const char* json, zebkit_menu_func func, void* dat
   };
   if (error)
     *error = nullptr;
-  if (!zebkit::OnEngineThread())
+  if (!zebkit::CurrentlyOnEngineThread())
     return fail("the engine's thread");
   if (!zebkit::DockMenuSupported())
     return fail("unsupported: the Dock's menu is macOS's");
@@ -96,7 +93,7 @@ bool zebkit_app_set_dock_menu(const char* json, zebkit_menu_func func, void* dat
 }
 
 void zebkit_app_request_attention(bool critical) {
-  if (zebkit::OnEngineThread())
+  if (zebkit::CurrentlyOnEngineThread())
     zebkit::RequestDockAttention(critical);
 }
 

@@ -13,8 +13,9 @@ namespace zebkit {
 // The startup setting appearance.follow (--zebkit-follow-system-appearance):
 // pages take the system's colour scheme and contrast, and their changes.
 bool FollowsSystemAppearance();
-// Once, as the browser starts: on Linux the XDG portal's settings, which
-// macOS and Windows have in their NativeTheme already.
+// Once, as the browser starts, whether or not the pages follow the system: on
+// Linux the XDG portal's settings, which macOS and Windows have in their
+// NativeTheme already.
 void StartSystemAppearance();
 void StopSystemAppearance();
 // The system's colour scheme, contrast and forced colours into @prefs.

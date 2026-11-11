@@ -69,13 +69,13 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     icu_platform=MacOSX
     jobs="$(sysctl -n hw.ncpu)"
 else
-    jobs="${ZEBKIT_JOBS:-12}"
+    jobs="$ZEBKIT_JOBS"
 fi
 (cd "$build/obj" &&
     ICU_DATA_FILTER_FILE="$filter" "$build/source/runConfigureICU" --enable-debug --disable-release \
         "$icu_platform" --disable-tests --disable-layoutex --disable-samples --enable-rpath \
         --prefix="$build/prefix" > "$build/configure.log" 2>&1 &&
-    make -j "$jobs" > "$build/make.log" 2>&1) || die "ICU build failed; see $build/make.log"
+    heavy make -j "$jobs" > "$build/make.log" 2>&1) || die "ICU build failed; see $build/make.log"
 
 dat="$(find "$build/obj/data/out/tmp" -name 'icudt*l.dat' | head -1)"
 [[ -n "$dat" ]] || die "no data file in $build/obj/data/out/tmp"
@@ -85,18 +85,19 @@ dat="$(find "$build/obj/data/out/tmp" -name 'icudt*l.dat' | head -1)"
 # (js-temporal-zoneinfo64.cc): when it is last, Temporal has no time zones.
 # Chromium's data has zu.res after it; without Zulu, an item of no other use
 # follows it (a copy of a small resource, under a name no locale has).
-items="$(LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -l "$dat" 2> /dev/null)"
+# ICU's own libraries, beside its tools: LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH
+# on a Mac, which ignores the other.
+icupkg() { LD_LIBRARY_PATH="$build/obj/lib" DYLD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" "$@"; }
+items="$(icupkg --ignore-deps -l "$dat")" || die "icupkg could not list $dat"
 if [[ "$(tail -1 <<< "$items")" == zoneinfo64.res ]]; then
     pad="$build/pad"
     rm -rf "$pad" && mkdir -p "$pad"
     # The filtered data's own dependencies are left as they are.
-    LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -d "$pad" \
-        -x res_index.res "$dat"
+    icupkg --ignore-deps -d "$pad" -x res_index.res "$dat"
     mv "$pad/res_index.res" "$pad/zzzz_after_zoneinfo64.res"
-    LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -s "$pad" \
-        -a zzzz_after_zoneinfo64.res "$dat"
-    [[ "$(LD_LIBRARY_PATH="$build/obj/lib" "$build/obj/bin/icupkg" --ignore-deps -l "$dat" 2> /dev/null | tail -1)" \
-        != zoneinfo64.res ]] || die "zoneinfo64.res is still the data's last item"
+    icupkg --ignore-deps -s "$pad" -a zzzz_after_zoneinfo64.res "$dat"
+    [[ "$(icupkg --ignore-deps -l "$dat" | tail -1)" != zoneinfo64.res ]] \
+        || die "zoneinfo64.res is still the data's last item"
 fi
 cp "$dat" "$out/icudtl.dat"
 echo "$want" > "$stamp"

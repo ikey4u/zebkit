@@ -14,6 +14,7 @@
 
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/win/scoped_gdi_object.h"
 #include "zebkit/engine/notifications.h"
 
 namespace zebkit {
@@ -43,14 +44,18 @@ class Balloon {
       Finish(false);
     NOTIFYICONDATAW data = Base();
     if (!added_) {
-      // The program's own icon, or Windows' default for one.
-      HICON icon = nullptr;
-      wchar_t path[MAX_PATH];
-      if (GetModuleFileNameW(nullptr, path, MAX_PATH))
-        ExtractIconExW(path, 0, nullptr, &icon, 1);
+      // The program's own icon, or Windows' default for one; taken once, and
+      // destroyed with this.
+      if (!icon_taken_) {
+        icon_taken_ = true;
+        HICON icon = nullptr;
+        wchar_t path[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, path, MAX_PATH) && ExtractIconExW(path, 0, nullptr, &icon, 1) && icon)
+          icon_ = base::win::ScopedGDIObject<HICON>(icon);
+      }
       data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
       data.uCallbackMessage = kCallback;
-      data.hIcon = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+      data.hIcon = icon_.is_valid() ? icon_.get() : LoadIconW(nullptr, IDI_APPLICATION);
       wcsncpy_s(data.szTip, L"Notifications", _TRUNCATE);
       if (!Shell_NotifyIconW(NIM_ADD, &data))
         return false;
@@ -115,6 +120,8 @@ class Balloon {
 
   HWND window_ = nullptr;
   bool added_ = false;
+  bool icon_taken_ = false;
+  base::win::ScopedGDIObject<HICON> icon_;
   std::string current_;
 };
 
@@ -136,8 +143,10 @@ LRESULT CALLBACK Balloon::Proc(HWND window, UINT message, WPARAM wparam, LPARAM 
         balloon.Finish(false, false);
         balloon.Hide();
         return 0;
+      // Sent when the icon goes, not when the person dismisses it (which is
+      // NIN_BALLOONTIMEOUT too): not by the person.
       case NIN_BALLOONHIDE:
-        balloon.Finish(false, true);
+        balloon.Finish(false, false);
         balloon.Hide();
         return 0;
     }

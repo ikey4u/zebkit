@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Serve a directory for the test scripts: serve.py DIR PORT [CERT_PEM].
 
+PORT 0 takes a free port. The first line on stdout is always
+"serving http://127.0.0.1:<port>" (https with a certificate), printed once
+the socket listens: a script reads the port back from it.
+
 With a certificate (key and cert in one PEM file) the server speaks HTTPS.
 Requests are logged to stdout, which is how the scripts read what a page reports.
 Files are served in the range a Range header asks for, as media players
@@ -99,4 +103,5 @@ if len(sys.argv) > 3:
     context.load_cert_chain(sys.argv[3])
     server.socket = context.wrap_socket(server.socket, server_side=True)
 sys.stderr = sys.stdout
+print("serving %s://127.0.0.1:%d" % ("https" if len(sys.argv) > 3 else "http", server.server_address[1]), flush=True)
 server.serve_forever()

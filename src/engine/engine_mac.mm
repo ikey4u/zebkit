@@ -15,10 +15,12 @@
 #include "base/apple/bundle_locations.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/context_factory.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -408,12 +410,12 @@ bool AttachView(zebkit_view* view, zebkit_view* parent, const gfx::Rect& bounds)
     // takes the size it is given, as it does inside a window.
     if (!zebkit_is_headless())
       return false;
-    DetachView(view);
+    DetachView(view, /*restore=*/false);
     AttachedViews()[view] = {parent->GetWeakPtr(), nil, false};
     view->window()->ResizeContents(bounds.size());
     return true;
   }
-  DetachView(view);
+  DetachView(view, /*restore=*/false);
   NSView* page = view->web_contents()->GetNativeView().GetNativeNSView();
   NSWindow* own_window = page.window;
   NSView* container = parent_window.contentView;
@@ -480,7 +482,7 @@ bool AttachViewNative(zebkit_view* view,
     return false;
   }
   NSWindow* own_window = view->window()->native_window().GetNativeNSWindow();
-  DetachView(view);
+  DetachView(view, /*restore=*/false);
   page.autoresizingMask = NSViewNotSizable;
   [container addSubview:page positioned:NSWindowAbove relativeTo:nil];
   page.frame = Frame(container, bounds);
@@ -563,12 +565,33 @@ void SetAttachedVisible(zebkit_view* view, bool visible) {
     it->second.view.hidden = !visible;
 }
 
-void DetachView(zebkit_view* view) {
+// @restore is not needed here: what moves is the page's NSView itself, and
+// every caller puts it where it goes next at once (AttachView(),
+// AttachViewNative()) or is the closing view. On Linux and Windows it is the
+// page's own window that an application's window takes, so the page has to
+// be back in it first.
+void DetachView(zebkit_view* view, bool /*restore*/) {
   auto it = AttachedViews().find(view);
   if (it == AttachedViews().end())
     return;
-  [it->second.view removeFromSuperview];
+  NSView* page = it->second.view;
+  [page removeFromSuperview];
   AttachedViews().erase(it);
+}
+
+void CloseViewsAttachedTo(zebkit_view* parent) {
+  for (const auto& [view, attached] : AttachedViews()) {
+    if (attached.native || attached.parent.get() != parent)
+      continue;
+    // Not now: the parent is inside its own teardown.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<zebkit_view> view) {
+                         if (view)
+                           view->Close();
+                       },
+                       const_cast<zebkit_view*>(view)->GetWeakPtr()));
+  }
 }
 
 void RegisterApplication() {

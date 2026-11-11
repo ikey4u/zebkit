@@ -9,7 +9,7 @@
 #       [--global-minutes N] [--out DIR] [--reference DIR] [--summarize-only] [files...]
 #
 # ZEBKIT_TEST_PACKAGE names another package; CHROME names another Chrome. The
-# results go to DIR (default out/playwright-suite/<target>): results.jsonl, one
+# results go to DIR (default out/blink/playwright-suite/<target>): results.jsonl, one
 # line a test, and summary.txt, counts by file with each failure against
 # tests/playwright-suite/expected-failures.txt. --reference DIR takes Chrome's
 # results to mark what fails on Chrome too. Exits 1 on a failure that the list
@@ -45,7 +45,8 @@ while (( $# )); do
     esac
     shift
 done
-out="${out:-$OUT_DIR/playwright-suite/$target}"
+out="$(caller_path "${out:-$OUT_DIR/playwright-suite/$target}")"
+[[ -z "$reference" ]] || reference="$(caller_path "$reference")"
 suite="$ZEBKIT_ROOT/tests/playwright-suite"
 repo="$CACHE_DIR/playwright-repo"
 mkdir -p "$out"
@@ -61,10 +62,8 @@ if (( summarize_only )); then
     exit
 fi
 
-node=(node)
-command -v mise > /dev/null && node=(mise exec node@24 -- node)
-npm=(npm)
-command -v mise > /dev/null && npm=(mise exec node@24 -- npm)
+node=("${node_cmd[@]}")
+npm=("${npm_cmd[@]}")
 if [[ "$(git -C "$repo" describe --tags --exact-match 2> /dev/null)" != "$PLAYWRIGHT_SUITE_TAG" ]]; then
     rm -rf "$repo"
     log "cloning Playwright $PLAYWRIGHT_SUITE_TAG"

@@ -1,9 +1,12 @@
 /*
  * zebkit: the web engine, for applications that embed it.
  *
- * The engine is Chromium's content layer, in a library (libzebkit.so.1 on
- * Linux) with a helper program beside it (zebkit-helper) that runs the
- * renderer, GPU and utility processes. An application links the library,
+ * The engine is Chromium's content layer, in a library: libzebkit.so.1 on
+ * Linux, Zebkit.framework on macOS, zebkit.dll on Windows. On Linux and
+ * macOS a helper program beside it runs the renderer, GPU and utility
+ * processes; on Windows the application's own executable runs them, linking
+ * zebkit_sandbox.lib and calling zebkit_win_startup() first in main()
+ * (<zebkit/win_sandbox.h>). An application links the library,
  * calls zebkit_main() from its main thread, and creates views when the
  * engine is ready:
  *
@@ -15,9 +18,10 @@
  *         return zebkit_main(argc, argv, ready, NULL);
  *     }
  *
- * Threads: everything here is for the thread that called zebkit_main(),
- * and every callback is called on it, except zebkit_post_task(), which any
- * thread may call to run a function there.
+ * Threads: everything here is for the engine's thread, the one that called
+ * zebkit_main() or zebkit_init(), and every callback is called on it, except
+ * where a function says otherwise: zebkit_post_task(), which any thread may
+ * call to run a function there, is one.
  *
  * Strings are UTF-8. A string the engine returns is the caller's, to free
  * with zebkit_free(); one it passes to a callback is the engine's, valid
@@ -129,7 +133,11 @@ ZEBKIT_API bool zebkit_shutdown(void);
  * Linux; on macOS always) and none otherwise or with --headless; a page
  * loads, runs and can be driven over CDP either way. Profile data is kept
  * in --user-data-dir, by default $XDG_CONFIG_HOME/zebkit/<program name>,
- * on macOS ~/Library/Application Support/zebkit/<program name>. The log
+ * on macOS ~/Library/Application Support/zebkit/<program name>, on Windows
+ * %LOCALAPPDATA%\zebkit\<program name>; with no
+ * home to put it in, a new private directory in the temporary one, deleted
+ * as the engine stops. A --user-data-dir that cannot be made fails the
+ * start (exit code 1). The log
  * goes to stderr unless --enable-logging or --log-file says otherwise.
  *
  * The loop runs until zebkit_quit(), also with no view open: closing the
@@ -167,11 +175,13 @@ ZEBKIT_API bool zebkit_set_cookie_encryption_key(const uint8_t *key, size_t size
  */
 ZEBKIT_API void zebkit_quit(void);
 
-/* Runs @func(@data) on the engine's thread. Any thread may call it. */
-ZEBKIT_API void zebkit_post_task(zebkit_task_func func, void *data);
+/* Runs @func(@data) on the engine's thread. Any thread may call it. False,
+ * and @func is never called, for a NULL @func, before the engine has started
+ * and once it has stopped. */
+ZEBKIT_API bool zebkit_post_task(zebkit_task_func func, void *data);
 
 /* The same, @delay_ms milliseconds from now. */
-ZEBKIT_API void zebkit_post_delayed_task(zebkit_task_func func, void *data, uint32_t delay_ms);
+ZEBKIT_API bool zebkit_post_delayed_task(zebkit_task_func func, void *data, uint32_t delay_ms);
 
 /* Whether views are without windows: no display, or --headless. */
 ZEBKIT_API bool zebkit_is_headless(void);
@@ -180,8 +190,9 @@ ZEBKIT_API bool zebkit_is_headless(void);
  * What the system says of how things should look, as JSON: {"colorScheme":
  * "light" | "dark", "contrast": "no-preference" | "more" | "less" | "custom",
  * "forcedColors", "reducedTransparency", "invertedColors", "locale",
- * "following"} (pages follow the system with the startup setting
- * appearance.follow). Caller frees. NULL off the engine's thread.
+ * "following", "accessibility": "off" | "native" | "basic" | "complete"}
+ * (pages follow the system with the startup setting appearance.follow; the
+ * rest is the system's whether they do or not). Caller frees. NULL off the engine's thread.
  * zebkit_on_environment_changed() tells changes; NULL stops. The JSON is the
  * engine's, for the call. The engine never changes the system's settings.
  */
@@ -204,18 +215,6 @@ ZEBKIT_API char *zebkit_get_environment(void);
 typedef void (*zebkit_notification_func)(const char *json, void *data);
 
 /*
- * What the system tells of itself, as JSON to @func on the engine's thread.
- * zebkit_on_power_event(): {"event": "suspend"}, {"event": "resume"},
- * {"event": "power-source", "onBattery"}, {"event": "lock"} and
- * {"event": "unlock"} for the session's lock (checked each second). zebkit_get_displays(): the screens,
- * [{id, bounds, workArea, scale, rotation, primary}] in DIPs (free it);
- * zebkit_on_displays_changed() tells {"event": "displays", "displays": [...]}.
- * NULL @func stops.
- * zebkit_prevent_sleep(): keeps the system from sleeping (and its display on,
- * with @keep_display_on) for the application until zebkit_allow_sleep(token),
- * or the engine's end; pages have the Wake Lock API for their own. 0 on failure.
- */
-/*
  * The system's handler for @url (a browser for https:, the mail program for
  * mailto:, the default program of a file: URL), or the file manager showing
  * @path selected in its folder. For the application: pages reach neither
@@ -227,6 +226,18 @@ typedef void (*zebkit_notification_func)(const char *json, void *data);
 ZEBKIT_API bool zebkit_open_external(const char *url, char **error);
 ZEBKIT_API bool zebkit_show_in_folder(const char *path, char **error);
 
+/*
+ * What the system tells of itself, as JSON to @func on the engine's thread.
+ * zebkit_on_power_event(): {"event": "suspend"}, {"event": "resume"},
+ * {"event": "power-source", "onBattery"}, {"event": "lock"} and
+ * {"event": "unlock"} for the session's lock (checked each second). zebkit_get_displays(): the screens,
+ * [{id, bounds, workArea, scale, rotation, primary}] in DIPs (free it);
+ * zebkit_on_displays_changed() tells {"event": "displays", "displays": [...]}.
+ * NULL @func stops.
+ * zebkit_prevent_sleep(): keeps the system from sleeping (and its display on,
+ * with @keep_display_on) for the application until zebkit_allow_sleep(token),
+ * or the engine's end; pages have the Wake Lock API for their own. 0 on failure.
+ */
 typedef void (*zebkit_system_event_func)(const char *json, void *data);
 ZEBKIT_API void zebkit_on_power_event(zebkit_system_event_func func, void *data);
 ZEBKIT_API char *zebkit_get_displays(void);
@@ -336,6 +347,16 @@ ZEBKIT_API void zebkit_tray_close(zebkit_tray *tray);
 typedef struct zebkit_view zebkit_view;
 
 /*
+ * The rule for every zebkit_view_*() function: on the engine's thread, with a
+ * view that has not closed. Called otherwise (NULL, a closed view, another
+ * thread) it does nothing and returns its failure value: false, NULL, or
+ * nothing. A callback the engine owes a view (an evaluation, a capture, a
+ * PDF, a media list, a drag's answer) is called exactly once: with the result,
+ * or, when the view closes first, with an error, the view still valid and
+ * before its on_close.
+ */
+
+/*
  * A view loading @url (NULL for none: about:blank, whose loading is not
  * reported, until zebkit_view_load_url()), @width by @height pixels, or
  * a default size when either is 0. It lives until it is closed, by
@@ -349,8 +370,10 @@ ZEBKIT_API zebkit_view *zebkit_view_new(const char *url, int width, int height);
 /*
  * A context: a profile of its own, in memory, as an incognito window's:
  * its cookies, storage, cache and permissions are its own and go with it.
- * Playwright's BrowserContext. zebkit_context_close() closes its views; the
- * profile itself is freed when the engine stops.
+ * Playwright's BrowserContext. zebkit_context_close() closes its views once
+ * the current callback has returned, as zebkit_view_close() does, so it may
+ * be called from any of them; the profile itself is freed when its pages'
+ * processes have gone, or else when the engine stops.
  */
 typedef struct zebkit_context zebkit_context;
 ZEBKIT_API zebkit_context *zebkit_context_new(void);
@@ -380,9 +403,12 @@ ZEBKIT_API void zebkit_view_set_size_limits(zebkit_view *view, int min_width, in
  * Places @view inside @parent's window, over @parent's page, at (@x, @y),
  * @width by @height, in @parent's coordinates (CSS pixels at zoom 1); its
  * own window is hidden. A browser inside an application's window. The view
- * goes with @parent's window when that closes.
+ * closes with @parent (zebkit_view_on_close()). Attached again to another
+ * view, it moves there; zebkit_view_attach_native() puts its page back in
+ * its own window first. False for a NULL or closed view, @view itself as
+ * @parent, or a parent without a window to be in.
  */
-ZEBKIT_API void zebkit_view_attach(zebkit_view *view, zebkit_view *parent, int x, int y, int width, int height);
+ZEBKIT_API bool zebkit_view_attach(zebkit_view *view, zebkit_view *parent, int x, int y, int width, int height);
 
 /* Where an attached view is in its parent's window. */
 ZEBKIT_API void zebkit_view_set_bounds(zebkit_view *view, int x, int y, int width, int height);
@@ -626,7 +652,9 @@ typedef struct zebkit_call zebkit_call;
 /*
  * A call from the page: zebkit.app.<name>(...args). @args_json is the
  * arguments as a JSON array, @origin the calling page's. Answer it, now or
- * later, with exactly one of zebkit_call_resolve() and zebkit_call_reject().
+ * later, with exactly one of zebkit_call_resolve() and zebkit_call_reject(),
+ * from any thread (an answer from another thread reaches the page through the
+ * engine's thread). A call never answered stays in memory until the end.
  */
 typedef void (*zebkit_bind_func)(zebkit_view *view, const char *origin, const char *args_json, zebkit_call *call,
                                  void *data);
@@ -656,7 +684,7 @@ ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
  */
 typedef struct zebkit_script zebkit_script;
 
-/* @args: what the script sees as zebkit.args; may be NULL. */
+/* @argc strings at @argv: what the script sees as zebkit.args; @argv may be NULL. */
 ZEBKIT_API zebkit_script *zebkit_script_new(int argc, const char *const *argv);
 
 /*

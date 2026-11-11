@@ -2,9 +2,11 @@
 links, downloads, client certificates, isolated worlds, file choosers and media."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import atexit
 import base64
 import hashlib
 import json
+import shutil
 import ssl
 import subprocess
 import tempfile
@@ -158,15 +160,34 @@ class Server(ThreadingHTTPServer):
     def handle_error(self, request, client_address): pass
 
 
+_keys = None
+
+
+def _certificates():
+    """The server's, the client's and a stranger's key and certificate: made
+    once per process, for every fixture (three RSA keys a mode were most of a
+    fixture's cost)."""
+    global _keys
+    if _keys is None:
+        _keys = tempfile.TemporaryDirectory(prefix='zebkit-hook-keys-')
+        atexit.register(_keys.cleanup)
+        made = Path(_keys.name)
+        for stem, name in (('server', 'localhost'), ('client', 'zebkit-client'), ('stranger', 'stranger')):
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                            '-keyout', str(made / f'{stem}.key'), '-out', str(made / f'{stem}.pem'),
+                            '-subj', '/CN=' + name, '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return Path(_keys.name)
+
+
 class HookFixture:
     def __init__(self):
         self.work = tempfile.TemporaryDirectory(prefix='zebkit-hook-fixture-')
         self.dir = Path(self.work.name)
-        for stem, name in (('server', 'localhost'), ('client', 'zebkit-client'), ('stranger', 'stranger')):
-            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                            '-keyout', str(self.dir / f'{stem}.key'), '-out', str(self.dir / f'{stem}.pem'),
-                            '-subj', '/CN=' + name, '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        keys = _certificates()
+        for stem in ('server', 'client', 'stranger'):
+            for suffix in ('.key', '.pem'):
+                shutil.copyfile(keys / (stem + suffix), self.dir / (stem + suffix))
         self.received, self.peers, self.echoed = [], [], []
         self.http = self._serve(None)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

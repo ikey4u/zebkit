@@ -16,7 +16,8 @@ below, `$PKG` is that directory.
 | `offscreen-host/` | A page drawn off-screen in one process (`render.c`) and shown in another that links nothing of zebkit's (`show.c`): frames as IOSurfaces or shared memory passed over a socket, input sent back, the reference protocol in `protocol.h` (`docs/API.md`, "Off-screen views") |
 | `ffmpeg.cpp` | A library inside the engine: an MP3 decoded to WAV with the engine's FFmpeg, through `zebkit::vendor::ffmpeg`, with no FFmpeg of the program's own |
 | `../bindings/rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
-| `../bindings/rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust |
+| `../bindings/rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust; the other programs there show the hooks, settings, native parents and the sandbox |
+| `../bindings/golang/examples/hello/` | A window whose page calls a Go function (`bindings/golang/README.md`) |
 | `electron-hello/` | Electron's hello world, which `scripts/electron-baseline.sh` measures zebkit against |
 
 For the C API, the programs in `tests/engine/` are examples too: `api.c`
@@ -27,6 +28,8 @@ program's own; `pdf.c` opens, renders, searches and edits a PDF.
 ## Running them
 
 ```sh
+# From the checkout's root, with PKG the package's absolute path (the
+# commands that go into a directory run in a subshell, and come back).
 # window.c
 cc -std=c11 -I$PKG/include examples/window.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o window
 ./window https://example.com/
@@ -46,8 +49,32 @@ c++ -std=c++17 examples/ffmpeg.cpp -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-
 ./ffmpeg-example examples/sample.mp3 out.wav
 
 # the Rust examples
-cd bindings/rust && ZEBKIT_DIR=$PKG cargo run --example window -- https://example.com/
+(cd bindings/rust && ZEBKIT_DIR=$PKG cargo run --example window -- https://example.com/)
+
+# the Go example
+(cd bindings/golang && CGO_CFLAGS="-I$PKG/include" CGO_LDFLAGS="-L$PKG -Wl,-rpath,$PKG" go run ./examples/hello)
+
+# custom-titlebar, in C and in JavaScript
+cc -std=c11 -I$PKG/include examples/custom-titlebar/main.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o custom-titlebar
+./custom-titlebar file://$PWD/examples/custom-titlebar/page.html
+./zebkit-js examples/custom-titlebar/main.mjs
+
+# pdf-plugin: a library to link into a program of yours (plugin.h); the
+# engine's tests build it into tests/engine/pdf_hooks.c
+cc -std=c11 -c -I$PKG/include examples/pdf-plugin/plugin.c -o plugin.o
+
+# gpui-browser (its README has what GPUI needs)
+(cd examples/gpui-browser && ZEBKIT_DIR=$PKG cargo run --release -- https://example.com/)
+
+# native-host: the X11 one, then the toolkits' (its README has macOS and winit)
+cc -I$PKG/include examples/native-host/x11.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -lX11 -o x11-host
+./x11-host --no-sandbox https://example.com/
+python3 examples/native-host/build.py gtk --package $PKG && out/blink/examples/gtk-host
+python3 examples/native-host/build.py qt --package $PKG && out/blink/examples/qt-host
 ```
+
+`sample.mp3` (the FFmpeg example's) and `native-host/sample.pdf` (the PDF
+pane's) are inputs of the examples, and of the engine's tests that run them.
 
 Where the machine cannot give Chromium's sandbox (containers, many build
 machines), add `--no-sandbox` to the engine's arguments. On macOS the

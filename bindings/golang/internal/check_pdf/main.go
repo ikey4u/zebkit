@@ -42,18 +42,18 @@ func must[T any](value T, err error) T {
 	return value
 }
 
-func decode(text string) any {
+func decode(text json.RawMessage) any {
 	var value any
-	_ = json.Unmarshal([]byte(text), &value)
+	_ = json.Unmarshal(text, &value)
 	return value
 }
 
-func list(text string) []any {
+func list(text json.RawMessage) []any {
 	value, _ := decode(text).([]any)
 	return value
 }
 
-func object(text string) map[string]any {
+func object(text json.RawMessage) map[string]any {
 	value, _ := decode(text).(map[string]any)
 	return value
 }
@@ -102,9 +102,20 @@ func read(dir, name string) []byte {
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		fmt.Println("FAIL reading", name, err)
-		os.Exit(1)
+		exit(1)
 	}
 	return data
+}
+
+// scratch is the checks' directory for files, beside the profile
+// (--user-data-dir) when there is one; exit removes it.
+var scratch string
+
+func exit(code int) {
+	if scratch != "" {
+		os.RemoveAll(scratch)
+	}
+	os.Exit(code)
 }
 
 func main() {
@@ -113,12 +124,23 @@ func main() {
 		fmt.Println("FAIL no PDFium resources: --resources=DIR")
 		os.Exit(1)
 	}
+	parent := ""
+	for _, arg := range args {
+		if profile, ok := strings.CutPrefix(arg, "--user-data-dir="); ok {
+			parent = filepath.Dir(profile)
+		}
+	}
+	var err error
+	if scratch, err = os.MkdirTemp(parent, "zebkit-go-pdf-"); err != nil {
+		fmt.Println("FAIL a scratch directory:", err)
+		os.Exit(1)
+	}
 	font := read(dir, "fonts/ahem/Ahem.ttf")
 	hello := read(dir, "hello_world.pdf")
 
 	if err := zebkit.Init(args...); err != nil {
 		fmt.Println("FAIL zebkit.Init:", err)
-		os.Exit(1)
+		exit(1)
 	}
 	checkServices()
 	checkText(font)
@@ -128,8 +150,9 @@ func main() {
 	zebkit.Shutdown()
 	fmt.Printf("%d of %d checks passed\n", checks-failures, checks)
 	if failures > 0 {
-		os.Exit(1)
+		exit(1)
 	}
+	exit(0)
 }
 
 func checkServices() {
@@ -143,10 +166,12 @@ func checkServices() {
 	}
 	_, err := zebkit.Decompress(zebkit.CompressZstd, payload, 0)
 	check(err != nil, "decompress refuses what is not compressed")
-	check(hex.EncodeToString(zebkit.ComputeDigest(zebkit.SHA256, []byte("abc"))) ==
+	check(hex.EncodeToString(must(zebkit.ComputeDigest(zebkit.SHA256, []byte("abc")))) ==
 		"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 of abc")
-	check(zebkit.SHA512.Size() == 64 && len(zebkit.ComputeDigest(zebkit.SHA1, nil)) == 20, "digest sizes")
-	check(hex.EncodeToString(zebkit.HMAC(zebkit.SHA256, []byte("key"), []byte("The quick brown fox jumps over the lazy dog"))) ==
+	check(zebkit.SHA512.Size() == 64 && len(must(zebkit.ComputeDigest(zebkit.SHA1, nil))) == 20, "digest sizes")
+	_, err = zebkit.ComputeDigest(zebkit.Digest(99), nil)
+	check(err != nil, "an unknown digest is refused")
+	check(hex.EncodeToString(must(zebkit.HMAC(zebkit.SHA256, []byte("key"), []byte("The quick brown fox jumps over the lazy dog")))) ==
 		"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8", "HMAC-SHA256")
 	random, err := zebkit.RandomBytes(32)
 	check(err == nil && len(random) == 32 && !bytes.Equal(random, make([]byte, 32)), "random bytes")
@@ -174,7 +199,9 @@ func checkServices() {
 	check(err == nil && len(jpeg) > 2 && jpeg[0] == 0xff && jpeg[1] == 0xd8, "JPEG encode")
 	_, err = zebkit.DecodeImage([]byte("no image"))
 	check(err != nil, "decode refuses what is not an image")
-	check(zebkit.ICUInit(), "ICU")
+	check(zebkit.ICUInit() == nil, "ICU")
+	opened, err = zebkit.AESGCMOpen(key, nonce, nil, must(zebkit.AESGCMSeal(key, nonce, nil, nil)))
+	check(err == nil && opened != nil && len(opened) == 0, "AES-GCM of nothing")
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err == nil {
@@ -184,11 +211,13 @@ func checkServices() {
 				body, _ = readAll(r)
 			}
 			w.Header().Set("X-Method", r.Method)
+			w.Header().Add("X-Twice", "a")
+			w.Header().Add("X-Twice", "b")
 			fmt.Fprintf(w, "got %s", body)
 		}))
 		var response *zebkit.FetchResponse
-		zebkit.Fetch("POST", fmt.Sprintf("http://%s/", listener.Addr()), "Content-Type: text/plain", []byte("hi"),
-			func(r *zebkit.FetchResponse) { response = r })
+		check(zebkit.Fetch("POST", fmt.Sprintf("http://%s/", listener.Addr()), "Content-Type: text/plain", []byte("hi"),
+			func(r *zebkit.FetchResponse) { response = r }) == nil, "Fetch queued")
 		end := time.Now().Add(15 * time.Second)
 		for response == nil && time.Now().Before(end) {
 			zebkit.Pump()
@@ -196,6 +225,21 @@ func checkServices() {
 		}
 		check(response != nil && response.Err == nil && response.Status == 200 && string(response.Body) == "got hi" &&
 			strings.Contains(strings.ToLower(response.Headers), "x-method: post"), "Fetch through the engine's network stack", response)
+		var twice []string
+		if response != nil {
+			for _, header := range response.HeaderList() {
+				if strings.EqualFold(header[0], "x-twice") {
+					twice = append(twice, header[1])
+				}
+			}
+		}
+		check(len(twice) == 2 && twice[0] == "a" && twice[1] == "b", "FetchResponse.HeaderList keeps a repeated header", twice)
+		offThread := make(chan bool, 1)
+		go func() {
+			defer func() { offThread <- recover() != nil }()
+			zebkit.Fetch("GET", "http://127.0.0.1/", "", nil, nil)
+		}()
+		check(<-offThread, "Fetch off the engine's thread panics")
 	}
 }
 
@@ -230,12 +274,12 @@ func checkCanvas(font []byte) {
 	canvas.Fill(false)
 	canvas.Save()
 	canvas.Translate(50, 0)
-	check(canvas.SetLinearGradient(0, 0, 50, 0, []float64{0, 1}, []uint32{0x0000ffff, 0x00ff00ff}), "a linear gradient")
+	check(canvas.SetLinearGradient(0, 0, 50, 0, []float64{0, 1}, []uint32{0x0000ffff, 0x00ff00ff}) == nil, "a linear gradient")
 	canvas.BeginPath()
 	canvas.Rect(0, 0, 50, 25)
 	canvas.Fill(false)
 	canvas.Restore()
-	check(!canvas.SetRadialGradient(0, 0, 1, []float64{0}, []uint32{0}), "a gradient refuses one stop")
+	check(canvas.SetRadialGradient(0, 0, 1, []float64{0}, []uint32{0}) != nil, "a gradient refuses one stop")
 	canvas.SetStrokeColor(0x000000ff)
 	canvas.SetLineWidth(2)
 	canvas.SetLineCap(zebkit.CapRound)
@@ -251,7 +295,7 @@ func checkCanvas(font []byte) {
 	canvas.ClosePath()
 	canvas.Stroke()
 	canvas.SetDash(nil, 0)
-	check(canvas.SetBlend("Multiply") && !canvas.SetBlend("Nope"), "blend modes")
+	check(canvas.SetBlend("Multiply") == nil && canvas.SetBlend("Nope") != nil, "blend modes")
 	canvas.SetBlend("Normal")
 	canvas.SetAlpha(1)
 	pixels, err := canvas.Pixels()
@@ -277,7 +321,8 @@ func checkCanvas(font []byte) {
 	check(err != nil, "a font refuses what is not one")
 
 	small := &zebkit.Pixels{Width: 1, Height: 1, RGBA: []byte{0, 0, 255, 255}}
-	check(canvas.DrawImage(small, 90, 0, 10, 10), "draw an image")
+	check(canvas.DrawImage(small, 90, 0, 10, 10) == nil, "draw an image")
+	check(canvas.DrawImage(&zebkit.Pixels{Width: 2, Height: 2, RGBA: []byte{1}}, 0, 0, 1, 1) != nil, "an image short of pixels is refused")
 	canvas.Save()
 	canvas.BeginPath()
 	canvas.Rect(0, 0, 5, 5)
@@ -313,7 +358,7 @@ func checkPDF(dir string, hello, font []byte) {
 		return
 	}
 	defer pdf.Close()
-	check(pdf.PageCount() == 1 && object(pdf.Info())["pages"] == 1.0, "page count and info")
+	check(pdf.PageCount() == 1 && object(must(pdf.Info()))["pages"] == 1.0, "page count and info")
 	page := object(must(pdf.Page(0)))
 	check(page["width"].(float64) > 0, "a page's size", page)
 	image, err := pdf.Render(0, nil)
@@ -339,7 +384,9 @@ func checkPDF(dir string, hello, font []byte) {
 	check(list(must(pdf.Signatures())) != nil, "signatures, none")
 	_, err = pdf.Links(0)
 	check(err == nil, "links")
-	check(pdf.SetMetadata(`{"title": "From Go"}`) == nil && strings.Contains(pdf.Info(), "From Go"), "set metadata")
+	check(pdf.SetMetadata(`{"title": "From Go"}`) == nil && strings.Contains(string(must(pdf.Info())), "From Go"), "set metadata")
+	check(pdf.SetMetadata(map[string]any{"author": "Go"}) == nil && strings.Contains(string(must(pdf.Info())), "\"Go\""),
+		"set metadata from a Go value")
 
 	bookmarks, err := zebkit.OpenPDF(read(dir, "bookmarks.pdf"), "")
 	if err == nil {
@@ -391,13 +438,13 @@ func checkPDF(dir string, hello, font []byte) {
 		}
 		other.Close()
 	}
-	xfdf, err := pdf.ExportAnnotations(zebkit.XFDF, -1, -1)
+	xfdf, err := pdf.ExportAnnotations(zebkit.PDFFormatXFDF, -1, -1)
 	check(err == nil && bytes.Contains(xfdf, []byte("<xfdf")), "export XFDF")
-	fdf, err := pdf.ExportAnnotations(zebkit.FDF, 0, -1)
+	fdf, err := pdf.ExportAnnotations(zebkit.PDFFormatFDF, 0, -1)
 	check(err == nil && bytes.HasPrefix(fdf, []byte("%FDF")), "export FDF")
 	fresh := must(zebkit.OpenPDF(hello, ""))
 	if fresh != nil {
-		count, err := fresh.ImportAnnotations(zebkit.XFDF, xfdf)
+		count, err := fresh.ImportAnnotations(zebkit.PDFFormatXFDF, xfdf)
 		check(err == nil && count >= 2, "import XFDF", count, err)
 		redacted, err := fresh.Redact(0, "[[0, 0, 600, 800]]", 0x000000ff)
 		check(err == nil && redacted == 1 && !strings.Contains(must(fresh.Text(0)), "Hello"), "redact")
@@ -435,7 +482,7 @@ func checkPDF(dir string, hello, font []byte) {
 	}
 	incremental, err := pdf.Save(zebkit.PDFSaveIncremental)
 	check(err == nil && len(incremental) > len(hello), "save incrementally")
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("zebkit-go-%d.pdf", os.Getpid()))
+	path := filepath.Join(scratch, "saved.pdf")
 	if os.WriteFile(path, saved, 0o600) == nil {
 		fromFile, err := zebkit.OpenPDFFile(path, "")
 		check(err == nil && fromFile.PageCount() == 2, "open a file")
@@ -463,7 +510,7 @@ func checkPDF(dir string, hello, font []byte) {
 		form.Close()
 	}
 
-	points, err := zebkit.FilterInput("ink", "[[0, 0], [10, 0.1], [20, 0]]", `{"simplify": 1}`)
+	points, err := zebkit.FilterInput("ink", [][2]float64{{0, 0}, {10, 0.1}, {20, 0}}, `{"simplify": 1}`)
 	check(err == nil && len(list(points)) == 2, "filter a tool's points", points)
 	check(len(list(must(pdf.PageData(0, "None_")))) == 0, "page data, none")
 }
@@ -475,8 +522,8 @@ func checkHooks(hello, font []byte) {
 	}
 	defer pdf.Close()
 
-	refuse, err := zebkit.HookBefore(pdf, "annotation.add", func(doc *zebkit.PDF, operation string) zebkit.PDFDecision {
-		if strings.Contains(operation, "forbidden") {
+	refuse, err := zebkit.OnPDFBefore(pdf, "annotation.add", func(doc *zebkit.PDF, operation json.RawMessage) zebkit.PDFDecision {
+		if strings.Contains(string(operation), "forbidden") {
 			return zebkit.PDFRefuse("not that")
 		}
 		return zebkit.PDFContinue()
@@ -484,18 +531,18 @@ func checkHooks(hello, font []byte) {
 	check(err == nil, "a before hook")
 	_, err = pdf.AddAnnotation(0, `{"type": "square", "rect": [0, 0, 10, 10], "contents": "forbidden"}`)
 	check(err != nil && strings.Contains(err.Error(), "not that"), "a before hook refuses, with its reason", err)
-	change, _ := zebkit.HookBefore(pdf, "annotation.add", func(doc *zebkit.PDF, operation string) zebkit.PDFDecision {
+	change, _ := zebkit.OnPDFBefore(pdf, "annotation.add", func(doc *zebkit.PDF, operation json.RawMessage) zebkit.PDFDecision {
 		op := object(operation)
 		annotation, _ := op["annotation"].(map[string]any)
 		if annotation["contents"] == "change me" {
 			annotation["contents"] = "changed by Go"
 			text, _ := json.Marshal(op)
-			return zebkit.PDFChange(string(text))
+			return zebkit.PDFChange(text)
 		}
 		return zebkit.PDFContinue()
 	})
 	var inverse string
-	after, _ := zebkit.HookAfter(pdf, "annotation.add", func(doc *zebkit.PDF, operation string) {
+	after, _ := zebkit.OnPDFAfter(pdf, "annotation.add", func(doc *zebkit.PDF, operation json.RawMessage) {
 		if value, ok := object(operation)["inverse"]; ok {
 			text, _ := json.Marshal(value)
 			inverse = string(text)
@@ -505,10 +552,12 @@ func checkHooks(hello, font []byte) {
 	annotations := list(must(pdf.Annotations(0)))
 	check(err == nil && len(annotations) == 1 && annotations[0].(map[string]any)["contents"] == "changed by Go", "a before hook changes the operation")
 	check(inverse != "" && pdf.Apply(inverse) == nil && len(list(must(pdf.Annotations(0)))) == 0, "an after hook's inverse undoes it", index)
-	check(refuse.Remove() && change.Remove() && after.Remove() && !after.Remove(), "remove hooks")
+	check(refuse.Remove() == nil && change.Remove() == nil && after.Remove() == nil && after.Remove() != nil, "remove hooks")
+	_, err = zebkit.OnPDFAfter(pdf, "annotation.add", nil)
+	check(err != nil, "a hook without a function is refused")
 
 	drawn := 0
-	appearance, err := zebkit.HookAppearance(pdf, "stamp", func(c *zebkit.Canvas, annotation string, width, height float64) bool {
+	appearance, err := zebkit.OnPDFAppearance(pdf, "stamp", func(c *zebkit.Canvas, annotation json.RawMessage, width, height float64) bool {
 		drawn++
 		c.SetFillColor(0x00ff00ff)
 		c.Rect(0, 0, width, height)
@@ -520,22 +569,22 @@ func checkHooks(hello, font []byte) {
 	check(err == nil && drawn > 0 && image != nil && near(pixel(image, image.Width/2, image.Height/2), 0, 255, 0), "an appearance hook draws", drawn)
 	appearance.Remove()
 
-	kind, err := zebkit.HookKind(pdf, zebkit.PDFKind{
+	kind, err := zebkit.RegisterPDFKind(pdf, zebkit.PDFKind{
 		Name: "GoTest_Sticker", Prefix: "GoTest_",
 		Schema: `{"mood": {"type": "string", "enum": ["happy", "sad"], "required": true}}`,
-		Check: func(data string) string {
-			if strings.Contains(data, "sad") {
+		Check: func(data json.RawMessage) string {
+			if strings.Contains(string(data), "sad") {
 				return "no sad stickers"
 			}
 			return ""
 		},
-		Draw: func(c *zebkit.Canvas, annotation string, width, height float64) bool {
+		Draw: func(c *zebkit.Canvas, annotation json.RawMessage, width, height float64) bool {
 			c.SetFillColor(0x0000ffff)
 			c.Rect(0, 0, width, height)
 			c.Fill(false)
 			return true
 		},
-		HitTest: func(doc *zebkit.PDF, page, index int, annotation string, x, y float64) bool { return x < 110 },
+		HitTest: func(doc *zebkit.PDF, page, index int, annotation json.RawMessage, x, y float64) bool { return x < 110 },
 	})
 	check(err == nil, "a kind of the application's", err)
 	sticker, err := pdf.AddAnnotation(0, `{"type": "GoTest_Sticker", "rect": [100, 100, 120, 120], "data": {"mood": "happy"}}`)
@@ -550,7 +599,7 @@ func checkHooks(hello, font []byte) {
 	check(pdf.Flatten(0, false) == nil && len(list(must(pdf.PageData(0, "GoTest_")))) == 1, "flatten keeps the kind's data")
 	kind.Remove()
 
-	layer, _ := zebkit.HookLayer(pdf, true, func(c *zebkit.Canvas, page int, info zebkit.PDFLayerInfo) {
+	layer, _ := zebkit.OnPDFLayer(pdf, true, func(c *zebkit.Canvas, page int, info zebkit.PDFLayerInfo) {
 		c.SetFillColor(0xff0000ff)
 		c.Rect(0, 0, 5, 5)
 		c.Fill(false)
@@ -563,14 +612,14 @@ func checkHooks(hello, font []byte) {
 	if blank != nil {
 		blank.InsertPage(0, 100, 100)
 		asked := 0
-		ocr, _ := zebkit.HookOCR(blank, func(page int, image *zebkit.Pixels, scale float64) (string, bool) {
+		ocr, _ := zebkit.OnPDFOCR(blank, func(page int, image *zebkit.Pixels, scale float64) (any, bool) {
 			asked++
 			return `[{"text": "seen by Go", "box": [10, 10, 90, 20]}]`, image.Width > 0
 		})
 		check(strings.Contains(must(blank.Text(0)), "seen by Go") && asked == 1, "OCR for a page without text", asked)
 		ocr.Remove()
 
-		fontHook, _ := zebkit.HookFont(blank, func(family string) []byte {
+		fontHook, _ := zebkit.OnPDFFont(blank, func(family string) []byte {
 			if family == "Boxes" {
 				return font
 			}
@@ -580,12 +629,12 @@ func checkHooks(hello, font []byte) {
 		check(err == nil, "a font from a hook", err)
 		fontHook.Remove()
 
-		trust, err := zebkit.HookTrust(blank, func(signature string, contents []byte) zebkit.PDFTrust { return zebkit.PDFTrusted })
-		check(err == nil && trust.Remove(), "a trust hook")
+		trust, err := zebkit.OnPDFTrust(blank, func(signature json.RawMessage, contents []byte) zebkit.PDFTrust { return zebkit.PDFTrusted })
+		check(err == nil && trust.Remove() == nil, "a trust hook")
 
 		handled := ""
-		action, _ := zebkit.HookAction(blank, func(action string) bool {
-			handled = action
+		action, _ := zebkit.OnPDFAction(blank, func(action json.RawMessage) bool {
+			handled = string(action)
 			return true
 		})
 		link, _ := blank.AddAnnotation(0, `{"type": "link", "rect": [0, 0, 5, 5], "url": "https://example.com/go"}`)
@@ -593,7 +642,7 @@ func checkHooks(hello, font []byte) {
 		check(result["handled"] == true && strings.Contains(handled, "example.com/go"), "an action hook takes it", result)
 		action.Remove()
 
-		input, _ := zebkit.HookInput(blank, "pen", func(tool, points string) (string, bool) {
+		input, _ := zebkit.OnPDFInput(blank, "pen", func(tool string, points json.RawMessage) (any, bool) {
 			return "[[1, 1]]", tool == "pen"
 		})
 		filtered, err := blank.FilterInput("pen", "[[0, 0], [5, 5]]", "")
@@ -602,10 +651,10 @@ func checkHooks(hello, font []byte) {
 		blank.Close()
 	}
 	seen := 0
-	all, err := zebkit.HookBefore(nil, "page.insert", func(doc *zebkit.PDF, operation string) zebkit.PDFDecision {
+	all, err := zebkit.OnPDFBefore(nil, "page.insert", func(doc *zebkit.PDF, operation json.RawMessage) zebkit.PDFDecision {
 		seen++
 		return zebkit.PDFContinue()
 	})
 	pdf.InsertPage(0, 100, 100)
-	check(err == nil && seen == 1 && all.Remove(), "a hook for all documents", seen)
+	check(err == nil && seen == 1 && all.Remove() == nil, "a hook for all documents", seen)
 }

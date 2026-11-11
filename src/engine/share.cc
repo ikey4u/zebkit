@@ -6,6 +6,7 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -57,6 +58,9 @@ class ShareService : public content::DocumentService<blink::mojom::ShareService>
         names.Append(file->name.path().AsUTF8Unsafe());
       metadata.Set("files", std::move(names));
       metadata.Set("origin", origin().Serialize());
+      // As the other hooks of a document say which frame asked.
+      metadata.Set("frameId", "f" + base::NumberToString(render_frame_host().GetFrameTreeNodeId().value()));
+      metadata.Set("mainFrame", render_frame_host().IsInPrimaryMainFrame());
       ShareRequests::Reply reply = base::BindOnce(
           [](ShareCallback callback, ShareTraits::Decision decision) {
             std::move(callback).Run(decision.shared ? blink::mojom::ShareError::OK
@@ -95,12 +99,15 @@ bool ShowSystemShareSheet(content::WebContents*, const std::string&, const std::
 
 extern "C" {
 void zebkit_view_on_share(zebkit_view* view, zebkit_share_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::ShareRequests::Get().Install(view, function, data);
 }
 void zebkit_view_on_share_result(zebkit_view* view, zebkit_share_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   zebkit::ShareRequests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_share_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::ShareRequests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_share_request_info(zebkit_share_request* request) {

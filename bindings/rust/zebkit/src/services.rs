@@ -352,11 +352,12 @@ unsafe extern "C" fn on_response<F: FnOnce(Response)>(response: *const sys::zebk
     } else {
         std::slice::from_raw_parts(response.body, response.body_size).to_vec()
     };
-    done(Response {
+    let response = Response {
         status: u16::try_from(response.status).unwrap_or(0),
         url: string_from(response.url).unwrap_or_default(),
         headers,
         body,
         error: string_from(response.error),
-    });
+    };
+    crate::guard(|| done(response));
 }

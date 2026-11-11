@@ -693,7 +693,7 @@ static void s_request_close_leave(void) {
 static void ready(void *data) {
     (void)data;
     const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env ? env : "http://127.0.0.1:8796");
+    snprintf(base, sizeof(base), "%s", env);
     snprintf(page_url, sizeof(page_url), "%s/page.html", base);
     snprintf(print_url, sizeof(print_url), "%s/print.html", base);
     const char *files = getenv("ZEBKIT_TEST_FILES");
@@ -737,6 +737,10 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;

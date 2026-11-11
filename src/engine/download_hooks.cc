@@ -20,6 +20,7 @@
 #include "zebkit/engine/download_manager.h"
 #include "net/base/filename_util.h"
 #include "url/gurl.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/hook_requests.h"
 #include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/settings.h"
@@ -84,7 +85,7 @@ class Watcher : public content::DownloadManager::Observer,
   bool used() const { return used_; }
 
   void Track(download::DownloadItem* item, zebkit_view* view) {
-    auto [it, added] = items_.try_emplace(item->GetId());
+    auto [it, added] = items_.try_emplace(item);
     if (!added)
       return;
     it->second.item = item;
@@ -93,12 +94,12 @@ class Watcher : public content::DownloadManager::Observer,
     Tell(item, it->second);
   }
   void SetRequest(download::DownloadItem* item, uintptr_t request) {
-    if (auto it = items_.find(item->GetId()); it != items_.end())
+    if (auto it = items_.find(item); it != items_.end())
       it->second.request = request;
   }
   bool Cancel(zebkit_view* view, const std::string& id) {
     for (auto& [key, entry] : items_) {
-      if (entry.view.get() == view && "d" + base::NumberToString(key) == id &&
+      if (entry.view.get() == view && "d" + base::NumberToString(entry.item->GetId()) == id &&
           entry.item->GetState() == download::DownloadItem::IN_PROGRESS) {
         entry.item->Cancel(true);
         return true;
@@ -128,21 +129,21 @@ class Watcher : public content::DownloadManager::Observer,
 
   // download::DownloadItem::Observer
   void OnDownloadUpdated(download::DownloadItem* item) override {
-    auto it = items_.find(item->GetId());
+    auto it = items_.find(item);
     if (it == items_.end())
       return;
     const uintptr_t request = it->second.request;
     if (request && item->GetState() != download::DownloadItem::IN_PROGRESS) {
       it->second.request = 0;
       Requests::Get().Settle(request, Traits::Refusal(), "cancelled");
-      it = items_.find(item->GetId());
+      it = items_.find(item);
       if (it == items_.end())
         return;
     }
     Tell(item, it->second);
   }
   void OnDownloadDestroyed(download::DownloadItem* item) override {
-    auto it = items_.find(item->GetId());
+    auto it = items_.find(item);
     if (it == items_.end())
       return;
     Requests::Get().Abandon(it->second.request);
@@ -166,7 +167,9 @@ class Watcher : public content::DownloadManager::Observer,
     entry.state = state;
     entry.received = item->GetReceivedBytes();
     zebkit_view* view = entry.view.get();
-    if (!view || !view->on_download_progress_)
+    // The view's own function, or that of the opener a popup inherits from.
+    zebkit_view* teller = view ? view->Decider(&zebkit_view::on_download_progress_) : nullptr;
+    if (!teller || !teller->on_download_progress_)
       return;
     const bool done = state != download::DownloadItem::IN_PROGRESS;
     base::DictValue event;
@@ -184,18 +187,21 @@ class Watcher : public content::DownloadManager::Observer,
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
-            [](base::WeakPtr<zebkit_view> view, uint64_t generation, std::string json) {
-              if (!view || view->download_generation_ != generation || !view->on_download_progress_)
+            [](base::WeakPtr<zebkit_view> view, base::WeakPtr<zebkit_view> teller, uint64_t generation,
+               std::string json) {
+              if (!view || !teller || teller->download_generation_ != generation || !teller->on_download_progress_)
                 return;
-              auto function = view->on_download_progress_;
-              function(view.get(), json.c_str(), view->on_download_progress_data_);
+              auto function = teller->on_download_progress_;
+              function(view.get(), json.c_str(), teller->on_download_progress_data_);
             },
-            entry.view, view->download_generation_, base::WriteJson(event).value_or("{}")));
+            entry.view, teller->GetWeakPtr(), teller->download_generation_, base::WriteJson(event).value_or("{}")));
   }
 
   bool used_ = false;
   std::set<content::DownloadManager*> managers_;
-  std::map<uint32_t, Entry> items_;
+  // By item: each profile's manager counts its ids from where the delegate
+  // started it, so two profiles' items can share one.
+  std::map<download::DownloadItem*, Entry> items_;
 };
 
 void Cancel(download::DownloadTargetCallback* callback) {
@@ -281,18 +287,21 @@ const char* EffectiveDownloads(zebkit_view* view) {
 
 extern "C" {
 void zebkit_view_on_download(zebkit_view* view, zebkit_download_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   auto& requests = zebkit::Requests::Get();
-  if (function && requests.Ready() && view && view->web_contents())
+  if (function && requests.Ready() && view->web_contents())
     zebkit::Watcher::Get().WatchProfileOf(view);
   requests.Install(view, function, data);
 }
 void zebkit_view_on_download_progress(zebkit_view* view, zebkit_download_progress_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   auto& requests = zebkit::Requests::Get();
-  if (function && requests.Ready() && view && view->web_contents())
+  if (function && requests.Ready() && view->web_contents())
     zebkit::Watcher::Get().WatchProfileOf(view);
   requests.Observe(view, function, data);
 }
 bool zebkit_view_set_download_timeout(zebkit_view* view, uint32_t milliseconds) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   return zebkit::Requests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_download_request_info(zebkit_download_request* request) {
@@ -321,7 +330,7 @@ bool zebkit_download_respond(zebkit_download_request* request, zebkit_download_a
   return true;
 }
 bool zebkit_view_cancel_download(zebkit_view* view, const char* download_id) {
-  if (!zebkit::Requests::Get().Ready() || !view || !download_id) return false;
+  if (!zebkit::Requests::Get().Ready() || !zebkit::LiveView(view) || !download_id) return false;
   return zebkit::Watcher::Get().Cancel(view, download_id);
 }
 }  // extern "C"

@@ -2,19 +2,17 @@
 //! a PNG image, a tooltip, a menu of `app::set_menu`'s items and a click.
 //! Engine thread only.
 
-use std::cell::RefCell;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void};
 use std::rc::Rc;
 
 use crate::engine::require_engine_thread;
-use crate::{c_string, sys, take_error, Error};
+use crate::{c_string, string_from, sys, take_error, Error, Slot};
 
-type MenuFunction = RefCell<Option<Box<dyn FnMut(&str)>>>;
-
+// Out of their slots while they run: a menu item's function may set a new menu.
 #[derive(Default)]
 struct Functions {
-    menu: MenuFunction,
-    click: RefCell<Option<Box<dyn FnMut()>>>,
+    menu: Slot<dyn FnMut(&str)>,
+    click: Slot<dyn FnMut()>,
 }
 
 /// A tray icon; dropping it (or [`Tray::close`]) removes it.
@@ -24,23 +22,20 @@ pub struct Tray {
     functions: Rc<Functions>,
 }
 
+/// The functions, held while one runs: it may drop the tray.
+unsafe fn functions(data: *mut c_void) -> Rc<Functions> {
+    let pointer = data.cast_const().cast::<Functions>();
+    Rc::increment_strong_count(pointer);
+    Rc::from_raw(pointer)
+}
+
 unsafe extern "C" fn on_menu(id: *const c_char, data: *mut c_void) {
-    let functions = &*data.cast_const().cast::<Functions>();
-    let id = CStr::from_ptr(id).to_string_lossy();
-    if let Ok(mut slot) = functions.menu.try_borrow_mut() {
-        if let Some(function) = slot.as_mut() {
-            function(&id);
-        }
-    }
+    let id = string_from(id).unwrap_or_default();
+    functions(data).menu.call(|function| function(&id));
 }
 
 unsafe extern "C" fn on_click(data: *mut c_void) {
-    let functions = &*data.cast_const().cast::<Functions>();
-    if let Ok(mut slot) = functions.click.try_borrow_mut() {
-        if let Some(function) = slot.as_mut() {
-            function();
-        }
-    }
+    functions(data).click.call(|function| function());
 }
 
 impl Tray {
@@ -83,9 +78,10 @@ impl Tray {
         if self.raw.is_null() {
             return Err(Error::new("the tray icon is closed"));
         }
-        *self.functions.menu.borrow_mut() = Some(Box::new(function));
         let mut error = std::ptr::null_mut();
         if unsafe { sys::zebkit_tray_set_menu(self.raw, c_string(json).as_ptr(), Some(on_menu), self.data(), &mut error) } {
+            // Only now: a refused menu leaves the old one, with its function.
+            self.functions.menu.set(Some(Box::new(function)));
             Ok(())
         } else {
             Err(unsafe { take_error(error, "the menu was refused") })
@@ -97,7 +93,7 @@ impl Tray {
         if self.raw.is_null() {
             return;
         }
-        *self.functions.click.borrow_mut() = Some(Box::new(function));
+        self.functions.click.set(Some(Box::new(function)));
         unsafe { sys::zebkit_tray_on_click(self.raw, Some(on_click), self.data()) }
     }
 

@@ -50,9 +50,14 @@ pub const DIRECTORY: &str = "zebkit";
 /// engine cannot be put there.
 pub fn bundle() {
     let engine = engine_directory();
-    // Windows has no run path: a DLL is found beside the executable itself.
+    // Windows has no run path: a DLL is found beside the executable itself,
+    // and tests and examples are one directory further down (hard links,
+    // where the file system has them, so that this costs little).
     if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "windows") {
-        copy_engine(&engine, &executable_directory());
+        let executables = executable_directory();
+        copy_engine(&engine, &executables);
+        copy_engine(&engine, &executables.join("deps"));
+        copy_engine(&engine, &executables.join("examples"));
         println!("cargo:rerun-if-changed={}", engine.join("zebkit.dll").display());
         // chrome.exe's main thread: a renderer's main thread runs V8 and Blink here.
         println!("cargo:rustc-link-arg=/STACK:0x800000");

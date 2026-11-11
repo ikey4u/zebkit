@@ -2,19 +2,11 @@
 // inside the engine, its events, pixels and endpoint; what a page plays,
 // listed, captured and tapped; FFmpeg's tools. Arguments: the local server's
 // base URL, a media clip, a directory to write to.
+import {finish, loaded, until as poll, verify as check, within} from './helpers.mjs';
+
+const until = (condition, ms = 15000) => poll(condition, ms);
+
 const [base, clip, scratch] = zebkit.args;
-let failures = 0;
-const check = (ok, what, detail) => {
-  console.log((ok ? 'ok   ' : 'FAIL ') + what + (ok || detail === undefined ? '' : ': ' + JSON.stringify(detail)));
-  if (!ok) failures++;
-};
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const within = (promise, ms, what) => Promise.race([promise, sleep(ms).then(() => { throw new Error('timed out: ' + what); })]);
-const loaded = (view) => new Promise((resolve) => view.on('load', (event) => { if (event === 'finished') resolve(); }));
-const until = async (condition, ms = 15000) => {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(50)) if (await condition()) return true;
-  return false;
-};
 const auto = zebkit.automation;
 
 // ---- automation.h ----
@@ -100,6 +92,5 @@ const cancelled = await zebkit.media.ffmpeg(['-y', '-i', clip, '-c', 'copy', '--
 check(cancelled === 'cancelled', 'a progress function that returns false cancels', cancelled);
 check(await zebkit.media.ffmpeg(['-i', clip, '-c', 'copy']).then(() => false, () => true), 'ffmpeg refuses what it cannot do');
 
-if (failures) throw new Error(`${failures} checks failed`);
-console.log('ok JavaScript automation, media capture, taps and FFmpeg');
+finish('JavaScript automation, media capture, taps and FFmpeg');
 zebkit.quit();

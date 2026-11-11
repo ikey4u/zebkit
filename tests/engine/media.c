@@ -649,7 +649,7 @@ static void s_bad_ids(void) {
 static void ready(void *data) {
     (void)data;
     const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env ? env : "http://127.0.0.1:8796");
+    snprintf(base, sizeof(base), "%s", env);
     env = getenv("ZEBKIT_TEST_FILES");
     snprintf(files, sizeof(files), "%s", env ? env : "/tmp");
     view = zebkit_view_new(NULL, 640, 480);
@@ -694,6 +694,10 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     const char *env = getenv("ZEBKIT_TEST_HISTORY");
     history = env && *env == '1';
     if (history)

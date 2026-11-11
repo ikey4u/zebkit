@@ -10,7 +10,7 @@
 #                    Extensions after the DASH stream's (a codec change)
 #   tone.webm        Opus alone, for <audio src>
 #   dash/            the MP4 as a DASH stream: an init segment and 1 s
-#                    segments for video and for audio, which mse.html
+#                    segments for video and for audio, which media.html
 #                    appends through Media Source Extensions
 #   cenc/            the same video encrypted (CENC, Clear Key), which a
 #                    capture refuses

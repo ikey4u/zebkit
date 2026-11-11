@@ -5,7 +5,8 @@
  * An off-screen view has no window. The engine draws its page and hands
  * every frame to the application as a shared surface, without encoding:
  *
- *   macOS   an IOSurface, drawn by the GPU; IOSurfaceCreateMachPort() (or
+ *   macOS   an IOSurface the engine copies the page's pixels into (on its
+ *           thread, the damaged part); IOSurfaceCreateMachPort() (or
  *           zebkit_frame_iosurface_mach_port()) gives another process a
  *           send right to it.
  *   Linux   BGRA pixels in shared memory, a file descriptor the

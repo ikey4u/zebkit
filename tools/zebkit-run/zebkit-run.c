@@ -62,15 +62,15 @@ static int no_startup_window;
 
 static void ready(void *data) {
     (void)data;
-    if (no_startup_window) {
-        /* A browser launched by a CDP client over its pipe, as Chrome is by
-         * Playwright: no window until it asks, and it ends with Browser.close. */
+    if (playwright_port >= 0) {
+        /* The client opens its own pages: no window of zebkit-run's either. */
+        zebkit_automation_listen(playwright_port, listening, NULL);
         ++open_views;
         return;
     }
-    if (playwright_port >= 0) {
-        /* The client opens its own pages. */
-        zebkit_automation_listen(playwright_port, listening, NULL);
+    if (no_startup_window) {
+        /* A browser launched by a CDP client over its pipe, as Chrome is by
+         * Playwright: no window until it asks, and it ends with Browser.close. */
         ++open_views;
         return;
     }
@@ -116,8 +116,13 @@ int main(int argc, char **argv) {
     if (zebkit_win_startup(&child_code))
         return child_code;
 #endif
-    char *found[64];
+    /* Every argument may be a URL: as many places as arguments. */
+    char **found = malloc(sizeof(char *) * (size_t)(argc > 0 ? argc : 1));
     int headless = 0;
+    if (!found) {
+        fprintf(stderr, "zebkit-run: out of memory\n");
+        return 1;
+    }
     urls = found;
     for (int i = 1; i < argc; ++i) {
         if (strncmp(argv[i], "--playwright-port=", 18) == 0)
@@ -126,7 +131,7 @@ int main(int argc, char **argv) {
             headless = 1;
         else if (strcmp(argv[i], "--no-startup-window") == 0)
             no_startup_window = 1;
-        else if (strncmp(argv[i], "--", 2) != 0 && url_count < 64)
+        else if (strncmp(argv[i], "--", 2) != 0)
             found[url_count++] = argv[i];
     }
     if (playwright_port < 0) {
@@ -137,6 +142,8 @@ int main(int argc, char **argv) {
         if (!pipe)
             return zebkit_main(argc, argv, ready, NULL);
         char **with = malloc(sizeof(char *) * (size_t)(argc + 2));
+        if (!with)
+            return 1;
         int count = 0;
         for (int i = 0; i < argc; ++i)
             with[count++] = argv[i];
@@ -147,6 +154,8 @@ int main(int argc, char **argv) {
     /* The program's name, Playwright's switches, then the caller's. */
     char **with = malloc(sizeof(char *) * (size_t)(argc + COUNT(playwright_switches) +
                                                     COUNT(playwright_headless_switches) + 1));
+    if (!with)
+        return 1;
     int count = 0;
     with[count++] = argv[0];
     for (int i = 0; i < COUNT(playwright_switches); ++i)

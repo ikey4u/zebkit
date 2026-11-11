@@ -5,11 +5,15 @@
 
 #include "zebkit/engine/js_dialog_views.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -32,6 +36,17 @@ struct Answer {
       std::move(callback).Run(accepted, std::move(text));
   }
 };
+
+// The dialogs open, by their page; an entry whose dialog has closed goes when
+// the next is shown or closed.
+std::multimap<content::WebContents*, base::WeakPtr<views::Widget>>& Shown() {
+  static base::NoDestructor<std::multimap<content::WebContents*, base::WeakPtr<views::Widget>>> shown;
+  return *shown;
+}
+
+void Prune() {
+  std::erase_if(Shown(), [](const auto& entry) { return !entry.second; });
+}
 
 }  // namespace
 
@@ -75,7 +90,22 @@ bool ShowViewsJavaScriptDialog(content::WebContents* contents, const std::u16str
   views::Widget* widget = views::DialogDelegate::CreateDialogWidget(std::move(delegate), gfx::NativeWindow(),
                                                                    window);
   widget->Show();
+  Prune();
+  Shown().emplace(contents, widget->GetWeakPtr());
   return true;
+}
+
+void CloseViewsJavaScriptDialogs(content::WebContents* contents) {
+  Prune();
+  auto [first, last] = Shown().equal_range(contents);
+  std::vector<base::WeakPtr<views::Widget>> widgets;
+  for (auto it = first; it != last; ++it)
+    widgets.push_back(it->second);
+  Shown().erase(first, last);
+  for (const auto& widget : widgets) {
+    if (widget)
+      widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
+  }
 }
 
 }  // namespace zebkit

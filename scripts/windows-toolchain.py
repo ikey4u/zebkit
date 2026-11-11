@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lay out MSVC and the Windows SDK as Chromium's Windows toolchain, on Linux.
 
-    windows-toolchain.py <.cache/windows> <chromium src>
+    windows-toolchain.py <.cache/sdk/windows> <chromium src>
 
 Run by scripts/windows-toolchain.sh, which says what comes from where. Lays
 the tree out as build/vs_toolchain.py's packaged toolchain has it

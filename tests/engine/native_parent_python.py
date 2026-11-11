@@ -137,11 +137,12 @@ def tick():
         state["tries"] = 0
     else:
         state["tries"] += 1
-        if state["tries"] > 150:
+        # 15 s a step, looked at every 10 ms.
+        if state["tries"] > 1500:
             check(False, what)
             finish()
             return
-    zebkit.post(tick, 100)
+    zebkit.post(tick, 10)
 
 
 def loaded(event, url):

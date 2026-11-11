@@ -29,13 +29,6 @@ and do not need the SDK archive or `macos-toolchain.sh` below. Allow about
 
 ## The package
 
-Passkey authentication also needs host configuration: the phone route
-requires a Bluetooth privacy description, and Apple's iCloud browser route
-requires an approved entitlement on the signed host application. The C
-example supplies the privacy description and supports an optional signing
-identity, entitlements file and provisioning profile. See
-[passkey support](PASSKEYS.md).
-
 `scripts/package.sh slim-macos` makes `out/blink/slim-macos/package`:
 
 ```text
@@ -54,14 +47,10 @@ An application links it with `-F<dir> -framework Zebkit -Wl,-rpath,<dir>`
 and calls `zebkit_main()` as on Linux. The framework loads only the
 system's frameworks and libraries; `scripts/engine-test.sh` checks that.
 
-| | Size |
-|---|---|
-| The package | **150.1 MiB** (40.8 MiB as `.tar.xz`) |
-| `Zebkit` | 133.3 MiB |
-| ICU's data | 6.5 MiB |
-| Headers | 8.4 MiB |
-
-Measured on 2026-10-31. `slim-macos` has `slim`'s `-O2` directories and
+The 0.4.0 archive is 153.3 MiB unpacked and 41.8 MiB as `.tar.xz`
+(`docs/releases/0.4.0.md`). Of the package as measured on 2026-10-31
+(Chromium 155, 150.1 MiB): `Zebkit` 133.3 MiB, ICU's data 6.5 MiB, the
+headers 8.4 MiB. `slim-macos` has `slim`'s `-O2` directories and
 link-time optimization, but not PGO, whose profile for macOS is not fetched yet
 (`docs/SIZE_AND_SPEED.md`).
 
@@ -98,13 +87,12 @@ target macOS; what only a Mac has is Apple's SDK.
 | `enable_swiftshader = false` | see below |
 | `use_cups = true` | `//printing`'s macOS print context needs CUPS, the system's `libcups.2.dylib`, for printing to PDF |
 
-What upstream does not build, and patches make work: Chrome always has
-Dawn on macOS; the slim profile has
-neither. `patches/0013` puts the IOSurface backing's WebGPU parts under
-`USE_DAWN`, as other platforms' backings are; `patches/0014` gives content
-the system's location permission manager (zebkit sets it, as Chrome does)
-in place of the tests' fake, and leaves out the display test support,
-which brought Perfetto's test library as a dylib of its own.
+What upstream does not build, and a patch makes work: Chrome always has
+Dawn on macOS, and the slim profile leaves it out. `patches/0013` puts the
+IOSurface backing's WebGPU parts under `USE_DAWN`, as other platforms'
+backings are. The system's location permission manager, which a patch gave
+the content shell before the engine had an embedder of its own, is set by
+the engine itself (`engine_mac.mm`), as Chrome does.
 
 The Linux release builder has 24 cores and 94 GB, which helps with
 ThinLTO's memory use. Native builds leave ThinLTO off to make iteration
@@ -126,6 +114,12 @@ ad hoc signing does for tests.
   application's own application menu if it gives one.
 - **The helper** enters the seatbelt sandbox itself, as Chrome's helpers
   do; `--no-sandbox` turns it off.
+- **Passkeys** need the host application's configuration: the phone route
+  requires a Bluetooth privacy description, and Apple's iCloud browser route
+  requires an approved entitlement on the signed host application. The C
+  example supplies the privacy description and supports an optional signing
+  identity, entitlements file and provisioning profile. See
+  [passkey support](PASSKEYS.md).
 
 ## Off-screen views and IOSurfaces
 
@@ -196,9 +190,42 @@ Chromium's `MacOcclusionForceShutoff` feature for that.
 
 ## State
 
-`scripts/engine-test.sh slim-macos --prebuilt`, the package and programs built on
+0.4.0's engine tests pass on macOS (Apple silicon), the package and programs built on
+Linux (`docs/releases/0.4.0.md`). The runs before it are under "History" below.
+
+Not run, or not fully:
+
+- **The real Keychain:** `tests/engine/cookies.py` and the off-screen and passkey tests
+  ran on the private store above. Passkeys' system interface was not shown.
+- **Real input:** events reach the views as AppKit hands them on, not from the system's
+  event source. Clicking into a window of another application, a `<select>`'s system
+  menu on an attached view and AppKit's input methods need a person.
+- **A real camera or microphone**, which need a person's permission. With fake devices
+  a microphone's `getUserMedia()` never settles on this Mac, in Chrome 156 as in zebkit
+  (cause not found), so `permission_hooks.py` grants through the camera there.
+- **WebRTC between two peers:** `media_tap.py` says `skip` on a Mac where they do not
+  connect. Here they do not in zebkit (mDNS names unresolved, then checks unanswered)
+  and do in Chrome 156. Local Network privacy is suspected, for a program with no
+  bundle and no grant; it is not confirmed, and may be a real gap.
+- **The Playwright client** (`playwright_connect.mjs`): playwright-core was not on the Mac.
+- **The sandbox in the test bundle:** nearly all of the suite runs with `--no-sandbox`. Without it, on 2026-11-01,
+  helpers crashed at their start and the engine said "the sandbox could not be entered"
+  (`base::apple::SetOverrideFrameworkBundlePath` called from `SetUpBundle` under `zebkit_helper_main`), in the
+  test bundle, signed ad hoc; the cause is not known. With the release archive the renderer, GPU and utility
+  processes run sandboxed (checked on 2026-11-09), and the Go binding's checks pass with the sandbox on.
+
+## Left
+
+- Real windows with a person at the Mac: files dropped on a view, the menu bar's items
+  and keys, and what is under "Not run" above.
+- Signing for distribution (Developer ID) and notarization.
+- Intel Macs (x86-64), if they are wanted.
+
+## History
+
+Chromium 155, 2026-10-31 and 2026-11-01. `scripts/engine-test.sh slim-macos --prebuilt`, the package and programs built on
 Linux, on an Apple M4 with macOS 27.0.1, 2026-10-31: every test passes, except what
-is listed as not run below. The last full run had 123 tests and about 2,400 checks;
+is listed as not run under "State". The last full run had 123 tests and about 2,400 checks;
 one test, `media-tap`, needed one correction to its own skip message and was then run
 again alone.
 
@@ -236,32 +263,5 @@ What those tests found, now fixed:
 - **The AppKit host showed no page and turned black text transparent:** it ignored
   IOSurface frames, and took a bitmap image representation's bytes as B, G, R, A.
 
-Not run, or not fully:
-
-- **The real Keychain:** `tests/engine/cookies.py` and the off-screen and passkey tests
-  ran on the private store above. Passkeys' system interface was not shown.
-- **Real input:** events reach the views as AppKit hands them on, not from the system's
-  event source. Clicking into a window of another application, a `<select>`'s system
-  menu on an attached view and AppKit's input methods need a person.
-- **A real camera or microphone**, which need a person's permission. With fake devices
-  a microphone's `getUserMedia()` never settles on this Mac, in Chrome 156 as in zebkit
-  (cause not found), so `permission_hooks.py` grants through the camera there.
-- **WebRTC between two peers:** `media_tap.py` says `skip` on a Mac where they do not
-  connect. Here they do not in zebkit (mDNS names unresolved, then checks unanswered)
-  and do in Chrome 156. Local Network privacy is suspected, for a program with no
-  bundle and no grant; it is not confirmed, and may be a real gap.
-- **The Playwright client** (`playwright_connect.mjs`): playwright-core was not on the Mac.
-- **The sandbox:** nearly all of the suite runs with `--no-sandbox`. Without it, on 2026-11-01, helpers crash at
-  their start and the engine says "the sandbox could not be entered", on this batch's engine and on the one before
-  it (`base::apple::SetOverrideFrameworkBundlePath` called from `SetUpBundle` under `zebkit_helper_main`), in the
-  test bundle, signed ad hoc. So a PDF has not been seen parsing inside the seatbelt: a real gap, not looked into.
-
 Measured with the fixes: `Zebkit` and the package are the same size to the byte
 (139,733,664 and 157,340,514 bytes). Page speed on the GPU was not measured.
-
-## Left
-
-- Real windows with a person at the Mac: files dropped on a view, the menu bar's items
-  and keys, and what is under "Not run" above.
-- Signing for distribution (Developer ID) and notarization.
-- Intel Macs (x86-64), if they are wanted.

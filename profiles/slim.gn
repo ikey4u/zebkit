@@ -166,13 +166,9 @@ zebkit_min_size_patterns = [
   "//media/mojo/*",
 ]
 
-# Where the size model costs speed, LLVM's own inliner at -Os: the DOM,
-# style and layout, and the bindings every call from JavaScript into the
-# page goes through. With the model, laying out 20,000 lines of text took a
-# third longer; without it there, as long as before, for 2.4 MiB. Blink's
-# platform library, ICU and HarfBuzz showed no difference.
-# The code that lays out text at -O2: at -Os Blink laid out text about
-# twice as slowly as Chrome's own build of the same version. (HarfBuzz,
+# The hottest code at -O2, whatever optimize_for_size says (patches/1007):
+# the code that lays out text, which at -Os Blink laid out about twice as
+# slowly as Chrome's own build of the same version. (HarfBuzz,
 # third_party/harfbuzz, is at -O3 by Chromium's own choice.)
 zebkit_max_speed_patterns = [
   "//third_party/blink/renderer/core/*",
@@ -190,6 +186,14 @@ zebkit_max_speed_patterns = [
 ]
 # The engine optimized across its files at link time, as Chrome's binary is.
 zebkit_lto_optimize = true
+
+# Where the size model costs speed, LLVM's own inliner at -Os: the DOM,
+# style and layout, and the bindings every call from JavaScript into the
+# page goes through. With the model, laying out 20,000 lines of text took a
+# third longer; without it there, as long as before, for 2.4 MiB. Blink's
+# platform library, ICU and HarfBuzz showed no difference. renderer/core is
+# also in zebkit_max_speed_patterns above, which wins (patches/1007): it is
+# at -O2, and is kept here for a profile that empties that list.
 zebkit_speed_patterns = [
   "//third_party/blink/renderer/core/*",
   "//third_party/blink/renderer/bindings/*",

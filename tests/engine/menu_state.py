@@ -11,47 +11,18 @@ item takes none. Exit 0 when every check passes.
 
 import os
 import shutil
-import subprocess
 import sys
-import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
+from harness import SETTLE, check, ev, finish, note, pump, skip, wait, x11_focused, x11_window, xdotool, zebkit  # noqa: E402
 
-failures = []
-checks = 0
 MENU = [{"title": "File", "items": [
     {"title": "Save", "id": "save", "key": "s"},
     {"separator": True},
     {"title": "Small", "id": "small", "radioGroup": "size", "checked": True},
     {"title": "Large", "id": "large", "radioGroup": "size"},
 ]}]
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-def wait(condition, seconds=10):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.005)
-    return False
-
-
-def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append(value))
-    wait(lambda: box)
-    return box[0] if box else None
 
 
 def item(menu, item_id):
@@ -94,35 +65,41 @@ def main():
         else:
             check(False, "an id of no item is refused")
 
-        if not zebkit.is_headless() and shutil.which("xdotool") and os.environ.get("DISPLAY") and \
-                not os.environ.get("WAYLAND_DISPLAY") and sys.platform.startswith("linux"):
+        x11 = not zebkit.is_headless() and os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY") and \
+            sys.platform.startswith("linux")
+        if x11 and shutil.which("xdotool"):
             view = zebkit.View("data:text/html,<title>Menu keys</title><script>window.keys=0;"
                                "addEventListener('keydown',e=>{if(e.key==='s'&&e.ctrlKey)keys++})</script>", 400, 300)
             wait(lambda: ev(view, "document.readyState") == "complete")
             view.focus()
-            wait(lambda: False, 0.5)
-            found = subprocess.run(["xdotool", "search", "--name", "^Menu keys$"], capture_output=True, text=True)
-            window = (found.stdout.split() or [None])[-1]
-            subprocess.run(["xdotool", "key", "--window", window, "ctrl+s"], check=False)
+            window = x11_window("Menu keys")
+            focused = window is not None and x11_focused(window) and \
+                wait(lambda: ev(view, "document.hasFocus()") is True, 5)
+            if not check(focused, "the view's X11 window, with the focus, and the page's", window):
+                raise AssertionError("no window to type into")
+            xdotool("key", "--window", window, "ctrl+s")
             wait(lambda: chosen, 3)
             # The page has a key first; one it does not take is the menu's.
             check(chosen == ["save"], "an enabled item takes its key", chosen)
             zebkit.app_update_menu_item("save", enabled=False)
             keys = ev(view, "keys")
-            subprocess.run(["xdotool", "key", "--window", window, "ctrl+s"], check=False)
-            wait(lambda: ev(view, "keys") == keys + 1 or ev(view, "keys") > keys, 3)
-            wait(lambda: False, 0.5)
-            check(chosen == ["save"] and ev(view, "keys") > keys, "a disabled item's key is the page's alone",
+            xdotool("key", "--window", window, "ctrl+s")
+            wait(lambda: ev(view, "keys") == keys + 1, 3)
+            # And not the menu's as well.
+            pump(SETTLE)
+            check(chosen == ["save"] and ev(view, "keys") == keys + 1, "a disabled item's key is the page's alone",
                   (chosen, ev(view, "keys")))
             view.close()
+        elif x11:
+            skip("keys", "no xdotool")
         else:
-            print("ok   keys: not on this display (X11 with xdotool only)", flush=True)
+            # Not a skip: the suite's X11 run of this test (menu-state-x11) has them.
+            note("keys: real key presses are the X11 run's (menu-state-x11)")
     except Exception as error:  # noqa: BLE001
         check(False, "the test ran to the end", repr(error))
     finally:
         zebkit.shutdown()
-    print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

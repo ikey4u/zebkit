@@ -4,6 +4,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,8 +65,11 @@ class Desktop {
 
   void Close(const std::string& id) {
     auto it = system_ids_.find(id);
-    if (it == system_ids_.end())
+    if (it == system_ids_.end()) {
+      // Before Notify has answered: closed once it does.
+      closed_early_.insert(id);
       return;
+    }
     dbus_utils::CallMethod<"u", "">(proxy_, kInterface, "CloseNotification",
                                     base::BindOnce([](dbus_utils::CallMethodResult<>) {}), it->second);
     ids_.erase(it->second);
@@ -74,11 +78,18 @@ class Desktop {
 
  private:
   void Shown(std::string id, dbus_utils::CallMethodResultSig<"u"> result) {
-    if (!result.has_value())
+    const bool closed = closed_early_.erase(id);
+    if (!result.has_value()) {
+      // Nothing shows it: closed, not shown for ever.
+      if (!closed)
+        SystemNotificationClosed(id, false);
       return;
+    }
     const uint32_t system_id = std::get<0>(result.value());
     system_ids_[id] = system_id;
     ids_[system_id] = id;
+    if (closed)
+      Close(id);
   }
 
   void Action(dbus_utils::ConnectToSignalResultSig<"us"> result) {
@@ -113,6 +124,7 @@ class Desktop {
   raw_ptr<dbus::ObjectProxy> proxy_;
   std::map<std::string, uint32_t> system_ids_;
   std::map<uint32_t, std::string> ids_;
+  std::set<std::string> closed_early_;
 };
 
 Desktop& TheDesktop() {

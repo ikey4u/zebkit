@@ -210,8 +210,8 @@ extern "C" {
     pub fn zebkit_pump() -> bool;
     pub fn zebkit_shutdown() -> bool;
     pub fn zebkit_quit();
-    pub fn zebkit_post_task(func: zebkit_task_func, data: *mut c_void);
-    pub fn zebkit_post_delayed_task(func: zebkit_task_func, data: *mut c_void, delay_ms: u32);
+    pub fn zebkit_post_task(func: zebkit_task_func, data: *mut c_void) -> bool;
+    pub fn zebkit_post_delayed_task(func: zebkit_task_func, data: *mut c_void, delay_ms: u32) -> bool;
     pub fn zebkit_is_headless() -> bool;
     pub fn zebkit_view_set_settings(view: *mut zebkit_view, json: *const c_char, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_get_settings(view: *mut zebkit_view) -> *mut c_char;
@@ -469,7 +469,7 @@ extern "C" {
         y: c_int,
         width: c_int,
         height: c_int,
-    );
+    ) -> bool;
     pub fn zebkit_view_attach_native(view: *mut zebkit_view, native_parent: usize, x: c_int, y: c_int, width: c_int, height: c_int, error: *mut *mut c_char) -> bool;
     pub fn zebkit_view_detach_native(view: *mut zebkit_view) -> bool;
     pub fn zebkit_view_get_native_window(view: *mut zebkit_view, window: *mut zebkit_native_window) -> bool;
@@ -1082,6 +1082,7 @@ pub type zebkit_frame_kind = c_int;
 pub const ZEBKIT_FRAME_SHARED_MEMORY: zebkit_frame_kind = 1;
 pub const ZEBKIT_FRAME_IOSURFACE: zebkit_frame_kind = 2;
 pub const ZEBKIT_FRAME_DMABUF: zebkit_frame_kind = 3;
+pub const ZEBKIT_FRAME_D3D11: zebkit_frame_kind = 4;
 
 /// `zebkit_frame_layer`.
 pub type zebkit_frame_layer = c_int;
@@ -1120,6 +1121,7 @@ pub struct zebkit_frame {
     pub offsets: [u32; 4],
     pub modifier: u64,
     pub fourcc: u32,
+    pub handle: *mut c_void,
 }
 
 /// `zebkit_frame_buffers`.

@@ -63,7 +63,8 @@ ZEBKIT_API zebkit_view *zebkit_view_new_with_options(zebkit_context *context, co
 
 /*
  * The window as JSON: {"revision", "owner" ("engine", "application" for a view
- * in the application's window, "none" without a window), "state" ("normal",
+ * in the application's window, "view" for one in another view's
+ * (zebkit_view_attach()), "none" without a window), "state" ("normal",
  * "minimized", "maximized", "fullscreen"), "pageFullscreen", "visible",
  * "focused", "bounds" {x, y, width, height}, "content" {width, height},
  * "scale", "frame" {requested, effective}, "titlebarArea" {x, y, width,
@@ -108,8 +109,10 @@ ZEBKIT_API bool zebkit_view_set_popup_window_options(zebkit_view *view, const ch
 
 /* What this build can do on this system and display, as JSON:
  * {"window": {"frames": [...], "position", "actions", "controlsDrawnByEngine",
- * "controlsHeight"}, "headless", "platform"}. A window's own state has its
- * capabilities too, which win. */
+ * "controlsHeight", "appearance" (whether the "appearance" option is
+ * honoured: macOS; elsewhere the frame has the toolkit's colours)},
+ * "headless", "platform"}. A window's own state has its capabilities too,
+ * which win. */
 ZEBKIT_API char *zebkit_get_capabilities(void);
 
 #ifdef __cplusplus

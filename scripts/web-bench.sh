@@ -62,12 +62,10 @@ fi
 
 # One display for both, without a GPU: the same software rendering. Wayland
 # is hidden so that neither picks the session's compositor.
-display=:$((90 + RANDOM % 9))
-Xvfb "$display" -screen 0 1920x1080x24 > /dev/null 2>&1 &
-xvfb=$!
-trap 'kill $xvfb 2>/dev/null || true' EXIT
-sleep 1
-export DISPLAY="$display"
+# The first free display, from Xvfb itself.
+start_xvfb 7 1920x1080x24
+trap 'kill $xvfb_pid 2>/dev/null || true' EXIT
+export DISPLAY="$xvfb_display"
 unset WAYLAND_DISPLAY
 
 # The user agent both send: Chrome's for zebkit's Chromium, as zebkit sends it.
@@ -93,12 +91,15 @@ for entry in "${pages[@]}"; do
   for run in $(seq "$runs"); do
     log "$name ($run of $runs)"
     rm -rf "$work/profile-zebkit" "$work/profile-electron"
-    python3 -I "$bench/measure.py" --label "zebkit|$name" --port 9411 --load "$load" --rest "$rest" -- \
-        "$work/zebkit-run" --no-sandbox --remote-debugging-port=9411 --user-data-dir="$work/profile-zebkit" \
+    # Each engine's CDP on a port that was free.
+    port="$(free_port)"
+    python3 -I "$bench/measure.py" --label "zebkit|$name" --port "$port" --load "$load" --rest "$rest" -- \
+        "$work/zebkit-run" --no-sandbox --remote-debugging-port="$port" --user-data-dir="$work/profile-zebkit" \
         --window-size=1280,800 "$url" >> "$results"
     (( check )) && continue
-    BENCH_URL="$url" python3 -I "$bench/measure.py" --label "electron|$name" --port 9412 --load "$load" --rest "$rest" -- \
-        "$work/electron/electron" --no-sandbox --ozone-platform=x11 --remote-debugging-port=9412 \
+    port="$(free_port)"
+    BENCH_URL="$url" python3 -I "$bench/measure.py" --label "electron|$name" --port "$port" --load "$load" --rest "$rest" -- \
+        "$work/electron/electron" --no-sandbox --ozone-platform=x11 --remote-debugging-port="$port" \
         --user-data-dir="$work/profile-electron" >> "$results"
   done
 done
@@ -126,8 +127,9 @@ if (( check )); then
     build_against_package "$package" "$work/privacy" "$bench/privacy.c"
     log "privacy defaults"
     rm -rf "$work/profile-privacy"
-    timeout 60 "$work/privacy" --no-sandbox --user-data-dir="$work/profile-privacy" \
-        "file://$bench/local/privacy.html" 2>/dev/null | tail -1 > "$work/privacy.json"
+    # A page that does not answer is reported below, as a failure of the check.
+    { timeout 60 "$work/privacy" --no-sandbox --user-data-dir="$work/profile-privacy" \
+        "file://$bench/local/privacy.html" 2>/dev/null || true; } | tail -1 > "$work/privacy.json"
     python3 -I - "$results" "$bench/limits.json" "$work/privacy.json" "${CHROMIUM_VERSION%%.*}" <<'PY'
 import ipaddress, json, sys
 results = [json.loads(line) for line in open(sys.argv[1])]
@@ -174,9 +176,9 @@ PY
     exit $?
 fi
 
-python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" "$ZEBKIT_ROOT" <<'PY'
+python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" "$ZEBKIT_ROOT" "$load" "$rest" <<'PY'
 import json, sys, datetime
-results, reports, electron, root = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+results, reports, electron, root, load, rest = sys.argv[1:7]
 rows = {}
 for line in open(results):
     r = json.loads(line)
@@ -191,7 +193,7 @@ def cell(z, e, key, fmt):
     return f"{win}{fmt.format(zv)}{win} / {fmt.format(ev)}"
 lines = [f"# Web pages: zebkit and Electron {electron}", "",
          f"scripts/web-bench.sh, {datetime.date.today()}. Each cell is zebkit / Electron, the median of {next(iter(rows.values()))['zebkit'].get('runs', 1)} runs; bold where zebkit costs less.",
-         "Loading: CPU seconds in the first 10 s. At rest: share of one core in the 20 s after. Memory: PSS of every process.", "",
+         f"Loading: CPU seconds in the first {load} s. At rest: share of one core in the {rest} s after. Memory: PSS of every process.", "",
          "| Page | Loaded (title) | Loading, s | At rest, % | Memory, MB | Renderers |", "|---|---|---:|---:|---:|---:|"]
 totals = {"zebkit": [0, 0, 0], "electron": [0, 0, 0]}
 for page, r in rows.items():

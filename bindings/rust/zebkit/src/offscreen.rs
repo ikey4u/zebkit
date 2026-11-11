@@ -26,7 +26,6 @@
 
 use crate::view::{call_slot, Slot};
 use crate::{c_string, string_from, sys, View};
-use std::cell::Cell;
 use std::ops::BitOr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
@@ -45,26 +44,46 @@ pub enum Layer {
 
 /// Where a frame's pixels are.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FrameBuffer<'a> {
-    /// BGRA pixels in shared memory: here, and through `fd` for another
-    /// process (the pixels at `offset` of `size` bytes mapped from 0).
+    /// Pixels in shared memory, in the frame's [`Frame::format`]: here, and
+    /// through `fd` for another process (the pixels at `offset` of `size`
+    /// bytes mapped from 0). On Windows `fd` is -1 and `handle` is the file
+    /// mapping (a `HANDLE`, the engine's while the frame lives); null elsewhere.
     SharedMemory {
         pixels: &'a [u8],
         stride: usize,
         fd: i32,
         offset: usize,
         size: usize,
+        handle: *mut c_void,
     },
     /// An `IOSurfaceRef` (macOS), the engine's while the frame lives.
     IoSurface(*mut c_void),
-    /// A dmabuf's planes (Linux).
+    /// A dmabuf's planes (Linux), the engine's fds while the frame lives.
     Dmabuf {
-        fds: Vec<i32>,
-        strides: Vec<u32>,
-        offsets: Vec<u32>,
+        fds: &'a [i32],
+        strides: &'a [u32],
+        offsets: &'a [u32],
         modifier: u64,
         fourcc: u32,
     },
+    /// An NT handle to a shared BGRA D3D11 texture (Windows), the engine's
+    /// while the frame lives: `ID3D11Device1::OpenSharedResource1()`.
+    D3D11(*mut c_void),
+    /// A kind this binding does not know (a newer engine).
+    Unknown(i32),
+}
+
+/// The order of a pixel's bytes in memory: 32 bits a pixel, alpha
+/// premultiplied, sRGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PixelFormat {
+    Bgra8,
+    Rgba8,
+    /// A format this binding does not know (a newer engine).
+    Unknown(i32),
 }
 
 /// A frame of an off-screen view: the whole picture, and what changed since
@@ -140,6 +159,15 @@ impl Frame {
         self.get().buffer_id
     }
 
+    /// The order of the pixels' bytes.
+    pub fn format(&self) -> PixelFormat {
+        match self.get().format {
+            sys::ZEBKIT_FORMAT_BGRA8 => PixelFormat::Bgra8,
+            sys::ZEBKIT_FORMAT_RGBA8 => PixelFormat::Rgba8,
+            other => PixelFormat::Unknown(other),
+        }
+    }
+
     /// Where the pixels are.
     pub fn buffer(&self) -> FrameBuffer<'_> {
         let frame = self.get();
@@ -148,14 +176,15 @@ impl Frame {
             sys::ZEBKIT_FRAME_DMABUF => {
                 let planes = frame.plane_count.clamp(0, 4) as usize;
                 FrameBuffer::Dmabuf {
-                    fds: frame.fds[..planes].to_vec(),
-                    strides: frame.strides[..planes].to_vec(),
-                    offsets: frame.offsets[..planes].to_vec(),
+                    fds: &frame.fds[..planes],
+                    strides: &frame.strides[..planes],
+                    offsets: &frame.offsets[..planes],
                     modifier: frame.modifier,
                     fourcc: frame.fourcc,
                 }
             }
-            _ => {
+            sys::ZEBKIT_FRAME_D3D11 => FrameBuffer::D3D11(frame.handle),
+            sys::ZEBKIT_FRAME_SHARED_MEMORY => {
                 let length = if frame.height > 0 {
                     frame.stride * (frame.height as usize - 1) + frame.width.max(0) as usize * 4
                 } else {
@@ -172,8 +201,10 @@ impl Frame {
                     fd: frame.fd,
                     offset: frame.offset,
                     size: frame.size,
+                    handle: frame.handle,
                 }
             }
+            other => FrameBuffer::Unknown(other),
         }
     }
 
@@ -321,6 +352,29 @@ pub struct CursorImage {
 
 type CursorFunction = dyn FnMut(&str, Option<CursorImage>);
 
+/// `event` as the engine takes it, for as long as `send` runs.
+fn with_key_event<R>(event: &KeyEvent<'_>, send: impl FnOnce(&sys::zebkit_key_event) -> R) -> R {
+    let code = event.code.map(c_string);
+    let key = event.key.map(c_string);
+    let text = event.text.map(c_string);
+    let unmodified = event.unmodified_text.map(c_string);
+    let pointer = |value: &Option<std::ffi::CString>| value.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+    send(&sys::zebkit_key_event {
+        type_: match event.kind {
+            KeyEventType::Down => sys::ZEBKIT_KEY_DOWN,
+            KeyEventType::Up => sys::ZEBKIT_KEY_UP,
+            KeyEventType::Char => sys::ZEBKIT_KEY_CHAR,
+        },
+        modifiers: event.modifiers.0,
+        key_code: event.key_code,
+        native_key_code: event.native_key_code,
+        code: pointer(&code),
+        key: pointer(&key),
+        text: pointer(&text),
+        unmodified_text: pointer(&unmodified),
+    })
+}
+
 /// The callbacks of an off-screen view, kept with the view.
 #[derive(Default)]
 pub(crate) struct Slots {
@@ -329,18 +383,15 @@ pub(crate) struct Slots {
     on_cursor: Slot<CursorFunction>,
     on_popup: Slot<dyn FnMut(Option<Rect>)>,
     on_authentication: Slot<dyn FnMut(&str)>,
-    authentication_generation: Cell<u64>,
 }
 
 impl Slots {
     pub(crate) fn clear(&self) {
-        self.on_frame.borrow_mut().take();
-        self.on_caret.borrow_mut().take();
-        self.on_cursor.borrow_mut().take();
-        self.on_popup.borrow_mut().take();
-        self.authentication_generation
-            .set(self.authentication_generation.get().wrapping_add(1));
-        self.on_authentication.borrow_mut().take();
+        self.on_frame.set(None);
+        self.on_caret.set(None);
+        self.on_cursor.set(None);
+        self.on_popup.set(None);
+        self.on_authentication.set(None);
     }
 }
 
@@ -386,7 +437,7 @@ impl View {
     /// is dropped. Frames start with this.
     pub fn on_frame<F: FnMut(Frame) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.offscreen.on_frame.borrow_mut() = Some(Box::new(function));
+        self.inner.offscreen.on_frame.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_frame(raw, Some(on_frame), self.data()) }
     }
 
@@ -394,7 +445,7 @@ impl View {
     pub fn stop_frames(&self) {
         let Some(raw) = self.raw() else { return };
         unsafe { sys::zebkit_view_on_frame(raw, None, std::ptr::null_mut()) }
-        self.inner.offscreen.on_frame.borrow_mut().take();
+        self.inner.offscreen.on_frame.set(None);
     }
 
     /// At most `fps` frames a second; 0 for the display's rate.
@@ -466,38 +517,21 @@ impl View {
 
     /// A key, to the focused element or the open popup.
     pub fn send_key(&self, event: &KeyEvent<'_>) {
-        self.send_key_with_commands(event, &[]);
+        let Some(raw) = self.raw() else { return };
+        with_key_event(event, |event| unsafe { sys::zebkit_view_send_key(raw, event) });
     }
 
     /// Sends one key with its native editing commands (at most 128).
     /// Commands are valid on DOWN only; false for invalid or closed views.
     pub fn send_key_with_commands(&self, event: &KeyEvent<'_>, commands: &[EditCommand<'_>]) -> bool {
         let Some(raw) = self.raw() else { return false };
-        let code = event.code.map(c_string);
-        let key = event.key.map(c_string);
-        let text = event.text.map(c_string);
-        let unmodified = event.unmodified_text.map(c_string);
         let pointer = |value: &Option<std::ffi::CString>| value.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
-        let raw_event = sys::zebkit_key_event {
-            type_: match event.kind {
-                KeyEventType::Down => sys::ZEBKIT_KEY_DOWN,
-                KeyEventType::Up => sys::ZEBKIT_KEY_UP,
-                KeyEventType::Char => sys::ZEBKIT_KEY_CHAR,
-            },
-            modifiers: event.modifiers.0,
-            key_code: event.key_code,
-            native_key_code: event.native_key_code,
-            code: pointer(&code),
-            key: pointer(&key),
-            text: pointer(&text),
-            unmodified_text: pointer(&unmodified),
-        };
         let names: Vec<_> = commands.iter().map(|c| c_string(c.name)).collect();
         let values: Vec<_> = commands.iter().map(|c| c.value.map(c_string)).collect();
         let commands: Vec<_> = names.iter().zip(&values).map(|(name, value)| sys::zebkit_edit_command {
             name: name.as_ptr(), value: pointer(value),
         }).collect();
-        unsafe { sys::zebkit_view_send_key_with_commands(raw, &raw_event, commands.as_ptr(), commands.len()) }
+        with_key_event(event, |event| unsafe { sys::zebkit_view_send_key_with_commands(raw, event, commands.as_ptr(), commands.len()) })
     }
 
     /// An input method's composition, `selection` in UTF-16 code units
@@ -534,30 +568,22 @@ impl View {
     /// Register before the request. Off-screen hosts must also opt into UI.
     pub fn on_authentication<F: FnMut(&str) + 'static>(&self, function: F) -> bool {
         let Some(raw) = self.raw() else { return false };
-        self.inner
-            .offscreen
-            .authentication_generation
-            .set(self.inner.offscreen.authentication_generation.get().wrapping_add(1));
         // Clear the C handler before replacing callback storage.
         unsafe {
             sys::zebkit_view_on_authentication(raw, None, std::ptr::null_mut());
         }
-        *self.inner.offscreen.on_authentication.borrow_mut() = Some(Box::new(function));
+        self.inner.offscreen.on_authentication.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_authentication(raw, Some(on_authentication), self.data()) }
     }
 
     /// Cancels outstanding host-owned requests, then restores native UI.
     pub fn clear_authentication_handler(&self) {
-        self.inner
-            .offscreen
-            .authentication_generation
-            .set(self.inner.offscreen.authentication_generation.get().wrapping_add(1));
         if let Some(raw) = self.raw() {
             unsafe {
                 sys::zebkit_view_on_authentication(raw, None, std::ptr::null_mut());
             }
         }
-        self.inner.offscreen.on_authentication.borrow_mut().take();
+        self.inner.offscreen.on_authentication.set(None);
     }
 
     /// Queues an action using the latest event's request/revision. False
@@ -580,43 +606,64 @@ impl View {
     /// as it moves; `None` when there is none.
     pub fn on_caret<F: FnMut(Option<Rect>) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.offscreen.on_caret.borrow_mut() = Some(Box::new(function));
+        self.inner.offscreen.on_caret.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_caret(raw, Some(on_caret), self.data()) }
+    }
+
+    /// Stops [`View::on_caret`], including from inside it.
+    pub fn clear_caret_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_caret(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.offscreen.on_caret.set(None);
     }
 
     /// Calls `function` with the cursor the page asks for, as CSS names it
     /// ("default", "pointer", "text", ...), with its image for "custom".
     pub fn on_cursor<F: FnMut(&str, Option<CursorImage>) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.offscreen.on_cursor.borrow_mut() = Some(Box::new(function));
+        self.inner.offscreen.on_cursor.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_cursor(raw, Some(on_cursor), self.data()) }
+    }
+
+    /// Stops [`View::on_cursor`], including from inside it.
+    pub fn clear_cursor_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_cursor(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.offscreen.on_cursor.set(None);
     }
 
     /// Calls `function` with a popup widget's place in the view when it is
     /// shown, and `None` when it is gone. Its frames are [`Layer::Popup`].
     pub fn on_popup<F: FnMut(Option<Rect>) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
-        *self.inner.offscreen.on_popup.borrow_mut() = Some(Box::new(function));
+        self.inner.offscreen.on_popup.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_popup(raw, Some(on_popup), self.data()) }
+    }
+
+    /// Stops [`View::on_popup`], including from inside it.
+    pub fn clear_popup_handler(&self) {
+        if let Some(raw) = self.raw() {
+            unsafe { sys::zebkit_view_on_popup(raw, None, std::ptr::null_mut()) }
+        }
+        self.inner.offscreen.on_popup.set(None);
     }
 }
 
-fn slots<'a>(data: *mut c_void) -> &'a Slots {
-    unsafe { &(*data.cast::<crate::view::Inner>()).offscreen }
-}
 
 unsafe extern "C" fn on_frame(_view: *mut sys::zebkit_view, frame: *const sys::zebkit_frame, data: *mut c_void) {
     let frame = Frame { raw: frame };
-    let slots = slots(data);
+    let inner = crate::view::hold(data);
     let mut frame = Some(frame);
-    call_slot(&slots.on_frame, |function| function(frame.take().expect("one frame")));
+    call_slot(&inner.offscreen.on_frame, |function| function(frame.take().expect("one frame")));
     // With no function the frame is dropped: given back.
     drop(frame);
 }
 
 unsafe extern "C" fn on_caret(_view: *mut sys::zebkit_view, caret: *const sys::zebkit_rect, data: *mut c_void) {
     let caret = (!caret.is_null()).then(|| *caret);
-    call_slot(&slots(data).on_caret, |function| function(caret));
+    call_slot(&crate::view::hold(data).offscreen.on_caret, |function| function(caret));
 }
 
 unsafe extern "C" fn on_cursor(
@@ -639,28 +686,17 @@ unsafe extern "C" fn on_cursor(
         }
     });
     let mut image = Some(image);
-    call_slot(&slots(data).on_cursor, |function| function(&name, image.take().flatten()));
+    call_slot(&crate::view::hold(data).offscreen.on_cursor, |function| function(&name, image.take().flatten()));
 }
 
 unsafe extern "C" fn on_popup(_view: *mut sys::zebkit_view, shown: bool, bounds: *const sys::zebkit_rect, data: *mut c_void) {
     let bounds = (shown && !bounds.is_null()).then(|| *bounds);
-    call_slot(&slots(data).on_popup, |function| function(bounds));
+    call_slot(&crate::view::hold(data).offscreen.on_popup, |function| function(bounds));
 }
 
 unsafe extern "C" fn on_authentication(_view: *mut sys::zebkit_view, event: *const c_char, data: *mut c_void) {
     // The host may close the view or replace its handler in this callback.
-    // Keep the engine-owned reference alive until returning to native code.
-    let inner_ptr = data.cast::<crate::view::Inner>();
-    Rc::increment_strong_count(inner_ptr);
-    let inner = Rc::from_raw(inner_ptr);
-    let slots = &inner.offscreen;
-    let generation = slots.authentication_generation.get();
-    let function = slots.on_authentication.borrow_mut().take();
-    if let Some(mut function) = function {
-        let event = string_from(event).unwrap_or_default();
-        function(&event);
-        if slots.authentication_generation.get() == generation {
-            *slots.on_authentication.borrow_mut() = Some(function);
-        }
-    }
+    let inner = crate::view::hold(data);
+    let event = string_from(event).unwrap_or_default();
+    inner.offscreen.on_authentication.call(|function| function(&event));
 }

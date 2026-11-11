@@ -1,5 +1,6 @@
 """Input right after a navigation, and what automation had wrong around it:
-tests/engine/automation_input.py <switches...>; ROUNDS= how many navigations.
+tests/engine/automation_input.py <switches...>; ZEBKIT_TEST_ROUNDS= how many navigations
+(100; another number is said, as a "narrowed:" line).
 
 A new page's widget takes no input until its first frame (paint holding): the browser
 answers the event itself and the page never hears of it. Commands wait for that signal
@@ -14,7 +15,9 @@ import threading
 import zebkit
 from zebkit.automation import Page, run
 
-ROUNDS = int(os.environ.get('ROUNDS', '100'))
+ROUNDS = int(os.environ.get('ZEBKIT_TEST_ROUNDS') or '100')
+if os.environ.get('ZEBKIT_TEST_ROUNDS'):
+    print(f'narrowed: ZEBKIT_TEST_ROUNDS={ROUNDS}', flush=True)
 failures = []
 checks = 0
 seen_paths = []

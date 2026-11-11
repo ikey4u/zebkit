@@ -39,13 +39,20 @@
 //!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
 //! re-exports as [`sys`] for whatever is not wrapped here yet. The C API it
-//! wraps is the same on Linux and macOS, and so is this crate.
+//! wraps is the same on Linux, macOS and Windows, and so is this crate.
 //!
 //! # Threads
 //!
 //! The engine has one thread: the one that called [`run`]. Views and
 //! scripts are neither `Send` nor `Sync`, so the compiler holds a program to
 //! that; [`post`] runs a closure there from any thread.
+//!
+//! # Panics in callbacks
+//!
+//! A closure the engine calls that panics does not unwind into the engine:
+//! the panic is kept, the loop is asked to end ([`quit`]), and [`run`] (or
+//! [`pump`], for an application's own loop) resumes it once the engine has
+//! returned.
 
 pub mod app;
 pub mod automation;
@@ -169,7 +176,95 @@ pub(crate) fn c_string(text: &str) -> CString {
 /// A closure the engine calls once: `data` is `Box::into_raw` of it.
 pub(crate) unsafe extern "C" fn call_once<F: FnOnce()>(data: *mut c_void) {
     let function = Box::from_raw(data.cast::<F>());
-    function();
+    guard(function);
+}
+
+thread_local! {
+    /// The first panic of a closure the engine called, for [`resume_panic`].
+    static PANIC: std::cell::RefCell<Option<Box<dyn std::any::Any + Send>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs a closure of the application's from a function the engine called.
+/// A panic does not unwind into C, which would abort: it is kept, the
+/// engine's loop is asked to end (with [`run`]) or the host's wakeup is asked
+/// for a pump (with [`init`]), and [`run`], [`pump`] or [`shutdown`]
+/// resumes it once the engine has returned. Only the first panic is kept
+/// until then; later ones are dropped. `None` when it panicked.
+pub(crate) fn guard<R>(function: impl FnOnce() -> R) -> Option<R> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(function)) {
+        Ok(value) => Some(value),
+        Err(panic) => {
+            let first = PANIC.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let first = slot.is_none();
+                if first {
+                    *slot = Some(panic);
+                }
+                first
+            });
+            if first {
+                engine::stop_after_panic();
+            }
+            None
+        }
+    }
+}
+
+/// Resumes the panic [`guard`] kept, outside the engine.
+pub(crate) fn resume_panic() {
+    if let Some(panic) = PANIC.with(|slot| slot.borrow_mut().take()) {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A closure the engine calls, which may replace or remove itself while it
+/// runs: it is out of its slot then, and goes back only when nothing was
+/// set meanwhile (the generation counts what was).
+pub(crate) struct Slot<T: ?Sized> {
+    function: std::cell::RefCell<Option<Box<T>>>,
+    generation: std::cell::Cell<u64>,
+}
+
+impl<T: ?Sized> Default for Slot<T> {
+    fn default() -> Self {
+        Slot::new()
+    }
+}
+
+impl<T: ?Sized> Slot<T> {
+    pub(crate) const fn new() -> Self {
+        Slot { function: std::cell::RefCell::new(None), generation: std::cell::Cell::new(0) }
+    }
+
+    /// Replaces the closure (`None` removes it). The old one is dropped
+    /// after the slot is let go, so that its drop may use the slot.
+    pub(crate) fn set(&self, function: Option<Box<T>>) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        let old = self.function.replace(function);
+        drop(old);
+    }
+
+    /// Takes the closure out for good, as [`Slot::set`] with `None`.
+    pub(crate) fn take(&self) -> Option<Box<T>> {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        self.function.borrow_mut().take()
+    }
+
+    pub(crate) fn is_set(&self) -> bool {
+        self.function.borrow().is_some()
+    }
+
+    /// Calls the closure, if there is one, through [`guard`]; `None` when
+    /// there is none or it panicked.
+    pub(crate) fn call<R>(&self, call: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let generation = self.generation.get();
+        let mut function = self.function.borrow_mut().take()?;
+        let result = guard(|| call(&mut function));
+        if self.generation.get() == generation {
+            *self.function.borrow_mut() = Some(function);
+        }
+        result
+    }
 }
 
 /// [`call_once`] for the type of `function`, which may have no name.
@@ -182,5 +277,47 @@ pub(crate) unsafe fn script_result(json: *const c_char, error: *const c_char) ->
     match string_from(error) {
         Some(message) => Err(Error::new(message)),
         None => Ok(string_from(json).unwrap_or_else(|| "null".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{guard, resume_panic, Slot};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_panic_is_kept_and_resumed_outside() {
+        assert_eq!(guard(|| 1), Some(1));
+        assert_eq!(guard(|| -> i32 { panic!("in a callback") }), None);
+        let resumed = std::panic::catch_unwind(resume_panic).expect_err("the kept panic");
+        assert_eq!(resumed.downcast_ref::<&str>(), Some(&"in a callback"));
+        // Once only.
+        resume_panic();
+    }
+
+    #[test]
+    fn a_slot_removed_or_replaced_inside_its_call_stays_so() {
+        let slot: Rc<Slot<dyn FnMut()>> = Rc::new(Slot::new());
+        let calls = Rc::new(Cell::new(0));
+        let (inside, counted) = (slot.clone(), calls.clone());
+        slot.set(Some(Box::new(move || {
+            counted.set(counted.get() + 1);
+            inside.set(None);
+        })));
+        slot.call(|function| function());
+        assert!(!slot.is_set());
+        let (inside, counted) = (slot.clone(), calls.clone());
+        slot.set(Some(Box::new(move || {
+            let again = counted.clone();
+            inside.set(Some(Box::new(move || again.set(again.get() + 10))));
+        })));
+        slot.call(|function| function());
+        slot.call(|function| function());
+        assert_eq!(calls.get(), 11);
+        // A closure that is kept is put back.
+        slot.call(|function| function());
+        assert_eq!(calls.get(), 21);
+        slot.set(None);
     }
 }

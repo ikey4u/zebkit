@@ -45,7 +45,6 @@ scripts="$SRC_DIR/media/ffmpeg/scripts"
 out="$ZEBKIT_ROOT/src/ffmpeg"
 work="$CACHE_DIR/ffmpeg-gen"
 [[ -d "$ffmpeg" ]] || die "no upstream tree; run scripts/fetch-upstream.sh first"
-[[ -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] || die "no macOS SDK; run scripts/macos-toolchain.sh first"
 export PATH="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin:$PATH"
 
 # Whether FFmpeg can be built for Windows here, and whether a run before did.
@@ -86,6 +85,8 @@ for platform in "${PLATFORMS[@]}"; do
     (( build )) || break
     [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" ]] && continue
     [[ "${platform%% *}" == win ]] && (( ! windows_sdk )) && continue
+    [[ "${platform%% *}" != mac || -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] \
+        || die "no macOS SDK to build FFmpeg for macOS; run scripts/zsdk-create.sh first, or FFMPEG_ONLY=linux"
     log "configuring and building FFmpeg for $platform"
     stub="$(stub_libvpx "${platform%% *}")"
     libpath="-L$stub"
@@ -172,10 +173,17 @@ else
     # The list as it is.
     rm -f "$out/ffmpeg_generated.gni"
 fi
-python3 -I - "$out" "$final" <<'PY'
+python3 -I - "$out" "$final" "$regenerate" <<'PY'
 import pathlib, shutil, sys
-new, old = map(pathlib.Path, sys.argv[1:])
+new, old = map(pathlib.Path, sys.argv[1:3])
 names = {p.relative_to(new) for p in new.rglob("*") if p.is_file()}
+# A list made anew names every renamed file there is: those it no longer
+# names go.
+if sys.argv[3] == "1" and (old / "autorename").is_dir():
+    for path in sorted((old / "autorename").rglob("*")):
+        if path.is_file() and path.relative_to(old) not in names:
+            print("removing", path.relative_to(old))
+            path.unlink()
 # A renamed file's first line is the time it was generated.
 def text(path):
     return path.read_bytes().split(b"\n", 1)[-1] if "autorename_" in path.name else path.read_bytes()

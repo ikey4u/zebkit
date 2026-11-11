@@ -13,12 +13,6 @@
 #include "build/build_config.h"
 #include "components/download/public/common/download_target_info.h"
 
-#if BUILDFLAG(IS_WIN)
-#include <windows.h>
-
-#include <commdlg.h>
-#endif
-
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
@@ -36,11 +30,6 @@
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/filename_util.h"
-
-#if BUILDFLAG(IS_WIN)
-#include "ui/aura/window.h"
-#include "ui/aura/window_tree_host.h"
-#endif
 
 namespace zebkit {
 

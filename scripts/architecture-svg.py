@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Draw docs/images/architecture.svg, the picture of zebkit in README.md and
 docs/ARCHITECTURE.md, in GitHub's light and dark themes.
 

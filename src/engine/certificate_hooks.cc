@@ -1,4 +1,5 @@
 #include "zebkit/engine/certificate_hooks.h"
+#include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 #include <stdlib.h>
 #include <string.h>
@@ -100,12 +101,18 @@ void FinishCertificateNavigation(zebkit_view* view, const GURL& url) {
     if (request->view.get() == view && request->main_frame && request->url == url) ids.push_back(id);
   for (auto id : ids) Finish(id, false, "cancelled");
 }
+// At most 1024 waiting for each view, so that one page cannot use up another's.
+static bool TooMany(zebkit_view* view) {
+  size_t count = 0;
+  for (const auto& [id, request] : Store().pending) count += request->view.get() == view;
+  return count >= 1024;
+}
 void HandleCertificateError(content::WebContents* contents, int error,
     const net::SSLInfo& info, const GURL& url, bool main_frame, bool strict,
     base::OnceCallback<void(content::CertificateRequestResultType)> reply) {
   auto* view = contents ? ViewOf(contents) : nullptr;
   zebkit_view* decider = view ? view->Decider(&zebkit_view::on_certificate_) : nullptr;
-  if (!Ready() || !decider || !decider->on_certificate_ || Store().pending.size() >= 1024 ||
+  if (!Ready() || !decider || !decider->on_certificate_ || TooMany(view) ||
       Store().next == std::numeric_limits<uintptr_t>::max()) {
     std::move(reply).Run(content::CERTIFICATE_REQUEST_RESULT_TYPE_DENY); return;
   }
@@ -146,19 +153,19 @@ void HandleCertificateError(content::WebContents* contents, int error,
 }  // namespace zebkit
 extern "C" {
 void zebkit_view_on_certificate(zebkit_view* view, zebkit_certificate_func function, void* data) {
-  if (!zebkit::Ready() || !view || !view->web_contents()) return;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   if (view->on_certificate_ == function && view->on_certificate_data_ == data) return;
   auto weak = view->GetWeakPtr();
   zebkit::CancelCertificateRequests(view, "handler-changed");
   if (weak) { weak->on_certificate_ = function; weak->on_certificate_data_ = data; }
 }
 void zebkit_view_on_certificate_result(zebkit_view* view, zebkit_certificate_result_func function, void* data) {
-  if (!zebkit::Ready() || !view || !view->web_contents()) return;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
   ++view->certificate_result_generation_;
   view->on_certificate_result_ = function; view->on_certificate_result_data_ = data;
 }
 bool zebkit_view_set_certificate_timeout(zebkit_view* view, uint32_t milliseconds) {
-  if (!zebkit::Ready() || !view || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
+  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
   auto weak = view->GetWeakPtr(); zebkit::Expire(view);
   if (!weak) return false;
   weak->certificate_timeout_ms_ = milliseconds; return true;

@@ -26,7 +26,7 @@ namespace zebkit {
 namespace {
 
 bool OnEngineThread() {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
+  return CurrentlyOnEngineThread();
 }
 
 bool Fail(char** error, std::string message) {
@@ -57,6 +57,7 @@ base::DictValue CapabilitiesValue(const WindowCapabilities& capabilities) {
   value.Set("actions", capabilities.actions);
   value.Set("controlsDrawnByEngine", capabilities.controls_drawn_by_engine);
   value.Set("controlsHeight", capabilities.controls_height);
+  value.Set("appearance", capabilities.appearance);
   return value;
 }
 
@@ -136,6 +137,10 @@ zebkit_view* zebkit_view_new_with_options(zebkit_context* context, const char* u
     return nullptr;
   }
   // A frame the system cannot give: an error, unless the system's will do.
+  if (Window::IsShutDown()) {
+    Fail(error, "the engine is stopping");
+    return nullptr;
+  }
   const WindowCapabilities capabilities = PlatformFor(Window::Kind::kNative)->Capabilities(nullptr);
   const bool frame_ok = options.frame == WindowOptions::Frame::kSystem ||
                         (options.frame == WindowOptions::Frame::kOverlay && capabilities.overlay) ||
@@ -158,7 +163,7 @@ zebkit_view* zebkit_view_new_with_options(zebkit_context* context, const char* u
 
 char* zebkit_view_get_window(zebkit_view* view) {
   using namespace zebkit;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return nullptr;
   return strdup(StateJson(view).c_str());
 }
@@ -167,7 +172,7 @@ bool zebkit_view_set_window(zebkit_view* view, const char* options_json, char** 
   using namespace zebkit;
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return Fail(error, "a live view on the engine's thread");
   Window* window = view->window();
   WindowOptions options;
@@ -190,7 +195,7 @@ bool zebkit_view_window_action(zebkit_view* view, const char* action, char** err
   using namespace zebkit;
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return Fail(error, "a live view on the engine's thread");
   auto parsed = WindowActionNamed(action ? action : "");
   if (!parsed)
@@ -211,7 +216,7 @@ bool zebkit_view_window_action(zebkit_view* view, const char* action, char** err
 
 void zebkit_view_on_window_state(zebkit_view* view, zebkit_window_state_func func, void* data) {
   using namespace zebkit;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return;
   view->on_window_state_ = func;
   view->on_window_state_data_ = data;
@@ -223,7 +228,7 @@ bool zebkit_view_set_drag_regions(zebkit_view* view, const char* regions_json, c
   using namespace zebkit;
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return Fail(error, "a live view on the engine's thread");
   std::vector<DragRegion> regions;
   std::string message;
@@ -237,7 +242,7 @@ bool zebkit_view_set_popup_window_options(zebkit_view* view, const char* options
   using namespace zebkit;
   if (error)
     *error = nullptr;
-  if (!OnEngineThread() || !view || !view->window())
+  if (!LiveView(view) || !view->window())
     return Fail(error, "a live view on the engine's thread");
   if (!options_json) {
     view->window()->SetPopupOptions(std::nullopt);
@@ -264,7 +269,7 @@ char* zebkit_get_capabilities(void) {
 #else
   value.Set("platform", "linux");
 #endif
-  value.Set("window", CapabilitiesValue(zebkit_is_headless()
+  value.Set("window", CapabilitiesValue(zebkit_is_headless() || Window::IsShutDown()
                                             ? WindowCapabilities()
                                             : PlatformFor(Window::Kind::kNative)->Capabilities(nullptr)));
   return strdup(base::WriteJson(value).value_or("{}").c_str());

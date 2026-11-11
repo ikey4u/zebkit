@@ -43,7 +43,8 @@ for kind in native web; do
         result="$(grep '^RESULT' "$work/$kind.out" | head -1 | cut -d' ' -f2)"
         memory="$(pss "$pid")"
         count="$(pgrep -c -P "$pid" || true)"
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
         [[ -n "$result" ]] || die "$kind printed no result"
         shown="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['shown'])" "$result")"
         updated="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['updated'])" "$result")"

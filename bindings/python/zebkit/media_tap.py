@@ -15,27 +15,19 @@ import ctypes
 import json
 import weakref
 
-from . import Error, _declare, _P, _S, _Z, _EP, _RESULT, _string
+from . import Error, _declare, _P, _S, _Z, _EP, _string
 
 _EVENT = ctypes.CFUNCTYPE(None, _P, _S, _P, _Z, _P)
 _start = _declare('zebkit_media_tap_start', _P, _P, _S, _S, _EVENT, _P, _EP)
 _stop = _declare('zebkit_media_tap_stop', None, _P)
 _free = _declare('zebkit_media_tap_free', None, _P)
-_list = _declare('zebkit_view_media_list', None, _P, _RESULT, _P)
 _active = set()
-_pending_lists = {}
 
 
 def list_media(view, callback):
-    """Call callback(list_or_none, error_or_none) with every frame's media."""
-    @_RESULT
-    def result(_view, value, error, _data):
-        _pending_lists.pop(id(result), None)
-        callback(json.loads(value) if value else None,
-                 error.decode() if error else None)
-    handle = view._check()
-    _pending_lists[id(result)] = result
-    _list(handle, result, None)
+    """Call callback(list_or_none, error_or_none) with every frame's media:
+    View.media_list()."""
+    view.media_list(callback)
 
 
 class MediaTap:
@@ -48,7 +40,6 @@ class MediaTap:
         self._handle = None
         if not callable(callback):
             raise TypeError('callback must be callable')
-        self._handle = None
         self._callback = callback
         self.done = None
         self.callback_error = None

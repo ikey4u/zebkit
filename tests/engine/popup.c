@@ -88,10 +88,10 @@ static void on_load(zebkit_view *v, zebkit_load_event event, const char *url, vo
 static void ready(void *data) {
     (void)data;
     const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env ? env : "http://127.0.0.1:8796");
+    snprintf(base, sizeof(base), "%s", env);
     /* The provider on another origin, as accounts.google.com is to a site. */
     const char *port = strrchr(base, ':');
-    snprintf(provider, sizeof(provider), "http://localhost%s/provider.html", port ? port : ":8796");
+    snprintf(provider, sizeof(provider), "http://localhost%s/provider.html", port ? port : "");
     char url[300];
     snprintf(url, sizeof(url), "%s/signin.html", base);
     view = zebkit_view_new_offscreen(url, 640, 480, 1);
@@ -106,6 +106,10 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;

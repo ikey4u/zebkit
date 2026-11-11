@@ -11,7 +11,7 @@ use std::time::Duration;
 use zebkit::services::{self, Compression, Digest, ImageFormat, UrlPart};
 use zebkit::vendor::ffmpeg;
 use zebkit::pdf::{Document, RenderOptions};
-use zebkit::offscreen::{FrameBuffer, Modifiers, MouseButton, MouseEvent};
+use zebkit::offscreen::{Buffers, FrameBuffer, Modifiers, MouseButton, MouseEvent, PixelFormat};
 use zebkit::{cdp, scheme, Allow, LoadEvent, Script, View, PermissionState, NavigationAction};
 
 thread_local! {
@@ -23,8 +23,9 @@ thread_local! {
     static WINDOW_DONE: Cell<bool> = const { Cell::new(false) };
     static PERMISSION_DONE: Cell<bool> = const { Cell::new(false) };
     static AUTHENTICATION_DONE: Cell<bool> = const { Cell::new(false) };
+    static HANDLERS_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
-    static CAPTURED: RefCell<std::path::PathBuf> = const { RefCell::new(std::path::PathBuf::new()) };
+    static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
     static PASSED: Cell<u32> = const { Cell::new(0) };
 }
@@ -43,8 +44,25 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The engine's FFmpeg on a file, with no engine running.
+fn media_tools() {
+    use zebkit::media_tools::{self, Completion, VideoOptions};
+    let clip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/engine/pages/media/clip.webm");
+    let clip = clip.to_string_lossy();
+    let probed = media_tools::probe(&clip);
+    check(probed.as_ref().is_ok_and(|json| json.contains("\"streams\"") && json.contains("vp9")), "media_tools::probe", &probed);
+    check(media_tools::probe("/nothing/here.webm").is_err(), "media_tools::probe: no file is an error", ());
+    let out = std::env::temp_dir().join(format!("zebkit-rust-frames-{}.rgba", std::process::id()));
+    let options = VideoOptions { size: Some((16, 8)), frames: Some(2), overwrite: true, ..Default::default() };
+    let done = media_tools::extract_video_with(&clip, &out.to_string_lossy(), &options, |_, _| true);
+    let size = std::fs::metadata(&out).map(|data| data.len()).unwrap_or(0);
+    check(done == Ok(Completion::Completed) && size == 16 * 8 * 4 * 2, "media_tools::extract_video: raw RGBA frames", (&done, size));
+    let _ = std::fs::remove_file(&out);
+}
+
 /// What needs no engine running.
 fn services() {
+    media_tools();
     let text = b"zebkit ".repeat(100);
     for format in [Compression::Gzip, Compression::Zlib, Compression::DeflateRaw, Compression::Brotli, Compression::Zstd] {
         let packed = services::compress(format, &text, None).unwrap();
@@ -204,6 +222,7 @@ fn engine(page_port: u16) {
     offscreen();
     contexts();
     media();
+    handlers();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -225,6 +244,8 @@ fn engine(page_port: u16) {
         refused.as_ref().err().map(|error| error.message().to_string()),
     );
     check(!view.detach_native(), "detach_native: nothing to detach", ());
+    let itself = view.try_attach(&view, 0, 0, 10, 10);
+    check(itself.is_err(), "try_attach: refused for the view as its own parent", itself.err().map(|error| error.message().to_string()));
     check(view.set_settings(r#"{"colorScheme":"dark","reducedMotion":true}"#).is_ok()
         && view.settings().is_some_and(|json| json.contains("dark") && json.contains("true")),
         "view settings: native preferences", view.settings());
@@ -401,6 +422,9 @@ fn offscreen() {
         return;
     };
     check(view.is_offscreen(), "View::new_offscreen", ());
+    // Pixels this process can read, on every system: a GPU buffer would be
+    // accepted unseen.
+    view.set_frame_buffers(Buffers::SharedMemory);
     let clicked = Rc::new(Cell::new(false));
     {
         let (view2, clicked) = (view.clone(), clicked.clone());
@@ -412,10 +436,14 @@ fn offscreen() {
                 // (150, 45) in CSS pixels, at a scale of 2: B, G, R, A.
                 FrameBuffer::SharedMemory { pixels, stride, .. } => {
                     let at = 90 * stride + 300 * 4;
-                    pixels.get(at..at + 4) == Some(&[255, 128, 0, 255][..])
+                    let expected: &[u8] = match frame.format() {
+                        PixelFormat::Rgba8 => &[0, 128, 255, 255],
+                        _ => &[255, 128, 0, 255],
+                    };
+                    pixels.get(at..at + 4) == Some(expected)
                 }
-                FrameBuffer::IoSurface(surface) => !surface.is_null(),
-                FrameBuffer::Dmabuf { fds, .. } => !fds.is_empty(),
+                // Asked for shared memory: anything else is a failure.
+                _ => false,
             };
             if !blue {
                 return;
@@ -439,6 +467,75 @@ fn offscreen() {
             }
         });
     }
+}
+
+/// Sets a flag when dropped: shows when a closure the engine held is let go.
+struct Dropped(Rc<Cell<bool>>);
+impl Drop for Dropped {
+    fn drop(&mut self) {
+        self.0.set(true);
+    }
+}
+
+/// Closures the engine holds are let go when they remove themselves, and
+/// when their view closes.
+fn handlers() {
+    let made = View::try_new(None, 200, 100);
+    check(made.is_ok(), "View::try_new", made.as_ref().err());
+    let Ok(view) = made else {
+        HANDLERS_DONE.with(|done| done.set(true));
+        return;
+    };
+    check(zebkit::automation::page_id(&view).is_some_and(|id| !id.is_empty()), "automation::page_id", zebkit::automation::page_id(&view));
+    // Kept by closures that capture the view itself: only closing lets them go.
+    let state_dropped = Rc::new(Cell::new(false));
+    let event_dropped = Rc::new(Cell::new(false));
+    {
+        let (keep, held) = (Dropped(state_dropped.clone()), view.clone());
+        view.on_window_state(move |_| {
+            let _ = (&keep, &held);
+        });
+        let (keep, held) = (Dropped(event_dropped.clone()), view.clone());
+        zebkit::automation::on_event(&view, move |_, _| {
+            let _ = (&keep, &held);
+        });
+    }
+    let offscreen = View::new_offscreen(Some("rs://test/offscreen.html"), 100, 50, 1.0);
+    let Some(offscreen) = offscreen else {
+        check(false, "handlers: an off-screen view", "none");
+        HANDLERS_DONE.with(|done| done.set(true));
+        return;
+    };
+    let frame_dropped = Rc::new(Cell::new(false));
+    let frames = Rc::new(Cell::new(0));
+    {
+        let (keep, stopping, counted) = (Dropped(frame_dropped.clone()), offscreen.clone(), frames.clone());
+        offscreen.on_frame(move |_| {
+            let _ = &keep;
+            counted.set(counted.get() + 1);
+            // Removing itself while it runs: it is not put back.
+            stopping.stop_frames();
+        });
+    }
+    when_true(offscreen.clone(), "document.readyState == 'complete'", 200, move |offscreen| {
+        offscreen.request_frame();
+        zebkit::after(Duration::from_millis(500), move || {
+            check(frames.get() >= 1 && frame_dropped.get(), "a frame function that stops the frames is let go", (frames.get(), frame_dropped.get()));
+            offscreen.close();
+            check(!state_dropped.get() && !event_dropped.get(), "a view's closures are kept while it is open", ());
+            let closing = view.clone();
+            view.on_close(move || {
+                let _ = &closing;
+                // The automation's closure goes in a task after the close.
+                zebkit::after(Duration::from_millis(50), move || {
+                    check(state_dropped.get(), "closing a view lets its window-state closure go", ());
+                    check(event_dropped.get(), "closing a view lets its automation closure go", ());
+                    HANDLERS_DONE.with(|done| done.set(true));
+                });
+            });
+            view.close();
+        });
+    });
 }
 
 // A context's storage is its own: what a page stores there, a page of the
@@ -750,7 +847,8 @@ fn script_and_cdp(view: View) {
     });
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
-            || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get) {
+            || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get)
+            || !HANDLERS_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }
@@ -813,7 +911,16 @@ fn main() {
     );
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let identity = format!("zebkit-rust-test-{}-{nonce}", std::process::id());
-    let profile = std::env::temp_dir().join(&identity);
+    // A suite gives the profile's place (`cargo test --test engine --
+    // --user-data-dir=...`) and removes it; else it is made here and removed.
+    let given = std::env::args().find_map(|arg| arg.strip_prefix("--user-data-dir=").map(std::path::PathBuf::from));
+    let owned = given.is_none();
+    let profile = given.unwrap_or_else(|| std::env::temp_dir().join(&identity));
+    let remove_profile = move |profile: &Path| {
+        if owned {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+    };
     let args = [
         identity.clone(),
         "--headless".to_string(),
@@ -823,9 +930,11 @@ fn main() {
     ];
     // Ends on its own; a test that hangs is a failure too.
     let watchdog_identity = identity.clone();
+    let watchdog_profile = profile.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(120));
         eprintln!("FAIL  the test did not finish in 120 s");
+        remove_profile(&watchdog_profile);
         cleanup_test_key(&watchdog_identity);
         std::process::exit(1);
     });
@@ -837,7 +946,7 @@ fn main() {
         services();
         engine(port);
     });
-    let _ = std::fs::remove_dir_all(&profile);
+    remove_profile(&profile);
     cleanup_test_key(&identity);
     check(code == 0, "the engine's exit code", code);
 

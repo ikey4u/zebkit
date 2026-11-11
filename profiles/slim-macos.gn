@@ -2,7 +2,7 @@
 #
 # The slim profile on macOS, for Apple silicon: Zebkit.framework, with the
 # same functions as on Linux. Built on Linux against the macOS SDK copied
-# from a Mac (scripts/fetch-macos-sdk.sh), as Chromium's own builders
+# from a Mac (scripts/zsdk-create.sh, scripts/macos-toolchain.sh), as Chromium's own builders
 # compile for macOS on Linux machines.
 
 target_os = "mac"
@@ -14,7 +14,9 @@ use_system_xcode = false
 mac_sdk_official_version = "27.0"
 
 # Linux's alone: packed ELF relocations applied by the engine, and the
-# thread-local model of an ELF library.
+# local-dynamic thread-local model of an ELF library. zebkit_tls_initial_exec
+# stays as slim sets it, and overrides that (patches/1040): on Mach-O the
+# thread-local model is the platform's own whatever the code asks for.
 zebkit_pack_relocations = false
 zebkit_v8_tls_local_dynamic = false
 

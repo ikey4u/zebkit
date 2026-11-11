@@ -287,7 +287,7 @@ bool zebkit_view_set_runtime_settings(zebkit_view* view, const char* json, char*
   std::string message;
   auto fail = [&]() { if (error) *error = strdup(message.c_str()); return false; };
   if (!IsReady(&message)) return fail();
-  if (!view || !view->web_contents()) {
+  if (!zebkit::LiveView(view) || !view->web_contents()) {
     message = "the view is closed";
     return fail();
   }
@@ -311,7 +311,7 @@ bool zebkit_view_set_runtime_settings(zebkit_view* view, const char* json, char*
 
 char* zebkit_view_get_runtime_settings(zebkit_view* view) {
   std::string message;
-  if (!IsReady(&message) || !view || !view->web_contents()) return nullptr;
+  if (!IsReady(&message) || !zebkit::LiveView(view) || !view->web_contents()) return nullptr;
   content::BrowserContext* context = view->web_contents()->GetBrowserContext();
   base::DictValue chosen, effective;
   auto& contexts = ContextCookies();

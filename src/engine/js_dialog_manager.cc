@@ -89,6 +89,7 @@ void JavaScriptDialogManagerImpl::RunJavaScriptDialog(
   dialog_ = std::make_unique<JavaScriptDialog>(
       this, parent_window, dialog_type, new_message_text, default_prompt_text,
       std::move(callback));
+  dialog_contents_ = web_contents->GetWeakPtr();
 #elif BUILDFLAG(IS_WIN)
   *did_suppress_message = g_message_box_open;
   if (g_message_box_open)
@@ -133,8 +134,11 @@ void JavaScriptDialogManagerImpl::RunBeforeUnloadDialog(
   gfx::NativeWindow parent_window = web_contents->GetTopLevelNativeWindow();
   dialog_ = std::make_unique<JavaScriptDialog>(
       this, parent_window, JAVASCRIPT_DIALOG_TYPE_CONFIRM,
-      u"Is it OK to leave/reload this page?", std::u16string(),
+      is_reload ? u"Reload this page? Changes you made may not be saved."
+                : u"Leave this page? Changes you made may not be saved.",
+      std::u16string(),
       std::move(callback));
+  dialog_contents_ = web_contents->GetWeakPtr();
 #elif BUILDFLAG(IS_WIN)
   if (g_message_box_open) {
     std::move(callback).Run(true, std::u16string());
@@ -142,7 +146,9 @@ void JavaScriptDialogManagerImpl::RunBeforeUnloadDialog(
   }
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&ShowMessageBox, web_contents->GetWeakPtr(),
-                                L"Is it OK to leave/reload this page?", MB_OKCANCEL,
+                                is_reload ? L"Reload this page? Changes you made may not be saved."
+                                          : L"Leave this page? Changes you made may not be saved.",
+                                MB_OKCANCEL,
                                 std::move(callback)));
 #else
   // "Leave this page?" in Chromium's views dialog where there is a window.
@@ -157,10 +163,13 @@ void JavaScriptDialogManagerImpl::RunBeforeUnloadDialog(
 void JavaScriptDialogManagerImpl::CancelDialogs(WebContents* web_contents,
                                                 bool reset_state) {
 #if BUILDFLAG(IS_MAC)
-  if (dialog_) {
+  // Only the page's own: one view's navigation does not end another's alert.
+  if (dialog_ && dialog_contents_.get() == web_contents) {
     dialog_->Cancel();
     dialog_.reset();
   }
+#else
+  CloseViewsJavaScriptDialogs(web_contents);
 #endif
 }
 

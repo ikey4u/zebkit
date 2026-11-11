@@ -18,6 +18,9 @@ bool ShowViewsJavaScriptDialog(content::WebContents* contents, const std::u16str
                                content::JavaScriptDialogType type, const std::u16string& message,
                                const std::u16string& default_prompt,
                                content::JavaScriptDialogManager::DialogClosedCallback& callback);
+// Closes those shown for @contents, which answer as cancelled: content asks
+// for it when the page navigates or goes (CancelDialogs).
+void CloseViewsJavaScriptDialogs(content::WebContents* contents);
 
 }  // namespace zebkit
 

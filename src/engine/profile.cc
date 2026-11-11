@@ -6,17 +6,25 @@
 #include "zebkit/engine/file_system_access.h"
 #include "zebkit/engine/notifications.h"
 
+#include <algorithm>
 #include <memory>
+#include <string>
+#include <vector>
 #include <utility>
 
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/no_destructor.h"
+#include "base/task/thread_pool.h"
 #include "base/path_service.h"
 #include "base/logging.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/simple_dependency_manager.h"
@@ -42,21 +50,18 @@ namespace zebkit {
 
 using namespace content;
 
-Profile::Profile(bool off_the_record,
-                                         bool delay_services_creation)
-    : off_the_record_(off_the_record) {
+Profile::Profile(bool off_the_record) : off_the_record_(off_the_record) {
   // As Chrome's Profile: a context closed before may have had this address, which
   // the dependency manager remembers as dead.
   BrowserContextDependencyManager::GetInstance()->MarkBrowserContextLive(this);
-  InitWhileIOAllowed();
+  CHECK(base::PathService::Get(kUserDataPath, &path_));
+  key_ = std::make_unique<SimpleFactoryKey>(path_, off_the_record_);
+  SimpleDependencyManager::GetInstance()->MarkContextLive(key_.get());
+  SimpleKeyMap::GetInstance()->Associate(this, key_.get());
 #if BUILDFLAG(IS_WIN)
   base::SetExtraNoExecuteAllowedPath(kUserDataPath);
 #endif  // BUILDFLAG(IS_WIN)
-
-  if (!delay_services_creation) {
-    BrowserContextDependencyManager::GetInstance()
-        ->CreateBrowserContextServices(this);
-  }
+  BrowserContextDependencyManager::GetInstance()->CreateBrowserContextServices(this);
 }
 
 Profile::~Profile() {
@@ -73,22 +78,6 @@ Profile::~Profile() {
   SimpleKeyMap::GetInstance()->Dissociate(this);
 
   ShutdownStoragePartitions();
-}
-
-void Profile::InitWhileIOAllowed() {
-  base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
-  if (cmd_line->HasSwitch(switches::kIgnoreCertificateErrors))
-    ignore_certificate_errors_ = true;
-
-  CHECK(base::PathService::Get(kUserDataPath, &path_));
-
-  FinishInitWhileIOAllowed();
-}
-
-void Profile::FinishInitWhileIOAllowed() {
-  key_ = std::make_unique<SimpleFactoryKey>(path_, off_the_record_);
-  SimpleDependencyManager::GetInstance()->MarkContextLive(key_.get());
-  SimpleKeyMap::GetInstance()->Associate(this, key_.get());
 }
 
 std::unique_ptr<ZoomLevelDelegate> Profile::CreateZoomLevelDelegate(
@@ -212,6 +201,63 @@ Profile::GetOriginTrialsControllerDelegate() {
 
 namespace zebkit {
 
+namespace {
+
+// The private directory made when there was no home to give one.
+base::FilePath& TemporaryUserData() {
+  static base::NoDestructor<base::FilePath> path;
+  return *path;
+}
+
+}  // namespace
+
+bool PrepareUserDataDirectory(std::vector<std::string>* args, std::string* error) {
+  // The last --user-data-dir before "--" is the one Chromium takes.
+  const std::string prefix = std::string("--") + kUserDataDirSwitch + "=";
+  std::string given;
+  bool found = false;
+  for (const std::string& arg : *args) {
+    if (arg == "--")
+      break;
+    if (arg.starts_with(prefix)) {
+      given = arg.substr(prefix.size());
+      found = true;
+    }
+  }
+  if (found && !given.empty()) {
+    const base::FilePath path = PathFromUTF8(given);
+    if (!base::DirectoryExists(path) && !base::CreateDirectory(path)) {
+      *error = "The profile directory could not be created: " + given;
+      return false;
+    }
+    return true;
+  }
+  // No home to find one in: for a run of its own, not kept. A new directory
+  // only the user can read, not a fixed name another user could make first.
+  base::FilePath path;
+  if (!base::CreateNewTempDirectory(FILE_PATH_LITERAL("zebkit-profile-"), &path)) {
+    *error = "No profile directory was given and none could be made";
+    return false;
+  }
+  TemporaryUserData() = path;
+  auto at = std::find(args->begin(), args->end(), "--");
+  args->insert(at, prefix + PathToUTF8(path));
+  return true;
+}
+
+void DeleteTemporaryUserData() {
+  if (TemporaryUserData().empty())
+    return;
+  const base::FilePath path = TemporaryUserData();
+  TemporaryUserData().clear();
+  // Best effort, on the calling thread: the thread pool has stopped. A child
+  // process still exiting may hold a file a little longer (on Windows that
+  // refuses the delete), so a few more tries, a second in all.
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  for (int attempt = 0; !base::DeletePathRecursively(path) && attempt < 10; ++attempt)
+    base::PlatformThread::Sleep(base::Milliseconds(100));
+}
+
 void RegisterUserDataPath() {
   base::PathService::RegisterProvider(
       [](int key, base::FilePath* result) {
@@ -228,16 +274,11 @@ void RegisterUserDataPath() {
               *result = path;
               return true;
             }
-          } else {
-            LOG(WARNING) << "Unable to create the user data directory: "
-                         << path.value();
           }
         }
-        // No home to find one in: for a run of its own, not kept.
-        if (!base::GetTempDir(result))
-          return false;
-        *result = result->AppendASCII("zebkit-profile");
-        return base::CreateDirectory(*result);
+        // PrepareUserDataDirectory() gave one, or the engine does not start.
+        LOG(ERROR) << "The profile directory could not be made: " << path.value();
+        return false;
       },
       kUserDataPath, kUserDataPath + 1);
 }

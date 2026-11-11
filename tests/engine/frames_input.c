@@ -501,7 +501,7 @@ static void start(void *data) {
     const char *base = getenv("ZEBKIT_TEST_BASE");
     const char *other = getenv("ZEBKIT_TEST_OTHER");
     char url[512];
-    snprintf(url, sizeof(url), "%s/frames-input.html%s%s", base ? base : "http://127.0.0.1:8796",
+    snprintf(url, sizeof(url), "%s/frames-input.html%s%s", base,
              other ? "?other=" : "", other ? other : "");
     if (windowed) {
         view = zebkit_view_new(url, 1200, 900);
@@ -528,6 +528,10 @@ static void start(void *data) {
 }
 
 int main(int argc, char **argv) {
+    if (!getenv("ZEBKIT_TEST_BASE")) {
+        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
+        return 2;
+    }
     windowed = getenv("ZEBKIT_TEST_WINDOW") != NULL;
 #if defined(FRAMES_X11)
     if (windowed) {

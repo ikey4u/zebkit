@@ -16,8 +16,7 @@ dry=0
 
 binding="$ZEBKIT_ROOT/bindings/python"
 version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
-package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$binding/pyproject.toml" | head -1)"
-[[ "$package_version" == "$version" ]] || die "VERSION says $version but bindings/python/pyproject.toml says $package_version"
+check_versions
 command -v uv > /dev/null || die "publishing needs uv; 'mise run r:python' provides it"
 
 if (( ! dry )); then
@@ -25,6 +24,11 @@ if (( ! dry )); then
     [[ -n "$UV_PUBLISH_TOKEN" ]] || die "set UV_PUBLISH_TOKEN (or PYPI_TOKEN) to a PyPI API token"
     [[ -z "$(git -C "$ZEBKIT_ROOT" status --porcelain -- bindings/python)" ]] \
         || die "bindings/python has changes not committed: the package is published from what is committed"
+    # The binding loads the engine of the GitHub release of its version.
+    if command -v gh > /dev/null; then
+        gh release view "v$version" > /dev/null 2>&1 \
+            || die "no GitHub release v$version: the package would name an engine that is not there"
+    fi
 fi
 
 out="$ZEBKIT_ROOT/dist/python"

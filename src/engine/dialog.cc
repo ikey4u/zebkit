@@ -253,7 +253,7 @@ DialogState* StateOf(content::WebContents* contents) {
 }
 
 DialogState* StateOf(zebkit_view* view) {
-  return view ? StateOf(view->web_contents()) : nullptr;
+  return zebkit::LiveView(view) ? StateOf(view->web_contents()) : nullptr;
 }
 
 // A window's manager: the policy's, and the system's own when the
@@ -417,6 +417,7 @@ extern "C" {
 void zebkit_view_on_dialog(zebkit_view* view,
                            zebkit_dialog_func func,
                            void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::DialogState* state = StateOf(view)) {
     state->on_dialog = func;
     state->on_dialog_data = data;
@@ -426,6 +427,7 @@ void zebkit_view_on_dialog(zebkit_view* view,
 void zebkit_view_on_dialog_closed(zebkit_view* view,
                                   zebkit_dialog_closed_func func,
                                   void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::DialogState* state = StateOf(view)) {
     state->on_closed = func;
     state->on_closed_data = data;
@@ -434,6 +436,7 @@ void zebkit_view_on_dialog_closed(zebkit_view* view,
 
 void zebkit_view_set_dialog_policy(zebkit_view* view,
                                    zebkit_dialog_policy policy) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   if (zebkit::DialogState* state = StateOf(view)) {
     state->policy = (policy >= ZEBKIT_DIALOG_POLICY_DEFAULT &&
                      policy <= ZEBKIT_DIALOG_POLICY_DISMISS)
@@ -443,6 +446,7 @@ void zebkit_view_set_dialog_policy(zebkit_view* view,
 }
 
 zebkit_dialog_policy zebkit_view_get_dialog_policy(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, EngineDialogPolicy().value_or(ZEBKIT_DIALOG_POLICY_DEFAULT));
   zebkit::DialogState* state = StateOf(view);
   return state ? state->Policy() : EngineDialogPolicy().value_or(ZEBKIT_DIALOG_POLICY_DEFAULT);
 }
@@ -451,6 +455,7 @@ bool zebkit_view_dialog_respond(zebkit_view* view,
                                 uint64_t id,
                                 bool accept,
                                 const char* prompt_text) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
   zebkit::DialogState* state = StateOf(view);
   if (!state)
     return false;
@@ -459,11 +464,13 @@ bool zebkit_view_dialog_respond(zebkit_view* view,
 }
 
 char* zebkit_view_dialogs(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
   zebkit::DialogState* state = StateOf(view);
   return strdup(state ? state->Json().c_str() : "[]");
 }
 
 void zebkit_view_request_close(zebkit_view* view) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   content::WebContents* contents = view->web_contents();
   zebkit::DialogState* state = StateOf(contents);
   if (!state)
