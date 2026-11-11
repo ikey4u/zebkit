@@ -1,6 +1,6 @@
 //! What a page asks of its window, for the application to answer
-//! (`<zebkit/page.h>`): JavaScript dialogs, the page printed to PDF, and
-//! drag and drop.
+//! (`<zebkit/page.h>`): JavaScript dialogs, the page printed to PDF, drag
+//! and drop, and find in page.
 //!
 //! ```no_run
 //! use zebkit::page::{DialogPolicy, DRAG_COPY};
@@ -123,6 +123,25 @@ pub struct DragImage {
     pub offset_y: f32,
 }
 
+/// How [`View::find`] looks: `FIND_*` combined.
+pub const FIND_MATCH_CASE: u32 = sys::ZEBKIT_FIND_MATCH_CASE;
+/// The previous match rather than the next.
+pub const FIND_BACKWARD: u32 = sys::ZEBKIT_FIND_BACKWARD;
+/// Count and highlight the matches, none made active.
+pub const FIND_HIGHLIGHT_ONLY: u32 = sys::ZEBKIT_FIND_HIGHLIGHT_ONLY;
+
+/// What becomes of the active match when a search stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindStop {
+    /// The highlights go, and the active match is not selected.
+    Clear,
+    /// The highlights go; the active match stays selected.
+    Keep,
+    /// The highlights go and the active match's element is activated (a
+    /// link followed).
+    Activate,
+}
+
 type DialogFunction = dyn FnMut(&Dialog);
 type DialogClosedFunction = dyn FnMut(u64, bool, &str);
 type DragFunction = dyn FnMut(&Drag) -> bool;
@@ -133,6 +152,7 @@ pub(crate) struct Slots {
     on_dialog_closed: Slot<DialogClosedFunction>,
     on_drag_start: Slot<DragFunction>,
     on_drag_end: Slot<dyn FnMut(u32)>,
+    on_find: Slot<dyn FnMut(&str)>,
 }
 
 impl Slots {
@@ -141,6 +161,7 @@ impl Slots {
         self.on_dialog_closed.set(None);
         self.on_drag_start.set(None);
         self.on_drag_end.set(None);
+        self.on_find.set(None);
     }
 }
 
@@ -218,6 +239,49 @@ impl View {
         if let Some(raw) = self.raw() {
             unsafe { sys::zebkit_view_request_close(raw) }
         }
+    }
+
+    /// Finds `text` in the page as Chrome's find bar does: in every frame
+    /// and shadow tree, all matches highlighted, the active one distinctly.
+    /// The same text again goes to the next match ([`FIND_BACKWARD`]: the
+    /// previous). Returns the request's number, which its results carry as
+    /// `requestId`; 0 for empty text or a closed view.
+    pub fn find(&self, text: &str, flags: u32) -> i32 {
+        let Some(raw) = self.raw() else { return 0 };
+        unsafe { sys::zebkit_view_find(raw, c_string(text).as_ptr(), flags) }
+    }
+
+    /// Stops the search and clears its highlights.
+    pub fn stop_finding(&self, action: FindStop) {
+        let Some(raw) = self.raw() else { return };
+        let action = match action {
+            FindStop::Clear => sys::ZEBKIT_FIND_STOP_CLEAR,
+            FindStop::Keep => sys::ZEBKIT_FIND_STOP_KEEP,
+            FindStop::Activate => sys::ZEBKIT_FIND_STOP_ACTIVATE,
+        };
+        unsafe { sys::zebkit_view_stop_finding(raw, action) }
+    }
+
+    /// Calls `function` with each result as JSON: `requestId`, `text`,
+    /// `matches`, `activeMatch` (from 1, 0 for none), `final`, `rect`
+    /// (the active match's, or null) and `stopped`.
+    pub fn on_find<F: FnMut(&str) + 'static>(&self, function: F) {
+        let Some(raw) = self.raw() else { return };
+        self.inner.page.on_find.set(Some(Box::new(function)));
+        unsafe { sys::zebkit_view_on_find(raw, Some(on_find), self.page_data()) }
+    }
+
+    /// Stops [`View::on_find`].
+    pub fn stop_find_results(&self) {
+        let Some(raw) = self.raw() else { return };
+        unsafe { sys::zebkit_view_on_find(raw, None, std::ptr::null_mut()) }
+        self.inner.page.on_find.set(None);
+    }
+
+    /// The last result of the search on, as [`View::on_find`] has them.
+    pub fn find_result_json(&self) -> Option<String> {
+        let raw = self.raw()?;
+        unsafe { take_string(sys::zebkit_view_find_result(raw)) }
     }
 
     /// Prints the page to PDF with CDP's `Page.printToPDF` parameters as a
@@ -321,6 +385,11 @@ unsafe extern "C" fn on_dialog_closed(
 ) {
     let input = string_from(user_input).unwrap_or_default();
     call_slot(&crate::view::hold(data).page.on_dialog_closed, |function| function(id, accepted, &input));
+}
+
+unsafe extern "C" fn on_find(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
+    let json = string_from(json).unwrap_or_default();
+    call_slot(&crate::view::hold(data).page.on_find, |function| function(&json));
 }
 
 unsafe extern "C" fn on_pdf<F: FnOnce(Result<Vec<u8>, Error>)>(

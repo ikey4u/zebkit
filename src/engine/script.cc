@@ -185,7 +185,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
   const views = new Map();
   // Events whose engine callback is set the first time the script listens.
   const LAZY_EVENTS = new Set(['new-window', 'drop', 'dialog', 'dialog-closed', 'drag-start', 'drag-end', 'frame',
-                               'caret', 'cursor', 'popup', 'authentication', 'automation']);
+                               'caret', 'cursor', 'popup', 'authentication', 'automation', 'find']);
   const MOUSE = {move: 0, down: 1, up: 2, leave: 3};
   const BUTTON = {none: 0, left: 1, middle: 2, right: 3, back: 4, forward: 5};
   const WHEEL_PHASE = {none: 0, began: 1, changed: 2, ended: 3, momentum: 4};
@@ -213,7 +213,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
     #id;
     #listening = new Set();
     #handlers = {load: [], title: [], close: [], 'popup-blocked': [], 'permission-result': [], 'navigation-result': [], 'window-open': [], console: [], 'certificate-result': [], 'http-auth-result': [], 'window-state': [],
-                 'new-window': [], drop: [], dialog: [], 'dialog-closed': [], 'drag-start': [], 'drag-end': [], frame: [], caret: [], cursor: [], popup: [], authentication: [], automation: []};
+                 'new-window': [], drop: [], dialog: [], 'dialog-closed': [], 'drag-start': [], 'drag-end': [], frame: [], caret: [], cursor: [], popup: [], authentication: [], automation: [], find: []};
     // {window: {...}}: <zebkit/window.h>'s options, before the window is made;
     // {context}: a Context of its own.
     constructor(url = 'about:blank', {width = 0, height = 0, window = null, context = null} = {}, adoption = null) {
@@ -296,6 +296,12 @@ constexpr char kBootstrap[] = R"js((function (native) {
     dragLeave() { this.#more('drag-leave'); }
     drop(x, y, modifiers = 0) { return this.#more('drop', x, y, modifiers); }
     dragSourceEnd(x, y, operation) { this.#more('drag-source-end', x, y, operation); }
+    // Find in page, as Chrome's find bar: results to 'find' listeners.
+    find(text, {matchCase = false, backward = false, highlightOnly = false} = {}) {
+      return this.#more('find', String(text), (matchCase ? 1 : 0) | (backward ? 2 : 0) | (highlightOnly ? 4 : 0));
+    }
+    stopFinding(action = 'clear') { this.#more('stop-finding', String(action)); }
+    get findResult() { return this.#more('find-result'); }
     // <zebkit/offscreen.h>: size, frames ('frame'), input; 'caret', 'cursor', 'popup'.
     get isOffscreen() { return this.#more('is-offscreen'); }
     setSize(width, height, scale = 0) { this.#more('set-size', width, height, scale); }
@@ -2487,6 +2493,16 @@ void zebkit_script::ViewMore(const v8::FunctionCallbackInfo<v8::Value>& info) {
     set_json(zebkit_view_dialogs(view));
   } else if (kind == "request-close") {
     zebkit_view_request_close(view);
+  } else if (kind == "find") {
+    // (text, flags)
+    info.GetReturnValue().Set(zebkit_view_find(view, text(2).c_str(), static_cast<unsigned>(number(3))));
+  } else if (kind == "stop-finding") {
+    const std::string action = text(2);
+    zebkit_view_stop_finding(view, action == "keep"       ? ZEBKIT_FIND_STOP_KEEP
+                                   : action == "activate" ? ZEBKIT_FIND_STOP_ACTIVATE
+                                                          : ZEBKIT_FIND_STOP_CLEAR);
+  } else if (kind == "find-result") {
+    set_json(zebkit_view_find_result(view));
   } else if (kind == "is-dragging") {
     info.GetReturnValue().Set(zebkit_view_is_dragging(view));
   } else if (kind == "drag-enter") {
@@ -2652,6 +2668,14 @@ void zebkit_script::ViewListen(zebkit_script* self, ViewEntry* entry, const std:
       SetField(isolate, object, "isReload", v8::Boolean::New(isolate, dialog->is_reload));
       SetField(isolate, object, "held", v8::Boolean::New(isolate, dialog->held));
       call.Event("dialog", {object});
+    }, hook);
+  } else if (name == "find") {
+    zebkit_view_on_find(view, [](zebkit_view*, const char* json, void* data) {
+      Call call(data);
+      if (!call.script())
+        return;
+      Scope scope(call.script());
+      call.Event("find", {JsonValueOf(call.isolate(), call.script()->context(), json)});
     }, hook);
   } else if (name == "dialog-closed") {
     zebkit_view_on_dialog_closed(view, [](zebkit_view*, uint64_t id, bool accepted, const char* input, void* data) {
@@ -2875,6 +2899,7 @@ int zebkit_script::WrapView(zebkit_view* view) {
         zebkit_view_on_drop(closing, nullptr, nullptr);
         zebkit_view_on_dialog(closing, nullptr, nullptr);
         zebkit_view_on_dialog_closed(closing, nullptr, nullptr);
+        zebkit_view_on_find(closing, nullptr, nullptr);
         zebkit_view_on_drag_start(closing, nullptr, nullptr);
         zebkit_view_on_drag_end(closing, nullptr, nullptr);
         zebkit_view_on_frame(closing, nullptr, nullptr);

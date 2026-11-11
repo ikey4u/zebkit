@@ -78,6 +78,13 @@
 #   it, fill, check, keys and mouse, strict mode and timeouts.
 # - tests/engine/automation_python.py: the same through zebkit.automation,
 #   Playwright's async API for Python.
+# - tests/engine/find_in_page.py: find in page (zebkit_view_find) in frames
+#   and shadow trees, next and previous, highlights, stopping; Zebkit.find*.
+# - tests/engine/download_outcomes.py: how downloads end: complete with the
+#   saved path, cancelled, failed on the network or the file system, each
+#   with its error; Zebkit.downloadProgress.
+# - tests/engine/automation_dialogs.py: dialogs native Playwright clicks
+#   open while a CDP client or the application holds the page's dialogs.
 # - tests/engine/notifications.py, tray.py: web notifications and the tray icon, on Linux
 #   against fake desktop services on a private bus (fake_notifications.py, fake_tray_watcher.py).
 # - tests/engine/appearance.py: pages following the system's colour scheme (appearance.follow),
@@ -1026,6 +1033,12 @@ run system-holes env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/system_hol
 run sign-in env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/sign_in.py" "${engine_switches[@]}"
 # A page's prompt() and confirm(): Chromium's views dialog with a window (9).
 run js-dialogs env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/js_dialogs.py" "${engine_switches[@]}"
+# Find in page: frames, shadow trees, next and previous, highlights, stopping; over CDP too.
+run find-in-page env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/find_in_page.py" "${engine_switches[@]}"
+# How downloads end: complete with the saved path, cancelled, failed on the network and the file system.
+run download-outcomes env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/download_outcomes.py" "${engine_switches[@]}"
+# Dialogs a native Playwright click opens, held for a CDP client or the application.
+run automation-dialogs env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/automation_dialogs.py" "${engine_switches[@]}"
 # A page's context menu: default items, commands on the captured context (8).
 run context-menu env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/context_menu.py" "${engine_switches[@]}"
 # The menu's items' state by id (docs/SYSTEM_INTEGRATION.md, 8).

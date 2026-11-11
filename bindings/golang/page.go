@@ -151,6 +151,65 @@ func (v *View) Dialogs() ([]Dialog, error) {
 	return dialogs, nil
 }
 
+// How Find looks, combined.
+const (
+	FindMatchCase     uint = 1 << 0
+	FindBackward      uint = 1 << 1
+	FindHighlightOnly uint = 1 << 2
+)
+
+// FindStop is what becomes of the active match when a search stops.
+type FindStop int
+
+const (
+	FindStopClear    FindStop = 0
+	FindStopKeep     FindStop = 1
+	FindStopActivate FindStop = 2
+)
+
+// Find looks for text in the page as Chrome's find bar does: in every frame
+// and shadow tree, all matches highlighted, the active one distinctly. The
+// same text again goes to the next match (FindBackward: the previous). It
+// returns the request's number, its results' requestId; 0 for empty text.
+func (v *View) Find(text string, flags uint) int {
+	raw, ok := v.raw()
+	if !ok {
+		return 0
+	}
+	t := C.CString(text)
+	defer free(t)
+	return int(C.zebkit_view_find(raw, t, C.uint(flags)))
+}
+
+// StopFinding stops the search and clears its highlights.
+func (v *View) StopFinding(action FindStop) {
+	if raw, ok := v.raw(); ok {
+		C.zebkit_view_stop_finding(raw, C.zebkit_find_stop_action(action))
+	}
+}
+
+// OnFind tells function each result: requestId, text, matches, activeMatch
+// (from 1, 0 for none), final, rect (the active match's, or nil), stopped;
+// nil stops.
+func (v *View) OnFind(function func(map[string]any)) {
+	v.told("find", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_find(raw, C.zebkit_find_func(f), d)
+	})
+}
+
+// FindResult is the last result of the search on, as OnFind has them.
+func (v *View) FindResult() (map[string]any, error) {
+	raw, ok := v.raw()
+	if !ok {
+		return nil, ErrClosed
+	}
+	var result map[string]any
+	if err := takeJSON(C.zebkit_view_find_result(raw), &result, "no find result"); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // RequestClose closes the view as a browser closes a tab: the page's
 // beforeunload handlers first.
 func (v *View) RequestClose() {

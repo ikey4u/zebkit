@@ -3346,10 +3346,17 @@ _view_drag_over = _declare("zebkit_view_drag_over", None, _V, ctypes.c_float, ct
 _view_drag_leave = _declare("zebkit_view_drag_leave", None, _V)
 _view_drop = _declare("zebkit_view_drop", None, _V, ctypes.c_float, ctypes.c_float, _U, _DRAG_OPERATION, _P)
 _view_drag_source_end = _declare("zebkit_view_drag_source_end", None, _V, ctypes.c_float, ctypes.c_float, _U)
+_FIND = ctypes.CFUNCTYPE(None, _V, _S, _P)
+_view_find = _declare("zebkit_view_find", _I, _V, _S, _U)
+_view_stop_finding = _declare("zebkit_view_stop_finding", None, _V, _I)
+_view_on_find = _declare("zebkit_view_on_find", None, _V, _FIND, _P)
+_view_find_result = _declare("zebkit_view_find_result", _P, _V)
 
 DIALOG_ALERT, DIALOG_CONFIRM, DIALOG_PROMPT, DIALOG_BEFOREUNLOAD, DIALOG_PRINT = 0, 1, 2, 3, 4
 DIALOG_POLICY_DEFAULT, DIALOG_POLICY_HOLD, DIALOG_POLICY_ACCEPT, DIALOG_POLICY_DISMISS = 0, 1, 2, 3
 DRAG_NONE, DRAG_COPY, DRAG_LINK, DRAG_MOVE, DRAG_ALL = 0, 1, 2, 16, 19
+FIND_MATCH_CASE, FIND_BACKWARD, FIND_HIGHLIGHT_ONLY = 1, 2, 4
+FIND_STOP_CLEAR, FIND_STOP_KEEP, FIND_STOP_ACTIVATE = 0, 1, 2
 
 
 def _view_page(cls):
@@ -3476,9 +3483,34 @@ def _view_page(cls):
         """Ends the page's own drag that the application ran (on_drag_start's True)."""
         _view_drag_source_end(self._check(), x, y, operation)
 
+    def find(self, text, flags=0):
+        """Finds text in the page as Chrome's find bar does: in every frame
+        and shadow tree, all matches highlighted, the active one distinctly.
+        The same text again goes to the next match (FIND_BACKWARD: the
+        previous). Returns the request's number (its results' "requestId"),
+        0 for empty text."""
+        return _view_find(self._check(), text.encode(), flags)
+
+    def stop_finding(self, action=FIND_STOP_CLEAR):
+        """Stops the search and clears its highlights: FIND_STOP_CLEAR,
+        _KEEP (the active match stays selected) or _ACTIVATE (it is clicked)."""
+        _view_stop_finding(self._check(), action)
+
+    def on_find(self, function):
+        """function(result): {"requestId", "text", "matches", "activeMatch",
+        "final", "rect", "stopped"} for each result. None removes it."""
+        if function is None:
+            return self._set("find", _FIND(), _view_on_find)
+        self._set("find", _FIND(_guard(lambda h, text, d: function(json.loads(text.decode())))), _view_on_find)
+
+    def find_result(self):
+        """The last result of the search on, as on_find() has them."""
+        value = _string(_view_find_result(self._check()))
+        return json.loads(value) if value else None
+
     for function in (on_dialog, on_dialog_closed, set_dialog_policy, dialog_policy, respond_dialog, dialogs,
                      request_close, print_to_pdf, on_drag_start, on_drag_end, is_dragging, drag_enter, _operation,
-                     drag_over, drag_leave, drop, drag_source_end):
+                     drag_over, drag_leave, drop, drag_source_end, find, stop_finding, on_find, find_result):
         setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
 
 
@@ -3734,4 +3766,6 @@ __all__ += [
     "KEY_DOWN", "KEY_UP", "KEY_CHAR", "DIALOG_ALERT", "DIALOG_CONFIRM", "DIALOG_PROMPT", "DIALOG_BEFOREUNLOAD",
     "DIALOG_PRINT", "DIALOG_POLICY_DEFAULT", "DIALOG_POLICY_HOLD", "DIALOG_POLICY_ACCEPT", "DIALOG_POLICY_DISMISS",
     "DRAG_NONE", "DRAG_COPY", "DRAG_LINK", "DRAG_MOVE", "DRAG_ALL",
+    "FIND_MATCH_CASE", "FIND_BACKWARD", "FIND_HIGHLIGHT_ONLY", "FIND_STOP_CLEAR", "FIND_STOP_KEEP",
+    "FIND_STOP_ACTIVATE",
 ]

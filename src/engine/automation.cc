@@ -6073,7 +6073,7 @@ class Automation : public content::WebContentsObserver,
   // dismissed at once as Playwright's dialog.ts does without a handler.
   bool holds_dialogs() const { return hold_dialogs_ || report_closed_dialogs_; }
 
-  void DialogOpened(const zebkit_dialog& dialog) {
+  void DialogOpened(const zebkit_dialog& dialog, bool held_elsewhere) {
     static const char* const kTypes[] = {"alert", "confirm", "prompt",
                                          "beforeunload", "print"};
     if (dialog.type == ZEBKIT_DIALOG_PRINT)
@@ -6085,7 +6085,10 @@ class Automation : public content::WebContentsObserver,
     params.Set("defaultValue",
                dialog.default_prompt ? dialog.default_prompt : "");
     params.Set("held", dialog.held);
-    const bool dismiss = dialog.held && !hold_dialogs_;
+    // Without a listener of the client's, a dialog held for it alone is
+    // dismissed (dialog.ts); one held for the application or a CDP client
+    // as well is theirs to answer.
+    const bool dismiss = dialog.held && !hold_dialogs_ && !held_elsewhere;
     if (dismiss)
       params.Set("auto", true);
     Emit("BrowserContext.dialog", std::move(params));
@@ -10883,9 +10886,10 @@ class AutomationDialogs : public DialogObserver {
     return automation && automation->holds_dialogs();
   }
   void DialogOpened(content::WebContents* contents,
-                    const zebkit_dialog& dialog) override {
+                    const zebkit_dialog& dialog,
+                    bool held_elsewhere) override {
     if (Automation* automation = Automation::FromWebContents(contents))
-      automation->DialogOpened(dialog);
+      automation->DialogOpened(dialog, held_elsewhere);
   }
   void DialogClosed(content::WebContents* contents,
                     uint64_t id,

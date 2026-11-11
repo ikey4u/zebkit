@@ -10,10 +10,14 @@
 #include <utility>
 
 #include "base/files/file_path.h"
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/strings/string_util.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_target_info.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/devtools_agent_host_client_channel.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
@@ -22,7 +26,9 @@
 #include "url/gurl.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/hook_requests.h"
+#include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/page_hooks.h"
+#include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/settings.h"
 
 namespace zebkit {
@@ -51,6 +57,136 @@ std::string Redacted(const GURL& url) {
   redact.ClearUsername();
   redact.ClearPassword();
   return url.ReplaceComponents(redact).spec();
+}
+
+// What a download's interrupt reason is about, and Chrome's words for it
+// (its download shelf's IDS_DOWNLOAD_INTERRUPTED_DESCRIPTION_*).
+struct Failure {
+  const char* category;
+  const char* message;
+};
+Failure FailureOf(download::DownloadInterruptReason reason) {
+  using R = download::DownloadInterruptReason;
+  switch (reason) {
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:
+      return {"file", "Insufficient permissions"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:
+      return {"file", "Disk full"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:
+      return {"file", "Path too long"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:
+      return {"file", "File too large"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_VIRUS_INFECTED:
+      return {"blocked", "Virus detected"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_TRANSIENT_ERROR:
+      return {"file", "System busy"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED:
+      return {"blocked", "Blocked"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:
+      return {"blocked", "Virus scan failed"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT:
+      return {"file", "File incomplete"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH:
+      return {"file", "Hash mismatch"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_SAME_AS_SOURCE:
+      return {"file", "Already downloaded"};
+    case R::DOWNLOAD_INTERRUPT_REASON_FILE_FAILED:
+      return {"file", "Failed to save the file"};
+    case R::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:
+      return {"network", "Network error"};
+    case R::DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:
+      return {"network", "Network timeout"};
+    case R::DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:
+      return {"network", "Network disconnected"};
+    case R::DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:
+      return {"network", "Server unavailable"};
+    case R::DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:
+      return {"network", "Invalid request"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED:
+      return {"server", "Server problem"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE:
+      return {"server", "Server does not support resuming"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_BAD_CONTENT:
+      return {"server", "No file"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_UNAUTHORIZED:
+      return {"server", "Needs authorization"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_CERT_PROBLEM:
+      return {"server", "Bad certificate"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN:
+      return {"server", "Forbidden"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_UNREACHABLE:
+      return {"server", "Unreachable server"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_CONTENT_LENGTH_MISMATCH:
+      return {"server", "File incomplete"};
+    case R::DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT:
+      return {"server", "Cross-origin redirect"};
+    case R::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED:
+      return {"cancelled", "Cancelled"};
+    case R::DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:
+      return {"shutdown", "Shut down"};
+    case R::DOWNLOAD_INTERRUPT_REASON_CRASH:
+      return {"crash", "Crashed"};
+    case R::DOWNLOAD_INTERRUPT_REASON_LOCAL_DOWNLOAD_BLOCKED:
+      return {"blocked", "Blocked"};
+    default:
+      return {"failed", "Failed"};
+  }
+}
+
+// A download's report: zebkit_view_on_download_progress()'s JSON, and
+// Zebkit.downloadProgress's.
+base::DictValue Report(download::DownloadItem* item) {
+  const auto state = item->GetState();
+  const bool done = state != download::DownloadItem::IN_PROGRESS;
+  const download::DownloadInterruptReason reason = item->GetLastReason();
+  base::DictValue event;
+  event.Set("downloadId", "d" + base::NumberToString(item->GetId()));
+  // As CDP's Browser.downloadWillBegin and downloadProgress name it.
+  event.Set("guid", item->GetGuid());
+  event.Set("url", Redacted(item->GetURL()));
+  event.Set("state", state == download::DownloadItem::COMPLETE    ? "complete"
+                     : state == download::DownloadItem::CANCELLED ? "cancelled"
+                     : done                                       ? "interrupted"
+                                                                  : "in-progress");
+  // Cancelled (by the application, a hook's answer, CDP or the user) or
+  // failed (the network, the server, the file system, ...).
+  const bool cancelled =
+      state == download::DownloadItem::CANCELLED ||
+      reason == download::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
+  event.Set("outcome", !done                                       ? "in-progress"
+                       : state == download::DownloadItem::COMPLETE ? "complete"
+                       : cancelled                                 ? "cancelled"
+                                                                   : "failed");
+  event.Set("path", item->GetTargetFilePath().AsUTF8Unsafe());
+  if (state == download::DownloadItem::COMPLETE)
+    event.Set("savedPath", item->GetFullPath().AsUTF8Unsafe());
+  else
+    event.Set("savedPath", base::Value());
+  event.Set("receivedBytes", static_cast<double>(item->GetReceivedBytes()));
+  event.Set("totalBytes", static_cast<double>(item->GetTotalBytes()));
+  event.Set("mimeType", item->GetMimeType());
+  event.Set("reason", download::DownloadInterruptReasonToString(reason));
+  if (done && state != download::DownloadItem::COMPLETE) {
+    // A cancellation without a reason of its own is the user's.
+    const download::DownloadInterruptReason why =
+        reason == download::DOWNLOAD_INTERRUPT_REASON_NONE
+            ? download::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED
+            : reason;
+    const Failure failure = FailureOf(why);
+    base::DictValue error;
+    error.Set("category", cancelled ? "cancelled" : failure.category);
+    error.Set("code", static_cast<int>(why));
+    error.Set("name", download::DownloadInterruptReasonToString(why));
+    error.Set("message", cancelled ? "Cancelled" : failure.message);
+    // Chrome may go on with it by itself (a network error, with a server
+    // that resumes), when a report in progress follows.
+    error.Set("resumable", !cancelled && item->CanResume());
+    event.Set("error", std::move(error));
+  } else {
+    event.Set("error", base::Value());
+  }
+  event.Set("done", done);
+  return event;
 }
 
 void Answer(download::DownloadTargetCallback callback, Traits::Decision decision) {
@@ -108,6 +244,8 @@ class Watcher : public content::DownloadManager::Observer,
     return false;
   }
   void Stop() {
+    sessions_.clear();
+    is_page_session_.clear();
     for (auto& [key, entry] : items_)
       entry.item->RemoveObserver(this);
     items_.clear();
@@ -121,6 +259,44 @@ class Watcher : public content::DownloadManager::Observer,
     content::WebContents* contents = content::DownloadItemUtils::GetWebContents(item);
     if (zebkit_view* view = contents ? ViewOf(contents) : nullptr)
       Track(item, view);
+  }
+
+  // Zebkit.setDownloadEvents: a page's session hears of that page's
+  // downloads, the browser's of all of the views'.
+  void AddSession(content::DevToolsAgentHostClientChannel* channel,
+                  content::WebContents* contents) {
+    sessions_[channel] = contents ? contents->GetWeakPtr() : nullptr;
+    is_page_session_[channel] = contents != nullptr;
+    for (zebkit_view* view : zebkit_view::Views()) {
+      if (view->web_contents() && (!contents || view->web_contents() == contents))
+        WatchProfileOf(view);
+    }
+  }
+  void RemoveSession(content::DevToolsAgentHostClientChannel* channel) {
+    sessions_.erase(channel);
+    is_page_session_.erase(channel);
+  }
+  bool has_sessions() const { return !sessions_.empty(); }
+  void TellSessions(download::DownloadItem* item, const base::DictValue& event) {
+    if (sessions_.empty())
+      return;
+    content::WebContents* contents = content::DownloadItemUtils::GetWebContents(item);
+    for (auto it = sessions_.begin(); it != sessions_.end();) {
+      const bool page = is_page_session_[it->first];
+      if (page && (!it->second || it->second.get() != contents)) {
+        ++it;
+        continue;
+      }
+      base::DictValue message;
+      message.Set("method", "Zebkit.downloadProgress");
+      message.Set("params", event.Clone());
+      if (SendToDevToolsClient(it->first, std::move(message))) {
+        ++it;
+      } else {
+        is_page_session_.erase(it->first);
+        it = sessions_.erase(it);
+      }
+    }
   }
   void ManagerGoingDown(content::DownloadManager* manager) override {
     manager->RemoveObserver(this);
@@ -167,23 +343,12 @@ class Watcher : public content::DownloadManager::Observer,
     entry.state = state;
     entry.received = item->GetReceivedBytes();
     zebkit_view* view = entry.view.get();
+    base::DictValue event = Report(item);
+    TellSessions(item, event);
     // The view's own function, or that of the opener a popup inherits from.
     zebkit_view* teller = view ? view->Decider(&zebkit_view::on_download_progress_) : nullptr;
     if (!teller || !teller->on_download_progress_)
       return;
-    const bool done = state != download::DownloadItem::IN_PROGRESS;
-    base::DictValue event;
-    event.Set("downloadId", "d" + base::NumberToString(item->GetId()));
-    event.Set("url", Redacted(item->GetURL()));
-    event.Set("state", state == download::DownloadItem::COMPLETE    ? "complete"
-                       : state == download::DownloadItem::CANCELLED ? "cancelled"
-                       : done                                       ? "interrupted"
-                                                                    : "in-progress");
-    event.Set("path", item->GetTargetFilePath().AsUTF8Unsafe());
-    event.Set("receivedBytes", static_cast<double>(item->GetReceivedBytes()));
-    event.Set("totalBytes", static_cast<double>(item->GetTotalBytes()));
-    event.Set("reason", download::DownloadInterruptReasonToString(item->GetLastReason()));
-    event.Set("done", done);
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
@@ -199,6 +364,9 @@ class Watcher : public content::DownloadManager::Observer,
 
   bool used_ = false;
   std::set<content::DownloadManager*> managers_;
+  // Zebkit.setDownloadEvents' sessions: a page's, or the browser's (null).
+  std::map<content::DevToolsAgentHostClientChannel*, base::WeakPtr<content::WebContents>> sessions_;
+  std::map<content::DevToolsAgentHostClientChannel*, bool> is_page_session_;
   // By item: each profile's manager counts its ids from where the delegate
   // started it, so two profiles' items can share one.
   std::map<download::DownloadItem*, Entry> items_;
@@ -275,6 +443,43 @@ void SetDownloadPolicy(zebkit_view* view, std::optional<bool> deny) {
   if (deny.value_or(false))
     Watcher::Get().WatchProfileOf(view);
 }
+bool IsDownloadCommand(std::string_view method) {
+  return method == "Zebkit.setDownloadEvents";
+}
+
+void HandleDownloadCommand(content::DevToolsAgentHostClientChannel* channel,
+                           int id,
+                           std::string_view method,
+                           const std::string& params_json) {
+  std::optional<base::Value> parsed = base::JSONReader::Read(params_json, 0);
+  const bool enabled = parsed && parsed->is_dict() &&
+                       parsed->GetDict().FindBool("enabled").value_or(false);
+  base::DictValue message;
+  message.Set("id", id);
+  if (!Requests::Get().Ready()) {
+    base::DictValue error;
+    error.Set("code", -32000);
+    error.Set("message", "the engine is not running");
+    message.Set("error", std::move(error));
+    SendToDevToolsClient(channel, std::move(message));
+    return;
+  }
+  content::DevToolsAgentHost* host = channel->GetAgentHost();
+  content::WebContents* contents = nullptr;
+  if (host && host->GetType() == content::DevToolsAgentHost::kTypePage)
+    contents = host->GetWebContents();
+  if (enabled)
+    Watcher::Get().AddSession(channel, contents);
+  else
+    Watcher::Get().RemoveSession(channel);
+  message.Set("result", base::DictValue());
+  SendToDevToolsClient(channel, std::move(message));
+}
+
+void OnDownloadClientDetached(content::DevToolsAgentHostClientChannel* channel) {
+  Watcher::Get().RemoveSession(channel);
+}
+
 const char* EffectiveDownloads(zebkit_view* view) {
   if (Requests::OrphanedPopup(view))
     return "deny";

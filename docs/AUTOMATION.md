@@ -474,7 +474,7 @@ Section 6 has what it saves.
 
 | Playwright | zebkit |
 |---|---|
-| `Dialog`, `page.on('dialog')` | `Page.updateSubscription {event: "dialog"}` holds the page's dialogs (`dialog.cc`'s `DialogObserver`); `BrowserContext.dialog`, `Dialog.accept`, `Dialog.dismiss` |
+| `Dialog`, `page.on('dialog')` | `Page.updateSubscription {event: "dialog"}` holds the page's dialogs (`dialog.cc`'s `DialogObserver`); `BrowserContext.dialog`, `Dialog.accept`, `Dialog.dismiss`; without that listener only a dialog held for the client alone is dismissed (`auto`): one the application, its policy or a CDP client holds stays theirs (`tests/engine/automation_dialogs.py`) |
 | `FileChooser`, `page.on('filechooser')` | the engine's own file chooser (`file_select.cc`) gives the embedder the page's file choosers: `Page.fileChooser`, `FileChooser.setFiles` answers as the person's choice |
 | `Download` | saved into a directory of the engine's without asking (`acceptDownloads`); `Page.download`, `Artifact.pathAfterFinished`, `saveAs`, `failure`, `cancel`, `delete` |
 | `exposeBinding`, `exposeFunction` | 4.1; `BrowserContext.bindingCall`, `BindingCall.resolve`, `reject` |

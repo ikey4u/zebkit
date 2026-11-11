@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/functional/callback.h"
 #include "base/memory/ref_counted_memory.h"
@@ -15,6 +16,7 @@
 
 namespace content {
 class DevToolsAgentHost;
+class DevToolsAgentHostClientChannel;
 class RenderFrameHost;
 class WebContents;
 }  // namespace content
@@ -40,14 +42,37 @@ class DialogObserver {
  public:
   virtual ~DialogObserver() = default;
   virtual bool HoldsDialogs(content::WebContents* contents) = 0;
+  // @held_elsewhere: held for someone else as well (the view's policy
+  // HOLD, its zebkit_view_on_dialog() function or a CDP client), who may
+  // answer it.
   virtual void DialogOpened(content::WebContents* contents,
-                            const zebkit_dialog& dialog) = 0;
+                            const zebkit_dialog& dialog,
+                            bool held_elsewhere) = 0;
   virtual void DialogClosed(content::WebContents* contents,
                             uint64_t id,
                             bool accepted,
                             const std::string& user_input) = 0;
 };
 void SetDialogObserver(DialogObserver* observer);
+
+// Zebkit.find, Zebkit.stopFinding and Zebkit.getFindResult over CDP, with
+// Zebkit.findResult events to the sessions that searched (find.cc).
+bool IsFindCommand(std::string_view method);
+void HandleFindCommand(content::DevToolsAgentHostClientChannel* channel,
+                       int id,
+                       std::string_view method,
+                       const std::string& params_json);
+void OnFindClientDetached(content::DevToolsAgentHostClientChannel* channel);
+
+// Zebkit.setDownloadEvents over CDP: Zebkit.downloadProgress, what
+// zebkit_view_on_download_progress() tells, to the session
+// (download_hooks.cc).
+bool IsDownloadCommand(std::string_view method);
+void HandleDownloadCommand(content::DevToolsAgentHostClientChannel* channel,
+                           int id,
+                           std::string_view method,
+                           const std::string& params_json);
+void OnDownloadClientDetached(content::DevToolsAgentHostClientChannel* channel);
 
 // Whether a DevTools client other than the engine's own sessions is
 // attached to @contents' page (devtools.cc).

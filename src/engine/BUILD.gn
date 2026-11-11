@@ -376,6 +376,7 @@ _sources = [
   "devtools.cc",
   "dialog.cc",
   "drag.cc",
+  "find.cc",
   "accept_language_delegate.cc",
   "accept_language_delegate.h",
   "background_sync_controller.cc",
@@ -496,6 +497,7 @@ _sources = [
 
 _deps = [
   ":automation_mojom",
+  "//components/find_in_page",
   ":page_call_mojom",
   "//components/download/public/common:public",
   "//third_party/libyuv",

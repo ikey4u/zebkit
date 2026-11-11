@@ -11,6 +11,8 @@
  *   and run inside the page from the mouse events the application sends an
  *   off-screen view; drags the application brings into the page, files from
  *   the system's file manager among them.
+ * - Find in page, as Chrome's find bar finds: in every frame and shadow
+ *   tree, all matches highlighted and the active one distinctly.
  *
  * Everything here is for the engine's thread, as in <zebkit/zebkit.h>.
  */
@@ -112,6 +114,61 @@ ZEBKIT_API char *zebkit_view_dialogs(zebkit_view *view);
  * reported as any other; the view closes when the page lets it, and stays
  * otherwise. zebkit_view_close() closes without asking. */
 ZEBKIT_API void zebkit_view_request_close(zebkit_view *view);
+
+/* ---- Find in page ---------------------------------------------------- */
+
+/* Chrome's own find in page (its find bar, Ctrl+F): text is looked for as
+ * the page shows it, in the main document, in every frame (other sites'
+ * frames too) and in shadow trees. Every match is highlighted, the active
+ * one distinctly, and the page scrolls to the active one. Results come in
+ * steps, the count growing as frames answer, the last with "final" true; a
+ * page that changes while a search is on sends more. Navigating to another
+ * document stops the search. */
+typedef enum {
+    ZEBKIT_FIND_MATCH_CASE = 1 << 0,
+    /* The previous match rather than the next. */
+    ZEBKIT_FIND_BACKWARD = 1 << 1,
+    /* Count and highlight the matches, with none made active, nothing
+     * scrolled; zebkit_view_find() again without it goes to one. */
+    ZEBKIT_FIND_HIGHLIGHT_ONLY = 1 << 2,
+} zebkit_find_flags;
+
+/* Looks for @text (UTF-8) in the view's page. The same text again, with
+ * the same ZEBKIT_FIND_MATCH_CASE, goes on to the next match (with
+ * ZEBKIT_FIND_BACKWARD the previous one), around the end; other text, or
+ * other case, starts a new search. Empty text stops it, as
+ * zebkit_view_stop_finding(ZEBKIT_FIND_STOP_CLEAR). Returns the number of
+ * the request, which its results carry as "requestId" (> 0), or 0 for a
+ * view that has gone, NULL or text that is not UTF-8, or empty text. */
+ZEBKIT_API int zebkit_view_find(zebkit_view *view, const char *text, unsigned flags);
+
+typedef enum {
+    /* The highlights go and the active match is no longer selected. */
+    ZEBKIT_FIND_STOP_CLEAR = 0,
+    /* The highlights go; the active match stays selected, as if the user
+     * had selected it. */
+    ZEBKIT_FIND_STOP_KEEP = 1,
+    /* The highlights go and the active match's element is activated: a
+     * link in it followed, as Enter in Chrome's find bar with Ctrl. */
+    ZEBKIT_FIND_STOP_ACTIVATE = 2,
+} zebkit_find_stop_action;
+
+/* Stops the search, with its highlights; results of it still on their way
+ * are not told. Told as a result with "stopped" true when one was on. */
+ZEBKIT_API void zebkit_view_stop_finding(zebkit_view *view, zebkit_find_stop_action action);
+
+/* Each result, as JSON: {"requestId": 3, "text": "price", "matches": 12,
+ * "activeMatch": 4, "final": true, "rect": {"x": 10, "y": 220, "width":
+ * 38, "height": 17}, "stopped": false}. activeMatch counts from 1, 0 for
+ * none (no match, or ZEBKIT_FIND_HIGHLIGHT_ONLY); rect is the active
+ * match's, in the view's coordinates (DIPs), null for none. NULL stops. */
+typedef void (*zebkit_find_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_find(zebkit_view *view, zebkit_find_func func, void *data);
+
+/* The last result, as above, of the search on; {"text": "", "matches": 0,
+ * "activeMatch": 0, "final": true, "rect": null, "stopped": true, ...}
+ * when none is on. NULL for a view that has gone. The caller frees it. */
+ZEBKIT_API char *zebkit_view_find_result(zebkit_view *view);
 
 /* ---- Printing to PDF ------------------------------------------------- */
 

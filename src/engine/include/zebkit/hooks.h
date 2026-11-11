@@ -303,9 +303,21 @@ ZEBKIT_API char *zebkit_download_request_info(zebkit_download_request *request);
 ZEBKIT_API bool zebkit_download_respond(zebkit_download_request *request, zebkit_download_action action,
                                         const char *path, char **error);
 /* Told for this view's downloads, asked or not: the decision (state save or
- * cancelled with its reason), then downloadId, url, state (in-progress, complete,
- * cancelled, interrupted), path, receivedBytes, totalBytes, reason, done. A download
- * outlives its view, without reports. NULL removes it.
+ * cancelled with its reason), then downloadId, guid (CDP's for it), url, state
+ * (in-progress, complete, cancelled, interrupted), outcome, path, savedPath,
+ * receivedBytes, totalBytes, mimeType, reason, error, done. outcome is
+ * "in-progress", "complete", "cancelled" (by the application, a hook's answer,
+ * CDP's Browser.cancelDownload or a closed opener) or "failed"; savedPath is the
+ * file's final path once complete, else null. error is null unless it was
+ * cancelled or failed: {"category": "cancelled" | "network" | "server" | "file" |
+ * "blocked" | "shutdown" | "crash" | "failed", "code": Chromium's
+ * DownloadInterruptReason (20 NETWORK_FAILED, 3 FILE_NO_SPACE, 40 USER_CANCELED,
+ * ...), "name": "NETWORK_FAILED", "message": "Network error", "resumable": bool}.
+ * A failure Chrome resumes by itself (a network error, with a server that
+ * resumes) is followed by reports in progress. A download outlives its view,
+ * without reports. NULL removes it. CDP clients get the same reports as
+ * Zebkit.downloadProgress events after Zebkit.setDownloadEvents {"enabled":
+ * true}: a page's session for that page's downloads, the browser's for all.
  */
 typedef void (*zebkit_download_progress_func)(zebkit_view *view, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_download_progress(zebkit_view *view, zebkit_download_progress_func func, void *data);

@@ -4,6 +4,9 @@
 // - Page.printToPDF, as headless Chrome serves it (print.cc), its stream
 //   included (transferMode ReturnAsStream, read with IO.read);
 // - Zebkit.media*, a page's media list and captures (media_capture.cc);
+// - Zebkit.find, stopFinding, getFindResult: find in page (find.cc);
+// - Zebkit.setDownloadEvents: how downloads end, in detail
+//   (download_hooks.cc);
 // - which clients are attached to each page, so that a page's dialogs wait
 //   for a CDP client that may answer them (dialog.cc), as in headless
 //   Chrome, rather than being dismissed;
@@ -133,6 +136,8 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
   void ClientDetached(content::DevToolsAgentHostClientChannel* channel) override {
     Channels().erase(channel);
     OnMediaClientDetached(channel);
+    OnFindClientDetached(channel);
+    OnDownloadClientDetached(channel);
   }
 
   void HandleCommand(content::DevToolsAgentHostClientChannel* channel,
@@ -146,8 +151,12 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
       const std::string_view method(
           reinterpret_cast<const char*>(dispatchable.Method().data()),
           dispatchable.Method().size());
-      // Media capture (media_capture.cc).
-      if (IsMediaCommand(method)) {
+      // Media capture (media_capture.cc), find in page (find.cc), what
+      // downloads end with (download_hooks.cc).
+      const bool media = IsMediaCommand(method);
+      const bool find = !media && IsFindCommand(method);
+      const bool download = !media && !find && IsDownloadCommand(method);
+      if (media || find || download) {
         // ConvertCBORToJSON appends to what the string has.
         std::string params;
         if (dispatchable.Params().empty() ||
@@ -155,7 +164,12 @@ class DevToolsManagerDelegate : public content::DevToolsManagerDelegate {
                  .ok()) {
           params = "{}";
         }
-        HandleMediaCommand(channel, dispatchable.CallId(), method, params);
+        if (media)
+          HandleMediaCommand(channel, dispatchable.CallId(), method, params);
+        else if (find)
+          HandleFindCommand(channel, dispatchable.CallId(), method, params);
+        else
+          HandleDownloadCommand(channel, dispatchable.CallId(), method, params);
         return;
       }
     }

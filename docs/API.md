@@ -700,6 +700,18 @@ function, and once that opener closed, the popup is refused.
 | Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
 
 Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
+
+How each download ends is told to `zebkit_view_on_download_progress()`'s function: `outcome`
+`complete` (with `savedPath`, the file's final path), `cancelled` (by the application, the
+hook's answer, CDP's `Browser.cancelDownload` or a closed opener) or `failed`; a cancelled or
+failed one has `error` `{category, code, name, message, resumable}`, its category `cancelled`,
+`network`, `server`, `file` (no space, no permission, a path too long), `blocked`, `shutdown` or
+`crash`, its code and name Chromium's `DownloadInterruptReason` (20 `NETWORK_FAILED`, 2
+`FILE_ACCESS_DENIED`, 40 `USER_CANCELED`, ...) and its message Chrome's words ("Network error",
+"Disk full"). Each report has the `guid` CDP's `Browser.downloadWillBegin` names it by. CDP's own
+`Browser.downloadProgress` says `canceled` for a failure as well, as Chrome's does; a CDP client
+gets these reports instead as `Zebkit.downloadProgress` after `Zebkit.setDownloadEvents
+{enabled: true}`, on a page's session for that page's downloads, on the browser's for all.
 Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` stages see what the
 network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
 that hold fail closed (`<zebkit/hooks.h>`).
@@ -1366,6 +1378,17 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
   `Page.javascriptDialogOpening` and `Page.javascriptDialogClosed`, and may
   answer with `Page.handleJavaScriptDialog`; the application hears of it
   as closed. Whoever answers first does.
+- **Native Playwright actions.** A dialog that a native action opens
+  (`zebkit_automation_call()`'s `Frame.click` whose handler calls
+  `confirm()`) is told to the automation client as `BrowserContext.dialog`
+  (`type`, `message`, `defaultValue`, `held`), and its close as
+  `BrowserContext.dialogClosed` (`accepted`, `userInput`). Held for the
+  application's function, a CDP client or `ZEBKIT_DIALOG_POLICY_HOLD`, it
+  stays open for them even when the automation client has no listener; held
+  for the automation client alone and without its listener
+  (`Page.updateSubscription {event: "dialog"}`), it is dismissed (`"auto":
+  true`), as Playwright does. The action itself is done once the dialog is
+  answered, as in Chrome, where the page is held until then.
 - **The policy is the view's, and may change at any time**
   (`zebkit_view_set_dialog_policy()`):
 
@@ -1406,6 +1429,25 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
   `Input.setInterceptDrags` and `Input.dragIntercepted`, and drags of the
   mouse events `Input.dispatchMouseEvent` sends, which come before the
   application's.
+- **Find in page** is Chrome's own (its find bar, `FindTabHelper` over
+  content's `FindRequestManager`): `zebkit_view_find(view, "price", flags)`
+  looks in the main document, in every frame (other sites' too) and in
+  shadow trees, open or closed. Every match is highlighted, the active one
+  distinctly, and the page scrolls to it. The same text again goes to the
+  next match, with `ZEBKIT_FIND_BACKWARD` the previous, around the end;
+  `ZEBKIT_FIND_MATCH_CASE` matches case and `ZEBKIT_FIND_HIGHLIGHT_ONLY`
+  counts and highlights without an active match. As in Chrome, a new search
+  starts in the focused frame. `zebkit_view_on_find()`'s function gets each
+  result as JSON (`requestId`, `text`, `matches`, `activeMatch` from 1,
+  `final`, `rect` of the active match, `stopped`), the count growing as
+  frames answer and again when the page changes; `zebkit_view_find_result()`
+  is the last. `zebkit_view_stop_finding()` clears the highlights, leaving
+  the active match selected (`ZEBKIT_FIND_STOP_KEEP`) or activating it
+  (`ZEBKIT_FIND_STOP_ACTIVATE`); navigating to another document stops a
+  search. Over CDP, on a page's session: `Zebkit.find {text, matchCase,
+  backward, highlightOnly}` → `{requestId}`, `Zebkit.stopFinding {action:
+  "clear" | "keep" | "activate"}`, `Zebkit.getFindResult` → `{result}`, and
+  `Zebkit.findResult` events, the same JSON, to the sessions that searched.
 
 | Functions | What |
 |---|---|
@@ -1413,10 +1455,15 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
 | `zebkit_view_print_to_pdf` | The page as PDF |
 | `zebkit_view_on_drag_start`, `_on_drag_end`, `_is_dragging`, `_drag_source_end` | The page's drags |
 | `zebkit_view_drag_enter`, `_drag_over`, `_drag_leave`, `_drop` | Drags into the page |
+| `zebkit_view_find`, `_stop_finding`, `_on_find`, `_find_result` | Find in page |
 
 In Rust, `zebkit::page` and the `View` methods it adds (`on_dialog`,
 `set_dialog_policy`, `respond_dialog`, `print_to_pdf`, `on_drag_start`,
-`drag_enter`, `drop_data`, ...).
+`drag_enter`, `drop_data`, `find`, `stop_finding`, `on_find`, ...); in
+Python `view.find()`, `stop_finding()`, `on_find()`, `find_result()`; in Go
+`View.Find`, `StopFinding`, `OnFind`, `FindResult`; in host JavaScript
+`view.find(text, {matchCase, backward, highlightOnly})`, `stopFinding()`,
+`findResult` and the `'find'` event.
 
 ## Media: what a page plays, saved as it plays
 

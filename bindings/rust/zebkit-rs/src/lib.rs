@@ -1300,6 +1300,17 @@ pub type zebkit_dialog_closed_func =
 pub type zebkit_pdf_func =
     unsafe extern "C" fn(view: *mut zebkit_view, pdf: *const u8, size: usize, error: *const c_char, data: *mut c_void);
 
+pub const ZEBKIT_FIND_MATCH_CASE: c_uint = 1 << 0;
+pub const ZEBKIT_FIND_BACKWARD: c_uint = 1 << 1;
+pub const ZEBKIT_FIND_HIGHLIGHT_ONLY: c_uint = 1 << 2;
+
+pub type zebkit_find_stop_action = c_int;
+pub const ZEBKIT_FIND_STOP_CLEAR: zebkit_find_stop_action = 0;
+pub const ZEBKIT_FIND_STOP_KEEP: zebkit_find_stop_action = 1;
+pub const ZEBKIT_FIND_STOP_ACTIVATE: zebkit_find_stop_action = 2;
+
+pub type zebkit_find_func = unsafe extern "C" fn(view: *mut zebkit_view, json: *const c_char, data: *mut c_void);
+
 pub const ZEBKIT_DRAG_NONE: c_uint = 0;
 pub const ZEBKIT_DRAG_COPY: c_uint = 1;
 pub const ZEBKIT_DRAG_LINK: c_uint = 2;
@@ -1340,6 +1351,10 @@ extern "C" {
         -> bool;
     pub fn zebkit_view_dialogs(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_view_request_close(view: *mut zebkit_view);
+    pub fn zebkit_view_find(view: *mut zebkit_view, text: *const c_char, flags: c_uint) -> c_int;
+    pub fn zebkit_view_stop_finding(view: *mut zebkit_view, action: zebkit_find_stop_action);
+    pub fn zebkit_view_on_find(view: *mut zebkit_view, func: Option<zebkit_find_func>, data: *mut c_void);
+    pub fn zebkit_view_find_result(view: *mut zebkit_view) -> *mut c_char;
     pub fn zebkit_automation_call(
         view: *mut zebkit_view,
         method: *const c_char,

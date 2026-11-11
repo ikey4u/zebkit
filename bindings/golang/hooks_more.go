@@ -296,7 +296,9 @@ func (v *View) OnExternalProtocol(function func(map[string]any)) {
 	})
 }
 
-// OnDownloadProgress tells function the view's downloads as they go: downloadId, url, state, path, receivedBytes, totalBytes, reason, done; nil stops.
+// OnDownloadProgress tells function the view's downloads as they go: downloadId, guid, url, state, outcome
+// (in-progress, complete, cancelled, failed), path, savedPath, receivedBytes, totalBytes, mimeType, reason,
+// error ({category, code, name, message, resumable} or nil), done; nil stops.
 func (v *View) OnDownloadProgress(function func(map[string]any)) {
 	v.told("download-progress", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_download_progress(raw, C.zebkit_download_progress_func(f), d)

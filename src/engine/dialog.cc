@@ -143,8 +143,13 @@ class DialogState : public content::WebContentsObserver,
     info.default_prompt = prompt.c_str();
     info.url = url.c_str();
     zebkit_view* view = ViewOf(web_contents());
+    // Native automation without a dialog listener dismisses what it alone
+    // holds, as Playwright does, and leaves the others' to them.
+    const bool held_elsewhere =
+        held && (Policy() == ZEBKIT_DIALOG_POLICY_HOLD || on_dialog ||
+                 HasExternalDevToolsClient(web_contents()));
     if (g_dialog_observer)
-      g_dialog_observer->DialogOpened(web_contents(), info);
+      g_dialog_observer->DialogOpened(web_contents(), info, held_elsewhere);
     if (view && on_dialog)
       on_dialog(view, &info, on_dialog_data);
   }
