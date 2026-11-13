@@ -108,6 +108,11 @@ ZEBKIT_API int zebkit_init(int argc, char **argv);
  * applicationIntegration (boolean; opt into zebkit's macOS delegate/menu/Dock),
  * appearance: {follow: boolean}: pages take the system's colour scheme and
  * contrast, and their changes (default false: light, as before).
+ * httpCache: {storage: disk/memory/off, maxSize: bytes}: the engine profile's
+ * HTTP cache, default disk (<profile>/Cache) as Chrome's; maxSize 0 (default)
+ * is Chromium's choice; contexts keep theirs in memory (<zebkit/services.h>).
+ * preconnect: [http(s) URLs]: a connection to each origin as the engine
+ * starts, for the engine's profile (zebkit_preconnect()).
  * Unknown keys and malformed values fail before startup or file IO. error,
  * when provided, is NULL on success or a message to free with zebkit_free().
  */

@@ -148,6 +148,8 @@
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation_network.h"
 #include "zebkit/engine/cookies.h"
+#include "zebkit/engine/http_cache.h"
+#include "zebkit/engine/preconnect.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
@@ -1031,6 +1033,8 @@ void BrowserClient::ConfigureNetworkContextParams(
       base::FeatureList::IsEnabled(net::features::kDeviceBoundSessions);
   ConfigureNetworkDefaults(context, params);
   ConfigurePersistentCookies(context, in_memory, relative_partition_path, params);
+  // The HTTP cache, servers' properties and HSTS under the profile (http_cache.h).
+  ConfigureNetworkPersistence(context, in_memory, relative_partition_path, params);
 }
 
 // Third-party cookies are blocked, as Safari and Firefox block them: an
@@ -1444,6 +1448,8 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   StartSystemAppearance();
   net::NetModule::SetResourceProvider(&NetResourceProvider);
   StartCdpFromCommandLine();
+  // The startup setting "preconnect" (preconnect.h).
+  PreconnectAtStartup(browser_context_.get());
   return 0;
 }
 

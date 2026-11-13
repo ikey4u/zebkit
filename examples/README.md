@@ -16,6 +16,7 @@ from this checkout (`out/blink/slim/package` after `scripts/package.sh slim`,
 | `gpui-browser/` | A tabbed browser in GPUI-KIT (Rust): GPUI's window, tabs, toolbar and dialogs; the engine in GPUI's loop, its pages native children of GPUI's window; the engine's questions (dialogs, permissions, downloads, sign-in) answered with GPUI-KIT dialogs |
 | `native-host/` | Toolkit-owned GTK, Qt, AppKit and winit windows with a web pane and native PDF pane; event-driven wakeup/pump integration, keyboard/IME and popup layers |
 | `offscreen-host/` | A page drawn off-screen in one process (`render.c`) and shown in another that links nothing of zebkit's (`show.c`): frames as IOSurfaces or shared memory passed over a socket, input sent back, the reference protocol in `protocol.h` (`docs/API.md`, "Off-screen views") |
+| `js-libraries/` | JavaScript libraries as normal libraries (`<zebkit/library.h>`, `docs/JS_LIBRARIES.md`): markdown-it (Markdown to HTML) and ECharts (a chart to SVG, drawn without a DOM) bundled by `build.sh` with `tools/js-bundle.mjs`, then loaded and called from any binding |
 | `ffmpeg.cpp` | A library inside the engine: an MP3 decoded to WAV with the engine's FFmpeg, through `zebkit::vendor::ffmpeg`, with no FFmpeg of the program's own |
 | `../bindings/rust/zebkit/examples/window.rs` | A window with a web page, in Rust |
 | `../bindings/rust/zebkit/examples/codecs.rs` | What the engine's FFmpeg can decode, in Rust; the other programs there show the hooks, settings, native parents and the sandbox |

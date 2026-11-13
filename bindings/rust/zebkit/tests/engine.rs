@@ -27,6 +27,8 @@ thread_local! {
     static AUTOMATION_DONE: Cell<bool> = const { Cell::new(false) };
     static FIND_DONE: Cell<bool> = const { Cell::new(false) };
     static NEW_API_DONE: Cell<bool> = const { Cell::new(false) };
+    static LIBRARY_DONE: Cell<bool> = const { Cell::new(false) };
+    static CONNECTIONS_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -932,6 +934,141 @@ fn poll(condition: impl Fn() -> bool + 'static, tries: u32, then: impl FnOnce() 
     }
 }
 
+/// A future driven to its end on this thread, which sleeps until woken: the
+/// library's calls are woken from the engine's thread.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
+            return value;
+        }
+        std::thread::park_timeout(Duration::from_secs(1));
+    }
+}
+
+/// JavaScript libraries (zebkit::js, <zebkit/library.h>): loaded here, on
+/// the engine's thread, and called from another thread, whose futures the
+/// engine wakes; each code; fetch() refused, and allowed to a local server.
+fn libraries() {
+    use zebkit::js::{Code, Library};
+    use zebkit::json::Value;
+    let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/engine");
+    let fixture = here.join("library_fixture");
+    let refused = Library::load(here.join("no-such-library"), &Value::Null);
+    check(refused.is_err(), "js::Library::load: a bad path is an error", refused.as_ref().err());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut line = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                line.clear();
+            }
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+        }
+    });
+    let options = |text: &str| Value::parse(text).unwrap();
+    let lib = Library::load(&fixture, &Value::Null).unwrap();
+    let net = Library::load(&fixture, &options(&format!(r#"{{"network": ["{base}"]}}"#))).unwrap();
+    let small = Library::load(&fixture, &options(r#"{"queue": 1}"#)).unwrap();
+    let doomed = Library::load(&fixture, &Value::Null).unwrap();
+    let hungry = Library::load(&fixture, &options(r#"{"heapLimitMB": 32}"#)).unwrap();
+    let forbidden = Library::load(here.join("library_forbidden"), &Value::Null).unwrap();
+    let closing = Library::load(&fixture, &Value::Null).unwrap();
+    // .then on the engine's thread.
+    lib.call("double", Value::Array(vec![21.into()])).then(|reply| {
+        let ok = reply.as_ref().is_ok_and(|reply| reply.value.as_i64() == Some(42));
+        zebkit::post(move || check(ok, "js::Call::then: the value, on the engine's thread", ()));
+    });
+    let worker = std::thread::spawn(move || {
+        let mut results: Vec<(bool, String, String)> = Vec::new();
+        let mut note = |ok: bool, what: &str, detail: String| results.push((ok, what.to_string(), detail));
+        let ready = block_on(lib.ready());
+        note(ready.as_ref().is_ok_and(|r| r.value["functions"].as_array().is_some_and(|f| f.iter().any(|n| n.as_str() == Some("echo")))),
+             "js: ready, the exported functions", format!("{ready:?}"));
+        let args = Value::parse(r#"[{"a": [1, null, true], "b": {"$part": 0}}, "日本語 🦓"]"#).unwrap();
+        let echoed = block_on(lib.call_with("echo", &args, &[&[1, 2, 255]], None));
+        note(echoed.as_ref().is_ok_and(|r| r.value == args && r.parts == vec![vec![1u8, 2, 255]]),
+             "js: JSON, non-ASCII text and a part echoed", format!("{echoed:?}"));
+        let bytes = block_on(lib.call("bytes", Value::Array(vec![300.into()])));
+        note(bytes.as_ref().is_ok_and(|r| r.value["b"]["$part"].as_i64() == Some(0) && r.parts[0].len() == 300 && r.parts[0][299] == 43),
+             "js: a Uint8Array returned is a part", format!("{:?}", bytes.as_ref().map(|r| r.value.clone())));
+        let thrown = block_on(lib.call("thrower", Value::Null));
+        note(thrown.as_ref().is_err_and(|e| e.code == Code::Thrown && e.name == "RangeError" && e.message == "too far" && e.stack.contains("thrower")),
+             "js: THROWN, with the library's name, message and stack", format!("{thrown:?}"));
+        let codes = [("rejecter", Code::Thrown), ("missing", Code::NoFunction), ("badResult", Code::BadResult)];
+        for (function, code) in codes {
+            let outcome = block_on(lib.call(function, Value::Null));
+            note(outcome.as_ref().is_err_and(|e| e.code == code), &format!("js: {function} is {}", code.name()), format!("{outcome:?}"));
+        }
+        let first = lib.call("later", Value::parse("[1, 200]").unwrap());
+        let queued = lib.call("double", Value::parse("[1]").unwrap());
+        queued.cancel();
+        let (queued, first) = (block_on(queued), block_on(first));
+        note(queued.as_ref().is_err_and(|e| e.code == Code::Cancelled) && first.is_ok(), "js: Call::cancel of a waiting call", format!("{queued:?}"));
+        let slow = lib.call_with("later", &Value::parse("[1, 2000]").unwrap(), &[], Some(Duration::from_millis(100)));
+        let next = lib.call("double", Value::parse("[2]").unwrap());
+        let (slow, next) = (block_on(slow), block_on(next));
+        note(slow.as_ref().is_err_and(|e| e.code == Code::Timeout) && next.as_ref().is_ok_and(|r| r.value.as_i64() == Some(4)),
+             "js: a waiting call past its deadline is TIMEOUT, the next runs", format!("{slow:?} {next:?}"));
+        let fetched = block_on(lib.call("get", Value::Array(vec![format!("{base}/").into()])));
+        note(fetched.as_ref().is_err_and(|e| e.code == Code::Thrown && e.name == "TypeError"), "js: fetch() refused without a grant", format!("{fetched:?}"));
+        let fetched = block_on(net.call("get", Value::Array(vec![format!("{base}/").into()])));
+        note(fetched.as_ref().is_ok_and(|r| r.value["status"].as_i64() == Some(200) && r.value["body"].as_str() == Some("hello")),
+             "js: fetch() to a granted origin", format!("{fetched:?}"));
+        block_on(small.ready()).ok();
+        let running = small.call("later", Value::parse("[0, 300]").unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        let (waiting, full) = (small.call("double", Value::parse("[1]").unwrap()), small.call("double", Value::parse("[1]").unwrap()));
+        let full = block_on(full);
+        note(full.as_ref().is_err_and(|e| e.code == Code::QueueFull) && block_on(running).is_ok() && block_on(waiting).is_ok(),
+             "js: QUEUE_FULL", format!("{full:?}"));
+        let spinning = doomed.call_with("spin", &Value::Null, &[], Some(Duration::from_millis(200)));
+        let after = doomed.call("double", Value::parse("[1]").unwrap());
+        let (spinning, after) = (block_on(spinning), block_on(after));
+        note(spinning.as_ref().is_err_and(|e| e.code == Code::Timeout) && after.as_ref().is_err_and(|e| e.code == Code::Gone),
+             "js: a running script past its deadline is TIMEOUT, then GONE", format!("{spinning:?} {after:?}"));
+        let grown = block_on(hungry.call_with("grow", &Value::Null, &[], Some(Duration::MAX)));
+        note(grown.as_ref().is_err_and(|e| e.code == Code::OutOfMemory), "js: heap exhaustion is OUT_OF_MEMORY", format!("{grown:?}"));
+        let loaded = block_on(forbidden.ready());
+        note(loaded.as_ref().is_err_and(|e| e.code == Code::LoadFailed && e.message.contains("outside")),
+             "js: an import outside the folder fails the load", format!("{loaded:?}"));
+        block_on(closing.ready()).ok();
+        let pending = [closing.call("later", Value::parse("[1, 1000]").unwrap()), closing.call("double", Value::parse("[1]").unwrap())];
+        // Dropped off the engine's thread: closed there.
+        drop(closing);
+        let gone = pending.into_iter().map(block_on).all(|outcome| outcome.is_err_and(|e| e.code == Code::Gone));
+        note(gone, "js: a library dropped with calls pending: GONE", String::new());
+        drop((lib, net, small, doomed, hungry, forbidden));
+        results
+    });
+    fn finish(worker: std::thread::JoinHandle<Vec<(bool, String, String)>>, tries: u32) {
+        if !worker.is_finished() && tries > 0 {
+            zebkit::after(Duration::from_millis(50), move || finish(worker, tries - 1));
+            return;
+        }
+        match worker.is_finished().then(|| worker.join()) {
+            Some(Ok(results)) => {
+                for (ok, what, detail) in results {
+                    check(ok, &what, detail);
+                }
+            }
+            _ => check(false, "js: the libraries' thread finished", ()),
+        }
+        LIBRARY_DONE.with(|done| done.set(true));
+    }
+    finish(worker, 1200);
+}
+
 /// The engine's part, from inside run(); quits when it is done.
 fn engine(page_port: u16) {
     check(zebkit::is_headless(), "headless", ());
@@ -980,6 +1117,8 @@ fn engine(page_port: u16) {
     automation_api(serve_pages());
     find_and_downloads(serve_pages());
     new_api();
+    libraries();
+    connections();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -1296,6 +1435,117 @@ fn handlers() {
             view.close();
         });
     });
+}
+
+// Connection reuse (docs/CONNECTION_REUSE.md): preconnect opens
+// connections and sends nothing, a context's fetch sends its own cookies, the
+// HTTP cache is cleared. A local server counts the connections it accepted.
+fn connections() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let (accepted, requests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    {
+        let (accepted, requests) = (accepted.clone(), requests.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let requests = requests.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream);
+                    let mut first = String::new();
+                    if reader.read_line(&mut first).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let (mut line, mut cookie) = (String::new(), String::new());
+                    while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                        if let Some(value) = line.strip_prefix("Cookie: ") {
+                            cookie = value.trim().to_string();
+                        }
+                        line.clear();
+                    }
+                    let set = if first.starts_with("GET /set ") { "Set-Cookie: rust=context; Path=/; Max-Age=3600\r\n" } else { "" };
+                    let _ = write!(
+                        reader.into_inner(),
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n{set}Content-Length: {}\r\nConnection: close\r\n\r\n{cookie}",
+                        cookie.len()
+                    );
+                });
+            }
+        });
+    }
+    let finish = || CONNECTIONS_DONE.with(|done| done.set(true));
+    check(services::preconnect("ftp://127.0.0.1/", 1).is_err(), "services::preconnect(): not http(s) is an error", ());
+    check(services::preconnect(&base, 0).is_err() && services::preconnect(&base, 7).is_err(),
+          "services::preconnect(): a count out of 1 to 6 is an error", ());
+    let preconnected = services::preconnect(&base, 2);
+    check(preconnected.is_ok(), "services::preconnect()", &preconnected);
+    let context = match zebkit::Context::new() {
+        Ok(context) => Rc::new(context),
+        Err(error) => {
+            check(false, "Context::new", error);
+            return finish();
+        }
+    };
+    let preconnected = context.preconnect(&base, 1);
+    check(preconnected.is_ok(), "Context::preconnect()", &preconnected);
+    fn until(condition: impl Fn() -> bool + 'static, then: impl FnOnce(bool) + 'static, left: u32) {
+        if condition() || left == 0 {
+            then(condition());
+        } else {
+            zebkit::after(Duration::from_millis(20), move || until(condition, then, left - 1));
+        }
+    }
+    let (counted, asked) = (accepted.clone(), requests.clone());
+    until(move || counted.load(Ordering::SeqCst) >= 3, move |opened| {
+        check(opened && asked.load(Ordering::SeqCst) == 0, "preconnect: three connections, no request",
+              (accepted.load(Ordering::SeqCst), asked.load(Ordering::SeqCst)));
+        let (inside, base2) = (context.clone(), base.clone());
+        let set = context.fetch("GET", &format!("{base}/set"), &[], b"", move |response| {
+            check(response.status == 200, "Context::fetch() sets a cookie", response.status);
+            let (outside, base3) = (inside.clone(), base2.clone());
+            let asked = inside.fetch("GET", &format!("{base2}/cookie"), &[], b"", move |response| {
+                check(response.body == b"rust=context", "Context::fetch() sends the context's cookie",
+                      String::from_utf8_lossy(response.body));
+                services::fetch("GET", &format!("{base3}/cookie"), &[], b"", move |response| {
+                    check(response.body.is_empty(), "services::fetch() does not send the context's",
+                          String::from_utf8_lossy(response.body));
+                    let context = outside.clone();
+                    let cleared = services::clear_http_cache(move || {
+                        check(true, "services::clear_http_cache() is done", ());
+                        let closing = context.clone();
+                        let cleared = context.clear_http_cache(move || {
+                            check(true, "Context::clear_http_cache() is done", ());
+                            closing.close();
+                            check(closing.preconnect("http://127.0.0.1/", 1).is_err()
+                                  && closing.clear_http_cache(|| {}).is_err()
+                                  && closing.fetch("GET", "http://127.0.0.1/", &[], b"", |_| {}).is_err(),
+                                  "a closed context refuses preconnect, clear_http_cache and fetch", ());
+                            CONNECTIONS_DONE.with(|done| done.set(true));
+                        });
+                        if let Err(error) = cleared {
+                            check(false, "Context::clear_http_cache()", error);
+                            CONNECTIONS_DONE.with(|done| done.set(true));
+                        }
+                    });
+                    if let Err(error) = cleared {
+                        check(false, "services::clear_http_cache()", error);
+                        CONNECTIONS_DONE.with(|done| done.set(true));
+                    }
+                });
+            });
+            if let Err(error) = asked {
+                check(false, "Context::fetch()", error);
+                CONNECTIONS_DONE.with(|done| done.set(true));
+            }
+        });
+        if let Err(error) = set {
+            check(false, "Context::fetch()", error);
+            CONNECTIONS_DONE.with(|done| done.set(true));
+        }
+    }, 250);
 }
 
 // A context's storage is its own: what a page stores there, a page of the
@@ -1616,7 +1866,9 @@ fn script_and_cdp(view: View) {
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
             || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get)
-            || !HANDLERS_DONE.with(Cell::get) || !AUTOMATION_DONE.with(Cell::get) || !FIND_DONE.with(Cell::get) || !NEW_API_DONE.with(Cell::get) {
+            || !HANDLERS_DONE.with(Cell::get) || !AUTOMATION_DONE.with(Cell::get) || !FIND_DONE.with(Cell::get) || !NEW_API_DONE.with(Cell::get)
+            || !LIBRARY_DONE.with(Cell::get)
+            || !CONNECTIONS_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

@@ -86,6 +86,17 @@ class Server(http.server.BaseHTTPRequestHandler):
             body, kind = VIDEO, "text/html"
         elif self.path == "/automation":
             body, kind = AUTOMATION, "text/html"
+        elif self.path in ("/connections-set", "/connections-cookie"):
+            # Connection reuse (check_connections): a cookie set, and sent back.
+            body = (self.headers.get("Cookie") or "").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            if self.path == "/connections-set":
+                self.send_header("Set-Cookie", "python=context; Path=/; Max-Age=3600")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         elif self.path == "/cookies":
             # A header given twice (the engine keeps Set-Cookie to itself).
             self.send_response(200)
@@ -830,6 +841,117 @@ def check_new_api(url, base):
     view.close()
 
 
+def check_connections(base):
+    """Connection reuse (docs/CONNECTION_REUSE.md): preconnect, fetch_in with a
+    context's cookies, clear_http_cache. tests/engine/connection_reuse.py counts
+    the connections and what the cache keeps."""
+    check(zebkit.preconnect(base, 2) and not zebkit.preconnect("ftp://127.0.0.1/")
+          and not zebkit.preconnect(base, 0) and not zebkit.preconnect(base, 7), "preconnect()")
+    context = zebkit.Context()
+    check(zebkit.preconnect(base, context=context), "preconnect() in a context")
+    answers = []
+    zebkit.fetch_in(context, base + "/connections-set", answers.append)
+    wait(lambda: answers)
+    inside, outside = [], []
+    zebkit.fetch_in(context, base + "/connections-cookie", inside.append)
+    zebkit.fetch(base + "/connections-cookie", outside.append)
+    wait(lambda: inside and outside)
+    bodies = [answer["body"] for answer in answers + inside + outside]
+    check(len(bodies) == 3 and bodies[1] == b"python=context" and bodies[2] == b"",
+          "fetch_in() sends the context's cookies, fetch() the engine profile's", bodies)
+    cleared = []
+    check(zebkit.clear_http_cache(lambda: cleared.append("engine"))
+          and zebkit.clear_http_cache(lambda: cleared.append("context"), context=context)
+          and wait(lambda: len(cleared) == 2), "clear_http_cache(), of the engine profile and a context", cleared)
+    context.close()
+    refused = 0
+    for call in (lambda: zebkit.preconnect(base, context=context), lambda: zebkit.clear_http_cache(context=context),
+                 lambda: zebkit.fetch_in(context, base, lambda response: None)):
+        try:
+            call()
+        except zebkit.Error:
+            refused += 1
+    check(refused == 3, "a closed context refuses preconnect, clear_http_cache and fetch_in", refused)
+
+
+def check_library(base):
+    """zebkit.library (<zebkit/library.h>): what Rust, Go and host JavaScript
+    check too, through Futures, a coroutine, function= and another thread;
+    tests/engine/library.py has the C API's every case."""
+    import zebkit.library as L
+    fixture = HERE / "library_fixture"
+
+    def done(*futures, seconds=20):
+        return wait(lambda: all(f.done() for f in futures), seconds)
+
+    def code(future):
+        if not done(future):
+            return "pending"
+        try:
+            future.result()
+            return "OK"
+        except L.LibraryError as error:
+            return error.code_name
+
+    try:
+        L.load(HERE / "no-such-library")
+        check(False, "library: a bad path raises")
+    except zebkit.Error:
+        check(True, "library: a bad path raises")
+    lib = L.load(fixture)
+    check(done(lib.ready) and "echo" in lib.ready.result()["functions"], "library: ready, the exported functions")
+    value = [{"a": [1, None, True], "b": b"\x01\x02\xff"}, "日本語 🦓"]
+    echoed = lib.call("echo", *value)
+    check(done(echoed) and echoed.result() == value, "library: JSON, bytes in place and non-ASCII text echoed",
+          echoed.done() and echoed.result())
+    got = lib.call("bytes", 300)
+    check(done(got) and got.result()["b"] == bytes(i & 255 for i in range(300)), "library: a Uint8Array returned is bytes")
+
+    async def coroutine():
+        return await lib.call("double", 21)
+    ran = zebkit.automation.run(coroutine())
+    check(done(ran) and ran.result() == 42, "library: a call awaited in a coroutine")
+    thrown = lib.call("thrower")
+    check(code(thrown) == "THROWN" and thrown._error.name == "RangeError" and "thrower" in thrown._error.stack,
+          "library: THROWN, the library's name and stack")
+    for function, expect in (("rejecter", "THROWN"), ("missing", "NO_FUNCTION"), ("badResult", "BAD_RESULT")):
+        check(code(lib.call(function)) == expect, "library: %s is %s" % (function, expect))
+    first, queued = lib.call("later", 1, 200), lib.call("double", 1)
+    lib.cancel(queued)
+    check(code(queued) == "CANCELLED" and code(first) == "OK", "library: cancel of a waiting call")
+    slow, nxt = lib.call("later", 1, 2000, timeout_ms=100), lib.call("double", 2)
+    check(code(slow) == "TIMEOUT" and code(nxt) == "OK" and nxt.result() == 4,
+          "library: a waiting call past its deadline is TIMEOUT, the next runs")
+    check(code(lib.call("get", base + "/")) == "THROWN", "library: fetch() refused without a grant")
+    net = L.load(fixture, {"network": [base]})
+    fetched = net.call("get", base + "/")
+    check(code(fetched) == "OK" and fetched.result()["status"] == 200, "library: fetch() to a granted origin")
+    told = []
+    threading.Thread(target=lambda: lib.call("double", 5, function=lambda v, e: told.append((v, e)))).start()
+    check(wait(lambda: told) and told[0] == (10, None), "library: a call from another thread, function=")
+    small = L.load(fixture, {"queue": 1})
+    done(small.ready)
+    running = small.call("later", 0, 300)
+    wait(lambda: False, 0.1)
+    waiting, full = small.call("double", 1), small.call("double", 1)
+    check(code(full) == "QUEUE_FULL" and code(running) == "OK" and code(waiting) == "OK", "library: QUEUE_FULL")
+    doomed = L.load(fixture)
+    spinning, after = doomed.call("spin", timeout_ms=200), doomed.call("double", 1)
+    check(code(spinning) == "TIMEOUT" and code(after) == "GONE",
+          "library: a running script past its deadline is TIMEOUT, then GONE")
+    hungry = L.load(fixture, {"heapLimitMB": 32})
+    check(code(hungry.call("grow", timeout_ms=-1)) == "OUT_OF_MEMORY", "library: heap exhaustion is OUT_OF_MEMORY")
+    forbidden = L.load(HERE / "library_forbidden")
+    check(code(forbidden.ready) == "LOAD_FAILED", "library: an import outside the folder fails the load")
+    closing = L.load(fixture)
+    done(closing.ready)
+    pending = [closing.call("later", 1, 1000), closing.call("double", 1)]
+    closing.close()
+    check([code(f) for f in pending] == ["GONE", "GONE"], "library: close with calls pending: GONE")
+    for library in (lib, net, small, doomed, hungry, forbidden):
+        library.close()
+
+
 def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -850,6 +972,8 @@ def main():
         check_review_fixes(url)
         check_automation(base)
         check_new_api(url, base)
+        check_connections(base)
+        check_library(base)
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()

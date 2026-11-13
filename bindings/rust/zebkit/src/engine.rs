@@ -71,6 +71,12 @@ pub(crate) fn stop_after_panic() {
     }
 }
 
+/// Whether this is the engine's thread (js.rs: a library dropped elsewhere
+/// is closed there).
+pub(crate) fn on_engine_thread() -> bool {
+    ENGINE_THREAD.with(Cell::get)
+}
+
 /// Panics unless this is the engine's thread, for what the engine does on
 /// it alone.
 pub(crate) fn require_engine_thread(what: &str) {

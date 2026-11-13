@@ -464,6 +464,19 @@ extern "C" {
         func: zebkit_response_func,
         data: *mut c_void,
     );
+    // Connection reuse (docs/CONNECTION_REUSE.md).
+    pub fn zebkit_clear_http_cache(context: *mut zebkit_context, done: Option<zebkit_task_func>, data: *mut c_void) -> bool;
+    pub fn zebkit_preconnect(context: *mut zebkit_context, url: *const c_char, count: c_int) -> bool;
+    pub fn zebkit_fetch_in(
+        context: *mut zebkit_context,
+        method: *const c_char,
+        url: *const c_char,
+        headers: *const c_char,
+        body: *const c_void,
+        body_size: usize,
+        func: zebkit_response_func,
+        data: *mut c_void,
+    );
 }
 
 pub type zebkit_capture_func =
@@ -1491,6 +1504,10 @@ extern "C" {
     pub fn zebkit_media_capture_status(capture: *mut zebkit_media_capture) -> *mut c_char;
     pub fn zebkit_media_capture_free(capture: *mut zebkit_media_capture);
 }
+
+/// `<zebkit/library.h>`: JavaScript libraries as normal libraries.
+mod library;
+pub use library::*;
 
 /// The FFmpeg inside the engine. The engine exports each of its functions
 /// as `zebkit_vendor_ffmpeg_<name>`; here they have FFmpeg's names.

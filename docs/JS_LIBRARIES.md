@@ -1,13 +1,17 @@
 # JavaScript libraries as normal libraries
 
-Status: design; nothing is built. It replaces the earlier proposal.
+Status: stage 1 is built (2026-11-13): the `isolate` backend, the C API, the
+Rust, Python, Go and host JavaScript bindings, `tools/js-bundle.mjs`, the
+benchmark and `examples/js-libraries`. Stage 2 (`page`) is not. It replaces
+the earlier proposal. "Built: what changed" below lists where building
+changed the design.
 
 An application loads a bundled JavaScript library and calls its functions
 from C, Rust, Python, Go or host JavaScript, as it calls any library:
 
 ```rust
-let charts = zebkit::js::Library::load("resources/libs/echarts", Value::Null)?;
-let svg = charts.call("renderSvg", json_value).await?.value; // a JSON string
+let charts = zebkit::js::Library::load("resources/libs/echarts", &Value::Null)?;
+let svg = charts.call("renderSvg", Value::Array(vec![spec])).await?.value; // a JSON string
 ```
 
 Paths are the repository's; Chromium's are under `upstream/chromium/src`.
@@ -189,7 +193,7 @@ works in the isolate, not under the page's CSP.
 
 ## Measuring
 
-Targets, not measurements:
+Targets:
 
 | | isolate | page |
 |---|---|---|
@@ -206,6 +210,24 @@ renderers' for `page`. Beside it, the same work through a hidden view and
 `zebkit_view_evaluate()`: the page backend must not be slower. Report:
 `docs/reports/library-bench.md`.
 
+Measured, `isolate`, 2026-11-13: zebkit 0.5.0 (`slim`, Chromium
+157.0.8103.38) on Linux x86-64, 24 threads; `scripts/library-bench.sh slim`,
+medians of 20 fresh processes; the bundles of `examples/js-libraries`
+(markdown-it 14.1.0, 144 KiB; ECharts 5.6.0, 1016 KiB, minified). Stage 1
+measures the 100-byte call over 2,000 calls (after 200 to warm up) rather
+than 10,000, and writes no report file yet; the numbers are here.
+
+| | target | measured |
+|---|---|---|
+| Load to ready: markdown-it / ECharts | 15 / 60 ms | 12.1 / 46.7 ms (an empty library: 10.0 ms) |
+| Call overhead, 100 B JSON each way: median / p99 | 50 µs | 29.3 / 57.9 µs |
+| 1 MiB part there and back | 1 ms | 1.04 ms |
+| Memory: empty instance / ECharts after 100 renders | 3 / 30 MiB | 1.8 / 34.0 MiB |
+
+ECharts' first render takes 25.8 ms (its code compiled on first use), the
+next 1.9 ms each. Its 34 MiB is above the target: the isolate's heap after
+100 renders, which V8 has not shrunk; `heapLimitMB` bounds it.
+
 ## Stages
 
 1. `isolate`, the C API, Rust, Python, Go and host JavaScript, `js-bundle.mjs`,
@@ -217,6 +239,65 @@ renderers' for `page`. Beside it, the same work through a hidden view and
    images, CSS and workers refused as well as `fetch()`.
 3. Only when needed: V8 code cache for libraries, several isolates per
    library, events to the application, a library's page shown in a view.
+
+## Built: what changed
+
+Stage 1, 2026-11-13. Where building showed the design needed a choice or a
+change:
+
+- **A call's deadline counts from when it starts to run**, not from the
+  call: a call waiting its turn is not TIMEOUT for the calls before it. The
+  load has a deadline too, `timeoutMs`: a top level that never ends is
+  stopped (LOAD_FAILED) as a call is.
+- **Refused at once (0, never told) only for a NULL library or function, or a
+  closed library.** QUEUE_FULL, BAD_ARGUMENTS (too large) and calls of a
+  library that failed or ended (LOAD_FAILED, GONE) are told like any outcome,
+  so that an application has one path for failures.
+- **`ready` is told GONE** when the library is closed before its load ends;
+  the design had only OK and LOAD_FAILED, and every accepted callback is told.
+- **A one-file library imports nothing**: its folder may hold other things
+  (the application's resources), which "imports stay in the folder" would let
+  it read as modules. A folder with `index.mjs` imports inside it, with links
+  resolved; bare and absolute specifiers are refused.
+- **`fetch()` does not go through `zebkit_fetch()`**, which sends the
+  profile's cookies: `library_web.cc` makes its own request on the same
+  network stack (the default profile's loader factory, its cache and proxy)
+  with credentials omitted, so no cookies are sent or kept, and follows a
+  redirect only to a granted origin.
+- **ArrayBuffers counted against `heapLimitMB` fail their allocation** (a
+  RangeError the library may catch, THROWN if it does not) rather than ending
+  the library; only V8's heap reaching its limit is OUT_OF_MEMORY.
+- **Results:** any typed array or ArrayBuffer is a part, not only a
+  Uint8Array; an object with a `"$part"` key in a result is BAD_RESULT, since
+  the receiver could not tell it from a part.
+- **No `self`, `window`, `navigator` or `process`**: ECharts takes a defined
+  `self` without `document` for a worker and draws differently; libraries see
+  the environment Node.js gives a bundle, less Node's own modules.
+  `TextDecoder` is UTF-8 only.
+- **The host script had no `URL` or `structuredClone`** (`docs/API.md`);
+  only libraries have them.
+- **Bindings:** Rust's `Library::call(name, args)` takes the arguments as a
+  JSON array (`Value::Array`), and `call_with` adds parts and a deadline;
+  dropping a `Library` closes it, posted to the engine's thread when dropped
+  elsewhere. Python's `call(..., function=f)` returns the call's number for
+  `cancel()`; its Future's own `cancel()` cancels the call too. Host
+  JavaScript has `callWith(name, args, {timeoutMs})` beside `call(name,
+  ...args)`, and errors carry the code as `error.code` (`"TIMEOUT"`). Each
+  binding refuses calls after close itself, so that a cancel never reaches a
+  freed handle.
+- **`js-bundle.mjs` is `tools/js-bundle.mjs`** and goes into the release
+  archive beside zebkit-js. A package given as its argument is bundled as
+  `export * from '<package>'`, which suits ES module packages; a CommonJS
+  package needs a small entry (as the examples have). `--empty <module>`
+  takes an import (a Node.js built-in used only where present) as an empty
+  module; without it each built-in import is named and the bundle fails.
+
+What is left for stage 2: the `page` backend (the `zebkit-library` scheme, a
+hidden view per instance, the runner over `PageCallHost`, the network refused
+in the browser), its test with a library that measures text in a canvas and
+with images, CSS and workers refused, and its column of the benchmark;
+`docs/reports/library-bench.md` once both backends are measured, with the
+hidden-view comparison.
 
 ## Security defaults
 

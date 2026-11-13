@@ -66,6 +66,45 @@ impl Context {
         View::new_offscreen_in(self.raw(), url, width, height, scale)
     }
 
+    /// Empties this context's HTTP cache, kept in memory, and what its network
+    /// learnt of servers, as [`crate::services::clear_http_cache`]; `done` once
+    /// that is done.
+    pub fn clear_http_cache<F: FnOnce() + 'static>(&self, done: F) -> Result<(), Error> {
+        require_engine_thread("Context::clear_http_cache()");
+        if self.raw().is_null() {
+            return Err(Error::new("the context is closed"));
+        }
+        crate::services::clear_http_cache_in(self.raw(), done)
+    }
+
+    /// Opens `count` connections to `url`'s origin in this context's network,
+    /// as [`crate::services::preconnect`].
+    pub fn preconnect(&self, url: &str, count: u32) -> Result<(), Error> {
+        require_engine_thread("Context::preconnect()");
+        if self.raw().is_null() {
+            return Err(Error::new("the context is closed"));
+        }
+        crate::services::preconnect_in(self.raw(), url, count)
+    }
+
+    /// [`crate::services::fetch`] in this context's network: its cookies,
+    /// its cache and the connections its pages opened (`zebkit_fetch_in()`).
+    pub fn fetch<F: FnOnce(crate::services::Response<'_>) + 'static>(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        done: F,
+    ) -> Result<(), Error> {
+        require_engine_thread("Context::fetch()");
+        if self.raw().is_null() {
+            return Err(Error::new("the context is closed"));
+        }
+        crate::services::fetch_in(self.raw(), method, url, headers, body, done);
+        Ok(())
+    }
+
     /// Closes the context's views; its data is let go when the engine stops.
     pub fn close(&self) {
         let raw = self.raw.replace(std::ptr::null_mut());

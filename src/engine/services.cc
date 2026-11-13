@@ -188,7 +188,8 @@ const EVP_AEAD* AesGcm(size_t key_size) {
 
 class Fetch : public network::SimpleURLLoaderStreamConsumer {
  public:
-  static void Start(std::unique_ptr<network::ResourceRequest> request,
+  static void Start(content::BrowserContext* profile,
+                    std::unique_ptr<network::ResourceRequest> request,
                     std::string body,
                     std::string content_type,
                     zebkit_response_func func,
@@ -199,7 +200,7 @@ class Fetch : public network::SimpleURLLoaderStreamConsumer {
           semantics {
             sender: "zebkit"
             description: "A request the embedding application makes."
-            trigger: "The application calls zebkit_fetch()."
+            trigger: "The application calls zebkit_fetch() or zebkit_fetch_in()."
             data: "What the application sends."
             destination: OTHER
           }
@@ -228,10 +229,9 @@ class Fetch : public network::SimpleURLLoaderStreamConsumer {
     if (!body.empty() || !content_type.empty())
       fetch->loader_->AttachStringForUpload(std::move(body), content_type);
     fetch->loader_->SetAllowHttpErrorResults(true);
+    // The profile's network: its cookies, cache and connections.
     scoped_refptr<network::SharedURLLoaderFactory> factory =
-        zebkit::GetBrowserContext()
-            ->GetDefaultStoragePartition()
-            ->GetURLLoaderFactoryForBrowserProcess();
+        profile->GetDefaultStoragePartition()->GetURLLoaderFactoryForBrowserProcess();
     // DownloadToString only accepts limits up to 5 MiB. The public C API
     // permits 256 MiB, so consume the stream while enforcing that bound.
     fetch->loader_->DownloadAsStream(factory.get(), fetch);
@@ -698,8 +698,30 @@ void zebkit_fetch(const char* method,
                   size_t body_size,
                   zebkit_response_func func,
                   void* data) {
+  zebkit_fetch_in(nullptr, method, url, headers, body, body_size, func, data);
+}
+
+void zebkit_fetch_in(zebkit_context* context,
+                     const char* method,
+                     const char* url,
+                     const char* headers,
+                     const void* body,
+                     size_t body_size,
+                     zebkit_response_func func,
+                     void* data) {
   if (!zebkit::CurrentlyOnEngineThread())
     return;
+  auto refuse = [&](const char* why) {
+    zebkit_response response = {};
+    response.url = "";
+    response.headers = "";
+    response.error = why;
+    if (func)
+      func(&response, data);
+  };
+  content::BrowserContext* profile = zebkit::ProfileOf(context);
+  if ((context && !context->profile) || !profile)
+    return refuse("the context is closed");
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = GURL(url ? url : "");
   request->method = method && *method ? method : "GET";
@@ -723,21 +745,14 @@ void zebkit_fetch(const char* method,
         request->headers.SetHeader(name, value);
     }
   }
-  if (!request->url.is_valid()) {
-    zebkit_response response = {};
-    response.url = "";
-    response.headers = "";
-    response.error = "not a valid URL";
-    if (func)
-      func(&response, data);
-    return;
-  }
+  if (!request->url.is_valid())
+    return refuse("not a valid URL");
   std::string upload;
   if (body && body_size)
     upload.assign(static_cast<const char*>(body), body_size);
   if (!upload.empty() && content_type.empty())
     content_type = "application/octet-stream";
-  Fetch::Start(std::move(request), std::move(upload), std::move(content_type),
+  Fetch::Start(profile, std::move(request), std::move(upload), std::move(content_type),
                func, data);
 }
 

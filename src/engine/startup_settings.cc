@@ -88,7 +88,8 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
     return SetError(error, "Startup settings must be a JSON object");
   const auto& settings = parsed->GetDict();
   if (!Fields(settings, {"profileDirectory", "proxy", "userAgent", "headless",
-                         "sandbox", "gpu", "logging", "cookies", "applicationIntegration", "appearance"}, error))
+                         "sandbox", "gpu", "logging", "cookies", "applicationIntegration", "appearance",
+                         "httpCache", "preconnect"}, error))
     return false;
   std::vector<std::string> result = *args;
   if (!StringSwitch(settings, "profileDirectory", "user-data-dir", true, &result, error) ||
@@ -194,6 +195,47 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
       Switch(&result, "zebkit-follow-system-appearance",
              follow->GetBool() ? std::make_optional(std::string()) : std::nullopt);
     }
+  }
+  // The HTTP cache (http_cache.cc): on disk for a profile on disk, as
+  // Chrome's; maxSize 0 is Chromium's choice from the free space.
+  if (const base::Value* cache = settings.Find("httpCache")) {
+    const base::DictValue* dict = cache->GetIfDict();
+    if (!dict)
+      return SetError(error, "httpCache: expected an object");
+    if (!Fields(*dict, {"storage", "maxSize"}, error))
+      return false;
+    if (const base::Value* storage = dict->Find("storage")) {
+      if (!Text(*storage, "httpCache.storage", error))
+        return false;
+      const std::string& mode = storage->GetString();
+      if (mode != "disk" && mode != "memory" && mode != "off")
+        return SetError(error, "httpCache.storage: expected disk, memory or off");
+      Switch(&result, "zebkit-http-cache", mode);
+    }
+    if (const base::Value* size = dict->Find("maxSize")) {
+      if (!size->is_int() || size->GetInt() < 0)
+        return SetError(error, "httpCache.maxSize: expected bytes, an integer from 0 to 2147483647");
+      Switch(&result, "zebkit-http-cache-size", std::to_string(size->GetInt()));
+    }
+  }
+  // Origins to connect to as the engine starts (preconnect.cc): http(s)
+  // URLs with a host, checked here without parsing them as URLs.
+  if (const base::Value* preconnect = settings.Find("preconnect")) {
+    const base::ListValue* list = preconnect->GetIfList();
+    if (!list)
+      return SetError(error, "preconnect: expected a list of http or https URLs");
+    std::string urls;
+    for (const base::Value& item : *list) {
+      if (!Text(item, "preconnect", error))
+        return false;
+      const std::string& url = item.GetString();
+      const size_t scheme = url.starts_with("https://") ? 8 : url.starts_with("http://") ? 7 : 0;
+      if (!scheme || url.size() == scheme || url[scheme] == '/' ||
+          url.find_first_of(" \t\r\n") != std::string::npos)
+        return SetError(error, "preconnect: not an http or https URL with a host: " + url);
+      urls += (urls.empty() ? "" : " ") + url;
+    }
+    Switch(&result, "zebkit-preconnect", urls.empty() ? std::nullopt : std::make_optional(urls));
   }
   *application_integration = integration;
   *args = std::move(result);

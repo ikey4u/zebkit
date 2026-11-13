@@ -57,11 +57,14 @@
 #include "zebkit/engine/path_utf8.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/automation.h"
+#include "zebkit/engine/include/zebkit/library.h"
+#include "zebkit/engine/library_script.h"
 #include "zebkit/engine/include/zebkit/media.h"
 #include "zebkit/engine/include/zebkit/media_tap.h"
 #include "zebkit/engine/include/zebkit/media_tools.h"
 #include "zebkit/engine/include/zebkit/offscreen.h"
 #include "zebkit/engine/include/zebkit/page.h"
+#include "zebkit/engine/include/zebkit/services.h"
 #include "zebkit/engine/include/zebkit/window.h"
 #include "zebkit/engine/pdf_script.h"
 #include "zebkit/engine/ui.h"
@@ -663,7 +666,13 @@ constexpr char kBootstrap[] = R"js((function (native) {
     View,
     setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
     get engineSettings() { return JSON.parse(native.engineSettings()); },
-    fetch: (url, options) => call('fetch', 'fetch', [String(url), options || {}]),
+    fetch: (url, options) => call('fetch', 'fetch', [String(url), options && options.context
+                                                       ? {...options, context: contextId(options.context)}
+                                                       : (options || {})]),
+    // Connection reuse (docs/CONNECTION_REUSE.md): {context} a Context's.
+    clearHttpCache: ({context = null} = {}) => native.more('clear-http-cache', context ? contextId(context) : 0),
+    preconnect: (url, {count = 1, context = null} = {}) =>
+      native.more('preconnect', context ? contextId(context) : 0, String(url), Number(count)),
     fs: api('fs', ['readFile', 'readText', 'writeFile', 'readDir', 'stat', 'mkdir', 'remove']),
     compress: (format, bytes, level) => call('compress', 'compress', [format, bytes, level ?? -1]),
     decompress: (format, bytes) => call('compress', 'decompress', [format, bytes]),
@@ -671,6 +680,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     image: api('image', ['decode', 'encode']),
     url: api('url', ['parse', 'registrableDomain']),
     pdf,
+    // JavaScript libraries as normal libraries (<zebkit/library.h>).
+    Library: native.Library,
     canvas: pdf.canvas,
     text: pdf.text,
   });
@@ -1067,6 +1078,18 @@ struct zebkit_script {
   static void UiAct(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void UiListen(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void UiCapture(const v8::FunctionCallbackInfo<v8::Value>& info);
+  // zebkit.Library (<zebkit/library.h>, library_script.h): the libraries the
+  // script loaded, and the outcomes it waits for (each holds the script).
+  static void Library(const v8::FunctionCallbackInfo<v8::Value>& info);
+  struct LibraryTold {
+    base::WeakPtr<zebkit_script> script;
+    v8::Global<v8::Function> function;
+  };
+  static void LibraryToldFunc(zebkit_library* library, zebkit_library_code code, const char* json,
+                              const zebkit_part* parts, size_t part_count, void* data);
+  std::map<int, zebkit_library*> libraries_;
+  int next_library_ = 1;
+  std::set<LibraryTold*> library_told_;
   zebkit::UiTree* Ui();
 
   ViewEntry* FindView(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -1257,6 +1280,11 @@ zebkit_script::~zebkit_script() {
     system_functions_.clear();
     environment_function_.Reset();
     unhandled_.clear();
+    // Its libraries closed: their outcomes come later, to nothing.
+    for (const auto& [id, library] : libraries_) zebkit_library_close(library);
+    libraries_.clear();
+    for (LibraryTold* told : library_told_) told->function.Reset();
+    library_told_.clear();
     context_.Reset();
   }
   isolate_tasks_->set_isolate(nullptr);
@@ -1360,6 +1388,16 @@ void zebkit_script::Install() {
     return;
   }
   std::ignore = native->Set(context, String8(isolate(), "ui"), ui);
+  // zebkit.Library, which the bootstrap puts in zebkit.
+  SetMethod(native, "library", &Library);
+  v8::Local<v8::Value> make_library =
+      v8::Script::Compile(context, String8(isolate(), zebkit::kLibraryScript)).ToLocalChecked()->Run(context).ToLocalChecked();
+  v8::Local<v8::Value> library_class;
+  if (!make_library.As<v8::Function>()->Call(context, v8::Undefined(isolate()), 1, ui_argv).ToLocal(&library_class)) {
+    Report(try_catch);
+    return;
+  }
+  std::ignore = native->Set(context, String8(isolate(), "Library"), library_class);
   v8::Local<v8::Script> script =
       v8::Script::Compile(context, String8(isolate(), Bootstrap()))
           .ToLocalChecked();
@@ -1506,6 +1544,19 @@ void zebkit_script::Call(const v8::FunctionCallbackInfo<v8::Value>& info) {
           script->Settle(id, ok, std::move(value));
       },
       self->weak_factory_.GetWeakPtr(), id);
+  // zebkit.fetch(url, {context}): that Context's network (zebkit_fetch_in).
+  if (call.module == "fetch" && call.args.size() > 1 && call.args[1].is_dict()) {
+    base::DictValue& options = call.args[1].GetDict();
+    if (std::optional<int> context_id = options.FindInt("context")) {
+      options.Remove("context");
+      auto it = self->contexts_.find(*context_id);
+      if (it == self->contexts_.end()) {
+        std::move(call.reply).Run(false, base::Value("the context is closed"));
+        return;
+      }
+      call.context = it->second;
+    }
+  }
   zebkit::HandlePageCall(std::move(call));
 }
 
@@ -2108,6 +2159,36 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     if (it != self->contexts_.end()) {
       zebkit_context_close(it->second);
       self->contexts_.erase(it);
+    }
+  } else if (kind == "preconnect") {
+    // (context or 0, url, count): whether the connections were asked for.
+    zebkit_context* in = nullptr;
+    if (number(1)) {
+      auto it = self->contexts_.find(static_cast<int>(number(1)));
+      if (it == self->contexts_.end())
+        return fail("the context is closed");
+      in = it->second;
+    }
+    const std::string url = text(2);
+    const double count = number(3, 1);
+    info.GetReturnValue().Set(zebkit_preconnect(in, url.c_str(), count >= 1 && count <= 6 ? static_cast<int>(count) : 0));
+  } else if (kind == "clear-http-cache") {
+    // (context or 0): settled once the cache is empty (docs/CONNECTION_REUSE.md).
+    zebkit_context* in = nullptr;
+    if (number(1)) {
+      auto it = self->contexts_.find(static_cast<int>(number(1)));
+      if (it == self->contexts_.end())
+        return fail("the context is closed");
+      in = it->second;
+    }
+    PendingCall* pending = promise();
+    if (!zebkit_clear_http_cache(in, [](void* data) {
+          std::unique_ptr<PendingCall> cleared(static_cast<PendingCall*>(data));
+          if (cleared->script)
+            cleared->script->Settle(cleared->id, true, base::Value());
+        }, pending)) {
+      std::unique_ptr<PendingCall> refused(pending);
+      self->Settle(refused->id, false, base::Value("the engine is stopping"));
     }
   } else if (kind == "view-new-in" || kind == "offscreen-new") {
     // (context, url, width, height, options or scale)
@@ -4245,6 +4326,105 @@ void zebkit_script::UiCapture(
           },
           self->weak_factory_.GetWeakPtr(), id));
   std::ignore = isolate;
+}
+
+// ---- zebkit.Library ----
+
+// library('load', path, options, ready): its number, or throws why not;
+// ('call', library, name, json, parts, timeoutMs, done): the call's number, 0
+// when refused; ('cancel', library, call); ('close', library). ready and done
+// get (code, json, parts).
+void zebkit_script::Library(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  zebkit_script* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  const std::string kind = Utf8(isolate, info[0]);
+  auto number = [&](int i) { return info[i]->IsNumber() ? info[i].As<v8::Number>()->Value() : 0.0; };
+  auto told = [&](v8::Local<v8::Value> function) {
+    auto* data = new LibraryTold{self->weak_factory_.GetWeakPtr(), v8::Global<v8::Function>(isolate, function.As<v8::Function>())};
+    self->library_told_.insert(data);
+    self->Hold();
+    return data;
+  };
+  auto forget = [&](LibraryTold* data) {
+    self->library_told_.erase(data);
+    delete data;
+    self->Release();
+  };
+  if (kind == "load") {
+    if (!info[3]->IsFunction())
+      return;
+    const std::string path = Utf8(isolate, info[1]), options = Utf8(isolate, info[2]);
+    LibraryTold* data = told(info[3]);
+    char* error = nullptr;
+    zebkit_library* library = zebkit_library_load(path.c_str(), options.c_str(), &LibraryToldFunc, data, &error);
+    if (!library) {
+      forget(data);
+      isolate->ThrowException(v8::Exception::Error(String8(isolate, error ? error : "the library was not loaded")));
+      zebkit_free(error);
+      return;
+    }
+    const int id = self->next_library_++;
+    self->libraries_[id] = library;
+    info.GetReturnValue().Set(id);
+    return;
+  }
+  auto it = self->libraries_.find(static_cast<int>(number(1)));
+  if (it == self->libraries_.end()) {
+    if (kind == "call")
+      info.GetReturnValue().Set(0);
+    return;
+  }
+  if (kind == "call") {
+    if (!info[6]->IsFunction())
+      return;
+    const std::string name = Utf8(isolate, info[2]), json = Utf8(isolate, info[3]);
+    std::vector<zebkit_part> parts;
+    if (info[4]->IsArray()) {
+      v8::Local<v8::Array> list = info[4].As<v8::Array>();
+      for (uint32_t i = 0; i < list->Length(); ++i) {
+        v8::Local<v8::Value> item;
+        if (!list->Get(isolate->GetCurrentContext(), i).ToLocal(&item) || !item->IsArrayBufferView())
+          continue;
+        v8::Local<v8::ArrayBufferView> view = item.As<v8::ArrayBufferView>();
+        const uint8_t* bytes = static_cast<const uint8_t*>(view->Buffer()->Data());
+        parts.push_back({bytes ? bytes + view->ByteOffset() : nullptr, view->ByteLength()});
+      }
+    }
+    LibraryTold* data = told(info[6]);
+    const uint64_t id = zebkit_library_call(it->second, name.c_str(), json.c_str(), parts.data(), parts.size(),
+                                            static_cast<int64_t>(number(5)), &LibraryToldFunc, data);
+    if (!id)
+      forget(data);
+    info.GetReturnValue().Set(static_cast<double>(id));
+  } else if (kind == "cancel") {
+    zebkit_library_cancel(it->second, static_cast<uint64_t>(number(2)));
+  } else if (kind == "close") {
+    zebkit_library* library = it->second;
+    self->libraries_.erase(it);
+    zebkit_library_close(library);
+  }
+}
+
+void zebkit_script::LibraryToldFunc(zebkit_library* library, zebkit_library_code code, const char* json,
+                                    const zebkit_part* parts, size_t part_count, void* data) {
+  std::unique_ptr<LibraryTold> told(static_cast<LibraryTold*>(data));
+  zebkit_script* self = told->script.get();
+  if (!self)
+    return;
+  self->library_told_.erase(told.get());
+  {
+    Scope scope(self);
+    v8::Isolate* isolate = self->isolate();
+    v8::Local<v8::Function> function = told->function.Get(isolate);
+    told->function.Reset();
+    v8::Local<v8::Array> list = v8::Array::New(isolate, static_cast<int>(part_count));
+    for (size_t i = 0; i < part_count; ++i) {
+      std::ignore = list->Set(self->context(), static_cast<uint32_t>(i),
+                              BytesValue(isolate, parts[i].data, parts[i].size));
+    }
+    self->CallFunction(function, {v8::Integer::New(isolate, code), String8(isolate, json ? json : "null"), list});
+  }
+  self->Release();
 }
 
 void zebkit_script::UiListen(const v8::FunctionCallbackInfo<v8::Value>& info) {

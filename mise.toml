@@ -17,6 +17,7 @@
 #   mise run r:python         the Python binding to PyPI (UV_PUBLISH_TOKEN or PYPI_TOKEN)
 #   mise run d                debug build for this machine    -> dist/debug
 #   mise run bench:web        what web pages cost in zebkit against Electron
+#   mise run bench:connections what reusing connections and cached responses saves (docs/CONNECTION_REUSE.md)
 #   mise example:linux:basic  build and run examples/window.c, a small browser window
 #   mise example:macos:basic  build and run examples/window.c on macOS
 #   mise example:macos:appkit build and run the AppKit host of examples/native-host on macOS
@@ -77,6 +78,10 @@ run = "scripts/publish-python.sh"
 [tasks."bench:web"]
 description = "What web pages cost in zebkit against Electron; --check fails on a regression past tests/bench/web/limits.json (pass --sites for the well-known sites)"
 run = "scripts/web-bench.sh"
+
+[tasks."bench:connections"]
+description = "What reusing connections and cached responses saves, offline against a local HTTPS server (docs/CONNECTION_REUSE.md); --idle adds the 30 s and 5 min idle cases, --spare the spare renderer"
+run = "scripts/connection-bench.sh"
 
 [tasks.d]
 description = "Build zebkit with debug information for this machine into dist/debug"

@@ -146,6 +146,10 @@
 #   JavaScript, outside any page.
 # - tests/engine/ui/app.mjs: zebkit.ui, a window of Chromium's views from
 #   that script, driven as a user would.
+# - tests/engine/library.py, script/library.mjs: JavaScript libraries as normal
+#   libraries (<zebkit/library.h>, docs/JS_LIBRARIES.md), every code, imports
+#   kept in the folder, fetch() granted and refused; with examples/js-libraries'
+#   markdown-it and ECharts bundles, which --fetch makes (tools/js-bundle.mjs).
 # - tools/zebkit-run with --remote-debugging-port=0: CDP as Chrome serves
 #   it, read back over HTTP the way a client finds it.
 #
@@ -214,6 +218,11 @@ if [[ -n "$fetch" ]]; then
         done
     else
         log "no cargo: the examples' crates are not fetched"
+    fi
+    # The bundles of examples/js-libraries (markdown-it, ECharts), for
+    # tests/engine/library.py, and the esbuild js-bundle.mjs is checked with.
+    if "${node_cmd[@]}" --version > /dev/null 2>&1; then
+        "$ZEBKIT_ROOT/examples/js-libraries/build.sh" "$CACHE_DIR/js-libraries" || die "the example libraries were not bundled"
     fi
     log "fetched what the tests need"
     exit 0
@@ -1135,6 +1144,8 @@ run script-uncaught "${python_run[@]}" "$tests/script_uncaught.py" "$bin/tools/z
 # A service worker's clients.openWindow() from a notification click, and the popup policy.
 run sw-open-window env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/sw_open_window.py" "${engine_switches[@]}"
 run python-declarations "${python_run[@]}" "$tests/python_declarations.py"
+# JavaScript libraries (<zebkit/library.h>); the examples' bundles from --fetch.
+run library env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/library.py" "$CACHE_DIR/js-libraries" "${engine_switches[@]}"
 run python-parity env ZEBKIT_DIR="$package" ZEBKIT_PDF_RESOURCES="$pdf_resources" "${python_run[@]}" "$tests/python_parity.py" \
     "${engine_switches[@]}"
 # WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
@@ -1381,6 +1392,9 @@ fi
 run cookie-host "${python_run[@]}" "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file "${python_run[@]}" "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file-options "${python_run[@]}" "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
+# Connection reuse (docs/CONNECTION_REUSE.md): the HTTP cache on disk, kept,
+# in memory, off and cleared; preconnect, its startup setting; fetch_in.
+run connection-reuse env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/connection_reuse.py" --no-sandbox --headless
 
 run webauthn-plain-headless "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view
@@ -1617,10 +1631,15 @@ run automation-media-javascript "$bin/tools/zebkit-js" --no-sandbox --headless -
     --user-data-dir="$work/profile-automation-media-javascript" "$tests/script/automation_media.mjs" "http://127.0.0.1:$port" \
     "$tests/pages/media/clip.mp4" "$work"
 finished automation-media-javascript "the automation and media script"
+run library-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-library-javascript" \
+    "$tests/script/library.mjs" "http://127.0.0.1:$port" "$tests"
+finished library-javascript "the libraries script"
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 finished system-javascript "the system services script"
 run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
 finished window-open-javascript "the window-open script"
+run connections-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-connections-javascript" "$tests/script/connections.mjs" "http://127.0.0.1:$port"
+finished connections-javascript "the connection reuse script"
 # The forms that do not wait on the engine's thread (cdp.listenAsync, openExternalAsync,
 # showInFolderAsync), and why a hook's reply was refused (request.error).
 run async-forms-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-async-forms-javascript" "$tests/script/async_forms.mjs" "http://127.0.0.1:$port" "$work"

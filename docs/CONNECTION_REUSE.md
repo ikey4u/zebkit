@@ -1,8 +1,13 @@
 # Connection reuse
 
-Status: plan; nothing is built. Goal: pages in applications load faster
-because zebkit reuses connections and cached responses. Each step stays only
-if the benchmark of step 0 shows it gains more than it costs.
+Status: steps 0, 1, 2 and the `zebkit_fetch_in` step built and measured
+(2026-11-13, zebkit 0.5.0 + these changes, Chromium 157.0.8103.38, profile
+slim); what was kept and why is under [Results](#results). Goal: pages in
+applications load faster because zebkit reuses connections and cached
+responses. Each step stays only if the benchmark of step 0 shows it gains
+more than it costs.
+
+The facts below are as they were before these changes.
 
 Paths are the repository's; Chromium's are under `upstream/chromium/src`.
 
@@ -27,7 +32,9 @@ Paths are the repository's; Chromium's are under `upstream/chromium/src`.
 
 ## Step 0: the benchmark
 
-`scripts/connection-bench.sh`, with `tests/bench/connection/`:
+`scripts/connection-bench.sh` (`mise run bench:connections`), with
+`tests/bench/connections/` (`server.mjs`, `client.py`, `report.py`); the
+report is `docs/reports/connection-bench.md` and `.json`:
 
 - **Server** (`server.mjs`, Node.js at mise.toml's pin). One HTTPS port with
   ALPN `h2` and `http/1.1` (`http2.createSecureServer({allowHTTP1: true})`,
@@ -66,6 +73,27 @@ Paths are the repository's; Chromium's are under `upstream/chromium/src`.
 | F, G | reload after 30 s and after 5 min idle |
 | H | the page with `<link rel=preconnect>` to `b.bench.test` |
 | I | back navigation (back-forward cache) |
+
+As built, where it differs from the above: the delay is a proxy in front of
+each counted port that passes every chunk on half a round trip later each
+way, and the client's first chunk a round trip more (TCP's own handshake,
+which loopback does not cost), so a new HTTPS connection costs two round
+trips and a request one. Each host has a certificate of its own (one key,
+trusted by its SPKI), so that HTTP/2 cannot pool `a` and `b` on one
+connection. Names are `MAP *.test 127.0.0.1`; besides `a.bench.test` and
+`b.bench.test` (one site) there are `c.other.test` and `cdn.shared.test`
+(other sites, for X and S). The `b` image is added by a script (`late.js`,
+`no-cache`) at the end of the page, so that it is found late, as a third-party
+resource usually is. Each view is made at `about:blank` and then loaded, so a
+time is the navigation's, not the view's making. Added cases: C3
+(`zebkit_fetch_in()` after A in the context), D-pre (D with the startup
+setting `preconnect`), P1 and P90 (`zebkit_preconnect()` 1 s and 90 s before
+E), X (a page on `c.other.test` using the `cdn.shared.test` images a page on
+`a.bench.test` used before: what partitioning costs), S (a navigation to
+another site with the spare renderer off and on, and the processes' PSS). F
+and G run 3 cycles, both protocols at once. The engine's own profile is used
+first by a fetch to another host in the C2 session, so that C2 times the
+connection, not the making of that profile's network context.
 
 Reported per case: TCP connections, full and resumed handshakes, requests
 that reached the server, 304s, load time. Report:
@@ -164,6 +192,141 @@ back-forward cache is on; case I checks that it is used
 (`src/engine/navigation_hooks.cc:187` reports it). No default changes without
 a measured gain larger than the memory.
 
+## Results
+
+Measured 2026-11-13 on this Linux machine, offline, with
+`scripts/connection-bench.sh` (40 ms a round trip; medians of 10 runs, 3 for
+P90 and for F and G): the baseline is zebkit 0.5.0 as released (Chromium
+157.0.8103.38, profile slim); each step is the same engine with that step's
+changes. Times in ms; TCP, full TLS handshakes and requests as the server
+counted them. The last full run, of the final engine with every kept step
+and the baseline beside it, is `docs/reports/connection-bench.md` (D h1 498
+-> 402, D-pre 300, P1 224 / 416, C3 42; the other cases as before).
+
+### Baseline (0.5.0)
+
+| Case | h2 ms | h2 TCP / full / requests | h1 ms | h1 TCP / full / requests |
+|---|---|---|---|---|
+| A first load, new profile | 725 | 2 / 2 / 23 | 499 | 7 / 5 / 23 |
+| B second view, after A | 134 | 0 / 0 / 13 (12 x 304) | 133 | 0 / 0 / 13 |
+| C `zebkit_fetch()` after A | 42 | 0 / 0 / 1 | 42 | 0 / 0 / 1 |
+| C2 `zebkit_fetch()` after A in a context | 124 | 1 / 1 / 1 | 123 | 1 / 1 / 1 |
+| D restart, same profile | 309 | 2 / 2 / 23 | 498 | 7 / 5 / 23 |
+| E new context | 304 | 2 / 2 / 23 | 498 | 7 / 5 / 23 |
+| F after 30 s idle | 131 | 0 / 0 / 13 | 131 | 0 / 0 / 13 |
+| G after 5 min idle | 132 | 0 / 0 / 13 | 379 | 7 / 4 (+3 resumed) / 13 |
+| H E with `<link rel=preconnect>` | 253 | 2 / 2 / 23 | 416 | 7 / 5 / 23 |
+| I back | 1.2, restored from the back-forward cache 10 of 10 | | 1.2, 10 of 10 | |
+| X shared host from another site | 171 | 1 / 1 / 2 | 170 | 1 / 1 / 2 |
+
+As the plan expected: B and C reuse; C2, D and E start cold; F reuses on both
+protocols; G reconnects on HTTP/1.1 (the server's sockets live 10 minutes,
+the client's idle ones 300 s) and not on HTTP/2. A restart (D) resumes no TLS
+session: net keeps session tickets in memory only, confirmed. A's spread is
+large (574 to 2180 ms over 30 runs on h2): it is the first navigation of a
+new process with a new profile; the HTTP/1.1 A, the same process's second
+first load, is the steady one.
+
+### Step 1: disk cache, server properties, transport security state — kept
+
+| Case | baseline | step 1 |
+|---|---|---|
+| D h2: ms, requests | 309, 23 | 309, 13 (12 x 304) |
+| D h1: ms, requests | 498, 23 | 415, 13 (20 runs: 503 -> 409, -19%) |
+| A h1 (a cold cache, in a warm process) | 499 / 500 | 501 / 501 |
+| every other case | | within 1 % |
+
+The restart sends only the revalidations: the 10 `max-age` images come from
+the disk cache. On HTTP/1.1, with six connections, that is 19 % of the load;
+on HTTP/2 the time is the critical path (connection, page, `late.js`, the
+second origin's connection and image), which the cache does not shorten, so
+it stays. No cost was measured: the cold-cache load (A on h1, and E) is
+unchanged; A on h2 moved +30 ms in both comparisons (725 -> 764, 853 -> 881
+over 20 runs), well inside its spread. Disk: 124 KiB for this page; the cap
+is Chromium's (80 MiB base, more on a large disk) unless `maxSize` says.
+`Network Persistent State` is written (`supports_spdy` of both origins);
+neither it nor HSTS changed a measured case (they matter for QUIC and for
+`http://` URLs of HSTS hosts, which the benchmark does not have), and they
+cost two small files: kept, as Chrome has them. TLS handshakes on restart
+did not fall, as expected.
+
+Decision on the default: `disk` for a profile on disk, as Chrome and as the
+code cache already is; the application chooses `memory` or `off`
+(`httpCache`), and `zebkit_clear_http_cache()` forgets the cache and the
+servers' properties and HSTS state. A `zebkit_context` stays in memory. The
+temporary profile zebkit makes when there is no home is on disk and deleted
+at the end, so its cache goes with it.
+
+### Step 2: preconnect — `zebkit_preconnect()` and `preconnect` kept, the navigation preconnect dropped
+
+| Case | h2 ms | h1 ms |
+|---|---|---|
+| E (no preconnect) | 307 / 303 | 499 / 499 |
+| P1: `zebkit_preconnect(context, origin, 1)` 1 s before E | 225 / 221 (-81) | 418 / 418 (-81) |
+| P90: the same 90 s before | 305 (no gain) | 498 (no gain) |
+| D | 309 | 398 |
+| D-pre: D with the startup setting `preconnect` | 279 (-30) | 333 (-66) |
+| E with the navigation preconnect off / on | 305.3 / 303.6 | 498.5 / 496.2 |
+| A with it off / on | 815 / 703 | 498 / 498 |
+| H with it off / on | 253.0 / 250.7 | 419.1 / 417.7 |
+
+`zebkit_preconnect()` saves the connection's two round trips when the load
+follows within the unused-socket lifetime (60 s), and nothing after it (P90:
+the socket was closed; one TLS session was resumed, which saved no measurable
+time). The startup setting saves part of that on a restart (the view's own
+start overlaps it). Both kept: their cost is a connection the application
+asked for.
+
+The navigation preconnect (`ShouldPreconnectNavigation()` true, as Chrome's,
+measured behind a temporary switch, not opening a connection when the view
+has a navigation policy or network rules) gained 1 to 2 ms (under 1 %, inside
+the noise; A's 112 ms is A's spread) and opened no extra socket: content
+starts the navigation's own request at once, so the preconnect races it and
+wins nothing. It helps a browser whose navigations wait (beforeunload,
+service workers, throttles); in zebkit the waits are the application's
+policies, where a connection before the decision would reach a host the
+application may refuse. Dropped, and the code removed.
+
+### `zebkit_fetch_in` — kept
+
+| Case | h2 ms | h1 ms |
+|---|---|---|
+| C2: `zebkit_fetch()` after A in a context (cold) | 123 (1 connection) | 123 (1 connection) |
+| C3: `zebkit_fetch_in(context, ...)` | 42 (0 connections) | 42 (0 connections) |
+
+It reuses the context's connections (-81 ms, two round trips) and sends the
+context's cookies, which `zebkit_fetch()` cannot. Kept, in every binding.
+
+### Step 5: spare renderer and back-forward cache — no change
+
+The back-forward cache is used (I: 10 of 10 restored, 1.2 ms, nothing reaches
+the server). The spare renderer gained nothing on a navigation to another
+site (S: 130.9 off, 131.5 on, h2; 130.0 / 130.1 h1): the new renderer starts
+while the navigation's request is on the network, which takes longer, and
+costs 4.5 MiB PSS and one process. Its default (off) stays.
+
+### What partitioning would cost (for the owner)
+
+Run with
+`--enable-features=SplitCacheByNetworkIsolationKey,PartitionConnectionsByNetworkIsolationKey`
+on the 0.5.0 engine (`scripts/connection-bench.sh --partitioned`):
+
+| Case | shared (zebkit today) | partitioned (Chrome) |
+|---|---|---|
+| X h2: a page on another site using a host a first page used | 171 ms, 1 TCP, 2 requests (1 x 304) | 254 ms (+48 %), 4 TCP, 4 requests (no 304) |
+| X h1 | 170 ms, 1 TCP, 2 requests | 253 ms (+49 %), 4 TCP, 4 requests |
+| A, B, C, C2, D, E, H, I (one site) | | unchanged (within 1 %) |
+
+So partitioning costs exactly the cross-site reuse: a new connection (two
+round trips) and the shared host's resources fetched again instead of read
+from the cache; pages of one site lose nothing. An application whose views
+show one site or its own pages loses nothing either; one that shows many
+sites sharing a CDN pays the X row on each new site, and gains that no site
+can learn through the cache or a connection what another showed. Steps 1 and
+2 work in both modes: with the final engine partitioned, D still sends 13
+requests (12 revalidations; 308 ms h2, 414 h1), D-pre 277 / 316, P1 226 /
+416, C3 42, and X costs the same 254 / 253 ms. No partitioning was changed.
+
 ## A decision for the owner: partitioning
 
 zebkit shares connections and cache across top-level sites; Chrome partitions
@@ -178,5 +341,6 @@ Steps 1 and 2 work in both modes.
 ## Order
 
 0, then 1, 2, the navigation preconnect, `zebkit_fetch_in`, the measurements
-of 5. Step 3 only with HTTP/3. Each step is kept only if the benchmark shows
-its gain larger than its cost; the reports of each step record both.
+of 5, done in that order on 2026-11-13 ([Results](#results)). Step 3 only
+with HTTP/3; step 4's sharing between contexts stays impossible
+(`docs/API.md`, "Connection reuse": contexts start cold).

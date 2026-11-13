@@ -39,7 +39,8 @@
 //!
 //! - [`automation`] is Playwright's API on a view's page, inside the
 //!   engine: pages, frames, locators, handles, routes, dialogs, downloads,
-//!   workers, tracing, `expect`; [`json`] reads and writes the JSON the
+//!   workers, tracing, `expect`; [`js`] loads JavaScript libraries and calls
+//!   them as any library; [`json`] reads and writes the JSON the
 //!   engine speaks; [`Bytes`] is a buffer the engine made, not copied.
 //!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
@@ -65,6 +66,8 @@ pub mod canvas;
 pub mod cdp;
 mod context;
 pub mod json;
+// JavaScript libraries as normal libraries (<zebkit/library.h>).
+pub mod js;
 mod engine;
 pub mod media;
 pub mod media_tools;

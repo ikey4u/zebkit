@@ -337,6 +337,8 @@ build_tools() {
         fi
     done
     log "tools for $system: $(cd "$dist" && du -ch zebkit-run$exe zebkit-js$exe zebkit-mcp$exe | tail -1 | cut -f1)"
+    # The bundler of JavaScript libraries (docs/JS_LIBRARIES.md): Node.js, at build time.
+    cp "$ZEBKIT_ROOT/tools/js-bundle.mjs" "$dist/js-bundle.mjs"
 }
 
 if (( ! publish_only )); then

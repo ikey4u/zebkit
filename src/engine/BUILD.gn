@@ -432,6 +432,11 @@ _sources = [
   "window_platform.h",
   "host_loop.cc",
   "host_loop.h",
+  # Connection reuse (docs/CONNECTION_REUSE.md).
+  "http_cache.cc",
+  "http_cache.h",
+  "preconnect.cc",
+  "preconnect.h",
   "startup_settings.cc",
   "startup_settings.h",
   "engine.h",
@@ -671,6 +676,16 @@ if (ozone_platform_x11) {
   ]
 }
 _deps += _vendored_libraries
+
+# JavaScript libraries as normal libraries (<zebkit/library.h>,
+# docs/JS_LIBRARIES.md): the backend "isolate".
+_sources += [
+  "include/zebkit/library.h",
+  "library.cc",
+  "library.h",
+  "library_bootstrap.h",
+  "library_web.cc",
+]
 
 declare_args() {
   # Optimize the engine across its object files as it is linked (ThinLTO

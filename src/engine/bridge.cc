@@ -586,10 +586,14 @@ void Fetch(PageCall call) {
     body = GetBytes(options->GetDict().Find("body"));
   }
   auto* pending = new FetchCall{std::move(call.reply)};
-  zebkit_fetch(method.c_str(), url.c_str(),
-               headers.empty() ? nullptr : headers.c_str(),
-               body ? body->data() : nullptr, body ? body->size() : 0,
-               &FetchDone, pending);
+  const char* text_headers = headers.empty() ? nullptr : headers.c_str();
+  const void* bytes = body ? body->data() : nullptr;
+  const size_t size = body ? body->size() : 0;
+  // A Context's network when the application's script names one.
+  if (call.context)
+    zebkit_fetch_in(call.context, method.c_str(), url.c_str(), text_headers, bytes, size, &FetchDone, pending);
+  else
+    zebkit_fetch(method.c_str(), url.c_str(), text_headers, bytes, size, &FetchDone, pending);
 }
 
 unsigned Needs(const std::string& module) {
