@@ -25,11 +25,28 @@ clang-cl /MT app.c /I<package>\include <package>\zebkit.dll.lib <package>\zebkit
 `scripts/engine-test.sh <profile>` tests every layer from programs built
 against the package (`tests/engine/`).
 
-Cookie encryption supports the built-in OS and private-file backends through
-`zebkit_set_cookie_storage()` before startup, or `--zebkit-cookie-storage=file`.
-The file backend is implemented by Zebkit for every host/binding. Advanced
-hosts can still provide their own key with `zebkit_set_cookie_encryption_key()`;
-see [storage and compatibility rules](COOKIE_PERSISTENCE.md#built-in-storage-backends).
+Persistent cookies are kept encrypted in the profile, with one of three keys,
+chosen on the main thread before `zebkit_main()`:
+
+- **The system's key store**, the default (`ZEBKIT_COOKIE_STORAGE_OS`): the
+  Keychain on macOS, the desktop's keyring over D-Bus on Linux, a key the
+  user's DPAPI protects on Windows; cookies in `Network/Cookies`.
+- **A private key file of the engine's**:
+  `zebkit_set_cookie_storage(ZEBKIT_COOKIE_STORAGE_FILE, NULL)`, or
+  `--zebkit-cookie-storage=file` (and `--zebkit-cookie-key-directory=DIR`). The key
+  is `<user-data-dir>/Secrets/cookie.key` unless an absolute directory is given,
+  made on the first start, private to its owner (links and other users' access
+  refused); cookies in `Network/Cookies.host`. It does not reach the system's
+  key store, and protects only as well as the file's permissions: back up the
+  key and the profile together.
+- **The application's own 32-byte key**: `zebkit_set_cookie_encryption_key()`,
+  which the application keeps; also `Network/Cookies.host`.
+
+A key that is missing or invalid for an existing `Cookies.host` fails the start
+(exit code 1); the engine never makes a new key over it. Switching between them
+does not merge the stores, so a switch can mean signing in again. Session
+cookies stay session-only, and in-memory contexts keep no cookies on disk. How
+this was found and checked: [notes/cookie-persistence.md](notes/cookie-persistence.md).
 
 ## Contents
 
@@ -63,7 +80,7 @@ see [storage and compatibility rules](COOKIE_PERSISTENCE.md#built-in-storage-bac
 - [Off-screen views](#off-screen-views)
   - [Another process](#another-process)
   - [In a host window](#in-a-host-window)
-- [Dialogs, PDF, drag and drop](#dialogs-pdf-drag-and-drop)
+- [Dialogs, PDF, drag and drop, find in page](#dialogs-pdf-drag-and-drop-find-in-page)
 - [Media: what a page plays, saved as it plays](#media-what-a-page-plays-saved-as-it-plays)
   - [Native media processing tools](#native-media-processing-tools)
 - [Automation: a screenshot's pixels](#automation-a-screenshots-pixels)
@@ -183,7 +200,7 @@ int main(int argc, char **argv) {
   pass, with fresh profiles on 2026-10-26. This is a reproducible
   compatibility result, not a published Google login requirement or
   official support commitment. Password/MFA and full login were not tested.
-  See [the source references and comparison](GOOGLE_SIGNIN.md).
+  See [the source references and comparison](notes/google-signin.md).
 - **A site's "Sign in with ..." popup.** Sites sign in with Google and
   other providers through a popup, as in Firefox: FedCM, which Chrome
   answers with dialogs of its own and the engine has none for, is off
@@ -211,19 +228,21 @@ int main(int argc, char **argv) {
 - **Data.** The profile is in `--user-data-dir`, by default
   `$XDG_CONFIG_HOME/zebkit/<program name>`
   (`~/Library/Application Support/zebkit/<program name>` on macOS). The
-  log goes to stderr.
-  Persistent cookies are encrypted in the profile's `Network/Cookies`
-  database and survive clean restarts. Cookies without an expiry remain
-  session-only. In-memory/off-the-record contexts are not configured for
-  disk cookies. The OS key store must be available; use the same profile
-  path after restarting. See [cookie persistence](COOKIE_PERSISTENCE.md).
+  log goes to stderr. With no home directory to keep a profile in, the
+  engine uses a private temporary one, deleted as it stops; a
+  `--user-data-dir` that cannot be made fails the start (exit code 1).
+  Persistent cookies are encrypted in the profile and survive clean
+  restarts, with the key chosen above, under the layers; with the default
+  the system's key store must be available. Use the same profile path after
+  restarting.
 - **Passkeys.** Chromium FIDO requests expose a shared host event/action
   interface: `zebkit_view_on_authentication()` and
   `zebkit_view_authentication_action()`. Hosts render their own UI, with
   default desktop presentation when no handler is installed. Off-screen
   views opt in with `zebkit_view_set_authentication_ui()` and maintain focus.
   OS platform credentials depend on platform support and permissions;
-  conditional autofill remains unavailable. See [Passkeys](PASSKEYS.md).
+  conditional autofill remains unavailable. The events' JSON (version 1) and
+  the actions are in [the passkeys notes](notes/passkeys.md#event-schema-version-1).
 - **URL schemes of the application's own.** `zebkit_scheme_register()`,
   before `zebkit_main()`, makes `app:` (say) a scheme of the engine's in
   every process: standard (an origin, relative URLs), secure, open to
@@ -262,16 +281,18 @@ reference:
 | `zebkit_view_attach`, `_set_bounds`, `_set_visible` | A view inside another view's window, a browser in an application |
 | `zebkit_view_attach_native`, `_detach_native` | A view's window inside a window of the application's: an X11 window id, or an `NSView*` on macOS; `_set_bounds`, `_set_visible`, `_resize` and `_focus` then act there. Refused, naming off-screen views, on Wayland and under `--headless` |
 | `zebkit_view_get_native_window` | Borrow the system window containing the page: platform kind plus X11 ID, HWND or NSWindow*. After attachment, the top-level window containing the host. False and NONE/0 for headless/off-screen/Wayland or invalid calls; engine thread only. Never destroy/release the handle; query again after attach/detach |
-| `zebkit_view_export_native_window` | The window as the system's portals name a parent window, asked for asynchronously: `"x11:<XID>"` or `"wayland:<handle>"` (xdg-foreign), so that a portal's dialog is the window's own; the callback once, after the call, NULL when there is none (always on Windows and macOS) |
+| `zebkit_view_export_native_window` | The window as the system's portals name a parent window, asked for asynchronously: `"x11:<XID>"` or `"wayland:<handle>"` (xdg-foreign), so that a portal's dialog is the window's own; the callback, `(view, handle, data)`, once, after the call, NULL when there is none (always on Windows and macOS) or the view closed first |
 | `zebkit_view_on_load`, `_on_title`, `_on_close` | Loads (started, committed, finished, failed), title changes, closing |
+| `zebkit_view_on_process_gone` | The page's process went, as Electron's `render-process-gone`: `{"reason", "exitCode"}`, the reason `crashed`, `killed`, `oom`, `abnormal-exit`, `clean-exit`, `launch-failed`, `integrity-failure` or `memory-eviction`; the view stays open, a reload starts a process again |
+| `zebkit_view_on_responsiveness` | The page stopped answering input and answers again, as Electron's `unresponsive` and `responsive`: `{"responsive": false}`, then `true`. Chromium's hang monitor: after 15 s of input unanswered, while the view is shown and no debugger (a CDP client, a Playwright client's CDP session) is attached; automation (`zebkit_automation_*()`, the Playwright endpoint's own commands) is not a debugger, and a page it drives is told |
 | `zebkit_view_on_new_window` | What a page opens in a new window, to the application as a URL |
 | `zebkit_view_on_window_open` | A window a page opens, to the application as a view still linked to its opener (a site's sign-in popup); off-screen when its opener is |
 | `zebkit_view_on_drop` | Paths of files dropped on the view; `zebkit.pathForFile()` in the page |
 | `zebkit_view_evaluate`, `_add_script` | Script in the page; script in every document before the page's own (a preload) |
 | `zebkit_view_set_user_agent`, `zebkit_view_capture` | The User-Agent; the view as PNG, with or without a window |
-| `zebkit_view_grant`, `_bind`, `zebkit_call_resolve`, `_resolve_json`, `zebkit_call_reject` | What a page may use of `zebkit.*`; the application's functions it may call (`_resolve_json` takes JSON with its length, a part of a larger string as it is) |
+| `zebkit_view_grant`, `_bind`, `zebkit_call_resolve`, `_resolve_json`, `zebkit_call_reject`, `zebkit_call_free` | What a page may use of `zebkit.*`; the application's functions it may call (`_resolve_json` takes JSON with its length, a part of a larger string as it is; `zebkit_call_free` drops a call the application will not answer, rejecting the page's promise) |
 | `zebkit_script_new`, `_run_module`, `_evaluate`, `_on_idle`, `_destroy` | Script outside any page |
-| `zebkit_cdp_listen`, `_get_port`, `_get_url`, `_stop` | The DevTools endpoint |
+| `zebkit_cdp_listen`, `zebkit_cdp_listen_async`, `_get_port`, `_get_url`, `_stop` | The DevTools endpoint; `_async` does not wait for the server's thread and gives the port and the browser target's address. Asking for another address or port while it runs is an error |
 | `zebkit_scheme_register`, `_handle`, `zebkit_request_url`, `_method`, `_headers`, `_body`, `zebkit_request_respond`, `_respond_file` | URL schemes of the application's own |
 
 ## The window: `<zebkit/window.h>`
@@ -354,7 +375,10 @@ asynchronously, so the callback runs once, on the engine thread, after the call
 returns, also when the request is dropped; its string is the callback's to copy,
 and NULL means there is none (headless, off-screen, a compositor without
 xdg-foreign, the view closed; always on Windows and macOS, whose handle is the
-one above). Rust has `View::export_native_window(|handle| ...)`, Python
+one above). A view that closes first is told NULL before its `on_close`, the
+view still valid, as every callback the engine owes a view. The callback is
+`(zebkit_view *view, const char *handle, void *data)`; before 0.5.0 it was
+`(void *data, const char *handle)`. Rust has `View::export_native_window(|handle| ...)`, Python
 `View.export_native_window(function)`, host JavaScript a promise,
 `await view.exportNativeWindow()`.
 
@@ -381,6 +405,7 @@ status is in its section 5. Engine thread only.
 | `zebkit_tray_new(png, size, tooltip, &error)` and `_set_icon`, `_set_tooltip`, `_set_menu`, `_on_click`, `_close` | `zebkit.Tray(png, tooltip)` | `Tray::new(png, tooltip)` | `new zebkit.Tray(png, tooltip)` |
 | `zebkit_on_notification(func, data)`, `zebkit_notification_clicked(id, action)`, `zebkit_notification_closed(id, by_user)` | `zebkit.on_notification(fn)`, `notification_clicked`, `notification_closed` | `system::on_notification`, ... | `zebkit.onNotification(fn)`, `notificationClicked`, `notificationClosed` |
 | `zebkit_open_external(url, &error)`, `zebkit_show_in_folder(path, &error)` | `zebkit.open_external(url)`, `show_in_folder(path)` | `system::open_external`, `system::show_in_folder` | `zebkit.openExternal(url)`, `showInFolder(path)` |
+| `zebkit_open_external_async(url, func, data)`, `zebkit_show_in_folder_async(path, func, data)` | `zebkit.open_external_async(url, fn)`, `show_in_folder_async(path, fn)` | `system::open_external_async`, `system::show_in_folder_async` | `await zebkit.openExternalAsync(url)`, `showInFolderAsync(path)` |
 | `zebkit_get_displays()`, `zebkit_on_displays_changed(func, data)` | `zebkit.displays()`, `on_displays_changed(fn)` | `system::displays()`, `system::on_displays_changed` | `zebkit.displays()`, `onDisplaysChanged(fn)` |
 | `zebkit_on_power_event(func, data)` | `zebkit.on_power_event(fn)` | `system::on_power_event` | `zebkit.onPowerEvent(fn)` |
 | `zebkit_prevent_sleep(keep_display_on, reason)`, `zebkit_allow_sleep(token)` | `zebkit.prevent_sleep(reason)`, `allow_sleep(token)` | `system::prevent_sleep`, `system::allow_sleep` | `zebkit.preventSleep(reason)`, `allowSleep(token)` |
@@ -391,7 +416,11 @@ status is in its section 5. Engine thread only.
 | `zebkit_view_on_media_access(...)` with `"type": "display"` | `view.on_media_access(fn)`; `request.respond(True, None, "view")` | `view.on_media_access(fn)` | `view.onMediaAccess(fn)` |
 
 - **Events** are JSON. Power: `{"event": "suspend" | "resume" | "lock" |
-  "unlock"}`, `{"event": "power-source", "onBattery"}`. Displays:
+  "unlock"}`, `{"event": "power-source", "onBattery"}`. Lock and unlock come
+  from the system's own notifications: macOS's screen-lock notifications,
+  Windows' session changes, and on Linux the desktop screen saver's D-Bus
+  signal (GNOME, Cinnamon, MATE, Xfce and freedesktop's); a Linux desktop
+  without a screen saver service tells nothing. Displays:
   `[{id, bounds, workArea, scale, rotation, primary}]` in DIPs.
   Notifications, when the application shows them: `{"event": "show", id,
   persistent, origin, title, body, icon, image, badge, tag, lang, silent,
@@ -417,6 +446,11 @@ status is in its section 5. Engine thread only.
   `file:` URL's default program) and refuses `javascript:`, `data:`, `blob:`,
   `about:` and invalid URLs; `zebkit_show_in_folder()` takes an absolute
   path. The URL or path is one argument to the system, never a shell's.
+  Both work off the engine's thread and return true once the request is
+  valid and handed to the system; the `_async` forms tell how it went,
+  `(done, error, data)`, once, after the call (an invalid URL or path, a file
+  that is not there, no program for the URL). macOS's Finder says nothing of
+  itself: done once it is asked.
 
 ## Runtime view preferences
 
@@ -431,7 +465,7 @@ For example, `{"javaScript":false,"images":false,"defaultFontSize":20,
 `View::set_settings` and `settings`; Python `view.set_settings({...})` and
 `view.settings`; host JavaScript `view.setSettings({...})` and `view.settings`.
 Temporary CDP emulation is separate. The complete field list, limits, reset
-behavior and tests are in [the hooks contract](ROADMAP_HOOKS.md#each-hook).
+behavior and tests are in [the hooks contract](HOOKS.md#each-hook).
 
 ## Runtime settings of the engine and of a view
 
@@ -470,7 +504,7 @@ use Chromium's own override table and subscriptions; later changes take effect
 in the permission's native Chromium scope. Worker policy remains context scoped.
 
 Rust, Python and host JavaScript expose the same rules and request lifecycle.
-See [the hooks contract](ROADMAP_HOOKS.md#each-hook) for limits and bindings.
+See [the hooks contract](HOOKS.md#each-hook) for limits and bindings.
 
 Besides Chromium's permissions (by their Permissions API names, such as
 `geolocation`, `camera`, `clipboard-read`), three are the engine's own, asked
@@ -494,6 +528,9 @@ the deadline) is asked again the next time; an answer, or a rule, holds.
 the same frame. Metadata includes navigation/frame IDs, redirects and response
 headers; a default 30-second deadline continues unanswered stages. Old tokens
 cannot answer later stages. Handler removal continues pending stages.
+`zebkit_view_on_navigation_result` tells each outcome: `state` `continued`,
+`cancelled` or `redirected` (with `replacementUrl`) and a `reason`, as every
+hook's outcome ([the outcome](HOOKS.md#the-outcome)).
 
 Rust uses `View::on_navigation` and `NavigationAction`; Python
 `view.on_navigation` and `request.respond`; host JavaScript `view.onNavigation`
@@ -507,7 +544,7 @@ tab targets, so evaluating a page does not disable prerendering. New page target
 inherit native initialization scripts and the host's UA override before their
 own scripts execute. Script registrations have view-owned opaque identifiers;
 removal clears both current target registrations and future replay state.
-See [the hooks contract](ROADMAP_HOOKS.md#each-hook).
+See [the hooks contract](HOOKS.md#each-hook).
 
 ## Views: popups, console, certificates, user agent, sign-in
 
@@ -521,7 +558,7 @@ identifier is freed with `zebkit_free()`. Rust exposes `View::target_id()`
 and `clear_new_window_handler()`. Python exposes `View.target_id()`.
 A URL-only `on_new_window` callback cancels the original operation and cannot
 preserve a form's POST or `window.opener`; see
-[the integration regression](GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup).
+[the integration regression](notes/google-signin.md#integrated-browser-preserve-the-original-authorization-popup).
 
 ### New-window decisions and creation metadata
 
@@ -618,10 +655,11 @@ requests. Mac compilation evidence does not establish Mac runtime behavior.
 object with required string `userAgent` and optional `acceptLanguage`, `platform`
 and `userAgentMetadata`, using Chromium's `Emulation.setUserAgentOverride`
 parameter format. The input is limited to 65536 UTF-8 bytes; unknown top-level
-options are rejected. The return value reports whether the command was queued,
-not whether Chromium accepted its values. Completion receives `{}` and no error
-on success, or a null value and an error. Syntax/schema rejection can complete
-synchronously. Call on the engine thread.
+options are rejected. On a live view, on the engine's thread, it returns true,
+and the callback is told exactly once, after it returns: `{}` and no error on
+success, or a null value and the error, invalid JSON or options among them.
+It returns false, and the callback is never called, only for a NULL or closed
+view or off the engine's thread.
 
 Chromium validates metadata before it is saved for future targets. Invalid
 updates leave the previous renderer/network override and replay state intact.
@@ -633,7 +671,10 @@ the last command across different sessions is not guaranteed to win.
 
 Python provides `View.set_user_agent_override(options, function=None)`, with a
 dictionary or JSON string and completion `(value, error)`. Rust's corresponding
-View method accepts JSON and a `FnOnce(Result<String, Error>)`; host JavaScript's
+View method accepts JSON and a `FnOnce(Result<String, Error>)`. Both follow the
+C rule: invalid options return true and are told once, after the call returns;
+false, the function never called, only for a closed view (or, in Python, the
+wrong thread). Host JavaScript's
 `view.setUserAgentOverride(options)` returns a promise. Existing string-only
 `zebkit_view_set_user_agent` remains available and ignores invalid HTTP-header
 values without changing saved settings.
@@ -662,8 +703,9 @@ credentials supplied in replies are not added to metadata or result JSON.
 `zebkit_view_set_http_auth_timeout` accepts 1..300000 ms for future challenges,
 default 30000. Monotonic deadlines, navigation, stopping, closing and handler
 replacement invalidate requests. `zebkit_view_on_http_auth_result` observes
-asynchronous outcome metadata with `provided` and a reason. Closing cancels
-pending reports. At most 1024 challenges wait.
+asynchronous outcome metadata with `state` `provided` or `cancelled` and a
+`reason` ([the outcome](HOOKS.md#the-outcome)). A closing view's
+challenges end without an outcome (`on_close` is the signal). At most 1024 challenges wait.
 
 Python exposes `HttpAuthRequest`, `View.on_http_auth`, `on_http_auth_result` and
 `set_http_auth_timeout`; requests provide `info` and `respond(user, password)`
@@ -689,7 +731,7 @@ function, and once that opener closed, the popup is refused.
 | Hook | C | Python | Rust | Host JavaScript | Unanswered |
 |---|---|---|---|---|---|
 | Links to other programs | `zebkit_view_on_external_protocol` | `on_external_protocol` | `on_external_protocol` | `onExternalProtocol` | told only |
-| Downloads | `zebkit_view_on_download`, `_progress`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `DownloadRequest.respond('save', path)` | `on_download`, `DownloadRequest::save`, `cancel` | `onDownload`, `respond('save', path)` | cancelled |
+| Downloads | `zebkit_view_on_download`, `_progress`, `_result`, `zebkit_download_respond`, `zebkit_view_cancel_download` | `on_download`, `on_download_result`, `DownloadRequest.respond('save', path)` | `on_download`, `on_download_result`, `DownloadRequest::save`, `cancel` | `onDownload`, `onDownloadResult`, `respond('save', path)` | cancelled |
 | Client certificates | `zebkit_view_on_client_certificate`, `zebkit_client_certificate_respond`, `zebkit_client_certificate_choose` | `on_client_certificate`, `respond('provide', pem, key)`, `choose(index)` | `on_client_certificate`, `provide`, `respond`, `choose` | `onClientCertificate`, `respond('provide', pem, key)`, `respond('choose', index)` | request fails |
 | Isolated worlds | `zebkit_view_add_world_script` | `add_world_script(source, world, main_frame_only)` | `add_world_script` | `addWorldScript(source, {world, mainFrameOnly})` | not asked |
 | File choosers | `zebkit_view_on_file_chooser`, `zebkit_file_chooser_respond` | `on_file_chooser`, `respond([paths])` | `on_file_chooser`, `respond(&[paths])` | `onFileChooser`, `respond([paths])` | cancelled |
@@ -697,9 +739,17 @@ function, and once that opener closed, the popup is refused.
 | Keys | `zebkit_view_set_reserved_keys`, `zebkit_view_on_reserved_key` | `set_reserved_keys`, `on_reserved_key` | same | `setReservedKeys`, `onReservedKey` | not asked |
 | Context menu | `zebkit_view_on_context_menu` | `on_context_menu` | `on_context_menu` | `onContextMenu` | told only |
 | Fullscreen | `zebkit_view_set_fullscreen_policy`, `zebkit_view_on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `set_fullscreen_policy`, `on_fullscreen` | `setFullscreenPolicy`, `onFullscreen` | not asked |
-| Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/ROADMAP_HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
+| Network, also `zebkit_view_set_network_filter_for_workers`, `zebkit_view_on_network_body`, `zebkit_network_respond_file`, `zebkit_network_respond_stream` in each language (`docs/HOOKS.md`) | `zebkit_view_set_network_filter`, `zebkit_view_on_network`, `zebkit_network_respond`, `zebkit_view_on_network_event` | `set_network_filter`, `on_network`, `respond('block')`, `on_network_event` | `set_network_filter`, `on_network`, `respond(json, body)`, `on_network_event` | `setNetworkFilter`, `onNetwork`, `respond({action}, body)`, `onNetworkEvent` | goes on |
 
 Asked hooks also have `zebkit_view_set_<hook>_timeout` and `zebkit_<hook>_request_info`.
+Each tells its outcome in one form, the request's metadata with `state` and `reason`
+([the outcome](HOOKS.md#the-outcome)): to its `*_result` function, to the network's events
+for a held request, and for downloads to `zebkit_view_on_download_result`, whose `state` is
+`saved` or `cancelled`. Requests of a closing view end without an outcome, `on_close`
+being the signal (`respond()` returns false from then on), and those the engine ends as it
+stops are refused and never told. A refused reply says why: `char **error` in C, `request.error` in host
+JavaScript. Console and network events count what they had to drop as `dropped`, a number.
+A device chooser's serial `filters` have `vendorId` and `productId`, as USB's and HID's do.
 
 How each download ends is told to `zebkit_view_on_download_progress()`'s function: `outcome`
 `complete` (with `savedPath`, the file's final path), `cancelled` (by the application, the
@@ -712,6 +762,8 @@ failed one has `error` `{category, code, name, message, resumable}`, its categor
 `Browser.downloadProgress` says `canceled` for a failure as well, as Chrome's does; a CDP client
 gets these reports instead as `Zebkit.downloadProgress` after `Zebkit.setDownloadEvents
 {enabled: true}`, on a page's session for that page's downloads, on the browser's for all.
+The network hook's `response` and `headersReceived` stages have `remoteAddress`, the IP address
+the response came from (absent when the network gives none, as through some proxies).
 Rules of the network hook at the `sendHeaders`, `sent` and `headersReceived` stages see what the
 network adds, Cookie and Set-Cookie, and at `sent` Authorization and Host, as DevTools does; those
 that hold fail closed (`<zebkit/hooks.h>`).
@@ -720,7 +772,7 @@ Client certificates come from the application, or, with the engine setting
 `clientCertificateStores`, from the operating system's store: the request's `identities` (subject,
 issuer, validity, SHA-256, the PEM certificate) of the user's NSS database on Linux, Keychain on
 macOS and the user's `MY` store on Windows, of which `choose(index)` answers with one; its key stays
-in the store, which signs. Limits are in `docs/ROADMAP_HOOKS.md`.
+in the store, which signs. Limits are in `docs/HOOKS.md`.
 
 ## 1. The libraries inside the engine
 
@@ -1010,6 +1062,12 @@ object is `New...` (`NewView`, `NewTray`), one that reads is the noun
 (`AppMenu`, `EngineSettings`, `CDPPort`) and one that sets a callback starts
 with `On` (`OnAppReopen`); the rest is in Go's case, initialisms in capitals
 (`CDP`, `PDF`, `URL`).
+Playwright's typed API, as Rust's `zebkit::automation` and Python's
+`zebkit.automation` have it, is the package
+`github.com/ikey4u/zebkit/bindings/golang/automation` (`automation.NewPage(view)`,
+`page.On(kind, fn)`, `GetByRole(role, automation.RoleOptions{Name: ...})`,
+`automation.Expect(locator)`; `docs/AUTOMATION.md`); the root package keeps
+the low level, `CallAutomation` and `View.OnAutomationEvent`.
 
 `scripts/check-bindings.py` checks that Rust, Python, Go and host JavaScript
 each reach every function the headers export.
@@ -1096,6 +1154,7 @@ const packed = await zebkit.compress('zstd', new TextEncoder().encode('...'), 19
 | In the script | What |
 |---|---|
 | `zebkit.View(url, {width, height})` | `load`, `reload`, `back`, `forward`, `resize`, `close`, `url`, `title`, `evaluate(script)`, `grant(origin, capabilities, filesRoot)`, `bind(name, fn)`, `on('load' \| 'title' \| 'close', fn)` |
+| `view.on('navigation-result' \| 'certificate-result' \| 'http-auth-result' \| 'permission-result' \| 'popup-blocked' \| 'console' \| 'window-state', fn)` | `fn(event, view)`: what the hook tells, and the View it is of, which is a popup's View while its opener decides for it |
 | `zebkit.fetch`, `fs`, `compress`, `decompress`, `crypto`, `image`, `url`, `pdf` | As in a page (layer 4), with no grant: the script is the application; `fs` takes any path, and `pdf.open` a path as well as bytes |
 | `zebkit.args`, `zebkit.quit()`, `zebkit.version`, `zebkit.engineVersion`, `zebkit.isHeadless()` | |
 | `console`, `setTimeout`, `setInterval`, `TextEncoder`, `TextDecoder` | |
@@ -1210,7 +1269,10 @@ int main(int argc, char **argv) { return zebkit_main(argc, argv, ready, NULL); }
   Also in a process without windows (`--headless`, or Linux without a display), as
   an application's helper process that draws pages for it
   (`examples/offscreen-host`). On Windows only there; elsewhere
-  `zebkit_view_new_offscreen()` returns NULL.
+  `zebkit_view_new_offscreen()` returns NULL. `zebkit_view_new_offscreen_ex(context,
+  url, width, height, scale, &error)` says why: another thread than the engine's, a
+  closed context, the engine stopping, a process with windows on Windows, a Wayland
+  process; the other forms log the reason.
 - **Frames are shared surfaces, never encoded.** The engine captures the
   view's compositor frames with viz's `FrameSinkVideoCapturer`, as Chrome's
   tab capture and Electron's shared texture do: the GPU process copies a
@@ -1340,7 +1402,7 @@ Commands on UP/CHAR and more than 128 commands are rejected. Ordinary
 `View::send_key_with_commands`; the AppKit example collects selectors and
 text-input actions before forwarding the event.
 
-## Dialogs, PDF, drag and drop
+## Dialogs, PDF, drag and drop, find in page
 
 `<zebkit/page.h>`: what a page asks of its window, for the application
 (or a CDP client) to answer. Any view, with a window or off-screen.
@@ -1394,7 +1456,7 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
 
   | Policy | A dialog is |
   |---|---|
-  | `ZEBKIT_DIALOG_POLICY_DEFAULT` | held for the application when it set a function; else held for a CDP client attached to the page, as headless Chrome holds it; else what the view's window has: on macOS a system alert; on Windows a message box for alert, confirm and beforeunload, with prompt() null (not run yet on a Windows machine); on Linux and in every off-screen view or `--headless` process nothing, dismissed at once (confirm false, prompt null, beforeunload leaves) |
+  | `ZEBKIT_DIALOG_POLICY_DEFAULT` | held for the application when it set a function; else held for a CDP client attached to the page, as headless Chrome holds it; else what the view's window has, as in Chrome: a sheet on macOS, Chromium's views dialog on Linux and Windows (prompt() with its text field), and the page waits for the person to answer it; an automation client listening for dialogs has them instead (dismissed at once without a handler, as Playwright does); in every off-screen view or `--headless` process nothing, dismissed at once (confirm false, prompt null, beforeunload leaves) |
   | `ZEBKIT_DIALOG_POLICY_HOLD` | always held until answered |
   | `ZEBKIT_DIALOG_POLICY_ACCEPT` | answered OK at once (confirm true, prompt its default, beforeunload leaves), and reported |
   | `ZEBKIT_DIALOG_POLICY_DISMISS` | answered Cancel at once (confirm false, prompt null, beforeunload stays), and reported |
@@ -1459,8 +1521,11 @@ zebkit_view_drop(view, 120, 80, 0, NULL, NULL);
 
 In Rust, `zebkit::page` and the `View` methods it adds (`on_dialog`,
 `set_dialog_policy`, `respond_dialog`, `print_to_pdf`, `on_drag_start`,
-`drag_enter`, `drop_data`, `find`, `stop_finding`, `on_find`, ...); in
-Python `view.find()`, `stop_finding()`, `on_find()`, `find_result()`; in Go
+`drag_enter`, `drop_data`, `find` (answering `Result<i32, Error>`),
+`stop_finding`, `on_find` with a `FindResult`, ...); in Python `view.find()`
+(raising `zebkit.Error` for a NUL, text that is not UTF-8 or the engine's
+refusal), `stop_finding()`, `on_find()`, `find_result()`, with a
+`zebkit.FindResult`; in Go
 `View.Find`, `StopFinding`, `OnFind`, `FindResult`; in host JavaScript
 `view.find(text, {matchCase, backward, highlightOnly})`, `stopFinding()`,
 `findResult` and the `'find'` event.

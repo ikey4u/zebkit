@@ -3,7 +3,7 @@
 //   zebkit-js --headless --no-sandbox app.mjs <base URL> <empty directory>
 //
 // Throws, and so fails, when a check fails.
-import {check, results, sleep} from './helpers.mjs';
+import {check, finish, sleep} from './helpers.mjs';
 
 const [base, directory] = zebkit.args;
 const text = (bytes) => new TextDecoder().decode(bytes);
@@ -264,7 +264,5 @@ await check('canvas in a page not granted it: refused', () => new Promise((resol
   });
 }));
 
-const failed = results.filter(([, outcome]) => outcome !== true);
-console.log(`${results.length - failed.length} of ${results.length} checks passed`);
-if (failed.length) throw new Error(`${failed.length} checks failed`);
+finish();
 // Nothing is pending and no view is open: zebkit-js ends by itself.

@@ -15,7 +15,7 @@ static int add(zebkit_pdf *pdf, int page, const char *json) {
     char *error = NULL;
     const int index = zebkit_pdf_annotation_add(pdf, page, json, &error);
     if (index < 0) {
-        check(0, json, error);
+        check_text(0, json, error);
         zebkit_free(error);
     }
     return index;
@@ -54,7 +54,7 @@ static void test_line_endings(void) {
         plain = render(pdf, 0);
         zebkit_pdf_close(pdf);
     }
-    check(near_color(at(&plain, 150, 100), 255, 0, 0) && white(at(&plain, 150, 106)), "a line", NULL);
+    check_text(near_color(at(&plain, 150, 100), 255, 0, 0) && white(at(&plain, 150, 106)), "a line", NULL);
     for (int i = 0; i < kNames; ++i) {
         char json[256];
         snprintf(json, sizeof(json),
@@ -64,11 +64,11 @@ static void test_line_endings(void) {
         zebkit_pdf *pdf = blank(300, 200);
         add(pdf, 0, json);
         shots[i] = render(pdf, 0);
-        check(inked(&shots[i], 40, 102, 60, 112) > 0 && inked(&shots[i], 240, 102, 260, 112) > 0, names[i],
+        check_text(inked(&shots[i], 40, 102, 60, 112) > 0 && inked(&shots[i], 240, 102, 260, 112) > 0, names[i],
               "reaches beside the line, at both ends");
         zebkit_pdf *again = reopened(pdf);
         shot after = render(again, 0);
-        check(same_pixels(&shots[i], &after) && listed(again, 0, names[i]), "the same after a save", names[i]);
+        check_text(same_pixels(&shots[i], &after) && listed(again, 0, names[i]), "the same after a save", names[i]);
         done(&after);
         zebkit_pdf_close(again);
         zebkit_pdf_close(pdf);
@@ -76,10 +76,10 @@ static void test_line_endings(void) {
     for (int i = 0; i < kNames; ++i) {
         for (int j = i + 1; j < kNames; ++j) {
             if (same_pixels(&shots[i], &shots[j]))
-                check(0, "two endings look the same", names[i]);
+                check_text(0, "two endings look the same", names[i]);
         }
     }
-    check(near_color(at(&shots[1], 243, 100), 0, 0, 255), "a closed arrow is filled with interiorColor", NULL);
+    check_text(near_color(at(&shots[1], 243, 100), 0, 0, 255), "a closed arrow is filled with interiorColor", NULL);
     for (int i = 0; i < kNames; ++i)
         done(&shots[i]);
     done(&plain);
@@ -93,18 +93,18 @@ static void test_leader_and_caption(void) {
         "\"caption\":{\"show\":true,\"position\":\"inline\"}}");
     shot s = render(pdf, 0);
     /* Leader lines rise from the ends; the line is drawn at their height. */
-    check(near_color(at(&s, 50, 120), 255, 0, 0) && near_color(at(&s, 250, 120), 255, 0, 0), "leader lines", NULL);
-    check(near_color(at(&s, 80, 143), 255, 0, 0) && white(at(&s, 80, 100)), "the line at the leaders' height", NULL);
-    check(near_color(at(&s, 50, 147), 255, 0, 0), "the leaders' extension past it", NULL);
+    check_text(near_color(at(&s, 50, 120), 255, 0, 0) && near_color(at(&s, 250, 120), 255, 0, 0), "leader lines", NULL);
+    check_text(near_color(at(&s, 80, 143), 255, 0, 0) && white(at(&s, 80, 100)), "the line at the leaders' height", NULL);
+    check_text(near_color(at(&s, 50, 147), 255, 0, 0), "the leaders' extension past it", NULL);
     /* An inline caption breaks the line: its middle has the text, not a line. */
-    check(inked(&s, 130, 138, 170, 150) > 10, "the caption is drawn", NULL);
-    check(white(at(&s, 137, 150)) || white(at(&s, 137, 136)), "the line is broken around it", NULL);
-    check(listed(pdf, 0, "\"position\":\"inline\"") && listed(pdf, 0, "\"length\":40"), "read back", NULL);
+    check_text(inked(&s, 130, 138, 170, 150) > 10, "the caption is drawn", NULL);
+    check_text(white(at(&s, 137, 150)) || white(at(&s, 137, 136)), "the line is broken around it", NULL);
+    check_text(listed(pdf, 0, "\"position\":\"inline\"") && listed(pdf, 0, "\"length\":40"), "read back", NULL);
     /* Rect covers all of it, so the file's own /Rect is right. */
-    check(listed(pdf, 0, "\"rect\":[") && !listed(pdf, 0, "\"rect\":[0.0,0.0,0.0,0.0]"), "a rect from the points", NULL);
+    check_text(listed(pdf, 0, "\"rect\":[") && !listed(pdf, 0, "\"rect\":[0.0,0.0,0.0,0.0]"), "a rect from the points", NULL);
     zebkit_pdf *again = reopened(pdf);
     shot after = render(again, 0);
-    check(same_pixels(&s, &after), "the same after a save", NULL);
+    check_text(same_pixels(&s, &after), "the same after a save", NULL);
     done(&after);
     zebkit_pdf_close(again);
     /* The font is in the file: PDFium would fall back to one, other readers not. */
@@ -116,7 +116,7 @@ static void test_leader_and_caption(void) {
             found_null_reference |= !memcmp(file + i, " 0 0 R", 6);
             found_font |= !memcmp(file + i, "/Helvetica", 10) && i + 10 < size;
         }
-        check(!found_null_reference && found_font, "a standard font is written into the stream's resources", NULL);
+        check_text(!found_null_reference && found_font, "a standard font is written into the stream's resources", NULL);
         zebkit_free(file);
     }
     /* On top of the line. */
@@ -124,7 +124,7 @@ static void test_leader_and_caption(void) {
                 "\"contents\":\"top\",\"caption\":{\"show\":true,\"position\":\"top\"}}");
     done(&s);
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 200), 0, 0, 255) && inked(&s, 130, 203, 170, 215) > 5, "a caption above an unbroken line",
+    check_text(near_color(at(&s, 150, 200), 0, 0, 255) && inked(&s, 130, 203, 170, 215) > 5, "a caption above an unbroken line",
           NULL);
     done(&s);
     zebkit_pdf_close(pdf);
@@ -147,11 +147,11 @@ static void test_shape_borders(void) {
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[50,50,250,250],\"color\":[0,0,0],"
                 "\"borderStyle\":{\"style\":\"dashed\",\"width\":2,\"dash\":[6,6]}}");
     shot s = render(pdf, 0);
-    check(runs_along(&s, 51, 60, 240) > 10, "a dashed square", NULL);
+    check_text(runs_along(&s, 51, 60, 240) > 10, "a dashed square", NULL);
     done(&s);
     zebkit_pdf *again = reopened(pdf);
     s = render(again, 0);
-    check(runs_along(&s, 51, 60, 240) > 10 && listed(again, 0, "\"style\":\"dashed\""), "the same after a save", NULL);
+    check_text(runs_along(&s, 51, 60, 240) > 10 && listed(again, 0, "\"style\":\"dashed\""), "the same after a save", NULL);
     done(&s);
     zebkit_pdf_close(again);
     zebkit_pdf_close(pdf);
@@ -160,7 +160,7 @@ static void test_shape_borders(void) {
     add(pdf, 0, "{\"type\":\"circle\",\"rect\":[50,50,250,250],\"color\":[0,0,0],\"interiorColor\":[255,255,0],"
                 "\"borderStyle\":{\"style\":\"dashed\",\"width\":2}}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 150), 255, 255, 0) && white(at(&s, 55, 55)), "a dashed circle, filled", NULL);
+    check_text(near_color(at(&s, 150, 150), 255, 255, 0) && white(at(&s, 55, 55)), "a dashed circle, filled", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 
@@ -185,11 +185,11 @@ static void test_shape_borders(void) {
         add(pdf, 0, shapes[i]);
         add(other, 0, plains[i]);
         shot cloud = render(pdf, 0), straight = render(other, 0);
-        check(!same_pixels(&cloud, &straight) && inked(&cloud, 40, 40, 260, 260) > inked(&straight, 40, 40, 260, 260),
+        check_text(!same_pixels(&cloud, &straight) && inked(&cloud, 40, 40, 260, 260) > inked(&straight, 40, 40, 260, 260),
               "a cloud has more edge than a straight line", shapes[i]);
         zebkit_pdf *saved = reopened(pdf);
         shot kept = render(saved, 0);
-        check(same_pixels(&cloud, &kept) && listed(saved, 0, "cloudy"), "the same after a save", NULL);
+        check_text(same_pixels(&cloud, &kept) && listed(saved, 0, "cloudy"), "the same after a save", NULL);
         done(&kept);
         zebkit_pdf_close(saved);
         done(&cloud);
@@ -204,7 +204,7 @@ static void test_shape_borders(void) {
     s = render(pdf, 0);
     {
         const uint8_t *p = at(&s, 150, 150);
-        check(abs(p[0] - 128) < 20 && abs(p[2] - 128) < 20, "opacity in a fill", NULL);
+        check_text(abs(p[0] - 128) < 20 && abs(p[2] - 128) < 20, "opacity in a fill", NULL);
     }
     done(&s);
     zebkit_pdf_close(pdf);
@@ -212,11 +212,11 @@ static void test_shape_borders(void) {
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[50,50,250,250],\"interiorColor\":[255,255,0],\"border\":0}");
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[100,100,200,200],\"interiorColor\":[0,255,255],\"border\":0,\"blend\":\"Multiply\"}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 150), 0, 255, 0) && near_color(at(&s, 70, 70), 255, 255, 0), "blend: Multiply over yellow", NULL);
+    check_text(near_color(at(&s, 150, 150), 0, 255, 0) && near_color(at(&s, 70, 70), 255, 255, 0), "blend: Multiply over yellow", NULL);
     done(&s);
     again = reopened(pdf);
     s = render(again, 0);
-    check(near_color(at(&s, 150, 150), 0, 255, 0) && listed(again, 0, "\"blend\":\"Multiply\""), "the same after a save", NULL);
+    check_text(near_color(at(&s, 150, 150), 0, 255, 0) && listed(again, 0, "\"blend\":\"Multiply\""), "the same after a save", NULL);
     done(&s);
     zebkit_pdf_close(again);
     zebkit_pdf_close(pdf);
@@ -226,7 +226,7 @@ static void test_shape_borders(void) {
     add(pdf, 0, "{\"type\":\"highlight\",\"rect\":[100,100,200,200],\"color\":[0,255,255],\"blend\":\"Normal\","
                 "\"quads\":[[100,200,200,200,100,100,200,100]]}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 150), 0, 255, 255), "blend replaced on a highlight", NULL);
+    check_text(near_color(at(&s, 150, 150), 0, 255, 255), "blend replaced on a highlight", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 
@@ -234,18 +234,18 @@ static void test_shape_borders(void) {
     pdf = blank(300, 300);
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[100,140,200,160],\"interiorColor\":[255,0,0],\"border\":0,\"rotation\":90}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 190), 255, 0, 0) && near_color(at(&s, 150, 110), 255, 0, 0) && white(at(&s, 190, 150)),
+    check_text(near_color(at(&s, 150, 190), 255, 0, 0) && near_color(at(&s, 150, 110), 255, 0, 0) && white(at(&s, 190, 150)),
           "rotation 90: wide became tall", NULL);
-    check(listed(pdf, 0, "\"rotation\":90"), "rotation read back", NULL);
+    check_text(listed(pdf, 0, "\"rotation\":90"), "rotation read back", NULL);
     /* Changing something else keeps the turned box, not a growing one. */
     zebkit_pdf_annotation_update(pdf, 0, 0, "{\"interiorColor\":[0,0,255]}", NULL);
     done(&s);
     s = render(pdf, 0);
-    check(near_color(at(&s, 150, 190), 0, 0, 255) && white(at(&s, 190, 150)), "it stays that shape when changed", NULL);
+    check_text(near_color(at(&s, 150, 190), 0, 0, 255) && white(at(&s, 190, 150)), "it stays that shape when changed", NULL);
     done(&s);
     zebkit_pdf_annotation_update(pdf, 0, 0, "{\"rotation\":null}", NULL);
     s = render(pdf, 0);
-    check(near_color(at(&s, 190, 150), 0, 0, 255) && white(at(&s, 150, 190)), "rotation removed: its box again", NULL);
+    check_text(near_color(at(&s, 190, 150), 0, 0, 255) && white(at(&s, 150, 190)), "rotation removed: its box again", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
     /* Polylines end too. */
@@ -253,7 +253,7 @@ static void test_shape_borders(void) {
     add(pdf, 0, "{\"type\":\"polyline\",\"vertices\":[[50,50],[250,50],[250,250]],\"color\":[255,0,0],\"border\":2,"
                 "\"lineEndings\":[\"butt\",\"closedArrow\"],\"interiorColor\":[0,255,0]}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 50, 52), 255, 0, 0) && near_color(at(&s, 250, 243), 0, 255, 0), "a polyline's endings", NULL);
+    check_text(near_color(at(&s, 50, 52), 255, 0, 0) && near_color(at(&s, 250, 243), 0, 255, 0), "a polyline's endings", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 }
@@ -262,16 +262,16 @@ static void test_free_text(void) {
     zebkit_pdf *pdf = blank(300, 300);
     char *error = NULL;
     /* The font as a family; Ahem's boxes make pixels certain. */
-    check(zebkit_pdf_font_add(pdf, "Ahem", font_bytes, font_size, NULL), "a font for free text", NULL);
-    check(!zebkit_pdf_font_add(pdf, "Bad", "nope", 4, &error) && error, "what is not a font fails", error);
+    check_text(zebkit_pdf_font_add(pdf, "Ahem", font_bytes, font_size, NULL), "a font for free text", NULL);
+    check_text(!zebkit_pdf_font_add(pdf, "Bad", "nope", 4, &error) && error, "what is not a font fails", error);
     zebkit_free(error);
     error = NULL;
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[50,200,250,280],\"contents\":\"XX\",\"font\":\"Ahem\",\"fontSize\":20,"
                 "\"textColor\":[255,0,0],\"color\":[255,255,200],\"borderStyle\":{\"width\":2},\"borderColor\":[0,0,255]}");
     shot s = render(pdf, 0);
-    check(near_color(at(&s, 60, 268), 255, 0, 0), "the font, the size, the colour", NULL);
-    check(near_color(at(&s, 240, 220), 255, 255, 200), "the background", NULL);
-    check(near_color(at(&s, 150, 201), 0, 0, 255), "the border's own colour", NULL);
+    check_text(near_color(at(&s, 60, 268), 255, 0, 0), "the font, the size, the colour", NULL);
+    check_text(near_color(at(&s, 240, 220), 255, 255, 200), "the background", NULL);
+    check_text(near_color(at(&s, 150, 201), 0, 0, 255), "the border's own colour", NULL);
     done(&s);
     /* Alignment. */
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[50,100,250,140],\"contents\":\"X\",\"font\":\"Ahem\",\"fontSize\":20,"
@@ -279,19 +279,19 @@ static void test_free_text(void) {
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[50,50,250,90],\"contents\":\"X\",\"font\":\"Ahem\",\"fontSize\":20,"
                 "\"align\":\"center\"}");
     s = render(pdf, 0);
-    check(!white(at(&s, 240, 125)) && white(at(&s, 60, 125)), "aligned right", NULL);
-    check(!white(at(&s, 150, 75)) && white(at(&s, 60, 75)) && white(at(&s, 240, 75)), "aligned to the centre", NULL);
+    check_text(!white(at(&s, 240, 125)) && white(at(&s, 60, 125)), "aligned right", NULL);
+    check_text(!white(at(&s, 150, 75)) && white(at(&s, 60, 75)) && white(at(&s, 240, 75)), "aligned to the centre", NULL);
     done(&s);
     /* It wraps at the box, and changing the text redraws it. */
     zebkit_pdf_annotation_update(pdf, 0, 0, "{\"contents\":\"XXXXXXXXX XXXXXXXXX\"}", NULL);
     s = render(pdf, 0);
-    check(!white(at(&s, 60, 268)) && !white(at(&s, 60, 244)), "wrapped onto a second line", NULL);
+    check_text(!white(at(&s, 60, 268)) && !white(at(&s, 60, 244)), "wrapped onto a second line", NULL);
     done(&s);
     zebkit_pdf *again = reopened(pdf);
-    check(listed(again, 0, "\"font\":\"Ahem\"") && listed(again, 0, "\"fontSize\":20") && listed(again, 0, "\"align\":\"right\""),
+    check_text(listed(again, 0, "\"font\":\"Ahem\"") && listed(again, 0, "\"fontSize\":20") && listed(again, 0, "\"align\":\"right\""),
           "read back after a save", NULL);
     s = render(again, 0);
-    check(!white(at(&s, 240, 125)), "an embedded font after a save", NULL);
+    check_text(!white(at(&s, 240, 125)), "an embedded font after a save", NULL);
     done(&s);
     zebkit_pdf_close(again);
     zebkit_pdf_close(pdf);
@@ -306,10 +306,10 @@ static void test_free_text(void) {
         "<p><span style=\\\"color:#ff0000;font-size:20pt;font-family:Ahem\\\">XX</span>XX</p>"
         "<p style=\\\"text-align:right\\\"><span style=\\\"color:#0000ff;font-size:20pt;font-family:Ahem\\\">X</span></p></body>\"}");
     s = render(pdf, 0);
-    check(near_color(at(&s, 30, 278), 255, 0, 0), "/RC: a span's colour and size", NULL);
-    check(near_color(at(&s, 66, 271), 0, 255, 0), "/DS: the default style beside it", NULL);
-    check(near_color(at(&s, 270, 254), 0, 0, 255), "/RC: a paragraph aligned right", NULL);
-    check(listed(pdf, 0, "\"richText\":") && listed(pdf, 0, "\"defaultStyle\":"), "read back", NULL);
+    check_text(near_color(at(&s, 30, 278), 255, 0, 0), "/RC: a span's colour and size", NULL);
+    check_text(near_color(at(&s, 66, 271), 0, 255, 0), "/DS: the default style beside it", NULL);
+    check_text(near_color(at(&s, 270, 254), 0, 0, 255), "/RC: a paragraph aligned right", NULL);
+    check_text(listed(pdf, 0, "\"richText\":") && listed(pdf, 0, "\"defaultStyle\":"), "read back", NULL);
     done(&s);
     /* Malformed /RC falls to /Contents and entities stay unexpanded. */
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[20,100,280,190],\"contents\":\"XX\",\"font\":\"Ahem\",\"fontSize\":20,"
@@ -317,8 +317,8 @@ static void test_free_text(void) {
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[20,20,280,90],\"contents\":\"XX\",\"font\":\"Ahem\",\"fontSize\":20,"
                 "\"richText\":\"<!DOCTYPE b [<!ENTITY x \\\"XXXX\\\">]><b>&x;&x;&x;</b>\"}");
     s = render(pdf, 0);
-    check(!white(at(&s, 30, 178)), "XHTML that is broken: /Contents is drawn", NULL);
-    check(!white(at(&s, 30, 78)), "XHTML with a DTD: not read", NULL);
+    check_text(!white(at(&s, 30, 178)), "XHTML that is broken: /Contents is drawn", NULL);
+    check_text(!white(at(&s, 30, 78)), "XHTML with a DTD: not read", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 
@@ -327,18 +327,18 @@ static void test_free_text(void) {
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[150,200,280,280],\"contents\":\"t\",\"textColor\":[255,0,0],"
                 "\"borderStyle\":{\"width\":1},\"callout\":[30,30,100,100,150,240],\"calloutEnding\":\"closedArrow\"}");
     s = render(pdf, 0);
-    check(!white(at(&s, 65, 65)), "the callout's first part", NULL);
-    check(!white(at(&s, 125, 170)), "and its second", NULL);
-    check(inked(&s, 20, 20, 40, 40) > 8, "its ending", NULL);
-    check(listed(pdf, 0, "\"calloutEnding\":\"closedArrow\""), "read back", NULL);
-    check(!white(at(&s, 215, 200)), "the box where it was", NULL);
+    check_text(!white(at(&s, 65, 65)), "the callout's first part", NULL);
+    check_text(!white(at(&s, 125, 170)), "and its second", NULL);
+    check_text(inked(&s, 20, 20, 40, 40) > 8, "its ending", NULL);
+    check_text(listed(pdf, 0, "\"calloutEnding\":\"closedArrow\""), "read back", NULL);
+    check_text(!white(at(&s, 215, 200)), "the box where it was", NULL);
     done(&s);
     again = reopened(pdf);
     s = render(again, 0);
-    check(!white(at(&s, 65, 65)) && listed(again, 0, "\"callout\":"), "the same after a save", NULL);
+    check_text(!white(at(&s, 65, 65)) && listed(again, 0, "\"callout\":"), "the same after a save", NULL);
     done(&s);
     /* The whole rectangle covers both, /RD says where the box is. */
-    check(listed(again, 0, "\"RD\":"), "/RD", NULL);
+    check_text(listed(again, 0, "\"RD\":"), "/RD", NULL);
     zebkit_pdf_close(again);
     zebkit_pdf_close(pdf);
 
@@ -348,7 +348,7 @@ static void test_free_text(void) {
     add(pdf, 0, "{\"type\":\"freeText\",\"rect\":[100,140,200,160],\"contents\":\"XXXXX\",\"font\":\"Ahem\",\"fontSize\":18,"
                 "\"rotation\":90,\"color\":[200,200,255]}");
     s = render(pdf, 0);
-    check(!white(at(&s, 150, 190)) && white(at(&s, 195, 150)), "free text turned", NULL);
+    check_text(!white(at(&s, 150, 190)) && white(at(&s, 195, 150)), "free text turned", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 }
@@ -365,16 +365,16 @@ static void test_stamps_and_the_rest(void) {
         add(pdf, 0, json);
         shot s = render(pdf, 0);
         /* A frame around ink, nothing beyond the rectangle. */
-        check(inked(&s, 20, 50, 280, 150) > 500 && inked(&s, 0, 0, 15, 200) == 0 && !white(at(&s, 150, 51)),
+        check_text(inked(&s, 20, 50, 280, 150) > 500 && inked(&s, 0, 0, 15, 200) == 0 && !white(at(&s, 150, 51)),
               standard[i], "a frame and its label");
         if (!i) {
             first = s;
         } else {
-            check(!same_pixels(&first, &s), "not the same drawing as the first", standard[i]);
+            check_text(!same_pixels(&first, &s), "not the same drawing as the first", standard[i]);
             done(&s);
         }
         zebkit_pdf *again = reopened(pdf);
-        check(listed(again, 0, "\"stamp\":\""), "read back", standard[i]);
+        check_text(listed(again, 0, "\"stamp\":\""), "read back", standard[i]);
         zebkit_pdf_close(again);
         zebkit_pdf_close(pdf);
     }
@@ -384,7 +384,7 @@ static void test_stamps_and_the_rest(void) {
     zebkit_pdf *pdf = blank(300, 200);
     add(pdf, 0, "{\"type\":\"stamp\",\"rect\":[20,50,280,150],\"stampText\":\"PAID\",\"color\":[0,128,0],\"rotation\":10}");
     shot s = render(pdf, 0);
-    check(inked(&s, 10, 30, 290, 170) > 500 && listed(pdf, 0, "\"stampText\":\"PAID\"") && listed(pdf, 0, "\"rotation\":10"),
+    check_text(inked(&s, 10, 30, 290, 170) > 500 && listed(pdf, 0, "\"stampText\":\"PAID\"") && listed(pdf, 0, "\"rotation\":10"),
           "a text stamp, turned", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
@@ -400,7 +400,7 @@ static void test_stamps_and_the_rest(void) {
     pdf = blank(300, 300);
     int stamp = add(pdf, 0, "{\"type\":\"stamp\",\"rect\":[50,50,250,250]}");
     char *error = NULL;
-    check(zebkit_pdf_annotation_stamp_page(pdf, 0, stamp, source, 0, &error), "a stamp from a page", error);
+    check_text(zebkit_pdf_annotation_stamp_page(pdf, 0, stamp, source, 0, &error), "a stamp from a page", error);
     zebkit_free(error);
     error = NULL;
     refused(!zebkit_pdf_annotation_stamp_page(pdf, 0, stamp, source, 5, &error), &error, "a page it does not have");
@@ -409,7 +409,7 @@ static void test_stamps_and_the_rest(void) {
     {
         const uint8_t *left = big.rgba + (size_t)(big.height / 2) * big.width * 4 + (150 * 8 - 2) * 4;
         const uint8_t *right = big.rgba + (size_t)(big.height / 2) * big.width * 4 + (150 * 8 + 1) * 4;
-        check(near_color(left, 255, 0, 0) && white(right), "vectors: sharp when enlarged", NULL);
+        check_text(near_color(left, 255, 0, 0) && white(right), "vectors: sharp when enlarged", NULL);
     }
     done(&big);
     /* The source may go; and a save keeps it. An update does not replace it. */
@@ -417,7 +417,7 @@ static void test_stamps_and_the_rest(void) {
     zebkit_pdf_annotation_update(pdf, 0, stamp, "{\"contents\":\"a note\",\"author\":\"me\"}", NULL);
     zebkit_pdf *again = reopened(pdf);
     s = render(again, 0);
-    check(near_color(at(&s, 100, 150), 255, 0, 0) && white(at(&s, 200, 150)), "and after a save", NULL);
+    check_text(near_color(at(&s, 100, 150), 255, 0, 0) && white(at(&s, 200, 150)), "and after a save", NULL);
     done(&s);
     zebkit_pdf_close(again);
     zebkit_pdf_close(pdf);
@@ -426,8 +426,8 @@ static void test_stamps_and_the_rest(void) {
     pdf = blank(300, 300);
     add(pdf, 0, "{\"type\":\"caret\",\"rect\":[100,100,140,140],\"color\":[255,0,0],\"caretSymbol\":\"paragraph\"}");
     s = render(pdf, 0);
-    check(inked(&s, 100, 100, 140, 140) > 50, "a caret", NULL);
-    check(listed(pdf, 0, "\"caretSymbol\":\"paragraph\""), "read back", NULL);
+    check_text(inked(&s, 100, 100, 140, 140) > 50, "a caret", NULL);
+    check_text(listed(pdf, 0, "\"caretSymbol\":\"paragraph\""), "read back", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
     const char *notes[] = {"Comment", "Key", "Note", "Help", "NewParagraph", "Paragraph", "Insert"};
@@ -438,9 +438,9 @@ static void test_stamps_and_the_rest(void) {
         snprintf(json, sizeof(json), "{\"type\":\"text\",\"rect\":[10,10,90,90],\"icon\":\"%s\",\"contents\":\"hi\"}", notes[i]);
         add(pdf, 0, json);
         note_shots[i] = render(pdf, 0);
-        check(inked(&note_shots[i], 10, 10, 90, 90) > 100, notes[i], "a note's icon");
+        check_text(inked(&note_shots[i], 10, 10, 90, 90) > 100, notes[i], "a note's icon");
         for (int j = 0; j < i; ++j)
-            check(!same_pixels(&note_shots[i], &note_shots[j]), "drawn differently from another", notes[j]);
+            check_text(!same_pixels(&note_shots[i], &note_shots[j]), "drawn differently from another", notes[j]);
         zebkit_pdf_close(pdf);
     }
     for (int i = 0; i < 7; ++i)
@@ -453,7 +453,7 @@ static void test_stamps_and_the_rest(void) {
         snprintf(json, sizeof(json), "{\"type\":\"fileAttachment\",\"rect\":[10,10,90,90],\"icon\":\"%s\"}", icons[i]);
         add(pdf, 0, json);
         s = render(pdf, 0);
-        check(inked(&s, 10, 10, 90, 90) > 50, icons[i], "an attachment's icon");
+        check_text(inked(&s, 10, 10, 90, 90) > 50, icons[i], "an attachment's icon");
         done(&s);
         zebkit_pdf_close(pdf);
     }
@@ -463,7 +463,7 @@ static void test_stamps_and_the_rest(void) {
     const char payload[] = "the attached file's bytes\0with a zero";
     int attachment = add(pdf, 0, "{\"type\":\"fileAttachment\",\"rect\":[10,10,30,30]}");
     error = NULL;
-    check(zebkit_pdf_annotation_attach_file(pdf, 0, attachment, "notes.txt", payload, sizeof(payload), &error), "a file embedded", error);
+    check_text(zebkit_pdf_annotation_attach_file(pdf, 0, attachment, "notes.txt", payload, sizeof(payload), &error), "a file embedded", error);
     zebkit_free(error);
     error = NULL;
     refused(!zebkit_pdf_annotation_attach_file(pdf, 0, attachment, "", payload, 1, &error), &error, "a file without a name");
@@ -474,7 +474,7 @@ static void test_stamps_and_the_rest(void) {
     char *name = NULL;
     size_t size = 0;
     uint8_t *back = zebkit_pdf_annotation_file(again, 0, attachment, &name, &size, NULL);
-    check(back && size == sizeof(payload) && !memcmp(back, payload, size) && name && !strcmp(name, "notes.txt"),
+    check_text(back && size == sizeof(payload) && !memcmp(back, payload, size) && name && !strcmp(name, "notes.txt"),
           "the file after a save", name);
     zebkit_free(back);
     zebkit_free(name);
@@ -489,10 +489,10 @@ static void test_discussion(void) {
     add(pdf, 0, "{\"type\":\"text\",\"rect\":[40,10,60,30],\"contents\":\"answer\",\"inReplyTo\":0,\"replyType\":\"reply\"}");
     add(pdf, 0, "{\"type\":\"text\",\"rect\":[70,10,90,30],\"inReplyTo\":0,\"state\":\"accepted\",\"stateModel\":\"review\",\"flags\":18}");
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[100,100,120,120],\"inReplyTo\":0,\"replyType\":\"group\"}");
-    check(listed(pdf, 0, "\"replies\":[1,2,3]"), "what replies to it", NULL);
-    check(listed(pdf, 0, "\"inReplyTo\":0") && listed(pdf, 0, "\"replyType\":\"group\"") && listed(pdf, 0, "\"replyType\":\"reply\""),
+    check_text(listed(pdf, 0, "\"replies\":[1,2,3]"), "what replies to it", NULL);
+    check_text(listed(pdf, 0, "\"inReplyTo\":0") && listed(pdf, 0, "\"replyType\":\"group\"") && listed(pdf, 0, "\"replyType\":\"reply\""),
           "replies and groups read", NULL);
-    check(listed(pdf, 0, "\"state\":\"accepted\"") && listed(pdf, 0, "\"stateModel\":\"review\""), "a state read", NULL);
+    check_text(listed(pdf, 0, "\"state\":\"accepted\"") && listed(pdf, 0, "\"stateModel\":\"review\""), "a state read", NULL);
 
     /* Cycles cannot be made, by any road. */
     char *unchanged = listing(pdf, 0);
@@ -505,11 +505,11 @@ static void test_discussion(void) {
     object_at = object_at ? strstr(object_at, "\"object\":") : NULL;
     int second_object = object_at ? atoi(object_at + 9) : 0;
     zebkit_free(read);
-    check(second_object > 0, "an annotation's object number", NULL);
+    check_text(second_object > 0, "an annotation's object number", NULL);
     snprintf(changes, sizeof(changes), "{\"entries\":{\"IRT\":{\"ref\":%d}}}", second_object);
     refused(!zebkit_pdf_annotation_update(pdf, 0, 0, changes, &error), &error, "and not by entries");
     read = listing(pdf, 0);
-    check(unchanged && read && !strcmp(unchanged, read), "the document is as it was", NULL);
+    check_text(unchanged && read && !strcmp(unchanged, read), "the document is as it was", NULL);
     zebkit_free(unchanged);
     zebkit_free(read);
 
@@ -517,22 +517,22 @@ static void test_discussion(void) {
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"text\",\"rect\":[1,1,2,2],\"inReplyTo\":99}", &error) < 0, &error, "a reply to nothing");
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"text\",\"rect\":[1,1,2,2],\"state\":\"happy\"}", &error) < 0, &error, "no such state");
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"text\",\"rect\":[1,1,2,2],\"replyType\":\"x\"}", &error) < 0, &error, "no such reply type");
-    check(count_annotations(pdf, 0) == 4, "nothing was added", NULL);
+    check_text(count_annotations(pdf, 0) == 4, "nothing was added", NULL);
 
     /* A popup, made and read. */
     add(pdf, 0, "{\"type\":\"text\",\"rect\":[150,150,170,170],\"contents\":\"with popup\","
                 "\"popup\":{\"rect\":[180,150,280,220],\"open\":true}}");
-    check(listed(pdf, 0, "\"type\":\"popup\"") && listed(pdf, 0, "\"popup\":5"), "a popup, linked", NULL);
+    check_text(listed(pdf, 0, "\"type\":\"popup\"") && listed(pdf, 0, "\"popup\":5"), "a popup, linked", NULL);
     zebkit_pdf *again = reopened(pdf);
-    check(listed(again, 0, "\"replies\":[1,2,3]") && listed(again, 0, "\"popup\":5") && listed(again, 0, "\"state\":\"accepted\""),
+    check_text(listed(again, 0, "\"replies\":[1,2,3]") && listed(again, 0, "\"popup\":5") && listed(again, 0, "\"state\":\"accepted\""),
           "the discussion after a save", NULL);
     zebkit_pdf_close(again);
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"text\",\"rect\":[1,1,2,2],\"popup\":{\"rect\":[1,2]}}", &error) < 0, &error, "a popup without a rect");
-    check(count_annotations(pdf, 0) == 6, "still six", NULL);
+    check_text(count_annotations(pdf, 0) == 6, "still six", NULL);
 
     /* Removing takes the replies and the popup with it. */
-    check(zebkit_pdf_annotation_remove(pdf, 0, 4, NULL) && count_annotations(pdf, 0) == 4, "a popup goes with its note", NULL);
-    check(zebkit_pdf_annotation_remove(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 0, "replies go with what they answer", NULL);
+    check_text(zebkit_pdf_annotation_remove(pdf, 0, 4, NULL) && count_annotations(pdf, 0) == 4, "a popup goes with its note", NULL);
+    check_text(zebkit_pdf_annotation_remove(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 0, "replies go with what they answer", NULL);
     zebkit_pdf_close(pdf);
 
     /* A file with a cycle of /IRT reads, and can be saved and drawn. */
@@ -544,12 +544,12 @@ static void test_discussion(void) {
         "5 0 obj << /Type /Annot /Subtype /Text /Rect [30 1 50 20] /IRT 4 0 R >> endobj\n"
         "trailer << /Root 1 0 R >>\n%%EOF\n";
     pdf = zebkit_pdf_open(cycle, sizeof(cycle) - 1, NULL, NULL);
-    check(pdf != NULL && listed(pdf, 0, "\"inReplyTo\":1") && listed(pdf, 0, "\"inReplyTo\":0"), "a file's cycle is read", NULL);
+    check_text(pdf != NULL && listed(pdf, 0, "\"inReplyTo\":1") && listed(pdf, 0, "\"inReplyTo\":0"), "a file's cycle is read", NULL);
     shot s = render(pdf, 0);
-    check(s.rgba != NULL, "and drawn", NULL);
+    check_text(s.rgba != NULL, "and drawn", NULL);
     done(&s);
     refused(!zebkit_pdf_annotation_update(pdf, 0, 0, "{\"contents\":\"x\"}", &error), &error, "and not made worse: no changes to what loops");
-    check(zebkit_pdf_annotation_remove(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 0, "and can be removed", NULL);
+    check_text(zebkit_pdf_annotation_remove(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 0, "and can be removed", NULL);
     zebkit_pdf_close(pdf);
 }
 
@@ -558,28 +558,28 @@ static void test_measurement(void) {
     char *error = NULL;
     add(pdf, 0, "{\"type\":\"line\",\"line\":[50,100,250,100],\"color\":[255,0,0],"
                 "\"measure\":{\"unit\":\"mm\",\"scale\":0.5,\"precision\":1}}");
-    check(listed(pdf, 0, "\"contents\":\"100.0 mm\"") && listed(pdf, 0, "\"text\":\"100.0 mm\"") && listed(pdf, 0, "\"value\":100"),
+    check_text(listed(pdf, 0, "\"contents\":\"100.0 mm\"") && listed(pdf, 0, "\"text\":\"100.0 mm\"") && listed(pdf, 0, "\"value\":100"),
           "distance", NULL);
-    check(listed(pdf, 0, "\"intent\":\"LineDimension\""), "the line's intent", NULL);
+    check_text(listed(pdf, 0, "\"intent\":\"LineDimension\""), "the line's intent", NULL);
     shot s = render(pdf, 0);
-    check(inked(&s, 130, 90, 170, 110) > 10 && white(at(&s, 137, 111)), "as the caption", NULL);
+    check_text(inked(&s, 130, 90, 170, 110) > 10 && white(at(&s, 137, 111)), "as the caption", NULL);
     done(&s);
     /* It follows the shape. */
     zebkit_pdf_annotation_update(pdf, 0, 0, "{\"line\":[50,100,150,100]}", NULL);
-    check(listed(pdf, 0, "\"contents\":\"50.0 mm\""), "and follows a change", NULL);
+    check_text(listed(pdf, 0, "\"contents\":\"50.0 mm\""), "and follows a change", NULL);
     add(pdf, 0, "{\"type\":\"polyline\",\"vertices\":[[0,0],[100,0],[100,100]],"
                 "\"measure\":{\"unit\":\"cm\",\"scale\":1,\"precision\":0}}");
-    check(listed(pdf, 0, "\"contents\":\"200 cm\"") && listed(pdf, 0, "\"intent\":\"PolyLineDimension\""), "perimeter", NULL);
+    check_text(listed(pdf, 0, "\"contents\":\"200 cm\"") && listed(pdf, 0, "\"intent\":\"PolyLineDimension\""), "perimeter", NULL);
     add(pdf, 0, "{\"type\":\"polygon\",\"vertices\":[[200,200],[300,200],[300,300],[200,300]],\"color\":[0,0,255],"
                 "\"measure\":{\"unit\":\"m\",\"scale\":2,\"precision\":2}}");
-    check(listed(pdf, 0, "\"contents\":\"40000.00 m\xc2\xb2\"") && listed(pdf, 0, "\"intent\":\"PolygonDimension\""), "area", NULL);
+    check_text(listed(pdf, 0, "\"contents\":\"40000.00 m\xc2\xb2\"") && listed(pdf, 0, "\"intent\":\"PolygonDimension\""), "area", NULL);
     s = render(pdf, 0);
-    check(inked(&s, 220, 240, 280, 260) > 10, "drawn in its middle", NULL);
+    check_text(inked(&s, 220, 240, 280, 260) > 10, "drawn in its middle", NULL);
     done(&s);
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[0,300,100,400],\"measure\":{\"unit\":\"u\",\"scale\":1,\"precision\":0}}");
-    check(listed(pdf, 0, "\"contents\":\"10000 u\xc2\xb2\""), "a square's area", NULL);
+    check_text(listed(pdf, 0, "\"contents\":\"10000 u\xc2\xb2\""), "a square's area", NULL);
     zebkit_pdf *again = reopened(pdf);
-    check(listed(again, 0, "\"contents\":\"50.0 mm\"") && listed(again, 0, "\"unit\":\"mm\""), "after a save", NULL);
+    check_text(listed(again, 0, "\"contents\":\"50.0 mm\"") && listed(again, 0, "\"unit\":\"mm\""), "after a save", NULL);
     zebkit_pdf_close(again);
     const char *wrong[] = {
         "{\"type\":\"text\",\"rect\":[1,1,2,2],\"measure\":{\"unit\":\"mm\",\"scale\":1}}",
@@ -609,20 +609,20 @@ static void test_viewers(void) {
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[100,100,200,200],\"interiorColor\":[0,0,255],\"border\":0}");
     add(pdf, 0, "{\"type\":\"line\",\"line\":[0,0,300,300],\"color\":[0,255,0]}");
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[250,20,280,50],\"flags\":2}");
-    check(zebkit_pdf_annotation_at(pdf, 0, 60, 100, 0, NULL) == 0, "the one at a point", NULL);
-    check(zebkit_pdf_annotation_at(pdf, 0, 120, 110, 0, NULL) == 1, "the top one of two", NULL);
-    check(zebkit_pdf_annotation_at(pdf, 0, 40, 40, 1, NULL) == 2, "a line, on it", NULL);
-    check(zebkit_pdf_annotation_at(pdf, 0, 40, 200, 0, NULL) == -1, "a line's rectangle is not a line", NULL);
-    check(zebkit_pdf_annotation_at(pdf, 0, 262, 30, 0, NULL) == -1, "hidden ones do not count", NULL);
-    check(zebkit_pdf_annotation_at(pdf, 0, 10, 290, 0, NULL) == -1, "nothing there", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 60, 100, 0, NULL) == 0, "the one at a point", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 120, 110, 0, NULL) == 1, "the top one of two", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 40, 40, 1, NULL) == 2, "a line, on it", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 40, 200, 0, NULL) == -1, "a line's rectangle is not a line", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 262, 30, 0, NULL) == -1, "hidden ones do not count", NULL);
+    check_text(zebkit_pdf_annotation_at(pdf, 0, 10, 290, 0, NULL) == -1, "nothing there", NULL);
     refused(zebkit_pdf_annotation_at(pdf, 9, 0, 0, 0, &error) < 0, &error, "no such page");
 
     /* The order. */
     shot before = render(pdf, 0);
-    check(near_color(at(&before, 130, 120), 0, 0, 255), "blue on top", NULL);
-    check(zebkit_pdf_annotation_move(pdf, 0, 1, 0, NULL), "moved under", NULL);
+    check_text(near_color(at(&before, 130, 120), 0, 0, 255), "blue on top", NULL);
+    check_text(zebkit_pdf_annotation_move(pdf, 0, 1, 0, NULL), "moved under", NULL);
     shot after = render(pdf, 0);
-    check(near_color(at(&after, 130, 120), 255, 0, 0), "red on top now", NULL);
+    check_text(near_color(at(&after, 130, 120), 255, 0, 0), "red on top now", NULL);
     done(&before);
     done(&after);
     refused(!zebkit_pdf_annotation_move(pdf, 0, 99, 0, &error), &error, "a move of nothing");
@@ -633,10 +633,10 @@ static void test_viewers(void) {
     /* Markup from a range of the text. */
     pdf = zebkit_pdf_open(text_page, sizeof(text_page) - 1, NULL, NULL);
     int mark = add(pdf, 0, "{\"type\":\"highlight\",\"textRange\":[0,5],\"color\":[255,255,0]}");
-    check(mark == 0 && listed(pdf, 0, "\"quads\":[["), "a highlight of Hello", NULL);
+    check_text(mark == 0 && listed(pdf, 0, "\"quads\":[["), "a highlight of Hello", NULL);
     shot s = render(pdf, 0);
-    check(near_color(at(&s, 40, 135), 255, 255, 0), "it is there", NULL);
-    check(white(at(&s, 76, 135)), "and not past Hello", NULL);
+    check_text(near_color(at(&s, 40, 135), 255, 255, 0), "it is there", NULL);
+    check_text(white(at(&s, 76, 135)), "and not past Hello", NULL);
     done(&s);
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"highlight\",\"textRange\":[0,5000]}", &error) < 0, &error, "a range past the text");
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"highlight\",\"textRange\":[-1,2]}", &error) < 0, &error, "a range before it");
@@ -649,20 +649,20 @@ static void test_viewers(void) {
     zebkit_pdf *other = blank(300, 300);
     add(pdf, 0, "{\"type\":\"stamp\",\"rect\":[50,50,150,150],\"stamp\":\"Draft\",\"contents\":\"copy me\","
                 "\"popup\":{\"rect\":[200,200,280,280]},\"entries\":{\"MyApp_x\":{\"y\":[1,2,{\"z\":\"/Name\"}]}}}");
-    check(zebkit_pdf_annotation_copy(pdf, 0, 0, pdf, 1, NULL) == 0, "to another page", NULL);
-    check(zebkit_pdf_annotation_copy(pdf, 0, 0, other, 0, NULL) == 0, "to another document", NULL);
+    check_text(zebkit_pdf_annotation_copy(pdf, 0, 0, pdf, 1, NULL) == 0, "to another page", NULL);
+    check_text(zebkit_pdf_annotation_copy(pdf, 0, 0, other, 0, NULL) == 0, "to another document", NULL);
     refused(zebkit_pdf_annotation_copy(pdf, 0, 99, other, 0, &error) < 0, &error, "a copy of nothing");
     refused(zebkit_pdf_annotation_copy(pdf, 0, 0, other, 99, &error) < 0, &error, "a copy to no page");
     refused(zebkit_pdf_annotation_copy(pdf, 0, 0, NULL, 0, &error) < 0, &error, "a copy to no document");
     shot a = render(pdf, 1), b = render(other, 0);
-    check(inked(&a, 50, 50, 150, 150) > 300 && same_pixels(&a, &b), "the same appearance on both", NULL);
-    check(listed(other, 0, "\"MyApp_x\":{\"y\":[1,2,{\"z\":\"/Name\"}]}") && listed(other, 0, "copy me") && !listed(other, 0, "\"popup\":"),
+    check_text(inked(&a, 50, 50, 150, 150) > 300 && same_pixels(&a, &b), "the same appearance on both", NULL);
+    check_text(listed(other, 0, "\"MyApp_x\":{\"y\":[1,2,{\"z\":\"/Name\"}]}") && listed(other, 0, "copy me") && !listed(other, 0, "\"popup\":"),
           "its entries, not its popup", NULL);
     /* The source gone: what was copied is the other's own. */
     zebkit_pdf_close(pdf);
     zebkit_pdf *again = reopened(other);
     shot c = render(again, 0);
-    check(same_pixels(&b, &c), "after the first is closed, and a save", NULL);
+    check_text(same_pixels(&b, &c), "after the first is closed, and a save", NULL);
     done(&a);
     done(&b);
     done(&c);
@@ -673,22 +673,22 @@ static void test_viewers(void) {
     pdf = blank(300, 300);
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[50,50,100,100],\"interiorColor\":[255,0,0],\"border\":0}");
     add(pdf, 0, "{\"type\":\"square\",\"rect\":[150,150,200,200],\"interiorColor\":[0,0,255],\"border\":0}");
-    check(zebkit_pdf_annotation_flatten(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 1, "one flattened", NULL);
+    check_text(zebkit_pdf_annotation_flatten(pdf, 0, 0, NULL) && count_annotations(pdf, 0) == 1, "one flattened", NULL);
     shot flat = render(pdf, 0);
-    check(near_color(at(&flat, 75, 75), 255, 0, 0) && near_color(at(&flat, 175, 175), 0, 0, 255), "drawn the same", NULL);
+    check_text(near_color(at(&flat, 75, 75), 255, 0, 0) && near_color(at(&flat, 175, 175), 0, 0, 255), "drawn the same", NULL);
     zebkit_pdf_render_options plain = {0};
     plain.scale = 1;
     plain.background = 0xffffffff;
     int w, h;
     uint8_t *content = zebkit_pdf_render(pdf, 0, &plain, &w, &h, NULL);
     shot only = {content, w, h};
-    check(near_color(at(&only, 75, 75), 255, 0, 0) && white(at(&only, 175, 175)), "as content, the other not", NULL);
+    check_text(near_color(at(&only, 75, 75), 255, 0, 0) && white(at(&only, 175, 175)), "as content, the other not", NULL);
     done(&only);
     done(&flat);
     again = reopened(pdf);
     content = zebkit_pdf_render(again, 0, &plain, &w, &h, NULL);
     only = (shot){content, w, h};
-    check(near_color(at(&only, 75, 75), 255, 0, 0), "and after a save", NULL);
+    check_text(near_color(at(&only, 75, 75), 255, 0, 0), "and after a save", NULL);
     done(&only);
     zebkit_pdf_close(again);
     refused(!zebkit_pdf_annotation_flatten(pdf, 0, 9, &error), &error, "flatten of nothing");
@@ -699,7 +699,7 @@ static void test_viewers(void) {
     refused(!zebkit_pdf_annotation_flatten(pdf, 0, 0, &error), &error, "a link draws nothing to flatten");
     /* Its action, as data. */
     char *action = zebkit_pdf_annotation_action(pdf, 0, 0, NULL);
-    check(action && strstr(action, "\"kind\":\"uri\"") && strstr(action, "\"handled\":false"), "an action read", action);
+    check_text(action && strstr(action, "\"kind\":\"uri\"") && strstr(action, "\"handled\":false"), "an action read", action);
     zebkit_free(action);
     refused(!zebkit_pdf_annotation_action(pdf, 0, 5, &error), &error, "an action of nothing");
     zebkit_pdf_close(pdf);
@@ -772,13 +772,13 @@ static void test_interchange(void) {
         const char *name = round ? "FDF" : "XFDF";
         size_t size = 0;
         uint8_t *file = zebkit_pdf_annotations_export(pdf, format, -1, -1, &size, &error);
-        check(file && size > 100, name, error ? error : "written");
+        check_text(file && size > 100, name, error ? error : "written");
         zebkit_free(error);
         error = NULL;
         zebkit_pdf *copy = blank(300, 300);
         zebkit_pdf_page_insert(copy, 1, 300, 300, NULL);
         const int count = zebkit_pdf_annotations_import(copy, format, file, size, &error);
-        check(count == 11, name, error ? error : "read: every annotation, not the popups");
+        check_text(count == 11, name, error ? error : "read: every annotation, not the popups");
         zebkit_free(error);
         error = NULL;
         shot back0 = render(copy, 0), back1 = render(copy, 1);
@@ -790,33 +790,33 @@ static void test_interchange(void) {
         }
         char detail[80];
         snprintf(detail, sizeof(detail), "%s: %d channels differ", name, differ);
-        check(differ == 0, "the first page's drawing comes back", detail);
+        check_text(differ == 0, "the first page's drawing comes back", detail);
         differ = 0;
         for (int i = 0; i < back1.width * back1.height * 4; ++i) {
             if (abs(back1.rgba[i] - page1.rgba[i]) > 40)
                 differ++;
         }
         snprintf(detail, sizeof(detail), "%s: %d channels differ", name, differ);
-        check(differ == 0, "the second page's drawing comes back", detail);
+        check_text(differ == 0, "the second page's drawing comes back", detail);
         done(&back0);
         done(&back1);
-        check(listed(copy, 0, "mark \\u003C&> \\\"this\\\"") && listed(copy, 0, "\"author\":\"An Author\"") && listed(copy, 0, "\"name\":\"h1\""),
+        check_text(listed(copy, 0, "mark \\u003C&> \\\"this\\\"") && listed(copy, 0, "\"author\":\"An Author\"") && listed(copy, 0, "\"name\":\"h1\""),
               "text and names, with what XML escapes", name);
-        check(listed(copy, 0, "\"replies\":[1]") && listed(copy, 0, "\"state\":\"accepted\"") && listed(copy, 0, "\"icon\":\"Comment\""),
+        check_text(listed(copy, 0, "\"replies\":[1]") && listed(copy, 0, "\"state\":\"accepted\"") && listed(copy, 0, "\"icon\":\"Comment\""),
               "the discussion", name);
-        check(listed(copy, 1, "\"unit\":\"mm\""), "a measurement", name);
+        check_text(listed(copy, 1, "\"unit\":\"mm\""), "a measurement", name);
         if (!round)
-            check(listed(copy, 1, "\"popup\":"), "a popup", name);
-        check(listed(copy, 0, "\"rotation\":90"), "rotation", name);
+            check_text(listed(copy, 1, "\"popup\":"), "a popup", name);
+        check_text(listed(copy, 0, "\"rotation\":90"), "rotation", name);
         zebkit_pdf *saved = reopened(copy);
-        check(saved && listed(saved, 0, "\"name\":\"h1\""), "and a save", name);
+        check_text(saved && listed(saved, 0, "\"name\":\"h1\""), "and a save", name);
         zebkit_pdf_close(saved);
         zebkit_free(file);
         /* One annotation, and a page. */
         file = zebkit_pdf_annotations_export(pdf, format, 1, 2, &size, NULL);
         zebkit_pdf *one = blank(300, 300);
         zebkit_pdf_page_insert(one, 1, 300, 300, NULL);
-        check(file && zebkit_pdf_annotations_import(one, format, file, size, NULL) == 1 && count_annotations(one, 1) == 1 &&
+        check_text(file && zebkit_pdf_annotations_import(one, format, file, size, NULL) == 1 && count_annotations(one, 1) == 1 &&
                   listed(one, 1, "\"type\":\"caret\""),
               "one annotation exported", name);
         zebkit_free(file);
@@ -838,12 +838,12 @@ static void test_interchange(void) {
         "width=\"2\" interior-color=\"#00FF00\"><contents>hello</contents></square>"
         "<text page=\"0\" rect=\"200,200,220,220\" icon=\"Help\" inreplyto=\"a1\" replyType=\"reply\"/></annots>"
         "<f href=\"x.pdf\"/></xfdf>";
-    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, acrobat, sizeof(acrobat) - 1, &error) == 2, "another writer's XFDF", error);
+    check_text(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, acrobat, sizeof(acrobat) - 1, &error) == 2, "another writer's XFDF", error);
     zebkit_free(error);
     error = NULL;
     shot s = render(pdf, 0);
-    check(near_color(at(&s, 60, 60), 0, 255, 0) && near_color(at(&s, 11, 60), 255, 0, 0), "drawn", NULL);
-    check(listed(pdf, 0, "\"replies\":[1]"), "the reply by name", NULL);
+    check_text(near_color(at(&s, 60, 60), 0, 255, 0) && near_color(at(&s, 11, 60), 255, 0, 0), "drawn", NULL);
+    check_text(listed(pdf, 0, "\"replies\":[1]"), "the reply by name", NULL);
     done(&s);
     zebkit_pdf_close(pdf);
 
@@ -852,7 +852,7 @@ static void test_interchange(void) {
     for (size_t i = 0; i < sizeof(hostile_xfdf) / sizeof(hostile_xfdf[0]); ++i) {
         const int count = zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, hostile_xfdf[i], strlen(hostile_xfdf[i]), &error);
         refused(count < 0, &error, hostile_xfdf[i]);
-        check(count_annotations(pdf, 0) == 0, "and nothing is left", NULL);
+        check_text(count_annotations(pdf, 0) == 0, "and nothing is left", NULL);
     }
     static const char *const hostile_fdf[] = {
         "garbage",
@@ -868,13 +868,13 @@ static void test_interchange(void) {
     for (size_t i = 0; i < sizeof(hostile_fdf) / sizeof(hostile_fdf[0]); ++i) {
         const int count = zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, hostile_fdf[i], strlen(hostile_fdf[i]), &error);
         refused(count < 0, &error, hostile_fdf[i]);
-        check(count_annotations(pdf, 0) == 0, "and nothing is left", NULL);
+        check_text(count_annotations(pdf, 0) == 0, "and nothing is left", NULL);
     }
     /* An action in FDF is not taken over. */
     static const char with_action[] =
         "%FDF-1.2\n1 0 obj\n<</FDF <</Annots [2 0 R]>>>>\nendobj\n2 0 obj\n<</Subtype/Text/Page 0/Rect[1 1 20 20]"
         "/A <</S/Launch/F(calc.exe)>>/AA <</O <</S/JavaScript/JS(app.alert)>>>>>>\nendobj\ntrailer\n<</Root 1 0 R>>\n%%EOF\n";
-    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, with_action, sizeof(with_action) - 1, NULL) == 1 &&
+    check_text(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, with_action, sizeof(with_action) - 1, NULL) == 1 &&
               !listed(pdf, 0, "calc.exe") && !listed(pdf, 0, "app.alert"),
           "FDF: actions left behind", NULL);
     /* Too large, empty. */
@@ -958,7 +958,7 @@ static void test_malformed(void) {
         refused(!ok, &error, wrong[i].json);
     }
     char *after = listing(pdf, 0);
-    check(after && before && !strcmp(before, after), "failed changes leave it as it was", NULL);
+    check_text(after && before && !strcmp(before, after), "failed changes leave it as it was", NULL);
     zebkit_free(before);
     zebkit_free(after);
     char *error = NULL;
@@ -969,7 +969,7 @@ static void test_malformed(void) {
     refused(zebkit_pdf_annotation_add(pdf, 0, "{\"type\":\"square\"}", &error) < 0, &error, "no rect");
     refused(zebkit_pdf_annotation_add(pdf, 9, "{\"type\":\"square\",\"rect\":[1,1,2,2]}", &error) < 0, &error, "no page");
     refused(zebkit_pdf_annotation_add(pdf, -1, "{\"type\":\"square\",\"rect\":[1,1,2,2]}", &error) < 0, &error, "a negative page");
-    check(count_annotations(pdf, 0) == 3, "nothing was added", NULL);
+    check_text(count_annotations(pdf, 0) == 3, "nothing was added", NULL);
     refused(!zebkit_pdf_annotation_update(pdf, 0, 99, "{}", &error), &error, "no such annotation");
     refused(!zebkit_pdf_annotation_remove(pdf, 0, 99, &error), &error, "no such annotation to remove");
     refused(!zebkit_pdf_annotation_draw(pdf, 0, 2, "[[\"nothing\"]]", &error), &error, "a wrong drawing");
@@ -993,13 +993,13 @@ static void test_hostile(void) {
     zebkit_pdf *pdf = blank(100, 100);
     add(pdf, 0, "{\"type\":\"line\",\"rect\":[0,0,9,9],\"entries\":{\"L\":[0,0,3e38,0],"
                 "\"Measure\":{\"X\":[{\"C\":3e38,\"U\":\"m\"}]}}}");
-    check(listed(pdf, 0, "\"text\":\"1000000000000000000.00 m\""), "a number too long to write", NULL);
+    check_text(listed(pdf, 0, "\"text\":\"1000000000000000000.00 m\""), "a number too long to write", NULL);
 
     /* What a file says in /CO is not known to be numbers. */
     add(pdf, 0, "{\"type\":\"line\",\"line\":[1,1,9,9],\"entries\":{\"CO\":[\"/x\",\"(y\"]}}");
     size_t size = 0;
     zebkit_free(zebkit_pdf_annotations_export(pdf, ZEBKIT_PDF_XFDF, 0, -1, &size, NULL));
-    check(size > 0, "an offset that is no numbers", NULL);
+    check_text(size > 0, "an offset that is no numbers", NULL);
     zebkit_pdf_close(pdf);
 
     /* /RC as Acrobat writes it goes through XFDF. */
@@ -1009,7 +1009,7 @@ static void test_hostile(void) {
     uint8_t *xfdf = zebkit_pdf_annotations_export(pdf, ZEBKIT_PDF_XFDF, -1, -1, &size, NULL);
     zebkit_pdf *other = blank(100, 100);
     const int read = zebkit_pdf_annotations_import(other, ZEBKIT_PDF_XFDF, xfdf, size, &error);
-    check(read == 1 && listed(other, 0, "\\u003Cp>hi\\u003C/p>"), "rich text with its declaration, read back", error);
+    check_text(read == 1 && listed(other, 0, "\\u003Cp>hi\\u003C/p>"), "rich text with its declaration, read back", error);
     zebkit_free(error);
     error = NULL;
     zebkit_free(xfdf);
@@ -1026,7 +1026,7 @@ static void test_hostile(void) {
     }
     length += (size_t)sprintf(chain + length, "</annots></xfdf>");
     pdf = blank(100, 100);
-    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, chain, length, &error) < 0 && error && strstr(error, "cycle"),
+    check_text(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, chain, length, &error) < 0 && error && strstr(error, "cycle"),
           "a long chain is judged at once", error);
     zebkit_free(error);
     error = NULL;
@@ -1037,13 +1037,13 @@ static void test_hostile(void) {
         "%FDF-1.2\n1 0 obj\n<</FDF <</Annots [2 0 R]>>>>\nendobj\n"
         "2 0 obj\n<</Subtype /Text /Rect [1 1 2 2] /Page 0 /Measure 1 0 R /Foo [1 0 R]>>\nendobj\n"
         "trailer\n<</Root 1 0 R>>\n%%EOF\n";
-    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, fdf, sizeof(fdf) - 1, &error) == 1, "an FDF with references", error);
+    check_text(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_FDF, fdf, sizeof(fdf) - 1, &error) == 1, "an FDF with references", error);
     zebkit_free(error);
     error = NULL;
-    check(!listed(pdf, 0, "Catalog") && !listed(pdf, 0, "\"ref\""), "they do not reach this document", NULL);
+    check_text(!listed(pdf, 0, "Catalog") && !listed(pdf, 0, "\"ref\""), "they do not reach this document", NULL);
     static const char with_ref[] =
         "<xfdf><annots><text page=\"0\" rect=\"1,1,2,2\"><zebkit-entries>{\"Measure\":{\"ref\":1}}</zebkit-entries></text></annots></xfdf>";
-    check(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, with_ref, sizeof(with_ref) - 1, NULL) == 1 && !listed(pdf, 0, "Catalog"),
+    check_text(zebkit_pdf_annotations_import(pdf, ZEBKIT_PDF_XFDF, with_ref, sizeof(with_ref) - 1, NULL) == 1 && !listed(pdf, 0, "Catalog"),
           "nor from XFDF", NULL);
     zebkit_pdf_close(pdf);
 
@@ -1062,11 +1062,11 @@ static void test_hostile(void) {
     char *file = malloc(128 * 1024);
     size_t file_size = page_with(file, 128 * 1024, "4 0 R", objects);
     pdf = zebkit_pdf_open(file, file_size, NULL, &error);
-    check(pdf != NULL, "the small file opens", error);
+    check_text(pdf != NULL, "the small file opens", error);
     zebkit_free(error);
     error = NULL;
     char *json = zebkit_pdf_annotations(pdf, 0, &error);
-    check(json && strstr(json, "\"Foo\":[") && strstr(json, "\"ref\":"), "read, as far as is reasonable", error);
+    check_text(json && strstr(json, "\"Foo\":[") && strstr(json, "\"ref\":"), "read, as far as is reasonable", error);
     zebkit_free(json);
     zebkit_free(error);
     error = NULL;
@@ -1076,7 +1076,7 @@ static void test_hostile(void) {
     getrusage(RUSAGE_SELF, &usage);
     char peak[64];
     snprintf(peak, sizeof(peak), "peak %ld MiB", usage.ru_maxrss / 1024);
-    check(usage.ru_maxrss / 1024 < 2048, "and within its memory", peak);
+    check_text(usage.ru_maxrss / 1024 < 2048, "and within its memory", peak);
 #endif
     zebkit_pdf_close(pdf);
     free(file);
@@ -1098,7 +1098,7 @@ static void test_hostile(void) {
     file = malloc((size_t)kReplies * 160 + 512);
     file_size = page_with(file, (size_t)kReplies * 160 + 512, annots, objects);
     pdf = zebkit_pdf_open(file, file_size, NULL, NULL);
-    check(zebkit_pdf_annotation_remove(pdf, 0, kReplies - 1, &error) && count_annotations(pdf, 0) == 0, "the whole thread goes", error);
+    check_text(zebkit_pdf_annotation_remove(pdf, 0, kReplies - 1, &error) && count_annotations(pdf, 0) == 0, "the whole thread goes", error);
     zebkit_free(error);
     error = NULL;
     zebkit_pdf_close(pdf);
@@ -1109,12 +1109,12 @@ static void test_hostile(void) {
     /* A change that fails leaves what it cannot describe: the file, and no popup. */
     pdf = blank(100, 100);
     const int attached = add(pdf, 0, "{\"type\":\"fileAttachment\",\"rect\":[1,1,9,9]}");
-    check(zebkit_pdf_annotation_attach_file(pdf, 0, attached, "a.txt", "file", 4, NULL), "attached", NULL);
+    check_text(zebkit_pdf_annotation_attach_file(pdf, 0, attached, "a.txt", "file", 4, NULL), "attached", NULL);
     refused(!zebkit_pdf_annotation_update(pdf, 0, attached, "{\"popup\":{\"rect\":[1,1,2,2]},\"zz\":1}", &error), &error, "an unknown key");
-    check(count_annotations(pdf, 0) == 1, "no popup stays", NULL);
+    check_text(count_annotations(pdf, 0) == 1, "no popup stays", NULL);
     size_t got = 0;
     uint8_t *bytes = zebkit_pdf_annotation_file(pdf, 0, attached, NULL, &got, NULL);
-    check(bytes && got == 4 && !memcmp(bytes, "file", 4), "the file stays after a change that failed", NULL);
+    check_text(bytes && got == 4 && !memcmp(bytes, "file", 4), "the file stays after a change that failed", NULL);
     zebkit_free(bytes);
     zebkit_pdf_close(pdf);
 }
@@ -1130,7 +1130,7 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_DATA, &data);
 #endif
     font_bytes = read_file(argv[1], &font_size);
-    check(font_bytes != NULL, "the font is there", argv[1]);
+    check_text(font_bytes != NULL, "the font is there", argv[1]);
     test_line_endings();
     test_leader_and_caption();
     test_shape_borders();
@@ -1143,6 +1143,5 @@ int main(int argc, char **argv) {
     test_malformed();
     test_hostile();
     free(font_bytes);
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures ? 1 : 0;
+    return summary();
 }

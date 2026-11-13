@@ -9,11 +9,14 @@
 //! The endpoint has no password: anything that can reach the port can
 //! drive the pages. It listens on this machine only unless told otherwise.
 
+use std::ffi::{c_char, c_uint, c_void};
+
 use crate::engine::require_engine_thread;
-use crate::{c_string, sys, take_error, take_string, Error};
+use crate::{c_string, string_from, sys, take_error, take_string, Error};
 
 /// Starts the endpoint and returns the port it listens on; if it already
-/// runs, its port.
+/// runs, its port (another `address` or `port` then is an error). Waits on
+/// the engine's thread for the server to bind: [`listen_async`] does not.
 ///
 /// `address` is the interface to listen on, a numeric IP address; `None`
 /// is 127.0.0.1, which is what to use unless the clients are on another
@@ -33,6 +36,38 @@ pub fn listen(address: Option<&str>, port: u16) -> Result<u16, Error> {
         return Err(unsafe { take_error(error, "the endpoint did not start") });
     }
     u16::try_from(port).map_err(|_| Error::new("the endpoint reported no port"))
+}
+
+unsafe extern "C" fn on_listen<F: FnOnce(Result<(u16, String), Error>)>(
+    port: c_uint,
+    url: *const c_char,
+    error: *const c_char,
+    data: *mut c_void,
+) {
+    let function = Box::from_raw(data.cast::<F>());
+    let result = match u16::try_from(port) {
+        Ok(port) if port != 0 => Ok((port, string_from(url).unwrap_or_default())),
+        _ => Err(Error::new(string_from(error).unwrap_or_else(|| "the endpoint did not start".into()))),
+    };
+    crate::guard(|| function(result));
+}
+
+/// [`listen`] without waiting for the server's thread: `done` gets the port
+/// and the browser's WebSocket address (as [`url`] gives it), or the error,
+/// once, on the engine's thread, after this returns. [`stop`] while it
+/// starts answers with an error.
+pub fn listen_async<F: FnOnce(Result<(u16, String), Error>) + 'static>(address: Option<&str>, port: u16, done: F) {
+    require_engine_thread("cdp::listen_async()");
+    let address = address.map(c_string);
+    let data = Box::into_raw(Box::new(done)).cast::<c_void>();
+    unsafe {
+        sys::zebkit_cdp_listen_async(
+            address.as_ref().map_or(std::ptr::null(), |address| address.as_ptr()),
+            u32::from(port),
+            Some(on_listen::<F>),
+            data,
+        )
+    }
 }
 
 /// The port the endpoint listens on, if it is running.

@@ -17,8 +17,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import Server, check, ev, finish, skip, wait, zebkit  # noqa: E402
-from cdp_page import Cdp  # noqa: E402
+from harness import Cdp, Server, check, ev, finish, skip, wait, zebkit  # noqa: E402
 
 FRAME = b"<!doctype html><body style='margin:0'><p>apple in a frame</p>"
 CROSS = b"<!doctype html><body style='margin:0'><p>apple of another site</p>"
@@ -103,6 +102,9 @@ def main():
     check(ev(view, "window.loaded") == 2, "the page and both of its frames are loaded")
     results = Results(view)
 
+    # The page's own pixels of those colours before any search: text that is
+    # antialiased in colour (Windows' ClearType) has a few at its edges.
+    before = highlight_colours(view)
     # Six matches: two in the document, one in each shadow tree, one in each frame.
     first = find(view, results, "apple")
     check(first.get("matches") == 6, "six matches across the document, frames and shadow trees", first)
@@ -113,7 +115,9 @@ def main():
     if colours is None:
         skip("highlight colours", "no capture of the view")
     else:
-        check(colours[0] > 50 and colours[1] > 50, "matches highlighted, the active one distinctly", colours)
+        base = before or (0, 0)
+        check(colours[0] > base[0] + 50 and colours[1] > base[1] + 50, "matches highlighted, the active one distinctly",
+              (colours, base))
     # Next, previous, and around the end.
     order = [find(view, results, "apple").get("activeMatch") for _ in range(5)]
     check(order == [2, 3, 4, 5, 6], "next goes through all of them", order)
@@ -144,7 +148,8 @@ def main():
     check(stopped.get("stopped") is True and stopped.get("matches") == 0, "nothing is on after stopping", stopped)
     colours = highlight_colours(view)
     if colours is not None:
-        check(colours[0] == 0 and colours[1] == 0, "stopping clears every highlight", colours)
+        base = before or (0, 0)
+        check(colours[0] <= base[0] and colours[1] <= base[1], "stopping clears every highlight", (colours, base))
     ev(view, "getSelection().removeAllRanges(); 1")
 
     # Counting and highlighting alone: no active match.

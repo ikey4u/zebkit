@@ -123,13 +123,14 @@ tests="$ZEBKIT_ROOT/tests/engine"
 build() {
     local name="$1" source="$2"
     shift 2
-    # shellcheck disable=SC2046
     # Warnings are engine-test.sh's business, with the system compiler.
+    engine_link_options "$work/package"
     "$clang" -std=c11 -O1 -w --sysroot="$root" --gcc-toolchain="$root/usr" -fuse-ld=lld \
-        -I"$work/package/include" "$source" "$@" $(engine_link_options "$work/package") -o "$work/$name"
+        -I"$work/package/include" "$source" "$@" "${engine_link[@]}" -o "$work/$name"
     "$patchelf" --set-interpreter "$loader" "$work/$name"
 }
-for name in vendor services pdf bridge page popup scheme media mode hooks certificate http_auth hook_policies offscreen_scale; do
+for name in vendor services pdf bridge page popup scheme media mode hooks certificate http_auth user_agent hook_policies \
+    offscreen_scale; do
     build "$name" "$tests/$name.c"
 done
 build api "$tests/api.c" -pthread
@@ -193,25 +194,20 @@ finished page
 run hooks "$work/hooks" "${engine_switches[@]}"
 run offscreen-scale "$work/offscreen_scale" "${engine_switches[@]}"
 run native-window "$work/native-window" "${engine_switches[@]}"
-# The Python TLS server uses the host runtime; only its C child gets CentOS libc.
-log "certificate-c"
-if ! limited 180 python3 "$tests/certificate_c.py" "$work/certificate" \
-    "$work/package:$root/usr/lib64" > "$work/certificate.log" 2> "$work/certificate.err"; then
-    failed=1
-    cat "$work/certificate.log"
-    tail -20 "$work/certificate.err"
-else
-    cat "$work/certificate.log"
-fi
-log "http-auth-c"
-if ! limited 180 python3 "$tests/http_auth_c.py" "$work/http_auth" \
-    "$work/package:$root/usr/lib64" > "$work/http-auth.log" 2> "$work/http-auth.err"; then
-    failed=1
-    cat "$work/http-auth.log"
-    tail -20 "$work/http-auth.err"
-else
-    cat "$work/http-auth.log"
-fi
+# The drivers' servers use the host runtime; only their C child gets CentOS libc
+# (tests/engine/language_modes.py's ZEBKIT_TEST_CHILD_LIBRARY_PATH).
+for family in certificate http_auth user_agent; do
+    log "${family//_/-}-c"
+    if ! ZEBKIT_TEST_CHILD_LIBRARY_PATH="$work/package:$root/usr/lib64" limited 180 \
+        python3 "$tests/$family.py" c "$work/$family" > "$work/$family.log" 2> "$work/$family.err"; then
+        failed=1
+        cat "$work/$family.log"
+        tail -20 "$work/$family.err"
+    else
+        cat "$work/$family.log"
+    fi
+    finished "$family"
+done
 log "hook-policies"
 if ! PYTHONPATH="$tests" ZEBKIT_HOOK_CHILD_LIBRARY_PATH="$work/package:$root/usr/lib64" limited 180 \
     python3 "$tests/hook_policies.py" c:download "$work/hook_policies" > "$work/hook-policies.log" 2> "$work/hook-policies.err"; then

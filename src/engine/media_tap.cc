@@ -19,6 +19,8 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "zebkit/engine/c_api_util.h"
+#include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/media_capture.mojom.h"
 #include "zebkit/engine/media_capture_writer.h"
 #include "zebkit/engine/engine.h"
@@ -187,7 +189,7 @@ extern "C" zebkit_media_tap* zebkit_media_tap_start(zebkit_view* view,
     const char* id, const char* options_json, zebkit_media_tap_func func, void* data, char** error) {
   if (error) *error = nullptr;
   auto fail = [error](const std::string& message) -> zebkit_media_tap* {
-    if (error) *error = strdup(message.c_str());
+    zebkit::SetError(error, message);
     return nullptr;
   };
   if (!zebkit::LiveView(view) || !view->web_contents() || !id || !func) return fail("view, media id and callback are required");
@@ -218,13 +220,11 @@ extern "C" zebkit_media_tap* zebkit_media_tap_start(zebkit_view* view,
     return fail("path must be an absolute file path");
   if (!packets && !video && !audio && !path) return fail("at least one output is required");
   if (!path && options->contains("recordingOptions")) return fail("recordingOptions requires path");
-  std::vector<std::string> parts = base::SplitString(id, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
-  int process, routing, element;
-  if (parts.size() != 3 || !base::StringToInt(parts[0], &process) || !base::StringToInt(parts[1], &routing) || !base::StringToInt(parts[2], &element))
-    return fail("not a media id of the media list");
-  auto* frame = content::RenderFrameHost::FromID(process, routing);
-  if (!frame || !frame->IsRenderFrameLive() || content::WebContents::FromRenderFrameHost(frame) != view->web_contents())
-    return fail("the media does not belong to this live view");
+  int element = 0;
+  std::string why;
+  auto* frame = zebkit::FrameOfMediaId(view->web_contents(), id, &element, &why);
+  if (!frame)
+    return fail(why);
   zebkit::CaptureOptions recording;
   bool buffered = options->FindBool("includeBuffered").value_or(false);
   if (path) {

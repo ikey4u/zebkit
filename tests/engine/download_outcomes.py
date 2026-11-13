@@ -1,7 +1,8 @@
 """How downloads end (<zebkit/hooks.h>, zebkit_view_on_download_progress):
 completed, with the file's final path; cancelled by the application and by
 the download hook's answer; failed on the network (a response cut off) and
-on the file system (a directory it may not write to), each with its
+on the file system (a path under a file, which no one can write, root and
+Windows' administrators included), each with its
 category, Chromium's interrupt reason as code and name, and a message; and
 the same reports over CDP (Zebkit.setDownloadEvents,
 Zebkit.downloadProgress) under the guid CDP knows the download by.
@@ -21,8 +22,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import Server, check, ev, finish, skip, wait, zebkit  # noqa: E402
-from cdp_page import Cdp  # noqa: E402
+from harness import Cdp, Server, check, ev, finish, wait, zebkit  # noqa: E402
 
 BODY = b"zebkit download " * 128
 release = threading.Event()
@@ -95,9 +95,11 @@ def main():
         print("FAIL zebkit.init()")
         return 1
     work = tempfile.mkdtemp(prefix="zebkit-downloads-")
+    # Not a directory one may not write to: root writes to any, and Windows'
+    # administrators move a file into one their own deny entry forbids.
     locked = os.path.join(work, "locked")
-    os.mkdir(locked)
-    os.chmod(locked, 0o500)
+    with open(locked, "wb"):
+        pass
     server = Server(Pages)
     view = zebkit.View(server.base + "/", 600, 400)
     # The page itself, not the blank document before it.
@@ -167,16 +169,13 @@ def main():
           error.get("name", "").startswith("NETWORK_") and 20 <= error.get("code", 0) <= 24 and
           bool(error.get("message")), "failed on the network", cut)
 
-    # Failed on the file system: a directory it may not write to.
-    if os.geteuid() == 0:
-        skip("a file-system failure", "root writes to any directory")
-    else:
-        start(view, "/denied")
-        wait(lambda: last("denied.bin"), 15)
-        denied = last("denied.bin") or {}
-        error = denied.get("error") or {}
-        check(denied.get("outcome") == "failed" and error.get("category") == "file" and
-              error.get("name", "").startswith("FILE_") and error.get("message"), "failed on the file system", denied)
+    # Failed on the file system: a path under a file.
+    start(view, "/denied")
+    wait(lambda: last("denied.bin"), 15)
+    denied = last("denied.bin") or {}
+    error = denied.get("error") or {}
+    check(denied.get("outcome") == "failed" and error.get("category") == "file" and
+          error.get("name", "").startswith("FILE_") and error.get("message"), "failed on the file system", denied)
 
     # Over CDP: the page's session gets the same reports.
     zebkit.cdp_listen("127.0.0.1", 0)
@@ -213,7 +212,6 @@ def main():
 
     view.close()
     server.close()
-    os.chmod(locked, 0o700)
     shutil.rmtree(work, ignore_errors=True)
     zebkit.shutdown()
     return finish()

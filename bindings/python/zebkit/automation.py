@@ -30,7 +30,7 @@ from . import Error, View, _P, _S, _V, _alive, _declare, _guard, _retire, _strin
 __all__ = ["Page", "Frame", "Locator", "FrameLocator", "ElementHandle", "JSHandle", "Route", "Request",
            "Response", "Dialog", "FileChooser", "Download", "BrowserContext", "Worker", "Tracing", "Pixels", "expect", "run",
            "new_context", "listen", "TimeoutError", "commands", "page_id", "Keyboard", "Mouse", "Touchscreen",
-           "Clock", "ConsoleMessage", "APIRequestContext", "APIResponse", "Future", "sleep"]
+           "Clock", "ConsoleMessage", "APIRequestContext", "APIResponse", "Future", "sleep", "call", "on_event", "Disposable"]
 
 _DONE = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
 _EVENT = ctypes.CFUNCTYPE(None, _V, _S, _S, _P)
@@ -60,6 +60,41 @@ def commands():
     return json.loads(value) if value else []
 
 
+def call(view, method, params=None):
+    """Runs Playwright's command @method on @view's page (None for one
+    that names no view: Browser.newContext, a context's) with @params, as
+    the protocol names them: a Future of its result."""
+    return _command(view, method, params)
+
+
+def on_event(view, function):
+    """function(event, params) for @view's automation events, as the
+    protocol names them ("Page.request", "BrowserContext.dialog", ...); it
+    replaces a Page's own. None stops. Let go once the view has closed."""
+    handle = view._check()
+    previous = getattr(view, "_automation_event", None)
+    if function is None:
+        view._automation_event = None
+        _on_event(handle, _EVENT(), None)
+    else:
+        def event(h, name, params, data):
+            function(name.decode(), json.loads(params.decode()) if params else {})
+        callback = _EVENT(_guard(event))
+        view._automation_event = callback
+        _alive.add(callback)
+        _on_event(handle, callback, None)
+
+        def release():
+            if getattr(view, "_automation_event", None) is callback:
+                view._automation_event = None
+            _retire(callback)
+            _alive.discard(callback)
+        view._close_hooks.append(release)
+    if previous is not None:
+        _retire(previous)
+        _alive.discard(previous)
+
+
 # ---- Futures and coroutines on the engine's thread ----------------------
 
 class Future:
@@ -87,6 +122,18 @@ class Future:
 
     def done(self):
         return self._done
+
+    def cancel(self):
+        """Stops waiting: the Future fails with Error("cancelled"), and what
+        it waited for, if it can be stopped (wait_for_event()'s listener),
+        is. A command already sent still runs. False once it is done."""
+        if self._done:
+            return False
+        stop, self._on_cancel = getattr(self, "_on_cancel", None), None
+        if stop is not None:
+            stop()
+        self._finish(None, Error("cancelled"))
+        return True
 
     def result(self):
         if self._error is not None:
@@ -313,9 +360,14 @@ class Frame(_Selectors):
         params["frame"] = self._id
         return _command(self.page._view, method, params)
 
+    def command(self, method, params=None):
+        """One of the frame's commands ("Frame.*"), the frame added to
+        @params: a Future of its result."""
+        return self._do(method, **(params or {}))
+
     async def goto(self, url, wait_until=None, timeout=None, referer=None):
         answer = await self._do("Frame.goto", url=url, waitUntil=wait_until, timeout=_ms(timeout), referer=referer)
-        return Response(answer.get("response")) if answer.get("response") else None
+        return Response(answer["response"], self.page) if answer.get("response") else None
 
     async def evaluate(self, expression, arg=None):
         is_function = _looks_like_function(expression)
@@ -462,8 +514,12 @@ class Page(Frame):
         self.keyboard = Keyboard(self)
         self.mouse = Mouse(self)
         self._listeners = {}
+        self._protocol_listeners = []
         self._routes = []
         self._workers = {}
+        self._requests = {}
+        # The enabled:false subscriptions sent and not answered yet.
+        self._unsubscribing = {}
         self.touchscreen = Touchscreen(self)
         self.tracing = Tracing(self)
         handle = self._view._check()
@@ -479,6 +535,10 @@ class Page(Frame):
         if callback is not None:
             _retire(callback)
             _alive.discard(callback)
+        # As Rust's: what the listeners, routes and bindings hold goes with
+        # the view (no event comes after its close).
+        self._listeners, self._protocol_listeners, self._routes = {}, [], []
+        self._workers, self._requests, self._unsubscribing, self._bindings = {}, {}, {}, {}
 
     @property
     def view(self):
@@ -498,6 +558,18 @@ class Page(Frame):
     def _event(self, view, event, params, data):
         name = event.decode()
         value = json.loads(params.decode()) if params else {}
+        for listener in list(self._protocol_listeners):
+            listener(name, value)
+        if name == "Page.request" and value.get("request"):
+            # What the request's end (requestfinished, requestfailed) names.
+            if len(self._requests) >= 1000:
+                self._requests.pop(next(iter(self._requests)))
+            self._requests[value["request"]] = value
+        elif name in ("Page.requestFinished", "Page.requestFailed"):
+            started = (self._requests.pop if name == "Page.requestFailed" else self._requests.get)(
+                value.get("request"), None)
+            if started:
+                value = {**started, **value}
         if name == "BrowserContext.route":
             self._route(value)
             return
@@ -519,8 +591,36 @@ class Page(Frame):
             "requestfinished": Request, "requestfailed": Request,
             "console": lambda v: ConsoleMessage(v), "worker": self._worker,
         }.get(kind, lambda v: v)(value)
-        for listener in list(self._listeners.get(kind, [])):
+        listeners = list(self._listeners.get(kind, []))
+        if not listeners and kind in self._HELD:
+            # Held for this page while its last listener went (the engine
+            # had not heard yet): let the page go on, as Playwright does
+            # without a listener. One held for the application or a CDP
+            # client is theirs.
+            if self._unsubscribing.get(kind) and not value.get("auto"):
+                if kind == "filechooser":
+                    wrapped.set_files([])
+                elif wrapped.type == "beforeunload":
+                    wrapped.accept()
+                else:
+                    wrapped.dismiss()
+            return
+        for listener in listeners:
             listener(wrapped)
+
+    _HELD = ("dialog", "filechooser")
+
+    def _subscribe(self, event, enabled):
+        name = "dialog" if event == "dialog" else "fileChooser"
+        # At once: commands run in the order they are given.
+        future = _command(self._view, "Page.updateSubscription", {"event": name, "enabled": enabled})
+        if enabled:
+            return
+        self._unsubscribing[event] = self._unsubscribing.get(event, 0) + 1
+
+        def answered(_):
+            self._unsubscribing[event] = max(0, self._unsubscribing.get(event, 0) - 1)
+        future.add_done_callback(answered)
 
     def on(self, event, listener):
         """Calls listener(value) for each @event: dialog, filechooser,
@@ -528,23 +628,43 @@ class Page(Frame):
         console, framenavigated, frameattached, framedetached, close."""
         listeners = self._listeners.setdefault(event, [])
         listeners.append(listener)
-        if event in ("dialog", "filechooser") and len(listeners) == 1:
-            # At once: commands run in the order they are given.
-            _command(self._view, "Page.updateSubscription",
-                     {"event": "dialog" if event == "dialog" else "fileChooser", "enabled": True})
+        if event in self._HELD and len(listeners) == 1:
+            self._subscribe(event, True)
 
     def remove_listener(self, event, listener):
+        """Removes a listener on() added; the last dialog or filechooser one
+        lets the engine stop holding them."""
         listeners = self._listeners.get(event, [])
         if listener in listeners:
             listeners.remove(listener)
+            if event in self._HELD and not listeners and not self._view._closed:
+                self._subscribe(event, False)
+
+    def on_protocol_event(self, listener):
+        """listener(event, params) for every automation event of the page, as
+        the protocol names them, before on()'s listeners."""
+        self._protocol_listeners.append(listener)
+
+    def remove_protocol_listener(self, listener):
+        if listener in self._protocol_listeners:
+            self._protocol_listeners.remove(listener)
+
+    def command(self, method, params=None):
+        """One of the page's commands, as the protocol names it and its
+        params: a Future of its result."""
+        return _command(self._view, method, params)
 
     def wait_for_event(self, event, predicate=None):
+        """A Future of the next @event for which predicate(value) is true.
+        Its listener goes once the event has come; Future.cancel() stops
+        waiting (Rust's remove_listener() with the id it returns)."""
         future = Future()
 
         def listener(value):
             if predicate is None or predicate(value):
                 self.remove_listener(event, listener)
                 future.set_result(value)
+        future._on_cancel = lambda: self.remove_listener(event, listener)
         self.on(event, listener)
         return future
 
@@ -615,15 +735,15 @@ class Page(Frame):
 
     async def reload(self, wait_until=None, timeout=None):
         answer = await _command(self._view, "Page.reload", {"waitUntil": wait_until, "timeout": _ms(timeout)})
-        return Response(answer["response"]) if answer.get("response") else None
+        return Response(answer["response"], self) if answer.get("response") else None
 
     async def go_back(self, wait_until=None, timeout=None):
         answer = await _command(self._view, "Page.goBack", {"waitUntil": wait_until, "timeout": _ms(timeout)})
-        return Response(answer["response"]) if answer.get("response") else None
+        return Response(answer["response"], self) if answer.get("response") else None
 
     async def go_forward(self, wait_until=None, timeout=None):
         answer = await _command(self._view, "Page.goForward", {"waitUntil": wait_until, "timeout": _ms(timeout)})
-        return Response(answer["response"]) if answer.get("response") else None
+        return Response(answer["response"], self) if answer.get("response") else None
 
     async def screenshot(self, path=None, **options):
         """Playwright's options: type, quality, full_page, clip, omit_background,
@@ -653,8 +773,12 @@ class Page(Frame):
                         "forcedColors": forced_colors, "contrast": contrast})
 
     async def add_init_script(self, script=None, path=None):
+        """@script (or the file at @path) in every document of the page from
+        now on, before the page's own: a Disposable whose dispose() takes it
+        away again."""
         source = pathlib.Path(path).read_text() if path else script
-        await _command(self._view, "Page.addInitScript", {"source": source})
+        answer = await _command(self._view, "Page.addInitScript", {"source": source})
+        return Disposable(self._view, (answer or {}).get("registration"))
 
     async def set_extra_http_headers(self, headers):
         await _command(self._view, "Page.setExtraHTTPHeaders",
@@ -811,6 +935,15 @@ class Locator(_Selectors):
 
     def _do(self, method, strict=True, **params):
         return self._frame._do(method, selector=self._selector, strict=strict, **params)
+
+    def command(self, method, params=None):
+        """@method with the selector, strictly, and @params: a Future of its result."""
+        return self._do(method, **(params or {}))
+
+    @property
+    def content_frame(self):
+        """The frame of this <iframe> locator, as Playwright's: a FrameLocator."""
+        return FrameLocator(self._frame, self._selector)
 
     async def click(self, **options):
         await self._do("Frame.click", **_options(options))
@@ -1054,6 +1187,10 @@ class ElementHandle(JSHandle):
 
     async def _act(self, name, **params):
         return await self._do("ElementHandle." + name, **params)
+
+    def command(self, name, params=None):
+        """An ElementHandle command ("click", "fill", ...) with @params: a Future of its result."""
+        return self._do("ElementHandle." + name, **(params or {}))
 
     async def click(self, **options):
         await self._act("click", **_options(options))
@@ -1396,9 +1533,18 @@ class Tracing:
         return answer.get("path")
 
 
-def _adopt_view(handle):
-    """A View for a view the engine made (a context's page)."""
-    return View._adopt(handle)
+class Disposable:
+    """What Page.add_init_script() added, until dispose() takes it away
+    (Playwright's Disposable)."""
+
+    def __init__(self, view, registration):
+        self._view = view
+        self.registration = registration
+
+    async def dispose(self):
+        """Documents from now on do not get it."""
+        if self.registration is not None:
+            await _command(self._view, "Page.removeRegistration", {"registration": self.registration})
 
 
 class BrowserContext:
@@ -1409,12 +1555,21 @@ class BrowserContext:
         self._id = context_id
         self.pages = []
 
+    @property
+    def id(self):  # noqa: A003
+        """Its id ("x1"), as the protocol names it."""
+        return self._id
+
     def _do(self, method, **params):
         return _command(None, method, {"context": self._id, **params})
 
+    def command(self, method, params=None):
+        """One of the context's commands, the context added to @params: a Future of its result."""
+        return self._do(method, **(params or {}))
+
     async def new_page(self):
         answer = await self._do("BrowserContext.newPage")
-        page = Page(_adopt_view(_page_view(answer["page"].encode())))
+        page = Page(View._adopt(_page_view(answer["page"].encode())))
         page.context = self
         self.pages.append(page)
         return page

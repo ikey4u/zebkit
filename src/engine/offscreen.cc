@@ -53,6 +53,7 @@
 #include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/ref_counted.h"
@@ -60,8 +61,11 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/numerics/clamped_math.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
@@ -110,6 +114,7 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/gpu_memory_buffer_handle.h"
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/offscreen.h"
 #include "zebkit/engine/page_internal.h"
@@ -244,6 +249,14 @@ struct Surface {
 };
 #endif
 
+#if BUILDFLAG(IS_MAC)
+bool CopyIntoSurface(gfx::ScopedIOSurface surface,
+                     scoped_refptr<Buffer> buffer,
+                     const uint8_t* pixels,
+                     size_t stride,
+                     const gfx::Rect& region);
+#endif
+
 // The frames of one widget, the view's page or a popup: a capturer on its
 // frame sink, and what the application holds of them.
 class FrameStream : public viz::mojom::FrameSinkVideoConsumer,
@@ -315,12 +328,31 @@ class FrameStream : public viz::mojom::FrameSinkVideoConsumer,
 
   scoped_refptr<Buffer> BufferFor(media::mojom::VideoBufferHandlePtr data);
   void Deliver(std::unique_ptr<Frame> frame);
+  // @frame to the application, whose it is until it releases it.
+  void Hand(std::unique_ptr<Frame> frame);
 #if BUILDFLAG(IS_MAC)
   // macOS: a frame read back into shared memory, copied into an IOSurface
   // of the stream's own (the part that changed since that surface last
-  // held a frame), which the application gets in its place.
-  void CopyToSurface(Frame* frame);
+  // held a frame), which the application gets in its place. The surface
+  // and the part are chosen here; the copy is made on copier_, a sequence
+  // of the thread pool, and the frame goes on from Copied(), in order.
+  struct SurfaceCopy {
+    gfx::ScopedIOSurface ref;
+    uint64_t id = 0;
+    gfx::Rect region;
+  };
+  std::optional<SurfaceCopy> PrepareCopy(Frame* frame);
+  void Copied(std::unique_ptr<Frame> frame, uint64_t surface_id,
+              gfx::ScopedIOSurface ref, bool copied);
+  // A frame that needed no copy, behind one still being made (Deliver()).
+  void Queued(std::unique_ptr<Frame> frame);
   bool copy_to_surface_ = false;
+  scoped_refptr<base::SequencedTaskRunner> copier_;
+  // Frames on copier_, copied or queued behind a copy: until it is back to
+  // 0, a frame that needs no copy goes behind them, so that frames reach
+  // the application in order (after ApplyBuffers() turned the copies off,
+  // or when no surface could be made for one).
+  int on_copier_ = 0;
   std::vector<Surface> surfaces_;
   // The damage of the frames delivered lately, by sequence.
   std::deque<std::pair<uint64_t, gfx::Rect>> history_;
@@ -353,6 +385,58 @@ class FrameStream : public viz::mojom::FrameSinkVideoConsumer,
   base::WeakPtrFactory<FrameStream> weak_factory_{this};
 };
 
+class Offscreen;
+
+// The off-screen view of each widget its pages draw in, for the widget hooks
+// (a cursor, a screen), without a walk of every view's frames. A widget is
+// here from its frame's creation (or its popup's showing) until it goes or
+// its view does.
+class WidgetOwners : public content::RenderWidgetHostObserver {
+ public:
+  static WidgetOwners& Get() {
+    static base::NoDestructor<WidgetOwners> owners;
+    return *owners;
+  }
+
+  void Add(content::RenderWidgetHost* widget, Offscreen* owner) {
+    if (!widget)
+      return;
+    auto [it, added] = owners_.try_emplace(widget, owner);
+    if (added)
+      observations_.AddObservation(widget);
+    else
+      it->second = owner;
+  }
+
+  Offscreen* Find(content::RenderWidgetHost* widget) const {
+    auto it = owners_.find(widget);
+    return it != owners_.end() ? it->second.get() : nullptr;
+  }
+
+  void RemoveOwner(Offscreen* owner) {
+    for (auto it = owners_.begin(); it != owners_.end();) {
+      if (it->second != owner) {
+        ++it;
+        continue;
+      }
+      observations_.RemoveObservation(it->first);
+      it = owners_.erase(it);
+    }
+  }
+
+ private:
+  // content::RenderWidgetHostObserver
+  void RenderWidgetHostDestroyed(content::RenderWidgetHost* widget) override {
+    observations_.RemoveObservation(widget);
+    owners_.erase(widget);
+  }
+
+  std::map<content::RenderWidgetHost*, raw_ptr<Offscreen>> owners_;
+  base::ScopedMultiSourceObservation<content::RenderWidgetHost,
+                                     content::RenderWidgetHostObserver>
+      observations_{this};
+};
+
 // What an off-screen view has besides its zebkit_view.
 class Offscreen : public content::WebContentsObserver,
                   public content::RenderWidgetHostObserver {
@@ -362,6 +446,10 @@ class Offscreen : public content::WebContentsObserver,
 
   static Offscreen* Of(zebkit_view* view);
   static Offscreen* OfContents(content::WebContents* contents);
+  // The view a widget of a page draws in: its frames', its popup's. With
+  // @walk, a widget not seen yet is looked for in every off-screen view's
+  // frames (one whose frame is still being made).
+  static Offscreen* OfWidget(content::RenderWidgetHost* widget, bool walk);
   static std::map<zebkit_view*, Offscreen*>& All();
 
   zebkit_view* view() const { return view_; }
@@ -396,10 +484,11 @@ class Offscreen : public content::WebContentsObserver,
     if (on_frame_)
       on_frame_(view_, frame, on_frame_data_);
   }
+  // The application takes frames.
+  bool wants_frames() const { return !!on_frame_; }
 
   void PopupShown(content::RenderWidgetHost* popup, const gfx::Rect& screen);
   void CursorChanged(const ui::Cursor& cursor);
-  bool Owns(content::RenderWidgetHost* widget);
   bool IsPopup(content::RenderWidgetHost* widget) const { return widget && widget == popup_; }
 
   zebkit_frame_buffers buffers() const { return buffers_; }
@@ -415,6 +504,7 @@ class Offscreen : public content::WebContentsObserver,
 
  private:
   // content::WebContentsObserver
+  void RenderFrameCreated(content::RenderFrameHost* frame) override;
   void RenderFrameHostChanged(content::RenderFrameHost* old_host,
                               content::RenderFrameHost* new_host) override;
   void RenderViewReady() override;
@@ -842,11 +932,53 @@ void FrameStream::Deliver(std::unique_ptr<Frame> frame) {
   frame->frame.damage = frame->damage.data();
   frame->frame.damage_count = frame->damage.size();
   frame->frame.sequence = ++sequence_;
-#if BUILDFLAG(IS_MAC)
-  if (copy_to_surface_ && frame->frame.kind == ZEBKIT_FRAME_SHARED_MEMORY)
-    CopyToSurface(frame.get());
-#endif
+  // Out from now on, while it is being copied too.
   ++in_flight_;
+#if BUILDFLAG(IS_MAC)
+  if (copy_to_surface_ && frame->frame.kind == ZEBKIT_FRAME_SHARED_MEMORY) {
+    if (std::optional<SurfaceCopy> copy = PrepareCopy(frame.get())) {
+      // Not on this thread: a full-damage 4K frame is 33 MB. The frame
+      // keeps its buffer, and the capturer does not reuse it, until
+      // Copied(); one sequence, whose replies come in the order of the
+      // copies, keeps the frames in order.
+      if (!copier_) {
+        copier_ = base::ThreadPool::CreateSequencedTaskRunner(
+            {base::TaskPriority::USER_BLOCKING,
+             base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
+      }
+      // Bound first: the reply takes the frame.
+      auto copy_task =
+          base::BindOnce(&CopyIntoSurface, copy->ref, frame->buffer,
+                         frame->frame.pixels, frame->frame.stride, copy->region);
+      auto reply = base::BindOnce(&FrameStream::Copied, weak_factory_.GetWeakPtr(),
+                                  std::move(frame), copy->id, std::move(copy->ref));
+      ++on_copier_;
+      copier_->PostTaskAndReplyWithResult(FROM_HERE, std::move(copy_task),
+                                          std::move(reply));
+      return;
+    }
+  }
+  if (on_copier_ > 0) {
+    // An earlier frame is still being copied: this one goes after it.
+    ++on_copier_;
+    copier_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                              base::BindOnce(&FrameStream::Queued,
+                                             weak_factory_.GetWeakPtr(),
+                                             std::move(frame)));
+    return;
+  }
+#endif
+  Hand(std::move(frame));
+}
+
+void FrameStream::Hand(std::unique_ptr<Frame> frame) {
+  if (!owner_->wants_frames()) {
+    // Turned off (zebkit_view_on_frame(view, NULL, NULL)) while the frame
+    // was being copied: nobody takes it, so it is let go here, and its
+    // place among those out with it.
+    Release(frame.release());
+    return;
+  }
   // The application's until it releases it.
   Frame* given = frame.release();
   owner_->DeliverFrame(&given->frame);
@@ -868,7 +1000,7 @@ void FrameStream::Release(Frame* frame) {
 }
 
 #if BUILDFLAG(IS_MAC)
-void FrameStream::CopyToSurface(Frame* frame) {
+std::optional<FrameStream::SurfaceCopy> FrameStream::PrepareCopy(Frame* frame) {
   zebkit_frame& out = frame->frame;
   const gfx::Size size(out.width, out.height);
   const uint64_t sequence = out.sequence;
@@ -893,7 +1025,7 @@ void FrameStream::CopyToSurface(Frame* frame) {
     fresh.ref = gfx::CreateIOSurface(size, viz::SinglePlaneFormat::kBGRA_8888,
                                      /*should_clear=*/false);
     if (!fresh.ref)
-      return;  // Shared memory, then.
+      return std::nullopt;  // Shared memory, then.
     fresh.id = NextBufferId();
     fresh.size = size;
     surfaces_.push_back(std::move(fresh));
@@ -912,34 +1044,71 @@ void FrameStream::CopyToSurface(Frame* frame) {
     }
   }
   region.Intersect(gfx::Rect(size));
+  // The surface is the frame's from now on: what the next frame copies into
+  // another one is counted from this picture.
+  surface->in_use = true;
+  surface->sequence = sequence;
+  return SurfaceCopy{surface->ref, surface->id, region};
+}
 
-  IOSurfaceRef ref = surface->ref.get();
-  // Not locked: the frame goes as shared memory, as it came.
+// On the copier's sequence: @region of the frame at @pixels (rows of @stride
+// bytes, in @buffer, which stays mapped while this runs) into @surface.
+// False when the surface could not be locked.
+bool CopyIntoSurface(gfx::ScopedIOSurface surface,
+                     scoped_refptr<Buffer> buffer,
+                     const uint8_t* pixels,
+                     size_t stride,
+                     const gfx::Rect& region) {
+  IOSurfaceRef ref = surface.get();
   if (IOSurfaceLock(ref, 0, nullptr) != KERN_SUCCESS)
-    return;
+    return false;
   uint8_t* base = static_cast<uint8_t*>(IOSurfaceGetBaseAddress(ref));
   const size_t row_bytes = IOSurfaceGetBytesPerRow(ref);
   for (int y = region.y(); y < region.bottom(); ++y) {
     memcpy(base + y * row_bytes + region.x() * 4,
-           out.pixels + y * out.stride + region.x() * 4, region.width() * 4);
+           pixels + y * stride + region.x() * 4, region.width() * 4);
   }
   IOSurfaceUnlock(ref, 0, nullptr);
-  surface->in_use = true;
-  surface->sequence = sequence;
+  return true;
+}
 
-  frame->surface.reset(ref, base::scoped_policy::RETAIN);
+void FrameStream::Queued(std::unique_ptr<Frame> frame) {
+  --on_copier_;
+  Hand(std::move(frame));
+}
+
+void FrameStream::Copied(std::unique_ptr<Frame> frame,
+                         uint64_t surface_id,
+                         gfx::ScopedIOSurface ref,
+                         bool copied) {
+  --on_copier_;
+  if (!copied) {
+    // Not locked: the frame goes as shared memory, as it came, and the
+    // surface's picture is not known any more.
+    for (Surface& surface : surfaces_) {
+      if (surface.id == surface_id) {
+        surface.in_use = false;
+        surface.sequence = 0;
+      }
+    }
+    Hand(std::move(frame));
+    return;
+  }
+  zebkit_frame& out = frame->frame;
   out.kind = ZEBKIT_FRAME_IOSURFACE;
-  out.iosurface = ref;
-  out.buffer_id = surface->id;
+  out.iosurface = ref.get();
+  out.buffer_id = surface_id;
   out.pixels = nullptr;
   out.stride = 0;
   out.fd = -1;
   out.size = 0;
   out.offset = 0;
+  frame->surface = std::move(ref);
   // Copied: the capturer has its buffer back now.
   frame->callbacks->Done();
   frame->done = true;
   frame->buffer = nullptr;
+  Hand(std::move(frame));
 }
 #endif
 
@@ -966,20 +1135,18 @@ void OnPopupShown(content::WebContents* contents,
 // the popup's page, laid out at its view's scale, would be cut to a corner.
 void OnScreenInfos(content::RenderWidgetHost* widget, display::ScreenInfos* infos) {
   if (!infos || infos->screen_infos.empty()) return;
-  for (const auto& [view, offscreen] : Offscreen::All()) {
-    if (!offscreen->Owns(widget)) continue;
+  Offscreen* offscreen = Offscreen::OfWidget(widget, /*walk=*/true);
+  if (!offscreen) return;
 #if BUILDFLAG(IS_LINUX)
-    if (zebkit_is_headless() && !offscreen->IsPopup(widget)) return;
+  if (zebkit_is_headless() && !offscreen->IsPopup(widget)) return;
 #endif
-    auto& current = infos->mutable_current();
-    current.device_scale_factor = offscreen->scale();
-    gfx::Size screen_size = offscreen->size();
-    screen_size.Enlarge(1024, 1024);
-    current.rect.set_size(screen_size);
-    current.available_rect = current.rect;
-    current.display_color_spaces = gfx::DisplayColorSpaces();
-    return;
-  }
+  auto& current = infos->mutable_current();
+  current.device_scale_factor = offscreen->scale();
+  gfx::Size screen_size = offscreen->size();
+  screen_size.Enlarge(1024, 1024);
+  current.rect.set_size(screen_size);
+  current.available_rect = current.rect;
+  current.display_color_spaces = gfx::DisplayColorSpaces();
 }
 #endif
 
@@ -1017,6 +1184,9 @@ Offscreen::Offscreen(zebkit_view* view, const gfx::Size& size, float scale)
   // page, rather than a menu of the system's.
   std::ignore = web_contents()->ForbidExternalPopupMenus().Release();
 #endif
+  web_contents()->ForEachRenderFrameHost([this](content::RenderFrameHost* frame) {
+    WidgetOwners::Get().Add(frame->GetRenderWidgetHost(), this);
+  });
   if (scale > 0) own_scale_ = scale;
   UpdateDisplay();
   PlaceWindow();
@@ -1030,6 +1200,7 @@ Offscreen::~Offscreen() {
   ClosePopup();
   if (main_widget_)
     main_widget_->RemoveObserver(this);
+  WidgetOwners::Get().RemoveOwner(this);
   All().erase(view_);
 #if BUILDFLAG(IS_LINUX)
   if (own_display_)
@@ -1048,9 +1219,30 @@ Offscreen* Offscreen::Of(zebkit_view* view) {
 }
 
 Offscreen* Offscreen::OfContents(content::WebContents* contents) {
-  for (auto& [view, offscreen] : All()) {
-    if (offscreen->web_contents() == contents)
+  zebkit_view* view = ViewOf(contents);
+  return view ? Of(view) : nullptr;
+}
+
+Offscreen* Offscreen::OfWidget(content::RenderWidgetHost* widget, bool walk) {
+  if (!widget)
+    return nullptr;
+  if (Offscreen* found = WidgetOwners::Get().Find(widget))
+    return found;
+  if (!walk)
+    return nullptr;
+  for (const auto& [view, offscreen] : All()) {
+    if (!offscreen->web_contents())
+      continue;
+    bool found = false;
+    offscreen->web_contents()->ForEachRenderFrameHost(
+        [&](content::RenderFrameHost* frame) {
+          if (frame->GetRenderWidgetHost() == widget)
+            found = true;
+        });
+    if (found) {
+      WidgetOwners::Get().Add(widget, offscreen);
       return offscreen;
+    }
   }
   return nullptr;
 }
@@ -1220,6 +1412,7 @@ void Offscreen::AttachMainWidget() {
   if (!widget)
     return;
   widget->AddObserver(this);
+  WidgetOwners::Get().Add(widget, this);
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   content::NotifyEmbedderWidgetScreenInfoChanged(widget);
 #endif
@@ -1351,19 +1544,6 @@ void Offscreen::CaretChanged() {
   }
 }
 
-bool Offscreen::Owns(content::RenderWidgetHost* widget) {
-  if (!widget || !web_contents())
-    return false;
-  if (widget == popup_ || widget == MainWidget())
-    return true;
-  bool found = false;
-  web_contents()->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
-    if (frame->GetRenderWidgetHost() == widget)
-      found = true;
-  });
-  return found;
-}
-
 // ---- Popups ----------------------------------------------------------------
 
 void Offscreen::PopupShown(content::RenderWidgetHost* popup,
@@ -1374,6 +1554,7 @@ void Offscreen::PopupShown(content::RenderWidgetHost* popup,
     return;
   popup_ = popup;
   popup_->AddObserver(this);
+  WidgetOwners::Get().Add(popup, this);
   popup_bounds_ = screen;
   popup_bounds_.Offset(-main->GetViewBounds().OffsetFromOrigin());
 #if BUILDFLAG(IS_LINUX)
@@ -1450,8 +1631,14 @@ content::RenderWidgetHost* Offscreen::KeyTarget() {
   return main ? content::GetFocusedRenderWidgetHost(main) : nullptr;
 }
 
+void Offscreen::RenderFrameCreated(content::RenderFrameHost* frame) {
+  WidgetOwners::Get().Add(frame->GetRenderWidgetHost(), this);
+}
+
 void Offscreen::RenderFrameHostChanged(content::RenderFrameHost* old_host,
                                        content::RenderFrameHost* new_host) {
+  if (new_host)
+    WidgetOwners::Get().Add(new_host->GetRenderWidgetHost(), this);
   if (new_host && new_host->IsInPrimaryMainFrame())
     AttachMainWidget();
 }
@@ -1828,12 +2015,10 @@ void Offscreen::CursorChanged(const ui::Cursor& cursor) {
 
 void OnCursorChanged(content::RenderWidgetHost* widget,
                      const ui::Cursor& cursor) {
-  for (auto& [view, offscreen] : Offscreen::All()) {
-    if (offscreen->Owns(widget)) {
-      offscreen->CursorChanged(cursor);
-      return;
-    }
-  }
+  // A widget's cursor comes from a live frame, which RenderFrameCreated()
+  // has told of.
+  if (Offscreen* offscreen = Offscreen::OfWidget(widget, /*walk=*/false))
+    offscreen->CursorChanged(cursor);
 }
 
 void OnPopupShown(content::WebContents* contents,
@@ -1884,13 +2069,33 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
                                           int width,
                                           int height,
                                           float scale) {
-  if (!zebkit::CurrentlyOnEngineThread())
+  char* error = nullptr;
+  zebkit_view* view =
+      zebkit_view_new_offscreen_ex(context, url, width, height, scale, &error);
+  if (!view && error)
+    LOG(ERROR) << "zebkit: " << error;
+  free(error);
+  return view;
+}
+
+zebkit_view* zebkit_view_new_offscreen_ex(zebkit_context* context,
+                                          const char* url,
+                                          int width,
+                                          int height,
+                                          float scale,
+                                          char** error) {
+  if (error)
+    *error = nullptr;
+  auto fail = [error](std::string_view why) -> zebkit_view* {
+    zebkit::SetError(error, why);
     return nullptr;
+  };
+  if (!zebkit::CurrentlyOnEngineThread())
+    return fail("views are made on the engine's thread");
 #if BUILDFLAG(IS_WIN)
   if (!zebkit_is_headless()) {
-    LOG(ERROR) << "zebkit: off-screen views are for a process without "
-                  "windows on Windows (--headless)";
-    return nullptr;
+    return fail("off-screen views are for a process without windows on "
+                "Windows (--headless)");
   }
 #elif BUILDFLAG(IS_LINUX)
   // Their root's stub platform window is X11's and headless's so far: on
@@ -1898,16 +2103,16 @@ zebkit_view* zebkit_view_new_offscreen_in(zebkit_context* context,
   auto* linux_ui = ui::LinuxUiDelegate::GetInstance();
   if (!zebkit_is_headless() && linux_ui &&
       linux_ui->GetBackend() == ui::LinuxUiBackend::kWayland) {
-    LOG(ERROR) << "zebkit: off-screen views are not done on Wayland yet: "
-                  "use X11 (the default) or --headless";
-    return nullptr;
+    return fail("off-screen views are not done on Wayland yet: use X11 (the "
+                "default) or --headless");
   }
 #endif
   const gfx::Size size(width > 0 ? width : 800, height > 0 ? height : 600);
+  std::string why;
   zebkit_view* view = zebkit::NewView(context, url, size.width(), size.height(),
-                                      zebkit::Window::Kind::kOffscreen);
+                                      zebkit::Window::Kind::kOffscreen, nullptr, &why);
   if (!view)
-    return nullptr;
+    return fail(why);
   // Deleted with the page (Offscreen::WebContentsDestroyed).
   new Offscreen(view, size, scale);
   return view;

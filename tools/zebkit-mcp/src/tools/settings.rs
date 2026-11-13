@@ -85,7 +85,11 @@ fn settings_set(bounds: &'static Bounds, args: Value, done: Done) {
         return done(after(&page));
     }
     let next = page.clone();
-    page.command("Page.setViewportSize", &json!({"viewportSize": {"width": width, "height": height}}).to_string(), move |result| match result {
+    let params = match super::to_engine(&json!({"viewportSize": {"width": width, "height": height}})) {
+        Ok(params) => params,
+        Err(why) => return done(Err(why)),
+    };
+    page.command("Page.setViewportSize", params, move |result| match result {
         Ok(_) => done(after(&next)),
         Err(error) => done(Err(error.message().chars().take(1000).collect())),
     });

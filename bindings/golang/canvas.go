@@ -82,6 +82,7 @@ func (c *Canvas) Close() {
 	c.c = nil
 }
 
+// Width and Height are the canvas's size in pixels (in points for a PDF hook's).
 func (c *Canvas) Width() int  { return int(C.zebkit_canvas_width(c.c)) }
 func (c *Canvas) Height() int { return int(C.zebkit_canvas_height(c.c)) }
 
@@ -107,6 +108,8 @@ func (c *Canvas) PNG() ([]byte, error) {
 	return takeBytes(out, size), nil
 }
 
+// Save pushes the state (matrix, clip, colors, line, font), Restore pops it;
+// Translate, Scale and Rotate (degrees, clockwise on the screen) change the matrix.
 func (c *Canvas) Save()                  { C.zebkit_canvas_save(c.c) }
 func (c *Canvas) Restore()               { C.zebkit_canvas_restore(c.c) }
 func (c *Canvas) Translate(x, y float64) { C.zebkit_canvas_translate(c.c, C.double(x), C.double(y)) }
@@ -137,6 +140,7 @@ func (c *Canvas) SetBlend(mode string) error {
 	return check(C.zebkit_canvas_set_blend(c.c, cmode), "no such blend mode")
 }
 
+// SetLineWidth is the stroke's width, in the units of the matrix.
 func (c *Canvas) SetLineWidth(width float64) { C.zebkit_canvas_set_line_width(c.c, C.double(width)) }
 
 // LineCap and LineJoin are a line's ends and corners.
@@ -152,6 +156,8 @@ const (
 	JoinBevel LineJoin = 2
 )
 
+// SetLineCap, SetLineJoin and SetMiterLimit are how a stroke ends, turns
+// corners, and how far a miter may reach.
 func (c *Canvas) SetLineCap(cap LineCap) { C.zebkit_canvas_set_line_cap(c.c, C.zebkit_canvas_cap(cap)) }
 func (c *Canvas) SetLineJoin(join LineJoin) {
 	C.zebkit_canvas_set_line_join(c.c, C.zebkit_canvas_join(join))
@@ -198,6 +204,8 @@ func (c *Canvas) SetRadialGradient(x, y, radius float64, offsets []float64, colo
 		"the gradient was refused")
 }
 
+// BeginPath starts a new path; MoveTo, LineTo, QuadTo (one control point) and
+// CurveTo (two) add to it, through the matrix.
 func (c *Canvas) BeginPath()          { C.zebkit_canvas_begin_path(c.c) }
 func (c *Canvas) MoveTo(x, y float64) { C.zebkit_canvas_move_to(c.c, C.double(x), C.double(y)) }
 func (c *Canvas) LineTo(x, y float64) { C.zebkit_canvas_line_to(c.c, C.double(x), C.double(y)) }
@@ -212,9 +220,14 @@ func (c *Canvas) CurveTo(c1x, c1y, c2x, c2y, x, y float64) {
 func (c *Canvas) Arc(x, y, radius, start, end float64, counterclockwise bool) {
 	C.zebkit_canvas_arc(c.c, C.double(x), C.double(y), C.double(radius), C.double(start), C.double(end), C.bool(counterclockwise))
 }
+
+// Rect adds a closed rectangle to the path.
 func (c *Canvas) Rect(x, y, width, height float64) {
 	C.zebkit_canvas_rect(c.c, C.double(x), C.double(y), C.double(width), C.double(height))
 }
+
+// ClosePath closes the subpath; Fill, Stroke and Clip use the path (evenOdd:
+// the even-odd rule, else nonzero); Clear sets every pixel in the clip to rgba.
 func (c *Canvas) ClosePath()        { C.zebkit_canvas_close_path(c.c) }
 func (c *Canvas) Fill(evenOdd bool) { C.zebkit_canvas_fill(c.c, C.bool(evenOdd)) }
 func (c *Canvas) Stroke()           { C.zebkit_canvas_stroke(c.c) }

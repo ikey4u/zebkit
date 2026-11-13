@@ -78,6 +78,12 @@ void OnDownloadClientDetached(content::DevToolsAgentHostClientChannel* channel);
 // attached to @contents' page (devtools.cc).
 bool HasExternalDevToolsClient(content::WebContents* contents);
 
+// The hang monitor held only by those clients (patch 1087): a view's own
+// session (evaluation, init scripts, grants) never pauses its page, and with
+// it counted as a debugger zebkit_view_on_responsiveness() would never be
+// told anything (devtools.cc).
+void InstallHangMonitorPolicy();
+
 // The page of @contents printed to PDF with Page.printToPDF's parameters
 // (print.cc): the bytes, or an empty pointer and the error, which is the
 // caller's when @invalid_params (CDP's "invalid parameters").

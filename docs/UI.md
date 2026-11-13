@@ -19,7 +19,7 @@ engine has to ask a person.
 - **For the engine itself:** JavaScript dialogs, permission prompts,
   popups, file and colour choosers, context menus. They are the default
   implementations of the decisions the hooks let a host take over
-  (`docs/ROADMAP_HOOKS.md`): a host with a toolkit presents them
+  (`docs/HOOKS.md`): a host with a toolkit presents them
   natively, a script or an agent gets them as they are.
 
 ## What it promises

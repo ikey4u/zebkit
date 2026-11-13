@@ -10,6 +10,7 @@
  * scripts/engine-test.sh sets them. Exit 0 when every check passes. */
 
 #define _GNU_SOURCE /* strcasestr */
+#include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,16 +18,7 @@
 #include <zebkit/services.h>
 #include <zebkit/zebkit.h>
 
-static int failures, checks;
 static char base[256], other[256], files[1024];
-
-static void check(int ok, const char *what, const char *detail) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-    fflush(stdout);
-}
 
 /* zebkit.app.add(a, b) */
 static void add(zebkit_view *view, const char *origin, const char *args, zebkit_call *call, void *data) {
@@ -72,16 +64,16 @@ static zebkit_view *granted, *stranger;
 
 static void fetched(const zebkit_response *response, void *data) {
     (void)data;
-    check(response->status == 200 && response->body_size == 6 && memcmp(response->body, "hello\n", 6) == 0,
+    check_text(response->status == 200 && response->body_size == 6 && memcmp(response->body, "hello\n", 6) == 0,
           "zebkit_fetch from C", response->error ? response->error : response->url);
-    check(strcasestr(response->headers, "content-type: text/plain") != NULL, "zebkit_fetch: response headers",
+    check_text(strcasestr(response->headers, "content-type: text/plain") != NULL, "zebkit_fetch: response headers",
           response->headers);
     zebkit_quit();
 }
 
 static void refused(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)view, (void)data;
-    check(json && strstr(json, "is not allowed for http://localhost:"), "a page of another origin is refused",
+    check_text(json && strstr(json, "is not allowed for http://localhost:"), "a page of another origin is refused",
           json ? json : error);
     char url[300];
     snprintf(url, sizeof(url), "%s/hello.txt", base);
@@ -97,7 +89,7 @@ static void on_stranger_load(zebkit_view *view, zebkit_load_event event, const c
 static void results(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)view, (void)data;
     if (!json) {
-        check(0, "runBridgeTests()", error);
+        check_text(0, "runBridgeTests()", error);
     } else {
         /* {"name": true, ...}: each value that is not true failed. */
         printf("     %s\n", json);
@@ -111,7 +103,7 @@ static void results(zebkit_view *view, const char *json, const char *error, void
         }
         char summary[64];
         snprintf(summary, sizeof(summary), "%d of %d", total - bad, total);
-        check(total >= 15 && bad == 0, "zebkit.* from the granted page", summary);
+        check_text(total >= 15 && bad == 0, "zebkit.* from the granted page", summary);
     }
     char url[300];
     snprintf(url, sizeof(url), "%s/bridge.html", other);
@@ -128,7 +120,7 @@ static void on_load(zebkit_view *view, zebkit_load_event event, const char *url,
     if (event == ZEBKIT_LOAD_FINISHED && !ran++)
         zebkit_view_evaluate(view, "runBridgeTests()", results, NULL);
     else if (event == ZEBKIT_LOAD_FAILED)
-        check(0, "loading the page", url);
+        check_text(0, "loading the page", url);
 }
 
 static void ready(void *data) {
@@ -152,7 +144,7 @@ int main(int argc, char **argv) {
     snprintf(base, sizeof(base), "%s", b);
     snprintf(other, sizeof(other), "%s", o);
     snprintf(files, sizeof(files), "%s", f);
-    zebkit_main(argc, argv, ready, NULL);
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures || checks < 4 ? 1 : 0;
+    check(zebkit_main(argc, argv, ready, NULL) == 0, "zebkit_main returned 0", NULL);
+    /* Its four parts each checked: a run that ended early is a failure. */
+    return summary() || harness_checks < 5 ? 1 : 0;
 }

@@ -14,7 +14,7 @@
 //!         // [{"id": "4.12.3", "kind": "mse", "codecs": {...}, ...}]
 //!         let Ok(list) = list else { return };
 //!         let Some(id) = list.split("\"id\":\"").nth(1).and_then(|rest| rest.split('"').next()) else { return };
-//!         let capture = page.media_capture_start(id, "/tmp/video.mp4", "{}").unwrap();
+//!         let capture = page.media_capture(id, "/tmp/video.mp4", "{}").unwrap();
 //!         capture.on_progress(|state| println!("{state}"));
 //!         capture.on_done(|done| println!("written: {done}"));
 //!         // ... later: capture.stop(); keep `capture` until then.
@@ -42,7 +42,7 @@ pub fn keep_history(keep: bool) {
 
 impl View {
     /// The `<audio>` and `<video>` elements in every frame of the page, as a
-    /// JSON array: `id` (for [`View::media_capture_start`]), `element`,
+    /// JSON array: `id` (for [`View::media_capture`]), `element`,
     /// `tag`, `path` (a CSS selector in its frame), `frame` (`url`, `main`,
     /// `name`), `src`, `kind` (`file`, `mse`, `hls`, `stream`, `none`),
     /// `duration`, `live`, `currentTime`, `buffered`, `codecs` (`audio`,
@@ -77,11 +77,6 @@ impl View {
     /// written when it stops ([`MediaCapture::stop`], or when the page goes
     /// or the element loads other media), and reported to
     /// [`MediaCapture::on_done`].
-    pub fn media_capture_start(&self, media_id: &str, path: impl AsRef<Path>, options_json: &str) -> Result<MediaCapture, Error> {
-        self.media_capture(media_id, path, options_json)
-    }
-
-    /// [`View::media_capture_start`], by the name the other bindings give it.
     pub fn media_capture(&self, media_id: &str, path: impl AsRef<Path>, options_json: &str) -> Result<MediaCapture, Error> {
         let Some(raw) = self.raw() else {
             return Err(Error::new("the view is closed"));

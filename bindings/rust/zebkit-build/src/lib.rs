@@ -59,8 +59,11 @@ pub fn bundle() {
         copy_engine(&engine, &executables.join("deps"));
         copy_engine(&engine, &executables.join("examples"));
         println!("cargo:rerun-if-changed={}", engine.join("zebkit.dll").display());
-        // chrome.exe's main thread: a renderer's main thread runs V8 and Blink here.
-        println!("cargo:rustc-link-arg=/STACK:0x800000");
+        // chrome.exe's main thread: a renderer's main thread runs V8 and Blink
+        // here. The flag is MSVC's linker's (the engine is built for msvc).
+        if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|abi| abi == "msvc") {
+            println!("cargo:rustc-link-arg=/STACK:0x800000");
+        }
         println!("cargo:rerun-if-changed=build.rs");
         return;
     }

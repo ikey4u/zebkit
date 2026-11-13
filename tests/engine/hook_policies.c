@@ -1,5 +1,9 @@
-/* The hooks of <zebkit/hooks.h> through the C API; run by hook_policies.py. */
+/* The hooks of <zebkit/hooks.h> through the C API; run by hook_policies.py:
+ * the modes of ZEBKIT_HOOK_RUNS one after the other in one engine, each on a
+ * view of its own, or the one of ZEBKIT_HOOK_MODE. The first that fails ends
+ * the program (FAIL on standard error, exit 1). */
 #define _POSIX_C_SOURCE 200809L
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,11 +31,15 @@ static void pump_for(int ms) { for (int i = 0; i < ms; ++i) pump_once(); }
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) FAIL("cannot read %s", path);
-    static char buffer[65536];
-    size_t n = fread(buffer, 1, sizeof buffer - 1, f);
+    size_t size = 0, used = 0;
+    char *buffer = NULL;
+    do {
+        if (used + 1 >= size) buffer = realloc(buffer, size = size ? size * 2 : 65536);
+        used += fread(buffer + used, 1, size - used - 1, f);
+    } while (!feof(f) && !ferror(f));
     fclose(f);
-    buffer[n] = 0;
-    return strdup(buffer);
+    buffer[used] = 0;
+    return buffer;
 }
 static long file_size(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -49,12 +57,19 @@ static void eval_done(zebkit_view *v, const char *json, const char *error, void 
     e->error = error ? strdup(error) : NULL;
     e->done = 1;
 }
-static char *ev(const char *script) {
+static char *ev_in(zebkit_view *in, const char *script) {
     struct eval e = {0};
-    zebkit_view_evaluate(view, script, eval_done, &e);
+    zebkit_view_evaluate(in, script, eval_done, &e);
     WAIT(e.done);
     if (e.error) FAIL("evaluate %s: %s", script, e.error);
     return e.json;
+}
+static char *ev(const char *script) { return ev_in(view, script); }
+static int ev_in_is(zebkit_view *in, const char *script, const char *value) {
+    char *json = ev_in(in, script);
+    int same = json && !strcmp(json, value);
+    free(json);
+    return same;
 }
 static struct eval pending_eval;
 static void ev_later(const char *script) {
@@ -142,7 +157,7 @@ static void external(void) {
 /* ---- downloads */
 static zebkit_download_request *download_request;
 static char target[4096];
-static int download_complete, download_cancelled, download_timeout, download_replaced, download_in_profile;
+static int download_complete, download_cancelled, download_saved, download_timeout, download_replaced, download_in_profile;
 static void download_progress(zebkit_view *v, const char *json, void *d) {
     (void)v; (void)d;
     if (strstr(json, "\"state\":\"complete\"")) {
@@ -150,8 +165,13 @@ static void download_progress(zebkit_view *v, const char *json, void *d) {
         if (strstr(json, "Downloads/report.bin") || strstr(json, "Downloads\\\\report.bin")) download_in_profile = 1;
     }
     if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"done\":true")) download_cancelled = 1;
-    if (strstr(json, "\"reason\":\"timeout\"")) download_timeout = 1;
-    if (strstr(json, "\"reason\":\"handler-changed\"")) download_replaced = 1;
+}
+/* What the function decided, or why it did not: the outcome every asked hook has. */
+static void download_result(zebkit_view *v, const char *json, void *d) {
+    (void)v; (void)d;
+    if (strstr(json, "\"state\":\"saved\"") && strstr(json, "\"reason\":\"answered\"")) download_saved = 1;
+    if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"reason\":\"timeout\"")) download_timeout = 1;
+    if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"reason\":\"handler-changed\"")) download_replaced = 1;
 }
 static void download_asked(zebkit_view *v, zebkit_download_request *request, const char *json, void *d) {
     (void)d;
@@ -177,6 +197,7 @@ static void download(void) {
     FILE *f = fopen(target, "wb"); CHECK(f); fputs("old", f); fclose(f);
     open_page();
     zebkit_view_on_download_progress(view, download_progress, NULL);
+    zebkit_view_on_download_result(view, download_result, NULL);
     if (!IS("download-default")) zebkit_view_on_download(view, download_asked, NULL);
     if (IS("download-timeout")) {
         CHECK(!zebkit_view_set_download_timeout(view, 0) && !zebkit_view_set_download_timeout(view, 300001));
@@ -192,6 +213,7 @@ static void download(void) {
     WAIT(asked);
     if (IS("download-save")) {
         WAIT(download_complete);
+        WAIT(download_saved);
         CHECK(file_size(target) == 65536);
     } else if (IS("download-cancel")) {
         WAIT(download_cancelled);
@@ -245,16 +267,35 @@ static void cert_asked(zebkit_view *v, zebkit_client_certificate_request *reques
         CHECK(zebkit_client_certificate_respond(request, ZEBKIT_CLIENT_CERTIFICATE_CANCEL, NULL, NULL, NULL));
     } else if (IS("cert-close")) {
         zebkit_view_close(v);
+    } else if (IS("cert-store")) {
+        /* The system's store's identity, chosen; its key stays there. */
+        const char *found = strstr(json, "\"subject\":\"zebkit-client\"");
+        CHECK(found);
+        const char *object = found;
+        while (object > json && *object != '{') --object;
+        const char *index = strstr(object, "\"index\":");
+        CHECK(index && index < found);
+        size_t chosen = (size_t)strtoul(index + 8, NULL, 10);
+        CHECK(strstr(object, "\"certificate\":\"-----BEGIN CERTIFICATE-----"));
+        char *error = NULL;
+        CHECK(!zebkit_client_certificate_choose(request, 1000, &error) && error);
+        zebkit_free(error);
+        CHECK(zebkit_client_certificate_choose(request, chosen, NULL));
+    } else if (IS("cert-store-off")) {
+        /* Without the engine setting, the store is not offered. */
+        CHECK(strstr(json, "\"identities\":[]"));
+        CHECK(zebkit_client_certificate_respond(request, ZEBKIT_CLIENT_CERTIFICATE_NONE, NULL, NULL, NULL));
     }
 }
 static void certificate(void) {
     zebkit_view_on_certificate(view, server_certificate, NULL);
     zebkit_view_on_client_certificate_result(view, note, NULL);
+    if (IS("cert-store")) CHECK(zebkit_set_engine_settings("{\"clientCertificateStores\":true}", NULL));
     if (!IS("cert-default")) zebkit_view_on_client_certificate(view, cert_asked, NULL);
     if (IS("cert-timeout")) CHECK(zebkit_view_set_client_certificate_timeout(view, 50));
     load(TLS, "/secure");
-    if (IS("cert-provide")) wait_title("cert:zebkit-client");
-    else if (IS("cert-none") || IS("cert-default")) wait_title("cert:none");
+    if (IS("cert-provide") || IS("cert-store")) wait_title("cert:zebkit-client");
+    else if (IS("cert-none") || IS("cert-default") || IS("cert-store-off")) wait_title("cert:none");
     else if (IS("cert-cancel") || IS("cert-timeout")) { WAIT(failed); WAIT(told); CHECK(has("\"state\":\"cancelled\"")); }
     else if (IS("cert-close")) { WAIT(closed); CHECK(!zebkit_client_certificate_request_info(cert_request)); return; }
     else if (IS("cert-pending-close")) {
@@ -587,7 +628,7 @@ static void more_asked(zebkit_view *v, zebkit_network_request *request, const ch
         CHECK(strstr(json, "\"worker\":true") && strstr(json, "\"workerType\":\"service\"") && strstr(json, "\"frameId\":\"\""));
         CHECK(REPLY("{\"action\":\"block\"}"));
     } else if (IS("net-sw-ws")) {
-        CHECK(strstr(json, "\"workerType\":\"shared-or-service\"") && strstr(json, "\"resourceType\":\"websocket\""));
+        CHECK(strstr(json, "\"workerType\":\"service\"") && strstr(json, "\"resourceType\":\"websocket\""));
         CHECK(REPLY("{\"action\":\"block\"}"));
     } else if (IS("net-shared-block") || IS("net-shared-running")) {
         CHECK(strstr(json, "\"worker\":true") && strstr(json, "\"workerType\":\"shared\""));
@@ -863,17 +904,305 @@ static void network(void) {
     zebkit_view_close(view);
 }
 
-int main(int argc, char **argv) {
-    MODE = getenv("ZEBKIT_HOOK_MODE"); BASE = getenv("ZEBKIT_HOOK_BASE"); TLS = getenv("ZEBKIT_HOOK_TLS");
-    FILES = getenv("ZEBKIT_HOOK_FILES"); DOWNLOADS = getenv("ZEBKIT_HOOK_DOWNLOADS");
-    if (!MODE) return 2;
-    CERT = read_file(getenv("ZEBKIT_HOOK_CERT"));
-    KEY = read_file(getenv("ZEBKIT_HOOK_KEY"));
-    OTHER_KEY = read_file(getenv("ZEBKIT_HOOK_OTHER_KEY"));
-    if (zebkit_init(argc, argv)) return 1;
+/* ---- popups, two views, a running download, a CDP client beside the hook, the workers' latch */
+/* The other views of a mode (popups, a second view), closed with it. */
+static zebkit_view *others[4];
+static int others_closed[4], other_count;
+static void other_closed(zebkit_view *v, void *d) { (void)v; others_closed[(intptr_t)d] = 1; }
+static int add_other(zebkit_view *v) {
+    if (other_count == 4) FAIL("too many views");
+    others[other_count] = v;
+    others_closed[other_count] = 0;
+    zebkit_view_on_close(v, other_closed, (void *)(intptr_t)other_count);
+    return other_count++;
+}
+static int other_finished[4];
+static void other_load(zebkit_view *v, zebkit_load_event event, const char *url, void *d) {
+    (void)v; (void)url;
+    if (event == ZEBKIT_LOAD_FINISHED) other_finished[(intptr_t)d] = 1;
+}
+/* Another view at BASE/page, loaded: its index in others. */
+static int another_page(void) {
+    int i = add_other(zebkit_view_new(NULL, 640, 480));
+    other_finished[i] = 0;
+    zebkit_view_on_load(others[i], other_load, (void *)(intptr_t)i);
+    char url[4096];
+    snprintf(url, sizeof url, "%s/page", BASE);
+    zebkit_view_load_url(others[i], url);
+    WAIT(other_finished[i]);
+    for (int t = 0; !ev_in_is(others[i], "location.pathname + ' ' + document.readyState", "\"/page complete\""); ++t) {
+        if (t > 3000) FAIL("the other view did not load");
+        pump_for(5);
+    }
+    return i;
+}
+static void close_others(void) {
+    for (int i = 0; i < other_count; ++i) if (!others_closed[i]) zebkit_view_close(others[i]);
+    for (int i = 0; i < other_count; ++i) WAIT(others_closed[i]);
+}
+#define PASSES "fetch('/held').then(() => 'passed', () => 'failed')"
+static zebkit_view *popup_child;
+static int popup_asked_download, popup_asked_network, popup_own_asked, popup_cancelled, popup_name_ok;
+static void popup_opened(zebkit_view *opener, zebkit_view *opened, const char *url, void *d) {
+    (void)opener; (void)url; (void)d;
+    if (!popup_child) popup_child = opened;
+}
+static void popup_download(zebkit_view *v, zebkit_download_request *request, const char *json, void *d) {
+    (void)v; (void)d;
+    ++popup_asked_download;
+    if (strstr(json, "\"suggestedName\":\"report.bin\"")) popup_name_ok = 1;
+    CHECK(zebkit_download_respond(request, ZEBKIT_DOWNLOAD_CANCEL, NULL, NULL));
+}
+static void popup_own_download(zebkit_view *v, zebkit_download_request *request, const char *json, void *d) {
+    (void)v; (void)json; (void)d;
+    ++popup_own_asked;
+    CHECK(zebkit_download_respond(request, ZEBKIT_DOWNLOAD_CANCEL, NULL, NULL));
+}
+static void popup_network(zebkit_view *v, zebkit_network_request *request, const char *json, void *d) {
+    (void)v; (void)json; (void)d;
+    ++popup_asked_network;
+    CHECK(zebkit_network_respond(request, "{\"action\":\"block\"}", NULL, 0, NULL));
+}
+static void popup_progress(zebkit_view *v, const char *json, void *d) {
+    (void)v; (void)d;
+    if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"done\":true")) popup_cancelled = 1;
+}
+static void popup(void) {
+    popup_child = NULL;
+    popup_asked_download = popup_asked_network = popup_own_asked = popup_cancelled = popup_name_ok = 0;
+    open_page();
+    zebkit_view_on_window_open(view, popup_opened, NULL);
+    zebkit_view_on_download(view, popup_download, NULL);
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/held\"}]", NULL));
+    zebkit_view_on_network(view, popup_network, NULL);
+    free(ev("window.open('/page'); 1"));
+    WAIT(popup_child);
+    int child = add_other(popup_child);
+    zebkit_view_on_download_progress(popup_child, popup_progress, NULL);
+    /* The URL is there before the document: wait for that. */
+    for (int t = 0; !ev_in_is(popup_child, "document.title", "\"page\""); ++t) {
+        if (t > 3000) FAIL("the popup did not load");
+        pump_for(5);
+    }
+    if (IS("popup-inherit")) {
+        /* The opener's functions decide for the popup. */
+        free(ev_in(popup_child, "location.href = '/download.bin'; 1"));
+        WAIT(popup_asked_download);
+        CHECK(popup_name_ok);
+        WAIT(popup_cancelled);
+        CHECK(ev_in_is(popup_child, PASSES, "\"failed\""));
+        CHECK(popup_asked_network);
+    } else if (IS("popup-own")) {
+        /* A function of its own replaces its opener's. */
+        zebkit_view_on_download(popup_child, popup_own_download, NULL);
+        free(ev_in(popup_child, "location.href = '/download.bin'; 1"));
+        WAIT(popup_own_asked);
+        CHECK(!popup_asked_download);
+    } else if (IS("popup-orphan")) {
+        /* With its opener gone, a popup without functions of its own has no policy left. */
+        zebkit_view_close(view);
+        WAIT(closed);
+        CHECK(ev_in_is(popup_child, PASSES, "\"failed\""));
+        CHECK(!popup_asked_network && !popup_asked_download);
+        /* Its navigations are refused too; a link with download attribute is not one. */
+        free(ev_in(popup_child, "const a = document.createElement('a'); a.href = '/download.bin'; a.download = ''; a.click(); 1"));
+        WAIT(popup_cancelled);
+        CHECK(ev_in_is(popup_child, FULL, "\"TypeError\""));
+    } else FAIL("a popup mode with nothing to check");
+    zebkit_view_close(popup_child);
+    WAIT(others_closed[child]);
+    zebkit_view_close(view);
+}
+static int running, running_cancelled;
+static char running_id[64];
+static void running_progress(zebkit_view *v, const char *json, void *d) {
+    (void)v; (void)d;
+    const char *id = strstr(json, "\"downloadId\":\"");
+    if (strstr(json, "\"state\":\"in-progress\"") && id && !strstr(json, "\"receivedBytes\":0,") && !running_id[0]) {
+        snprintf(running_id, sizeof running_id, "%s", id + 14);
+        *strchr(running_id, '"') = 0;
+        running = 1;
+    }
+    if (strstr(json, "\"state\":\"cancelled\"") && strstr(json, "\"done\":true")) running_cancelled = 1;
+}
+static void running_asked(zebkit_view *v, zebkit_download_request *request, const char *json, void *d) {
+    (void)v; (void)json; (void)d;
+    CHECK(zebkit_download_respond(request, ZEBKIT_DOWNLOAD_SAVE, target, NULL));
+}
+static void cancel_running(void) {
+    running = running_cancelled = 0;
+    running_id[0] = 0;
+    snprintf(target, sizeof target, "%s/running.bin", DOWNLOADS);
+    open_page();
+    zebkit_view_on_download(view, running_asked, NULL);
+    zebkit_view_on_download_progress(view, running_progress, NULL);
+    free(ev("location.href = '/slow.bin'; 1"));
+    WAIT(running);
+    CHECK(!zebkit_view_cancel_download(view, "d999999"));
+    CHECK(zebkit_view_cancel_download(view, running_id));
+    WAIT(running_cancelled);
+    CHECK(!zebkit_view_cancel_download(view, running_id));
+    CHECK(file_size(target) < 0);
+    zebkit_view_close(view);
+}
+/* The request's own headers and X-Hook: first, continued. */
+static void order_asked(zebkit_view *v, zebkit_network_request *request, const char *json, void *d) {
+    (void)v; (void)d;
+    const char *headers = strstr(json, "\"headers\":[");
+    CHECK(headers);
+    headers += 10;
+    const char *end = headers;
+    int depth = 0, quoted = 0;
+    for (; *end; ++end) {
+        if (quoted) { if (*end == '\\') ++end; else if (*end == '"') quoted = 0; continue; }
+        if (*end == '"') quoted = 1;
+        else if (*end == '[') ++depth;
+        else if (*end == ']' && !--depth) break;
+    }
+    CHECK(*end == ']');
+    size_t size = (size_t)(end - headers) + 128;
+    char *reply = malloc(size);
+    snprintf(reply, size, "{\"action\":\"continue\",\"headers\":%.*s%s{\"name\":\"X-Hook\",\"value\":\"first\"}]}",
+             (int)(end - headers), headers, end - headers > 1 ? "," : "");
+    CHECK(zebkit_network_respond(request, reply, NULL, 0, NULL));
+    free(reply);
+}
+static void cdp_order(void) {
+    load(BASE, "/input");
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/held\"}]", NULL));
+    zebkit_view_on_network(view, order_asked, NULL);
+    wait_title("fetch-on");
+    CHECK(ev_is("fetch('/held').then(r => r.text())", "\"from-cdp\""));
+    zebkit_view_close(view);
+}
+static int two_asked[2], two_order[2], two_count, first_complete, second_cancelled;
+static void two_download(zebkit_view *v, zebkit_download_request *request, const char *json, void *d) {
+    (void)v; (void)json;
+    int which = (int)(intptr_t)d;
+    if (two_count < 2) two_order[two_count++] = which;
+    ++two_asked[which];
+    if (which == 0) CHECK(zebkit_download_respond(request, ZEBKIT_DOWNLOAD_SAVE, target, NULL));
+    else CHECK(zebkit_download_respond(request, ZEBKIT_DOWNLOAD_CANCEL, NULL, NULL));
+}
+static void two_progress(zebkit_view *v, const char *json, void *d) {
+    (void)v;
+    if (d == NULL && strstr(json, "\"state\":\"complete\"")) first_complete = 1;
+    if (d != NULL && strstr(json, "\"state\":\"cancelled\"")) second_cancelled = 1;
+}
+static void block_all(zebkit_view *v, zebkit_network_request *request, const char *json, void *d) {
+    (void)v; (void)json; (void)d;
+    CHECK(zebkit_network_respond(request, "{\"action\":\"block\"}", NULL, 0, NULL));
+}
+static void two_views(void) {
+    memset(two_asked, 0, sizeof two_asked);
+    two_count = first_complete = second_cancelled = 0;
+    snprintf(target, sizeof target, "%s/first.bin", DOWNLOADS);
+    open_page();
+    zebkit_view *second = others[another_page()];
+    zebkit_view_on_download(view, two_download, (void *)0);
+    zebkit_view_on_download(second, two_download, (void *)1);
+    zebkit_view_on_download_progress(view, two_progress, NULL);
+    zebkit_view_on_download_progress(second, two_progress, (void *)1);
+    CHECK(zebkit_view_set_network_filter(view, "[{\"url\":\"**/held\"}]", NULL));
+    zebkit_view_on_network(view, block_all, NULL);
+    CHECK(zebkit_view_set_fullscreen_policy(view, ZEBKIT_FULLSCREEN_DENY));
+    free(ev("location.href = '/download.bin'; 1"));
+    WAIT(first_complete);
+    free(ev_in(second, "location.href = '/download.bin'; 1"));
+    WAIT(second_cancelled);
+    CHECK(two_count == 2 && two_order[0] == 0 && two_order[1] == 1 && two_asked[0] == 1 && two_asked[1] == 1);
+    CHECK(file_size(target) == 65536);
+    CHECK(ev_is(PASSES, "\"failed\"") && ev_in_is(second, PASSES, "\"passed\""));
+    zebkit_view_focus(second);
+    CHECK(ev_is(FULL, "\"TypeError\"") && ev_in_is(second, FULL, "\"in\""));
+    zebkit_view_close(second);
+    zebkit_view_close(view);
+}
+#define SW_FETCH SW_SCRIPT("fetch")
+#define SHARED_FETCH SHARED_SCRIPT("fetch")
+static void workers_latch(void) {
+    /* A policy outlives the view that held it: refused until a view takes over or says off. */
+    open_page();
+    zebkit_view *holder = view, *second = others[another_page()];
+    int other = add_other(zebkit_view_new(NULL, 640, 480));
+    const char *both[] = {SW_FETCH, SHARED_FETCH};
+    CHECK(zebkit_view_set_network_filter_for_workers(holder, false));
+    CHECK(zebkit_view_set_network_filter(holder, "[]", NULL));
+    CHECK(zebkit_view_set_network_filter_for_workers(holder, true));
+    for (int i = 0; i < 2; ++i) CHECK(ev_in_is(second, both[i], "\"through\""));
+    CHECK(zebkit_view_set_network_filter(second, "[]", NULL));
+    CHECK(!zebkit_view_set_network_filter_for_workers(second, false));
+    zebkit_view_close(holder);
+    WAIT(closed);
+    for (int i = 0; i < 2; ++i) CHECK(ev_in_is(second, both[i], "\"failed\""));
+    CHECK(zebkit_view_set_network_filter_for_workers(second, true));
+    for (int i = 0; i < 2; ++i) CHECK(ev_in_is(second, both[i], "\"through\""));
+    zebkit_view_close(second);
+    WAIT(others_closed[0]);
+    CHECK(zebkit_view_set_network_filter_for_workers(others[other], false));
+    zebkit_view *page = others[another_page()];
+    for (int i = 0; i < 2; ++i) CHECK(ev_in_is(page, both[i], "\"through\""));
+    zebkit_view_close(page);
+    zebkit_view_close(others[other]);
+}
+
+/* The modes this program has: any other is a failure, not a pass. */
+static const char *const KNOWN[] = {
+    "external-told", "external-none", "external-close",
+    "download-save", "download-cancel", "download-timeout", "download-close", "download-pending-close",
+    "download-replace", "download-default",
+    "cert-provide", "cert-none", "cert-cancel", "cert-timeout", "cert-close", "cert-pending-close",
+    "cert-replace", "cert-default", "cert-store", "cert-store-off",
+    "world",
+    "file-open", "file-multiple", "file-folder", "file-cancel", "file-timeout", "file-close",
+    "file-pending-close", "file-replace", "media-allow", "media-deny", "media-timeout", "media-close",
+    "media-pending-close", "media-replace", "keys", "menu", "fullscreen-allow", "fullscreen-deny",
+    "net-none", "net-block", "net-headers", "net-redirect", "net-fulfill", "net-navigation", "net-response",
+    "net-response-block", "net-observe", "net-timeout", "net-close", "net-pending-close", "net-replace",
+    "net-filter", "net-server-redirect", "net-worker", "net-post", "net-redirect-manual", "net-redirect-error",
+    "net-ws-none", "net-ws-nofunc", "net-ws-filter", "net-ws-block", "net-ws-continue", "net-ws-timeout",
+    "net-ws-close", "net-ws-abort", "net-ws-replace",
+    "net-sw-none", "net-sw-block", "net-sw-running", "net-sw-ws",
+    "net-shared-none", "net-shared-block", "net-shared-running",
+    "net-body", "net-body-none", "net-body-big", "net-body-backpressure", "net-body-error", "net-body-close",
+    "net-body-abort", "net-body-replace", "net-file", "net-file-missing", "net-file-close",
+    "net-stream", "net-stream-full", "net-stream-fail", "net-stream-close", "net-flood",
+    "popup-inherit", "popup-orphan", "popup-own", "two-views", "cancel-running", "cdp-order", "workers-latch",
+};
+
+/* Every mode starts from nothing: the state the last one left is forgotten. */
+static void reset_state(void) {
+    closed = finished = failed = told = asked = 0;
+    last_told[0] = 0;
+    download_request = NULL;
+    target[0] = 0;
+    download_complete = download_cancelled = download_saved = download_timeout = download_replaced = download_in_profile = 0;
+    cert_request = NULL;
+    file_request = NULL;
+    media_request = NULL;
+    net_request = NULL;
+    net_timeout = net_replaced = net_request_told = net_response_told = net_finished_told = net_failed_told = 0;
+    body_ends = body_truncated = body_second = body_end_late = 0;
+    body_bytes = 0;
+    net_response_json[0] = body_id[0] = 0;
+    net_stream = NULL;
+    stream_left = 0;
+    stream_blocked = 0;
+    memset(&pending_eval, 0, sizeof pending_eval);
+    other_count = 0;
+}
+
+static void run_mode(void) {
+    size_t known = 0;
+    while (known < sizeof KNOWN / sizeof *KNOWN && !IS(KNOWN[known])) ++known;
+    if (known == sizeof KNOWN / sizeof *KNOWN) FAIL("an unknown mode");
+    reset_state();
     view = zebkit_view_new(NULL, 640, 480);
     zebkit_view_on_close(view, on_close, NULL);
     zebkit_view_on_load(view, on_load, NULL);
+    /* The workers' network policy is the engine's, and outlives the view that
+       set it: off, as an engine starts. */
+    (void)zebkit_view_set_network_filter_for_workers(view, false);
     if (!strncmp(MODE, "external", 8)) external();
     else if (!strncmp(MODE, "download", 8)) download();
     else if (!strncmp(MODE, "cert", 4)) certificate();
@@ -884,10 +1213,87 @@ int main(int argc, char **argv) {
     else if (IS("menu")) menu();
     else if (!strncmp(MODE, "fullscreen", 10)) fullscreen();
     else if (!strncmp(MODE, "net", 3)) network();
-    else return 2;
+    else if (!strncmp(MODE, "popup", 5)) popup();
+    else if (IS("two-views")) two_views();
+    else if (IS("cancel-running")) cancel_running();
+    else if (IS("cdp-order")) cdp_order();
+    else if (IS("workers-latch")) workers_latch();
+    else FAIL("a known mode with no function");
+    /* Its views gone before the next mode's, and what they left pending told. */
+    if (!closed) zebkit_view_close(view);
+    WAIT(closed);
+    close_others();
     pump_for(50);
-    zebkit_shutdown();
     printf("ok c %s\n", MODE);
     fflush(stdout);
+}
+
+/* ZEBKIT_HOOK_RUNS: the path of a file with a JSON array of objects whose
+ * values are strings, as hook_policies.py writes it (a file: a group's runs
+ * pass Windows' 32767 characters a variable); read here without a JSON library. */
+static char *json_string(const char **at) {
+    const char *p = *at;
+    if (*p != '"') return NULL;
+    char *out = malloc(strlen(p) + 1), *o = out;
+    for (++p; *p && *p != '"'; ++p) {
+        if (*p == '\\') {
+            ++p;
+            if (*p == 'n') *o++ = '\n';
+            else if (*p == 't') *o++ = '\t';
+            else if (*p == 'u') FAIL("ZEBKIT_HOOK_RUNS: \\u escapes are not read here");
+            else *o++ = *p;
+        } else *o++ = *p;
+    }
+    if (*p != '"') FAIL("ZEBKIT_HOOK_RUNS: an unterminated string");
+    *o = 0;
+    *at = p + 1;
+    return out;
+}
+static void skip_space(const char **at) { while (**at == ' ' || **at == '\n' || **at == '\t' || **at == '\r') ++*at; }
+/* The next object of the array into the mode's globals; false after the last. */
+static int next_run(const char **at) {
+    skip_space(at);
+    if (**at == '[' || **at == ',') { ++*at; skip_space(at); }
+    if (**at == ']' || !**at) return 0;
+    if (**at != '{') FAIL("ZEBKIT_HOOK_RUNS: not an array of objects");
+    ++*at;
+    for (;;) {
+        skip_space(at);
+        if (**at == '}') { ++*at; return 1; }
+        if (**at == ',') { ++*at; continue; }
+        char *name = json_string(at);
+        if (!name) FAIL("ZEBKIT_HOOK_RUNS: a name expected");
+        skip_space(at);
+        if (**at != ':') FAIL("ZEBKIT_HOOK_RUNS: ':' expected");
+        ++*at;
+        skip_space(at);
+        char *value = json_string(at);
+        if (!value) FAIL("ZEBKIT_HOOK_RUNS: a string value expected");
+        if (!strcmp(name, "ZEBKIT_HOOK_MODE")) MODE = value;
+        else if (!strcmp(name, "ZEBKIT_HOOK_BASE")) BASE = value;
+        else if (!strcmp(name, "ZEBKIT_HOOK_TLS")) TLS = value;
+        else if (!strcmp(name, "ZEBKIT_HOOK_FILES")) FILES = value;
+        else if (!strcmp(name, "ZEBKIT_HOOK_DOWNLOADS")) DOWNLOADS = value;
+        else free(value);
+        free(name);
+    }
+}
+
+int main(int argc, char **argv) {
+    MODE = getenv("ZEBKIT_HOOK_MODE"); BASE = getenv("ZEBKIT_HOOK_BASE"); TLS = getenv("ZEBKIT_HOOK_TLS");
+    FILES = getenv("ZEBKIT_HOOK_FILES"); DOWNLOADS = getenv("ZEBKIT_HOOK_DOWNLOADS");
+    const char *runs_file = getenv("ZEBKIT_HOOK_RUNS");
+    if (!MODE && !runs_file) return 2;
+    const char *runs = runs_file ? read_file(runs_file) : NULL;
+    CERT = read_file(getenv("ZEBKIT_HOOK_CERT"));
+    KEY = read_file(getenv("ZEBKIT_HOOK_KEY"));
+    OTHER_KEY = read_file(getenv("ZEBKIT_HOOK_OTHER_KEY"));
+    if (zebkit_init(argc, argv)) return 1;
+    if (runs) {
+        while (next_run(&runs)) run_mode();
+    } else {
+        run_mode();
+    }
+    zebkit_shutdown();
     return 0;
 }

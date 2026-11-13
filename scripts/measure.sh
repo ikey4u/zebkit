@@ -7,7 +7,9 @@
 # compressed, as a download takes it, is reported beside it. The report
 # also lists what the package still expects from the system, since a small
 # package that needs a long list of system libraries would not be the same
-# achievement.
+# achievement. Its first line names what was measured (lib.sh's report_engine:
+# the engine's version, Chromium's, the profile, the date), which
+# scripts/check-reports.py compares with upstream.lock.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -39,14 +41,16 @@ while IFS= read -r file; do
 done < <(find "$package" -type f | sort)
 
 if (( total <= GOAL_BYTES )); then verdict="within"; else verdict="over"; fi
+# What was measured: the package's version and Chromium's, the profile, the date.
+engine_line="$(report_engine "$package" "$profile")"
 xz_bytes=$(compressed_size xz "$package")
 zip_bytes=$(compressed_size zip "$package")
 
 {
     echo "# Size report: \`$profile\`"
     echo
-    echo "- Upstream: Chromium $CHROMIUM_VERSION, zebkit's engine library"
-    echo "- Measured: $(date -u +%Y-%m-%d) on $(uname -sm), from the package directory \`scripts/package.sh\` assembles"
+    echo "- $engine_line"
+    echo "- Measured on $(uname -sm), from the package directory \`scripts/package.sh\` assembles"
     echo "- **Total: $(mib "$total") MiB** ($verdict the $(mib "$GOAL_BYTES") MiB of Electron $ELECTRON_VERSION trimmed, the baseline)"
     echo "- Compressed: $(mib "$xz_bytes") MiB as \`.tar.xz\` (xz -6, as releases ship), $(mib "$zip_bytes") MiB as \`.zip\` (deflate -9, as Electron ships)"
     echo "- Oldest glibc it can run on: $(field 'oldest usable glibc')"

@@ -6,6 +6,7 @@
 #define ZEBKIT_ENGINE_JS_DIALOG_MANAGER_H_
 
 #include "zebkit/engine/content_names.h"
+#include <map>
 #include <memory>
 
 #include "base/functional/callback.h"
@@ -49,9 +50,13 @@ class JavaScriptDialogManagerImpl : public JavaScriptDialogManager {
   void DialogClosed(JavaScriptDialog* dialog);
 
  private:
-  std::unique_ptr<JavaScriptDialog> dialog_;
-  // The page the dialog is of.
-  base::WeakPtr<WebContents> dialog_contents_;
+  // One dialog of each page at a time, a sheet on its window, as Chrome's:
+  // another page's is shown too. The key is compared, never followed.
+  struct Shown {
+    base::WeakPtr<WebContents> contents;
+    std::unique_ptr<JavaScriptDialog> dialog;
+  };
+  std::map<WebContents*, Shown> dialogs_;
 #endif
 };
 

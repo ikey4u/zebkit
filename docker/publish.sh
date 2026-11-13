@@ -6,11 +6,16 @@
 #   zebkit-publish               # build, check, publish
 #   zebkit-publish --no-publish  # build and check only
 #
-# Publishing needs GH_TOKEN and a commit that names the archives' checksums:
-# a first run builds and records them in engines.txt, then stops; commit and
-# push that, and run again to publish what was built (release.sh
-# --publish-only: nothing is built twice). A run whose archives or checks are
-# not those of the committed sources builds and checks again instead.
+# The release's order (docs/BUILD.md, "Releases"): build, measure the reports
+# on that build, commit, check, push, publish. A first run builds and records
+# the archives' checksums in engines.txt; while docs/reports has reports
+# measured before (scripts/check-reports.py), it stops there: measure them on
+# this build, commit them with engines.txt and the release notes, push, and
+# run again. That run builds nothing new (the build is up to date), checks,
+# and publishes what was built (release.sh --publish-only), with GH_TOKEN. A
+# run whose archives or checks are not those of the committed sources builds
+# and checks again instead. The tags are pushed with gh's credentials when git
+# cannot reach origin here (no ssh client in the image; release.sh).
 #
 # Limits: the SDKs are laid out by scripts/zsdk-create.sh into .cache/sdk
 # (or ZEBKIT_SDK_DIR): Windows' is downloaded, which accepts Microsoft's
@@ -69,6 +74,12 @@ if (( publish )) && built_and_checked; then
 fi
 log "release build for Linux, macOS and Windows"
 mise run r
+# The reports are measured on the release build, and are part of the sources
+# the checks are recorded for: before the checks.
+if ! python3 -I -B scripts/check-reports.py docs/reports profiles \
+    "$(sed -n 's/^CHROMIUM_VERSION=//p' upstream.lock)" "$(sed -n 's/^ELECTRON_VERSION=//p' upstream.lock)"; then
+    die "built; now measure the reports above on this build (docs/BUILD.md, \"Releases\"), commit them with engines.txt and the release notes, push, and run again"
+fi
 log "the checks"
 mise run check
 

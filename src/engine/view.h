@@ -108,6 +108,18 @@ void ClosePdfsOfScript(const void* script);
 
 // The view of a page, or null.
 zebkit_view* ViewOf(content::WebContents* contents);
+// Closes @view as a task, when it is still open then: for a view closed by
+// what happens to another (its parent's window going), told inside that.
+void CloseSoon(base::WeakPtr<zebkit_view> view);
+// The paths of files dropped on @view's page, to its zebkit.pathForFile(),
+// before the page has the drop; @done runs once the page has them (or the
+// view has gone).
+void TellDroppedPaths(zebkit_view* view,
+                      const std::vector<base::FilePath>& paths,
+                      base::OnceClosure done);
+// The page's renderer stopped or started answering again
+// (zebkit_view_on_responsiveness()).
+void TellResponsiveness(content::WebContents* contents, bool responsive);
 
 // A new window a page asks for: to its view's application when it said so
 // (Window::SetNewWindowHandler()).
@@ -160,6 +172,9 @@ struct zebkit_view : public content::WebContentsObserver,
   ~zebkit_view() override;
 
   static std::set<zebkit_view*>& Views();
+  // Views are made in this order (Views() is in no order of theirs).
+  const uint64_t created_ = ++next_created_;
+  static inline uint64_t next_created_ = 0;
 
   zebkit::Window* window();
   void Close();
@@ -256,6 +271,11 @@ struct zebkit_view : public content::WebContentsObserver,
       int32_t line, const std::u16string& source,
       const std::optional<std::u16string>& stack) override;
   void WebContentsDestroyed() override;
+  void PrimaryMainFrameRenderProcessGone(base::TerminationStatus status) override;
+
+  // zebkit_view_on_process_gone() and zebkit_view_on_responsiveness(): told
+  // after the fact, as a task.
+  void TellProcess(bool responsiveness, base::DictValue event);
 
   zebkit_load_func on_load_ = nullptr;
   // Made without a URL: the about:blank it starts on is not reported.
@@ -272,6 +292,14 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_title_data_ = nullptr;
   zebkit_view_func on_close_ = nullptr;
   void* on_close_data_ = nullptr;
+  zebkit_process_func on_process_gone_ = nullptr;
+  void* on_process_gone_data_ = nullptr;
+  uint64_t process_gone_generation_ = 0;
+  zebkit_process_func on_responsiveness_ = nullptr;
+  void* on_responsiveness_data_ = nullptr;
+  uint64_t responsiveness_generation_ = 0;
+  // Told unresponsive and not responsive since: only changes are told.
+  bool unresponsive_ = false;
   zebkit_url_func on_new_window_ = nullptr;
   void* on_new_window_data_ = nullptr;
   zebkit_window_open_func on_window_open_ = nullptr;
@@ -288,6 +316,7 @@ struct zebkit_view : public content::WebContentsObserver,
   void* on_navigation_data_ = nullptr;
   zebkit_navigation_result_func on_navigation_result_ = nullptr;
   void* on_navigation_result_data_ = nullptr;
+  uint64_t navigation_result_generation_ = 0;
   base::DictValue settings_;
   std::optional<zebkit_popup_policy> popup_policy_;
   // "downloads" of the runtime settings: true denies when no function decides.
@@ -336,6 +365,9 @@ struct zebkit_view : public content::WebContentsObserver,
   zebkit_download_progress_func on_download_progress_ = nullptr;
   void* on_download_progress_data_ = nullptr;
   uint64_t download_generation_ = 0;
+  zebkit_download_result_func on_download_result_ = nullptr;
+  void* on_download_result_data_ = nullptr;
+  uint64_t download_result_generation_ = 0;
   uint32_t download_timeout_ms_ = 30000;
   zebkit_client_certificate_func on_client_certificate_ = nullptr;
   void* on_client_certificate_data_ = nullptr;

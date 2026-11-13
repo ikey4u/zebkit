@@ -70,6 +70,13 @@ def main():
                   meta.get("origin") == url.rstrip("/"), "%s: the application is asked, with the devices" % kind,
                   {k: meta.get(k) for k in ("kind", "origin", "filters")})
             check(refused == none, "%s: answered with none, the page gets none" % kind, refused)
+            if kind == "serial":
+                asked.clear()
+                ev(view, activated("navigator.serial.requestPort({filters: [{usbVendorId: 0x1234, "
+                                   "usbProductId: 0x5678}]}).then(() => 'device', e => e.name)"))
+                filters = asked[0].get("filters") if asked else None
+                check(filters == [{"vendorId": 0x1234, "productId": 0x5678}],
+                      "serial: the page's filters, as vendorId and productId", filters)
             devices = meta.get("devices") or []
             print("     %s: %d device(s) here" % (kind, len(devices)), flush=True)
             if not devices:

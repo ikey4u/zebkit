@@ -240,6 +240,8 @@ class Window : public content::WebContentsDelegate,
       content::WebContents* source,
       content::RenderWidgetHost* render_widget_host,
       base::RepeatingClosure hang_monitor_restarter) override;
+  void RendererResponsive(content::WebContents* source,
+                          content::RenderWidgetHost* render_widget_host) override;
   void ActivateContents(content::WebContents* contents) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
                       scoped_refptr<content::FileSelectListener> listener,

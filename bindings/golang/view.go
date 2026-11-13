@@ -8,6 +8,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sync/atomic"
 	"unsafe"
 )
@@ -402,6 +403,30 @@ func (v *View) OnClose(function func()) {
 	v.onClose = function
 }
 
+// ProcessGone is how a view's page process went (Electron's
+// render-process-gone): Reason is "crashed" (a crash, chrome://crash),
+// "killed" (a signal, the system, chrome://kill), "oom", "abnormal-exit" (a
+// non-zero exit), "clean-exit", "launch-failed", "integrity-failure"
+// (Windows' code integrity) or "memory-eviction"; ExitCode is the process's
+// exit code or signal as the system gives it.
+type ProcessGone struct {
+	Reason   string `json:"reason"`
+	ExitCode int    `json:"exitCode"`
+}
+
+// OnProcessGone calls function when the page's process goes, told
+// asynchronously. The view stays open, its page blank: Reload or Load start
+// a process again. nil stops.
+func (v *View) OnProcessGone(function func(gone ProcessGone)) {
+	var value func(string)
+	if function != nil {
+		value = jsonFunc(function)
+	}
+	v.hook("process-gone", function, value, unsafe.Pointer(C.zk_view_text), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_process_gone(raw, C.zebkit_process_func(f), d)
+	})
+}
+
 // Grant gives pages of origin what allow says: the zebkit object and its
 // APIs. filesRoot is the directory zebkit.fs works in, or "".
 func (v *View) Grant(origin string, allow Allow, filesRoot string) {
@@ -418,8 +443,12 @@ func (v *View) Grant(origin string, allow Allow, filesRoot string) {
 
 // Call is a page's call of a function the application bound: answer it
 // once, now or later, from any goroutine (the answer reaches the page
-// through the engine's thread). A call never answered stays in the engine's
-// memory until it stops.
+// through the engine's thread), or drop it with Close. A Call the program
+// lets go unanswered is dropped once the garbage collector finds it, as
+// Rust's on Drop and Python's when it is collected, through Post on the
+// engine's thread: the page's promise is rejected ("the application dropped
+// the call"). That can be late, or never (no collection, or the engine
+// stopped first), so answer or Close every call.
 type Call struct {
 	call   unsafe.Pointer // *C.zebkit_call, atomically
 	Origin string
@@ -429,7 +458,30 @@ type Call struct {
 func newCall(call *C.zebkit_call, origin string, args json.RawMessage) *Call {
 	c := &Call{Origin: origin, Args: args}
 	atomic.StorePointer(&c.call, unsafe.Pointer(call))
+	runtime.SetFinalizer(c, (*Call).dropped)
 	return c
+}
+
+// dropped frees a Call let go unanswered: the page's promise is rejected.
+func (c *Call) dropped() {
+	call := (*C.zebkit_call)(atomic.SwapPointer(&c.call, nil))
+	if call == nil {
+		return
+	}
+	// Post fails only once the engine has stopped, and the call with it.
+	_ = Post(func() { C.zebkit_call_free(call) })
+}
+
+// Close drops the call unanswered: the page's promise is rejected with an
+// Error ("the application dropped the call"). ErrClosed once answered or
+// closed. Any goroutine may call it.
+func (c *Call) Close() error {
+	call, err := c.take()
+	if err != nil {
+		return err
+	}
+	C.zebkit_call_free(call)
+	return nil
 }
 
 // ArgsInto decodes the arguments into values, pointers in their order;

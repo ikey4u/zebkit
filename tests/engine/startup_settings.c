@@ -2,6 +2,7 @@
 /* Strict startup validation is repeatable and precedes profile/key/log IO. */
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+#include "harness.h"
 #include <zebkit/zebkit.h>
 #include <limits.h>
 #include <stdio.h>
@@ -13,18 +14,13 @@
 #include <ftw.h>
 #endif
 
-static int failures, evaluated;
+static int evaluated;
 /* The directory made here when the suite gave none, removed at the end. */
 static char made[PATH_MAX];
-static void check(int ok, const char *what) {
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
-    fflush(stdout);
-    failures += !ok;
-}
 static void result(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)view; (void)data;
     check(!error && json && strcmp(json, "\"Zebkit Startup Settings\"") == 0,
-          "a page sees the API's user agent");
+          "a page sees the API's user agent", NULL);
     evaluated = 1;
 }
 
@@ -67,7 +63,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
         char *error = NULL;
         int code = zebkit_init_with_settings(argc, argv, invalid[i], &error);
-        check(code != 0 && error && *error, "invalid settings fail with an explanation without consuming startup");
+        check(code != 0 && error && *error, "invalid settings fail with an explanation without consuming startup", NULL);
         zebkit_free(error);
     }
 #ifdef _WIN32
@@ -97,10 +93,10 @@ int main(int argc, char **argv) {
              "{\"profileDirectory\":\"%s\",\"cookies\":{\"storage\":\"file\",\"keyDirectory\":\"%s\"},\"bad\":true}", profile, keys);
     char *error = NULL;
     check(zebkit_init_with_settings(argc, argv, config, &error) != 0,
-          "a late unknown field rejects the whole configuration");
+          "a late unknown field rejects the whole configuration", NULL);
     zebkit_free(error);
     check(access(profile, F_OK) != 0 && access(keys, F_OK) != 0,
-          "invalid settings create neither the profile nor the key directory");
+          "invalid settings create neither the profile nor the key directory", NULL);
     snprintf(config, sizeof(config),
              "{\"profileDirectory\":\"%s\",\"userAgent\":\"Zebkit Startup Settings\","
              "\"cookies\":{\"storage\":\"file\",\"keyDirectory\":\"%s\",\"thirdParty\":false},"
@@ -108,21 +104,17 @@ int main(int argc, char **argv) {
              "\"headless\":true,\"sandbox\":false,\"applicationIntegration\":false}", profile, keys);
     error = NULL;
     int code = zebkit_init_with_settings(argc, argv, config, &error);
-    check(code == 0 && !error, "valid settings start the engine after validation failures");
+    check(code == 0 && !error, "valid settings start the engine after validation failures", NULL);
     zebkit_free(error);
     if (code)
         return 1;
-    check(zebkit_is_headless(), "headless is selected through the API");
+    check(zebkit_is_headless(), "headless is selected through the API", NULL);
     check(access(profile, F_OK) == 0 && access(keys, F_OK) == 0,
-          "profile and file-cookie key locations come from the API");
+          "profile and file-cookie key locations come from the API", NULL);
     zebkit_view *view = zebkit_view_new(NULL, 320, 200);
     zebkit_view_evaluate(view, "navigator.userAgent", result, NULL);
-    struct timespec wait = {0, 1000000};
-    for (int i = 0; i < 10000 && !evaluated; ++i) {
-        zebkit_pump();
-        nanosleep(&wait, NULL);
-    }
-    check(evaluated, "the configured engine drives a real page");
-    check(zebkit_shutdown(), "configured startup shuts down normally");
-    return failures ? 1 : 0;
+    WAIT(evaluated, 10);
+    check(evaluated, "the configured engine drives a real page", NULL);
+    check(zebkit_shutdown(), "configured startup shuts down normally", NULL);
+    return summary();
 }

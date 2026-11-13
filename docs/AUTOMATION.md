@@ -85,9 +85,9 @@ counted with `DEBUG=pw:protocol`:
 (`Input.insertText` is the text itself), `textContent` and `evaluate` 1,
 `goto` 1 and then events.
 
-### What it costs
+### What it costs (history, 2026-10-27, Chromium 155)
 
-History: measured before zebkit's own API, on 2026-10-27; what it costs now
+Measured before zebkit's own API, on 2026-10-27; what it costs now
 is section 6 and `docs/reports/automation-bench.md`. Medians over 50 runs
 (20 for `goto` and `screenshot`), Playwright 1.56 in Node 24, a local page,
 headless, the same machine:
@@ -301,6 +301,16 @@ Playwright's async API with its names: `Page`, `Frame`, `Locator` (with
 engine's thread with `zebkit.automation.run()`; an `await` is a command in
 flight. Rust's is `zebkit::automation` (`Page`, `Frame`, `Locator`,
 `BrowserContext`, `listen`, `screenshot_pixels`, and `call` for any command).
+Go's is the package `github.com/ikey4u/zebkit/bindings/golang/automation`,
+with the same features in Go's names: `NewPage(view)` or `OpenPage(w, h)`,
+`NewContext(options, done)`, `Page` (embedding its main `Frame`) with `On(kind,
+fn)`, `RemoveListener`, `WaitForEvent`, `Route`, `ExposeFunction`, `Keyboard()`,
+`Mouse()`, `Clock()`, `Tracing()`, `Request()`; `Locator` with
+`GetByRole(role, RoleOptions{...})`, `Filter(Filter{...})` and the actions;
+`Expect(locator)`; `Listen` for the endpoint. Each method runs on the engine's
+thread and answers once, there, as `func(T, error)` (`func(error)` for a
+command that answers nothing); the root package keeps the low level
+(`CallAutomation`, `View.OnAutomationEvent`, `ListenAutomation`).
 
 ## 4. The parts
 
@@ -748,11 +758,12 @@ disposal also removes the replay entry used for future pages. Linux client
 regressions cover these cases, compressed-response timings and sizes, POST
 uploads, navigation response identity and response-body reads.
 
-## 6. What it costs now
+## 6. What it costs (2026-11-07, Chromium 155)
 
 `scripts/automation-bench.sh` (`docs/reports/automation-bench.md`), the
 page of section 1, 50 runs each (20 of `goto` and of each screenshot),
-headless, on one machine, 2026-11-07. Medians; the endpoint is Playwright's
+headless, on one machine, 2026-11-07, zebkit on Chromium 155.0.8059.84; not
+run again on Chromium 157. Medians; the endpoint is Playwright's
 own client (playwright-core 1.64.1) connected to `zebkit_automation_listen()`,
 with no CDP in between:
 

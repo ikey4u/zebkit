@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -31,6 +32,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -72,13 +74,10 @@
 #include "zebkit/engine/popup_metadata.h"
 #include "zebkit/engine/settings.h"
 #include "zebkit/engine/pdf_script.h"
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/webauthn.h"
 
 namespace {
-
-char* Copy(const std::string& text) {
-  return strdup(text.c_str());
-}
 
 // The page's side of zebkit.*, before any of the page's own script runs:
 // a call goes to the browser through __zebkit_call, a native function each
@@ -172,8 +171,8 @@ constexpr char kBridgeScript[] = R"js((() => {
     pathForFile: (file) => {
       if (!(file instanceof File)) return '';
       if (filePaths.has(file)) return filePaths.get(file);
-      // By name, each path given once: two files of one name from two
-      // folders get a path each, in the order they are asked for.
+      // A File the drop did not hand the page as it is (one copied, one of
+      // a frame the paths did not go to): by name, each path given once.
       const index = dropped.findIndex((p, i) => !taken.has(i) && (p.split(/[\\/]/).pop() || p) === file.name);
       if (index < 0) return '';
       taken.add(index);
@@ -187,6 +186,23 @@ constexpr char kBridgeScript[] = R"js((() => {
   Object.defineProperty(globalThis, '__zebkit_dropped', {
     value: (paths) => { dropped = Array.isArray(paths) ? paths.map(String) : []; taken = new Set(); },
   });
+  // The drop's Files, before any handler of the page's sees them: in the order
+  // of its paths, so that each has its own, files of one name from two
+  // folders too. All or none: another drop's (an element's own) is left, and
+  // so is a drop the page made itself (not isTrusted).
+  const listen = EventTarget.prototype.addEventListener;
+  listen.call(globalThis, 'drop', (event) => {
+    if (!event.isTrusted) return;
+    const files = event.dataTransfer ? event.dataTransfer.files : null;
+    if (!files || files.length === 0 || files.length !== dropped.length) return;
+    for (let i = 0; i < files.length; ++i) {
+      if (files[i].name !== (dropped[i].split(/[\\/]/).pop() || dropped[i])) return;
+    }
+    for (let i = 0; i < files.length; ++i) {
+      filePaths.set(files[i], dropped[i]);
+      taken.add(i);
+    }
+  }, true);
   Object.defineProperty(globalThis, 'zebkit', {value: Object.freeze(zebkit), enumerable: false});
 })();)js";
 
@@ -797,10 +813,10 @@ void zebkit_view::SetUserAgentOverride(base::DictValue params, Reply reply) {
   const size_t submission = ++protocol_user_agent_submission_;
   auto saved = params.Clone();
   ++protocol_setups_pending_;
-  Send("Emulation.setUserAgentOverride", std::move(params),
-      base::BindOnce([](base::WeakPtr<zebkit_view> view, size_t submission,
-                       base::DictValue saved, Reply reply,
-                       const base::DictValue* result, const std::string& error) {
+  using Finish = base::OnceCallback<void(Reply, const base::DictValue*, const std::string&)>;
+  Finish finish = base::BindOnce([](base::WeakPtr<zebkit_view> view, size_t submission,
+                                    base::DictValue saved, Reply reply,
+                                    const base::DictValue* result, const std::string& error) {
         if (!view) return;
         // Persist only successfully validated overrides. In-flight replies
         // must not replace a newer successful setting with an older one.
@@ -822,7 +838,39 @@ void zebkit_view::SetUserAgentOverride(base::DictValue params, Reply reply) {
         if (reply) std::move(reply).Run(result, error);
         if (!view || view->protocol_closing_) return;
         view->MaybeRunDeferredLoad();
-      }, GetWeakPtr(), submission, std::move(saved), std::move(reply)));
+      }, GetWeakPtr(), submission, std::move(saved));
+  // The session can answer inside Send() (bad characters in userAgent are
+  // refused at once): then the answer, and the deferred load after it, wait
+  // for a task, so that the caller is always told after its call returns
+  // (zebkit_view_set_user_agent_override()); loads wait meanwhile. A view
+  // closed first tells the caller so, still alive and before its on_close,
+  // as for an answer still in the session.
+  auto inside = std::make_shared<bool>(true);
+  Send("Emulation.setUserAgentOverride", std::move(params),
+      base::BindOnce([](base::WeakPtr<zebkit_view> view, std::shared_ptr<bool> inside,
+                        Finish finish, Reply reply,
+                        const base::DictValue* result, const std::string& error) {
+        if (!*inside || !view) {
+          std::move(finish).Run(std::move(reply), result, error);
+          return;
+        }
+        auto held = std::make_shared<Reply>(std::move(reply));
+        const int id = view->AddCancel(base::BindOnce(
+            [](std::shared_ptr<Reply> held) {
+              if (*held) std::move(*held).Run(nullptr, "the view is closed");
+            }, held));
+        std::optional<base::DictValue> answer;
+        if (result) answer = result->Clone();
+        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, base::BindOnce(
+                [](base::WeakPtr<zebkit_view> view, int id, Finish finish,
+                   std::shared_ptr<Reply> held, std::optional<base::DictValue> answer,
+                   std::string error) {
+                  if (view && view->TakeCancel(id))
+                    std::move(finish).Run(std::move(*held), answer ? &*answer : nullptr, error);
+                }, view, id, std::move(finish), held, std::move(answer), error));
+      }, GetWeakPtr(), inside, std::move(finish), std::move(reply)));
+  *inside = false;
 }
 
 const zebkit_view::GrantEntry* zebkit_view::GrantFor(
@@ -1021,7 +1069,7 @@ void zebkit_view::OnDidAddMessageToConsole(content::RenderFrameHost* frame,
       [](base::WeakPtr<zebkit_view> view, uint64_t generation, base::DictValue event) {
         if (!view || view->console_generation_ != generation || !view->on_console_) return;
         --view->console_pending_;
-        event.Set("dropped", base::NumberToString(view->console_dropped_));
+        event.Set("dropped", static_cast<double>(view->console_dropped_));
         view->console_dropped_ = 0;
         const std::string json = base::WriteJson(event).value_or("{}");
         auto function = view->on_console_; void* data = view->on_console_data_;
@@ -1097,6 +1145,59 @@ void zebkit_view::TitleWasSet(content::NavigationEntry* entry) {
     const std::string title = base::UTF16ToUTF8(web_contents()->GetTitle());
     on_title_(this, title.c_str(), on_title_data_);
   }
+}
+
+void zebkit_view::PrimaryMainFrameRenderProcessGone(base::TerminationStatus status) {
+  // A hang ends with its process: told by the process event, not as an answer.
+  unresponsive_ = false;
+  const char* reason = "abnormal-exit";
+  switch (status) {
+    case base::TERMINATION_STATUS_NORMAL_TERMINATION: reason = "clean-exit"; break;
+    case base::TERMINATION_STATUS_ABNORMAL_TERMINATION: reason = "abnormal-exit"; break;
+    case base::TERMINATION_STATUS_PROCESS_WAS_KILLED: reason = "killed"; break;
+    case base::TERMINATION_STATUS_PROCESS_CRASHED: reason = "crashed"; break;
+#if BUILDFLAG(IS_CHROMEOS)
+    case base::TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM: reason = "oom"; break;
+#endif
+#if BUILDFLAG(IS_ANDROID)
+    case base::TERMINATION_STATUS_OOM_PROTECTED: reason = "oom"; break;
+#endif
+    case base::TERMINATION_STATUS_LAUNCH_FAILED: reason = "launch-failed"; break;
+    case base::TERMINATION_STATUS_OOM: reason = "oom"; break;
+#if BUILDFLAG(IS_WIN)
+    case base::TERMINATION_STATUS_INTEGRITY_FAILURE: reason = "integrity-failure"; break;
+#endif
+    case base::TERMINATION_STATUS_EVICTED_FOR_MEMORY: reason = "memory-eviction"; break;
+    case base::TERMINATION_STATUS_STILL_RUNNING:
+    case base::TERMINATION_STATUS_MAX_ENUM: break;
+  }
+  base::DictValue event;
+  event.Set("reason", reason);
+  event.Set("exitCode", web_contents() ? web_contents()->GetCrashedErrorCode() : 0);
+  TellProcess(false, std::move(event));
+}
+
+void zebkit_view::TellProcess(bool responsiveness, base::DictValue event) {
+  if (!(responsiveness ? on_responsiveness_ : on_process_gone_))
+    return;
+  // As a task: the page's observers are still being told, and the function
+  // may reload or close the view.
+  content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, base::BindOnce(
+      [](base::WeakPtr<zebkit_view> view, bool responsiveness, uint64_t generation,
+         std::string json) {
+        if (!view)
+          return;
+        auto function = responsiveness ? view->on_responsiveness_ : view->on_process_gone_;
+        void* data = responsiveness ? view->on_responsiveness_data_ : view->on_process_gone_data_;
+        const uint64_t now = responsiveness ? view->responsiveness_generation_
+                                            : view->process_gone_generation_;
+        if (!function || now != generation)
+          return;
+        function(view.get(), json.c_str(), data);
+      },
+      GetWeakPtr(), responsiveness,
+      responsiveness ? responsiveness_generation_ : process_gone_generation_,
+      base::WriteJson(event).value_or("{}")));
 }
 
 void zebkit_view::WebContentsDestroyed() {
@@ -1186,6 +1287,16 @@ void HandlePopup(content::WebContents* opener,
   made->navigation_timeout_ms_ = view->navigation_timeout_ms_;
   made->certificate_timeout_ms_ = view->certificate_timeout_ms_;
   made->http_auth_timeout_ms_ = view->http_auth_timeout_ms_;
+  // Every hook's: what a popup with a function of its own starts with (while
+  // its opener decides, the opener's own deadline applies, hook_requests.h).
+  made->network_timeout_ms_ = view->network_timeout_ms_;
+  made->download_timeout_ms_ = view->download_timeout_ms_;
+  made->client_certificate_timeout_ms_ = view->client_certificate_timeout_ms_;
+  made->file_chooser_timeout_ms_ = view->file_chooser_timeout_ms_;
+  made->eye_dropper_timeout_ms_ = view->eye_dropper_timeout_ms_;
+  made->device_chooser_timeout_ms_ = view->device_chooser_timeout_ms_;
+  made->share_timeout_ms_ = view->share_timeout_ms_;
+  made->media_access_timeout_ms_ = view->media_access_timeout_ms_;
   MakeOffscreenLike(view, made, features);
   // Held while automation sets it up, then released after what that posted.
   const bool held = PopupStartsHeld();
@@ -1252,26 +1363,25 @@ class ViewDelegate : public content::WebContentsViewDelegate {
       return;
     }
     base::ListValue paths;
-    for (const ui::FileInfo& file : drop_data.filenames)
+    std::vector<base::FilePath> files;
+    for (const ui::FileInfo& file : drop_data.filenames) {
       paths.Append(file.path.AsUTF8Unsafe());
+      files.push_back(file.path);
+    }
     const std::string json =
         base::WriteJson(base::Value(std::move(paths))).value_or("[]");
     view->on_drop_(view, json.c_str(), view->on_drop_data_);
     // The page's zebkit.pathForFile() knows the paths before the page gets
     // the drop: the drop goes on when the page has them.
-    base::DictValue params;
-    params.Set("expression",
-               "globalThis.__zebkit_dropped && __zebkit_dropped(" + json + ")");
-    view->Send("Runtime.evaluate", std::move(params),
-               base::BindOnce(
-                   [](base::WeakPtr<ViewDelegate> self,
-                      content::DropData drop_data,
-                      DropCompletionCallback callback,
-                      const base::DictValue*, const std::string&) {
-                     if (self)
-                       self->Drop(drop_data, std::move(callback));
-                   },
-                   weak_factory_.GetWeakPtr(), drop_data, std::move(callback)));
+    zebkit::TellDroppedPaths(
+        view, files,
+        base::BindOnce(
+            [](base::WeakPtr<ViewDelegate> self, content::DropData drop_data,
+               DropCompletionCallback callback) {
+              if (self)
+                self->Drop(drop_data, std::move(callback));
+            },
+            weak_factory_.GetWeakPtr(), drop_data, std::move(callback)));
   }
 
   gfx::NativeWindow GetNativeWindow() override {
@@ -1512,17 +1622,25 @@ zebkit_view* NewView(zebkit_context* context,
                      int width,
                      int height,
                      Window::Kind kind,
-                     const WindowOptions* options) {
+                     const WindowOptions* options,
+                     std::string* error) {
+  auto fail = [error](const char* why) -> zebkit_view* {
+    if (error)
+      *error = why;
+    return nullptr;
+  };
   if (!CurrentlyOnEngineThread())
-    return nullptr;
+    return fail("views are made on the engine's thread");
   if (context && !context->profile)
-    return nullptr;
+    return fail("the context is closed");
+  if (Window::IsShutDown())
+    return fail("the engine is stopping");
   const bool sized = width > 0 && height > 0;
   zebkit::Window* window = zebkit::Window::Create(
       zebkit::ProfileOf(context), GURL(), nullptr,
       gfx::Size(sized ? width : 0, sized ? height : 0), kind, options);
   if (!window)
-    return nullptr;
+    return fail("the view's window could not be made");
   zebkit_view* view = new zebkit_view(window);
   // Without a URL, about:blank: it gives the view a renderer, which the
   // scripts for new documents are registered with, but its loading is not
@@ -1602,9 +1720,7 @@ bool zebkit_view_attach_native(zebkit_view* view,
     failure = "an off-screen view has no window to parent; its frames are the application's to draw";
   else if (zebkit::AttachViewNative(view, native_parent, gfx::Rect(x, y, width, height), &failure))
     return true;
-  if (error)
-    *error = strdup(failure.c_str());
-  return false;
+  return zebkit::SetError(error, failure);
 }
 
 bool zebkit_view_get_native_window(zebkit_view* view, zebkit_native_window* window) {
@@ -1628,14 +1744,22 @@ bool zebkit_view_export_native_window(zebkit_view* view,
       !content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
     return false;
   // Once, after this returns, on this thread, also when the platform drops
-  // the request (a window closed before the compositor answered).
+  // the request (a window closed before the compositor answered); NULL as
+  // the view closes first, before its on_close (zebkit_view::AddCancel()).
+  const int id = view->AddCancel(base::BindOnce(
+      [](zebkit_view* view, zebkit_native_window_export_func callback, void* data) {
+        callback(view, nullptr, data);
+      },
+      base::Unretained(view), callback, data));
   auto done = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       base::BindPostTaskToCurrentDefault(base::BindOnce(
-          [](zebkit_native_window_export_func callback, void* data,
+          [](base::WeakPtr<zebkit_view> view, int id,
+             zebkit_native_window_export_func callback, void* data,
              std::string handle) {
-            callback(data, handle.empty() ? nullptr : handle.c_str());
+            if (view && view->TakeCancel(id))
+              callback(view.get(), handle.empty() ? nullptr : handle.c_str(), data);
           },
-          callback, data)),
+          view->GetWeakPtr(), id, callback, data)),
       std::string());
   if (!view->web_contents() || view->offscreen_view_ || zebkit_is_headless()) {
     std::move(done).Run(std::string());
@@ -1736,12 +1860,10 @@ void zebkit_view_set_user_agent(zebkit_view* view, const char* user_agent) {
 
 bool zebkit_view_set_user_agent_override(zebkit_view* view, const char* json,
                                          zebkit_result_func func, void* data) {
-  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) return false;
-  if (!zebkit::LiveView(view) || !view->web_contents()) {
-    // Told, as for every other failure: its callers release what they gave it there.
-    if (func) func(view, nullptr, "the view is closed", data);
+  // False only where @func cannot be told (zebkit.h's rule: never called then).
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !zebkit::LiveView(view) ||
+      !view->web_contents())
     return false;
-  }
   const size_t size = json ? strnlen(json, 65537) : 0;
   auto parsed = size && size <= 65536
       ? base::JSONReader::Read(std::string_view(json, size), base::JSON_PARSE_RFC)
@@ -1758,17 +1880,28 @@ bool zebkit_view_set_user_agent_override(zebkit_view* view, const char* json,
       }
     }
   }
-  if (error) {
-    if (func) func(view, nullptr, error, data);
-    return false;
-  }
-  view->SetUserAgentOverride(std::move(parsed->GetDict()),
-      base::BindOnce([](base::WeakPtr<zebkit_view> view, zebkit_result_func func,
-                       void* data, const base::DictValue*, const std::string& error) {
+  auto told = base::BindOnce([](base::WeakPtr<zebkit_view> view, zebkit_result_func func,
+                                void* data, const base::DictValue*, const std::string& error) {
         if (view && func)
           func(view.get(), error.empty() ? "{}" : nullptr,
                error.empty() ? nullptr : error.c_str(), data);
-      }, view->GetWeakPtr(), func, data));
+      }, view->GetWeakPtr(), func, data);
+  if (error) {
+    // Told as any other answer, after this returns; nothing changed. A view
+    // closed first tells it so, still alive and before its on_close.
+    const int id = view->AddCancel(base::BindOnce(
+        [](zebkit_view* view, zebkit_result_func func, void* data) {
+          if (func) func(view, nullptr, "the view is closed", data);
+        }, base::Unretained(view), func, data));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+            [](base::WeakPtr<zebkit_view> view, int id, zebkit_view::Reply told, std::string error) {
+              if (view && view->TakeCancel(id))
+                std::move(told).Run(nullptr, error);
+            }, view->GetWeakPtr(), id, std::move(told), std::string(error)));
+    return true;
+  }
+  view->SetUserAgentOverride(std::move(parsed->GetDict()), std::move(told));
   return true;
 }
 
@@ -1843,14 +1976,14 @@ void zebkit_view_close(zebkit_view* view) {
 
 char* zebkit_view_get_url(zebkit_view* view) {
   ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
-  return Copy(view->web_contents()
+  return zebkit::CopyString(view->web_contents()
                   ? view->web_contents()->GetLastCommittedURL().spec()
                   : std::string());
 }
 
 char* zebkit_view_get_title(zebkit_view* view) {
   ZEBKIT_LIVE_VIEW_OR_RETURN(view, nullptr);
-  return Copy(view->web_contents()
+  return zebkit::CopyString(view->web_contents()
                   ? base::UTF16ToUTF8(view->web_contents()->GetTitle())
                   : std::string());
 }
@@ -1986,6 +2119,10 @@ void zebkit_call_reject(zebkit_call* call, const char* message) {
   delete call;
 }
 
+void zebkit_call_free(zebkit_call* call) {
+  zebkit_call_reject(call, "the application dropped the call");
+}
+
 // Which window.open()s a view's pages get (BrowserClient::CanCreateWindow()).
 bool zebkit_view_set_popup_policy(zebkit_view* view, zebkit_popup_policy policy) {
   ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
@@ -2043,7 +2180,7 @@ bool zebkit_view_set_authentication_ui(zebkit_view* view, bool enabled) {
 extern "C" bool zebkit_view_add_world_script(zebkit_view* view, const char* world,
                                              const char* source, bool main_frame_only,
                                              char** error) {
-  auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
+  auto fail = [&](const char* message) { return zebkit::SetError(error, message); };
   if (!zebkit::LiveView(view) || !view->web_contents()) return fail("the view is closed");
   if (!source || !base::IsStringUTF8(source)) return fail("the script must be UTF-8");
   const std::string name = world ? world : "";
@@ -2051,6 +2188,65 @@ extern "C" bool zebkit_view_add_world_script(zebkit_view* view, const char* worl
   view->AddWorldScript(name, source, main_frame_only);
   return true;
 }
+
+extern "C" void zebkit_view_on_process_gone(zebkit_view* view, zebkit_process_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  ++view->process_gone_generation_;
+  view->on_process_gone_ = function; view->on_process_gone_data_ = data;
+}
+
+extern "C" void zebkit_view_on_responsiveness(zebkit_view* view, zebkit_process_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  ++view->responsiveness_generation_;
+  view->on_responsiveness_ = function; view->on_responsiveness_data_ = data;
+}
+
+namespace zebkit {
+
+void CloseSoon(base::WeakPtr<zebkit_view> view) {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<zebkit_view> view) {
+                       if (view)
+                         view->Close();
+                     },
+                     std::move(view)));
+}
+
+void TellDroppedPaths(zebkit_view* view,
+                      const std::vector<base::FilePath>& paths,
+                      base::OnceClosure done) {
+  base::ListValue list;
+  for (const base::FilePath& path : paths)
+    list.Append(path.AsUTF8Unsafe());
+  const std::string json =
+      base::WriteJson(base::Value(std::move(list))).value_or("[]");
+  base::DictValue params;
+  params.Set("expression",
+             "globalThis.__zebkit_dropped && __zebkit_dropped(" + json + ")");
+  view->Send("Runtime.evaluate", std::move(params),
+             base::BindOnce(
+                 [](base::OnceClosure done, const base::DictValue*,
+                    const std::string&) { std::move(done).Run(); },
+                 std::move(done)));
+}
+
+void TellResponsiveness(content::WebContents* contents, bool responsive) {
+  zebkit_view* view = ViewOf(contents);
+  if (!view)
+    return;
+  // Content tells a hang again for each input that waits on it, and that the
+  // renderer answers even when it did not tell the hang (held by a debugger,
+  // or the page hidden): only the changes.
+  if (view->unresponsive_ == !responsive)
+    return;
+  view->unresponsive_ = !responsive;
+  base::DictValue event;
+  event.Set("responsive", responsive);
+  view->TellProcess(true, std::move(event));
+}
+
+}  // namespace zebkit
 
 extern "C" void zebkit_view_on_console(zebkit_view* view, zebkit_console_func function, void* data) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) || !zebkit::LiveView(view) || !view->web_contents()) return;

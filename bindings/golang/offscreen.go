@@ -26,20 +26,26 @@ func rectFrom(r *C.zebkit_rect) Rect {
 }
 
 // NewOffscreenView makes a view drawn off-screen, width by height CSS pixels
-// at scale device pixels per CSS pixel (0 for 1); "" loads nothing. An error
-// where the engine cannot make one.
+// at scale device pixels per CSS pixel (0 for 1); "" loads nothing. Where
+// the engine cannot make one, its error says why (a closed context, the
+// engine stopping, a process with windows on Windows, Wayland).
 func NewOffscreenView(url string, width, height int, scale float32) (*View, error) {
 	if !started.Load() {
 		return nil, ErrNotStarted
 	}
 	onEngineThread()
+	return newOffscreenView(nil, url, width, height, scale)
+}
+
+func newOffscreenView(context *C.zebkit_context, url string, width, height int, scale float32) (*View, error) {
 	curl := optionalString(url)
 	defer free(curl)
-	view := newView(C.zebkit_view_new_offscreen(curl, C.int(width), C.int(height), C.float(scale)))
-	if view == nil {
-		return nil, refused("no off-screen view")
+	var message *C.char
+	raw := C.zebkit_view_new_offscreen_ex(context, curl, C.int(width), C.int(height), C.float(scale), &message)
+	if raw == nil {
+		return nil, takeError(message, "no off-screen view")
 	}
-	return view, nil
+	return newView(raw), nil
 }
 
 // NewOffscreenView is the package's NewOffscreenView in the context (its
@@ -49,13 +55,7 @@ func (c *Context) NewOffscreenView(url string, width, height int, scale float32)
 	if !ok {
 		return nil, ErrClosed
 	}
-	curl := optionalString(url)
-	defer free(curl)
-	view := newView(C.zebkit_view_new_offscreen_in(raw, curl, C.int(width), C.int(height), C.float(scale)))
-	if view == nil {
-		return nil, refused("no off-screen view")
-	}
-	return view, nil
+	return newOffscreenView(raw, url, width, height, scale)
 }
 
 // IsOffscreen says whether the view is drawn off-screen.

@@ -22,18 +22,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cdp_page import Cdp, launch_engine  # noqa: E402
+from harness import SETTLE, Cdp, check, failures, finish, launch_engine, note, skip  # noqa: E402
 from pdf_long import long_pdf, real_pdf  # noqa: E402
-
-checks = passed = 0
-
-
-def check(condition, what, detail=""):
-    global checks, passed
-    checks += 1
-    passed += bool(condition)
-    print(("ok   " if condition else "FAIL ") + what + ("" if condition else f": {detail!r}"), flush=True)
-    return condition
 
 
 CHROME_DOCUMENT = ('<html style="height:100%;width:100%"><!-- the placeholder in the body style is for an optional '
@@ -90,9 +80,13 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 
+browsers = []
+
+
 class Browser:
     def __init__(self, run, switches):
         self.engine = launch_engine([run, *switches])
+        browsers.append(self)
         self.process = self.engine.process
         if not self.engine.url:
             self.engine.stop(True)
@@ -126,12 +120,15 @@ class Page:
             raise RuntimeError(json.dumps(result["exceptionDetails"])[:500])
         return result["result"].get("value")
 
-    def go(self, url, settle=1.0):
+    def go(self, url):
+        """Navigates, and waits for the document; for a PDF's, for the viewer in it too."""
         self.call("Page.navigate", {"url": url})
         end = time.time() + 30
         while time.time() < end and self.evaluate("document.readyState") != "complete":
-            time.sleep(.05)
-        time.sleep(settle)
+            time.sleep(.01)
+        if url.split("#")[0].endswith(".pdf"):
+            while time.time() < end and not self.viewer():
+                time.sleep(.02)
 
     def viewer(self):
         """The viewer's scroller's data-* attributes, from CDP's pierced DOM."""
@@ -156,7 +153,7 @@ class Page:
             state = self.viewer()
             if predicate(state):
                 return state
-            time.sleep(.1)
+            time.sleep(.02)
         check(False, what, state)
         return state
 
@@ -185,7 +182,7 @@ class Page:
             shot = self.shot()
             if shot != before or time.time() > end:
                 return shot
-            time.sleep(.05)
+            time.sleep(.02)
 
     def wheel(self, dy, x=500, y=400):
         self.call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": dy})
@@ -228,6 +225,18 @@ def pdf_renderers(root_pid):
 
 
 def main():
+    try:
+        return test()
+    except Exception as error:  # noqa: BLE001
+        check(False, "the test went on", repr(error))
+        return finish()
+    finally:
+        for browser in browsers:
+            if browser.engine.poll() is None:
+                browser.close(True)
+
+
+def test():
     run = sys.argv[1]
     switches = sys.argv[2:]
     files["/long.pdf"] = (long_pdf(300), "application/pdf", {})
@@ -254,7 +263,7 @@ def main():
     page = browser.page()
 
     # What a page says of itself, before any PDF.
-    page.go(base + "/blank", settle=0)
+    page.go(base + "/blank")
     page.evaluate("document.cookie='own=1';localStorage.setItem('own','1')")
     check(page.evaluate("navigator.pdfViewerEnabled") is True, "navigator.pdfViewerEnabled, as Chrome")
     plugins = page.evaluate("[...navigator.plugins].map(x=>[x.name,x.filename,x.description,x.length])")
@@ -287,7 +296,8 @@ def main():
                    "(cookieStore.getAll().catch(()=>0),0)", "(navigator.serviceWorker.getRegistrations().catch(()=>0),0)"):
         try:
             page.evaluate(f"(()=>{{try{{return {script}}}catch(e){{return 0}}}})()")
-            time.sleep(.2)
+            # A kill would come at once; the page is asked again after a moment.
+            time.sleep(SETTLE)
             alive = page.evaluate("1+1") == 2
         except Exception as error:  # noqa: BLE001
             alive = repr(error)
@@ -389,33 +399,31 @@ def main():
     check(state.get("page") == "40", "an internal link", state)
 
     # Selection and copy, as a person: all of it, and what is on the clipboard.
-    # Only where the clipboard is the engine's own: Linux, headless (in memory)
-    # or on the suite's private display. On a Mac and on Windows it is the
+    # Only where the clipboard is the engine's own, in memory: Linux under
+    # --headless. On a Mac and on Windows, and with a window, it is the
     # person's: not touched, and so not checked there.
-    if not sys.platform.startswith("linux"):
-        print("skip Select All and Copy: the clipboard here is the person's", flush=True)
+    if not (sys.platform.startswith("linux") and "--headless" in switches):
+        skip("Select All and Copy", "the clipboard here is the person's (only Linux under --headless has its own)")
     else:
         page.go(base + "/text.pdf")
-        page.wait_viewer(lambda s: s.get("pages") == "3", "a small PDF")
-        time.sleep(.5)
+        page.wait_viewer(lambda s: s.get("pages") == "3" and int(s.get("paintedPages", 0)) > 0, "a small PDF")
         page.key("a", "KeyA", 65, modifiers=2)
         page.key("c", "KeyC", 67, modifiers=2, commands=["copy"])
-        page.go(base + "/blank", settle=0)
+        page.go(base + "/blank")
         page.cdp.call("Browser.grantPermissions", {"permissions": ["clipboardReadWrite"], "origin": base})
         page.call("Page.bringToFront")
         # navigator.clipboard is for a focused document; bringToFront() gets there
         # after it answers.
-        for _ in range(100):
-            if page.evaluate("document.hasFocus()"):
-                break
-            time.sleep(.05)
+        end = time.time() + 5
+        while not page.evaluate("document.hasFocus()") and time.time() < end:
+            time.sleep(.01)
         # The copy reaches the clipboard on its own time.
         end = time.time() + 5
         while True:
             copied = page.evaluate("navigator.clipboard.readText().catch(e => 'error: ' + e)")
             if "needle2" in (copied or "") or time.time() > end:
                 break
-            time.sleep(.05)
+            time.sleep(.02)
         check("needle2" in (copied or ""), "Select All and Copy give the text of the pages", copied)
 
     # Another type, a broken file, an attachment.
@@ -428,8 +436,14 @@ def main():
 
     # Elements: frames, always in a process of their own, whatever the parent's origin.
     for path, tag in (("/embed", "EMBED"), ("/iframe", "IFRAME"), ("/object", "OBJECT"), ("/xembed", "EMBED")):
-        page.go(base + path, settle=1.5)
-        targets = page.cdp.call("Target.getTargets")["targetInfos"]
+        page.go(base + path)
+        # The frame's process, and its PDF, come after the parent's load.
+        end = time.time() + 15
+        while True:
+            targets = page.cdp.call("Target.getTargets")["targetInfos"]
+            if any(t["type"] == "iframe" and t["url"].endswith("/long.pdf") for t in targets) or time.time() > end:
+                break
+            time.sleep(.02)
         check(any(t["type"] == "iframe" and t["url"].endswith("/long.pdf") for t in targets),
               f"{path}: a frame of its own process with the PDF", targets)
         check(len(page.call("Page.getFrameTree")["frameTree"].get("childFrames", [])) == 0,
@@ -439,7 +453,10 @@ def main():
         check(page.evaluate("window.length") == 1, f"{path}: one frame in the page")
     # A same-origin frame's PDF is parsed in a PDF renderer too, as Chrome's plugin:
     # no process of the page's has it, so the page does not reach its document.
-    page.go(base + "/iframe", settle=1.5)
+    page.go(base + "/iframe")
+    end = time.time() + 15
+    while not pdf_renderers(browser.process.pid) and time.time() < end:
+        time.sleep(.05)
     check(len(pdf_renderers(browser.process.pid)) >= 1, "a same-origin frame's PDF is in a PDF renderer")
     check(page.evaluate("document.getElementById('e').contentDocument") is None,
           "a same-origin parent does not reach the PDF's document")
@@ -452,16 +469,16 @@ def main():
     printed = base64.b64decode(page.call("Page.printToPDF", {})["data"])
     check(printed.startswith(b"%PDF"), "the document prints to PDF", printed[:20])
     pages = len(re.findall(rb"/Type\s*/Page[^s]", printed))
-    print(f"note printed pages: {pages}")
+    note(f"printed pages: {pages}")
     check(pages == 3, "all of its pages, by the plugin", pages)
 
     # A real long document: memory stays bounded, what is painted stays few.
     source = "/real.pdf" if real else "/long.pdf"
     requests.clear()
-    page.go(base + source, settle=3)
+    page.go(base + source)
     state = page.wait_viewer(lambda s: "paintedPages" in s and int(s.get("pages", 0)) >= 300, f"{source} opens", 60)
     count = int(state["pages"])
-    print(f"note {source}: {count} pages, {len(files[source][0])} bytes, requests {requests[:6]}", flush=True)
+    note(f"{source}: {count} pages, {len(files[source][0])} bytes, requests {requests[:6]}")
     resident = []
     limit = time.time() + 120
     for hop in range(0, 41):
@@ -483,23 +500,22 @@ def main():
         if int(state.get("loadedPages", 999)) <= 16 or time.time() > end:
             break
         time.sleep(.1)
-    print(f"note resident KiB of the PDF renderer during the scroll: {resident}; state {state}", flush=True)
+    note(f"resident KiB of the PDF renderer during the scroll: {resident}; state {state}")
     check(int(state.get("loadedPages", 999)) <= 16, "pages loaded at the end are few", state)
     check(int(state.get("paintedPages", 999)) < count / 2, "pages painted are what went by, not the document", state)
     check(resident and max(resident) < 1200 * 1024, "the renderer's memory is bounded under 1.2 GiB", resident)
 
-    browser.close(passed != checks)
+    browser.close(bool(failures))
 
     # The setting to download instead: pdfViewerEnabled false, as Chrome's "Download PDFs".
     browser = Browser(run, [s if "user-data-dir" not in s else s + "-off" for s in switches] + ["--disable-pdf-viewer"])
     page = browser.page()
-    page.go(base + "/blank", settle=0)
+    page.go(base + "/blank")
     check(page.evaluate("navigator.pdfViewerEnabled") is False, "--disable-pdf-viewer: pdfViewerEnabled is false")
     check(page.evaluate("navigator.plugins.length") == 0, "--disable-pdf-viewer: no plugins")
-    browser.close(passed != checks)
+    browser.close(bool(failures))
 
-    print(f"{passed} of {checks} checks passed")
-    return 0 if checks and passed == checks else 1
+    return finish()
 
 
 if __name__ == "__main__":

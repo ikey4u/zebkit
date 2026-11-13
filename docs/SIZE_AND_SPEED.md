@@ -5,9 +5,10 @@ kept, and how the compiler is set between size and speed. Numbers are for
 Linux x86-64, from `scripts/measure.sh` (the package), `scripts/mapsize.py`
 (the engine's linker map), `scripts/bench.sh` and
 `scripts/electron-compare.sh`. "Now" and the first table of "Against
-Electron" are Chromium 157.0.8103.38 (the engine of 0.3.0 and 0.4.0); every
-other section says its date, and before 2026-11-08 the engine was Chromium
-155.0.8059.84. Where the usual advice for
+Electron" are of the current engine, Chromium 157.0.8103.38 (the engine of
+0.3.0 and 0.4.0), measured on 2026-11-08. Every other section and table is
+history, and its heading says its date and its engine: Chromium was pinned
+to 157 on 2026-11-07, and was 155.0.8059.84 before. Where the usual advice for
 slimming Chromium disagrees with what was measured, the measurement wins.
 
 ## Now
@@ -104,6 +105,24 @@ both. The machine's disk is a spinning one shared with other work, which
 is what makes cold starts slow here, and other work on it during a run
 slows it severalfold (one Electron run of 9 on 2026-11-07, 16.9 s).
 
+What could not be made the same:
+
+- **Chromium versions**: Electron 45.2.1 has Chromium 156, zebkit 157. Both
+  send zebkit's user agent (Chrome 157); the client hints still say 156 for
+  Electron.
+- **The sandbox**: off in both. Each needs its set-user-ID helper installed
+  as root or unprivileged user namespaces, which this machine refuses; both
+  ship it on.
+- **Sites**: Reddit showed zebkit a "prove your humanity" page in every run
+  and Electron the page; Stack Overflow showed each a challenge in one run.
+  Both are left out of the sums, and listed.
+- **Defaults that differ** were left as each ships them, as an application
+  gets them: zebkit blocks third-party cookies and keeps no spare renderer;
+  Electron runs Node.js in its browser process.
+- **Not measured**: a real application on both (the roadmap's one
+  application, two hosts, beyond these thin hosts); an EPUB; cold start
+  on macOS.
+
 ### History: 2026-11-06, Chromium 155
 
 `scripts/electron-compare.sh`, 2026-11-06, zebkit `slim` (Chromium
@@ -161,8 +180,9 @@ below, 9 runs each.
   summed, 150 against 161% of a core; zebkit less on 6. Reddit and Stack
   Overflow showed a different page in some run and are left out.
 
-What was done about the losses on 2026-11-02 and after, each measured with
-the same harness before and after (the commits have the runs):
+### History: what was done about the losses, 2026-11-02 to 2026-11-07, Chromium 155
+
+Each measured with the same harness before and after (the commits have the runs):
 
 - **The cold start** (2026-11-07). Measured with the harness's own cold
   start, three ways in turn on the same quiet machine, 7 to 9 runs each,
@@ -307,23 +327,7 @@ the same harness before and after (the commits have the runs):
   stored data (IndexedDB, local storage, caches) in a sandbox. Kept, as
   Chrome has it.
 
-What could not be made the same:
-
-- **Chromium versions**: Electron 45.2.1 has Chromium 156, zebkit 157. Both
-  send zebkit's user agent (Chrome 157); the client hints still say 156 for
-  Electron.
-- **The sandbox**: off in both. Each needs its set-user-ID helper installed
-  as root or unprivileged user namespaces, which this machine refuses; both
-  ship it on.
-- **Sites**: Reddit showed zebkit a "prove your humanity" page in every run
-  and Electron the page; Stack Overflow showed each a challenge in one run.
-  Both are left out of the sums, and listed.
-- **Defaults that differ** were left as each ships them, as an application
-  gets them: zebkit blocks third-party cookies and keeps no spare renderer;
-  Electron runs Node.js in its browser process.
-- **Not measured**: a real application on both (the roadmap's one
-  application, two hosts, beyond these thin hosts); an EPUB; cold start
-  on macOS.
+### macOS (history, 2026-11-02, Chromium 155)
 
 On macOS (Apple silicon, a person's desktop, Electron 45.2.1 for arm64,
 `docs/reports/electron-compare-macos.md`), with memory as the sum of
@@ -341,7 +345,7 @@ window was not given the focus and zebkit's was. The Mac's runs used
 the package before the change to `goto` (`docs/AUTOMATION.md`), which
 changes none of these.
 
-## PDF in pages: what it cost
+## PDF in pages: what it cost (history, 2026-11-01, Chromium 155)
 
 Measured 2026-11-01, Linux `slim`, against the package before it (which also lacks the same build's
 Playwright and CDP fixes, so this is an upper bound): library 146,512,520 to 146,872,968 bytes, +0.25%;
@@ -358,11 +362,9 @@ does, runs it, and counts it as `scripts/measure.sh` counts zebkit.
 
 | Electron, Linux x86-64, MiB | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| 44.9.0 as shipped | 283.3 | 87.1 | 117.2 |
-| 44.9.0 trimmed: one locale, no licence file | **255.7** | **85.3** | **112.6** |
-| 45.0.0-beta.5 as shipped | 273.9 | 88.9 | 117.8 |
-| 45.0.0-beta.5 trimmed (`docs/reports/electron-45.0.0-beta.5.md`) | 261.0 | 87.3 | 115.0 |
-| 45.2.1 as shipped (2026-11-02, the latest stable) | 273.4 | 88.7 | 117.6 |
+| 44.9.0 as shipped (history: the baseline until 2026-11-02) | 283.3 | 87.1 | 117.2 |
+| 44.9.0 trimmed: one locale, no licence file (history) | 255.7 | 85.3 | 112.6 |
+| 45.2.1 as shipped (2026-11-02, the latest stable; `docs/reports/electron.md`) | 273.4 | 88.7 | 117.6 |
 | **45.2.1 trimmed: the baseline since 2026-11-02** | **260.5** | **87.1** | **114.8** |
 
 Of 44.9.0's 255.7 MiB, the `electron` binary (Chromium, Node.js and
@@ -400,7 +402,7 @@ process, draws through `cc`, loads through the network service and runs on
 V8. The Content API is the smallest unit; Electron, CEF, the content shell
 and `headless_shell` embed the same.
 
-## How the size came down
+## How the size came down (history, 2026-10-17 to 2026-10-21, Chromium 155)
 
 | Build, MiB | Package | `.tar.xz` | Engine |
 |---|---:|---:|---:|
@@ -460,7 +462,8 @@ regular expressions 55%, parsing 70% and JIT compilation 30%, and was not
 taken. Maglev stays: 2.4 MiB for a JIT tier.
 
 Text layout was what the size build lost. Laying out a chapter of a book,
-as a reader does, when it was decided (2026-10-21):
+as a reader does, when it was decided (history, 2026-10-21, zebkit on
+Chromium 155):
 
 | Build | ms | Package, MiB |
 |---|---:|---:|
@@ -471,7 +474,7 @@ as a reader does, when it was decided (2026-10-21):
 | **and link-time optimization (`zebkit_lto_optimize`): adopted** | **8.7** | **157.3** |
 | and without the size-trained inliner at the link | 8.2 | 171.4, not taken |
 
-History, 0.0.1-alpha.11 (2026-10-27; today's numbers are in "Against Electron" above): `scripts/layout-bench.sh` lays out a
+History, 0.0.1-alpha.11 (2026-10-27, Chromium 155; today's numbers are in "Against Electron" above): `scripts/layout-bench.sh` lays out a
 chapter of about 9,000 words in columns a page wide, again after each
 change of its width by a pixel, as a reader does when its window is
 resized; the median of 50 layouts, the median of 5 runs, in each engine.
@@ -490,7 +493,7 @@ holds, 18 to 19%, and so does the CPU per layout below.)
 directories at `-O2` (a third tier in `patches/1007`). `slim-macos` is
 built without PGO until Chromium's profile for macOS is fetched.
 
-### Where the time went: the build, not the engine
+### Where the time went: the build, not the engine (history, 2026-10-27, Chromium 155)
 
 The gap was taken apart on 2026-10-27, measuring the CPU time of the
 renderer's main thread per layout of the same chapter (its lines, widths
@@ -543,7 +546,7 @@ within 4% of Google's build. Beating Electron on this test means
 beating Chrome 155 at Chromium 155, which is a change of Chromium, not of
 the build.
 
-### Web pages (history, 2026-10, Electron 44.9.0)
+### Web pages (history, 2026-10-27, Chromium 155, Electron 44.9.0)
 
 The current comparison of pages is the "Sites" part of
 `docs/reports/electron-compare.md` (summed in "Against Electron" above).

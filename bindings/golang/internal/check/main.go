@@ -190,17 +190,30 @@ func main() {
 	})
 	check(activated(view, "navigator.usb.requestDevice({filters: []}).then(() => 'x', e => e.name)") == `"NotFoundError"` &&
 		len(kinds) == 1 && kinds[0] == "usb", "OnDeviceChooser", kinds)
+	var filters any
+	view.OnDeviceChooser(func(request *zebkit.DeviceChooserRequest) {
+		filters = request.Metadata()["filters"]
+		request.Respond("")
+	})
+	activated(view, "navigator.serial.requestPort({filters: [{usbVendorId: 0x1234, usbProductId: 0x5678}]}).then(() => 'x', e => e.name)")
+	check(fmt.Sprint(filters) == "[map[productId:22136 vendorId:4660]]", "OnDeviceChooser: serial filters as vendorId and productId", filters)
 	view.OnMediaAccess(func(request *zebkit.MediaAccessRequest) { request.Respond(true, "", "view") })
 	check(activated(view, "navigator.mediaDevices.getDisplayMedia({video: true}).then(s => s.getVideoTracks()[0].getSettings().displaySurface, e => e.name)") == `"browser"`,
 		"OnMediaAccess chooses the view for getDisplayMedia()")
 
 	navigated := false
+	var navigation map[string]any
+	view.OnNavigationResult(func(event map[string]any) { navigation = event })
 	view.OnNavigation(func(request *zebkit.NavigationRequest) {
 		navigated = true
 		request.Respond(zebkit.NavigationContinue, "")
 	})
 	view.Load("goapp://main/")
 	check(wait(func() bool { return view.Title() == "From Go" }, 15) && navigated, "OnNavigation, and a page from a Go scheme handler", view.Title())
+	_, hasAction := navigation["action"]
+	check(wait(func() bool { return navigation != nil }, 5) && navigation["state"] == "continued" && navigation["reason"] == "answered" && !hasAction,
+		"OnNavigationResult: continued, answered", navigation)
+	view.OnNavigationResult(nil)
 
 	// A scheme request let go unanswered is answered 404 once collected.
 	dropped := "timeout"

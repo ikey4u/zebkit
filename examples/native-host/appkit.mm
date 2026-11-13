@@ -231,12 +231,16 @@ static unsigned Modifiers(NSEvent* event) {
   NSTimer* _timer;
   HostClock::time_point _deadline;
   BOOL _started;
+  // In zebkit_pump(), whose platform loop also runs this application's timers;
+  // a stop asked for there waits for it to return (_finishing).
+  BOOL _pumping, _finishing;
   int _pumps;
   std::string _smoke;
 }
 - (void)start;
 - (void)scheduleAt:(HostClock::time_point)due;
 - (void)stopEngine;
+- (void)finish;
 @end
 static void Wake(int64_t delay, void* data) {
   HostController* host = (__bridge HostController*)data;
@@ -328,9 +332,7 @@ static void Wake(int64_t delay, void* data) {
       if (end || up > 0) ++up;
       if (up >= 60 || limit.timeIntervalSinceNow < 0) {
         [NSProcessInfo.processInfo endActivity:activity]; activity = nil;
-        [timer invalidate]; [host stopEngine]; [NSApp stop:nil];
-        [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
-          modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
+        [timer invalidate]; [host finish];
         return;
       }
       CGEventRef wheel = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 1, up > 0 ? 3 : -3);
@@ -352,9 +354,7 @@ static void Wake(int64_t delay, void* data) {
       fflush(stdout);
       NSData* png = [image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
       [png writeToFile:[NSString stringWithUTF8String:host->_smoke.c_str()] atomically:YES];
-      [timer invalidate]; [host stopEngine]; [NSApp stop:nil];
-      [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
-        modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
+      [timer invalidate]; [host finish];
     }];
   }
 }
@@ -366,7 +366,11 @@ static void Wake(int64_t delay, void* data) {
   _timer = [NSTimer timerWithTimeInterval:delay repeats:NO block:^(NSTimer*) {
     HostController* host = weak;
     if (!host || !host->_started) return;
-    host->_timer = nil; host->_deadline = HostClock::time_point::max(); ++host->_pumps; zebkit_pump();
+    host->_timer = nil; host->_deadline = HostClock::time_point::max(); ++host->_pumps;
+    // This timer too can fire inside the pump, where zebkit_pump() refuses.
+    const BOOL outer = !host->_pumping;
+    host->_pumping = YES; zebkit_pump();
+    if (outer) { host->_pumping = NO; if (host->_finishing) [host finish]; }
   }];
   [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
 }
@@ -375,8 +379,19 @@ static void Wake(int64_t delay, void* data) {
   _started = NO; [_timer invalidate]; _timer = nil;
   _model.Close(); const bool stopped = zebkit_shutdown();
   std::printf("AppKit host: %d frames, %d event-driven pumps, shutdown=%s\n", _model.frames, _pumps, stopped ? "ok" : "failed");
+  std::fflush(stdout);
 }
-- (void)windowWillClose:(NSNotification*)notification { (void)notification; [self stopEngine]; [NSApp stop:nil]; }
+// The engine stopped, then the application's run loop: never from inside
+// zebkit_pump(), where zebkit_shutdown() is refused and the event that wakes
+// [NSApp run] would go to the pump's loop instead.
+- (void)finish {
+  if (_pumping) { _finishing = YES; return; }
+  _finishing = NO;
+  [self stopEngine]; [NSApp stop:nil];
+  [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
+    modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
+}
+- (void)windowWillClose:(NSNotification*)notification { (void)notification; [self finish]; }
 @end
 
 @interface HostDelegate : NSObject <NSApplicationDelegate>

@@ -24,6 +24,9 @@ thread_local! {
     static PERMISSION_DONE: Cell<bool> = const { Cell::new(false) };
     static AUTHENTICATION_DONE: Cell<bool> = const { Cell::new(false) };
     static HANDLERS_DONE: Cell<bool> = const { Cell::new(false) };
+    static AUTOMATION_DONE: Cell<bool> = const { Cell::new(false) };
+    static FIND_DONE: Cell<bool> = const { Cell::new(false) };
+    static NEW_API_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -100,7 +103,7 @@ fn services() {
         "registrable domain",
         services::registrable_domain("a.b.example.co.uk"),
     );
-    let image = services::Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 128] };
+    let image = services::Image { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 128].into() };
     let png = services::encode_image(ImageFormat::Png, &image, 0).unwrap();
     check(services::decode_image(&png).as_ref() == Ok(&image), "PNG both ways", png.len());
     let pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
@@ -178,6 +181,757 @@ fn serve(page: &'static str) -> u16 {
     port
 }
 
+/// tests/engine/pages over HTTP, and `/download.bin` as an attachment.
+fn serve_pages() -> u16 {
+    let pages = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/engine/pages");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let pages = pages.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream);
+                let mut first = String::new();
+                if reader.read_line(&mut first).is_err() {
+                    return;
+                }
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
+                    line.clear();
+                }
+                let path = first.split(' ').nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/").to_string();
+                let mut stream = reader.into_inner();
+                let (status, kind, extra, body) = if path == "/download.bin" {
+                    ("200 OK", "application/octet-stream", "Content-Disposition: attachment; filename=\"report.bin\"\r\n", b"zebkit download".to_vec())
+                } else {
+                    let file = pages.join(path.trim_start_matches('/'));
+                    let kind = match file.extension().and_then(|e| e.to_str()) {
+                        Some("html") => "text/html; charset=utf-8",
+                        Some("json") => "application/json",
+                        Some("js") => "text/javascript",
+                        _ => "application/octet-stream",
+                    };
+                    match std::fs::read(&file) {
+                        Ok(body) if file.starts_with(&pages) => ("200 OK", kind, "", body),
+                        _ => ("404 Not Found", "text/plain", "", b"not found".to_vec()),
+                    }
+                };
+                let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(&body);
+            });
+        }
+    });
+    port
+}
+
+type Next = Box<dyn FnOnce()>;
+type Step = Box<dyn FnOnce(zebkit::automation::Page, Next)>;
+
+/// Runs `steps` one after the other, each with the page and what comes next.
+fn chain(page: zebkit::automation::Page, steps: Vec<Step>, end: impl FnOnce() + 'static) {
+    let mut next: Next = Box::new(end);
+    for step in steps.into_iter().rev() {
+        let (page, after) = (page.clone(), next);
+        next = Box::new(move || step(page, after));
+    }
+    next();
+}
+
+/// zebkit::automation, as tests/engine/automation_python.py drives
+/// zebkit.automation, on tests/engine/pages/automation.html: locators,
+/// actions, expect, handles, routes and requests, responses, dialogs,
+/// exposed functions, the clock, screenshots, workers, tracing, downloads,
+/// file choosers, the console, contexts of their own and the endpoint.
+fn automation_api(port: u16) {
+    use zebkit::automation::{self as auto, expect, EventKind, Filter, PageEvent, RoleOptions, SelectOption, Text};
+    use zebkit::json::Value;
+    let base = format!("http://127.0.0.1:{port}");
+    let page = match auto::Page::open(1280, 800) {
+        Ok(page) => page,
+        Err(error) => {
+            check(false, "automation: Page::open", error);
+            AUTOMATION_DONE.with(|done| done.set(true));
+            return;
+        }
+    };
+    let requests = Rc::new(RefCell::new(Vec::<String>::new()));
+    let finished = Rc::new(RefCell::new(Vec::<String>::new()));
+    {
+        let (requests, finished) = (requests.clone(), finished.clone());
+        page.on(EventKind::Request, move |event| {
+            if let PageEvent::Request(request) = event {
+                requests.borrow_mut().push(format!("{} {}", request.method(), request.url()));
+            }
+        });
+        page.on(EventKind::RequestFinished, move |event| {
+            if let PageEvent::RequestFinished(request) = event {
+                finished.borrow_mut().push(request.url().to_string());
+            }
+        });
+    }
+    let url = format!("{base}/automation.html");
+    let data_url = format!("{base}/data.json");
+    let download_url = format!("{base}/download.bin");
+    let context_base = base.clone();
+    let steps: Vec<Step> = vec![
+        Box::new(move |page, next| {
+            let reading = page.clone();
+            page.goto(&url, move |response| {
+                let response = response.ok().flatten();
+                check(response.as_ref().is_some_and(|r| r.status() == 200 && r.ok()), "automation: goto's response", response.as_ref().map(|r| r.status()));
+                let titled = reading.clone();
+                let Some(response) = response else { return next() };
+                response.text(move |body| {
+                    check(body.as_ref().is_ok_and(|body| body.contains("<title>Automation</title>")), "automation: Response::text", body.as_ref().map(|b| b.len()));
+                    titled.title(move |title| {
+                        check(title.as_deref() == Ok("Automation"), "automation: title", &title);
+                        next();
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let out = page.locator("#out");
+            page.get_by_role("button", RoleOptions::name("Go")).click(move |clicked| {
+                out.text_content(move |text| {
+                    check(clicked.is_ok() && text.as_ref().is_ok_and(|t| t.as_deref() == Some("clicked 1")), "automation: get_by_role().click()", &text);
+                    next();
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let again = page.clone();
+            expect(&page.locator("#out")).to_have_text("clicked 1", move |held| {
+                check(held.is_ok(), "automation: expect().to_have_text()", &held);
+                expect(&again.locator("#out")).timeout(300.0).to_have_text("nope", move |failed| {
+                    check(failed.as_ref().is_err_and(|e| e.message().contains("timed out")), "automation: a failing expect is an error", &failed);
+                    next();
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let name = page.locator("#name");
+            page.get_by_placeholder("Name", false).fill("Grace", move |_| {
+                let typed = name.clone();
+                name.press("End", move |_| {
+                    let read = typed.clone();
+                    typed.press_sequentially(" H", move |_| {
+                        read.input_value(move |value| {
+                            check(value.as_deref() == Ok("Grace H"), "automation: fill(), press(), press_sequentially()", &value);
+                            next();
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let items = page.locator(".item");
+            let (texts, filtered, last) = (items.clone(), items.filter(&Filter { has_text: Some("two".into()), ..Default::default() }), items.last());
+            let agree = page.get_by_text("I agree", false);
+            let checked = page.locator("#agree");
+            items.count(move |count| {
+                check(count == Ok(3), "automation: count()", &count);
+                texts.all_text_contents(move |all| {
+                    check(all.as_ref().is_ok_and(|all| all == &["one", "two", "three"]), "automation: all_text_contents()", &all);
+                    filtered.text_content(move |two| {
+                        check(two == Ok(Some("two".to_string())), "automation: filter(has_text)", &two);
+                        last.text_content(move |three| {
+                            check(three == Ok(Some("three".to_string())), "automation: last()", &three);
+                            let checking = agree.clone();
+                            agree.is_visible(move |visible| {
+                                check(visible == Ok(true), "automation: get_by_text().is_visible()", &visible);
+                                checking.check(move |_| {
+                                    checked.is_checked(move |is| {
+                                        check(is == Ok(true), "automation: check() through its label", &is);
+                                        next();
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let deep = page.frame_locator("#inner").locator("#deep");
+            let also = page.locator("#inner").content_frame().locator("#deep");
+            page.locator("#color").select_option(&[SelectOption::Label("Blue".into())], move |values| {
+                check(values.as_ref().is_ok_and(|v| v == &["b"]), "automation: select_option(label)", &values);
+                let reading = deep.clone();
+                deep.click(move |_| {
+                    reading.text_content(move |text| {
+                        check(text == Ok(Some("pressed".to_string())), "automation: frame_locator().click()", &text);
+                        also.text_content(move |same| {
+                            check(same == Ok(Some("pressed".to_string())), "automation: Locator::content_frame()", &same);
+                            next();
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let evaluating = page.clone();
+            page.query_selector("#go", move |handle| {
+                let Ok(Some(handle)) = handle else {
+                    check(false, "automation: query_selector()", handle.err());
+                    return next();
+                };
+                let (boxed, arg) = (handle.clone(), handle.as_arg());
+                handle.text_content(move |text| {
+                    check(text == Ok(Some("Go".to_string())), "automation: ElementHandle::text_content()", &text);
+                    boxed.bounding_box(move |found| {
+                        check(found.as_ref().is_ok_and(|b| b.is_some_and(|b| b.width > 0.0)), "automation: ElementHandle::bounding_box()", &found);
+                        evaluating.evaluate("(b) => b.tagName", arg, move |tag| {
+                            check(tag.as_ref().is_ok_and(|t| t.as_str() == Some("BUTTON")), "automation: evaluate() with a handle", &tag);
+                            next();
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            page.locator("#nothing").with_timeout(300.0).click(move |result| {
+                check(result.as_ref().is_err_and(|e| e.is_timeout() && e.message().contains("Timeout 300ms exceeded")), "automation: a timeout is Error::is_timeout()", &result);
+                next();
+            });
+        }),
+        Box::new(|page, next| {
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let (seen2, listening) = (seen.clone(), page.clone());
+            let id = page.on(EventKind::Dialog, move |event| {
+                if let PageEvent::Dialog(dialog) = event {
+                    seen2.borrow_mut().push((dialog.kind().to_string(), dialog.message().to_string()));
+                    dialog.accept(None, |_| {});
+                }
+            });
+            page.evaluate("() => new Promise(r => setTimeout(() => r(confirm('Proceed?')), 0))", Value::Null, move |answer| {
+                check(answer == Ok(Value::Bool(true)) && *seen.borrow() == [("confirm".to_string(), "Proceed?".to_string())],
+                    "automation: on(Dialog) and Dialog::accept()", (&answer, seen.borrow()));
+                listening.remove_listener(id);
+                next();
+            });
+        }),
+        Box::new(|page, next| {
+            // The only listener gone (wait_for_event's after its event, one
+            // removed, one cancelled): a dialog no longer holds the page.
+            let answered = Rc::new(Cell::new(false));
+            let (seen, after) = (answered.clone(), page.clone());
+            page.wait_for_event(EventKind::Dialog, |_| true, move |event| {
+                if let PageEvent::Dialog(dialog) = event {
+                    dialog.accept(None, |_| {});
+                }
+                seen.set(true);
+            });
+            let cancelled = page.wait_for_event(EventKind::FileChooser, |_| true, |_| {});
+            page.remove_listener(cancelled);
+            page.evaluate("() => { setTimeout(() => alert('one'), 0); }", Value::Null, move |_| {
+                when(move || answered.get(), 100, move |got| {
+                    check(got, "automation: wait_for_event(Dialog) returns", ());
+                    let result = Rc::new(RefCell::new(None));
+                    let into = result.clone();
+                    after.evaluate("() => { alert('two'); const c = confirm('three'); return 'after ' + c; }", Value::Null, move |answer| {
+                        *into.borrow_mut() = Some(answer);
+                    });
+                    let chosen = Rc::new(RefCell::new(None));
+                    let (into, choosing) = (chosen.clone(), after.clone());
+                    let polled = result.clone();
+                    when(move || polled.borrow().is_some(), 100, move |_| {
+                        let answer = result.borrow_mut().take();
+                        check(answer == Some(Ok(Value::from("after false"))), "automation: a dialog after the last listener went is dismissed", &answer);
+                        let clicking = choosing.clone();
+                        choosing.evaluate("() => { const i = document.querySelector('#upload'); window.__closed = null; i.oncancel = () => window.__closed = 'cancel'; i.onchange = () => window.__closed = 'change'; }", Value::Null, move |_| {
+                            clicking.locator("#upload").click(|_| {});
+                            let asking = clicking.clone();
+                            poll_value(asking, "() => window.__closed", 100, move |answer| {
+                                *into.borrow_mut() = Some(answer);
+                            });
+                        });
+                        let polled = chosen.clone();
+                        when(move || polled.borrow().is_some(), 150, move |_| {
+                            let answer = chosen.borrow_mut().take();
+                            check(answer.as_ref().is_some_and(|a| !a.is_null()), "automation: a file chooser after its listener was cancelled is not held", &answer);
+                            next();
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(move |page, next| {
+            let routed = Rc::new(RefCell::new(None));
+            let seen = routed.clone();
+            let fetching = page.clone();
+            page.route(
+                "**/data.json",
+                move |route, request| {
+                    *seen.borrow_mut() = Some(format!("{} {}", request.method(), request.url()));
+                    route.fulfill_json(&Value::object([("from", "route".into())]), |_| {});
+                },
+                move |set| {
+                    check(set.is_ok(), "automation: route()", &set);
+                    fetching.evaluate("() => fetch('data.json').then(r => r.json())", Value::Null, move |got| {
+                        check(got.as_ref().is_ok_and(|got| got["from"].as_str() == Some("route")), "automation: route() and Route::fulfill_json()", &got);
+                        check(routed.borrow().as_deref() == Some(&format!("GET {data_url}")[..]), "automation: the route's Request", routed.borrow());
+                        next();
+                    });
+                },
+            );
+        }),
+        Box::new(|page, next| {
+            let calling = page.clone();
+            page.expose_function(
+                "add",
+                |args| Ok(Value::from(args.iter().filter_map(Value::as_f64).sum::<f64>())),
+                move |_| {
+                    calling.evaluate("() => add(20, 22)", Value::Null, move |total| {
+                        check(total.as_ref().is_ok_and(|t| t.as_i64() == Some(42)), "automation: expose_function()", &total);
+                        next();
+                    });
+                },
+            );
+        }),
+        Box::new(|page, next| {
+            let (clock, reading) = (page.clock(), page.clone());
+            page.clock().install(Some(0.0.into()), move |_| {
+                clock.set_fixed_time(5000.0, move |_| {
+                    reading.evaluate("() => Date.now()", Value::Null, move |now| {
+                        check(now.as_ref().is_ok_and(|n| n.as_i64() == Some(5000)), "automation: Clock::set_fixed_time()", &now);
+                        next();
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let list = page.locator("ul");
+            let expecting = list.clone();
+            list.aria_snapshot(move |snapshot| {
+                check(snapshot.as_ref().is_ok_and(|s| s.contains("- listitem: one")), "automation: aria_snapshot()", &snapshot);
+                expect(&expecting).to_match_aria_snapshot("- list:\n  - listitem: one\n  - listitem: two\n  - listitem: three", move |matched| {
+                    check(matched.is_ok(), "automation: to_match_aria_snapshot()", &matched);
+                    next();
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let (jpeg, pixels, element, boxed) = (page.clone(), page.clone(), page.locator("#go"), page.locator("#go"));
+            page.screenshot(Value::Null, move |png| {
+                check(png.as_ref().is_ok_and(|png| png.starts_with(b"\x89PNG\r\n\x1a\n")), "automation: screenshot()", png.as_ref().map(Vec::len));
+                jpeg.screenshot(Value::object([("type", "jpeg".into()), ("quality", 60.into())]), move |jpeg| {
+                    check(jpeg.as_ref().is_ok_and(|jpeg| jpeg.starts_with(b"\xff\xd8\xff")), "automation: screenshot(type jpeg)", jpeg.as_ref().map(Vec::len));
+                    pixels.screenshot_pixels(Value::Null, move |pixels| {
+                        check(pixels.as_ref().is_ok_and(|p| (p.width, p.height, p.stride, p.data.len()) == (1280, 800, 1280 * 4, 1280 * 800 * 4)),
+                            "automation: screenshot_pixels()", pixels.as_ref().map(|p| (p.width, p.height)));
+                        element.screenshot_pixels(Value::Null, move |shot| {
+                            let size = shot.as_ref().map(|p| (p.width, p.height)).ok();
+                            boxed.bounding_box(move |found| {
+                                // The box's enclosing pixels, as screenshotter.ts takes an element's.
+                                let enclosing = found.ok().flatten().map(|b| (((b.x + b.width).ceil() - b.x.floor()) as u32, ((b.y + b.height).ceil() - b.y.floor()) as u32));
+                                check(size.is_some() && size == enclosing, "automation: Locator::screenshot_pixels() is the element's", (size, enclosing));
+                                next();
+                            });
+                        });
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            page.wait_for_event(EventKind::Worker, |_| true, move |event| {
+                let PageEvent::Worker(worker) = event else { return next() };
+                let closed = Rc::new(Cell::new(false));
+                let seen = closed.clone();
+                worker.on_close(move |_| seen.set(true));
+                worker.evaluate("self.x * 6", Value::Null, move |value| {
+                    check(value.as_ref().is_ok_and(|v| v.as_i64() == Some(42)), "automation: the Worker event, Worker::evaluate()", &value);
+                    let _ = closed;
+                    next();
+                });
+            });
+            page.evaluate("() => { window.w = new Worker(URL.createObjectURL(new Blob(['self.x = 7']))); }", Value::Null, |_| {});
+        }),
+        Box::new(|page, next| {
+            let (tracing, clicking) = (page.tracing(), page.locator("#go"));
+            let zip = std::env::temp_dir().join(format!("zebkit-rust-trace-{}.zip", std::process::id()));
+            page.tracing().start(None, None, true, false, move |started| {
+                check(started.is_ok(), "automation: Tracing::start()", &started);
+                clicking.click(move |_| {
+                    let path = zip.to_string_lossy().into_owned();
+                    tracing.stop(Some(&path), move |written| {
+                        let head = std::fs::read(&zip).map(|bytes| bytes[..2.min(bytes.len())].to_vec()).unwrap_or_default();
+                        let _ = std::fs::remove_file(&zip);
+                        check(written.as_ref().is_ok_and(Option::is_some) && head == b"PK", "automation: Tracing::stop() writes the zip", &written);
+                        next();
+                    });
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let messages = Rc::new(RefCell::new(Vec::new()));
+            let seen = messages.clone();
+            page.on(EventKind::Console, move |event| {
+                if let PageEvent::Console(message) = event {
+                    seen.borrow_mut().push((message.kind().to_string(), message.text().to_string()));
+                }
+            });
+            page.evaluate("() => console.warn('from Rust', 7)", Value::Null, move |_| {
+                when(move || messages.borrow().iter().any(|(kind, text)| kind == "warning" && text == "from Rust 7"), 100, move |found| {
+                    check(found, "automation: on(Console), ConsoleMessage", ());
+                    next();
+                });
+            });
+        }),
+        Box::new(|page, next| {
+            let chosen = Rc::new(Cell::new(false));
+            let seen = chosen.clone();
+            let files = page.clone();
+            let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml").to_string_lossy().into_owned();
+            let id = page.on(EventKind::FileChooser, move |event| {
+                if let PageEvent::FileChooser(chooser) = event {
+                    seen.set(chooser.is_multiple());
+                    chooser.set_files(&[&file], |_| {});
+                }
+            });
+            page.locator("#upload").click(move |_| {
+                when(move || chosen.get(), 100, move |multiple| {
+                    let removing = files.clone();
+                    files.evaluate("() => [...document.querySelector('#upload').files].map(f => f.name)", Value::Null, move |names| {
+                        check(multiple && names.as_ref().is_ok_and(|n| n[0].as_str() == Some("Cargo.toml")), "automation: on(FileChooser), FileChooser::set_files()", &names);
+                        removing.remove_listener(id);
+                        next();
+                    });
+                });
+            });
+        }),
+        Box::new(move |page, next| {
+            let link = format!("() => {{ const a = document.createElement('a'); a.href = {}; a.download = 'report.bin'; document.body.append(a); a.click(); }}", zebkit::json::quote(&download_url));
+            page.wait_for_event(EventKind::Download, |_| true, move |event| {
+                let PageEvent::Download(download) = event else { return next() };
+                check(download.suggested_filename() == "report.bin" && download.url().ends_with("/download.bin"), "automation: the Download event", (download.suggested_filename(), download.url()));
+                let failing = download.clone();
+                download.path(move |path| {
+                    let body = path.as_ref().ok().cloned().flatten().and_then(|path| std::fs::read(path).ok());
+                    check(body.as_deref() == Some(&b"zebkit download"[..]), "automation: Download::path() has the file", &path);
+                    failing.failure(move |failure| {
+                        check(failure == Ok(None), "automation: Download::failure() of a finished one", &failure);
+                        next();
+                    });
+                });
+            });
+            page.evaluate(&link, Value::Null, |_| {});
+        }),
+        Box::new(move |page, next| {
+            let mine = page.clone();
+            auto::new_context(Value::object([("viewport", Value::object([("width", 640.into()), ("height", 480.into())])), ("userAgent", "zebkit-rust-context".into())]), move |context| {
+                let Ok(context) = context else {
+                    check(false, "automation: new_context()", context.err());
+                    return next();
+                };
+                check(!context.id().is_empty(), "automation: BrowserContext::id()", context.id());
+                let held = context.clone();
+                context.new_page(move |other| {
+                    let Ok(other) = other else {
+                        check(false, "automation: BrowserContext::new_page()", other.err());
+                        return next();
+                    };
+                    other.evaluate("() => navigator.userAgent", Value::Null, move |agent| {
+                        check(agent.as_ref().is_ok_and(|a| a.as_str() == Some("zebkit-rust-context")), "automation: new_context(userAgent)", &agent);
+                        let cookie = Value::Array(vec![Value::object([("name", "only".into()), ("value", "x".into()), ("url", format!("{context_base}/").into())])]);
+                        let reading = held.clone();
+                        held.add_cookies(cookie, move |_| {
+                            let url = format!("{context_base}/");
+                            let url2 = url.clone();
+                            let asking = reading.clone();
+                            asking.cookies(&[&url], move |theirs| {
+                                mine.cookies(&[&url2], move |ours| {
+                                    let has = |list: &Result<Vec<Value>, zebkit::Error>| list.as_ref().is_ok_and(|l| l.iter().any(|c| c["name"].as_str() == Some("only")));
+                                    check(has(&theirs) && !has(&ours) && reading.pages().len() == 1, "automation: a context's cookies are its own", ());
+                                    reading.close(move |closed| {
+                                        check(closed.is_ok(), "automation: BrowserContext::close()", &closed);
+                                        next();
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        }),
+        // 3dfb35a: a dialog a native click opens while the application holds
+        // the view's dialogs stays the application's, told to the automation
+        // client too; the click is done once the application has answered.
+        Box::new(|_, next| {
+            let Ok(page) = auto::Page::open(320, 200) else {
+                check(false, "automation: a page for the held dialog", ());
+                return next();
+            };
+            let told = Rc::new(RefCell::new(Vec::new()));
+            let seen = told.clone();
+            page.on_protocol_event(move |event, params| {
+                if event == "BrowserContext.dialog" {
+                    seen.borrow_mut().push(params["message"].as_str().unwrap_or_default().to_string());
+                }
+            });
+            let held = Rc::new(Cell::new(false));
+            let (answering, holding) = (page.view().clone(), held.clone());
+            page.view().on_dialog(move |dialog| {
+                holding.set(dialog.held);
+                let (view, id) = (answering.clone(), dialog.id);
+                zebkit::after(Duration::from_millis(100), move || {
+                    view.respond_dialog(id, true, None);
+                });
+            });
+            let (clicking, reading, closing) = (page.locator("#confirm"), page.locator("#out"), page.view().clone());
+            page.set_content("<button id=confirm onclick=\"out.textContent = confirm('Proceed?') ? 'yes' : 'no'\">Confirm</button><p id=out></p>", Value::Null, move |_| {
+                clicking.click(move |clicked| {
+                    reading.text_content(move |text| {
+                        check(clicked.is_ok() && held.get() && text == Ok(Some("yes".to_string())) && *told.borrow() == ["Proceed?"],
+                            "automation: a click's dialog held for the application, told to the client", (&clicked, held.get(), &text, told.borrow()));
+                        closing.close();
+                        next();
+                    });
+                });
+            });
+        }),
+        Box::new(|_, next| {
+            auto::listen(0, move |url| {
+                check(url.as_ref().is_ok_and(|u| u.starts_with("ws://127.0.0.1:") && u.rsplit('/').next().is_some_and(|t| t.len() >= 32)),
+                    "automation: listen() serves Playwright's protocol, with its token", &url);
+                next();
+            });
+        }),
+    ];
+    let (closing, requests_seen, finished_seen) = (page.clone(), requests.clone(), finished.clone());
+    chain(page, steps, move || {
+        check(requests_seen.borrow().iter().any(|r| r.starts_with("GET ") && r.ends_with("/automation.html")), "automation: on(Request)", requests_seen.borrow().len());
+        check(finished_seen.borrow().iter().any(|url| url.ends_with("/automation.html")), "automation: on(RequestFinished) names the request", finished_seen.borrow().len());
+        check(Text::regex("a/b", "i") != Text::from("x"), "automation: Text", ());
+        closing.view().close();
+        AUTOMATION_DONE.with(|done| done.set(true));
+    });
+}
+
+/// `expression`'s value once it is not null, polling, or null after `tries`.
+fn poll_value(page: zebkit::automation::Page, expression: &'static str, tries: u32, then: impl FnOnce(zebkit::json::Value) + 'static) {
+    let again = page.clone();
+    page.evaluate(expression, zebkit::json::Value::Null, move |value| {
+        let value = value.unwrap_or_default();
+        if !value.is_null() || tries == 0 {
+            then(value);
+            return;
+        }
+        zebkit::after(Duration::from_millis(30), move || poll_value(again, expression, tries - 1, then));
+    });
+}
+
+/// Calls `then(true)` once `condition` holds, polling, or `then(false)` after `tries`.
+fn when(condition: impl Fn() -> bool + 'static, tries: u32, then: impl FnOnce(bool) + 'static) {
+    if condition() || tries == 0 {
+        then(condition());
+        return;
+    }
+    zebkit::after(Duration::from_millis(30), move || when(condition, tries - 1, then));
+}
+
+/// Find in page (3dfb35a): the count and the active match, next and
+/// backward, the last result, stopping; and a download's report: complete,
+/// with the saved path.
+fn find_and_downloads(port: u16) {
+    use zebkit::page::{FindResult, FindStop, FIND_BACKWARD};
+    let view = View::new(None, 400, 300);
+    let results = Rc::new(RefCell::new(Vec::<FindResult>::new()));
+    {
+        let results = results.clone();
+        view.on_find(move |result| results.borrow_mut().push(result.clone()));
+    }
+    let reports = Rc::new(RefCell::new(Vec::<zebkit::json::Value>::new()));
+    {
+        let reports = reports.clone();
+        view.on_download_progress(move |json| reports.borrow_mut().push(zebkit::json::Value::parse(json).unwrap_or_default()));
+    }
+    let save = std::env::temp_dir().join(format!("zebkit-rust-download-{}.bin", std::process::id()));
+    {
+        let save = save.to_string_lossy().into_owned();
+        view.on_download(move |request| {
+            let saved = request.try_save(&save);
+            check(saved.is_ok(), "downloads: DownloadRequest::try_save", &saved);
+        });
+    }
+    let page = format!("http://127.0.0.1:{port}/page.html");
+    let ready = view.clone();
+    let mut once = Some((results, reports, save));
+    view.on_load(move |event, _| {
+        if event != LoadEvent::Finished {
+            return;
+        }
+        let Some((results, reports, save)) = once.take() else { return };
+        ready.clear_load_handler();
+        let finding = ready.clone();
+        ready.evaluate("document.body.innerHTML = '<p>apple pie</p><p>apple tart</p><p>an apple</p>'; true", move |_| {
+            let refused = finding.find("app\0le", 0);
+            check(refused.as_ref().is_err_and(|e| e.message().contains("NUL")), "find: text with a NUL is an error", &refused);
+            let first = finding.find("apple", 0).unwrap_or(0);
+            let (seen, view) = (results.clone(), finding.clone());
+            poll(move || seen.borrow().iter().any(|r| r.request_id == first && r.final_update), 100, move || {
+                let last = results.borrow().iter().rev().find(|r| r.request_id == first).cloned();
+                check(first > 0 && last.as_ref().is_some_and(|r| r.matches == 3 && r.active_match == 1 && r.text == "apple" && r.rect.is_some()),
+                    "find: three matches, the first active", &last);
+                let back = view.find("apple", FIND_BACKWARD).unwrap_or(0);
+                let (results, view) = (results.clone(), view.clone());
+                poll({ let results = results.clone(); move || results.borrow().iter().any(|r| r.request_id == back && r.final_update) }, 100, move || {
+                    let result = view.find_result();
+                    check(result.as_ref().is_some_and(|r| r.request_id == back && r.active_match == 3 && !r.stopped),
+                        "find: backward goes around; find_result() is the last", &result);
+                    view.stop_finding(FindStop::Keep);
+                    let stopped = view.clone();
+                    poll(move || stopped.find_result().is_some_and(|r| r.stopped), 100, move || {
+                        check(view.find_result().is_some_and(|r| r.stopped) && view.find("", 0) == Ok(0), "find: stop_finding(); empty text finds nothing", view.find_result());
+                        view.clear_find_handler();
+                        downloads(view, port, reports, save);
+                    });
+                });
+            });
+        });
+    });
+    view.load_url(&page);
+}
+
+fn downloads(view: View, port: u16, reports: Rc<RefCell<Vec<zebkit::json::Value>>>, save: std::path::PathBuf) {
+    view.load_url(&format!("http://127.0.0.1:{port}/download.bin"));
+    let seen = reports.clone();
+    poll(move || seen.borrow().iter().any(|r| r["outcome"].as_str() == Some("complete")), 200, move || {
+        let whole = reports.borrow().iter().find(|r| r["outcome"].as_str() == Some("complete")).cloned().unwrap_or_default();
+        let saved = whole["savedPath"].as_str().map(str::to_string).unwrap_or_default();
+        check(whole["state"].as_str() == Some("complete") && whole["error"].is_null() && std::fs::read(&saved).ok().as_deref() == Some(&b"zebkit download"[..]),
+            "downloads: complete, with savedPath and no error", &whole);
+        check(reports.borrow().iter().filter(|r| r["outcome"].as_str() == Some("in-progress")).all(|r| r["savedPath"].is_null()),
+            "downloads: no savedPath while in progress", ());
+        let _ = std::fs::remove_file(&save);
+        view.close();
+        FIND_DONE.with(|done| done.set(true));
+    });
+}
+
+/// Calls `then` once `condition` holds, polling; a failed check after `tries`.
+/// The C API's newer functions: a Call kept and answered later, from another
+/// thread; one dropped unanswered (zebkit_call_free); the _async forms; the
+/// off-screen constructor's error; a process gone; a refused user agent
+/// override answered once; the export callback of an off-screen view.
+fn new_api() {
+    let missing = std::env::temp_dir().join("zebkit-rust-not-there").join("nothing.txt");
+    let told = Rc::new(Cell::new(0));
+    let (one, two) = (told.clone(), told.clone());
+    zebkit::system::open_external_async("javascript:alert(1)", move |result| {
+        check(result.is_err(), "system::open_external_async(): a javascript: URL refused", &result);
+        one.set(one.get() + 1);
+    });
+    zebkit::system::show_in_folder_async(&missing.to_string_lossy(), move |result| {
+        check(result.is_err(), "system::show_in_folder_async(): a file that is not there", &result);
+        two.set(two.get() + 1);
+    });
+    check(told.get() == 0, "the _async forms tell after they return", told.get());
+
+    let context = zebkit::Context::new().expect("a context");
+    context.close();
+    let refused = context.new_offscreen_view(None, 10, 10, 1.0);
+    check(refused.as_ref().is_err_and(|error| !error.message().is_empty()), "new_offscreen_view(): the engine's error",
+        refused.as_ref().err().map(|error| error.message().to_string()));
+
+    let offscreen = View::new_offscreen(None, 40, 40, 1.0).expect("an off-screen view");
+    let exported = Rc::new(RefCell::new(Vec::new()));
+    let sink = exported.clone();
+    offscreen.export_native_window(move |handle| sink.borrow_mut().push(handle));
+
+    let view = View::new(None, 320, 240);
+    let answers = Rc::new(Cell::new(0));
+    let count = answers.clone();
+    // The engine's rule, in every binding: invalid options are taken (true)
+    // and told once to done, after the call returns; false, done never
+    // called, only for a closed view.
+    let returned = Rc::new(Cell::new(false));
+    let after_return = returned.clone();
+    let queued = view.set_user_agent_override(r#"{"userAgent":42}"#, move |result| {
+        check(result.is_err() && after_return.get(), "set_user_agent_override(): an invalid one is an error, told after it returns", &result);
+        count.set(count.get() + 1);
+    });
+    returned.set(true);
+    check(queued, "set_user_agent_override(): invalid options are taken (true)", queued);
+    let (returned, nul_answers) = (Rc::new(Cell::new(false)), answers.clone());
+    let after_return = returned.clone();
+    let nul = view.set_user_agent_override("{\"userAgent\":\"a\0b\"}", move |result| {
+        check(result.as_ref().is_err_and(|e| e.message().contains("NUL")) && after_return.get(), "set_user_agent_override(): a NUL is an error, told after it returns", &result);
+        nul_answers.set(nul_answers.get() + 10);
+    });
+    returned.set(true);
+    check(nul, "set_user_agent_override(): options with a NUL are taken (true)", nul);
+    let closed = View::new(None, 20, 20);
+    closed.close();
+    let closing = closed.clone();
+    poll(move || closing.is_closed(), 200, move || {
+        let refused = closed.set_user_agent_override(r#"{"userAgent":"x"}"#, |_| check(false, "set_user_agent_override(): a closed view calls done", ()));
+        check(!refused, "set_user_agent_override(): a closed view is false", refused);
+    });
+    view.grant("*", Allow::APP, None);
+    let kept: Rc<RefCell<Vec<zebkit::Call>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = kept.clone();
+    view.bind("later", move |call| sink.borrow_mut().push(call));
+    view.bind("dropped", drop);
+    let gone = Rc::new(RefCell::new(String::new()));
+    let sink = gone.clone();
+    view.on_process_gone(move |json| *sink.borrow_mut() = json.to_string());
+    view.on_download_result(|_| {});
+    view.on_responsiveness(|_| {});
+    let port = serve("<title>new api</title>");
+    view.load_url(&format!("http://127.0.0.1:{port}/"));
+    let (held, view2) = (kept.clone(), view.clone());
+    poll(move || view2.title().as_deref() == Some("new api"), 500, move || {
+        let page = view.clone();
+        view.evaluate("window.answer = zebkit.app.later(20, 1).then(v => 'later ' + v); \
+                       zebkit.app.dropped().then(() => 'resolved', e => 'rejected: ' + e.message)", move |dropped| {
+            check(dropped.as_deref() == Ok("\"rejected: the application dropped the call\""),
+                "a Call dropped unanswered: zebkit_call_free", &dropped);
+            let Some(call) = held.borrow_mut().pop() else {
+                check(false, "View::bind: the Call kept", ());
+                NEW_API_DONE.with(|done| done.set(true));
+                return;
+            };
+            let sum = call.args().iter().filter_map(zebkit::json::Value::as_i64).sum::<i64>();
+            // Send: answered from another thread.
+            std::thread::spawn(move || call.resolve(&sum.to_string())).join().unwrap();
+            let page2 = page.clone();
+            page.evaluate("window.answer", move |answer| {
+                check(answer.as_deref() == Ok("\"later 21\""), "a Call answered later, from another thread", &answer);
+                page2.load_url("chrome://crash");
+                let page3 = page2.clone();
+                let watched = gone.clone();
+                poll(move || !watched.borrow().is_empty(), 1000, move || {
+                    check(gone.borrow().contains("\"reason\":\"crashed\"") && gone.borrow().contains("exitCode"),
+                        "on_process_gone(): crashed", gone.borrow().clone());
+                    check(answers.get() == 11, "set_user_agent_override(): answered exactly once each", answers.get());
+                    check(*exported.borrow() == [None], "export_native_window(): an off-screen view has none",
+                        exported.borrow().clone());
+                    check(told.get() == 2, "the _async forms told once each", told.get());
+                    page3.clear_process_gone_handler();
+                    page3.clear_download_result_handler();
+                    page3.clear_responsiveness_handler();
+                    page3.close();
+                    offscreen.close();
+                    NEW_API_DONE.with(|done| done.set(true));
+                });
+            });
+        });
+    });
+}
+
+fn poll(condition: impl Fn() -> bool + 'static, tries: u32, then: impl FnOnce() + 'static) {
+    if condition() {
+        then();
+    } else if tries == 0 {
+        check(false, "a condition held in time", ());
+        FIND_DONE.with(|done| done.set(true));
+        NEW_API_DONE.with(|done| done.set(true));
+    } else {
+        zebkit::after(Duration::from_millis(30), move || poll(condition, tries - 1, then));
+    }
+}
+
 /// The engine's part, from inside run(); quits when it is done.
 fn engine(page_port: u16) {
     check(zebkit::is_headless(), "headless", ());
@@ -223,6 +977,9 @@ fn engine(page_port: u16) {
     contexts();
     media();
     handlers();
+    automation_api(serve_pages());
+    find_and_downloads(serve_pages());
+    new_api();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -307,7 +1064,7 @@ fn engine(page_port: u16) {
     let finished_navigation = navigation.clone();
     navigation.on_navigation_result(move |json| {
         if !json.contains("\"phase\":\"response\"") { return; }
-        check(json.contains("\"action\":\"cancel\"") && json.contains("answered"),
+        check(json.contains("\"state\":\"cancelled\"") && json.contains("answered"),
             "navigation: asynchronous outcome", json);
         finished_navigation.clear_navigation_result_handler();
         finished_navigation.close();
@@ -416,10 +1173,13 @@ fn engine(page_port: u16) {
 /// An off-screen view: its frames, shared memory or an IOSurface, and a
 /// click sent to it.
 fn offscreen() {
-    let Some(view) = View::new_offscreen(Some("rs://test/offscreen.html"), 200, 100, 2.0) else {
-        check(false, "View::new_offscreen", "none");
-        OFFSCREEN_DONE.with(|done| done.set(true));
-        return;
+    let view = match View::new_offscreen(Some("rs://test/offscreen.html"), 200, 100, 2.0) {
+        Ok(view) => view,
+        Err(error) => {
+            check(false, "View::new_offscreen", error);
+            OFFSCREEN_DONE.with(|done| done.set(true));
+            return;
+        }
     };
     check(view.is_offscreen(), "View::new_offscreen", ());
     // Pixels this process can read, on every system: a GPU buffer would be
@@ -501,7 +1261,7 @@ fn handlers() {
         });
     }
     let offscreen = View::new_offscreen(Some("rs://test/offscreen.html"), 100, 50, 1.0);
-    let Some(offscreen) = offscreen else {
+    let Ok(offscreen) = offscreen else {
         check(false, "handlers: an off-screen view", "none");
         HANDLERS_DONE.with(|done| done.set(true));
         return;
@@ -514,7 +1274,7 @@ fn handlers() {
             let _ = &keep;
             counted.set(counted.get() + 1);
             // Removing itself while it runs: it is not put back.
-            stopping.stop_frames();
+            stopping.clear_frame_handler();
         });
     }
     when_true(offscreen.clone(), "document.readyState == 'complete'", 200, move |offscreen| {
@@ -549,7 +1309,7 @@ fn contexts() {
             return;
         }
     };
-    check(context.new_offscreen_view(None, 100, 100, 1.0).is_some(), "an off-screen view in a context", ());
+    check(context.new_offscreen_view(None, 100, 100, 1.0).is_ok(), "an off-screen view in a context", ());
     let Some(inside) = context.new_view(Some("rs://test/context.html"), 320, 240) else {
         check(false, "Context::new_view", "none");
         CONTEXTS_DONE.with(|done| done.set(true));
@@ -580,7 +1340,8 @@ fn contexts() {
             });
         });
     });
-    std::mem::forget(context);
+    // A context lives until it is closed; this one, until the engine stops.
+    let _ = context;
 }
 
 fn editing(view: View) {
@@ -640,13 +1401,13 @@ fn page(view: View) {
     let png_path = std::env::temp_dir().join(format!("zebkit-rust-shot-{}.png", std::process::id()));
     let path_text = png_path.to_string_lossy().into_owned();
     let pixels_page = shots.clone();
-    shots.screenshot(&path_text, move |written| {
+    shots.screenshot(zebkit::json::Value::object([("path", path_text.as_str().into())]), move |written| {
         let png = std::fs::read(&png_path).unwrap_or_default();
         let _ = std::fs::remove_file(&png_path);
-        pixels_page.screenshot_pixels("{}", move |pixels| {
+        pixels_page.screenshot_pixels(zebkit::json::Value::Null, move |pixels| {
             let decoded = services::decode_image(&png);
             let same = matches!((&pixels, &decoded), (Ok(p), Ok(i))
-                if p.width == i.width && p.height == i.height && p.stride == p.width as usize * 4 && p.data == i.rgba);
+                if p.width == i.width && p.height == i.height && p.stride == p.width as usize * 4 && p.data == &i.rgba[..]);
             check(
                 written.is_ok() && same,
                 "automation: the screenshot's pixels are the PNG's",
@@ -674,7 +1435,7 @@ fn page_dialogs(view: View) {
         check(answer.as_deref() == Ok("true"), "page: answered OK", &answer);
         let closing = printing.clone();
         printing.print_to_pdf(r#"{"printBackground": true}"#, move |pdf| {
-            check(pdf.as_ref().is_ok_and(|bytes| bytes.starts_with(b"%PDF-")), "page: printed to PDF", pdf.as_ref().map(Vec::len));
+            check(pdf.as_ref().is_ok_and(|bytes| bytes.starts_with(b"%PDF-")), "page: printed to PDF", pdf.as_ref().map(|bytes| bytes.len()));
             closing.close();
             OFFSCREEN_DONE.with(|done| done.set(true));
             // Keep focus-sensitive fixtures sequential: this test explicitly
@@ -710,7 +1471,7 @@ fn media() {
             check(list.contains(r#""video":"vp9""#) && list.contains(r#""kind":"file""#), "media: the video is listed", &list);
             let id = list.split(r#""id":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or("").to_string();
             let path = std::env::temp_dir().join(format!("zebkit-rust-media-{}.webm", std::process::id()));
-            let capture = page.media_capture_start(&id, &path, "{}");
+            let capture = page.media_capture(&id, &path, "{}");
             check(capture.is_ok(), "media: the capture starts", capture.as_ref().err());
             let Ok(capture) = capture else {
                 MEDIA_DONE.with(|done| done.set(true));
@@ -831,6 +1592,13 @@ fn script_and_cdp(view: View) {
         return;
     };
     check(cdp::port() == Some(port), "CDP port", cdp::port());
+    cdp::listen_async(None, port, move |result| {
+        check(result.as_ref().is_ok_and(|(same, url)| *same == port && url.starts_with("ws://")),
+            "cdp::listen_async(): the endpoint that runs", &result);
+    });
+    cdp::listen_async(None, port.wrapping_add(1), |result| {
+        check(result.is_err(), "cdp::listen_async(): another port while it runs is an error", &result);
+    });
     check(
         cdp::url().is_some_and(|url| url.starts_with(&format!("ws://127.0.0.1:{port}/devtools/browser/"))),
         "CDP browser URL",
@@ -848,7 +1616,7 @@ fn script_and_cdp(view: View) {
     fn wait(client: std::thread::JoinHandle<String>, view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
             || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get)
-            || !HANDLERS_DONE.with(Cell::get) {
+            || !HANDLERS_DONE.with(Cell::get) || !AUTOMATION_DONE.with(Cell::get) || !FIND_DONE.with(Cell::get) || !NEW_API_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

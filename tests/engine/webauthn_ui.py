@@ -3,20 +3,19 @@
 The C fixture deliberately binds its host interface to this origin to allow
 assertions via CDP. Production embedders must never grant such a bridge to
 untrusted pages. Pairing data/PINs are not printed or persisted by this test.
+
+    python3 tests/engine/webauthn_ui.py <webauthn host> [engine switches...]
 """
 import http.server
 import json
 import pathlib
-import os
-import re
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from cdp_page import Cdp
+from harness import Cdp, Engine, check, failures, finish, part  # noqa: E402
 
 
 class Fixture(http.server.BaseHTTPRequestHandler):
@@ -36,27 +35,18 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://localhost:{server.server_port}"
     with tempfile.TemporaryDirectory(prefix="zebkit-host-auth-") as directory:
-        logpath = pathlib.Path(directory) / "engine.log"
-        with logpath.open("w") as log:
-            arguments = [*sys.argv[2:], "--headless", "--disable-gpu", "--test-host-ui",
-                         f"--user-data-dir={directory}", "--remote-debugging-port=0", origin]
-            app = os.environ.get("ZEBKIT_WEBAUTHN_TEST_APP")
-            command = (["open", "-n", "-W", "--stdout", str(logpath), "--stderr", str(logpath),
-                        app, "--args", *arguments] if app else [sys.argv[1], *arguments])
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
-            cdp = None
-            try:
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline and process.poll() is None:
-                    match = re.search(r"ws://\S+", logpath.read_text())
-                    if match:
-                        cdp = Cdp(match[0])
-                        break
-                    time.sleep(.1)
-                assert cdp is not None, "fixture did not start"
-                target = next(t["targetId"] for t in cdp.call("Target.getTargets")["targetInfos"] if t["type"] == "page")
-                session = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        engine = Engine([sys.argv[1], *sys.argv[2:], "--headless", "--disable-gpu", "--test-host-ui",
+                         f"--user-data-dir={directory}"], page=origin)
+        cdp = target = None
+        try:
+            if not engine.url:
+                check(False, "the fixture serves CDP", engine.tail(20))
+                return finish()
+            cdp = Cdp(engine.url)
+            target = next(t["targetId"] for t in cdp.call("Target.getTargets")["targetInfos"] if t["type"] == "page")
+            session = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
 
+            with part('host receives origin-bound events; malformed, stale and duplicate actions reject; cancel completes', fatal=True):
                 def call(method, params=None):
                     return cdp.call(method, params, session=session)
 
@@ -80,7 +70,7 @@ def main():
                         event = state()
                         if event and (request is None or event["request"] == request) and ((event["state"] == "closed") == closed):
                             return event
-                        time.sleep(.05)
+                        time.sleep(.01)
                     raise AssertionError("expected host state did not arrive")
 
                 def start():
@@ -110,8 +100,8 @@ def main():
                 closed = wait_state(first["request"], closed=True)
                 assert closed["outcome"] == "cancelled"
                 assert evaluate("window.authResult") == "NotAllowedError"
-                print("ok host receives origin-bound events; malformed, stale and duplicate actions reject; cancel completes", flush=True)
 
+            with part('AbortSignal closes host state and old request tokens remain invalid', fatal=True):
                 second = start()
                 assert second["request"] != first["request"]
                 assert not action(first), "old request cannot act on new UI"
@@ -121,10 +111,10 @@ def main():
                 # settles: the two go to different processes.
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline and evaluate("window.authResult") == "pending":
-                    time.sleep(.05)
+                    time.sleep(.01)
                 assert evaluate("window.authResult") == "AbortError"
-                print("ok AbortSignal closes host state and old request tokens remain invalid", flush=True)
 
+            with part('navigation closes the host request and rejects later replies', fatal=True):
                 third = start()
                 call("Page.navigate", {"url": "about:blank"})
                 assert cdp.event("Page.loadEventFired", timeout=15)
@@ -132,37 +122,30 @@ def main():
                 assert cdp.event("Page.loadEventFired", timeout=15)
                 wait_state(third["request"], closed=True)
                 assert not action(third)
-                print("ok navigation closes the host request and rejects later replies", flush=True)
 
+            with part('removing the callback cancels active authentication and invalidates its operations', fatal=True):
                 fourth = start()
                 assert fourth["request"] != third["request"]
                 assert evaluate("zebkit.app.authenticationDetach()") is True
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline and evaluate("window.authResult") == "pending":
-                    time.sleep(.05)
+                    time.sleep(.01)
                 assert evaluate("window.authResult") == "NotAllowedError"
                 assert not action(fourth)
-                print("ok removing the callback cancels active authentication and invalidates its operations", flush=True)
-                print("all host authentication checks passed", flush=True)
-            except Exception:
-                print(logpath.read_text()[-5000:], file=sys.stderr)
-                raise
-            finally:
-                if cdp:
-                    try:
-                        cdp.call("Target.closeTarget", {"targetId": target})
-                    except (OSError, EOFError):
-                        pass
-                    cdp.sock.close()
-                process.terminate()
+        except Exception:  # noqa: BLE001
+            pass  # Said by its part; the rest needs it.
+        finally:
+            if cdp:
                 try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                    cdp.call("Target.closeTarget", {"targetId": target})
+                except (OSError, EOFError, RuntimeError, TimeoutError):
+                    pass
+                cdp.close()
+            engine.stop(bool(failures))
     server.shutdown()
     server.server_close()
+    return finish()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

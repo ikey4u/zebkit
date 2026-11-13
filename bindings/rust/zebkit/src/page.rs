@@ -26,6 +26,7 @@
 //! ```
 
 use crate::view::{call_slot, Slot};
+use crate::json::Value;
 use crate::{c_string, string_from, sys, take_string, Error, View};
 use std::os::raw::{c_char, c_uint, c_void};
 use std::rc::Rc;
@@ -95,7 +96,7 @@ pub struct Dialog {
 
 /// A drag the page started.
 #[derive(Debug, Clone)]
-pub struct Drag {
+pub struct Drag<'a> {
     /// What it carries, as JSON: `text`, `html`, `htmlBaseUrl`, `urls`
     /// (`url`, `title`), `files` (paths), `custom` (type to data),
     /// `fileContents` (`name`, `url`, `base64`).
@@ -106,13 +107,14 @@ pub struct Drag {
     pub x: f32,
     pub y: f32,
     /// Its picture, if the page gave one.
-    pub image: Option<DragImage>,
+    pub image: Option<DragImage<'a>>,
 }
 
-/// A drag's picture: BGRA premultiplied, `stride` bytes a row.
-#[derive(Debug, Clone)]
-pub struct DragImage {
-    pub pixels: Vec<u8>,
+/// A drag's picture: BGRA premultiplied, `stride` bytes a row; the
+/// engine's for as long as the function it is given to runs.
+#[derive(Debug, Clone, Copy)]
+pub struct DragImage<'a> {
+    pub pixels: &'a [u8],
     pub width: u32,
     pub height: u32,
     pub stride: usize,
@@ -142,9 +144,53 @@ pub enum FindStop {
     Activate,
 }
 
+/// A result of [`View::find`], as [`View::on_find`] and
+/// [`View::find_result`] give it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FindResult {
+    /// The [`View::find`] it answers.
+    pub request_id: i32,
+    pub text: String,
+    /// The matches so far.
+    pub matches: u32,
+    /// The active one, from 1; 0 for none.
+    pub active_match: u32,
+    /// The last result of its request: the counting is done.
+    pub final_update: bool,
+    /// The active match, in the view's CSS pixels.
+    pub rect: Option<crate::offscreen::Rect>,
+    /// The search has stopped (by [`View::stop_finding`], or its document went).
+    pub stopped: bool,
+    /// All of it, as the engine gave it.
+    pub json: String,
+}
+
+impl FindResult {
+    fn from_json(json: &str) -> FindResult {
+        let value = Value::parse(json).unwrap_or_default();
+        let number = |key: &str| value[key].as_f64().unwrap_or(0.0);
+        let rect = &value["rect"];
+        FindResult {
+            request_id: number("requestId") as i32,
+            text: value.text("text").unwrap_or_default(),
+            matches: number("matches") as u32,
+            active_match: number("activeMatch") as u32,
+            final_update: value["final"].as_bool().unwrap_or(false),
+            rect: rect.as_object().map(|_| crate::offscreen::Rect {
+                x: rect["x"].as_f64().unwrap_or(0.0) as i32,
+                y: rect["y"].as_f64().unwrap_or(0.0) as i32,
+                width: rect["width"].as_f64().unwrap_or(0.0) as i32,
+                height: rect["height"].as_f64().unwrap_or(0.0) as i32,
+            }),
+            stopped: value["stopped"].as_bool().unwrap_or(false),
+            json: json.to_string(),
+        }
+    }
+}
+
 type DialogFunction = dyn FnMut(&Dialog);
-type DialogClosedFunction = dyn FnMut(u64, bool, &str);
-type DragFunction = dyn FnMut(&Drag) -> bool;
+type DialogClosedFunction = dyn FnMut(u64, bool, Option<&str>);
+type DragFunction = dyn FnMut(&Drag<'_>) -> bool;
 
 #[derive(Default)]
 pub(crate) struct Slots {
@@ -152,7 +198,7 @@ pub(crate) struct Slots {
     on_dialog_closed: Slot<DialogClosedFunction>,
     on_drag_start: Slot<DragFunction>,
     on_drag_end: Slot<dyn FnMut(u32)>,
-    on_find: Slot<dyn FnMut(&str)>,
+    on_find: Slot<dyn FnMut(&FindResult)>,
 }
 
 impl Slots {
@@ -180,19 +226,27 @@ impl View {
         unsafe { sys::zebkit_view_on_dialog(raw, Some(on_dialog), self.page_data()) }
     }
 
-    /// Stops [`View::on_dialog`].
-    pub fn stop_dialogs(&self) {
+    /// Stops [`View::on_dialog`], including from inside it.
+    pub fn clear_dialog_handler(&self) {
         let Some(raw) = self.raw() else { return };
         unsafe { sys::zebkit_view_on_dialog(raw, None, std::ptr::null_mut()) }
         self.inner.page.on_dialog.set(None);
     }
 
     /// Calls `function(id, accepted, user_input)` when a dialog closes,
-    /// however it was answered.
-    pub fn on_dialog_closed<F: FnMut(u64, bool, &str) + 'static>(&self, function: F) {
+    /// however it was answered: `user_input` is the prompt's text, `""` for
+    /// another dialog, and `None` only when the engine gives none.
+    pub fn on_dialog_closed<F: FnMut(u64, bool, Option<&str>) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
         self.inner.page.on_dialog_closed.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_dialog_closed(raw, Some(on_dialog_closed), self.page_data()) }
+    }
+
+    /// Stops [`View::on_dialog_closed`], including from inside it.
+    pub fn clear_dialog_closed_handler(&self) {
+        let Some(raw) = self.raw() else { return };
+        unsafe { sys::zebkit_view_on_dialog_closed(raw, None, std::ptr::null_mut()) }
+        self.inner.page.on_dialog_closed.set(None);
     }
 
     pub fn set_dialog_policy(&self, policy: DialogPolicy) {
@@ -226,8 +280,32 @@ impl View {
         }
     }
 
-    /// The open dialogs, as a JSON array (`id`, `type`, `message`,
-    /// `defaultPrompt`, `url`, `isReload`).
+    /// The open dialogs, oldest first (each `held`).
+    pub fn dialogs(&self) -> Vec<Dialog> {
+        let list = Value::parse(&self.dialogs_json()).unwrap_or_default();
+        list.as_array()
+            .unwrap_or_default()
+            .iter()
+            .map(|dialog| Dialog {
+                id: dialog["id"].as_f64().unwrap_or(0.0) as u64,
+                kind: match dialog["type"].as_str().unwrap_or_default() {
+                    "confirm" => DialogType::Confirm,
+                    "prompt" => DialogType::Prompt,
+                    "beforeunload" => DialogType::BeforeUnload,
+                    "print" => DialogType::Print,
+                    _ => DialogType::Alert,
+                },
+                message: dialog.text("message").unwrap_or_default(),
+                default_prompt: dialog.text("defaultPrompt").unwrap_or_default(),
+                url: dialog.text("url").unwrap_or_default(),
+                is_reload: dialog["isReload"].as_bool().unwrap_or(false),
+                held: true,
+            })
+            .collect()
+    }
+
+    /// The open dialogs, as the engine gives them: a JSON array (`id`,
+    /// `type`, `message`, `defaultPrompt`, `url`, `isReload`).
     pub fn dialogs_json(&self) -> String {
         let Some(raw) = self.raw() else { return "[]".to_string() };
         unsafe { take_string(sys::zebkit_view_dialogs(raw)) }.unwrap_or_else(|| "[]".to_string())
@@ -245,10 +323,16 @@ impl View {
     /// and shadow tree, all matches highlighted, the active one distinctly.
     /// The same text again goes to the next match ([`FIND_BACKWARD`]: the
     /// previous). Returns the request's number, which its results carry as
-    /// `requestId`; 0 for empty text or a closed view.
-    pub fn find(&self, text: &str, flags: u32) -> i32 {
-        let Some(raw) = self.raw() else { return 0 };
-        unsafe { sys::zebkit_view_find(raw, c_string(text).as_ptr(), flags) }
+    /// `requestId`; 0 for empty text, which stops the search. An error for
+    /// a closed view or text with a NUL, which the engine cannot be given.
+    pub fn find(&self, text: &str, flags: u32) -> Result<i32, Error> {
+        let Some(raw) = self.raw() else { return Err(Error::new("find: the view is closed")) };
+        let Ok(text) = std::ffi::CString::new(text) else { return Err(Error::new("find: the text holds a NUL")) };
+        let request = unsafe { sys::zebkit_view_find(raw, text.as_ptr(), flags) };
+        if request == 0 && !text.as_bytes().is_empty() {
+            return Err(Error::new("find: the engine refused it (the view has gone)"));
+        }
+        Ok(request)
     }
 
     /// Stops the search and clears its highlights.
@@ -262,23 +346,26 @@ impl View {
         unsafe { sys::zebkit_view_stop_finding(raw, action) }
     }
 
-    /// Calls `function` with each result as JSON: `requestId`, `text`,
-    /// `matches`, `activeMatch` (from 1, 0 for none), `final`, `rect`
-    /// (the active match's, or null) and `stopped`.
-    pub fn on_find<F: FnMut(&str) + 'static>(&self, function: F) {
+    /// Calls `function` with each result.
+    pub fn on_find<F: FnMut(&FindResult) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
         self.inner.page.on_find.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_find(raw, Some(on_find), self.page_data()) }
     }
 
-    /// Stops [`View::on_find`].
-    pub fn stop_find_results(&self) {
+    /// Stops [`View::on_find`], including from inside it.
+    pub fn clear_find_handler(&self) {
         let Some(raw) = self.raw() else { return };
         unsafe { sys::zebkit_view_on_find(raw, None, std::ptr::null_mut()) }
         self.inner.page.on_find.set(None);
     }
 
     /// The last result of the search on, as [`View::on_find`] has them.
+    pub fn find_result(&self) -> Option<FindResult> {
+        self.find_result_json().map(|json| FindResult::from_json(&json))
+    }
+
+    /// [`View::find_result`] as the engine gives it, JSON.
     pub fn find_result_json(&self) -> Option<String> {
         let raw = self.raw()?;
         unsafe { take_string(sys::zebkit_view_find_result(raw)) }
@@ -287,7 +374,7 @@ impl View {
     /// Prints the page to PDF with CDP's `Page.printToPDF` parameters as a
     /// JSON object (`"{}"` for the defaults), and calls `done` with the
     /// document's bytes.
-    pub fn print_to_pdf<F: FnOnce(Result<Vec<u8>, Error>) + 'static>(&self, options_json: &str, done: F) {
+    pub fn print_to_pdf<F: FnOnce(Result<&[u8], Error>) + 'static>(&self, options_json: &str, done: F) {
         let Some(raw) = self.raw() else {
             done(Err(Error::new("the view is closed")));
             return;
@@ -301,10 +388,24 @@ impl View {
     /// the engine run it inside the page (an off-screen view's mouse moves
     /// are then the drag's), true to run it yourself and end it with
     /// [`View::drag_source_end`].
-    pub fn on_drag_start<F: FnMut(&Drag) -> bool + 'static>(&self, function: F) {
+    pub fn on_drag_start<F: FnMut(&Drag<'_>) -> bool + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
         self.inner.page.on_drag_start.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_drag_start(raw, Some(on_drag_start), self.page_data()) }
+    }
+
+    /// Stops [`View::on_drag_start`]: the page's drags are the engine's again.
+    pub fn clear_drag_start_handler(&self) {
+        let Some(raw) = self.raw() else { return };
+        unsafe { sys::zebkit_view_on_drag_start(raw, None, std::ptr::null_mut()) }
+        self.inner.page.on_drag_start.set(None);
+    }
+
+    /// Stops [`View::on_drag_end`].
+    pub fn clear_drag_end_handler(&self) {
+        let Some(raw) = self.raw() else { return };
+        unsafe { sys::zebkit_view_on_drag_end(raw, None, std::ptr::null_mut()) }
+        self.inner.page.on_drag_end.set(None);
     }
 
     /// Calls `function` with what was done when the page's drag ends.
@@ -383,16 +484,16 @@ unsafe extern "C" fn on_dialog_closed(
     user_input: *const c_char,
     data: *mut c_void,
 ) {
-    let input = string_from(user_input).unwrap_or_default();
-    call_slot(&crate::view::hold(data).page.on_dialog_closed, |function| function(id, accepted, &input));
+    let input = string_from(user_input);
+    call_slot(&crate::view::hold(data).page.on_dialog_closed, |function| function(id, accepted, input.as_deref()));
 }
 
 unsafe extern "C" fn on_find(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let json = string_from(json).unwrap_or_default();
-    call_slot(&crate::view::hold(data).page.on_find, |function| function(&json));
+    let result = FindResult::from_json(&string_from(json).unwrap_or_default());
+    call_slot(&crate::view::hold(data).page.on_find, |function| function(&result));
 }
 
-unsafe extern "C" fn on_pdf<F: FnOnce(Result<Vec<u8>, Error>)>(
+unsafe extern "C" fn on_pdf<F: FnOnce(Result<&[u8], Error>)>(
     _view: *mut sys::zebkit_view,
     pdf: *const u8,
     size: usize,
@@ -403,7 +504,7 @@ unsafe extern "C" fn on_pdf<F: FnOnce(Result<Vec<u8>, Error>)>(
     let result = if pdf.is_null() {
         Err(Error::new(string_from(error).unwrap_or_else(|| "printing failed".to_string())))
     } else {
-        Ok(std::slice::from_raw_parts(pdf, size).to_vec())
+        Ok(std::slice::from_raw_parts(pdf, size))
     };
     crate::guard(|| done(result));
 }
@@ -414,7 +515,7 @@ unsafe extern "C" fn on_drag_start(_view: *mut sys::zebkit_view, drag: *const sy
         let stride = raw.image_stride.max(0) as usize;
         let height = raw.image_height as u32;
         DragImage {
-            pixels: std::slice::from_raw_parts(raw.image, stride * height as usize).to_vec(),
+            pixels: std::slice::from_raw_parts(raw.image, stride * height as usize),
             width: raw.image_width as u32,
             height,
             stride,

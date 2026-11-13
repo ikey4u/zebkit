@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/strings/sys_string_conversions.h"
 #include "content/public/browser/web_contents.h"
 #include "zebkit/engine/certificate_picker.h"
@@ -15,13 +16,13 @@
 
 namespace zebkit {
 
-bool ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
-                           const std::vector<std::u16string>& names, CertificateAnswer& answer) {
+base::OnceClosure ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
+                                        const std::vector<std::u16string>& names, CertificateAnswer& answer) {
   if (HasNoDisplay(contents) || names.empty())
-    return false;
+    return base::OnceClosure();
   NSWindow* window = contents->GetTopLevelNativeWindow().GetNativeNSWindow();
   if (!window)
-    return false;
+    return base::OnceClosure();
   NSAlert* alert = [[NSAlert alloc] init];
   alert.messageText = @"Choose a certificate";
   alert.informativeText = base::SysUTF16ToNSString(host + u" asks for a certificate.");
@@ -41,7 +42,16 @@ bool ShowCertificatePicker(content::WebContents* contents, const std::u16string&
                   else
                     std::move(*shared).Run(std::nullopt);
                 }];
-  return true;
+  // Closed unanswered: the answer is dropped first, so that the completion
+  // handler ending the sheet runs nothing.
+  __weak NSWindow* weak_window = window;
+  __weak NSAlert* weak_alert = alert;
+  return base::BindOnce(^{
+    shared->Reset();
+    NSAlert* shown = weak_alert;
+    if (shown && weak_window)
+      [weak_window endSheet:shown.window returnCode:NSModalResponseAbort];
+  });
 }
 
 }  // namespace zebkit

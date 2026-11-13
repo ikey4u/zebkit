@@ -1,5 +1,6 @@
 #include "zebkit/engine/http_auth.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/hook_requests.h"
 #include "zebkit/engine/view.h"
 
 #include <string.h>
@@ -24,24 +25,23 @@
 
 namespace zebkit {
 namespace {
-class HttpAuthDelegate;
-struct Pending {
-  base::WeakPtr<HttpAuthDelegate> delegate;
-  base::WeakPtr<zebkit_view> view;
-  base::DictValue metadata;
-  base::TimeTicks deadline;
+struct Traits {
+  struct Decision {
+    std::optional<net::AuthCredentials> credentials;
+  };
+  using Request = zebkit_http_auth_request;
+  static constexpr auto kHandler = &zebkit_view::on_http_auth_;
+  static constexpr auto kData = &zebkit_view::on_http_auth_data_;
+  static constexpr auto kResult = &zebkit_view::on_http_auth_result_;
+  static constexpr auto kResultData = &zebkit_view::on_http_auth_result_data_;
+  static constexpr auto kGeneration = &zebkit_view::http_auth_result_generation_;
+  static constexpr auto kTimeout = &zebkit_view::http_auth_timeout_ms_;
+  static Decision Refusal() { return {}; }
+  static Decision Unanswered() { return {}; }
+  static const char* State(const Decision& decision) { return decision.credentials ? "provided" : "cancelled"; }
 };
-struct Requests {
-  bool active = false;
-  uintptr_t next = 1;
-  std::map<uintptr_t, Pending> pending;
-};
-Requests& Store() { static base::NoDestructor<Requests> store; return *store; }
-bool Ready() {
-  return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) && Store().active;
-}
-void Finish(uintptr_t id, const std::optional<net::AuthCredentials>& credentials,
-            const char* reason, bool reply = true);
+using Requests = HookRequests<Traits>;
+bool Ready() { return Requests::Get().Ready(); }
 
 class HttpAuthDelegate : public content::LoginDelegate {
  public:
@@ -49,10 +49,11 @@ class HttpAuthDelegate : public content::LoginDelegate {
   ~HttpAuthDelegate() override {
     // Destruction means the network request was cancelled. Chromium explicitly
     // requires dropping, rather than invoking, its auth callback in this case.
-    if (id_) Finish(id_, std::nullopt, "cancelled", false);
+    Requests::Get().Abandon(id_);
   }
   base::WeakPtr<HttpAuthDelegate> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
   void SetId(uintptr_t id) { id_ = id; }
+  void Answer(Traits::Decision decision) { Reply(decision.credentials); }
   void Reply(const std::optional<net::AuthCredentials>& credentials) {
     id_ = 0;
     auto callback = std::move(callback_);
@@ -66,47 +67,6 @@ class HttpAuthDelegate : public content::LoginDelegate {
   base::WeakPtrFactory<HttpAuthDelegate> weak_factory_{this};
 };
 
-void Report(base::WeakPtr<zebkit_view> view, base::DictValue metadata) {
-  if (!Store().active || !view || !view->on_http_auth_result_) return;
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
-      base::BindOnce([](base::WeakPtr<zebkit_view> view, uint64_t generation, std::string json) {
-        if (!Store().active || !view || view->http_auth_result_generation_ != generation ||
-            !view->on_http_auth_result_) return;
-        auto function = view->on_http_auth_result_; void* data = view->on_http_auth_result_data_;
-        function(view.get(), json.c_str(), data);
-      }, view, view->http_auth_result_generation_, base::WriteJson(metadata).value_or("{}")));
-}
-void Finish(uintptr_t id, const std::optional<net::AuthCredentials>& credentials,
-            const char* reason, bool reply) {
-  auto found = Store().pending.find(id);
-  if (found == Store().pending.end()) return;
-  auto pending = std::move(found->second);
-  Store().pending.erase(found);
-  pending.metadata.Set("state", credentials ? "provided" : "cancelled");
-  pending.metadata.Set("reason", reason);
-  pending.metadata.Set("provided", credentials.has_value());
-  Report(pending.view, std::move(pending.metadata));
-  if (reply && pending.delegate) pending.delegate->Reply(credentials);
-}
-void Check(uintptr_t id) {
-  auto found = Store().pending.find(id);
-  if (found == Store().pending.end()) return;
-  if (!found->second.view || !found->second.view->web_contents() || !found->second.delegate)
-    Finish(id, std::nullopt, "cancelled");
-  else if (base::TimeTicks::Now() >= found->second.deadline)
-    Finish(id, std::nullopt, "timeout");
-}
-void Deliver(uintptr_t id) {
-  Check(id);
-  auto found = Store().pending.find(id);
-  if (found == Store().pending.end()) return;
-  auto view = found->second.view;
-  zebkit_view* decider = view ? view->Decider(&zebkit_view::on_http_auth_) : nullptr;
-  if (!decider || !decider->on_http_auth_) { Finish(id, std::nullopt, "handler-changed"); return; }
-  const std::string json = base::WriteJson(found->second.metadata).value_or("{}");
-  auto function = decider->on_http_auth_; void* data = decider->on_http_auth_data_;
-  function(view.get(), reinterpret_cast<zebkit_http_auth_request*>(id), json.c_str(), data);
-}
 std::string MetadataText(std::string text, bool* truncated) {
   if (text.size() > 16384) { text.resize(16384); *truncated = true; }
   // A byte limit can cut a UTF-8 sequence; never hand malformed JSON to a host.
@@ -114,22 +74,10 @@ std::string MetadataText(std::string text, bool* truncated) {
 }
 }  // namespace
 
-void InstallHttpAuthHooks() { Store().active = true; }
-void StopHttpAuthHooks() {
-  Store().active = false;
-  while (!Store().pending.empty()) Finish(Store().pending.begin()->first, std::nullopt, "shutdown");
-}
+void InstallHttpAuthHooks() { Requests::Get().Start(); }
+void StopHttpAuthHooks() { Requests::Get().Stop(); }
 void CancelHttpAuthRequests(zebkit_view* view, const char* reason) {
-  std::vector<uintptr_t> ids;
-  for (const auto& [id, pending] : Store().pending)
-    if (pending.view.get() == view) ids.push_back(id);
-  for (auto id : ids) Finish(id, std::nullopt, reason);
-}
-// At most 1024 waiting for each view, so that one page cannot use up another's.
-static bool TooMany(zebkit_view* view) {
-  size_t count = 0;
-  for (const auto& [id, pending] : Store().pending) count += pending.view.get() == view;
-  return count >= 1024;
+  Requests::Get().CancelAll(view, reason);
 }
 std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
     const net::AuthChallengeInfo& challenge, content::WebContents* contents,
@@ -139,21 +87,17 @@ std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
   zebkit_view* decider = view ? view->Decider(&zebkit_view::on_http_auth_) : nullptr;
   if (!Ready() || !view || (decider && !decider->on_http_auth_)) return nullptr;
   auto delegate = std::make_unique<HttpAuthDelegate>(std::move(callback));
-  auto runner = base::SingleThreadTaskRunner::GetCurrentDefault();
-  if (!decider || TooMany(view) || Store().next == std::numeric_limits<uintptr_t>::max()) {
-    runner->PostTask(FROM_HERE, base::BindOnce(&HttpAuthDelegate::Cancel, delegate->GetWeakPtr()));
-    return delegate;
-  }
-  const uintptr_t id = Store().next++;
-  delegate->SetId(id);
-  Pending pending;
-  pending.delegate = delegate->GetWeakPtr(); pending.view = view->GetWeakPtr();
-  pending.deadline = base::TimeTicks::Now() + base::Milliseconds(view->http_auth_timeout_ms_);
-  auto& metadata = pending.metadata;
+  auto cancel = [&] {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&HttpAuthDelegate::Cancel, delegate->GetWeakPtr()));
+    return std::move(delegate);
+  };
+  if (!decider)
+    return cancel();
+  base::DictValue metadata;
   bool truncated = false;
   GURL::Replacements redact;
   redact.ClearUsername(); redact.ClearPassword();
-  metadata.Set("id", base::NumberToString(id)); metadata.Set("state", "pending");
   metadata.Set("url", MetadataText(url.ReplaceComponents(redact).spec(), &truncated));
   metadata.Set("realm", MetadataText(challenge.realm, &truncated));
   metadata.Set("scheme", MetadataText(challenge.scheme, &truncated));
@@ -164,49 +108,38 @@ std::unique_ptr<content::LoginDelegate> CreateHttpAuthDelegate(
   metadata.Set("mainFrame", primary_main_frame); metadata.Set("navigation", navigation);
   metadata.Set("firstAttempt", first_attempt);
   metadata.Set("metadataTruncated", truncated);
-  metadata.Set("timeoutMs", static_cast<int>(view->http_auth_timeout_ms_));
-  metadata.Set("deadlineUnixMs", (base::Time::Now() + base::Milliseconds(view->http_auth_timeout_ms_)).InMillisecondsFSinceUnixEpoch());
-  Store().pending.emplace(id, std::move(pending));
-  runner->PostTask(FROM_HERE, base::BindOnce(&Deliver, id));
-  runner->PostDelayedTask(FROM_HERE, base::BindOnce(&Check, id), base::Milliseconds(view->http_auth_timeout_ms_));
+  // At most 1024 waiting for each view, so that one page cannot use up another's.
+  Requests::Reply reply = base::BindOnce(&HttpAuthDelegate::Answer, delegate->GetWeakPtr());
+  auto& requests = Requests::Get();
+  if (!requests.Ask(view, std::move(metadata), reply))
+    return cancel();
+  delegate->SetId(requests.last_id());
   return delegate;
 }
 }  // namespace zebkit
 
 extern "C" {
 void zebkit_view_on_http_auth(zebkit_view* view, zebkit_http_auth_func function, void* data) {
-  using namespace zebkit;
-  if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
-  if (view->on_http_auth_ == function && view->on_http_auth_data_ == data) return;
-  auto weak = view->GetWeakPtr();
-  CancelHttpAuthRequests(view, "handler-changed");
-  if (!weak) return;
-  view->on_http_auth_ = function; view->on_http_auth_data_ = data;
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  zebkit::Requests::Get().Install(view, function, data);
 }
 void zebkit_view_on_http_auth_result(zebkit_view* view, zebkit_http_auth_result_func function, void* data) {
-  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents()) return;
-  ++view->http_auth_result_generation_;
-  view->on_http_auth_result_ = function; view->on_http_auth_result_data_ = data;
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  zebkit::Requests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_http_auth_timeout(zebkit_view* view, uint32_t milliseconds) {
-  if (!zebkit::Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000) return false;
-  view->http_auth_timeout_ms_ = milliseconds; return true;
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);
+  return zebkit::Requests::Get().SetTimeout(view, milliseconds);
 }
 char* zebkit_http_auth_request_info(zebkit_http_auth_request* request) {
-  using namespace zebkit;
-  if (!Ready()) return nullptr;
-  const uintptr_t id = reinterpret_cast<uintptr_t>(request);
-  Check(id);
-  auto found = Store().pending.find(id);
-  return found == Store().pending.end() ? nullptr
-      : strdup(base::WriteJson(found->second.metadata).value_or("{}").c_str());
+  return zebkit::Requests::Get().Info(reinterpret_cast<uintptr_t>(request));
 }
 bool zebkit_http_auth_respond(zebkit_http_auth_request* request, const char* username, const char* password) {
   using namespace zebkit;
   if (!Ready()) return false;
   const uintptr_t id = reinterpret_cast<uintptr_t>(request);
-  Check(id);
-  if (!Store().pending.contains(id)) return false;
+  auto& requests = Requests::Get();
+  if (!requests.Find(id)) return false;
   if ((!username) != (!password)) return false;
   std::optional<net::AuthCredentials> credentials;
   if (username) {
@@ -220,9 +153,8 @@ bool zebkit_http_auth_respond(zebkit_http_auth_request* request, const char* use
     credentials.emplace(base::UTF8ToUTF16(std::string_view(username, user_size)),
                         base::UTF8ToUTF16(std::string_view(password, password_size)));
   }
-  Check(id);
-  if (!Store().pending.contains(id)) return false;
-  Finish(id, credentials, "answered");
+  if (!requests.Find(id)) return false;
+  requests.Settle(id, Traits::Decision{std::move(credentials)}, "answered");
   return true;
 }
 }  // extern "C"

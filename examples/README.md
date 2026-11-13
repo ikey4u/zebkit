@@ -1,15 +1,17 @@
 # examples
 
-Small programs on zebkit. Each builds against a package directory,
-`out/blink/slim/package` after `scripts/package.sh slim` (`docs/BUILD.md`);
-below, `$PKG` is that directory.
+Small programs on zebkit. Each builds against a package directory: a
+release archive unpacked (`zebkit-<version>-<target>`, from the
+[releases](https://github.com/ikey4u/zebkit/releases)), or a package built
+from this checkout (`out/blink/slim/package` after `scripts/package.sh slim`,
+`docs/BUILD.md`). Below, `$PKG` is that directory's absolute path.
 
 | Example | What it shows |
 |---|---|
 | `window.c` | A small browser window: a page with a back button, a forward button and an address box above it, the bar a script in the page that calls the program through `zebkit.app`. One file for Linux and macOS |
 | `custom-titlebar/` | A title bar that is the page's (`<zebkit/window.h>`): frame `overlay`, the window's buttons over the page, the page laid out around them with `env(titlebar-area-*)` and dragged from its `app-region`; in C (`main.c`) and JavaScript (`main.mjs`) |
 | `html-in-canvas.html` | HTML in canvas, new in Chromium 157: a form drawn turned into a 2D canvas, with its reflection, that is still a form where it is drawn (its field types, its button submits); open it with `window.c` or any view |
-| `ui/todo.mjs` | An application in JavaScript with native widgets: `zebkit.ui`, Chromium's views driven by signals, no web page (`docs/API.md`, "Native interface") |
+| `ui/todo.mjs` | `zebkit.ui`, the engine's small UI for programs without one of their own (`docs/UI.md`): a window of Chromium's views driven by signals, drawn headless too; rich UI is a page, and an application with a toolkit uses its own |
 | `pdf-plugin/` | A plugin of the PDF library's hooks, in C (`plugin.c`) and in JavaScript (`plugin.mjs`): a kind of annotation with its own appearance, an undo history from the operations hooks are told of, text for pages without any |
 | `gpui-browser/` | A tabbed browser in GPUI-KIT (Rust): GPUI's window, tabs, toolbar and dialogs; the engine in GPUI's loop, its pages native children of GPUI's window; the engine's questions (dialogs, permissions, downloads, sign-in) answered with GPUI-KIT dialogs |
 | `native-host/` | Toolkit-owned GTK, Qt, AppKit and winit windows with a web pane and native PDF pane; event-driven wakeup/pump integration, keyboard/IME and popup layers |
@@ -34,7 +36,7 @@ program's own; `pdf.c` opens, renders, searches and edits a PDF.
 cc -std=c11 -I$PKG/include examples/window.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o window
 ./window https://example.com/
 
-# ui/todo.mjs, with zebkit-js built against the package
+# ui/todo.mjs, with the archive's $PKG/zebkit-js, or zebkit-js built against the package
 cc -std=c11 -I$PKG/include tools/zebkit-js/zebkit-js.c -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o zebkit-js
 ./zebkit-js examples/ui/todo.mjs
 ./zebkit-js --headless examples/ui/todo.mjs --capture todo.png    # no display: a picture of it
@@ -77,9 +79,29 @@ python3 examples/native-host/build.py qt --package $PKG && out/blink/examples/qt
 pane's) are inputs of the examples, and of the engine's tests that run them.
 
 Where the machine cannot give Chromium's sandbox (containers, many build
-machines), add `--no-sandbox` to the engine's arguments. On macOS the
-package holds `Zebkit.framework`: link with
-`-F$PKG -framework Zebkit -Wl,-rpath,$PKG` instead.
+machines), add `--no-sandbox` to the engine's arguments.
+
+On macOS the package holds `Zebkit.framework`: link with
+`-F$PKG -framework Zebkit -Wl,-rpath,$PKG` in place of
+`-L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG`, for example:
+
+```sh
+cc -std=c11 -I$PKG/include examples/window.c -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o window
+./window https://example.com/
+```
+
+On Windows, in a command prompt with LLVM's `clang-cl` on the path, link
+`zebkit.dll.lib` and put the program beside `zebkit.dll`, as the README's
+quick start does. The examples do not call `zebkit_win_startup()`
+(`docs/WINDOWS.md`), so they run with `--no-sandbox`, with
+`zebkit-helper.exe` as the engine's children; the archive's `zebkit-js.exe`
+runs sandboxed. The suite does not run the examples on Windows.
+
+```bat
+clang-cl /MT examples\window.c /I%PKG%\include %PKG%\zebkit.dll.lib /Fe%PKG%\window.exe
+%PKG%\window.exe --no-sandbox https://example.com/
+%PKG%\zebkit-js.exe --headless examples\ui\todo.mjs --capture todo.png
+```
 
 `mise example:linux:basic` builds and runs `window.c` (`scripts/example.sh`),
 `mise example:ffmpeg` the FFmpeg example, `mise example:rust:window` and

@@ -6,7 +6,7 @@
 //! engine's network stack and runs on its thread.
 
 use crate::engine::require_engine_thread;
-use crate::{c_string, string_from, sys, take_bytes, take_error, take_string, Error};
+use crate::{c_string, string_from, sys, take_bytes, take_error, take_string, Bytes, Error};
 use std::os::raw::{c_int, c_void};
 
 /// A compressed format.
@@ -38,7 +38,7 @@ impl Compression {
 
 /// Compresses `data`. `level` `None` is the format's default; otherwise
 /// 0-9 for zlib's formats, 0-11 for Brotli, 1-22 for Zstandard.
-pub fn compress(format: Compression, data: &[u8], level: Option<i32>) -> Result<Vec<u8>, Error> {
+pub fn compress(format: Compression, data: &[u8], level: Option<i32>) -> Result<Bytes, Error> {
     let (mut size, mut error) = (0, std::ptr::null_mut());
     unsafe {
         let out =
@@ -52,7 +52,7 @@ pub fn compress(format: Compression, data: &[u8], level: Option<i32>) -> Result<
 
 /// Decompresses `data`, failing rather than produce more than `max_size`
 /// bytes (`None`: 256 MiB), against data that expands without end.
-pub fn decompress(format: Compression, data: &[u8], max_size: Option<usize>) -> Result<Vec<u8>, Error> {
+pub fn decompress(format: Compression, data: &[u8], max_size: Option<usize>) -> Result<Bytes, Error> {
     let (mut size, mut error) = (0, std::ptr::null_mut());
     unsafe {
         let out = sys::zebkit_decompress(
@@ -125,7 +125,7 @@ pub fn random_bytes(size: usize) -> Vec<u8> {
 /// AES-256), a 12-byte `nonce` never used twice with the same key, and
 /// `ad` authenticated but not encrypted. Returns the ciphertext followed by
 /// the tag.
-pub fn aes_gcm_seal(key: &[u8], nonce: &[u8], ad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn aes_gcm_seal(key: &[u8], nonce: &[u8], ad: &[u8], plaintext: &[u8]) -> Result<Bytes, Error> {
     let (mut size, mut error) = (0, std::ptr::null_mut());
     unsafe {
         let out = sys::zebkit_aes_gcm_seal(
@@ -148,7 +148,7 @@ pub fn aes_gcm_seal(key: &[u8], nonce: &[u8], ad: &[u8], plaintext: &[u8]) -> Re
 }
 
 /// Opens what [`aes_gcm_seal`] sealed; fails when anything was changed.
-pub fn aes_gcm_open(key: &[u8], nonce: &[u8], ad: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn aes_gcm_open(key: &[u8], nonce: &[u8], ad: &[u8], sealed: &[u8]) -> Result<Bytes, Error> {
     let (mut size, mut error) = (0, std::ptr::null_mut());
     unsafe {
         let out = sys::zebkit_aes_gcm_open(
@@ -235,7 +235,7 @@ pub struct Image {
     pub width: u32,
     pub height: u32,
     /// `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
+    pub rgba: Bytes,
 }
 
 /// A format to encode an image in.
@@ -262,7 +262,7 @@ pub fn decode_image(data: &[u8]) -> Result<Image, Error> {
 
 /// Encodes an image. `quality` 0-100 is for JPEG and lossy WebP; 101 asks
 /// WebP for lossless. PNG does not use it.
-pub fn encode_image(format: ImageFormat, image: &Image, quality: u8) -> Result<Vec<u8>, Error> {
+pub fn encode_image(format: ImageFormat, image: &Image, quality: u8) -> Result<Bytes, Error> {
     if image.rgba.len() != image.width as usize * image.height as usize * 4 {
         return Err(Error::new("the pixels are not width * height * 4 bytes"));
     }
@@ -296,16 +296,17 @@ pub fn icu_init() -> bool {
     unsafe { sys::zebkit_icu_init() }
 }
 
-/// An answer to [`fetch`].
+/// An answer to [`fetch`]; its body is the engine's for as long as the
+/// function it is given to runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Response {
+pub struct Response<'a> {
     /// The HTTP status, or 0 when there was no response.
     pub status: u16,
     /// After redirects.
     pub url: String,
     /// Each header as it came, name and value.
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub body: &'a [u8],
     /// Why there was no response.
     pub error: Option<String>,
 }
@@ -315,7 +316,7 @@ pub struct Response {
 /// browser makes a request of its own (no CORS, no page). Redirects are
 /// followed; a body over 256 MiB fails. `done` is called on the engine's
 /// thread, which this is for.
-pub fn fetch<F: FnOnce(Response) + 'static>(
+pub fn fetch<F: FnOnce(Response<'_>) + 'static>(
     method: &str,
     url: &str,
     headers: &[(&str, &str)],
@@ -338,7 +339,7 @@ pub fn fetch<F: FnOnce(Response) + 'static>(
     }
 }
 
-unsafe extern "C" fn on_response<F: FnOnce(Response)>(response: *const sys::zebkit_response, data: *mut c_void) {
+unsafe extern "C" fn on_response<F: FnOnce(Response<'_>)>(response: *const sys::zebkit_response, data: *mut c_void) {
     let done = Box::from_raw(data.cast::<F>());
     let response = &*response;
     let headers = string_from(response.headers)
@@ -347,11 +348,7 @@ unsafe extern "C" fn on_response<F: FnOnce(Response)>(response: *const sys::zebk
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
         .collect();
-    let body = if response.body.is_null() {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(response.body, response.body_size).to_vec()
-    };
+    let body = if response.body.is_null() { &[][..] } else { std::slice::from_raw_parts(response.body, response.body_size) };
     let response = Response {
         status: u16::try_from(response.status).unwrap_or(0),
         url: string_from(response.url).unwrap_or_default(),

@@ -16,32 +16,23 @@ import json
 import os
 import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.request
 
-import zebkit
-from cdp_page import Cdp
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import harness  # noqa: E402
+from harness import Cdp, check, finish, launch_engine, settled, skip, zebkit  # noqa: E402
 
 CREDENTIALS = base64.b64encode(b'user:secret').decode()
 AUTHORIZATION = 'Basic ' + CREDENTIALS
 WORKER = b"fetch('/echo?worker').then(r => r.text()).then(t => postMessage(t), () => postMessage('failed'))"
-failures = []
-checks = 0
 errors = []
 wire = []
 wire_lock = threading.Lock()
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(('ok   ' if ok else 'FAIL ') + what + ('' if detail is None else ': ' + str(detail)), flush=True)
-    if not ok:
-        failures.append(what)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -113,23 +104,14 @@ def forget():
         wire.clear()
 
 
-def pump(seconds):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        assert zebkit.pump()
-        time.sleep(.002)
-
-
 def wait(condition, label, seconds=20):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        assert not errors, errors
-        assert zebkit.pump()
-        if condition():
-            return True
-        time.sleep(.002)
-    check(False, 'in time: ' + label)
-    return False
+    """harness.wait(), a failed check "in time: <label>" when it times out; an
+    error in a function of the test's stops the test."""
+    done = harness.wait(lambda: errors or condition(), seconds)
+    assert not errors, errors
+    if not done:
+        check(False, 'in time: ' + label)
+    return done
 
 
 def guarded(function):
@@ -142,11 +124,14 @@ def guarded(function):
 
 
 def ev(view, script):
-    box = []
-    view.evaluate(script, lambda value, error=None: box.append((value, error)))
-    if not wait(lambda: box, script):
+    """The script's value; None when it threw or no answer came (a failed
+    check "in time: <script>")."""
+    value = harness.ev(view, script, 20)
+    assert not errors, errors
+    if not settled(value):
+        check(False, 'in time: ' + script)
         return None
-    return box[0][0]
+    return None if isinstance(value, tuple) else value
 
 
 def opened(url):
@@ -528,24 +513,14 @@ def test_cdp(base, port):
 def test_chrome(base, engine_sent):
     chrome = os.environ.get('ZEBKIT_TEST_CHROME') or shutil.which('google-chrome') or shutil.which('chromium')
     if not chrome:
-        print('skip the comparison with Chrome: no Chrome here', flush=True)
+        skip('the comparison with Chrome', 'no Chrome here (ZEBKIT_TEST_CHROME)')
         return
-    with tempfile.TemporaryDirectory(prefix='zebkit-stages-chrome-', ignore_cleanup_errors=True) as profile, socket.socket() as free:
-        free.bind(('127.0.0.1', 0))
-        port = free.getsockname()[1]
-        free.close()
-        process = subprocess.Popen([chrome, '--headless=new', '--no-sandbox', '--no-first-run', f'--user-data-dir={profile}',
-                                    f'--remote-debugging-port={port}', 'about:blank'],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with tempfile.TemporaryDirectory(prefix='zebkit-stages-chrome-', ignore_cleanup_errors=True) as profile:
+        # Started as the engine is, on the port it is given: its DevTools line.
+        chrome_engine = launch_engine([chrome, '--headless=new', '--no-sandbox', '--no-first-run',
+                                       f'--user-data-dir={profile}'])
         try:
-            url = None
-            end = time.monotonic() + 30
-            while not url and time.monotonic() < end:
-                try:
-                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/version', timeout=2) as answer:
-                        url = json.load(answer)['webSocketDebuggerUrl']
-                except OSError:
-                    time.sleep(.2)
+            url = chrome_engine.url
             if not url:
                 check(False, 'Chrome serves CDP')
                 return
@@ -574,8 +549,7 @@ def test_chrome(base, engine_sent):
             print('names only in Chrome:', sorted(set(theirs) - set(engine_sent)),
                   'only in the engine:', sorted(set(engine_sent) - set(theirs)), flush=True)
         finally:
-            process.kill()
-            process.wait()
+            chrome_engine.stop()
 
 
 def main():
@@ -588,7 +562,9 @@ def main():
         free.bind(('127.0.0.1', 0))
         cdp_port = free.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix='zebkit-stages-') as profile:
-        assert zebkit.init(['network-stages', f'--user-data-dir={profile}', f'--remote-debugging-port={cdp_port}'] + sys.argv[1:]) == 0
+        if zebkit.init(['network-stages', f'--user-data-dir={profile}', f'--remote-debugging-port={cdp_port}'] + sys.argv[1:]) != 0:
+            check(False, 'zebkit.init()')
+            return finish()
         engine_sent = {}
         try:
             test_seen(base)
@@ -601,13 +577,12 @@ def main():
             test_preflight(base, other)
             test_worker(base)
             engine_sent = test_cdp(base, cdp_port)
-            pump(.1)
+            harness.pump(.1)
             check(not errors, 'no error in a function', errors)
         finally:
             zebkit.shutdown()
     test_chrome(base, engine_sent)
-    print(f'{checks - len(failures)} of {checks} checks passed', flush=True)
-    return 1 if failures else 0
+    return finish()
 
 
 sys.exit(main())

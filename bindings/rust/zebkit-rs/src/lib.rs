@@ -38,7 +38,16 @@ pub type zebkit_navigation_action = c_int;
 pub const ZEBKIT_NAVIGATION_CONTINUE: zebkit_navigation_action = 0;
 pub const ZEBKIT_NAVIGATION_CANCEL: zebkit_navigation_action = 1;
 pub const ZEBKIT_NAVIGATION_REDIRECT: zebkit_navigation_action = 2;
-pub type zebkit_native_window_export_func = unsafe extern "C" fn(*mut c_void, *const c_char);
+pub type zebkit_native_window_export_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
+/// `zebkit_view_on_process_gone` / `zebkit_view_on_responsiveness`: the event as JSON.
+pub type zebkit_process_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
+/// `<zebkit/hooks.h>`: how a download the application decided ended, as JSON.
+pub type zebkit_download_result_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
+/// `zebkit_open_external_async` / `zebkit_show_in_folder_async`.
+pub type zebkit_desktop_done_func = unsafe extern "C" fn(done: bool, error: *const c_char, data: *mut c_void);
+/// `zebkit_cdp_listen_async`.
+pub type zebkit_cdp_listen_func =
+    unsafe extern "C" fn(port: c_uint, url: *const c_char, error: *const c_char, data: *mut c_void);
 pub type zebkit_navigation_func = unsafe extern "C" fn(*mut zebkit_view, *mut zebkit_navigation_request, *const c_char, *mut c_void);
 pub type zebkit_navigation_result_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
 pub type zebkit_window_open_event_func = unsafe extern "C" fn(*mut zebkit_view, *const c_char, *mut c_void);
@@ -242,6 +251,7 @@ extern "C" {
     pub fn zebkit_view_on_external_protocol(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
     pub fn zebkit_view_on_download(view: *mut zebkit_view, func: Option<zebkit_download_func>, data: *mut c_void);
     pub fn zebkit_view_on_download_progress(view: *mut zebkit_view, func: Option<zebkit_told_func>, data: *mut c_void);
+    pub fn zebkit_view_on_download_result(view: *mut zebkit_view, func: Option<zebkit_download_result_func>, data: *mut c_void);
     pub fn zebkit_view_set_download_timeout(view: *mut zebkit_view, milliseconds: u32) -> bool;
     pub fn zebkit_download_request_info(request: *mut zebkit_download_request) -> *mut c_char;
     pub fn zebkit_download_respond(request: *mut zebkit_download_request, action: c_int, path: *const c_char, error: *mut *mut c_char) -> bool;
@@ -349,6 +359,9 @@ extern "C" {
     pub fn zebkit_call_resolve(call: *mut zebkit_call, json: *const c_char);
     pub fn zebkit_call_resolve_json(call: *mut zebkit_call, json: *const c_char, length: usize);
     pub fn zebkit_call_reject(call: *mut zebkit_call, message: *const c_char);
+    pub fn zebkit_call_free(call: *mut zebkit_call);
+    pub fn zebkit_view_on_process_gone(view: *mut zebkit_view, func: Option<zebkit_process_func>, data: *mut c_void);
+    pub fn zebkit_view_on_responsiveness(view: *mut zebkit_view, func: Option<zebkit_process_func>, data: *mut c_void);
 
     pub fn zebkit_script_new(argc: c_int, argv: *const *const c_char) -> *mut zebkit_script;
     pub fn zebkit_script_run_module(
@@ -367,6 +380,7 @@ extern "C" {
     pub fn zebkit_script_destroy(script: *mut zebkit_script);
 
     pub fn zebkit_cdp_listen(address: *const c_char, port: c_uint, error: *mut *mut c_char) -> c_uint;
+    pub fn zebkit_cdp_listen_async(address: *const c_char, port: c_uint, func: Option<zebkit_cdp_listen_func>, data: *mut c_void);
     pub fn zebkit_cdp_get_port() -> c_uint;
     pub fn zebkit_cdp_get_url() -> *mut c_char;
     pub fn zebkit_cdp_stop();
@@ -1044,6 +1058,8 @@ extern "C" {
 
     pub fn zebkit_open_external(url: *const c_char, error: *mut *mut c_char) -> bool;
     pub fn zebkit_show_in_folder(path: *const c_char, error: *mut *mut c_char) -> bool;
+    pub fn zebkit_open_external_async(url: *const c_char, func: Option<zebkit_desktop_done_func>, data: *mut c_void);
+    pub fn zebkit_show_in_folder_async(path: *const c_char, func: Option<zebkit_desktop_done_func>, data: *mut c_void);
     pub fn zebkit_on_power_event(func: Option<zebkit_system_event_func>, data: *mut c_void);
     pub fn zebkit_get_displays() -> *mut c_char;
     pub fn zebkit_on_displays_changed(func: Option<zebkit_system_event_func>, data: *mut c_void);
@@ -1215,6 +1231,14 @@ pub type zebkit_popup_func =
 extern "C" {
     pub fn zebkit_view_new_offscreen(url: *const c_char, width: c_int, height: c_int, scale: f32) -> *mut zebkit_view;
     pub fn zebkit_view_new_offscreen_in(context: *mut zebkit_context, url: *const c_char, width: c_int, height: c_int, scale: f32) -> *mut zebkit_view;
+    pub fn zebkit_view_new_offscreen_ex(
+        context: *mut zebkit_context,
+        url: *const c_char,
+        width: c_int,
+        height: c_int,
+        scale: f32,
+        error: *mut *mut c_char,
+    ) -> *mut zebkit_view;
     pub fn zebkit_view_is_offscreen(view: *mut zebkit_view) -> bool;
     pub fn zebkit_view_set_size(view: *mut zebkit_view, width: c_int, height: c_int, scale: f32);
     pub fn zebkit_view_on_frame(view: *mut zebkit_view, func: Option<zebkit_frame_func>, data: *mut c_void);

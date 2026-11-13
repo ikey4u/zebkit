@@ -25,6 +25,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
@@ -185,7 +186,12 @@ constexpr char kBootstrap[] = R"js((function (native) {
   const views = new Map();
   // Events whose engine callback is set the first time the script listens.
   const LAZY_EVENTS = new Set(['new-window', 'drop', 'dialog', 'dialog-closed', 'drag-start', 'drag-end', 'frame',
-                               'caret', 'cursor', 'popup', 'authentication', 'automation', 'find']);
+                               'caret', 'cursor', 'popup', 'authentication', 'automation', 'find', 'popup-blocked',
+                               'permission-result', 'navigation-result', 'console', 'window-state',
+                               'certificate-result', 'http-auth-result']);
+  // Of those, the ones told as JSON (script.cc's ZEBKIT_JSON_EVENT).
+  const TOLD_JSON_EVENTS = new Set(['popup-blocked', 'permission-result', 'navigation-result', 'console',
+                                    'window-state', 'certificate-result', 'http-auth-result']);
   const MOUSE = {move: 0, down: 1, up: 2, leave: 3};
   const BUTTON = {none: 0, left: 1, middle: 2, right: 3, back: 4, forward: 5};
   const WHEEL_PHASE = {none: 0, began: 1, changed: 2, ended: 3, momentum: 4};
@@ -228,14 +234,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
       native.viewOn(this.#id, 'close', () => { views.delete(this.#id); this.#emit('close'); });
       native.viewOn(this.#id, 'load', (event, url) => this.#emit('load', event, url));
       native.viewOn(this.#id, 'title', (title) => this.#emit('title', title));
-      native.viewOn(this.#id, 'popup-blocked', (event) => this.#emit('popup-blocked', event));
-      native.viewOn(this.#id, 'permission-result', event => this.#emit('permission-result', event));
-      native.viewOn(this.#id, 'navigation-result', event => this.#emit('navigation-result', event));
       native.viewOn(this.#id, 'window-open', event => this.#emit('window-open', event));
-      native.viewOn(this.#id, 'console', event => this.#emit('console', event));
-      native.viewOn(this.#id, 'window-state', event => this.#emit('window-state', event));
-      native.viewOn(this.#id, 'certificate-result', event => this.#emit('certificate-result', event));
-      native.viewOn(this.#id, 'http-auth-result', event => this.#emit('http-auth-result', event));
     }
     #emit(name, ...args) { for (const fn of this.#handlers[name]) fn(...args); }
     on(name, fn) {
@@ -252,16 +251,21 @@ constexpr char kBootstrap[] = R"js((function (native) {
           const frame = makeFrame(info, id);
           try { this.#emit('frame', frame); } finally { if (!frame.kept) frame.release(); }
         });
+      } else if (TOLD_JSON_EVENTS.has(name)) {
+        // (event, view): the View the event is of, a popup's while its
+        // outcomes go to its opener (hooks.h), else this one.
+        native.viewOn(this.#id, name, (event, view) => this.#emit(name, event, view ?? this));
       } else {
         native.viewOn(this.#id, name, (...args) => this.#emit(name, ...args));
       }
       native.viewMore(this.#id, 'listen', name);
     }
-    // A view without a window, its frames to the 'frame' event; null on
-    // Windows without --headless.
+    // A view without a window, its frames to the 'frame' event. Throws the
+    // engine's reason when it cannot be made (a closed context, the engine
+    // stopping; on Windows without --headless, on Wayland).
     static offscreen(url = 'about:blank', {width = 800, height = 600, scale = 1, context = null} = {}) {
       const id = native.more('offscreen-new', context ? contextId(context) : 0, String(url), width, height, scale);
-      return id === null ? null : new View('', {}, {key: VIEW_ADOPT, id});
+      return new View('', {}, {key: VIEW_ADOPT, id});
     }
     #more(kind, ...args) { return native.viewMore(this.#id, kind, ...args); }
     // The view as a window of its own: limits, place, visibility, title.
@@ -395,9 +399,16 @@ constexpr char kBootstrap[] = R"js((function (native) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError(`${kind} handler must be a function or null`);
       return native.viewHook(this.#id, kind, fn === null ? null : metadata => {
         const id = metadata.id;
+        // Why the last respond() was refused (the C API's reason), else null.
+        let error = null;
         fn(Object.freeze({metadata: Object.freeze(metadata),
           get info() { return native.hookRequest(kind, 'info', id); },
-          respond(...args) { return responder(id, ...args); },
+          get error() { return error; },
+          respond(...args) {
+            const ok = responder(id, ...args);
+            error = ok ? null : native.hookRequest(kind, 'error', id);
+            return ok;
+          },
           ...more(id)
         }));
       });
@@ -423,9 +434,11 @@ constexpr char kBootstrap[] = R"js((function (native) {
         }
       });
     }
+    // fn(event, view): @view is the View the event is of, a popup's while
+    // its outcomes go to its opener (hooks.h), else this one.
     #told(kind, fn) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError(`${kind} observer must be a function or null`);
-      return native.viewHook(this.#id, kind, fn);
+      return native.viewHook(this.#id, kind, fn === null ? null : (event, view) => fn(event, view ?? this));
     }
     setNetworkFilter(rules) { return native.viewHookCall(this.#id, 'network-filter', JSON.stringify(rules)); }
     setNetworkFilterForWorkers(on) { return native.viewHookCall(this.#id, 'network-filter-workers', !!on); }
@@ -447,6 +460,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
     onExternalProtocol(fn) { return this.#told('external-protocol', fn); }
     onDownload(fn) { return this.#asked('download', fn, (id, action, path = null) => native.hookRequest('download', 'respond', id, String(action), path)); }
     onDownloadProgress(fn) { return this.#told('download-progress', fn); }
+    onDownloadResult(fn) { return this.#told('download-result', fn); }
     setDownloadTimeout(ms) { return native.viewHookTimeout(this.#id, 'download', ms); }
     cancelDownload(id) { return native.viewHookCall(this.#id, 'cancel-download', String(id)); }
     onClientCertificate(fn) { return this.#asked('client-certificate', fn, (id, action, certificate = null, key = null) => native.hookRequest('client-certificate', 'respond', id, String(action), certificate, key)); }
@@ -478,6 +492,8 @@ constexpr char kBootstrap[] = R"js((function (native) {
     onContextMenu(fn) { return this.#told('context-menu', fn); }
     setFullscreenPolicy(policy) { return native.viewHookCall(this.#id, 'fullscreen-policy', String(policy)); }
     onFullscreen(fn) { return this.#told('fullscreen', fn); }
+    onProcessGone(fn) { return this.#told('process-gone', fn); }
+    onResponsiveness(fn) { return this.#told('responsiveness', fn); }
     setHttpAuthTimeout(milliseconds) { return native.viewHttpAuth(this.#id, 'timeout', milliseconds); }
     onHttpAuth(fn) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError('HTTP authentication handler must be a function or null');
@@ -494,9 +510,15 @@ constexpr char kBootstrap[] = R"js((function (native) {
       if (fn !== null && typeof fn !== 'function') throw new TypeError('navigation handler must be a function or null');
       return native.viewNavigation(this.#id, 'handler', fn === null ? null : metadata => {
         const id = metadata.id;
+        let error = null;
         fn(Object.freeze({metadata: Object.freeze(metadata),
           get info() { return native.navigationRequest('info', id); },
-          respond(action = 'continue', replacementUrl = null) { return native.navigationRequest('respond', id, action, replacementUrl); }
+          get error() { return error; },
+          respond(action = 'continue', replacementUrl = null) {
+            const ok = native.navigationRequest('respond', id, action, replacementUrl);
+            error = ok ? null : native.navigationRequest('error', id);
+            return ok;
+          }
         }));
       });
     }
@@ -557,6 +579,9 @@ constexpr char kBootstrap[] = R"js((function (native) {
     allowSleep: (token) => native.system('allow-sleep', String(token)),
     openExternal: (url) => native.system('open-external', String(url)),
     showInFolder: (path) => native.system('show-in-folder', String(path)),
+    // Promises of how it went (zebkit_open_external_async, zebkit_show_in_folder_async).
+    openExternalAsync: (url) => native.system('open-external-async', String(url)),
+    showInFolderAsync: (path) => native.system('show-in-folder-async', String(path)),
     onNotification: (fn) => native.onSystem('notification', typeof fn === 'function' ? fn : null),
     notificationClicked: (id, action = -1) => native.system('notification-clicked', String(id), Number(action)),
     notificationClosed: (id, byUser = true) => native.system('notification-closed', String(id), !!byUser),
@@ -581,6 +606,9 @@ constexpr char kBootstrap[] = R"js((function (native) {
     // CDP, as Chrome serves it (zebkit_cdp_listen): the port, 0 for any.
     cdp: Object.freeze({
       listen: (address = '127.0.0.1', port = 0) => native.more('cdp-listen', address == null ? null : String(address), port),
+      // The same without waiting: a promise of {port, url}.
+      listenAsync: (address = '127.0.0.1', port = 0) =>
+        native.more('cdp-listen-async', address == null ? null : String(address), port),
       get port() { return native.more('cdp-port'); },
       get url() { return native.more('cdp-url'); },
       stop: () => native.more('cdp-stop'),
@@ -590,13 +618,14 @@ constexpr char kBootstrap[] = R"js((function (native) {
     // engine starts); handled here, each request answered once.
     scheme: Object.freeze({
       // A handler that throws or rejects answers 500, so that the page does
-      // not wait for ever; the error is still reported.
+      // not wait for ever; the error is still printed. Answered, it is not
+      // an uncaught error that fails the program (as a server's 500).
       handle: (name, fn) => native.more('scheme-handle', String(name), typeof fn === 'function' ? (raw) => {
         const request = makeRequest(raw);
-        const failed = (error) => { request.respond(500); throw error; };
+        const failed = (prefix) => (error) => { request.respond(500); native.print(1, prefix + format(error)); };
         let result;
-        try { result = fn(request); } catch (error) { failed(error); }
-        if (result && typeof result.then === 'function') result.then(undefined, failed);
+        try { result = fn(request); } catch (error) { failed('Uncaught ')(error); }
+        if (result && typeof result.then === 'function') result.then(undefined, failed('Uncaught (in promise) '));
       } : null),
     }),
     // Playwright's API inside the engine (<zebkit/automation.h>); a view's
@@ -789,6 +818,45 @@ std::string Describe(v8::Isolate* isolate,
   return Utf8(isolate, exception);
 }
 
+// The engine's thread for V8's own tasks of a script's isolate. They run with
+// the isolate entered, as a renderer's main isolate always is: a
+// FinalizationRegistry's cleanup enters only the context, and crashed the
+// program. Those still queued when the isolate goes are dropped.
+class EnteringTaskRunner : public base::SingleThreadTaskRunner {
+ public:
+  explicit EnteringTaskRunner(scoped_refptr<base::SingleThreadTaskRunner> runner)
+      : runner_(std::move(runner)) {}
+
+  void set_isolate(v8::Isolate* isolate) { isolate_ = isolate; }
+
+  bool PostDelayedTask(const base::Location& from_here, base::OnceClosure task,
+                       base::TimeDelta delay) override {
+    return runner_->PostDelayedTask(from_here, Entering(std::move(task)), delay);
+  }
+  bool PostNonNestableDelayedTask(const base::Location& from_here, base::OnceClosure task,
+                                  base::TimeDelta delay) override {
+    return runner_->PostNonNestableDelayedTask(from_here, Entering(std::move(task)), delay);
+  }
+  bool RunsTasksInCurrentSequence() const override { return runner_->RunsTasksInCurrentSequence(); }
+
+ private:
+  ~EnteringTaskRunner() override = default;
+
+  base::OnceClosure Entering(base::OnceClosure task) {
+    return base::BindOnce(
+        [](scoped_refptr<EnteringTaskRunner> self, base::OnceClosure task) {
+          if (!self->isolate_)
+            return;
+          v8::Isolate::Scope isolate_scope(self->isolate_);
+          std::move(task).Run();
+        },
+        base::WrapRefCounted(this), std::move(task));
+  }
+
+  const scoped_refptr<base::SingleThreadTaskRunner> runner_;
+  raw_ptr<v8::Isolate> isolate_ = nullptr;
+};
+
 }  // namespace
 
 struct zebkit_script {
@@ -805,6 +873,16 @@ struct zebkit_script {
     idle_data_ = data;
     CheckIdle();
   }
+
+  // A page's call to a function the script bound (ViewBind), until the
+  // function's result settles. Unsettled, it is dropped (zebkit_call_free())
+  // when that result is collected or the script ends.
+  struct PageCall {
+    zebkit_call* call = nullptr;
+    base::WeakPtr<zebkit_script> script;
+    v8::Global<v8::Function> watch;
+  };
+  std::map<PageCall*, std::unique_ptr<PageCall>> page_calls_;
 
  private:
   // Enters the isolate and the context for a call into script. Leaving
@@ -883,6 +961,8 @@ struct zebkit_script {
   void CallFunction(v8::Local<v8::Function> function,
                     std::vector<v8::Local<v8::Value>> args);
   void Report(v8::TryCatch& try_catch);
+  // An error nothing caught: to stderr, and the program fails as it ends.
+  void Uncaught(const std::string& text);
 
   v8::MaybeLocal<v8::Module> LoadModule(const base::FilePath& path);
   static v8::MaybeLocal<v8::Module> Resolve(
@@ -906,6 +986,10 @@ struct zebkit_script {
   static void SetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void GetEngineSettings(const v8::FunctionCallbackInfo<v8::Value>& info);
   int WrapView(zebkit_view* view);
+  // The View an event of view @id is about when that is another view, a
+  // popup whose outcomes go to its opener (hooks.h); undefined for @id's
+  // own, which the script's View makes `this`.
+  v8::Local<v8::Value> ToldView(int id, zebkit_view* told);
   static void SetViewFactory(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewNew(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewWindow(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -952,6 +1036,8 @@ struct zebkit_script {
   // A network stream's onWritable: the script and the view's number, never
   // the view's hook, which goes with the view while the stream may not.
   std::map<uintptr_t, std::unique_ptr<Target>> stream_targets_;
+  // Why the last reply to a hook's request was refused (request.error).
+  std::string hook_error_;
   static void ViewOn(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewPermission(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void PermissionRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -959,7 +1045,7 @@ struct zebkit_script {
   static void CertificateRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewHttpAuth(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& info);
-  static void DeliverHook(void* data, const char* name, const char* json);
+  static void DeliverHook(void* data, zebkit_view* told, const char* name, const char* json);
   static void ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewHookTimeout(const v8::FunctionCallbackInfo<v8::Value>& info);
   static void ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info);
@@ -989,6 +1075,7 @@ struct zebkit_script {
                  std::vector<v8::Local<v8::Value>> args);
   void ViewClosed(int id);
 
+  scoped_refptr<EnteringTaskRunner> isolate_tasks_;
   std::unique_ptr<gin::IsolateHolder> holder_;
   v8::Global<v8::Context> context_;
   v8::Global<v8::Function> view_factory_;
@@ -1045,14 +1132,19 @@ zebkit_script::zebkit_script(std::vector<std::string> args)
     : args_(std::move(args)) {
   static bool initialized = false;
   if (!initialized) {
-    gin::IsolateHolder::Initialize(gin::IsolateHolder::kStrictMode,
-                                   gin::ArrayBufferAllocator::SharedInstance());
+    // --js-flags are the host script's V8's too, as Electron's main
+    // process takes them (--js-flags=--expose-gc gives it gc()).
+    gin::IsolateHolder::Initialize(
+        gin::IsolateHolder::kStrictMode, gin::ArrayBufferAllocator::SharedInstance(), nullptr,
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("js-flags"));
     initialized = true;
   }
+  isolate_tasks_ = base::MakeRefCounted<EnteringTaskRunner>(
+      base::SingleThreadTaskRunner::GetCurrentDefault());
   holder_ = std::make_unique<gin::IsolateHolder>(
-      base::SingleThreadTaskRunner::GetCurrentDefault(),
-      gin::IsolateHolder::kSingleThread,
+      isolate_tasks_, gin::IsolateHolder::kSingleThread,
       gin::IsolateHolder::IsolateType::kUtility);
+  isolate_tasks_->set_isolate(isolate());
   v8::Isolate::Scope isolate_scope(isolate());
   v8::HandleScope handles(isolate());
   // Promise jobs run when an entry from C++ into script ends (Scope).
@@ -1150,6 +1242,10 @@ zebkit_script::~zebkit_script() {
   {
     v8::Isolate::Scope isolate_scope(isolate());
     v8::HandleScope handles(isolate());
+    // The page's calls still waiting on the script: dropped, not left waiting.
+    for (const auto& [key, pending] : page_calls_)
+      if (pending->call) zebkit_call_free(std::exchange(pending->call, nullptr));
+    page_calls_.clear();
     timers_.clear();
     pending_.clear();
     views_.clear();
@@ -1163,6 +1259,7 @@ zebkit_script::~zebkit_script() {
     unhandled_.clear();
     context_.Reset();
   }
+  isolate_tasks_->set_isolate(nullptr);
   holder_.reset();
 }
 
@@ -1283,7 +1380,7 @@ void zebkit_script::ReportUnhandledRejections() {
   v8::Isolate* isolate = this->isolate();
   v8::Local<v8::Context> context = this->context();
   for (const auto& [promise, value] : unhandled)
-    fprintf(stderr, "Uncaught (in promise) %s\n", Describe(isolate, context, value.Get(isolate)).c_str());
+    Uncaught("Uncaught (in promise) " + Describe(isolate, context, value.Get(isolate)));
 }
 
 void zebkit_script::CheckIdle() {
@@ -1362,8 +1459,14 @@ void zebkit_script::SettleJson(int id, const char* json, const char* error) {
 }
 
 void zebkit_script::Report(v8::TryCatch& try_catch) {
-  fprintf(stderr, "Uncaught %s\n",
-          Describe(isolate(), context(), try_catch.Exception()).c_str());
+  Uncaught("Uncaught " + Describe(isolate(), context(), try_catch.Exception()));
+}
+
+void zebkit_script::Uncaught(const std::string& text) {
+  // Reported and run on: the engine is not stopped inside a callback, and the
+  // program fails as it ends (zebkit_main() returns 1).
+  fprintf(stderr, "%s\n", text.c_str());
+  zebkit::NoteUncaughtScriptError();
 }
 
 void zebkit_script::CallFunction(v8::Local<v8::Function> function,
@@ -1670,6 +1773,12 @@ void zebkit_script::OnSystem(const v8::FunctionCallbackInfo<v8::Value>& info) {
   info.GetReturnValue().Set(true);
 }
 
+// A promise of the script's that a C callback settles, if the script is still there.
+struct PendingCall {
+  base::WeakPtr<zebkit_script> script;
+  int id;
+};
+
 void zebkit_script::System(const v8::FunctionCallbackInfo<v8::Value>& info) {
   zebkit_script* self = From(info);
   auto* isolate = info.GetIsolate();
@@ -1718,6 +1827,23 @@ void zebkit_script::System(const v8::FunctionCallbackInfo<v8::Value>& info) {
   }
   if (kind == "open-external") return finish(zebkit_open_external(Utf8(isolate, info[1]).c_str(), &error), "not opened");
   if (kind == "show-in-folder") return finish(zebkit_show_in_folder(Utf8(isolate, info[1]).c_str(), &error), "not shown");
+  // A promise of how the system did it: rejected with its error.
+  if (kind == "open-external-async" || kind == "show-in-folder-async") {
+    v8::Local<v8::Promise> made;
+    const int id = self->NewPromise(&made);
+    info.GetReturnValue().Set(made);
+    auto* pending = new PendingCall{self->weak_factory_.GetWeakPtr(), id};
+    zebkit_desktop_done_func done = [](bool ok, const char* reason, void* data) {
+      std::unique_ptr<PendingCall> pending(static_cast<PendingCall*>(data));
+      if (pending->script)
+        pending->script->Settle(pending->id, ok, ok ? base::Value() : base::Value(reason ? reason : "not done"));
+    };
+    if (kind == "open-external-async")
+      zebkit_open_external_async(Utf8(isolate, info[1]).c_str(), done, pending);
+    else
+      zebkit_show_in_folder_async(Utf8(isolate, info[1]).c_str(), done, pending);
+    return;
+  }
   if (kind == "notification-clicked") {
     const int action = info[2]->IsNumber() ? static_cast<int>(info[2].As<v8::Number>()->Value()) : -1;
     info.GetReturnValue().Set(zebkit_notification_clicked(Utf8(isolate, info[1]).c_str(), action));
@@ -1866,11 +1992,6 @@ v8::Local<v8::Value> RectValue(v8::Isolate* isolate, const zebkit_rect* rect) {
 
 // A promise of the script's, settled by a callback that may come after the
 // script has gone.
-struct PendingCall {
-  base::WeakPtr<zebkit_script> script;
-  int id;
-};
-
 // ffmpeg's progress and its cancelling, between a worker thread and the
 // engine's.
 struct MediaJob : base::RefCountedThreadSafe<MediaJob> {
@@ -2002,11 +2123,10 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     zebkit_view* view = nullptr;
     if (kind == "offscreen-new") {
       const float scale = static_cast<float>(number(5, 1));
-      view = in ? zebkit_view_new_offscreen_in(in, url.c_str(), width, height, scale)
-                : zebkit_view_new_offscreen(url.c_str(), width, height, scale);
-      // Not on Windows without --headless.
+      char* error = nullptr;
+      view = zebkit_view_new_offscreen_ex(in, url.c_str(), width, height, scale, &error);
       if (!view)
-        return info.GetReturnValue().SetNull();
+        return take_error(error, "cannot create an off-screen view");
     } else if (info[5]->IsString()) {
       char* error = nullptr;
       view = zebkit_view_new_with_options(in, url.c_str(), text(5).c_str(), &error);
@@ -2026,6 +2146,26 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     if (!port)
       return take_error(error, "CDP did not listen");
     info.GetReturnValue().Set(port);
+  } else if (kind == "cdp-listen-async") {
+    // {port, url}, without waiting on the engine's thread.
+    const std::string address = text(1);
+    PendingCall* pending = promise();
+    zebkit_cdp_listen_async(
+        info[1]->IsString() ? address.c_str() : nullptr, static_cast<unsigned>(number(2)),
+        [](unsigned port, const char* url, const char* error, void* data) {
+          std::unique_ptr<PendingCall> pending(static_cast<PendingCall*>(data));
+          if (!pending->script)
+            return;
+          if (!port) {
+            pending->script->Settle(pending->id, false, base::Value(error ? error : "CDP did not listen"));
+            return;
+          }
+          base::DictValue served;
+          served.Set("port", static_cast<int>(port));
+          served.Set("url", url ? url : "");
+          pending->script->Settle(pending->id, true, base::Value(std::move(served)));
+        },
+        pending);
   } else if (kind == "cdp-port") {
     info.GetReturnValue().Set(zebkit_cdp_get_port());
   } else if (kind == "cdp-url") {
@@ -2669,6 +2809,29 @@ void zebkit_script::ViewListen(zebkit_script* self, ViewEntry* entry, const std:
       SetField(isolate, object, "held", v8::Boolean::New(isolate, dialog->held));
       call.Event("dialog", {object});
     }, hook);
+  } else if (name == "popup-blocked" || name == "permission-result" || name == "navigation-result" ||
+             name == "console" || name == "window-state" || name == "certificate-result" ||
+             name == "http-auth-result") {
+    // Told as JSON, parsed only for a script that listens.
+#define ZEBKIT_JSON_EVENT(event, setter)                                                         \
+  if (name == event) {                                                                         \
+    setter(view, [](zebkit_view* told, const char* json, void* data) {                         \
+      Call call(data);                                                                         \
+      if (!call.script())                                                                      \
+        return;                                                                                \
+      Scope scope(call.script());                                                              \
+      call.Event(event, {JsonValueOf(call.isolate(), call.script()->context(), json),          \
+                         call.script()->ToldView(call.hook->id, told)});                      \
+    }, hook);                                                                                  \
+  }
+    ZEBKIT_JSON_EVENT("popup-blocked", zebkit_view_on_popup_blocked)
+    ZEBKIT_JSON_EVENT("permission-result", zebkit_view_on_permission_result)
+    ZEBKIT_JSON_EVENT("navigation-result", zebkit_view_on_navigation_result)
+    ZEBKIT_JSON_EVENT("console", zebkit_view_on_console)
+    ZEBKIT_JSON_EVENT("window-state", zebkit_view_on_window_state)
+    ZEBKIT_JSON_EVENT("certificate-result", zebkit_view_on_certificate_result)
+    ZEBKIT_JSON_EVENT("http-auth-result", zebkit_view_on_http_auth_result)
+#undef ZEBKIT_JSON_EVENT
   } else if (name == "find") {
     zebkit_view_on_find(view, [](zebkit_view*, const char* json, void* data) {
       Call call(data);
@@ -2907,78 +3070,19 @@ int zebkit_script::WrapView(zebkit_view* view) {
         zebkit_view_on_cursor(closing, nullptr, nullptr);
         zebkit_view_on_popup(closing, nullptr, nullptr);
         zebkit_view_on_authentication(closing, nullptr, nullptr);
+        zebkit_view_on_popup_blocked(closing, nullptr, nullptr);
+        zebkit_view_on_permission_result(closing, nullptr, nullptr);
+        zebkit_view_on_navigation_result(closing, nullptr, nullptr);
+        zebkit_view_on_console(closing, nullptr, nullptr);
+        zebkit_view_on_window_state(closing, nullptr, nullptr);
+        zebkit_view_on_certificate_result(closing, nullptr, nullptr);
+        zebkit_view_on_http_auth_result(closing, nullptr, nullptr);
         auto* hook = static_cast<ViewHook*>(data);
         if (hook->script)
           hook->script->ViewClosed(hook->id);
         base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, hook);
       },
       hook);
-  zebkit_view_on_popup_blocked(
-      view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script)
-          return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "popup-blocked", {value});
-      },
-      hook);
-  zebkit_view_on_permission_result(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "permission-result", {value});
-      }, hook);
-  zebkit_view_on_navigation_result(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "navigation-result", {value});
-      }, hook);
-  zebkit_view_on_certificate_result(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "certificate-result", {value});
-      }, hook);
-  zebkit_view_on_http_auth_result(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "http-auth-result", {value});
-      }, hook);
-  zebkit_view_on_console(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "console", {value});
-      }, hook);
-  zebkit_view_on_window_state(view,
-      [](zebkit_view*, const char* json, void* data) {
-        auto* hook = static_cast<ViewHook*>(data);
-        if (!hook->script) return;
-        Scope scope(hook->script.get());
-        v8::Local<v8::Value> value;
-        if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-          hook->script->ViewEvent(hook->id, "window-state", {value});
-      }, hook);
   zebkit_view_on_window_open(view,
       [](zebkit_view*, zebkit_view* child, const char*, void* data) {
         auto* hook = static_cast<ViewHook*>(data);
@@ -3272,13 +3376,24 @@ void zebkit_script::HttpAuthRequest(const v8::FunctionCallbackInfo<v8::Value>& i
 }
 
 // One function per hook name, so that a plain C function reaches its handler.
-void zebkit_script::DeliverHook(void* data, const char* name, const char* json) {
+void zebkit_script::DeliverHook(void* data, zebkit_view* told, const char* name, const char* json) {
   auto* hook = static_cast<ViewHook*>(data);
   if (!hook->script) return;
   Scope scope(hook->script.get());
   v8::Local<v8::Value> value;
   if (v8::JSON::Parse(hook->script->context(), String8(hook->script->isolate(), json)).ToLocal(&value))
-    hook->script->ViewEvent(hook->id, name, {value});
+    hook->script->ViewEvent(hook->id, name, {value, hook->script->ToldView(hook->id, told)});
+}
+
+v8::Local<v8::Value> zebkit_script::ToldView(int id, zebkit_view* told) {
+  auto own = views_.find(id);
+  if (told && own != views_.end() && own->second.view != told) {
+    for (const auto& [other, entry] : views_) {
+      if (entry.view == told && !entry.wrapper.IsEmpty())
+        return entry.wrapper.Get(isolate());
+    }
+  }
+  return v8::Undefined(isolate());
 }
 
 #define ZEBKIT_TOLD_HOOK(NAME, SETTER)                                        \
@@ -3289,8 +3404,8 @@ void zebkit_script::DeliverHook(void* data, const char* name, const char* json) 
     entry->handlers.erase(NAME);                                              \
     if (info[2]->IsFunction()) {                                              \
       entry->handlers[NAME].Reset(isolate, info[2].As<v8::Function>());       \
-      SETTER(entry->view, [](zebkit_view*, const char* json, void* data) {    \
-        DeliverHook(data, NAME, json);                                        \
+      SETTER(entry->view, [](zebkit_view* told, const char* json, void* data) { \
+        DeliverHook(data, told, NAME, json);                                  \
       }, entry->hook);                                                        \
     }                                                                         \
     info.GetReturnValue().Set(true);                                          \
@@ -3304,8 +3419,8 @@ void zebkit_script::DeliverHook(void* data, const char* name, const char* json) 
     entry->handlers.erase(NAME);                                              \
     if (info[2]->IsFunction()) {                                              \
       entry->handlers[NAME].Reset(isolate, info[2].As<v8::Function>());       \
-      SETTER(entry->view, [](zebkit_view*, REQUEST*, const char* json, void* data) { \
-        DeliverHook(data, NAME, json);                                        \
+      SETTER(entry->view, [](zebkit_view* told, REQUEST*, const char* json, void* data) { \
+        DeliverHook(data, told, NAME, json);                                  \
       }, entry->hook);                                                        \
     }                                                                         \
     info.GetReturnValue().Set(true);                                          \
@@ -3350,6 +3465,7 @@ void zebkit_script::ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& 
   ZEBKIT_TOLD_HOOK("external-protocol", zebkit_view_on_external_protocol)
   ZEBKIT_ASKED_HOOK("download", zebkit_view_on_download, zebkit_download_request)
   ZEBKIT_TOLD_HOOK("download-progress", zebkit_view_on_download_progress)
+  ZEBKIT_TOLD_HOOK("download-result", zebkit_view_on_download_result)
   ZEBKIT_ASKED_HOOK("client-certificate", zebkit_view_on_client_certificate, zebkit_client_certificate_request)
   ZEBKIT_TOLD_HOOK("client-certificate-result", zebkit_view_on_client_certificate_result)
   ZEBKIT_ASKED_HOOK("file-chooser", zebkit_view_on_file_chooser, zebkit_file_chooser_request)
@@ -3365,6 +3481,8 @@ void zebkit_script::ViewHookFunction(const v8::FunctionCallbackInfo<v8::Value>& 
   ZEBKIT_TOLD_HOOK("reserved-key", zebkit_view_on_reserved_key)
   ZEBKIT_TOLD_HOOK("context-menu", zebkit_view_on_context_menu)
   ZEBKIT_TOLD_HOOK("fullscreen", zebkit_view_on_fullscreen)
+  ZEBKIT_TOLD_HOOK("process-gone", zebkit_view_on_process_gone)
+  ZEBKIT_TOLD_HOOK("responsiveness", zebkit_view_on_responsiveness)
   PermissionTypeError(isolate, "unknown hook");
 }
 #undef ZEBKIT_TOLD_HOOK
@@ -3441,7 +3559,7 @@ void zebkit_script::ViewHookCall(const v8::FunctionCallbackInfo<v8::Value>& info
           entry->view, menu, info[3]->IsString() ? items.c_str() : nullptr,
           info[4]->IsFunction() ? +[](zebkit_view*, const char* item, void* data) {
             const std::string json = base::WriteJson(base::Value(item ? item : "")).value_or("\"\"");
-            DeliverHook(data, "context-menu-item", json.c_str());
+            DeliverHook(data, nullptr, "context-menu-item", json.c_str());
           } : nullptr,
           entry->hook, &error);
     }
@@ -3489,9 +3607,15 @@ void zebkit_script::NetworkStreamCall(const v8::FunctionCallbackInfo<v8::Value>&
 }
 
 void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info) {
-  auto* isolate = info.GetIsolate(); uint64_t id = 0;
+  auto* self = From(info); auto* isolate = info.GetIsolate(); uint64_t id = 0;
   const auto kind = Utf8(isolate, info[0]);
   const auto action = Utf8(isolate, info[1]);
+  // Why the last reply was refused: what the request's error reads.
+  if (action == "error") {
+    if (self->hook_error_.empty()) info.GetReturnValue().SetNull();
+    else info.GetReturnValue().Set(String8(isolate, self->hook_error_.c_str()));
+    return;
+  }
   if (!info[2]->IsString() || !base::StringToUint64(Utf8(isolate, info[2]), &id) || !id || id > UINTPTR_MAX) {
     PermissionTypeError(isolate, "invalid request id"); return;
   }
@@ -3520,15 +3644,24 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     *out = Utf8(isolate, info[index]);
     return out->find('\0') == std::string::npos;
   };
+  // The C API's reason when it refuses a reply, or a general one.
+  char* error = nullptr;
+  auto refused = [&](bool ok) {
+    self->hook_error_ = ok ? std::string() : error ? error : "the request is no longer pending, or the reply is invalid";
+    free(error);
+    error = nullptr;
+    return ok;
+  };
   if (kind == "network" && action == "respond-file") {
-    info.GetReturnValue().Set(zebkit_network_respond_file(static_cast<zebkit_network_request*>(request),
-                                                          Utf8(isolate, info[3]).c_str(), Utf8(isolate, info[4]).c_str(),
-                                                          nullptr));
+    info.GetReturnValue().Set(refused(zebkit_network_respond_file(static_cast<zebkit_network_request*>(request),
+                                                                  Utf8(isolate, info[3]).c_str(),
+                                                                  Utf8(isolate, info[4]).c_str(), &error)));
     return;
   }
   if (kind == "network" && action == "respond-stream") {
     zebkit_network_stream* stream =
-        zebkit_network_respond_stream(static_cast<zebkit_network_request*>(request), Utf8(isolate, info[3]).c_str(), nullptr);
+        zebkit_network_respond_stream(static_cast<zebkit_network_request*>(request), Utf8(isolate, info[3]).c_str(), &error);
+    refused(stream);
     if (stream)
       info.GetReturnValue().Set(String8(isolate, base::NumberToString(reinterpret_cast<uintptr_t>(stream)).c_str()));
     else
@@ -3548,20 +3681,20 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
       bytes = Utf8(isolate, info[4]);
     }
     ok = zebkit_network_respond(static_cast<zebkit_network_request*>(request), Utf8(isolate, info[3]).c_str(),
-                                bytes.data(), bytes.size(), nullptr);
+                                bytes.data(), bytes.size(), &error);
   } else if (kind == "download") {
     const auto verb = Utf8(isolate, info[3]);
     if ((verb != "save" && verb != "cancel") || !optional(4, &first)) { PermissionTypeError(isolate, "a download is saved or cancelled"); return; }
     ok = zebkit_download_respond(static_cast<zebkit_download_request*>(request),
                                  verb == "save" ? ZEBKIT_DOWNLOAD_SAVE : ZEBKIT_DOWNLOAD_CANCEL,
-                                 info[4]->IsString() ? first.c_str() : nullptr, nullptr);
+                                 info[4]->IsString() ? first.c_str() : nullptr, &error);
   } else if (kind == "client-certificate" && Utf8(isolate, info[3]) == "choose") {
     // One of the system store's identities, by its index.
     if (!info[4]->IsNumber()) { PermissionTypeError(isolate, "choose takes an identity's index"); return; }
     const double index = info[4].As<v8::Number>()->Value();
     if (index < 0 || index > 65536) { PermissionTypeError(isolate, "choose takes an identity's index"); return; }
     ok = zebkit_client_certificate_choose(static_cast<zebkit_client_certificate_request*>(request),
-                                          static_cast<size_t>(index), nullptr);
+                                          static_cast<size_t>(index), &error);
   } else if (kind == "client-certificate") {
     const auto verb = Utf8(isolate, info[3]);
     if ((verb != "none" && verb != "provide" && verb != "cancel") || !optional(4, &first) || !optional(5, &second)) {
@@ -3569,7 +3702,7 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     }
     ok = zebkit_client_certificate_respond(static_cast<zebkit_client_certificate_request*>(request),
         verb == "none" ? ZEBKIT_CLIENT_CERTIFICATE_NONE : verb == "provide" ? ZEBKIT_CLIENT_CERTIFICATE_PROVIDE : ZEBKIT_CLIENT_CERTIFICATE_CANCEL,
-        info[4]->IsString() ? first.c_str() : nullptr, info[5]->IsString() ? second.c_str() : nullptr, nullptr);
+        info[4]->IsString() ? first.c_str() : nullptr, info[5]->IsString() ? second.c_str() : nullptr, &error);
   } else if (kind == "file-chooser") {
     if (!info[3]->IsArray()) { PermissionTypeError(isolate, "paths is an array"); return; }
     auto array = info[3].As<v8::Array>();
@@ -3581,7 +3714,7 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
       paths.push_back(Utf8(isolate, path));
     }
     for (const auto& path : paths) pointers.push_back(path.c_str());
-    ok = zebkit_file_chooser_respond(static_cast<zebkit_file_chooser_request*>(request), pointers.data(), pointers.size(), nullptr);
+    ok = zebkit_file_chooser_respond(static_cast<zebkit_file_chooser_request*>(request), pointers.data(), pointers.size(), &error);
   } else if (kind == "media-access") {
     if (!optional(4, &first) || !optional(5, &second)) { PermissionTypeError(isolate, "a device id is a string"); return; }
     ok = zebkit_media_access_respond(static_cast<zebkit_media_access_request*>(request), info[3]->IsTrue(),
@@ -3597,7 +3730,7 @@ void zebkit_script::HookRequest(const v8::FunctionCallbackInfo<v8::Value>& info)
     ok = zebkit_device_chooser_respond(static_cast<zebkit_device_chooser_request*>(request),
                                        info[3]->IsString() ? first.c_str() : nullptr);
   }
-  info.GetReturnValue().Set(ok);
+  info.GetReturnValue().Set(refused(ok));
 }
 
 void zebkit_script::ViewNavigation(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -3645,6 +3778,12 @@ void zebkit_script::NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>&
   }
   auto* request = reinterpret_cast<zebkit_navigation_request*>(static_cast<uintptr_t>(id));
   const auto action = Utf8(isolate, info[0]);
+  if (action == "error") {
+    const std::string& error = From(info)->hook_error_;
+    if (error.empty()) info.GetReturnValue().SetNull();
+    else info.GetReturnValue().Set(String8(isolate, error.c_str()));
+    return;
+  }
   if (action == "info") {
     char* json = zebkit_navigation_request_info(request);
     v8::Local<v8::Value> value = v8::Null(isolate);
@@ -3664,9 +3803,14 @@ void zebkit_script::NavigationRequest(const v8::FunctionCallbackInfo<v8::Value>&
   }
   const auto url = info[3]->IsNull() ? std::string() : Utf8(isolate, info[3]);
   if (url.find('\0') != std::string::npos) { PermissionTypeError(isolate, "replacement URL contains NUL"); return; }
-  info.GetReturnValue().Set(zebkit_navigation_respond(request,
+  char* error = nullptr;
+  const bool ok = zebkit_navigation_respond(request,
       state == "continue" ? ZEBKIT_NAVIGATION_CONTINUE : state == "cancel" ? ZEBKIT_NAVIGATION_CANCEL : ZEBKIT_NAVIGATION_REDIRECT,
-      info[3]->IsNull() ? nullptr : url.c_str(), nullptr));
+      info[3]->IsNull() ? nullptr : url.c_str(), &error);
+  // Why it was refused, as the other hooks' requests say (request.error).
+  From(info)->hook_error_ = ok ? std::string() : error ? error : "the navigation request is no longer pending";
+  free(error);
+  info.GetReturnValue().Set(ok);
 }
 
 template <zebkit_script::Action action>
@@ -3795,7 +3939,7 @@ void zebkit_script::ViewExportNativeWindow(const v8::FunctionCallbackInfo<v8::Va
     return;
   }
   auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
-  auto settle = [](void* data, const char* handle) {
+  auto settle = [](zebkit_view*, const char* handle, void* data) {
     std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
     if (!hook->script)
       return;
@@ -3805,7 +3949,7 @@ void zebkit_script::ViewExportNativeWindow(const v8::FunctionCallbackInfo<v8::Va
     hook->script->SettleJson(hook->id, json.c_str(), nullptr);
   };
   if (!zebkit_view_export_native_window(entry->view, settle, hook))
-    settle(hook, nullptr);
+    settle(entry->view, nullptr, hook);
 }
 
 void zebkit_script::ViewNativeWindow(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -3842,11 +3986,15 @@ void zebkit_script::ViewUserAgentOverride(const v8::FunctionCallbackInfo<v8::Val
     return;
   }
   auto* hook = new ViewHook{self->weak_factory_.GetWeakPtr(), id};
-  zebkit_view_set_user_agent_override(entry->view, Utf8(info.GetIsolate(), info[1]).c_str(),
+  // False: the function is never called (zebkit.h).
+  if (!zebkit_view_set_user_agent_override(entry->view, Utf8(info.GetIsolate(), info[1]).c_str(),
       [](zebkit_view*, const char* json, const char* error, void* data) {
         std::unique_ptr<ViewHook> hook(static_cast<ViewHook*>(data));
         if (hook->script) hook->script->SettleJson(hook->id, json, error);
-      }, hook);
+      }, hook)) {
+    delete hook;
+    self->SettleJson(id, nullptr, "the view is closed");
+  }
 }
 
 void zebkit_script::ViewGrant(const v8::FunctionCallbackInfo<v8::Value>& info) {
@@ -3865,12 +4013,10 @@ namespace {
 
 // A call from a page to a function the script bound, waiting for the
 // function's promise.
-struct PageCallToScript {
-  zebkit_call* call;
-};
+using PageCall = zebkit_script::PageCall;
 
 void SettleCall(const v8::FunctionCallbackInfo<v8::Value>& info, bool ok) {
-  auto* pending = static_cast<PageCallToScript*>(
+  auto* pending = static_cast<PageCall*>(
       info.Data().As<v8::External>()->Value(
           v8::kExternalPointerTypeTagDefault));
   if (!pending->call)
@@ -3879,6 +4025,9 @@ void SettleCall(const v8::FunctionCallbackInfo<v8::Value>& info, bool ok) {
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
   zebkit_call* call = pending->call;
   pending->call = nullptr;
+  // Answered: forgotten. The reactions holding @pending do not run again.
+  if (zebkit_script* script = pending->script.get())
+    script->page_calls_.erase(pending);
   if (ok) {
     v8::Local<v8::String> json;
     if (info[0]->IsUndefined() ||
@@ -3950,28 +4099,64 @@ void zebkit_script::ViewBind(const v8::FunctionCallbackInfo<v8::Value>& info) {
           return;
         }
         // Settled when the result does, promise or not.
-        auto* pending = new PageCallToScript{call};
+        auto owned = std::make_unique<PageCall>();
+        PageCall* pending = owned.get();
+        pending->call = call;
+        pending->script = script->weak_factory_.GetWeakPtr();
+        script->page_calls_[pending] = std::move(owned);
         v8::Local<v8::External> external = v8::External::New(
             isolate, pending, v8::kExternalPointerTypeTagDefault);
         v8::Local<v8::Promise::Resolver> resolver =
             v8::Promise::Resolver::New(context).ToLocalChecked();
         std::ignore = resolver->Resolve(context, result);
-        std::ignore = resolver->GetPromise()->Then(
-            context,
+        v8::Local<v8::Function> fulfilled =
             v8::Function::New(
                 context,
                 [](const v8::FunctionCallbackInfo<v8::Value>& info) {
                   SettleCall(info, true);
                 },
                 external)
-                .ToLocalChecked(),
+                .ToLocalChecked();
+        v8::Local<v8::Function> rejected =
             v8::Function::New(
                 context,
                 [](const v8::FunctionCallbackInfo<v8::Value>& info) {
                   SettleCall(info, false);
                 },
                 external)
-                .ToLocalChecked());
+                .ToLocalChecked();
+        // The watch below is on @fulfilled. A rejection queues a job that
+        // holds only @rejected; @rejected holds @fulfilled, so a collection
+        // before that job runs does not drop the call in place of its error.
+        std::ignore = rejected->SetPrivate(
+            context,
+            v8::Private::ForApi(isolate, String8(isolate, "zebkit.fulfilled")),
+            fulfilled);
+        std::ignore =
+            resolver->GetPromise()->Then(context, fulfilled, rejected);
+        // A result that never settles and is collected takes its reactions
+        // with it: the call is dropped then, not left for ever.
+        pending->watch.Reset(isolate, fulfilled);
+        pending->watch.SetWeak(
+            pending,
+            [](const v8::WeakCallbackInfo<PageCall>& weak) {
+              PageCall* pending = weak.GetParameter();
+              pending->watch.Reset();
+              zebkit_call* call = std::exchange(pending->call, nullptr);
+              // Not inside the collector: the answer runs the engine's code.
+              base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE,
+                  base::BindOnce(
+                      [](base::WeakPtr<zebkit_script> script, PageCall* pending,
+                         zebkit_call* call) {
+                        if (call)
+                          zebkit_call_free(call);
+                        if (script)
+                          script->page_calls_.erase(pending);
+                      },
+                      pending->script, pending, call));
+            },
+            v8::WeakCallbackType::kParameter);
       },
       data);
 }
@@ -4162,8 +4347,8 @@ void zebkit_script::Settled(const v8::FunctionCallbackInfo<v8::Value>& info,
   std::string error;
   if (!ok) {
     error = Describe(isolate, context, info[0]);
-    if (!done->func)
-      fprintf(stderr, "Uncaught %s\n", error.c_str());
+    if (!done->func && done->script)
+      done->script->Uncaught("Uncaught " + error);
   } else if (!done->as_module && !info[0]->IsUndefined()) {
     v8::Local<v8::String> text;
     if (v8::JSON::Stringify(context, info[0]).ToLocal(&text))
@@ -4232,7 +4417,7 @@ void zebkit_script::RunModule(const std::string& file,
     if (func)
       func(nullptr, nullptr, error.c_str(), data);
     else
-      fprintf(stderr, "%s\n", error.c_str());
+      Uncaught(error);
     CheckIdle();
     return;
   }
@@ -4245,7 +4430,7 @@ void zebkit_script::RunModule(const std::string& file,
     if (func)
       func(nullptr, nullptr, error.c_str(), data);
     else
-      fprintf(stderr, "Uncaught %s\n", error.c_str());
+      Uncaught("Uncaught " + error);
     CheckIdle();
     return;
   }

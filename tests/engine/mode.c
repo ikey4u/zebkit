@@ -2,6 +2,7 @@
  * enable Chromium's automation flag. Explicit automation switches must
  * still do so. Run against a real engine, including its child renderer. */
 
+#include "harness.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -9,19 +10,11 @@
 #include <zebkit/offscreen.h>
 
 static int expect_automation;
-static int failures;
-
-static void check(int ok, const char *what) {
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
-    fflush(stdout);
-    if (!ok)
-        ++failures;
-}
 
 static void evaluated(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)view, (void)error, (void)data;
     check(json && strcmp(json, expect_automation ? "true" : "false") == 0,
-          "navigator.webdriver agrees with the explicit automation mode");
+          "navigator.webdriver agrees with the explicit automation mode", NULL);
     zebkit_quit();
 }
 
@@ -35,13 +28,13 @@ static void loaded(zebkit_view *view, zebkit_load_event event, const char *url, 
 
 static void ready(void *data) {
     (void)data;
-    check(zebkit_is_headless(), "the engine creates no native windows");
+    check(zebkit_is_headless(), "the engine creates no native windows", NULL);
     char *error = NULL;
     check(zebkit_cdp_listen("127.0.0.1", 0, &error) != 0,
-          "the host can serve CDP through the API");
+          "the host can serve CDP through the API", NULL);
     zebkit_free(error);
     zebkit_view *view = zebkit_view_new_offscreen(NULL, 800, 600, 1.0);
-    check(view != NULL, "the host can create an off-screen view");
+    check(view != NULL, "the host can create an off-screen view", NULL);
     if (!view) {
         zebkit_quit();
         return;
@@ -55,5 +48,6 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--expect-automation") == 0)
             expect_automation = 1;
     int result = zebkit_main(argc, argv, ready, NULL);
-    return result ? result : failures ? 1 : 0;
+    check(result == 0, "zebkit_main returned 0", "%d", result);
+    return summary();
 }

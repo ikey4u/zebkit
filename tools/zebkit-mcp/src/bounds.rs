@@ -35,6 +35,9 @@ pub struct Bounds {
     pub oauth_hosts: Vec<String>,
     /// Keys settings_set may change: none unless the operator names them.
     pub settings: BTreeSet<String>,
+    /// --allow-local-network: a public name may be answered from this machine or
+    /// a local network (`check_address` lets every address pass).
+    pub local_network: bool,
 }
 
 impl Bounds {
@@ -215,6 +218,46 @@ impl Bounds {
         Some(format!("connect-src {} blob: data:", if sources.is_empty() { "'none'".to_string() } else { sources.join(" ") }))
     }
 
+    /// Whether a response for `url` may come from `address`, the IP address it
+    /// came from after DNS (the network hook's response stage, before the page
+    /// has any of the body), as the names' check cannot say: a public name whose
+    /// DNS answer is this machine or a local network (DNS rebinding) is refused.
+    /// A host local by its name or address was allowed by the operator, by name,
+    /// and passes; so does any address with --allow-local-network.
+    ///
+    /// Only what came over the network has an address: http and https (ws and
+    /// wss, should they come here). A response of one of those without an
+    /// address is refused, what cannot be told not passing. The engine does not
+    /// say whether a response came from the HTTP cache; one that did carries the
+    /// address it was fetched from, kept in the cache entry, and is checked by
+    /// it. `data:` and `about:` are bytes the page has already and pass, as in
+    /// `check_request`; `blob:` passes by its inner URL; any other scheme is
+    /// refused (`check_request` has stopped it before).
+    pub fn check_address(&self, url: &str, address: Option<&str>) -> Result<(), String> {
+        if self.local_network {
+            return Ok(());
+        }
+        let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+        match scheme.as_str() {
+            "http" | "https" | "ws" | "wss" => {}
+            "data" | "about" => return Ok(()),
+            "blob" => return self.check_url(url.get(5..).unwrap_or("")).map(|_| ()),
+            _ => return Err(format!("the scheme {scheme}: is refused; only http and https are allowed")),
+        }
+        let host = url_part(url, None, UrlPart::Host).unwrap_or_default();
+        if !host.is_empty() && is_private_host(&host) {
+            return Ok(());
+        }
+        let Some(address) = address else {
+            return Err(format!("{host}: the network did not say which address answered; refused without --allow-local-network"));
+        };
+        match address.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>() {
+            Ok(ip) if !is_local_address(ip) => Ok(()),
+            Ok(ip) => Err(format!("{host} answered from {ip}, an address of this machine or a local network (DNS rebinding); refused without --allow-local-network")),
+            Err(_) => Err(format!("{host}: answered from {}, not an IP address; refused", short(address))),
+        }
+    }
+
     /// A request of a page, or of its workers.
     pub fn check_request(&self, url: &str) -> Result<(), String> {
         let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
@@ -276,11 +319,14 @@ fn private_host_patterns() -> Vec<String> {
     for first in ["0", "10", "127"] {
         patterns.push(format!("{first}.*.*.*"));
     }
-    patterns.extend(["169.254.*.*", "192.168.*.*", "192.0.0.*", "198.18.*.*", "198.19.*.*"].map(str::to_string));
+    patterns.extend(["169.254.*.*", "192.168.*.*", "192.0.0.*", "192.0.2.*", "192.88.99.*", "198.18.*.*", "198.19.*.*", "198.51.100.*", "203.0.113.*"].map(str::to_string));
     patterns.extend((16..32).map(|second| format!("172.{second}.*.*")));
     patterns.extend((64..128).map(|second| format!("100.{second}.*.*")));
     patterns.extend((224..256).map(|first| format!("{first}.*.*.*")));
     // At least two colons: `fcfoo.example:443`, which the rules also try, has one.
+    // Teredo and the other IETF blocks, documentation, discard, SRv6: as text,
+    // so with each way its zeros may be written.
+    patterns.extend(["2001::*", "2001:0:*:*", "2001:2::*", "2001:2:0:*", "2001:db8:*", "3fff::*", "3fff:?:*", "3fff:??:*", "3fff:???:*", "100::*", "100:0:0:1:*", "5f00:*:*"].map(str::to_string));
     patterns.extend(["::*", "64:ff9b:*:*", "2002:*:*", "fc*:*:*", "fd*:*:*", "fe8*:*:*", "fe9*:*:*", "fea*:*:*", "feb*:*:*", "fec*:*:*", "fed*:*:*", "fee*:*:*", "fef*:*:*", "ff*:*:*"].map(str::to_string));
     patterns
 }
@@ -332,7 +378,7 @@ const PRIVATE_SUFFIXES: &[&str] = &[".localhost", ".local", ".internal", ".local
 /// A host `*` does not reach: names of this machine, private and link-local
 /// addresses. The name is the browser's canonical one, so `2130706433` has been
 /// read as 127.0.0.1 by now. A public name that resolves to a private address
-/// (DNS rebinding) is not seen here.
+/// (DNS rebinding) is not seen here: `check_address` holds that, at the response.
 pub fn is_private_host(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host == "localhost"
@@ -345,33 +391,87 @@ pub fn is_private_host(host: &str) -> bool {
         return private_v4(ip);
     }
     if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-        let Ok(ip) = inner.parse::<std::net::Ipv6Addr>() else { return true };
-        let parts = ip.segments();
-        // An IPv4 address inside: mapped (::ffff:a.b.c.d), compatible (::a.b.c.d),
-        // NAT64 (64:ff9b::a.b.c.d), 6to4 (2002:a.b:c.d::).
-        let (hi, lo) = (parts[6], parts[7]);
-        let inner = |hi: u16, lo: u16| private_v4(std::net::Ipv4Addr::from(((hi as u32) << 16) | lo as u32));
-        if parts[..5] == [0; 5] && (parts[5] == 0xffff || parts[5] == 0) && !ip.is_loopback() && !ip.is_unspecified() {
-            return inner(hi, lo);
-        }
-        if parts[0] == 0x64 && parts[1] == 0xff9b {
-            return inner(hi, lo);
-        }
-        if parts[0] == 0x2002 {
-            return inner(parts[1], parts[2]);
-        }
-        let first = parts[0];
-        // Loopback, unique local, link-local and the old site-local, multicast.
-        return ip.is_loopback() || ip.is_unspecified() || first & 0xfe00 == 0xfc00 || first & 0xff80 == 0xfe80 || first & 0xffc0 == 0xfec0 || first & 0xff00 == 0xff00;
+        return inner.parse::<std::net::Ipv6Addr>().map_or(true, private_v6);
     }
     false
 }
 
+/// An address of this machine, of a local network, or one no public host has,
+/// by the IANA special-purpose address registries (IPv4 and IPv6): every block
+/// they mark not globally reachable, and an IPv4 address of those inside an
+/// IPv6 one. Loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7),
+/// link-local (169.254/16, fe80::/10, and the old fec0::/10), shared (100.64/10),
+/// unspecified, "this network" (0/8), protocol assignments (192.0.0/24,
+/// 2001::/23 but for its global blocks), documentation (192.0.2/24,
+/// 198.51.100/24, 203.0.113/24, 2001:db8::/32, 3fff::/20), benchmarking
+/// (198.18/15, 2001:2::/48), the old 6to4 relays (192.88.99/24), reserved
+/// (240/4), broadcast, multicast, discard (100::/64), the dummy prefix
+/// (100:0:0:1::/64), SRv6 (5f00::/16) and Teredo (2001::/32, whose server and
+/// client addresses inside cannot be trusted to say where it goes).
+pub fn is_local_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => private_v4(ip),
+        std::net::IpAddr::V6(ip) => private_v6(ip),
+    }
+}
+
+fn private_v6(ip: std::net::Ipv6Addr) -> bool {
+    let parts = ip.segments();
+    let bytes = ip.octets();
+    let inner = |a: u8, b: u8, c: u8, d: u8| private_v4(std::net::Ipv4Addr::new(a, b, c, d));
+    let last = || inner(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+    // An IPv4 address inside: mapped (::ffff:a.b.c.d), translated (SIIT,
+    // ::ffff:0:a.b.c.d), compatible (::a.b.c.d), NAT64 (64:ff9b::/96, by its
+    // last 32 bits; the local-use 64:ff9b:1::/48 by RFC 6052's /48 layout, bits
+    // 48-63 and 72-87, the octet between them being zero), 6to4 (2002:a.b:c.d::).
+    if parts[..4] == [0; 4] && ((parts[4] == 0 && matches!(parts[5], 0 | 0xffff)) || (parts[4] == 0xffff && parts[5] == 0)) {
+        return last();
+    }
+    if parts[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return last();
+    }
+    if parts[..3] == [0x64, 0xff9b, 1] {
+        return inner(bytes[6], bytes[7], bytes[9], bytes[10]);
+    }
+    if parts[0] == 0x2002 {
+        return inner(bytes[2], bytes[3], bytes[4], bytes[5]);
+    }
+    // 2001::/23, IETF protocol assignments: not global but for the blocks the
+    // registry marks so. Teredo (2001::/32) and benchmarking (2001:2::/48) are
+    // among those that are not.
+    if parts[0] == 0x2001 && parts[1] < 0x200 {
+        let global = matches!(parts, [0x2001, 1, 0, 0, 0, 0, 0, 1..=3])
+            || parts[1] == 3
+            || parts[..3] == [0x2001, 4, 0x112]
+            || (0x20..0x40).contains(&parts[1]);
+        return !global;
+    }
+    let first = parts[0];
+    // Documentation, discard-only, the dummy prefix, SRv6 SIDs; unique local,
+    // link-local and the old site-local, multicast.
+    (first == 0x2001 && parts[1] == 0xdb8)
+        || (first == 0x3fff && parts[1] < 0x1000)
+        || (first == 0x100 && parts[1..3] == [0, 0] && parts[3] <= 1)
+        || first == 0x5f00
+        || first & 0xfe00 == 0xfc00
+        || first & 0xffc0 == 0xfe80
+        || first & 0xffc0 == 0xfec0
+        || first & 0xff00 == 0xff00
+}
+
 fn private_v4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
+    let [a, b, c, d] = ip.octets();
     ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || a == 0
         || (a == 100 && (64..128).contains(&b))
-        || (a == 192 && b == 0 && c == 0)
+        // Protocol assignments, documentation, the old 6to4 relays, benchmarking.
+        // (192.0.0.9 and .10, anycast, are global).
+        || (a == 192 && b == 0 && ((c == 0 && d != 9 && d != 10) || c == 2))
+        || (a == 192 && b == 88 && c == 99)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
         || (a == 198 && (b == 18 || b == 19))
         // Multicast, reserved, broadcast.
         || a >= 224
@@ -466,3 +566,101 @@ fn many_links(path: &Path, _meta: &Metadata) -> bool {
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("the bounds' file checks are written for unix and Windows");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn local(address: &str) -> bool {
+        is_local_address(address.parse::<IpAddr>().expect(address))
+    }
+
+    #[test]
+    fn local_addresses() {
+        for address in [
+            "127.0.0.1", "127.255.0.9", "10.0.0.1", "10.255.255.255", "172.16.0.1", "172.31.255.254", "192.168.1.1",
+            "169.254.169.254", "100.64.0.1", "100.127.255.255", "0.0.0.0", "0.1.2.3", "224.0.0.1", "255.255.255.255",
+            "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "febf::1", "fec0::1", "ff02::1",
+            "::ffff:127.0.0.1", "::ffff:10.1.2.3", "::ffff:169.254.169.254", "::ffff:100.64.0.1", "::ffff:0.0.0.0",
+            "::127.0.0.1", "64:ff9b::7f00:1", "2002:c0a8:101::",
+            // The review's gaps: Teredo (any), SIIT, local-use NAT64 by its /48 layout.
+            "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:0:808:808::", "::ffff:0:127.0.0.1",
+            "::ffff:0:10.0.0.1", "::ffff:0:7f00:1", "64:ff9b:1:7f00:0:100::", "64:ff9b:1:7f00:0:100:808:808", "64:ff9b:1:a00:1::", "64:ff9b:1:c0a8:1:100::",
+            // The IANA registries: protocol assignments, documentation, benchmarking,
+            // 6to4 relays, discard, the dummy prefix, SRv6, ORCHID.
+            "192.0.0.1", "192.0.0.170", "192.0.2.1", "198.51.100.7", "203.0.113.255", "192.88.99.1", "198.18.0.1", "198.19.255.255",
+            "240.0.0.1", "2001:2::1", "2001:10::1", "2001:db8::1", "3fff::1", "3fff:fff:ffff::1", "100::1", "100::1:2:3:4",
+            "100:0:0:1::1", "5f00::1", "fec0::1", "::ffff:192.0.2.1", "64:ff9b::c000:201", "2002:c000:201::",
+        ] {
+            assert!(local(address), "{address} is local");
+        }
+        for address in [
+            "8.8.8.8", "1.1.1.1", "93.184.216.34", "172.15.255.255", "172.32.0.1", "100.63.255.255", "100.128.0.1",
+            "169.253.0.1", "192.169.0.1", "11.0.0.1", "2606:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8",
+            "64:ff9b::808:808", "2002:808:808::",
+            // Public by the registries; the IPv4 inside the /48 local-use NAT64.
+            "64:ff9b:1:808:8:800::", "::ffff:0:8.8.8.8", "192.0.0.9", "192.0.0.10", "192.31.196.1", "192.52.193.1",
+            "192.175.48.1", "2001:1::1", "2001:1::2", "2001:1::3", "2001:3::1", "2001:4:112::1", "2001:20::1",
+            "2001:30::1", "2001:200::1", "2620:4f:8000::1", "3fff:1000::1", "100:0:0:2::1", "2400:cb00::1",
+        ] {
+            assert!(!local(address), "{address} is public");
+        }
+    }
+
+    #[test]
+    fn addresses_by_scheme() {
+        let bounds = Bounds { origins: vec![OriginRule::Exact("http://127.0.0.1:8000".to_string())], ..Bounds::default() };
+        // A data: or about: document (a child frame) has no address, and needs none.
+        assert!(bounds.check_address("data:text/html,<p>x", None).is_ok());
+        assert!(bounds.check_address("DATA:text/plain,x", None).is_ok());
+        assert!(bounds.check_address("about:srcdoc", None).is_ok());
+        // blob: by its inner URL, as a request.
+        assert!(bounds.check_address("blob:http://127.0.0.1:8000/0b1c", None).is_ok());
+        assert!(bounds.check_address("blob:https://example.com/0b1c", None).is_err());
+        assert!(bounds.check_address("blob:null/0b1c", None).is_err());
+        // http, https, ws, wss: a public name needs a public address; none fails closed.
+        for url in ["http://example.com/", "https://example.com/", "ws://example.com/", "wss://example.com/"] {
+            assert!(bounds.check_address(url, Some("93.184.216.34")).is_ok(), "{url}");
+            assert!(bounds.check_address(url, Some("[2606:4700::1111]")).is_ok(), "{url}");
+            assert!(bounds.check_address(url, Some("127.0.0.1")).is_err(), "{url}");
+            assert!(bounds.check_address(url, Some("[::ffff:0:7f00:1]")).is_err(), "{url}");
+            assert!(bounds.check_address(url, Some("2001::1")).is_err(), "{url}");
+            assert!(bounds.check_address(url, None).is_err(), "{url}");
+            assert!(bounds.check_address(url, Some("proxy")).is_err(), "{url}");
+        }
+        // A host local by its own name or address passes, whatever answered.
+        assert!(bounds.check_address("http://127.0.0.1:8000/", Some("127.0.0.1")).is_ok());
+        assert!(bounds.check_address("http://localhost/", None).is_ok());
+        assert!(bounds.check_address("http://[2001:db8::1]/", Some("2001:db8::1")).is_ok());
+        // Other schemes never reach this stage; if they did, refused.
+        assert!(bounds.check_address("file:///etc/passwd", None).is_err());
+        assert!(bounds.check_address("chrome://settings", None).is_err());
+    }
+
+    #[test]
+    fn private_hosts() {
+        for host in ["localhost", "a.localhost", "printer", "127.0.0.1", "[::1]", "[2001::1]", "[::ffff:0:a00:1]", "[2001:db8::1]", "192.0.2.1"] {
+            assert!(is_private_host(host), "{host}");
+        }
+        for host in ["example.com", "8.8.8.8", "[2001:4860:4860::8888]", "[64:ff9b:1:808:8:800::]"] {
+            assert!(!is_private_host(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn resolver_patterns() {
+        let rules = host_resolver_rules(&["*".to_string()], &[]).unwrap();
+        for pattern in ["MAP 2001::* ~NOTFOUND", "MAP 2001:0:*:* ~NOTFOUND", "MAP 2001:db8:* ~NOTFOUND", "MAP 192.0.2.* ~NOTFOUND", "MAP 64:ff9b:*:* ~NOTFOUND"] {
+            assert!(rules.contains(pattern), "{pattern}");
+        }
+        assert!(!rules.contains("MAP 2001:*:* "));
+    }
+
+    #[test]
+    fn addresses_with_the_switch() {
+        let bounds = Bounds { local_network: true, ..Bounds::default() };
+        assert!(bounds.check_address("https://example.com/", Some("127.0.0.1")).is_ok());
+        assert!(bounds.check_address("https://example.com/", None).is_ok());
+    }
+}

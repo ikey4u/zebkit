@@ -47,11 +47,11 @@ impl Request {
         unsafe { string_from(sys::zebkit_request_headers(self.raw)) }.unwrap_or_default()
     }
 
-    /// The body sent with it.
-    pub fn body(&self) -> Option<Vec<u8>> {
+    /// The body sent with it, the engine's while the request is.
+    pub fn body(&self) -> Option<&[u8]> {
         let mut size = 0;
         let body = unsafe { sys::zebkit_request_body(self.raw, &mut size) };
-        (!body.is_null()).then(|| unsafe { std::slice::from_raw_parts(body, size) }.to_vec())
+        (!body.is_null()).then(|| unsafe { std::slice::from_raw_parts(body, size) })
     }
 
     /// Answers with `status`, `headers` ("Name: value" lines separated by

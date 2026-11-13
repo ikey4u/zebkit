@@ -48,8 +48,6 @@ class EngineDownloadManagerDelegate : public content::DownloadManagerDelegate {
   void SetDownloadDirectory(const base::FilePath& default_download_path);
 
  private:
-  friend class base::RefCountedThreadSafe<EngineDownloadManagerDelegate>;
-
   using FilenameDeterminedCallback =
       base::OnceCallback<void(const base::FilePath&)>;
 
@@ -59,8 +57,7 @@ class EngineDownloadManagerDelegate : public content::DownloadManagerDelegate {
                                const std::string& mime_type,
                                const base::FilePath& suggested_directory,
                                FilenameDeterminedCallback callback);
-  void OnDownloadPathGenerated(uint32_t download_id,
-                               download::DownloadTargetCallback callback,
+  void OnDownloadPathGenerated(download::DownloadTargetCallback callback,
                                const base::FilePath& suggested_path);
 
   raw_ptr<content::DownloadManager> download_manager_;

@@ -1,20 +1,25 @@
-"""The hooks through zebkit's Python binding; run by hook_policies.py."""
+"""The hooks through zebkit's Python binding; run by hook_policies.py: the modes
+of ZEBKIT_HOOK_RUNS (a JSON file's path) one after the other in one engine,
+each on views of its own, or the one of ZEBKIT_HOOK_MODE. The first that fails
+ends the program (FAIL, exit 1)."""
 import json
 import os
 import pathlib
 import sys
-import tempfile
 import time
 import zebkit
 from harness import activated
 
 env = os.environ
-MODE, BASE, TLS = env['ZEBKIT_HOOK_MODE'], env['ZEBKIT_HOOK_BASE'], env['ZEBKIT_HOOK_TLS']
-FILES, DOWNLOADS = pathlib.Path(env['ZEBKIT_HOOK_FILES']), pathlib.Path(env['ZEBKIT_HOOK_DOWNLOADS'])
+RUNS = (json.loads(pathlib.Path(env['ZEBKIT_HOOK_RUNS']).read_text()) if env.get('ZEBKIT_HOOK_RUNS')
+        else [dict(env)])
+MODE = BASE = TLS = FILES = DOWNLOADS = None
 CERT = pathlib.Path(env['ZEBKIT_HOOK_CERT']).read_text()
 KEY = pathlib.Path(env['ZEBKIT_HOOK_KEY']).read_text()
 OTHER_KEY = pathlib.Path(env['ZEBKIT_HOOK_OTHER_KEY']).read_text()
 errors = []
+# The views of the mode running, closed before the next one's.
+views = []
 
 
 def pump(seconds):
@@ -55,6 +60,7 @@ def ev(view, script):
 def opened(url=None):
     view = zebkit.View()
     state = {'closed': False, 'loads': []}
+    views.append((view, state))
     view.on_close(lambda: state.update(closed=True))
     names = {zebkit.LOAD_FINISHED: 'finished', zebkit.LOAD_FAILED: 'failed'}
     view.on_load(lambda phase, u: state['loads'].append(names.get(phase, 'other')))
@@ -104,8 +110,9 @@ def download(mode):
     view, state = opened(BASE + '/page')
     target = DOWNLOADS / 'saved.bin'
     target.write_bytes(b'old')
-    kept, progress = [], []
+    kept, progress, results = [], [], []
     view.on_download_progress(guarded(progress.append))
+    view.on_download_result(guarded(results.append))
     def asked(request):
         kept.append(request)
         metadata = request.metadata
@@ -155,13 +162,14 @@ def download(mode):
     wait(lambda: kept, 'asked')
     if mode == 'download-save':
         wait(lambda: any(e.get('state') == 'complete' for e in progress), 'complete')
+        wait(lambda: any(e['state'] == 'saved' and e['reason'] == 'answered' for e in results), 'the outcome: saved')
         assert target.read_bytes() == b'z' * 65536
         assert not list(DOWNLOADS.glob('*.crdownload'))
     elif mode == 'download-cancel':
         wait(lambda: any(e.get('state') == 'cancelled' and e.get('done') for e in progress), 'cancelled')
         assert target.read_bytes() == b'old'
     elif mode == 'download-timeout':
-        wait(lambda: any(e.get('reason') == 'timeout' for e in progress), 'timeout told')
+        wait(lambda: any(e['state'] == 'cancelled' and e['reason'] == 'timeout' for e in results), 'timeout told')
         stale(kept[0])
         assert not kept[0].respond('save', str(target))
         assert target.read_bytes() == b'old'
@@ -180,7 +188,8 @@ def download(mode):
     elif mode == 'download-replace':
         view.on_download(None)
         stale(kept[0])
-        wait(lambda: any(e.get('reason') == 'handler-changed' for e in progress), 'replaced told')
+        wait(lambda: any(e['state'] == 'cancelled' and e['reason'] == 'handler-changed' for e in results),
+             'replaced told')
         assert target.read_bytes() == b'old'
     view.close()
 
@@ -559,7 +568,7 @@ def network_workers(mode):
         kept.append(request)
         metadata = request.metadata
         assert metadata['worker'] and metadata['frameId'] == '', metadata
-        expected = {'net-sw-ws': 'shared-or-service', 'net-sw-block': 'service', 'net-sw-running': 'service'}.get(mode, 'shared')
+        expected = {'net-sw-ws': 'service', 'net-sw-block': 'service', 'net-sw-running': 'service'}.get(mode, 'shared')
         assert metadata['workerType'] == expected, metadata
         assert request.respond('block')
     view.on_network(guarded(asked))
@@ -795,6 +804,8 @@ def network(mode):
         rules = [{'url': '**/echo?worker'}]
     elif mode in ('net-post', 'net-headers'):
         rules = [{'url': '**/echo'}]
+    elif mode == 'net-flood':
+        rules = [{'url': '**/held*'}]
     for invalid in ('nope', [{'mode': 'sometimes'}], [{'stage': 'x'}], [{'frames': 'x'}], [1]):
         try:
             view.set_network_filter(invalid)
@@ -863,6 +874,11 @@ def network(mode):
         box = []
         view.evaluate("new Promise(ok => { const w = new Worker('/net-worker'); w.onmessage = e => ok(e.data); })",
                       lambda value, error=None: box.append(value))
+    elif mode == 'net-flood':
+        # What is past the queue is refused, not let through: nothing here is answered.
+        box = []
+        view.evaluate("Promise.race(Array.from({length: 1100}, (_, i) => fetch('/held?' + i)"
+                      ".then(() => 'through', () => 'failed')))", lambda value, error=None: box.append(value))
     else:
         box = fetched(view, url, 'POST' if mode == 'net-post' else None)
     if mode == 'net-close':
@@ -881,6 +897,10 @@ def network(mode):
         view.on_network(None)
         stale(kept[0])
     wait(lambda: box, 'the fetch ended')
+    if mode == 'net-flood':
+        assert box == ['failed'] and len(kept) >= 1024, (box, len(kept))
+        view.close()
+        return
     if mode == 'net-worker':
         assert box == ['from-host'], box
         view.close()
@@ -1019,19 +1039,58 @@ def two_views(mode):
     second.close()
 
 
-def main():
-    with tempfile.TemporaryDirectory(prefix='zebkit-hook-python-') as profile:
-        assert zebkit.init(['hook-policies-python'] + sys.argv[1:]) == 0
-        try:
-            group = MODE.split('-')[0]
-            {'popup': popup, 'workers': workers_latch, 'two': two_views, 'cancel': cancel_running, 'cdp': cdp_order, 'net': network, 'external': external, 'download': download, 'cert': certificate, 'world': world, 'file': chooser,
-             'media': media, 'keys': keys, 'menu': menu, 'fullscreen': fullscreen}[group](MODE)
-            assert not errors, errors
-            pump(.1)
-            assert not errors, errors
-        finally:
-            zebkit.shutdown()
+GROUPS = {'popup': popup, 'workers': workers_latch, 'two': two_views, 'cancel': cancel_running, 'cdp': cdp_order,
+          'net': network, 'external': external, 'download': download, 'cert': certificate, 'world': world,
+          'file': chooser, 'media': media, 'keys': keys, 'menu': menu, 'fullscreen': fullscreen}
+
+
+def known():
+    """The modes of the driver's list this program has: every one but those
+    its LACKS says Python lacks."""
+    from hook_policies import LACKS, MODES
+    lacks = LACKS.get('python', {})
+    return {mode for group, modes in MODES.items() if group not in lacks for mode in modes if mode not in lacks}
+
+
+def run_mode(run):
+    global MODE, BASE, TLS, FILES, DOWNLOADS
+    MODE, BASE, TLS = run['ZEBKIT_HOOK_MODE'], run['ZEBKIT_HOOK_BASE'], run['ZEBKIT_HOOK_TLS']
+    FILES, DOWNLOADS = pathlib.Path(run['ZEBKIT_HOOK_FILES']), pathlib.Path(run['ZEBKIT_HOOK_DOWNLOADS'])
+    assert MODE in known(), 'an unknown mode: ' + MODE
+    del errors[:]
+    del views[:]
+    # The workers' network policy is the engine's, and outlives the view that
+    # set it: off, as an engine starts.
+    reset, reset_state = opened()
+    reset.set_network_filter_for_workers(False)
+    reset.close()
+    wait(lambda: reset_state['closed'], 'closed')
+    del views[:]
+    GROUPS[MODE.split('-')[0]](MODE)
+    assert not errors, errors
+    # Its views gone before the next mode's, and what they left pending told.
+    for view, state in views:
+        if not state['closed']:
+            view.close()
+    wait(lambda: all(state['closed'] for _, state in views), 'the views closed')
+    pump(.05)
+    assert not errors, errors
     print('ok python ' + MODE, flush=True)
 
 
-main()
+def main():
+    assert zebkit.init(['hook-policies-python'] + sys.argv[1:]) == 0
+    try:
+        for run in RUNS:
+            try:
+                run_mode(run)
+            except Exception:  # noqa: BLE001
+                import traceback
+                print('FAIL %s: %s' % (MODE, traceback.format_exc()), flush=True)
+                return 1
+    finally:
+        zebkit.shutdown()
+    return 0
+
+
+sys.exit(main())

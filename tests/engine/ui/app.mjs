@@ -1,7 +1,7 @@
 // zebkit.ui: a window of Chromium's views, built and kept up to date by
 // signals, driven as a user would (click, type, submit) and read back laid
 // out. Run by zebkit-js (scripts/engine-test.sh); throws when a check fails.
-import {check, results} from '../script/helpers.mjs';
+import {check, finish} from '../script/helpers.mjs';
 
 const {h, signal, computed, Show, For, window, dump, click, type, submit, flush, classes} = zebkit.ui;
 
@@ -93,6 +93,4 @@ await check('an unknown class is refused', () => {
 });
 
 win.close();
-const failed = results.filter(([, outcome]) => outcome !== true);
-console.log(`${results.length - failed.length} of ${results.length} checks passed`);
-if (failed.length) throw new Error(`${failed.length} checks failed`);
+finish();

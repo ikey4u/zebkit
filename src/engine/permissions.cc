@@ -29,6 +29,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/permission_manager.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -428,7 +429,7 @@ extern "C" {
 bool zebkit_view_set_permission(zebkit_view* view, const char* origin, const char* permission,
                                 zebkit_permission_state state, char** error) {
   using namespace zebkit;
-  auto fail = [&](const std::string& message) { if (error) *error = strdup(message.c_str()); return false; };
+  auto fail = [&](const std::string& message) { return zebkit::SetError(error, message); };
   if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
   if (auto code = NamedCode(permission ? permission : "")) {
     if (!ValidState(state)) return fail("unknown permission or state");
@@ -489,7 +490,7 @@ zebkit_permission_state zebkit_view_get_permission(zebkit_view* view, const char
 }
 bool zebkit_view_reset_permissions(zebkit_view* view, const char* origin, char** error) {
   using namespace zebkit;
-  auto fail = [&](const char* message) { if (error) *error = strdup(message); return false; };
+  auto fail = [&](const char* message) { return zebkit::SetError(error, message); };
   if (!Ready() || !zebkit::LiveView(view) || !view->web_contents()) return fail("permission policy needs a live view on the engine thread");
   std::optional<std::string> key;
   if (origin) {

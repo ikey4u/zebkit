@@ -26,15 +26,17 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   windows ([What is in it](#what-is-in-it)).
 - **The real Chrome engine.** Pages see Chromium 157, its user agent and
   client hints, and nothing of a debugger attached.
-- **Lighter than Electron.** Against the latest Electron, 45.2.1, on Linux:
+- **Lighter than Electron.** Against the latest Electron, 45.2.1, on Linux
+  (2026-11-08, Chromium 157):
   33% smaller as an application ships it, a cold start in 2.3 s against
   5.8, a blank page in 27% less memory, JavaScript and the DOM 6% faster,
   text layout level ([Benchmark](#benchmark)).
 - **Take what you need.** Web views in a window or off-screen, a full PDF
-  API, media saved as it plays, 2D drawing, the 17 C libraries inside the
-  engine, your own URL schemes.
+  API, media saved as it plays, 2D drawing, find in page as Chrome finds,
+  the 17 C libraries inside the engine, your own URL schemes.
 - **For agents and tests.** Playwright's API inside the engine, a click in
-  2 to 4 ms where Playwright over CDP takes 33; CDP; an MCP server.
+  2 to 4 ms where Playwright over CDP takes 33 (2026-11-07, Chromium 155);
+  CDP; an MCP server.
 - **The desktop is the application's.** Every decision the engine would
   take, and everything it would show the person, goes through a hook of
   the application's, with a safe default.
@@ -389,15 +391,13 @@ zebkit.main(ready)                 # the engine is found in $ZEBKIT_DIR
 
 [`bindings/golang`](bindings/golang), on cgo: all of the C API, on Linux,
 macOS and Windows; programs for Windows are cross-built with its
-`cmd/zebkit-cc` (`bindings/golang/README.md`). The module has no version tag
-of its own yet: `@main` builds against the 0.4.0 archive. `main` has added
-or removed no function of the C API since 0.4.0; three now return `bool`
-where they returned nothing (`zebkit_post_task`, `zebkit_post_delayed_task`,
-`zebkit_view_attach`), so build with `main`'s headers. Build with the
-engine's headers and library:
+`cmd/zebkit-cc` (`bindings/golang/README.md`). Each release from 0.5.0 on
+tags the module `bindings/golang/v<version>`, made for the engine archive of
+the same version (`zebkit.BindingVersion`); 0.4.0 had no Go binding. Build
+with the engine's headers and library:
 
 ```sh
-go get github.com/ikey4u/zebkit/bindings/golang@main
+go get github.com/ikey4u/zebkit/bindings/golang@v0.4.0
 export CGO_CFLAGS="-I$ZEBKIT_DIR/include" CGO_LDFLAGS="-L$ZEBKIT_DIR -Wl,-rpath,$ZEBKIT_DIR"   # Linux
 ```
 
@@ -468,8 +468,9 @@ window({title: 'Today', width: 460, height: 680}, () =>
 Playwright's API runs inside the engine (`docs/AUTOMATION.md`): every
 command of Playwright's protocol, in the application's process, with no
 CDP and no Node.js. From C it is one call, `zebkit_automation_call(view,
-"Frame.click", "{\"selector\": \"#go\"}", done, data)`; Python has it with
-Playwright's names:
+"Frame.click", "{\"selector\": \"#go\"}", done, data)`; Python, Rust
+(`zebkit::automation`) and Go (`github.com/ikey4u/zebkit/bindings/golang/automation`)
+have it with Playwright's names:
 
 ```python
 import zebkit
@@ -579,7 +580,7 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
   routes, dialogs, downloads, contexts, workers, traces, HAR, video) runs
   inside the engine, without CDP or a Node.js driver: up to 16 times as fast
   as the same commands over CDP, a click in 2 to 4 ms instead of 33
-  (`<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
+  (2026-11-07, Chromium 155; `<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
   clients, in any of its languages, connect to it unchanged with
   `chromium.connect()`.
 - **Made for agents.** `tools/zebkit-mcp` gives them pages, PDFs, files, media
@@ -590,10 +591,10 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
 - **Customise it from your code, down to the desktop.** Native hooks
   (`<zebkit/hooks.h>`) decide what the engine does, in C and every binding:
   permissions,
-  navigation, popups, dialogs, downloads, certificates and client
+  navigation, popups, dialogs, downloads and how each ended, certificates and client
   certificates, sign-in, network requests and responses at every stage,
   settings at run time, your own URL schemes, what a page may call, scripts
-  before the page's own (`docs/ROADMAP_HOOKS.md`). And everything a page or
+  before the page's own (`docs/HOOKS.md`). And everything a page or
   the engine would show the person or ask of the system goes through the
   application: the window's frame (system, overlay or none, with the page as
   the title bar), menus and the context menu, JavaScript dialogs and sign-in,
@@ -611,6 +612,8 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
   sandboxed; permissions a browser would ask about are not granted.
 
 ## Benchmark
+
+### Against Electron (2026-11-08, Chromium 157)
 
 Against the latest stable Electron, 45.2.1 (Chromium 156), measured the same way:
 one harness, the same pages, two thin hosts that do the same thing, every process
@@ -646,6 +649,8 @@ its hot paths as they were (`docs/releases/0.4.0.md`).
   The Verge and the CPU they take loading, where advertising and video decide.
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
+### Playwright's commands (2026-11-07, Chromium 155)
+
 The same Playwright commands three ways, headless, medians, 2026-11-07:
 zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
 1.64.1; not run again on Chromium 157 (`docs/reports/automation-bench.md`,
@@ -664,8 +669,8 @@ zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
 | the screenshot's pixels, unencoded | **9.3 ms** | | |
 
 - **zebkit's API, in-process**: your program calls the command through
-  `<zebkit/automation.h>`, Python's `zebkit.automation` or Rust's
-  `zebkit::automation`; it runs inside the engine, with no Node.js and no protocol.
+  `<zebkit/automation.h>`, Python's `zebkit.automation`, Rust's
+  `zebkit::automation` or Go's `github.com/ikey4u/zebkit/bindings/golang/automation`; it runs inside the engine, with no Node.js and no protocol.
 - **Your Playwright scripts, connected to zebkit**: Playwright's own Node.js
   client, unchanged, with `chromium.connect()` to zebkit's endpoint; its test
   suite (v1.64.1) passes 4,047 of its tests there on Chromium 157
@@ -694,7 +699,7 @@ zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
 | **Use** | |
 | [docs/API.md](docs/API.md) | Everything an application can call, in C and in every binding (Rust, Python, Go, host JavaScript) |
 | [docs/SYSTEM_INTEGRATION.md](docs/SYSTEM_INTEGRATION.md) | Every place the engine meets the system or the person: windows, menus, dialogs, permissions, devices, notifications; each one's default and status |
-| [docs/ROADMAP_HOOKS.md](docs/ROADMAP_HOOKS.md) | Hooks (`<zebkit/hooks.h>`): how an application decides what the engine does, from native code |
+| [docs/HOOKS.md](docs/HOOKS.md) | Hooks (`<zebkit/hooks.h>`): how an application decides what the engine does, from native code |
 | [docs/AUTOMATION.md](docs/AUTOMATION.md) | Playwright's API without CDP (`<zebkit/automation.h>`): how Playwright works, what zebkit does instead, the endpoint, what it costs |
 | [docs/MCP.md](docs/MCP.md) | `tools/zebkit-mcp`: the engine as MCP tools for agents, its bounds, what is weak |
 | [docs/MEDIA_TAP.md](docs/MEDIA_TAP.md) | `<zebkit/media_tap.h>`: the decoded frames and sound of what a page plays |
@@ -717,9 +722,9 @@ zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
 | [docs/SIZE_AND_SPEED.md](docs/SIZE_AND_SPEED.md) | Where the size goes, what was cut and kept, the compiler against speed, the Electron baseline |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The library and the engine: requirements, what is done, what is next |
 | **Investigations** | |
-| [docs/COOKIE_PERSISTENCE.md](docs/COOKIE_PERSISTENCE.md) | Cookies kept across restarts, and their encryption on each system |
-| [docs/GOOGLE_SIGNIN.md](docs/GOOGLE_SIGNIN.md) | Google's sign-in in zebkit, compared with Chrome |
-| [docs/PASSKEYS.md](docs/PASSKEYS.md) | Passkeys and WebAuthn on each system |
+| [docs/notes/cookie-persistence.md](docs/notes/cookie-persistence.md) | Cookies kept across restarts, and their encryption on each system |
+| [docs/notes/google-signin.md](docs/notes/google-signin.md) | Google's sign-in in zebkit, compared with Chrome |
+| [docs/notes/passkeys.md](docs/notes/passkeys.md) | Passkeys and WebAuthn on each system |
 | **Releases and measurements** | |
 | [docs/releases/](docs/releases) | Each release: what is in it, what was tested, what is missing; [next.md](docs/releases/next.md) what is on `main` since the last one |
 | [docs/reports/](docs/reports) | Size reports and benchmarks, written by the scripts that measure |

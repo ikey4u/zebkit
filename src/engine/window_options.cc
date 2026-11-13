@@ -1,3 +1,4 @@
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/window_options.h"
 
 #include <cmath>
@@ -23,12 +24,6 @@ constexpr const char* kRuntimeFields[] = {
     "minWidth", "minHeight", "resizable", "x", "y", "title", "controls", "background",
     "appearance", "pageFullscreen", "dragRegions",
 };
-
-bool Fail(std::string* error, std::string message) {
-  if (error)
-    *error = std::move(message);
-  return false;
-}
 
 bool IsCreationField(std::string_view key) {
   for (const char* field : kCreationFields)
@@ -76,22 +71,22 @@ bool Field(const base::DictValue& dict, std::string_view key, std::string* error
   if (!value)
     return true;
   nested = value->GetIfDict();
-  return nested ? true : Fail(error, std::string(key) + ": expected an object");
+  return nested ? true : SetError(error, std::string(key) + ": expected an object");
 }
 
 bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std::string* error) {
   for (auto [key, value] : dict) {
     if (!IsCreationField(key) && !IsRuntimeField(key))
-      return Fail(error, "unknown window option: " + key);
+      return SetError(error, "unknown window option: " + key);
     if (popup && key == "dragRegions")
-      return Fail(error, "dragRegions: a popup never has its opener's regions");
+      return SetError(error, "dragRegions: a popup never has its opener's regions");
   }
   auto integer = [&](const char* key, int low, int high, int* out) {
     const base::Value* value = dict.Find(key);
     if (!value)
       return true;
     return Integer(*value, low, high, out) ||
-           Fail(error, std::string(key) + ": expected an integer from " + base::NumberToString(low) + " to " +
+           SetError(error, std::string(key) + ": expected an integer from " + base::NumberToString(low) + " to " +
                            base::NumberToString(high));
   };
   auto boolean = [&](const char* key, bool* out) {
@@ -99,7 +94,7 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
     if (!value)
       return true;
     if (!value->is_bool())
-      return Fail(error, std::string(key) + ": expected a boolean");
+      return SetError(error, std::string(key) + ": expected a boolean");
     *out = value->GetBool();
     return true;
   };
@@ -120,7 +115,7 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
     std::string expected;
     for (const char* name : names)
       expected += (expected.empty() ? "" : ", ") + std::string(name);
-    return Fail(error, std::string(key) + ": expected one of " + expected);
+    return SetError(error, std::string(key) + ": expected one of " + expected);
   };
 
   int width = options->size.width(), height = options->size.height();
@@ -146,7 +141,7 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
     return false;
   const bool has_x = dict.Find("x"), has_y = dict.Find("y");
   if (has_x != has_y)
-    return Fail(error, "x and y: both or neither");
+    return SetError(error, "x and y: both or neither");
   if (has_x) {
     int x = 0, y = 0;
     if (!integer("x", -kMaxDimension, kMaxDimension, &x) || !integer("y", -kMaxDimension, kMaxDimension, &y))
@@ -157,7 +152,7 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
     if (title->is_none())
       options->title.reset();
     else if (!title->is_string() || title->GetString().size() > 4096)
-      return Fail(error, "title: expected a string of at most 4096 bytes, or null for the page's");
+      return SetError(error, "title: expected a string of at most 4096 bytes, or null for the page's");
     else
       options->title = base::UTF8ToUTF16(title->GetString());
   }
@@ -167,19 +162,19 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
   if (controls) {
     for (auto [key, value] : *controls)
       if (key != "height" && key != "color" && key != "symbolColor")
-        return Fail(error, "controls: unknown key " + key);
+        return SetError(error, "controls: unknown key " + key);
     if (const base::Value* value = controls->Find("height");
         value && !Integer(*value, 0, 200, &options->controls_height))
-      return Fail(error, "controls.height: expected an integer from 0 to 200");
+      return SetError(error, "controls.height: expected an integer from 0 to 200");
     SkColor color;
     if (const base::Value* value = controls->Find("color")) {
       if (!Color(*value, &color))
-        return Fail(error, "controls.color: expected #rrggbb or #rrggbbaa");
+        return SetError(error, "controls.color: expected #rrggbb or #rrggbbaa");
       options->controls_color = color;
     }
     if (const base::Value* value = controls->Find("symbolColor")) {
       if (!Color(*value, &color))
-        return Fail(error, "controls.symbolColor: expected #rrggbb or #rrggbbaa");
+        return SetError(error, "controls.symbolColor: expected #rrggbb or #rrggbbaa");
       options->symbol_color = color;
     }
   }
@@ -188,7 +183,7 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
     if (value->is_none())
       options->background.reset();
     else if (!Color(*value, &color))
-      return Fail(error, "background: expected #rrggbb or #rrggbbaa, or null");
+      return SetError(error, "background: expected #rrggbb or #rrggbbaa, or null");
     else
       options->background = color;
   }
@@ -207,33 +202,33 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
   if (regions) {
     for (auto [key, value] : *regions)
       if (key != "source" && key != "origins")
-        return Fail(error, "dragRegions: unknown key " + key);
+        return SetError(error, "dragRegions: unknown key " + key);
     int source = static_cast<int>(options->drag_source);
     const base::Value* given = regions->Find("source");
     if (given) {
       if (!given->is_string())
-        return Fail(error, "dragRegions.source: expected none, css or host");
+        return SetError(error, "dragRegions.source: expected none, css or host");
       const std::string& name = given->GetString();
       if (name == "none") source = 0;
       else if (name == "css") source = 1;
       else if (name == "host") source = 2;
-      else return Fail(error, "dragRegions.source: expected none, css or host");
+      else return SetError(error, "dragRegions.source: expected none, css or host");
     }
     std::vector<url::Origin> origins = options->drag_origins;
     if (const base::Value* list = regions->Find("origins")) {
       if (!list->is_list() || list->GetList().size() > kMaxOrigins)
-        return Fail(error, "dragRegions.origins: expected a list of at most 64 origins");
+        return SetError(error, "dragRegions.origins: expected a list of at most 64 origins");
       origins.clear();
       for (const base::Value& item : list->GetList()) {
         const GURL url(item.is_string() ? item.GetString() : std::string());
         url::Origin origin = url::Origin::Create(url);
         if (!url.is_valid() || origin.opaque() || origin.Serialize() != item.GetString())
-          return Fail(error, "dragRegions.origins: expected serialized origins, such as https://app.example");
+          return SetError(error, "dragRegions.origins: expected serialized origins, such as https://app.example");
         origins.push_back(std::move(origin));
       }
     }
     if (source == 1 && origins.empty())
-      return Fail(error, "dragRegions: css needs the origins whose pages may set regions");
+      return SetError(error, "dragRegions: css needs the origins whose pages may set regions");
     options->drag_source = static_cast<WindowOptions::DragSource>(source);
     options->drag_origins = std::move(origins);
   }
@@ -273,15 +268,15 @@ WindowOptions& WindowOptions::operator=(const WindowOptions& other) {
 bool ParseWindowOptions(std::string_view json, bool at_creation, const WindowOptions& base,
                         WindowOptions* out, std::string* error) {
   if (json.size() > kMaxJson)
-    return Fail(error, "window options: at most 64 KiB of JSON");
+    return SetError(error, "window options: at most 64 KiB of JSON");
   std::optional<base::Value> parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_dict())
-    return Fail(error, "window options: expected a JSON object");
+    return SetError(error, "window options: expected a JSON object");
   const base::DictValue& dict = parsed->GetDict();
   if (!at_creation) {
     for (auto [key, value] : dict)
       if (IsCreationField(key))
-        return Fail(error, "requires-recreate: " + key + " is fixed when the window is made");
+        return SetError(error, "requires-recreate: " + key + " is fixed when the window is made");
   }
   WindowOptions options = base;
   if (!Apply(dict, false, &options, error))
@@ -294,10 +289,10 @@ bool ParseWindowOptions(std::string_view json, bool at_creation, const WindowOpt
 
 bool ParsePopupWindowOptions(std::string_view json, WindowOptions* out, std::string* error) {
   if (json.size() > kMaxJson)
-    return Fail(error, "window options: at most 64 KiB of JSON");
+    return SetError(error, "window options: at most 64 KiB of JSON");
   std::optional<base::Value> parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_dict())
-    return Fail(error, "window options: expected a JSON object");
+    return SetError(error, "window options: expected a JSON object");
   WindowOptions options;
   if (!Apply(parsed->GetDict(), true, &options, error))
     return false;
@@ -331,29 +326,29 @@ const char* WindowActionName(WindowAction action) {
 
 bool ParseDragRegions(std::string_view json, std::vector<DragRegion>* out, std::string* error) {
   if (json.size() > kMaxJson)
-    return Fail(error, "drag regions: at most 64 KiB of JSON");
+    return SetError(error, "drag regions: at most 64 KiB of JSON");
   std::optional<base::Value> parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_list() || parsed->GetList().size() > kMaxRegions)
-    return Fail(error, "drag regions: expected a JSON array of at most 1024 rectangles");
+    return SetError(error, "drag regions: expected a JSON array of at most 1024 rectangles");
   std::vector<DragRegion> regions;
   for (const base::Value& item : parsed->GetList()) {
     const base::DictValue* rect = item.GetIfDict();
     int x = 0, y = 0, width = 0, height = 0;
     if (!rect)
-      return Fail(error, "drag regions: each is {x, y, width, height, drag}");
+      return SetError(error, "drag regions: each is {x, y, width, height, drag}");
     for (auto [key, value] : *rect)
       if (key != "x" && key != "y" && key != "width" && key != "height" && key != "drag")
-        return Fail(error, "drag regions: unknown key " + key);
+        return SetError(error, "drag regions: unknown key " + key);
     const base::Value *vx = rect->Find("x"), *vy = rect->Find("y"), *vw = rect->Find("width"),
                       *vh = rect->Find("height");
     if (!vx || !vy || !vw || !vh || !Integer(*vx, -kMaxDimension, kMaxDimension, &x) ||
         !Integer(*vy, -kMaxDimension, kMaxDimension, &y) || !Integer(*vw, 0, kMaxDimension, &width) ||
         !Integer(*vh, 0, kMaxDimension, &height))
-      return Fail(error, "drag regions: x, y, width and height are integers, width and height not negative");
+      return SetError(error, "drag regions: x, y, width and height are integers, width and height not negative");
     DragRegion region{gfx::Rect(x, y, width, height), true};
     if (const base::Value* drag = rect->Find("drag")) {
       if (!drag->is_bool())
-        return Fail(error, "drag regions: drag is a boolean");
+        return SetError(error, "drag regions: drag is a boolean");
       region.drag = drag->GetBool();
     }
     regions.push_back(region);

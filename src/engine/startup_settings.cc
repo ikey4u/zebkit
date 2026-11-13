@@ -1,4 +1,5 @@
 // Startup settings without constructing URLs or initializing ICU before content.
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/startup_settings.h"
 
 #include <algorithm>
@@ -15,23 +16,18 @@
 namespace zebkit {
 namespace {
 
-bool Fail(std::string* error, const std::string& message) {
-  *error = message;
-  return false;
-}
-
 bool Fields(const base::DictValue& value,
             std::initializer_list<std::string_view> fields, std::string* error) {
   for (auto [key, ignored] : value) {
     if (std::find(fields.begin(), fields.end(), key) == fields.end())
-      return Fail(error, "Unknown startup setting: " + key);
+      return SetError(error, "Unknown startup setting: " + key);
   }
   return true;
 }
 
 bool Text(const base::Value& value, std::string_view name, std::string* error) {
   return (value.is_string() && value.GetString().find('\0') == std::string::npos) ||
-         Fail(error, std::string(name) + ": expected a string without NUL");
+         SetError(error, std::string(name) + ": expected a string without NUL");
 }
 
 void Switch(std::vector<std::string>* args, std::string_view name,
@@ -55,14 +51,14 @@ bool StringSwitch(const base::DictValue& settings, const char* key,
   const std::string& text = value->GetString();
   // Not through UTF-8: that depends on the locale, which is the application's.
   if (text.empty() || (path && !base::FilePath(base::FilePath::StringType(text.begin(), text.end())).IsAbsolute()))
-    return Fail(error, std::string(key) + (path ? ": expected an absolute path" : ": must not be empty"));
+    return SetError(error, std::string(key) + (path ? ": expected an absolute path" : ": must not be empty"));
   if (!strcmp(key, "userAgent") && !net::HttpUtil::IsValidHeaderValue(text))
-    return Fail(error, "userAgent: not a valid header value");
+    return SetError(error, "userAgent: not a valid header value");
   if (!strcmp(key, "proxy")) {
     net::ProxyConfig::ProxyRules rules;
     rules.ParseFromString(text);
     if (rules.empty() || rules.type == net::ProxyConfig::ProxyRules::Type::EMPTY)
-      return Fail(error, "proxy: not a proxy list");
+      return SetError(error, "proxy: not a proxy list");
   }
   Switch(args, flag, text);
   return true;
@@ -75,7 +71,7 @@ bool BooleanSwitch(const base::DictValue& settings, const char* key,
   if (!value)
     return true;
   if (!value->is_bool())
-    return Fail(error, std::string(key) + ": expected a boolean");
+    return SetError(error, std::string(key) + ": expected a boolean");
   Switch(args, flag, value->GetBool() != inverted ? std::make_optional(std::string()) : std::nullopt);
   return true;
 }
@@ -89,7 +85,7 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
     return true;
   auto parsed = base::JSONReader::Read(json, base::JSON_PARSE_RFC);
   if (!parsed || !parsed->is_dict())
-    return Fail(error, "Startup settings must be a JSON object");
+    return SetError(error, "Startup settings must be a JSON object");
   const auto& settings = parsed->GetDict();
   if (!Fields(settings, {"profileDirectory", "proxy", "userAgent", "headless",
                          "sandbox", "gpu", "logging", "cookies", "applicationIntegration", "appearance"}, error))
@@ -110,7 +106,7 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
       return false;
     const auto& mode = gpu->GetString();
     if (mode != "auto" && mode != "disabled" && mode != "software")
-      return Fail(error, "gpu: expected auto, disabled or software");
+      return SetError(error, "gpu: expected auto, disabled or software");
     for (const char* flag : {"disable-gpu", "use-gl", "use-angle", "enable-unsafe-swiftshader"})
       Switch(&result, flag, std::nullopt);
     if (mode == "disabled")
@@ -123,37 +119,37 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
   }
   if (const base::Value* logging = settings.Find("logging")) {
     if (!logging->is_dict())
-      return Fail(error, "logging: expected an object");
+      return SetError(error, "logging: expected an object");
     const auto& log = logging->GetDict();
     if (!Fields(log, {"destination", "path", "level"}, error))
       return false;
     const base::Value* destination = log.Find("destination");
     if (!destination || !Text(*destination, "logging.destination", error))
-      return Fail(error, "logging.destination: expected stderr, file or none");
+      return SetError(error, "logging.destination: expected stderr, file or none");
     const auto& target = destination->GetString();
     if (target != "stderr" && target != "file" && target != "none")
-      return Fail(error, "logging.destination: expected stderr, file or none");
+      return SetError(error, "logging.destination: expected stderr, file or none");
     for (const char* flag : {"enable-logging", "disable-logging", "log-file"})
       Switch(&result, flag, std::nullopt);
     Switch(&result, target == "none" ? "disable-logging" : "enable-logging",
            target == "stderr" ? std::string("stderr") : std::string());
     if (target == "file") {
       if (!log.contains("path"))
-        return Fail(error, "logging.path is required for file logging");
+        return SetError(error, "logging.path is required for file logging");
       if (!StringSwitch(log, "path", "log-file", true, &result, error))
         return false;
     } else if (log.contains("path")) {
-      return Fail(error, "logging.path is only valid for file logging");
+      return SetError(error, "logging.path is only valid for file logging");
     }
     if (const base::Value* level = log.Find("level")) {
       if (!level->is_int() || level->GetInt() < 0 || level->GetInt() > 3)
-        return Fail(error, "logging.level: expected an integer from 0 to 3");
+        return SetError(error, "logging.level: expected an integer from 0 to 3");
       Switch(&result, "log-level", std::to_string(level->GetInt()));
     }
   }
   if (const base::Value* cookies = settings.Find("cookies")) {
     if (!cookies->is_dict())
-      return Fail(error, "cookies: expected an object");
+      return SetError(error, "cookies: expected an object");
     const auto& cookie = cookies->GetDict();
     if (!Fields(cookie, {"storage", "keyDirectory", "thirdParty"}, error))
       return false;
@@ -161,7 +157,7 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
       if (!Text(*storage, "cookies.storage", error))
         return false;
       if (storage->GetString() != "os" && storage->GetString() != "file")
-        return Fail(error, "cookies.storage: expected os or file");
+        return SetError(error, "cookies.storage: expected os or file");
       Switch(&result, "zebkit-cookie-storage", storage->GetString());
       if (storage->GetString() == "os")
         Switch(&result, "zebkit-cookie-key-directory", std::nullopt);
@@ -173,7 +169,7 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
       for (const auto& arg : result)
         if (arg.starts_with(prefix)) file = arg.substr(prefix.size()) == "file";
       if (!file)
-        return Fail(error, "cookies.keyDirectory requires file storage");
+        return SetError(error, "cookies.keyDirectory requires file storage");
     }
     if (!StringSwitch(cookie, "keyDirectory", "zebkit-cookie-key-directory", true, &result, error) ||
         !BooleanSwitch(cookie, "thirdParty", "zebkit-allow-third-party-cookies", false, &result, error))
@@ -182,19 +178,19 @@ bool ApplyStartupSettings(const char* json, std::vector<std::string>* args,
   bool integration = false;
   if (const base::Value* app = settings.Find("applicationIntegration")) {
     if (!app->is_bool())
-      return Fail(error, "applicationIntegration: expected a boolean");
+      return SetError(error, "applicationIntegration: expected a boolean");
     integration = app->GetBool();
   }
   if (const base::Value* appearance = settings.Find("appearance")) {
     const base::DictValue* dict = appearance->GetIfDict();
     if (!dict)
-      return Fail(error, "appearance: expected an object");
+      return SetError(error, "appearance: expected an object");
     for (auto [key, value] : *dict)
       if (key != "follow")
-        return Fail(error, "appearance: unknown key " + key);
+        return SetError(error, "appearance: unknown key " + key);
     if (const base::Value* follow = dict->Find("follow")) {
       if (!follow->is_bool())
-        return Fail(error, "appearance.follow: expected a boolean");
+        return SetError(error, "appearance.follow: expected a boolean");
       Switch(&result, "zebkit-follow-system-appearance",
              follow->GetBool() ? std::make_optional(std::string()) : std::nullopt);
     }

@@ -123,7 +123,9 @@ in a profile is preferred to a patch wherever one exists.
 | `scripts/check-bindings.py` | That Rust, Python, Go and host JavaScript each reach every function the headers export, and that each package's `LICENSE` is a copy of `LICENSE` |
 | `scripts/check-surfaces.py` | That `src/engine/surfaces.json`, the registry of what the engine shows the person or asks of the system, matches the code (`docs/SYSTEM_INTEGRATION.md`) |
 | `scripts/check.sh` (`mise run check`) | What a release is published after: the static checks, `engine-test.sh --fetch`, the suite in strict mode, `glibc-test.sh`, `web-bench.sh --check`; a pass is recorded for these sources in `out/blink/check/` (`--profile`, default `slim`) |
-| `scripts/check.sh --static` (`mise run check:static`) | What needs no build: `bash -n` of the scripts, the Python files' syntax, `check-bindings.py` |
+| `scripts/check.sh --static` (`mise run check:static`) | What needs no build: `bash -n` of the scripts, the Python files' syntax, `check-bindings.py`, `check-view-guards.py` (every `zebkit_view_*()` function checks its view and its thread), `check-reports.py` (below) |
+| `scripts/check-reports.py` | That each report in `docs/reports` was measured on `upstream.lock`'s Chromium and Electron, and that the size and benchmark reports have their `Engine:` line; a report kept on purpose has a `> History:` line. `ZEBKIT_REPORTS_STALE_OK=1` makes a stale report a warning, for `--static` only |
+| `scripts/sandbox-helper-test.sh <release .tar.xz>` | The Linux sandbox's set-user-ID helper installed from an archive and used (`docs/SANDBOX.md`). Without root it checks the archive's side and skips the rest; run as root on a test machine, a step of every release. The suite runs it as `sandbox-helper` |
 
 `engine-test.sh` takes:
 
@@ -132,7 +134,9 @@ in a profile is preferred to a patch wherever one exists.
 - `--fetch`: what some tests take from the network, into `.cache`: the long
   real PDF, and the npm packages of the CDP clients (installed with
   `--ignore-scripts`: no browser), of the MCP client and Playwright's, at
-  `upstream.lock`'s versions. Then it exits; the run itself uses no network.
+  `upstream.lock`'s versions, and the crates of the Rust hosts in
+  `examples/` (`cargo fetch --locked`). Then it exits; the run itself uses no
+  network.
 - `--strict`, or `ENGINE_TEST_STRICT=1`: a skip is a failure, of a whole
   test (no tool, no download) or of a part of one (a `skip <part>: <why>` or
   `narrowed: ...` line in its log, which the suite collects), and so is a
@@ -142,6 +146,20 @@ in a profile is preferred to a patch wherever one exists.
   `<test>: <part>: <why>`.
 - `--build-only DIR` and `--prebuilt DIR/programs`: the bundle for a machine
   with no compiler, and its run there (`docs/MACOS.md`, `docs/WINDOWS.md`).
+
+A test passes only when it exits 0 and its log ends with `N of N checks
+passed` (N above 0), the line `tests/engine/harness.py`, `harness.h` and
+`script/helpers.mjs` print; the few that do not print it yet are named in
+`engine-test.sh` (`no_result_line_yet`) and listed at the end of a run. The
+features with one driver each run in each language the driver has a
+program for: HTTP authentication, certificates and the user agent as
+`<feature>-c`, `-python`, `-javascript` and `-rust` (and `user-agent-cdp`);
+the console as `console-python`, `-javascript` and `-rust`, its C checks
+being in `hooks`; popups as `popup-python` and `popup-rust`, C's being
+`popup` (and `hooks`) and JavaScript's `window-open-javascript`; the hooks of `<zebkit/hooks.h>` run a group of modes in one engine,
+`hook-<language>-<group>`. `cdp-clients` keeps Chrome's results in
+`.cache/cdp-clients-results`, made again when Chrome, the clients or the test
+change; a run in which Chrome failed a case is not kept.
 
 `scripts/check.sh` runs the suite strict with its own list of expected
 skips, what a Linux build machine (this one, the container below) cannot
@@ -173,7 +191,6 @@ on Linux wait while the load is above `ZEBKIT_HEAVY_MAX_LOAD` (30);
 | `scripts/electron-baseline.sh` | `docs/reports/electron.md`: Electron's hello world, packaged and counted the same way |
 | `scripts/bench.sh <profile> [before=<dir>]` | JavaScript and DOM workloads, best of three, against a saved package |
 | `scripts/layout-bench.sh` | Text layout in zebkit and the pinned Electron: a chapter of a book in columns, laid out again as its width changes (`tests/bench/web/local/layout.html`) |
-| `scripts/ui-bench.sh <profile> [rows]` | The same interface as `zebkit.ui` widgets and as a page: layout time, update time, memory |
 | `scripts/web-bench.sh [--sites] [--check]` | What pages cost in zebkit and in the pinned Electron: CPU loading and at rest, memory, processes; `docs/reports/web-bench.md`. `--check` fails when zebkit goes over `tests/bench/web/limits.json` (`mise run bench:web`) |
 
 Size counts uncompressed and as a download (`.tar.xz` at `xz -6`, `.zip` at
@@ -184,9 +201,9 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 | Task | What it does |
 |---|---|
 | `mise run r` | `scripts/release.sh`: the release packages with the tools, Linux in `dist/release`, macOS in `dist/release-macos` and Windows in `dist/release-windows` (cross-built, `docs/MACOS.md`, `docs/WINDOWS.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
-| `mise run r:github` | The same, then the GitHub release `v<version>` with the archives (`gh`, logged in; the tree committed and pushed; `mise run check` passed, strict, on the same sources and package) |
-| `scripts/release.sh --publish-only` | Publishes what an earlier run built into `dist/`, building nothing: what the release lacks is uploaded, what it has must be the same bytes |
-| `mise run check` | `scripts/check.sh`: the checks a release needs (above); records the pass `r:github` looks for |
+| `mise run r:github:publish` | `scripts/release.sh --publish-only`: publishes what `mise run r` built into `dist/`, building nothing: the two tags, then what the release lacks is uploaded; what it has must be the same bytes (`gh`, logged in; the tree committed and pushed; `mise run check` passed, strict, on the same sources and package) |
+| `mise run r:github` | `scripts/release.sh --publish`: `r` and `r:github:publish` in one run, for sources already built, measured, committed, checked and pushed (its build then does nothing); it checks for the pass before building |
+| `mise run check` | `scripts/check.sh`: the checks a release needs (above); records the pass `r:github:publish` looks for |
 | `mise run check:static` | `scripts/check.sh --static`: the checks that need no build |
 | `mise run r:crate` | `scripts/publish-crates.sh`: the Rust crates at `VERSION` to crates.io (`CARGO_REGISTRY_TOKEN`; `--dry-run` to check only) |
 | `mise run r:python` | `scripts/publish-python.sh`: the Python binding at `VERSION` to PyPI (`UV_PUBLISH_TOKEN` or `PYPI_TOKEN`; `--dry-run` to check only) |
@@ -207,17 +224,73 @@ release is `mise r r` or `mise run r`.
 A release is one archive per system, `x86_64-unknown-linux-gnu`,
 `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`, all built on Linux, whose SHA-256 goes
 into `bindings/rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
-downloads; the crates and the engine share the version in `VERSION`. Build
-(`mise run r`), check (`mise run check`), commit and push `engines.txt`, then
-publish (`mise run r:github`, or `scripts/release.sh --publish-only` to
-upload what was built without building again). A version whose tag
-`v<version>` exists, here or on origin, and whose release has archives is
-published: `release.sh` stops before building and asks for a new `VERSION`,
-and never rewrites that version's lines of `engines.txt`; only
-`--publish-only` goes on, to upload archives the release lacks with the bytes
-it names. An interrupted upload can leave a draft release without a tag: the
-next run says so, and the draft is deleted (`gh release delete v<version>`)
-before running again.
+downloads; the crates and the engine share the version in `VERSION`.
+`scripts/bump-version.sh X.Y.Z` gives the checkout a new version: `VERSION`,
+every manifest and lock file of zebkit's crates, the Python package, the Go
+binding's `BindingVersion`, README.md's instructions, and
+`docs/releases/next.md` renamed to `docs/releases/<version>.md`; it commits
+nothing. It drops the notes' "**A draft.**" paragraph and lists the parts
+still marked **To fill at release**.
+
+The version is compiled into the engine (`ZEBKIT_VERSION`, from `VERSION`),
+so the build comes after the bump; the reports are measured on that build;
+and the checks' record is of the sources as they are, reports and notes
+included (`source_tree_key`; `engines.txt` is left out of it) and of the
+package as its stamp is: so the checks come after the reports. The order:
+
+1. **Bump.** `scripts/bump-version.sh X.Y.Z`, with the release's summary
+   written in `docs/releases/next.md` (the paragraph after "**A draft.**",
+   which the bump drops).
+2. **Build.** `mise run r` (`scripts/release.sh`): `scripts/dist.sh
+   release` builds the `slim` profile and packages it into
+   `out/blink/slim/package`, the package `mise run check` tests, and copies
+   it to `dist/release`; then macOS and Windows; the three archives in
+   `dist/`, their SHA-256 in `bindings/rust/zebkit-rs/engines.txt`. It ends
+   by naming the next steps.
+3. **Measure, on that build.** The reports `scripts/check-reports.py` names
+   as stale (`mise run check:static` lists them): `scripts/measure.sh slim`,
+   `scripts/web-bench.sh`, `scripts/automation-bench.sh`, and on a Mac
+   `tests/bench/equal/compare.py` for `electron-compare-macos.md`, or a
+   `> History:` line on a report kept as it is. They write only
+   `docs/reports/`; `measure.sh`'s `package.sh` finds the package up to
+   date and leaves it. The parts of the release notes marked **To fill at
+   release** are filled from this build and its runs: the archives' sizes,
+   the suite's counts, and the runs on the test machines
+   (`scripts/sandbox-helper-test.sh` on the Linux archive as root, the macOS
+   and Windows bundles, `docs/MACOS.md`, `docs/WINDOWS.md`).
+4. **Commit** `engines.txt`, the reports and the notes, and anything else
+   the release has.
+5. **Check.** `mise run check`: strict, on `out/blink/slim/package`,
+   recorded for these sources. Nothing may change after it but
+   `engines.txt`: a change of any other file, or a new package, means
+   running it again.
+6. **Push** the commit.
+7. **Publish.** `mise run r:github:publish` (`scripts/release.sh
+   --publish-only`), which builds nothing: it requires a clean tree, the
+   checks' record for its sources and package, and HEAD on origin; it pushes
+   two tags at the release's commit, `v<version>` and
+   `bindings/golang/v<version>` (the Go module's), then creates the GitHub
+   release with the archives, and checks that `go list -m` finds the module
+   through the Go proxy.
+8. **The crates**, `mise run r:crate`, then **the Python package**, `mise
+   run r:python`; the crates download the release's archives, so they come
+   after it.
+
+`mise run r:github` is steps 2 and 7 in one run, for a tree that has been
+through 2 to 6 already; on a new version its check for the pass, made
+before building, stops it. `release.sh` reads and pushes the tags with git
+at `origin`; where git cannot reach `origin` (the container below has no ssh
+client, and `GH_TOKEN` authenticates only `gh`), at
+`https://github.com/<owner>/<repository>` with `gh`'s credentials (`git -c
+credential.helper='!gh auth git-credential'`).
+
+A version whose tag `v<version>` exists, here or on origin, and whose
+release has archives is published: `release.sh` stops before building and
+asks for a new `VERSION`, and never rewrites that version's lines of
+`engines.txt`; only `--publish-only` goes on, to upload archives the release
+lacks with the bytes it names. An interrupted upload can leave a draft
+release without a tag: the next run says so, and the draft is deleted (`gh
+release delete v<version>`) before running again.
 Crates download only from a release anyone can read, so the repository
 has to be public for that.
 
@@ -246,7 +319,7 @@ Windows they take part in Chromium's sandbox (`docs/WINDOWS.md`).
 application.
 
 The tools add to an archive, unpacked / as `.tar.xz`, as last measured with
-0.2.0's engine on 2026-11-07: Linux 1.1 / 0.4 MiB, macOS 0.9 / 0.35 MiB,
+0.2.0's engine (Chromium 155) on 2026-11-07: Linux 1.1 / 0.4 MiB, macOS 0.9 / 0.35 MiB,
 Windows 4.8 / 1.0 MiB (the C tools carry the sandbox's 1.2 MiB each there).
 
 ### In a container
@@ -260,12 +333,17 @@ macOS and Windows targets, and mise. Its entry, `docker/publish.sh`:
    neither: `scripts/fetch-upstream.sh`, Apple's SDK copied from the `/macos`
    mount, then `scripts/zsdk-create.sh all`, which also downloads MSVC and the
    Windows SDK from Microsoft (that accepts Microsoft's licence terms;
-   `docs/WINDOWS.md`);
+   `docs/WINDOWS.md`). Two of the pinned MSVC packages are no longer served:
+   give the container a `.cache/sdk/windows/downloads` copied from a machine
+   that has it, and keep that directory backed up (`docs/WINDOWS.md`,
+   "Build");
 2. runs `mise run r` (all three systems built and packed, their checksums
-   written into `engines.txt`), then `mise run check` (`scripts/check.sh`,
-   strict);
+   written into `engines.txt`); while `docs/reports` has reports measured
+   before (`check-reports.py`), it stops there: measure them on this build
+   (step 3 above), commit them with `engines.txt` and the notes, push, and
+   run it again; then `mise run check` (`scripts/check.sh`, strict);
 3. with `--no-publish`, stops there. Otherwise it stops too while the tree has
-   changes (`engines.txt` with the new checksums): commit and push them and
+   changes (`engines.txt` with new checksums): commit and push them and
    run it again;
 4. a run on a clean tree whose `dist/` archives are those `engines.txt` names
    and whose sources have a strict pass of the checks recorded builds

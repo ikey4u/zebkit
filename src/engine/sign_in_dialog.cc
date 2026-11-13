@@ -12,9 +12,17 @@ namespace {
 class SignInDelegate : public content::LoginDelegate {
  public:
   SignInDelegate() = default;
+  // The request ended (the page went, or the network gave up): the dialog
+  // goes with it, as Chrome's login prompt does.
+  ~SignInDelegate() override {
+    if (close_)
+      std::move(close_).Run();
+  }
   void set_callback(LoginAuthRequiredCallback callback) { callback_ = std::move(callback); }
+  void set_close(base::OnceClosure close) { close_ = std::move(close); }
   base::WeakPtr<SignInDelegate> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
   void Answer(std::optional<std::pair<std::u16string, std::u16string>> credentials) {
+    close_.Reset();
     auto callback = std::move(callback_);
     if (!callback)
       return;
@@ -26,6 +34,7 @@ class SignInDelegate : public content::LoginDelegate {
 
  private:
   LoginAuthRequiredCallback callback_;
+  base::OnceClosure close_;
   base::WeakPtrFactory<SignInDelegate> weak_factory_{this};
 };
 
@@ -50,9 +59,11 @@ std::unique_ptr<content::LoginDelegate> CreateSignInDialogDelegate(
   std::u16string message = (challenge.is_proxy ? u"The proxy " : u"") + host + u" asks you to sign in.";
   if (!challenge.realm.empty())
     message += u"\n" + base::UTF8ToUTF16(challenge.realm);
-  if (!ShowSignInDialog(contents, u"Sign in", message, answer))
+  base::OnceClosure close = ShowSignInDialog(contents, u"Sign in", message, answer);
+  if (!close)
     return nullptr;
   delegate->set_callback(std::move(callback));
+  delegate->set_close(std::move(close));
   return delegate;
 }
 

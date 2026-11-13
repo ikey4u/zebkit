@@ -5,8 +5,9 @@
  * An off-screen view has no window. The engine draws its page and hands
  * every frame to the application as a shared surface, without encoding:
  *
- *   macOS   an IOSurface the engine copies the page's pixels into (on its
- *           thread, the damaged part); IOSurfaceCreateMachPort() (or
+ *   macOS   an IOSurface the engine copies the page's pixels into (the
+ *           damaged part, off the engine's thread, the frame coming once
+ *           it is copied); IOSurfaceCreateMachPort() (or
  *           zebkit_frame_iosurface_mach_port()) gives another process a
  *           send right to it.
  *   Linux   BGRA pixels in shared memory, a file descriptor the
@@ -69,6 +70,15 @@ ZEBKIT_API zebkit_view *zebkit_view_new_offscreen(const char *url, int width, in
 /* zebkit_view_new_offscreen() in @context (<zebkit/zebkit.h>). */
 ZEBKIT_API zebkit_view *zebkit_view_new_offscreen_in(zebkit_context *context, const char *url, int width, int height,
                                                      float scale);
+/*
+ * zebkit_view_new_offscreen_in() that says why it failed: NULL with the
+ * reason in @error (free with zebkit_free(); NULL if unwanted), as
+ * zebkit_view_new_with_options() does: another thread than the engine's, a
+ * closed context, the engine stopping, a process with windows on Windows, a
+ * Wayland process. The other two log the reason instead.
+ */
+ZEBKIT_API zebkit_view *zebkit_view_new_offscreen_ex(zebkit_context *context, const char *url, int width, int height,
+                                                     float scale, char **error);
 
 /* Whether @view is off-screen. */
 ZEBKIT_API bool zebkit_view_is_offscreen(zebkit_view *view);

@@ -1,4 +1,7 @@
-"""Built-in file backend through a normal runner's flags, including startup errors."""
+"""Built-in file backend through a normal runner's flags, including startup errors.
+
+    python3 tests/engine/cookie_file_options.py <zebkit-run> [engine switches...]
+"""
 import http.server
 import pathlib
 import subprocess
@@ -7,7 +10,8 @@ import tempfile
 import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from cookies import Fixture, run
+from cookies import Fixture, run  # noqa: E402
+from harness import finish, part  # noqa: E402
 
 
 def main():
@@ -21,25 +25,26 @@ def main():
             directory = root / '密钥 folder'
             flags = [*sys.argv[2:], '--zebkit-cookie-storage=file', f'--zebkit-cookie-key-directory={directory}']
             base = f'http://127.0.0.1:{server.server_port}'
-            run(binary, flags, profile, base + '/set', write=True)
-            assert (directory / 'cookie.key').is_file() and not (profile / 'Secrets').exists()
-            assert run(binary, flags, profile, base + '/check')['sent_auth']
-            database = profile / 'Network/Cookies.host'
-            original = database.read_bytes()
-            keyfile = directory / 'cookie.key'
-            keyfile.write_bytes(b'invalid-format')
-            failure = subprocess.run([str(binary), *flags, f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
-            assert failure.returncode == 1 and keyfile.read_bytes() == b'invalid-format'
-            assert database.read_bytes() == original
-            keyfile.unlink()
-            failure = subprocess.run([str(binary), *flags, f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
-            assert failure.returncode == 1 and not keyfile.exists() and database.read_bytes() == original
-            failure = subprocess.run([str(binary), '--zebkit-cookie-storage=unknown', f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
-            assert failure.returncode == 1
-            print('ok normal-runner flags: Unicode custom directory and restart, invalid/missing key fail before touching database, unknown mode rejects')
+            with part('normal-runner flags: Unicode custom directory and restart, invalid/missing key fail before touching database, unknown mode rejects'):
+                run(binary, flags, profile, base + '/set', write=True)
+                assert (directory / 'cookie.key').is_file() and not (profile / 'Secrets').exists()
+                assert run(binary, flags, profile, base + '/check')['sent_auth']
+                database = profile / 'Network/Cookies.host'
+                original = database.read_bytes()
+                keyfile = directory / 'cookie.key'
+                keyfile.write_bytes(b'invalid-format')
+                failure = subprocess.run([str(binary), *flags, f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
+                assert failure.returncode == 1 and keyfile.read_bytes() == b'invalid-format'
+                assert database.read_bytes() == original
+                keyfile.unlink()
+                failure = subprocess.run([str(binary), *flags, f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
+                assert failure.returncode == 1 and not keyfile.exists() and database.read_bytes() == original
+                failure = subprocess.run([str(binary), '--zebkit-cookie-storage=unknown', f'--user-data-dir={profile}', 'about:blank'], capture_output=True, timeout=15)
+                assert failure.returncode == 1
     finally:
         server.shutdown(); server.server_close()
+    return finish()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

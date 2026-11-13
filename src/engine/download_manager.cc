@@ -105,7 +105,7 @@ bool EngineDownloadManagerDelegate::DetermineDownloadTarget(
 
   FilenameDeterminedCallback filename_determined_callback = base::BindOnce(
       &EngineDownloadManagerDelegate::OnDownloadPathGenerated,
-      weak_ptr_factory_.GetWeakPtr(), download->GetId(), std::move(*callback));
+      weak_ptr_factory_.GetWeakPtr(), std::move(*callback));
 
   base::ThreadPool::PostTask(
       FROM_HERE,
@@ -159,7 +159,6 @@ void EngineDownloadManagerDelegate::GenerateFilename(
 }
 
 void EngineDownloadManagerDelegate::OnDownloadPathGenerated(
-    uint32_t download_id,
     download::DownloadTargetCallback callback,
     const base::FilePath& suggested_path) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);

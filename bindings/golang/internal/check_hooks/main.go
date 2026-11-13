@@ -8,6 +8,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -204,7 +206,20 @@ func main() {
 	}) == nil, "SetNetworkFilter")
 	check(view.SetNetworkFilter([]map[string]any{{"mode": "nonsense"}}) != nil, "a bad filter is refused")
 	events, bodies := 0, 0
-	view.OnNetworkEvent(func(map[string]any) { events++ })
+	outcomes := map[string]string{}
+	view.OnNetworkEvent(func(event map[string]any) {
+		events++
+		url, _ := event["url"].(string)
+		state, _ := event["state"].(string)
+		if state != "" && event["reason"] == "answered" {
+			outcomes[url[strings.LastIndex(url, "/")+1:]] = state
+		}
+		if _, ok := event["dropped"]; ok {
+			if _, number := event["dropped"].(float64); !number {
+				outcomes["dropped-not-a-number"] = fmt.Sprint(event["dropped"])
+			}
+		}
+	})
 	view.OnNetworkBody(func(id string, bytes []byte, end, truncated bool) { bodies += len(bytes) })
 	view.OnNetwork(func(r *zebkit.NetworkRequest) {
 		url, _ := r.Metadata()["url"].(string)
@@ -237,6 +252,9 @@ func main() {
 	check(fetch("/stream") == `"one two"`, "RespondStream", fetch("/stream"))
 	check(fetch("/data") == `"from the server"`, "OnNetwork continues")
 	check(wait(func() bool { return events > 0 && bodies > 0 }, 5), "OnNetworkEvent and OnNetworkBody", events, bodies)
+	check(wait(func() bool { return outcomes["data"] == "continued" }, 5) && outcomes["fulfil"] == "fulfilled" &&
+		outcomes["moved"] == "redirected" && outcomes["blocked"] == "blocked" && outcomes["dropped-not-a-number"] == "",
+		"the outcomes of held requests: continued, fulfilled, redirected, blocked", outcomes)
 	check(view.SetNetworkTimeout(5000) == nil && view.SetNetworkFilterForWorkers(true) == nil && view.SetNetworkFilterForWorkers(false) == nil,
 		"network settings")
 	view.SetNetworkFilter([]any{})
@@ -254,13 +272,60 @@ func main() {
 	})
 	view.Load(base + "/download")
 	check(wait(func() bool { return progress["state"] == "complete" }, 15), "a download saved where the application said", progress)
+	guid, _ := progress["guid"].(string)
+	check(progress["outcome"] == "complete" && progress["savedPath"] == saved && progress["error"] == nil && guid != "",
+		"its outcome: complete, savedPath, guid, no error", progress)
 	bytes, _ := os.ReadFile(saved)
 	check(string(bytes) == "downloaded bytes", "its bytes", string(bytes))
 	cancelled := false
 	view.OnDownload(func(r *zebkit.DownloadRequest) { cancelled = r.Cancel() == nil })
 	view.Load(base + "/download")
 	check(wait(func() bool { return cancelled }, 15), "a download cancelled")
+	failure, _ := progress["error"].(map[string]any)
+	check(wait(func() bool {
+		failure, _ = progress["error"].(map[string]any)
+		return progress["outcome"] == "cancelled"
+	}, 15) &&
+		failure != nil && failure["category"] == "cancelled" && progress["savedPath"] == nil,
+		"its outcome: cancelled, with the error's category", progress)
 	check(view.CancelDownload("no-such-download") != nil, "CancelDownload of none")
+	// What was decided, on OnDownloadResult: saved or cancelled, and why.
+	var results []map[string]any
+	view.OnDownloadResult(func(event map[string]any) { results = append(results, event) })
+	result := func(state, reason string) bool {
+		return wait(func() bool {
+			for _, r := range results {
+				if r["state"] == state && r["reason"] == reason {
+					return true
+				}
+			}
+			return false
+		}, 15)
+	}
+	view.OnDownload(func(r *zebkit.DownloadRequest) { r.Save(filepath.Join(directory, "again.txt")) })
+	view.Load(base + "/download")
+	check(result("saved", "answered"), "OnDownloadResult: saved, answered", results)
+	view.OnDownload(func(r *zebkit.DownloadRequest) { r.Cancel() })
+	view.Load(base + "/download")
+	check(result("cancelled", "answered"), "OnDownloadResult: cancelled, answered", results)
+	check(view.SetDownloadTimeout(50) == nil, "SetDownloadTimeout")
+	view.OnDownload(func(r *zebkit.DownloadRequest) {})
+	view.Load(base + "/download")
+	check(result("cancelled", "timeout"), "OnDownloadResult: an unanswered download times out, cancelled", results)
+	check(view.SetDownloadTimeout(30000) == nil, "SetDownloadTimeout back")
+	held := false
+	view.OnDownload(func(r *zebkit.DownloadRequest) { held = true })
+	view.Load(base + "/download")
+	check(wait(func() bool { return held }, 15), "a download held")
+	view.OnDownload(func(r *zebkit.DownloadRequest) {})
+	check(result("cancelled", "handler-changed"), "OnDownloadResult: the function replaced, cancelled", results)
+	for _, r := range results {
+		if _, ok := r["state"].(string); !ok || r["state"] == "save" {
+			check(false, "every download result has a past-tense state", r)
+			break
+		}
+	}
+	view.OnDownloadResult(nil)
 	view.OnDownload(nil)
 
 	// A certificate the application accepts.
@@ -278,10 +343,15 @@ func main() {
 	view.OnClientCertificate(nil)
 
 	// HTTP authentication.
+	var authResult map[string]any
+	view.OnHTTPAuthResult(func(event map[string]any) { authResult = event })
 	view.OnHTTPAuth(func(r *zebkit.HTTPAuthRequest) { r.Respond("alice", "secret") })
 	view.Load(base + "/private")
 	check(wait(func() bool { return view.Title() == "Signed in" }, 15), "OnHTTPAuth signs in", view.Title())
+	check(wait(func() bool { return authResult != nil }, 5) && authResult["state"] == "provided" &&
+		authResult["reason"] == "answered", "OnHTTPAuthResult: provided, answered", authResult)
 	view.OnHTTPAuth(nil)
+	view.OnHTTPAuthResult(nil)
 
 	// A file chooser.
 	file := filepath.Join(directory, "picked.txt")
@@ -338,6 +408,9 @@ func main() {
 		check(wait(func() bool { return openedClosed }, 10) && opened.IsClosed(), "a popup closed by its page")
 		opened.Close()
 		check(opened.TargetID() == "" && opened.SetSettings(map[string]any{}) == zebkit.ErrClosed, "its methods after")
+		calledClosed := false
+		check(opened.SetUserAgentOverride(`{"userAgent":"x"}`, func(json.RawMessage, error) { calledClosed = true }) == zebkit.ErrClosed &&
+			!calledClosed, "SetUserAgentOverride of a closed view: ErrClosed, done not called")
 	}
 	view.OnWindowOpen(nil)
 	var newURL string
@@ -354,11 +427,60 @@ func main() {
 		"SetUserAgentOverride queued")
 	check(wait(func() bool { return agentDone }, 10) && agentErr == nil && evaluate(view, "navigator.userAgent") == `"GoAgent/1"`,
 		"the user agent overridden", agentErr)
+	invalid := []error{}
+	queued := view.SetUserAgentOverride("{not json", func(_ json.RawMessage, err error) { invalid = append(invalid, err) })
+	zeroed := view.SetUserAgentOverride("{\"userAgent\":\"a\x00b\"}", func(_ json.RawMessage, err error) { invalid = append(invalid, err) })
+	// An engine before 0.5.0 also returned false for unreadable options.
+	check((queued == nil || errors.Is(queued, zebkit.ErrRefused)) && zeroed == nil && wait(func() bool { return len(invalid) == 2 }, 10) && invalid[0] != nil && invalid[1] != nil,
+		"SetUserAgentOverride: options it cannot read are told once, to done", queued, zeroed, invalid)
 
 	// Calls answered with the page's JSON as written.
 	view.Grant(base, zebkit.AllowApp, "")
 	view.Bind("raw", func(c *zebkit.Call) { c.ResolveJSON([]byte(`{"a":[1,2]}`)) })
 	check(load(view, base+"/") && evaluate(view, "zebkit.app.raw().then(v => v.a[1])") == "2", "ResolveJSON")
+	// Calls dropped: by Close, and by the garbage collector.
+	var closeAgain error
+	view.Bind("closed", func(c *zebkit.Call) { c.Close(); closeAgain = c.Close() })
+	check(evaluate(view, "zebkit.app.closed().then(() => 'resolved', e => e.message)") == `"the application dropped the call"` &&
+		closeAgain == zebkit.ErrClosed, "Call.Close rejects the page's promise, once", closeAgain)
+	view.Bind("dropped", func(c *zebkit.Call) {})
+	view.Evaluate("globalThis.dropped = 'pending'; zebkit.app.dropped().then(() => dropped = 'resolved', e => dropped = e.message), 1", nil)
+	check(wait(func() bool {
+		goruntime.GC()
+		return evaluate(view, "dropped") == `"the application dropped the call"`
+	}, 15), "a Call let go is dropped once collected", evaluate(view, "dropped"))
+	view.Bind("closed", nil)
+	view.Bind("dropped", nil)
+
+	// The page's process gone, and started again.
+	{
+		crashing := mustView(zebkit.NewView(base+"/", 320, 240))
+		var gone []zebkit.ProcessGone
+		crashing.OnProcessGone(func(g zebkit.ProcessGone) { gone = append(gone, g) })
+		check(load(crashing, base+"/"), "a page to crash")
+		crashing.Load("chrome://crash")
+		check(wait(func() bool { return len(gone) > 0 }, 15) && gone[0].Reason == "crashed" && !crashing.IsClosed(),
+			"OnProcessGone: crashed, the view still open", gone)
+		check(load(crashing, base+"/"), "a page loads again after the crash")
+		crashing.OnProcessGone(nil)
+		crashing.Load("chrome://crash")
+		wait(func() bool { return false }, 1)
+		check(len(gone) == 1, "OnProcessGone(nil): nothing told", gone)
+		crashing.OnResponsiveness(func(bool) {})
+		crashing.OnResponsiveness(nil)
+		crashing.Close()
+	}
+
+	// The desktop, asked and told how it went.
+	var desktopErrs []error
+	desktopDone := 0
+	zebkit.OpenExternalAsync("javascript:alert(1)", func(err error) { desktopDone++; desktopErrs = append(desktopErrs, err) })
+	zebkit.ShowInFolderAsync(filepath.Join(directory, "no-such-file"), func(err error) { desktopDone++; desktopErrs = append(desktopErrs, err) })
+	zebkit.ShowInFolderAsync("relative/path", func(err error) { desktopDone++; desktopErrs = append(desktopErrs, err) })
+	check(desktopDone == 0, "the async desktop calls answer after they return")
+	check(wait(func() bool { return desktopDone == 3 }, 10) && desktopErrs[0] != nil && desktopErrs[1] != nil && desktopErrs[2] != nil,
+		"OpenExternalAsync of javascript:, ShowInFolderAsync of a missing file and a relative path: errors", desktopErrs)
+	check(zebkit.OpenExternal("javascript:alert(1)") != nil, "OpenExternal of javascript: is refused")
 
 	// Windows and the system's handles, without a display.
 	view.SetSizeLimits(100, 100, true)
@@ -369,6 +491,17 @@ func main() {
 	exported := false
 	if view.ExportNativeWindow(func(string, bool) { exported = true }) == nil {
 		check(wait(func() bool { return exported }, 5), "ExportNativeWindow answers")
+	}
+	// A view that closes first is told, before OnClose's function.
+	{
+		closing := mustView(zebkit.NewView("", 100, 100))
+		var order []string
+		closing.OnClose(func() { order = append(order, "closed") })
+		if closing.ExportNativeWindow(func(handle string, ok bool) { order = append(order, fmt.Sprint("export ", ok)) }) == nil {
+			closing.Close()
+			check(wait(func() bool { return len(order) == 2 }, 10) && order[0] == "export false" && order[1] == "closed",
+				"ExportNativeWindow of a view that closes: ok false, before OnClose", order)
+		}
 	}
 	check(view.OnAuthentication(func(map[string]any) {}) == nil && view.OnAuthentication(nil) == nil, "OnAuthentication set and removed")
 	view.OnDrop(func([]string) {})
@@ -433,6 +566,29 @@ func main() {
 	check(strings.HasPrefix(zebkit.CDPURL(), "ws://"), "CDPURL", zebkit.CDPURL())
 	zebkit.StopCDP()
 	check(zebkit.CDPPort() == 0, "StopCDP")
+	var asyncPort, asyncPort2 uint
+	var asyncURL string
+	var asyncErr, asyncErr2 error
+	asyncDone := 0
+	zebkit.ListenCDPAsync("", 0, func(port uint, url string, err error) { asyncDone++; asyncPort, asyncURL, asyncErr = port, url, err })
+	zebkit.ListenCDPAsync("", 0, func(port uint, url string, err error) { asyncDone++; asyncPort2, asyncErr2 = port, err })
+	check(asyncDone == 0, "ListenCDPAsync answers after it returns")
+	check(wait(func() bool { return asyncDone == 2 }, 15) && asyncErr == nil && asyncErr2 == nil && asyncPort > 0 &&
+		asyncPort2 == asyncPort && asyncPort == zebkit.CDPPort() && strings.HasPrefix(asyncURL, "ws://") && asyncURL == zebkit.CDPURL(),
+		"ListenCDPAsync: two calls while it starts, one port and its URL", asyncPort, asyncPort2, asyncURL, asyncErr, asyncErr2)
+	var otherErr error
+	otherDone := false
+	zebkit.ListenCDPAsync("", asyncPort+1, func(port uint, url string, err error) { otherDone, otherErr = true, err })
+	check(wait(func() bool { return otherDone }, 10) && otherErr != nil, "ListenCDPAsync of another port while served: an error", otherErr)
+	_, err = zebkit.ListenCDP("", asyncPort+1)
+	check(err != nil, "ListenCDP of another port while served: an error")
+	var stoppedErr error
+	stoppedDone := false
+	zebkit.StopCDP()
+	zebkit.ListenCDPAsync("", 0, func(port uint, url string, err error) { stoppedDone, stoppedErr = true, err })
+	zebkit.StopCDP()
+	check(wait(func() bool { return stoppedDone }, 10) && stoppedErr != nil, "StopCDP answers a starting ListenCDPAsync with an error", stoppedErr)
+	check(zebkit.CDPPort() == 0, "StopCDP again")
 
 	view.Close()
 	zebkit.Shutdown()

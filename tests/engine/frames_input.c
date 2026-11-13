@@ -20,6 +20,7 @@
  * read what only an off-screen view reports (its cursor, its popup).
  * ZEBKIT_TEST_SCALE=2 gives the off-screen view twice the pixels.
  */
+#include "harness.h"
 #include <zebkit/offscreen.h>
 #include <zebkit/page.h>
 #include <zebkit/zebkit.h>
@@ -36,23 +37,6 @@
 #endif
 
 static zebkit_view *view;
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *format, ...) {
-    ++checks;
-    printf("%s %s", ok ? "ok  " : "FAIL", what);
-    if (format && !ok) {
-        va_list args;
-        va_start(args, format);
-        printf(": ");
-        vprintf(format, args);
-        va_end(args);
-    }
-    printf("\n");
-    fflush(stdout);
-    if (!ok)
-        ++failures;
-}
 
 static int64_t now_us(void) {
     struct timespec ts;
@@ -356,7 +340,6 @@ static void next_step(void *data);
 static void poll(void *data);
 
 static void finish(void) {
-    printf("%d of %d checks passed\n", checks - failures, checks);
     zebkit_quit();
 }
 
@@ -498,7 +481,7 @@ static void timeout(void *data) {
 
 static void start(void *data) {
     (void)data;
-    const char *base = getenv("ZEBKIT_TEST_BASE");
+    const char *base = test_base();
     const char *other = getenv("ZEBKIT_TEST_OTHER");
     char url[512];
     snprintf(url, sizeof(url), "%s/frames-input.html%s%s", base,
@@ -528,10 +511,7 @@ static void start(void *data) {
 }
 
 int main(int argc, char **argv) {
-    if (!getenv("ZEBKIT_TEST_BASE")) {
-        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
-        return 2;
-    }
+    test_base();
     windowed = getenv("ZEBKIT_TEST_WINDOW") != NULL;
 #if defined(FRAMES_X11)
     if (windowed) {
@@ -554,5 +534,5 @@ int main(int argc, char **argv) {
     int code = zebkit_main(argc, argv, start, NULL);
     if (code)
         return code;
-    return failures || checks < 20 ? 1 : 0;
+    return summary() || harness_checks < 20 ? 1 : 0;
 }

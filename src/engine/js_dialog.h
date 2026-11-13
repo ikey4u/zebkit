@@ -27,9 +27,12 @@ class JavaScriptDialogManagerImpl;
 
 class JavaScriptDialog {
  public:
+  // A sheet on @parent_window (app-modal without one), titled @title (the
+  // page's origin, as the views dialog's title; empty for "leave this page?").
   JavaScriptDialog(JavaScriptDialogManagerImpl* manager,
                         gfx::NativeWindow parent_window,
                         JavaScriptDialogType dialog_type,
+                        const std::u16string& title,
                         const std::u16string& message_text,
                         const std::u16string& default_prompt_text,
                         JavaScriptDialogManager::DialogClosedCallback callback);

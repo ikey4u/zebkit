@@ -8,7 +8,7 @@
 # The token is crates.io's API token in CARGO_REGISTRY_TOKEN, which cargo
 # reads itself; it is never written anywhere. The crates download the engine
 # from the GitHub release v<VERSION> and check it against engines.txt, so that
-# release is published first (mise run r:github) and engines.txt names its
+# release is published first (mise run r:github:publish) and engines.txt names its
 # three archives.
 source "$(dirname "$0")/lib.sh"
 
@@ -21,7 +21,7 @@ check_versions
 
 for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
     grep -q "^$version $target " "$crates/zebkit-rs/engines.txt" \
-        || die "engines.txt has no $version archive for $target: build and publish the release first (mise run r:github)"
+        || die "engines.txt has no $version archive for $target: build and publish the release first (mise run r, then mise run r:github:publish; docs/BUILD.md, \"Releases\")"
 done
 if (( ! dry )); then
     [[ -n "${CARGO_REGISTRY_TOKEN:-}" ]] || die "set CARGO_REGISTRY_TOKEN to a crates.io API token"

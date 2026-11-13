@@ -6,8 +6,10 @@ package zebkit
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -287,7 +289,11 @@ func (v *View) NativeWindow() (NativeWindowKind, uintptr, bool) {
 }
 
 // ExportNativeWindow gives done the window as the system's portals name a
-// parent window, "x11:<XID>" or "wayland:<handle>", or ok false.
+// parent window, "x11:<XID>" or "wayland:<handle>", or ok false when there is
+// none (headless, off-screen, a compositor without xdg-foreign; on Windows
+// and macOS always, where NativeWindow is the handle). done is called once,
+// later, on the engine's thread; a view that closes first calls it with ok
+// false before OnClose's function. An error, and no call, for a closed view.
 func (v *View) ExportNativeWindow(done func(handle string, ok bool)) error {
 	raw, ok := v.raw()
 	if !ok {
@@ -306,15 +312,30 @@ func (v *View) ExportNativeWindow(done func(handle string, ok bool)) error {
 }
 
 // SetUserAgentOverride sets the user agent, its client hints and platform
-// at once, JSON (docs/API.md); done gets the state applied, or why not.
+// at once, JSON (docs/API.md); done gets the state applied ({}), or why not.
+// It returns an error, and done is never called, only when the engine cannot
+// take it at all: a closed view (ErrClosed), or the engine's refusal. Options
+// it cannot read (not JSON, a zero byte, too long, no userAgent) are told
+// once, to done.
 func (v *View) SetUserAgentOverride(options any, done func(result json.RawMessage, err error)) error {
 	raw, ok := v.raw()
 	if !ok {
 		return ErrClosed
 	}
-	text, err := jsonArg(options)
+	var text *C.char
+	err := refused("the user agent options hold a zero byte")
+	if !holdsZero(options) {
+		text, err = jsonArg(options)
+	}
 	if err != nil {
-		return err
+		// Told after this returns, as the engine tells its own answers.
+		if done != nil {
+			told := err
+			if Post(func() { done(nil, told) }) != nil {
+				done(nil, told)
+			}
+		}
+		return nil
 	}
 	defer free(text)
 	h := resultOnce(done)
@@ -323,6 +344,20 @@ func (v *View) SetUserAgentOverride(options any, done func(result json.RawMessag
 		return refused("the user agent override was refused")
 	}
 	return nil
+}
+
+// holdsZero says whether JSON text given as it is holds a zero byte, which
+// would cut it short.
+func holdsZero(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.IndexByte(v, 0) >= 0
+	case []byte:
+		return bytes.IndexByte(v, 0) >= 0
+	case json.RawMessage:
+		return bytes.IndexByte(v, 0) >= 0
+	}
+	return false
 }
 
 // OnNewWindow takes the URL of a window a page opens instead of opening it;
@@ -358,7 +393,7 @@ func (v *View) OnDrop(function func(paths []string)) {
 }
 
 // OnAuthentication shows WebAuthn's requests in the application's own UI:
-// function gets each event (docs/PASSKEYS.md); nil gives the engine's UI back.
+// function gets each event (docs/notes/passkeys.md); nil gives the engine's UI back.
 func (v *View) OnAuthentication(function func(event map[string]any)) error {
 	raw, ok := v.raw()
 	if !ok {
@@ -425,7 +460,10 @@ func (v *View) SetPopupWindowOptions(options any) error {
 }
 
 // ListenCDP serves the Chrome DevTools Protocol at address ("" for
-// 127.0.0.1) and port (0 picks one); it returns the port.
+// 127.0.0.1) and port (0 picks one); it returns the port. It waits, on the
+// engine's thread, for the server to bind (up to ten seconds; ListenCDPAsync
+// does not). Served already, it returns the port; asking then for another
+// address or port is an error.
 func ListenCDP(address string, port uint) (uint, error) {
 	onEngineThread()
 	caddress := optionalString(address)
@@ -436,6 +474,24 @@ func ListenCDP(address string, port uint) (uint, error) {
 		return 0, takeError(message, "CDP did not listen")
 	}
 	return got, nil
+}
+
+// ListenCDPAsync is ListenCDP without waiting for the server to bind: done
+// gets the port and the browser target's WebSocket address (CDPURL), or the
+// error, once, on the engine's thread after it returns. Calls while it
+// starts are answered together; StopCDP answers them with an error. Asking
+// for another address or port than the one served is an error. done may be
+// nil.
+func ListenCDPAsync(address string, port uint, done func(port uint, url string, err error)) {
+	onEngineThread()
+	caddress := optionalString(address)
+	defer free(caddress)
+	h := onceHandle(func(port uint, url string, err error) {
+		if done != nil {
+			done(port, url, err)
+		}
+	})
+	C.zebkit_cdp_listen_async(caddress, C.uint(port), C.zebkit_cdp_listen_func(C.zk_cdp_listen), data(h))
 }
 
 // CDPPort is the port CDP is served on, 0 when it is not.

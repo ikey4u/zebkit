@@ -49,10 +49,15 @@ typedef enum {
     /* To zebkit_view_on_dialog()'s function when there is one, held until
      * it is answered. Otherwise held for a CDP client attached to the page
      * (Page.javascriptDialogOpening, Page.handleJavaScriptDialog), as
-     * headless Chrome holds them. Otherwise what the engine does by itself: on
-     * macOS a window's dialog is the system's alert, elsewhere and without
-     * a window it is dismissed at once (alert returns, confirm is false,
-     * prompt null) and beforeunload leaves. The default. */
+     * headless Chrome holds them. Otherwise what the engine does by itself, as
+     * Chrome: a view in a window on a display shows the dialog in that window
+     * (a sheet on macOS, Chromium's views dialog on Linux and Windows, prompt()
+     * with its text field) and the page waits for the person to answer it,
+     * unless an automation client listening for dialogs has them
+     * (<zebkit/automation.h>; dismissed at once without a handler, as
+     * Playwright does). Without a display (an off-screen view,
+     * --headless) it is dismissed at once (alert returns, confirm is false, prompt null) and
+     * beforeunload leaves. The default. */
     ZEBKIT_DIALOG_POLICY_DEFAULT = 0,
     /* Always held, until the application or a CDP client answers it: a page
      * that alerts waits. */

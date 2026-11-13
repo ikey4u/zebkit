@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """The native hosts' PDF pane: wheeled through a long document with XTest.
 
-    native_host_pdf_scroll.py <host> <document.pdf> [engine switches...]
+    native_host_pdf_scroll.py [--self] <host> <document.pdf | generated[:pages]> [engine switches...]
 
-A private Xvfb. What the pane did is its own report (NATIVE_HOST_PDF_REPORT=1):
-positions, pages rendered and kept, a checksum of the pane's pixels.
+A private Xvfb (Linux). What the pane did is its own report (NATIVE_HOST_PDF_REPORT=1):
+positions, pages rendered and kept, a checksum of the pane's pixels. With --self the
+host wheels itself (--scroll-test): winit's, which drops XTest's wheel, and AppKit's.
+scripts/engine-test.sh runs it for the hosts examples/native-host/README.md builds.
+ZEBKIT_TEST_PDF_SCROLL_LIMIT=<seconds> cuts the scroll down the document short.
 """
 import atexit
 import ctypes as C
@@ -15,6 +18,10 @@ import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness import check, failures, finish, knob, note  # noqa: E402
+from pdf_long import long_pdf  # noqa: E402
 
 LINE = re.compile(r"pdf-pane: position=(\d+) total=(\d+) page=(\d+) pages=(\d+) visible=(\d+)-(\d+) "
                   r"renders=(\d+) kept=(\d+) bytes=(\d+) checksum=(\w+)")
@@ -38,13 +45,6 @@ def self_driven(host, document, switches):
             if display:
                 display.terminate()
     lines = [LINE.search(line) for line in result.stdout.splitlines() if "pdf-pane:" in line]
-    failures = 0
-
-    def check(condition, what, detail=""):
-        nonlocal failures
-        print(("ok   " if condition else "FAIL ") + what + ("" if condition else f": {detail!r}"), flush=True)
-        failures += not condition
-
     check(lines and int(lines[-1][4]) >= 30, "the pane has the document", result.stdout[-400:] + result.stderr[-400:])
     if lines:
         positions = [int(m[1]) for m in lines]
@@ -57,15 +57,12 @@ def self_driven(host, document, switches):
         check(sorted(steps)[len(steps) // 2] < limit, "in steps", sorted(steps)[len(steps) // 2])
         check(positions[-1] < top, "and back up", positions[-1])
         check(int(lines[-1][8]) < int(lines[-1][4]) / 2 and int(lines[-1][9]) <= 160 << 20, "what is kept is bounded", lines[-1][0])
-        print(f"note {lines[-1][7]} renders of {lines[-1][4]} pages; {lines[-1][8]} kept, {lines[-1][9]} bytes")
+        note(f"{lines[-1][7]} renders of {lines[-1][4]} pages; {lines[-1][8]} kept, {lines[-1][9]} bytes")
     check(result.returncode == 0, "the host ends cleanly", result.returncode)
-    print("FAIL" if failures else "0 failures")
-    return 1 if failures else 0
+    return finish()
 
 
 def main():
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from pdf_long import long_pdf
     self_drive = sys.argv[1] == "--self"
     if self_drive:
         del sys.argv[1]
@@ -92,13 +89,6 @@ def main():
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     process = None
     display = None
-    failures = []
-
-    def check(condition, what, detail=""):
-        print(("ok   " if condition else "FAIL ") + what + ("" if condition else f": {detail!r}"), flush=True)
-        if not condition:
-            failures.append(what)
-
     try:
         name = ":" + server.stdout.readline().strip()
         display = x.XOpenDisplay(name.encode())
@@ -113,11 +103,21 @@ def main():
             def lines():
                 return [LINE.search(line) for line in log_path.read_text(errors="replace").splitlines() if "pdf-pane:" in line]
 
+            def still(seconds=5, quiet=.25):
+                """The last line, once the pane has said nothing new for quiet seconds."""
+                end = time.monotonic() + seconds
+                said, since = len(lines()), time.monotonic()
+                while time.monotonic() < end and time.monotonic() - since < quiet:
+                    time.sleep(.02)
+                    if len(lines()) != said:
+                        said, since = len(lines()), time.monotonic()
+                return lines()[-1]
+
             end = time.monotonic() + 30
             while time.monotonic() < end and not lines():
                 if process.poll() is not None:
                     raise RuntimeError(log_path.read_text())
-                time.sleep(.1)
+                time.sleep(.02)
             check(bool(lines()), "the pane draws", log_path.read_text()[-500:])
             first = lines()[-1]
             pages = int(first[4])
@@ -125,7 +125,7 @@ def main():
             # The pointer in the right half of the window, over the PDF pane.
             test.XTestFakeMotionEvent(display, 0, 900, 400, 0)
             x.XFlush(display)
-            time.sleep(.3)
+            still()
 
             def notch(down, count, gap=.02):
                 for _ in range(count):
@@ -136,7 +136,8 @@ def main():
                     time.sleep(gap)
 
             notch(True, 1)
-            time.sleep(.6)
+            # A smooth notch is several steps: done when they stop.
+            still()
             after = lines()
             positions = [int(m[1]) for m in after]
             distinct = sorted(set(positions))
@@ -147,31 +148,27 @@ def main():
 
             if failures:
                 print(log_path.read_text(errors="replace")[-800:])
-                raise SystemExit(1)
-            # Down through the whole document, as far as it goes.
-            limit = os.environ.get("ZEBKIT_TEST_PDF_SCROLL_LIMIT")
-            if limit:
-                print("narrowed: ZEBKIT_TEST_PDF_SCROLL_LIMIT=%s seconds of scrolling" % limit, flush=True)
+                return finish()
+            # Down through the whole document, as far as it goes: seconds of it.
+            limit = knob("PDF_SCROLL_LIMIT")
             end = time.monotonic() + float(limit or 180)
             last = lines()[-1]
             while time.monotonic() < end and int(last[1]) + 900 < int(last[2]) - 1:
                 notch(True, 40, .005)
                 time.sleep(.05)
                 last = lines()[-1]
-                total = int(last[2])
                 if int(last[3]) >= pages:
                     break
-            time.sleep(.8)
-            last = lines()[-1]
+            last = still()
             check(int(last[3]) >= pages - 1, "the wheel reaches the end of the document", last[0])
             renders = int(last[7])
             kept = int(last[8])
             bytes_kept = int(last[9])
-            print(f"note {renders} renders of {pages} pages; {kept} kept, {bytes_kept} bytes", flush=True)
+            note(f"{renders} renders of {pages} pages; {kept} kept, {bytes_kept} bytes")
             check(kept < pages / 2 and bytes_kept <= 160 << 20, "what is kept is bounded", last[0])
             top = int(last[1])
             notch(False, 5)
-            time.sleep(.6)
+            still()
             check(int(lines()[-1][1]) < top, "back up", lines()[-1][0])
             process.terminate()
             try:
@@ -185,8 +182,7 @@ def main():
         if display:
             x.XCloseDisplay(display)
         server.terminate()
-    print(("FAIL " + ", ".join(failures)) if failures else f"{0} failures")
-    return 1 if failures else 0
+    return finish()
 
 
 if __name__ == "__main__":

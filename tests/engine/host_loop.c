@@ -2,6 +2,7 @@
 /* A blocking host loop: wakes only for engine work or the next deadline. */
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#include "harness.h"
 #include <zebkit/zebkit.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -23,7 +24,7 @@ typedef struct {
     int notifications;
 } host_state;
 
-static int failures, evaluated, delayed, posted, closed;
+static int evaluated, delayed, posted, closed;
 static int64_t began, timer_fired;
 static atomic_int monitor_active, monitor_ready, handler_changed;
 static void host_signal(int number) { (void)number; }
@@ -46,12 +47,6 @@ static int64_t now_ms(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-}
-
-static void check(int ok, const char *name) {
-    printf("%s %s\n", ok ? "ok  " : "FAIL", name);
-    fflush(stdout);
-    failures += !ok;
 }
 
 static void wakeup(int64_t delay, void *data) {
@@ -81,7 +76,7 @@ static void *worker(void *data) {
 }
 static void result(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)view; (void)data;
-    check(!error && json && json[0] == '4' && json[1] == '2', "page evaluation completes in an event-driven loop");
+    check(!error && json && json[0] == '4' && json[1] == '2', "page evaluation completes in an event-driven loop", NULL);
     evaluated = 1;
 }
 static void on_load(zebkit_view *view, zebkit_load_event event, const char *url, void *data) {
@@ -106,7 +101,7 @@ int main(int argc, char **argv) {
         return 1;
     fcntl(host.pipe[0], F_SETFL, O_NONBLOCK);
     fcntl(host.pipe[1], F_SETFL, O_NONBLOCK);
-    check(zebkit_set_wakeup(wakeup, &host), "host wakeup configured before startup");
+    check(zebkit_set_wakeup(wakeup, &host), "host wakeup configured before startup", NULL);
     struct sigaction action = {0};
     action.sa_handler = host_signal;
     sigemptyset(&action.sa_mask);
@@ -123,13 +118,13 @@ int main(int argc, char **argv) {
     pthread_join(monitor, NULL);
     if (startup)
         return 1;
-    check(!atomic_load(&handler_changed), "signal handlers remain the host's throughout initialization");
+    check(!atomic_load(&handler_changed), "signal handlers remain the host's throughout initialization", NULL);
     char thread_name[64] = {0};
     pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name));
-    check(strcmp(thread_name, "zebkit-host") == 0, "initialization preserves the host thread's name");
-    check(strcmp(setlocale(LC_ALL, NULL), "C") == 0, "initialization preserves the host C locale");
-    check(had_bus_environment || !getenv("DBUS_SESSION_BUS_ADDRESS"), "initialization preserves an unset host D-Bus environment");
-    check(!zebkit_set_wakeup(NULL, NULL), "wakeup lifetime cannot be replaced during startup's lifetime");
+    check(strcmp(thread_name, "zebkit-host") == 0, "initialization preserves the host thread's name", NULL);
+    check(strcmp(setlocale(LC_ALL, NULL), "C") == 0, "initialization preserves the host C locale", NULL);
+    check(had_bus_environment || !getenv("DBUS_SESSION_BUS_ADDRESS"), "initialization preserves an unset host D-Bus environment", NULL);
+    check(!zebkit_set_wakeup(NULL, NULL), "wakeup lifetime cannot be replaced during startup's lifetime", NULL);
     zebkit_view *view = zebkit_view_new("data:text/html,<title>host loop</title>", 320, 200);
     zebkit_view_on_load(view, on_load, NULL);
     zebkit_view_on_close(view, on_close, NULL);
@@ -154,18 +149,18 @@ int main(int argc, char **argv) {
             host.next = INT64_MAX;
         pthread_mutex_unlock(&host.lock);
         if (ready) {
-            check(zebkit_pump(), "host can pump after a notification");
+            check(zebkit_pump(), "host can pump after a notification", NULL);
             ++pumps;
         }
     }
     pthread_join(thread, NULL);
-    check(evaluated && posted && delayed, "page, worker and delayed work finish without periodic polling");
-    check(timer_fired - began >= 190 && timer_fired - began < 3000, "delayed work wakes near its deadline");
-    check(pumps < 500, "future deadlines do not make the host busy-loop");
-    check(zebkit_shutdown(), "host loop engine shuts down");
-    check(closed == 1, "shutdown closes the host's view");
+    check(evaluated && posted && delayed, "page, worker and delayed work finish without periodic polling", NULL);
+    check(timer_fired - began >= 190 && timer_fired - began < 3000, "delayed work wakes near its deadline", NULL);
+    check(pumps < 500, "future deadlines do not make the host busy-loop", NULL);
+    check(zebkit_shutdown(), "host loop engine shuts down", NULL);
+    check(closed == 1, "shutdown closes the host's view", NULL);
     close(host.pipe[0]);
     close(host.pipe[1]);
     pthread_mutex_destroy(&host.lock);
-    return failures ? 1 : 0;
+    return summary();
 }

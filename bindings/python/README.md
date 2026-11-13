@@ -26,6 +26,14 @@ pip install zebkit
 export ZEBKIT_DIR=/path/to/zebkit-<version>-<target>
 ```
 
+On Windows `python.exe` cannot be one of the sandbox's children
+(`docs/WINDOWS.md`): run the engine with `--no-sandbox`, for example
+`zebkit.main(ready, ["python", "--no-sandbox"])`.
+
+Everything is for the thread that called `zebkit.main()` (or `zebkit.init()`),
+and callbacks run on it; `zebkit.post()` runs a function there from any
+thread. A call from another thread raises `zebkit.Error`.
+
 Everything the binding offers is in
 [docs/API.md](https://github.com/ikey4u/zebkit/blob/main/docs/API.md), and
 Playwright's API from Python (`zebkit.automation`) in

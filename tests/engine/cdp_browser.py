@@ -22,8 +22,7 @@ import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cdp_page import Cdp, check, launch_engine  # noqa: E402
-import cdp_page  # noqa: E402
+from harness import Cdp, check, failures, finish, launch_engine  # noqa: E402
 
 
 def upgrade_status(url, origin=None):
@@ -60,7 +59,7 @@ def main():
     check(url is not None, "the engine serves CDP", url)
     if not url:
         engine.stop(True)
-        return 1
+        return finish()
     try:
         check_origins(run, switches, url)
         cdp = Cdp(url)
@@ -147,9 +146,8 @@ def main():
         check(watched.get("webdriver") is True, "navigator.webdriver as Chrome sets it with port 0",
               watched.get("webdriver"))
     finally:
-        engine.stop(bool(cdp_page.failures))
-    print(f"{cdp_page.checks - len(cdp_page.failures)} of {cdp_page.checks} checks passed")
-    return 1 if cdp_page.failures else 0
+        engine.stop(bool(failures))
+    return finish()
 
 
 if __name__ == "__main__":

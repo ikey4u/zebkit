@@ -68,6 +68,9 @@ fn clipped(mut value: Value) -> Value {
     value
 }
 
+/// How page_network shows a response the address check refused.
+const ADDRESS_FAILURE: &str = "net::ERR_ADDRESS_UNREACHABLE";
+
 fn push(log: &mut VecDeque<Value>, value: Value) {
     if log.len() >= MAX_LOG {
         log.pop_front();
@@ -94,8 +97,12 @@ pub(super) fn page_of(args: &Value) -> Result<Page, String> {
 /// dialog open says so: that is usually why.
 fn command(page: &Page, id: &str, method: &str, params: Value, done: impl FnOnce(Result<Value, String>) + 'static) {
     let id = id.to_string();
-    page.command(method, &params.to_string(), move |result| match result {
-        Ok(json) => done(Ok(serde_json::from_str(&json).unwrap_or(Value::Null))),
+    let params = match super::to_engine(&params) {
+        Ok(params) => params,
+        Err(why) => return done(Err(why)),
+    };
+    page.command(method, params, move |result| match result {
+        Ok(value) => done(super::from_engine(&value)),
         Err(error) => {
             let mut why: String = error.message().chars().take(4000).collect();
             let open = STATE.with(|state| state.borrow().pages.get(&id).is_some_and(|entry| !entry.dialogs.is_empty()));
@@ -176,13 +183,21 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
     });
 
     // A worker's script has a policy of its own, not its document's: "script" is
-    // where a worker's comes in.
-    let filter = if bounds.connect_policy().is_some() {
-        r#"[{"mode":"hold","stage":"request"},{"mode":"hold","stage":"response","resourceTypes":["document","script"]}]"#
-    } else {
-        r#"[{"mode":"hold","stage":"request"}]"#
-    };
-    view.set_network_filter(filter)
+    // where a worker's comes in. The response stage has the address that
+    // answered, after DNS, and comes before the page has any of the body: a
+    // public name answered from a local one is refused there (`check_address`),
+    // answered at once in this function, so that no deadline or page comes in.
+    // Held outside the network, it costs about 4% of the load of a page of 300
+    // images (headersReceived, inside it, cost about 25%).
+    let guard = !bounds.local_network;
+    let policy = bounds.connect_policy();
+    let mut rules = vec![json!({"mode": "hold", "stage": "request"})];
+    if guard {
+        rules.push(json!({"mode": "hold", "stage": "response"}));
+    } else if policy.is_some() {
+        rules.push(json!({"mode": "hold", "stage": "response", "resourceTypes": ["document", "script"]}));
+    }
+    view.set_network_filter(&Value::Array(rules).to_string())
         .map_err(|why| why.to_string())
         .and_then(|set| if set { Ok(()) } else { Err("the view is closed".to_string()) })?;
     let name = id.to_string();
@@ -190,11 +205,26 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
         let meta: Value = serde_json::from_str(request.metadata()).unwrap_or(Value::Null);
         let url = meta["url"].as_str().unwrap_or("");
         if meta["stage"] == "response" {
+            if let Err(why) = bounds.check_address(url, meta["remoteAddress"].as_str()) {
+                let url = url.to_string();
+                with_entry(&name, |entry| {
+                    if let Some(logged) = entry.network.iter_mut().rev().find(|logged| logged["url"] == url.as_str() && logged["failure"].is_null()) {
+                        logged["failure"] = json!(ADDRESS_FAILURE);
+                        if let Some(logged) = logged.as_object_mut() {
+                            logged.remove("status");
+                            logged.remove("mimeType");
+                        }
+                    }
+                    push(&mut entry.refused, json!({"what": "address", "url": url, "why": why}));
+                });
+                let _ = request.respond(r#"{"action":"block","error":"addressunreachable"}"#, &[]);
+                return;
+            }
             // WebSockets are not seen by this hook: the browser's own policy, on
             // every document and worker, keeps its connections to the allowed origins. A page
             // may add policies, which only narrow, and none it adds can undo this.
             let mut reply = json!({"action": "continue"});
-            if let Some(policy) = bounds.connect_policy() {
+            if let (Some(policy), Some("document" | "script")) = (&policy, meta["resourceType"].as_str()) {
                 let mut headers = meta["responseHeaders"].as_array().cloned().unwrap_or_default();
                 headers.push(json!({"name": "Content-Security-Policy", "value": policy}));
                 reply["headers"] = Value::Array(headers);
@@ -230,6 +260,7 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
     view.on_permission(|request| {
         request.respond(PermissionState::Denied, false);
     });
+    allow_local_network(bounds, view);
     view.on_http_auth(|request| {
         request.cancel();
     });
@@ -254,8 +285,12 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
     });
 
     let name = id.to_string();
-    page.on_event(move |event, json| {
-        let data: Value = serde_json::from_str(json).unwrap_or(Value::Null);
+    page.on_protocol_event(move |event, value| {
+        // Only the events read here are converted, once, member by member.
+        if !matches!(event, "Page.request" | "Page.response" | "Page.requestFailed" | "BrowserContext.dialog" | "Page.dialog") {
+            return;
+        }
+        let Ok(data) = super::from_engine(value) else { return };
         match event {
             "Page.request" => with_entry(&name, |entry| {
                 push(&mut entry.network, json!({
@@ -264,9 +299,16 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
                 }));
             }),
             "Page.response" => with_entry(&name, |entry| {
+                // A response the address check refused reaches no page, though
+                // the network told of it: the log says it failed, as the page saw.
+                let refused = entry.refused.iter().any(|refusal| refusal["what"] == "address" && refusal["url"] == data["url"]);
                 if let Some(request) = entry.network.iter_mut().rev().find(|request| request["request"] == data["request"]) {
-                    request["status"] = data["status"].clone();
-                    request["mimeType"] = data["mimeType"].clone();
+                    if refused {
+                        request["failure"] = json!(ADDRESS_FAILURE);
+                    } else {
+                        request["status"] = data["status"].clone();
+                        request["mimeType"] = data["mimeType"].clone();
+                    }
                 }
             }),
             "Page.requestFailed" => with_entry(&name, |entry| {
@@ -279,11 +321,21 @@ fn install_hooks(bounds: &'static Bounds, page: &Page, id: &str) -> Result<(), S
             _ => {}
         }
     });
-    page.command("Page.updateSubscription", r#"{"event":"dialog","enabled":true}"#, |_| {});
-    page.command("Page.updateSubscription", r#"{"event":"request","enabled":true}"#, |_| {});
-    page.command("Page.updateSubscription", r#"{"event":"response","enabled":true}"#, |_| {});
-    page.command("Page.updateSubscription", r#"{"event":"requestFailed","enabled":true}"#, |_| {});
+    for event in ["dialog", "request", "response", "requestFailed"] {
+        page.command("Page.updateSubscription", super::to_engine(&json!({"event": event, "enabled": true}))?, |_| {});
+    }
     Ok(())
+}
+
+/// Under --allow-local-network, Local Network Access's permissions: Chromium asks
+/// them before a request of a public document reaches a local address, which that
+/// switch allows (`check_address` then passes it too). Otherwise denied, as all.
+fn allow_local_network(bounds: &Bounds, view: &zebkit::View) {
+    if bounds.local_network {
+        for permission in ["local-network", "loopback-network", "local-network-access"] {
+            let _ = view.set_permission(permission, PermissionState::Granted, Some("*"));
+        }
+    }
 }
 
 fn with_profile(name: &str, function: impl FnOnce(Result<BrowserContext, String>) + 'static) {
@@ -299,7 +351,11 @@ fn with_profile(name: &str, function: impl FnOnce(Result<BrowserContext, String>
         return;
     }
     let name = name.to_string();
-    BrowserContext::new(r#"{"acceptDownloads":"deny"}"#, move |result| match result {
+    let options = match super::to_engine(&json!({"acceptDownloads": "deny"})) {
+        Ok(options) => options,
+        Err(why) => return function(Err(why)),
+    };
+    automation::new_context(options, move |result| match result {
         Ok(context) => {
             // Two asked at once for a new name: both get the one that was first.
             let context = STATE.with(|state| state.borrow_mut().profiles.entry(name).or_insert(context).clone());
@@ -365,14 +421,29 @@ pub fn service_fetch(profile: &str, request: ServiceRequest, done: impl FnOnce(R
             let redirect: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
             let view = page.view();
             view.set_popup_policy(PopupPolicy::Block);
-            if !view.set_network_filter(r#"[{"mode":"hold","stage":"request"}]"#).unwrap_or(false) {
+            let bounds = crate::bounds();
+            let filter = if bounds.local_network { r#"[{"mode":"hold","stage":"request"}]"# } else { r#"[{"mode":"hold","stage":"request"},{"mode":"hold","stage":"response"}]"# };
+            if !view.set_network_filter(filter).unwrap_or(false) {
                 view.close();
                 return done(Err("the engine would not hold this request".to_string()));
             }
-            let (held_document, held_origin, held_redirect, authorization) = (document.clone(), origin.clone(), redirect.clone(), request.authorization.clone());
+            let refusal: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+            let (held_document, held_origin, held_redirect, held_refusal, authorization) = (document.clone(), origin.clone(), redirect.clone(), refusal.clone(), request.authorization.clone());
             view.on_network(move |held| {
                 let meta: Value = serde_json::from_str(held.metadata()).unwrap_or(Value::Null);
                 let url = meta["url"].as_str().unwrap_or("");
+                if meta["stage"] == "response" {
+                    // As a page's: a public name answered from a local address.
+                    let reply = match bounds.check_address(url, meta["remoteAddress"].as_str()) {
+                        Ok(()) => r#"{"action":"continue"}"#,
+                        Err(why) => {
+                            *held_refusal.borrow_mut() = Some(why);
+                            r#"{"action":"block","error":"addressunreachable"}"#
+                        }
+                    };
+                    let _ = held.respond(reply, &[]);
+                    return;
+                }
                 if url == held_document {
                     let reply = json!({"action": "fulfill", "status": 200, "headers": [{"name": "Content-Type", "value": "text/html"}]});
                     let _ = held.respond(&reply.to_string(), b"<!doctype html>");
@@ -392,8 +463,16 @@ pub fn service_fetch(profile: &str, request: ServiceRequest, done: impl FnOnce(R
             view.on_http_auth(|asked| {
                 asked.cancel();
             });
+            allow_local_network(bounds, view);
             let next = page.clone();
-            page.command("Frame.goto", &json!({"url": document, "waitUntil": "commit", "timeout": request.timeout}).to_string(), move |loaded| {
+            let params = match super::to_engine(&json!({"url": document, "waitUntil": "commit", "timeout": request.timeout})) {
+                Ok(params) => params,
+                Err(why) => {
+                    view.close();
+                    return done(Err(why));
+                }
+            };
+            page.command("Frame.goto", params, move |loaded| {
                 if let Err(error) = loaded {
                     next.view().close();
                     return done(Err(error.message().to_string()));
@@ -401,13 +480,23 @@ pub fn service_fetch(profile: &str, request: ServiceRequest, done: impl FnOnce(R
                 let arg = json!({"url": request.url, "method": request.method, "headers": request.headers.iter().map(|header| [header["name"].clone(), header["value"].clone()]).collect::<Vec<_>>(),
                     "body": request.body, "limit": request.limit, "timeout": request.timeout});
                 let closing = next.clone();
-                next.command("Frame.evaluateExpression", &json!({"expression": SERVICE_FETCH, "isFunction": true, "arg": arg}).to_string(), move |result| {
+                let params = match super::to_engine(&json!({"expression": SERVICE_FETCH, "isFunction": true, "arg": arg})) {
+                    Ok(params) => params,
+                    Err(why) => {
+                        next.view().close();
+                        return done(Err(why));
+                    }
+                };
+                next.command("Frame.evaluateExpression", params, move |result| {
                     closing.view().close();
+                    if let Some(why) = refusal.borrow_mut().take() {
+                        return done(Err(why));
+                    }
                     if let Some(url) = redirect.borrow_mut().take() {
                         return done(Ok(json!({"redirect": url})));
                     }
                     match result {
-                        Ok(json) => done(serde_json::from_str::<Value>(&json).map(|mut answer| answer["value"].take()).map_err(|e| e.to_string())),
+                        Ok(value) => done(super::from_engine(&value["value"])),
                         Err(error) => done(Err(error.message().lines().next().unwrap_or("").chars().take(1000).collect())),
                     }
                 });
@@ -475,16 +564,21 @@ fn page_open(bounds: &'static Bounds, args: Value, done: Done) {
                 });
             });
             if let Some((width, height)) = size {
-                page.command("Page.setViewportSize", &json!({"viewportSize": {"width": width, "height": height}}).to_string(), |_| {});
+                if let Ok(params) = super::to_engine(&json!({"viewportSize": {"width": width, "height": height}})) {
+                    page.command("Page.setViewportSize", params, |_| {});
+                }
             }
             let answer = json!({"page": id, "profile": name});
             match url {
                 Some(url) => navigate(page, id, url, "load".to_string(), DEFAULT_TIMEOUT, answer, done),
                 // The blank document there already came before the hooks.
-                None => page.command("Frame.evaluateExpression", &json!({"expression": format!("{}; 1", document_script(bounds))}).to_string(), move |result| match result {
-                    Ok(_) => done(ok(answer)),
-                    Err(error) => done(Err(error.message().to_string())),
-                }),
+                None => match super::to_engine(&json!({"expression": format!("{}; 1", document_script(bounds))})) {
+                    Ok(params) => page.command("Frame.evaluateExpression", params, move |result| match result {
+                        Ok(_) => done(ok(answer)),
+                        Err(error) => done(Err(error.message().to_string())),
+                    }),
+                    Err(why) => done(Err(why)),
+                },
             }
         });
     });

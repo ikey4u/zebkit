@@ -3,19 +3,16 @@ from Python, in pixels. The font's path is the first argument. Runs without the
 engine:
 
     ZEBKIT_DIR=<package> PYTHONPATH=bindings/python python3 tests/engine/pdf_bindings.py <font.ttf>
+
+Exit 0 when every check passes.
 """
 
+import os
 import sys
 
-import zebkit
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-failures = []
-
-
-def check(ok, what, detail=None):
-    print(f"{'ok  ' if ok else 'FAIL'} {what}" + (f": {detail}" if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
+from harness import check, finish, zebkit  # noqa: E402
 
 
 def refuses(function, what):
@@ -285,5 +282,4 @@ global_hook = zebkit.pdf_hooks.before("open", lambda operation: {"refuse": "clos
 refuses(blank, "opening refused, for all documents")
 zebkit.remove_pdf_hook(global_hook)
 page.close()
-print(f"{'FAILED: ' + ', '.join(failures) if failures else 'all passed'}")
-sys.exit(1 if failures else 0)
+sys.exit(finish())

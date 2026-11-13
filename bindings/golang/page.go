@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"strings"
 	"unsafe"
 )
 
@@ -151,63 +152,126 @@ func (v *View) Dialogs() ([]Dialog, error) {
 	return dialogs, nil
 }
 
-// How Find looks, combined.
+// FindFlags is how Find looks: FindMatchCase, FindBackward and
+// FindHighlightOnly, combined.
+type FindFlags uint
+
 const (
-	FindMatchCase     uint = 1 << 0
-	FindBackward      uint = 1 << 1
-	FindHighlightOnly uint = 1 << 2
+	// FindMatchCase tells upper from lower case.
+	FindMatchCase FindFlags = 1 << 0
+	// FindBackward goes to the previous match rather than the next.
+	FindBackward FindFlags = 1 << 1
+	// FindHighlightOnly counts and highlights the matches, none made active
+	// and nothing scrolled.
+	FindHighlightOnly FindFlags = 1 << 2
 )
 
 // FindStop is what becomes of the active match when a search stops.
 type FindStop int
 
 const (
-	FindStopClear    FindStop = 0
-	FindStopKeep     FindStop = 1
+	// FindStopClear: the highlights go and the active match is not selected.
+	FindStopClear FindStop = 0
+	// FindStopKeep: the highlights go; the active match stays selected.
+	FindStopKeep FindStop = 1
+	// FindStopActivate: the highlights go and the active match's element is
+	// activated (a link in it followed).
 	FindStopActivate FindStop = 2
 )
 
 // Find looks for text in the page as Chrome's find bar does: in every frame
 // and shadow tree, all matches highlighted, the active one distinctly. The
 // same text again goes to the next match (FindBackward: the previous). It
-// returns the request's number, its results' requestId; 0 for empty text.
-func (v *View) Find(text string, flags uint) int {
+// returns the request's number, its results' requestId (OnFind). Empty text
+// stops the search, as StopFinding(FindStopClear), and returns 0 and nil; a
+// closed view returns ErrClosed; text that is not UTF-8, or holds a zero
+// byte, is refused.
+func (v *View) Find(text string, flags FindFlags) (int, error) {
 	raw, ok := v.raw()
 	if !ok {
-		return 0
+		return 0, ErrClosed
+	}
+	if strings.IndexByte(text, 0) >= 0 {
+		return 0, refused("Find: the text holds a zero byte")
 	}
 	t := C.CString(text)
 	defer free(t)
-	return int(C.zebkit_view_find(raw, t, C.uint(flags)))
+	request := int(C.zebkit_view_find(raw, t, C.uint(flags)))
+	if request == 0 && text != "" {
+		return 0, refused("Find: the text is not UTF-8, or the view has gone")
+	}
+	return request, nil
 }
 
-// StopFinding stops the search and clears its highlights.
+// StopFinding stops the search and clears its highlights; OnFind is told a
+// result with stopped true when one was on.
 func (v *View) StopFinding(action FindStop) {
 	if raw, ok := v.raw(); ok {
 		C.zebkit_view_stop_finding(raw, C.zebkit_find_stop_action(action))
 	}
 }
 
-// OnFind tells function each result: requestId, text, matches, activeMatch
-// (from 1, 0 for none), final, rect (the active match's, or nil), stopped;
-// nil stops.
-func (v *View) OnFind(function func(map[string]any)) {
-	v.told("find", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+// FindResult is a result of Find, as OnFind and View.FindResult give it.
+type FindResult struct {
+	// RequestID is the Find it answers.
+	RequestID int
+	Text      string
+	// Matches is the number of matches so far.
+	Matches int
+	// ActiveMatch is the active one, from 1; 0 for none.
+	ActiveMatch int
+	// Final: the last result of its request, the counting done.
+	Final bool
+	// Rect is the active match, in the view's CSS pixels; nil for none.
+	Rect *Rect
+	// Stopped: the search has stopped (StopFinding, or its document went).
+	Stopped bool
+	// JSON is all of it, as the engine gave it.
+	JSON json.RawMessage
+}
+
+func findResultOf(text string) FindResult {
+	var value struct {
+		RequestID   float64 `json:"requestId"`
+		Text        string  `json:"text"`
+		Matches     float64 `json:"matches"`
+		ActiveMatch float64 `json:"activeMatch"`
+		Final       bool    `json:"final"`
+		Rect        *struct{ X, Y, Width, Height float64 }
+		Stopped     bool `json:"stopped"`
+	}
+	_ = json.Unmarshal([]byte(text), &value)
+	result := FindResult{RequestID: int(value.RequestID), Text: value.Text, Matches: int(value.Matches),
+		ActiveMatch: int(value.ActiveMatch), Final: value.Final, Stopped: value.Stopped, JSON: json.RawMessage(text)}
+	if r := value.Rect; r != nil {
+		result.Rect = &Rect{int32(r.X), int32(r.Y), int32(r.Width), int32(r.Height)}
+	}
+	return result
+}
+
+// OnFind tells function each result of Find; nil stops.
+func (v *View) OnFind(function func(FindResult)) {
+	var value func(string)
+	if function != nil {
+		value = func(text string) { function(findResultOf(text)) }
+	}
+	v.hook("find", function, value, unsafe.Pointer(C.zk_view_text), func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_find(raw, C.zebkit_find_func(f), d)
 	})
 }
 
-// FindResult is the last result of the search on, as OnFind has them.
-func (v *View) FindResult() (map[string]any, error) {
+// FindResult is the last result of the search on, as OnFind has them; with
+// none on, Text "", Matches 0 and Stopped true.
+func (v *View) FindResult() (FindResult, error) {
 	raw, ok := v.raw()
 	if !ok {
-		return nil, ErrClosed
+		return FindResult{}, ErrClosed
 	}
-	var result map[string]any
-	if err := takeJSON(C.zebkit_view_find_result(raw), &result, "no find result"); err != nil {
-		return nil, err
+	text, err := takeRaw(C.zebkit_view_find_result(raw), "no find result")
+	if err != nil {
+		return FindResult{}, err
 	}
-	return result, nil
+	return findResultOf(string(text)), nil
 }
 
 // RequestClose closes the view as a browser closes a tab: the page's

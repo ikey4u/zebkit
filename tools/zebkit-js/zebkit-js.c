@@ -5,7 +5,16 @@
  * app.mjs is an ES module, with zebkit.* (docs/API.md): views to
  * make, the engine's services, timers and console. The program ends when
  * the script calls zebkit.quit(), or once nothing of it is pending and no
- * view is open, as Node ends. Its exit status is 1 when the module threw.
+ * view is open, as Node ends. Its exit status is 1 when the module threw,
+ * and when an error went uncaught later: thrown from a callback (a timer, an
+ * event or hook handler) or a promise rejected with no handler. Such an error
+ * is printed ("Uncaught ...") and the program runs on to its end: the engine
+ * is not stopped inside a callback. A URL scheme handler's error is answered
+ * (500) and printed, and does not fail the program, as a server's.
+ *
+ * Its own switches, before the module: --zebkit-cookie-key-file=PATH (below);
+ * the engine's --zebkit-scheme=..., --zebkit-cookie-storage=os|file and the
+ * other --zebkit-... switches (docs/API.md) and Chromium's go to the engine.
  *
  * Built with ZEBKIT_WIN_SANDBOX on Windows (and zebkit_sandbox.lib, as the
  * release archive's is), it is the engine's sandboxed children too
@@ -116,7 +125,10 @@ int main(int argc, char **argv) {
         }
     }
     if (!module_path) {
-        fprintf(stderr, "usage: zebkit-js [switches] app.mjs [arguments]\n");
+        fprintf(stderr,
+                "usage: zebkit-js [switches] app.mjs [arguments]\n"
+                "  switches: --zebkit-cookie-key-file=PATH, the engine's --zebkit-... and Chromium's\n"
+                "  exit status: 1 when the module threw or an error went uncaught (printed, run on to the end)\n");
         return 2;
     }
     /* --zebkit-cookie-key-file=PATH: cookies encrypted with the application's

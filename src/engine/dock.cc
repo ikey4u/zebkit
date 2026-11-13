@@ -34,6 +34,10 @@ Menu& TheMenu() {
 
 }  // namespace
 
+const DockState& CurrentDockState() {
+  return State();
+}
+
 const std::vector<MenuItem>& DockMenu() {
   return TheMenu().items;
 }

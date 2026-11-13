@@ -66,6 +66,11 @@ The refusal, its message and `--no-sandbox` run in the suite. The helper itself 
 the build machine, where no root is to be had; **it has not been run from this package**. See
 `docs/ROADMAP.md`.
 
+`scripts/sandbox-helper-test.sh <release .tar.xz>`, run as root on a test machine, is a step of
+every release: it installs the helper as above and checks that the page processes get a PID
+namespace of their own from it. Without root it checks the package's side and skips the rest;
+the suite runs it so, as `sandbox-helper`.
+
 ## macOS
 
 The helper, `Zebkit Helper.app` inside the framework, enters the seatbelt sandbox

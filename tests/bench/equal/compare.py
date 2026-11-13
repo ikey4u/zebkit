@@ -50,7 +50,7 @@ PR_SET_CHILD_SUBREAPER = 36
 QUIET_LOAD = 4.5
 SPOILED_LOAD = 8.0
 SCRIPTS = ("engine-test.sh", "playwright-suite.sh", "build.sh", "package.sh", "web-bench.sh", "layout-bench.sh",
-           "automation-bench.sh", "release.sh", "dist.sh", "ui-bench.sh")
+           "automation-bench.sh", "release.sh", "dist.sh")
 TOOLS = ("ninja", "siso", "autoninja", "rustc", "cargo", "ld.lld", "lld", "gn")
 
 

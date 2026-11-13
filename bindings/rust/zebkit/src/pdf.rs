@@ -9,7 +9,7 @@
 
 use crate::services::Image;
 use crate::canvas::Canvas;
-use crate::{c_string, string_from, sys, take_bytes, take_error, take_string, Error};
+use crate::{c_string, string_from, sys, take_bytes, take_error, take_string, Bytes, Error};
 use std::mem::ManuallyDrop;
 use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -212,7 +212,7 @@ impl Document {
     }
 
     /// Signature `index`'s contents: the DER-encoded PKCS#7 it holds.
-    pub fn signature_contents(&mut self, index: usize) -> Result<Vec<u8>, Error> {
+    pub fn signature_contents(&mut self, index: usize) -> Result<Bytes, Error> {
         let (mut size, mut error) = (0, std::ptr::null_mut());
         unsafe {
             let data = sys::zebkit_pdf_signature_contents(self.raw, page_index(index), &mut size, &mut error);
@@ -225,7 +225,7 @@ impl Document {
 
     /// Image `image` of the page, as [`Document::images`] lists them: its
     /// JPEG as stored (and true), or its pixels as PNG (and false).
-    pub fn image_data(&mut self, page: usize, image: usize) -> Result<(Vec<u8>, bool), Error> {
+    pub fn image_data(&mut self, page: usize, image: usize) -> Result<(Bytes, bool), Error> {
         let (mut size, mut jpeg, mut error) = (0, false, std::ptr::null_mut());
         unsafe {
             let data =
@@ -377,7 +377,7 @@ impl Document {
         self.json(answer, error)
     }
 
-    pub fn attachment(&mut self, index: usize) -> Result<Vec<u8>, Error> {
+    pub fn attachment(&mut self, index: usize) -> Result<Bytes, Error> {
         let (mut size, mut error) = (0, std::ptr::null_mut());
         unsafe {
             let data = sys::zebkit_pdf_attachment(self.raw, page_index(index), &mut size, &mut error);
@@ -492,7 +492,7 @@ impl Document {
     }
 
     /// The document as a file, whole or with its changes appended.
-    pub fn save(&mut self, incremental: bool) -> Result<Vec<u8>, Error> {
+    pub fn save(&mut self, incremental: bool) -> Result<Bytes, Error> {
         let flags = if incremental { sys::ZEBKIT_PDF_SAVE_INCREMENTAL } else { 0 };
         let (mut size, mut error) = (0, std::ptr::null_mut());
         unsafe {
@@ -589,7 +589,7 @@ impl Document {
     }
 
     /// The name and bytes of the file in annotation `index`.
-    pub fn annotation_file(&mut self, page: usize, index: usize) -> Result<(String, Vec<u8>), Error> {
+    pub fn annotation_file(&mut self, page: usize, index: usize) -> Result<(String, Bytes), Error> {
         let (mut name, mut size, mut error) = (std::ptr::null_mut(), 0, std::ptr::null_mut());
         unsafe {
             let data = sys::zebkit_pdf_annotation_file(self.raw, page_index(page), page_index(index), &mut name, &mut size, &mut error);
@@ -617,7 +617,7 @@ impl Document {
     }
 
     /// The annotations as a file: of `page`, or of all; only `index` of it, or all.
-    pub fn export_annotations(&mut self, format: Interchange, page: Option<usize>, index: Option<usize>) -> Result<Vec<u8>, Error> {
+    pub fn export_annotations(&mut self, format: Interchange, page: Option<usize>, index: Option<usize>) -> Result<Bytes, Error> {
         let (mut size, mut error) = (0, std::ptr::null_mut());
         unsafe {
             let data = sys::zebkit_pdf_annotations_export(

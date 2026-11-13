@@ -6,6 +6,7 @@
  * The test takes the mouse and the keyboard for a moment. Exit 0 when every check
  * passes. */
 
+#include "harness.h"
 #include <windows.h>
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -30,18 +31,9 @@ static const char page[] =
 
 static HWND window, other;
 static HANDLE wake;
-static int failures, checks;
 static zebkit_view *view;
 static char answer[4096];
 static int answered, closed;
-
-static void check(int ok, const char *what) {
-    ++checks;
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
-    fflush(stdout);
-    if (!ok)
-        ++failures;
-}
 
 static void wakeup(int64_t delay_ms, void *data) {
     (void)delay_ms;
@@ -167,82 +159,81 @@ int main(int argc, char **argv) {
     zebkit_view_on_close(view, on_close, NULL);
 
     char *error = NULL;
-    check(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no window: refused");
+    check(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no window: refused", NULL);
     zebkit_free(error), error = NULL;
-    check(!zebkit_view_attach_native(view, 0x7ffffff0u, 0, 0, 100, 100, &error) && error, "a window that is not there: refused");
+    check(!zebkit_view_attach_native(view, 0x7ffffff0u, 0, 0, 100, 100, &error) && error, "a window that is not there: refused", NULL);
     zebkit_free(error), error = NULL;
-    check(!zebkit_view_attach_native(view, (uintptr_t)window, 0, 0, 0, 100, &error) && error, "empty bounds: refused");
+    check(!zebkit_view_attach_native(view, (uintptr_t)window, 0, 0, 0, 100, &error) && error, "empty bounds: refused", NULL);
     zebkit_free(error), error = NULL;
-    check(zebkit_view_attach_native(view, (uintptr_t)window, 40, 30, 600, 400, &error), "attached in the application's window");
+    check(zebkit_view_attach_native(view, (uintptr_t)window, 40, 30, 600, 400, &error), "attached in the application's window", NULL);
     zebkit_native_window native = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
     check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_WIN32 &&
-          native.handle == (uintptr_t)window, "native window: host HWND");
+          native.handle == (uintptr_t)window, "native window: host HWND", NULL);
 
     for (int i = 0; i < 3000 && !state; ++i)
         spin(5);
-    check(state == 1, "the page loads");
+    check(state == 1, "the page loads", NULL);
     spin(1500);
 
     HWND child = GetWindow(window, GW_CHILD);
-    check(child != NULL && (GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD), "the view's window is a child of the application's");
+    check(child != NULL && (GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD), "the view's window is a child of the application's", NULL);
     RECT box;
     GetClientRect(child, &box);
-    check(box.right == 600 && box.bottom == 400, "at the size asked for");
+    check(box.right == 600 && box.bottom == 400, "at the size asked for", NULL);
 
     foreground(window);
     /* (40,30) is where the view starts in the client area. */
-    check(GetForegroundWindow() == window, "the application's window is the foreground one");
+    check(GetForegroundWindow() == window, "the application's window is the foreground one", NULL);
     /* The parent's pixels at the display's scale: the page's (60, 60). */
     const double scale = atof(ask("devicePixelRatio"));
     const int at = (int)(60 * (scale > 0 ? scale : 1) + 0.5);
     click(window, 40 + at, 30 + at);
     printf("after the click: %s\n", ask("JSON.stringify(log)"));
-    check(strstr(answer, "click\\\",60,60,true") != NULL, "a real click reaches the page where it was, trusted");
-    check(strstr(ask("document.activeElement.id"), "i") != NULL, "the click focused the page's field");
-    check(GetFocus() != NULL && (GetFocus() == child || IsChild(child, GetFocus())), "the keyboard is in the view's window");
+    check(strstr(answer, "click\\\",60,60,true") != NULL, "a real click reaches the page where it was, trusted", NULL);
+    check(strstr(ask("document.activeElement.id"), "i") != NULL, "the click focused the page's field", NULL);
+    check(GetFocus() != NULL && (GetFocus() == child || IsChild(child, GetFocus())), "the keyboard is in the view's window", NULL);
     key('Z');
     key('K');
     printf("after the keys: %s\n", ask("document.getElementById('i').value"));
-    check(!strcmp(answer, "\"zk\""), "real keys type into the page");
+    check(!strcmp(answer, "\"zk\""), "real keys type into the page", NULL);
     wheel(-WHEEL_DELTA);
     printf("after the wheel: %s\n", ask("JSON.stringify(log.filter(e=>e[0]=='wheel'))"));
-    check(strstr(answer, "wheel\\\",1,true") != NULL, "the real wheel reaches the page");
+    check(strstr(answer, "wheel\\\",1,true") != NULL, "the real wheel reaches the page", NULL);
 
     /* Moved and sized by the application. */
     zebkit_view_set_bounds(view, 10, 10, 500, 300);
     spin(800);
     GetClientRect(child, &box);
-    check(box.right == 500 && box.bottom == 300, "zebkit_view_set_bounds()");
+    check(box.right == 500 && box.bottom == 300, "zebkit_view_set_bounds()", NULL);
     check(!strcmp(ask("Math.round(innerWidth*devicePixelRatio)+'x'+Math.round(innerHeight*devicePixelRatio)"),
-                  "\"500x300\""), "the page has the new size, in the parent's pixels");
+                  "\"500x300\""), "the page has the new size, in the parent's pixels", NULL);
 
     /* A click in the application's own part stays the application's. */
     click(window, 5, 5);
-    check(strstr(ask("JSON.stringify(log.filter(e=>e[0]=='click').length)"), "1") != NULL, "a click beside the view does not reach the page");
+    check(strstr(ask("JSON.stringify(log.filter(e=>e[0]=='click').length)"), "1") != NULL, "a click beside the view does not reach the page", NULL);
 
     /* Detached: its own window again, input still works. */
-    check(zebkit_view_detach_native(view), "zebkit_view_detach_native()");
+    check(zebkit_view_detach_native(view), "zebkit_view_detach_native()", NULL);
     check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_WIN32 &&
-          native.handle == (uintptr_t)child, "native window: own HWND after detaching");
+          native.handle == (uintptr_t)child, "native window: own HWND after detaching", NULL);
 
     spin(500);
-    check(GetParent(child) == NULL && !(GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD), "its own window again");
-    check(IsWindowVisible(child), "shown");
+    check(GetParent(child) == NULL && !(GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD), "its own window again", NULL);
+    check(IsWindowVisible(child), "shown", NULL);
 
     /* In a second window, whose end takes the view with it. */
     other = make_window(L"zebkit parent 2", 100, 100, 400, 300);
-    check(zebkit_view_attach_native(view, (uintptr_t)other, 0, 0, 200, 150, &error), "attached again, in another window");
+    check(zebkit_view_attach_native(view, (uintptr_t)other, 0, 0, 200, 150, &error), "attached again, in another window", NULL);
     spin(500);
-    check(GetParent(child) == other, "with that window as its parent");
+    check(GetParent(child) == other, "with that window as its parent", NULL);
     DestroyWindow(other);
     for (int i = 0; i < 1000 && !closed; ++i)
         spin(5);
-    check(closed, "the parent destroyed first takes the view with it: on_close");
+    check(closed, "the parent destroyed first takes the view with it: on_close", NULL);
 
     DestroyWindow(window);
     spin(200);
-    check(zebkit_shutdown(), "zebkit_shutdown()");
-    printf("%d of %d checks passed\n", checks - failures, checks);
+    check(zebkit_shutdown(), "zebkit_shutdown()", NULL);
     fflush(stdout);
-    return failures ? 1 : 0;
+    return summary();
 }

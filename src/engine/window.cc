@@ -56,6 +56,7 @@
 #include "content/public/browser/renderer_preferences_util.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/content_switches.h"
 #include "zebkit/engine/file_select.h"
 #include "zebkit/engine/engine.h"
@@ -89,6 +90,24 @@ base::OnceClosure& GetMainMessageLoopQuitClosure() {
 
 constexpr int kDefaultWidth = 800;
 constexpr int kDefaultHeight = 600;
+
+// The page's window, for Window::FromWebContents() without a walk of every
+// window.
+class WindowOfContents : public WebContentsUserData<WindowOfContents> {
+ public:
+  Window* window() const { return window_; }
+
+ private:
+  friend class WebContentsUserData<WindowOfContents>;
+  WindowOfContents(WebContents* contents, Window* window)
+      : WebContentsUserData<WindowOfContents>(*contents), window_(window) {}
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+
+  const raw_ptr<Window> window_;
+};
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(WindowOfContents);
+
 }  // namespace
 
 std::vector<Window*> Window::windows_;
@@ -102,6 +121,7 @@ Window::Window(std::unique_ptr<WebContents> web_contents, Kind kind)
   UpdateFontRendererPreferencesFromSystemSettings(
       web_contents_->GetMutableRendererPrefs());
   windows_.push_back(this);
+  WindowOfContents::CreateForWebContents(web_contents_.get(), this);
 }
 
 namespace {
@@ -215,6 +235,7 @@ void Window::RequestMediaAccessPermission(WebContents* contents,
 Window::~Window() {
   platform_->CleanUp(this);
   std::erase(windows_, this);
+  web_contents_->RemoveUserData(WindowOfContents::UserDataKey());
   web_contents_->SetDelegate(nullptr);
   web_contents_.reset();
 }
@@ -318,12 +339,9 @@ bool Window::IsWebContentsCreationOverridden(
 
 // static
 Window* Window::FromWebContents(WebContents* web_contents) {
-  for (Window* window : windows_) {
-    if (window->web_contents() && window->web_contents() == web_contents) {
-      return window;
-    }
-  }
-  return nullptr;
+  WindowOfContents* found =
+      web_contents ? WindowOfContents::FromWebContents(web_contents) : nullptr;
+  return found ? found->window() : nullptr;
 }
 
 // static
@@ -737,7 +755,12 @@ void Window::RendererUnresponsive(
     WebContents* source,
     RenderWidgetHost* render_widget_host,
     base::RepeatingClosure hang_monitor_restarter) {
-  LOG(WARNING) << "renderer unresponsive";
+  TellResponsiveness(source, false);
+}
+
+void Window::RendererResponsive(WebContents* source,
+                                RenderWidgetHost* render_widget_host) {
+  TellResponsiveness(source, true);
 }
 
 void Window::ActivateContents(WebContents* contents) {

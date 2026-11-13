@@ -1,10 +1,14 @@
 """Optional X11 integration: toolkit window input, observed through CDP.
 
-python3 tests/engine/native_host_input.py /path/to/gtk-host [engine switches...]
-Uses a private Xvfb server; never sends input to the user's display.
+    python3 tests/engine/native_host_input.py <gtk-host | qt-host | zebkit-winit-host> [engine switches...]
 
-Run by hand, not by scripts/engine-test.sh: the hosts are built apart, and
-examples/native-host/README.md has the commands for the GTK, Qt and winit hosts.
+Uses a private Xvfb server; never sends input to the user's display. The host
+prints its DevTools line and its web view's bounds (--print-bounds) on standard
+output and error both, which is why it is not started with harness.Engine.
+
+scripts/engine-test.sh runs it as native-host-input-<host> for each host it has
+built, and skips it for one that is not; examples/native-host/README.md has the
+commands for the GTK, Qt and winit hosts.
 """
 import ctypes as C
 import os
@@ -15,7 +19,10 @@ import sys
 import tempfile
 import time
 
-from cdp_page import Cdp
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness import Cdp, check, finish  # noqa: E402
+
+WHAT = 'native toolkit X11 input: focus, typing, backspace, button, select popup'
 
 
 def main():
@@ -65,7 +72,7 @@ def main():
                         break
                     if process.poll() is not None:
                         raise RuntimeError(text)
-                    time.sleep(.05)
+                    time.sleep(.02)
                 if not endpoint or not bounds:
                     raise RuntimeError('Host did not initialize: ' + log_path.read_text())
                 cdp = Cdp(endpoint[0])
@@ -75,7 +82,7 @@ def main():
                     targets = cdp.call('Target.getTargets')['targetInfos']
                     target = next((t['targetId'] for t in targets if t['type'] == 'page'), None)
                     if target is None:
-                        time.sleep(.05)
+                        time.sleep(.01)
                 if target is None:
                     raise RuntimeError('No web-view target appeared')
                 session = cdp.call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
@@ -93,7 +100,7 @@ def main():
                         value = evaluate(expression)
                         if value == expected:
                             return
-                        time.sleep(.05)
+                        time.sleep(.01)
                     raise AssertionError(f'{expression}: expected {expected!r}, got {value!r}')
 
                 wait('!!document.querySelector("input")', True)
@@ -147,8 +154,10 @@ def main():
                 key(0xff54)  # Down
                 key(0xff0d)  # Return
                 wait('document.querySelector("select").selectedIndex', 1)
-                print('ok native toolkit X11 input: focus, typing, backspace, button, select popup', flush=True)
-                cdp.sock.close()
+                check(True, WHAT)
+                cdp.close()
+    except Exception as error:  # noqa: BLE001
+        check(False, WHAT, repr(error))
     finally:
         if process and process.poll() is None:
             process.terminate()
@@ -161,7 +170,8 @@ def main():
             x.XCloseDisplay(display)
         server.terminate()
         server.wait()
+    return finish()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -24,7 +24,7 @@
 // panics (before Init or Main, the goroutine that will start the engine is
 // the one to call the functions that configure it). The exceptions are the
 // ones the C API lets any thread call: Post and PostDelayed, a Call's
-// Resolve and Reject, a Request's Respond, and an off-screen Frame's
+// Resolve, Reject and Close, a Request's Respond, and an off-screen Frame's
 // Release. From other goroutines, hand work over with Post. The package's
 // own state for what the engine holds (the functions of OnPowerEvent,
 // SetAppMenu, HandleScheme and the like) is the engine thread's too, and is
@@ -54,6 +54,14 @@
 // its window, its page calls window.close(), its context closes, or the
 // engine quits. A closed view's methods do nothing; those that return an
 // error return ErrClosed, and a done function is called with ErrClosed.
+//
+// # Playwright's API
+//
+// The automation package (github.com/ikey4u/zebkit/bindings/golang/automation)
+// is Playwright's API, typed: pages, locators, events, routes, handles,
+// contexts and expect. This package has its low level: CallAutomation,
+// CallAutomationPixels, View.OnAutomationEvent, ViewByPageID and
+// ListenAutomation.
 package zebkit
 
 /*
@@ -403,6 +411,15 @@ func bytesOnce(done func([]byte, error)) C.uintptr_t {
 	})
 }
 
+// errorOnce is the handle of a done function given only an error, once.
+func errorOnce(done func(error)) C.uintptr_t {
+	return resultOnce(func(_ json.RawMessage, err error) {
+		if done != nil {
+			done(err)
+		}
+	})
+}
+
 // decodeOnce adapts done to a JSON answer decoded into a T.
 func decodeOnce[T any](done func(T, error)) func(json.RawMessage, error) {
 	return func(result json.RawMessage, err error) {
@@ -468,6 +485,10 @@ func onEngineThread() {
 		panic("zebkit: called off the engine's thread; hand the work over with zebkit.Post")
 	}
 }
+
+// IsEngineThread says whether the calling goroutine runs on the engine's
+// thread (before Init or Main, any goroutine does); any goroutine may ask.
+func IsEngineThread() bool { return bool(C.zk_on_engine_thread()) }
 
 // Init starts the engine inside the program's own loop; args are the
 // engine's switches, such as "--headless". Pump it from then on, and Shutdown

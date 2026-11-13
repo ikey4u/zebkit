@@ -29,5 +29,5 @@
     },
     "installed_app_modified": false
   },
-  "source_basis": "docs/GOOGLE_SIGNIN.md#integrated-browser-preserve-the-original-authorization-popup"
+  "source_basis": "docs/notes/google-signin.md#integrated-browser-preserve-the-original-authorization-popup"
 }

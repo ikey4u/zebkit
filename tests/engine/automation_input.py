@@ -10,26 +10,16 @@ import json
 import os
 import sys
 import tempfile
-import threading
 
-import zebkit
-from zebkit.automation import Page, run
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-ROUNDS = int(os.environ.get('ZEBKIT_TEST_ROUNDS') or '100')
-if os.environ.get('ZEBKIT_TEST_ROUNDS'):
-    print(f'narrowed: ZEBKIT_TEST_ROUNDS={ROUNDS}', flush=True)
-failures = []
-checks = 0
+from harness import Server, check, finish, knob, zebkit  # noqa: E402
+from zebkit.automation import Page, run  # noqa: E402
+
+# A debugging option: fewer rounds, said ("narrowed:"), a failure under ENGINE_TEST_STRICT=1.
+ROUNDS = int(knob('ROUNDS') or '100')
 seen_paths = []
 seen_auth = {}
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(('ok   ' if ok else 'FAIL ') + what + (': %r' % (detail,) if detail is not None and not ok else ''), flush=True)
-    if not ok:
-        failures.append(what)
 
 
 LISTEN = """<script>
@@ -76,9 +66,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(200, LISTEN.encode(), [('Content-Type', 'text/html')])
 
 
-server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-base = f'http://127.0.0.1:{server.server_port}'
+base = Server(Handler).base
 
 
 async def seen(page):
@@ -215,12 +203,12 @@ def main():
         def finished(done):
             if done._error is not None:
                 check(False, 'the test ran to the end', repr(done._error))
-            print('%d of %d checks passed' % (checks - len(failures), checks), flush=True)
             zebkit.quit()
         future.add_done_callback(finished)
 
     code = zebkit.main(ready, ['python'] + sys.argv[1:])
-    sys.exit(1 if code or failures or not checks else 0)
+    result = finish()
+    sys.exit(1 if code else result)
 
 
 main()

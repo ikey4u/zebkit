@@ -3,11 +3,15 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/current_thread.h"
+#include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -52,10 +56,23 @@ bool PresentNativeMenu(zebkit_view* view, content::RenderFrameHost* frame, const
   }
   // The point is in the page's view, top left the origin.
   const NSPoint at = NSMakePoint(point.x(), page.isFlipped ? point.y() : NSHeight(page.bounds) - point.y());
-  // Modal while it is open, as the system's context menus are.
-  [menu popUpMenuPositioningItem:nil atLocation:at inView:page];
-  if (chosen)
-    std::move(chosen).Run(target.picked);
+  // Shown after this returns, as on Linux and Windows: the menu's modal loop
+  // is not inside the call that asked for it, and the item comes after it too.
+  __weak NSView* weak_page = page;
+  auto pending = std::make_shared<base::OnceCallback<void(std::string)>>(std::move(chosen));
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE, base::BindOnce(^{
+    NSView* shown_in = weak_page;
+    if (shown_in && shown_in.window) {
+      // Modal while it is open, as the system's context menus are; the
+      // engine's tasks run meanwhile.
+      base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
+      [menu popUpMenuPositioningItem:nil atLocation:at inView:shown_in];
+    }
+    if (*pending) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(*pending), shown_in ? target.picked : std::string()));
+    }
+  }));
   return true;
 }
 

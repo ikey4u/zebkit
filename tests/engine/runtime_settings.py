@@ -12,11 +12,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import pathlib
-import subprocess
 import sys
 import tempfile
 import threading
 from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import harness  # noqa: E402
+from harness import finish, program  # noqa: E402
 
 TOP = '''<!doctype html><title>top</title><script>
 const OTHER = %s;
@@ -86,13 +90,9 @@ def main():
     server = ThreadingHTTPServer(('127.0.0.1', 0), Server)
     server.other = f'http://localhost:{server.server_port}'
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    checks = failures = 0
 
-    def check(ok, what, detail=''):
-        nonlocal checks, failures
-        checks += 1
-        failures += not ok
-        print(f"{'ok  ' if ok else 'FAIL'} {language}: {what}{'' if ok else f': {detail}'}", flush=True)
+    def check(ok, what, detail=None):
+        return harness.check(ok, f'{language}: {what}', detail)
 
     with tempfile.TemporaryDirectory(prefix='zebkit-runtime-settings-') as work:
         switches = ['--no-sandbox', '--headless', f'--user-data-dir={work}']
@@ -103,22 +103,16 @@ def main():
         if language == 'javascript':
             arguments.append(json.dumps({'RUNTIME_BASE': base, 'RUNTIME_OTHER': server.other}))
         environment = {**os.environ, 'RUNTIME_BASE': base, 'RUNTIME_OTHER': server.other}
-        try:
-            run = subprocess.run(arguments, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
-        except subprocess.TimeoutExpired as error:
-            print(error.stdout, error.stderr)
-            check(False, 'the program ended')
-            print(f'{checks - failures} of {checks} checks passed')
-            return 1
-        check(run.returncode == 0 and f'ok {language}\n' in run.stdout, 'the program passed',
-              f'exit {run.returncode}\n{run.stdout}\n{run.stderr[-3000:]}')
+        # It ends with "ok <language>" when all it checked holds.
+        if not program(arguments, f'{language}: the program passed', expect=f'^ok {language}$', seconds=120,
+                       env=environment):
+            return finish()
         # What is on the disk, whatever the program believes.
         downloads = pathlib.Path(work) / 'Downloads'
         names = sorted(path.name for path in downloads.iterdir()) if downloads.is_dir() else []
         check(any(name == 'saved.bin' for name in names), '"save" is on the disk', names)
         check(not any(name.startswith('denied') for name in names), '"deny" left nothing on the disk', names)
-    print(f'{checks - failures} of {checks} checks passed')
-    return 1 if failures else 0
+    return finish()
 
 
 if __name__ == '__main__':

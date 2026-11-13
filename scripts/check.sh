@@ -4,7 +4,7 @@
 #
 #   scripts/check.sh [--profile PROFILE]   everything, on out/blink/<profile>/package (slim)
 #   scripts/check.sh --static              only: bash -n, Python syntax, check-bindings.py,
-#                                          check-view-guards.py
+#                                          check-view-guards.py, check-reports.py
 #
 # Everything is: the static checks; engine-test.sh's downloads (--fetch), then
 # the suite in strict mode (the suite also runs check-surfaces.py and
@@ -53,14 +53,23 @@ expected_skips=(
     # browsers they could download (--ignore-scripts), and nothing installs Chrome.
     '^cdp-clients: no Chrome$'
     '^network-stages: the comparison with Chrome: no Chrome here$'
+    # The set-user-ID sandbox helper installed and used: needs root, which no
+    # check asks for; run as root on a test machine (scripts/sandbox-helper-test.sh).
+    '^sandbox-helper: setuid helper: needs root'
     # The native hosts' PDF pane: the hosts are built apart (examples/native-host/README.md).
-    '^native-host-pdf-[a-z-]+: no [^ ]+: examples/native-host/README\.md builds it$'
+    '^native-host-(pdf|input)-[a-z-]+: no [^ ]+: examples/native-host/README\.md builds it$'
     # Parts of macOS and Windows runs (engine-test.sh --prebuilt there, given
     # this list) that a machine without a person at its screen cannot have:
     # the person's clipboard, the Local Network grant, a window's focus.
-    '^pdf-in-page: Select All and Copy: the clipboard here is the person.s$'
+    '^pdf-in-page: Select All and Copy: the clipboard here is the person.s'
+    '^clipboard-permission: writing and reading the clipboard: the clipboard here is the person.s'
     '^media-tap: WebRTC loopback: .*macOS Local Network permission'
     '^(window-frame|system-holes)-(mac|win): (window actions|pointer lock): the window cannot have focus'
+    # What a bundle (--prebuilt) does not carry: the checkout's own builds of
+    # the Rust binding's engine test and the Rust hosts of examples/.
+    '^(rust-engine|example-gpui-browser|example-winit-host): not in the bundle \(--prebuilt\): run from a checkout$'
+    # A Windows machine with a GPU gives D3D11 textures, whose pixels offscreen.c does not read.
+    '^offscreen-gpu-buffers: the pixels of the frames: D3D11 textures'
 )
 
 log "shell scripts: bash -n"
@@ -87,6 +96,19 @@ sys.exit(bad)' || die "Python syntax errors"
 log "every C function in every binding"
 python3 -I "$ZEBKIT_ROOT/scripts/check-bindings.py" || die "a binding misses functions of the C API"
 python3 -I "$ZEBKIT_ROOT/scripts/check-view-guards.py" "$ZEBKIT_ROOT" || die "a view function of the C API uses its view unchecked"
+
+log "measurement reports against upstream.lock's Chromium and Electron"
+# scripts/check-reports.py has the rules. ZEBKIT_REPORTS_STALE_OK=1 makes a
+# stale report a warning, for a tree whose reports are to be measured again on
+# the release build; never for a release.
+if ! python3 -I -B "$ZEBKIT_ROOT/scripts/check-reports.py" "$REPORTS_DIR" "$PROFILES_DIR" \
+    "$CHROMIUM_VERSION" "$ELECTRON_VERSION"; then
+    if [[ "${ZEBKIT_REPORTS_STALE_OK:-}" == 1 ]] && (( static )); then
+        log "warning: stale reports (ZEBKIT_REPORTS_STALE_OK=1)"
+    else
+        die "stale reports in docs/reports (above)"
+    fi
+fi
 
 if (( static )); then
     log "static checks passed"

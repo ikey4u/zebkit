@@ -1,5 +1,6 @@
 /* Independent frame pixels, CSS layout and DPR across two live views. */
 #define _POSIX_C_SOURCE 200809L
+#include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,19 +8,13 @@
 #include <zebkit/offscreen.h>
 
 struct picture { int count, width, height; float scale; };
-static int failures;
-static void check(int ok, const char *label) {
-    printf("%s %s\n",ok ? "ok" : "FAIL",label);
-    fflush(stdout);
-    if (!ok) ++failures;
-}
 static double now(void) {
     struct timespec value; clock_gettime(CLOCK_MONOTONIC,&value);
     return value.tv_sec+value.tv_nsec/1e9;
 }
 static void step(void) {
     struct timespec pause={0,2000000};
-    if (!zebkit_pump()) ++failures;
+    if (!zebkit_pump()) ++harness_failures;
     nanosleep(&pause,NULL);
 }
 static void frame(zebkit_view *view,const zebkit_frame *value,void *data) {
@@ -47,7 +42,7 @@ static void query(zebkit_view *view,const char *script,const char *expected,cons
     struct result result={0};
     read_result(view,script,&result);
     if (!result.done || strcmp(result.value,expected)) fprintf(stderr,"identity %s: %s expected %s\n",label,result.value,expected);
-    check(result.done && !strcmp(result.value,expected),label);
+    check(result.done && !strcmp(result.value,expected),label, NULL);
 }
 static void identity(zebkit_view *view,const char *expected,const char *label) {
     query(view,"[devicePixelRatio,innerWidth,innerHeight]",expected,label);
@@ -73,7 +68,7 @@ int main(int argc,char **argv) {
     read_result(normal,"devicePixelRatio",&native_density);
     char *density_end=NULL;
     double density=strtod(native_density.value,&density_end);
-    check(native_density.done && density>0 && density_end && !*density_end,"normal headless view reports its original DPR");
+    check(native_density.done && density>0 && density_end && !*density_end,"normal headless view reports its original DPR", NULL);
     struct picture first={0},second={0};
     zebkit_view *a=zebkit_view_new_offscreen(page,200,100,1);
     if (!a) return 2;
@@ -88,8 +83,8 @@ int main(int argc,char **argv) {
     for (int i=0;i<50;++i) step();
     identity(a,"[1,200,100]","second view does not change first DPR or CSS layout");
     identity(b,"[2,200,100]","second view has its own DPR");
-    check(first.width==200 && first.height==100 && first.scale==1,"first frame retains its own pixel scale");
-    check(second.width==400 && second.height==200 && second.scale==2,"second frame uses scale two pixels");
+    check(first.width==200 && first.height==100 && first.scale==1,"first frame retains its own pixel scale", NULL);
+    check(second.width==400 && second.height==200 && second.scale==2,"second frame uses scale two pixels", NULL);
     query(normal,"devicePixelRatio",native_density.value,"offscreen scales preserve normal headless DPR");
     click(a,"first view receives CSS-coordinate click");
     click(b,"scale-two view receives CSS-coordinate click");
@@ -104,11 +99,11 @@ int main(int argc,char **argv) {
     wait_picture(&second,360,180);
     identity(a,"[1,200,100]","rescaling second view preserves first layout");
     identity(b,"[1.5,240,120]","second view supports independent fractional scale");
-    check(second.width==360 && second.height==180 && second.scale==1.5f,"fractional frame pixels match CSS layout");
+    check(second.width==360 && second.height==180 && second.scale==1.5f,"fractional frame pixels match CSS layout", NULL);
     zebkit_view_set_size(b,239,121,1.5f);
     wait_picture(&second,359,182);
     identity(b,"[1.5,239,121]","odd CSS dimensions retain fractional layout");
-    check(second.width==359 && second.height==182,"fractional frame dimensions round up");
+    check(second.width==359 && second.height==182,"fractional frame dimensions round up", NULL);
     struct picture third={0},fourth={0};
     zebkit_view *c=zebkit_view_new_offscreen(page,3600,80,.5f);
     if (!c) return 2;
@@ -130,6 +125,6 @@ int main(int argc,char **argv) {
     identity(a,"[1,200,100]","closing second view preserves first display");
     zebkit_view_close(a);
     zebkit_view_close(normal);
-    check(zebkit_shutdown(),"offscreen scale engine shuts down");
-    return failures ? 1 : 0;
+    check(zebkit_shutdown(),"offscreen scale engine shuts down", NULL);
+    return summary();
 }

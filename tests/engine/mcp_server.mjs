@@ -19,7 +19,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import {
-  check, finish, httpClient, loadSdk, makePdf, signedPdf, startHttp, stdioClient, stop, wrap,
+  check, finish, httpClient, loadSdk, makePdf, signedPdf, skip, startHttp, stdioClient, stop, wrap,
 } from './mcp_support.mjs';
 
 const [toolsDir, binary, ...switches] = process.argv.slice(2);
@@ -30,6 +30,9 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zebkit-mcp-test-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // How long a negative check gives what must not happen: one short constant for all of them.
 const SETTLE = 700;
+// The device flow's polling interval (RFC 8628: the provider's interval, 1 s
+// here) and a margin: a wait the protocol asks for, not one for a condition.
+const POLL_INTERVAL = 1100;
 // Whether test() became true within ms.
 const until = async (test, ms = 10000, step = 20) => {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(step)) if (await test()) return true;
@@ -118,6 +121,7 @@ function requestHandler(request, response) {
     case '/page': return send(PAGE);
     case '/canvas': return send(CANVAS);
     case '/second': return send('<!doctype html><title>Second</title><h1>Second page</h1>');
+    case '/data-frame': return send(`<!doctype html><script>window.got = []; addEventListener('message', e => got.push(e.data));</script><iframe src='data:text/html,<script>parent.postMessage("DATA-RAN","*")</script>'></iframe>`);
     case '/file.bin': response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment' }); return response.end('bytes');
     case '/wide': return send('é'.repeat(100), 'text/plain; charset=utf-8');
     case '/data.json': return send('{"hello": "world"}', 'application/json');
@@ -300,7 +304,7 @@ async function everyTool(label, c) {
   const hovered = await call('page_evaluate', { page, script: "document.querySelector('#hover').textContent" });
   check(hovered.structured.value === 'hovered', say('page_hover'), hovered.text);
   await call('page_scroll', { page, deltaY: 300 });
-  await sleep(100);
+  await until(async () => (await call('page_evaluate', { page, script: 'scrollY' })).structured.value > 0, 5000);
   const scrolled = await call('page_evaluate', { page, script: 'scrollY' });
   check(scrolled.structured.value > 0, say('page_scroll by a distance'), scrolled.text);
   await call('page_scroll', { page, selector: '#end' });
@@ -345,7 +349,7 @@ async function everyTool(label, c) {
   await call('page_mouse', { page: canvas, action: 'drag', x: box[0] + 50, y: box[1] + 200, toX: box[0] + 300, toY: box[1] + 200 });
   check((await state()).drag?.flat().join() === '50,200,300,200', say('page_mouse: a drag'), JSON.stringify((await state()).drag));
   await call('page_mouse', { page: canvas, action: 'wheel', x: box[0] + 100, y: box[1] + 100, deltaY: 120 });
-  await sleep(100);
+  await until(async () => (await state()).wheel === 120, 5000);
   check((await state()).wheel === 120, say('page_mouse: the wheel at a point'));
   await refused('page_mouse', { page: canvas, action: 'click' }, /x and y/, 'page_mouse: a click needs a point');
   const picture = await call('page_capture', { page: canvas });
@@ -684,10 +688,10 @@ async function everyTool(label, c) {
   await refused('net_fetch', { url: `${OAUTH}/api/echo`, auth: flow }, /not approved/, 'net_fetch with a flow not approved');
   const early = await call('auth_device_poll', { flow });
   check(early.structured.status === 'pending' && early.structured.retryAfter >= 1 && provider.polls === 0, say('auth_device_poll waits as long as the provider asks'), early.text);
-  await sleep(1100);
+  await sleep(POLL_INTERVAL);
   const pending = await call('auth_device_poll', { flow });
   check(pending.structured.status === 'pending' && provider.polls === 1, say('auth_device_poll: pending'), pending.text);
-  await sleep(1100);
+  await sleep(POLL_INTERVAL);
   const approved = await call('auth_device_poll', { flow });
   check(approved.structured.status === 'approved' && provider.polls === 2, say('auth_device_poll: approved'), approved.text);
   const tokenBody = provider.requests.find(item => item.path === '/token')?.body ?? '';
@@ -1075,6 +1079,67 @@ async function defaults() {
   startFails(['--', '--disable-features=x'], /refused/, 'its features, which hold part of the bounds');
   startFails(['--', 'http://example.com/'], /refused/, 'an address among the switches');
 
+  // DNS rebinding: a public name that resolves to this machine. Chromium's resolver reads
+  // /etc/hosts; a small preloaded library gives it a copy with the name (Linux only).
+  if (process.platform === 'linux') {
+    const shimDir = path.join(work, 'hosts-shim');
+    fs.mkdirSync(shimDir);
+    fs.writeFileSync(path.join(shimDir, 'shim.c'), `#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static const char *swap(const char *p) { const char *h = getenv("ZEBKIT_TEST_HOSTS"); return h && p && !strcmp(p, "/etc/hosts") ? h : p; }
+#define OPEN(n) int n(const char *p, int f, ...) { static int (*r)(const char *, int, ...); if (!r) r = dlsym(RTLD_NEXT, #n); va_list a; va_start(a, f); int m = va_arg(a, int); va_end(a); return r(swap(p), f, m); }
+OPEN(open) OPEN(open64)
+#define OPENAT(n) int n(int d, const char *p, int f, ...) { static int (*r)(int, const char *, int, ...); if (!r) r = dlsym(RTLD_NEXT, #n); va_list a; va_start(a, f); int m = va_arg(a, int); va_end(a); return r(d, swap(p), f, m); }
+OPENAT(openat) OPENAT(openat64)
+#define FOPEN(n) FILE *n(const char *p, const char *m) { static FILE *(*r)(const char *, const char *); if (!r) r = dlsym(RTLD_NEXT, #n); return r(swap(p), m); }
+FOPEN(fopen) FOPEN(fopen64)
+`);
+    fs.writeFileSync(path.join(shimDir, 'hosts'), fs.readFileSync('/etc/hosts', 'utf8') + '\n127.0.0.1 rebind.example\n');
+    execFileSync('cc', ['-shared', '-fPIC', '-o', path.join(shimDir, 'shim.so'), path.join(shimDir, 'shim.c'), '-ldl']);
+    const env = { LD_PRELOAD: path.join(shimDir, 'shim.so'), ZEBKIT_TEST_HOSTS: path.join(shimDir, 'hosts') };
+    const rebound = `http://rebind.example:${sitePort}`;
+    for (const origin of [rebound, '*']) {
+      await withClient(['--allow-origin', origin], async c => {
+        const page = await c.call('page_open', { url: `${rebound}/page` });
+        check(page.isError && /answered from 127\.0\.0\.1.*DNS rebinding/.test(page.text), `--allow-origin ${origin}: a public name answered from 127.0.0.1 is refused`, page.text);
+        const blank = (await c.call('page_open', {})).structured.page;
+        const fetched = await c.call('page_evaluate', { page: blank, script: `fetch('${rebound}/page', { mode: 'no-cors' }).then(r => r.type, e => String(e))` });
+        const log = await c.call('page_network', { page: blank });
+        check(/Failed to fetch/.test(fetched.text) && /ERR_ADDRESS_UNREACHABLE/.test(log.text) && /"what":"address"/.test(log.text), `--allow-origin ${origin}: a page's fetch() of it, and page_network says why`, { fetched: fetched.text, log: log.text });
+        const viaFetch = await c.call('net_fetch', { url: `${rebound}/page` });
+        check(viaFetch.isError, `--allow-origin ${origin}: net_fetch of it is refused`, viaFetch.text);
+      }, env);
+    }
+    await withClient(['--allow-origin', rebound, '--allow-local-network'], async c => {
+      const page = await c.call('page_open', { url: `${rebound}/page` });
+      check(!page.isError && page.structured.status === 200, '--allow-local-network: it loads', page.text);
+    }, env);
+  }
+  startFails(['--', '--ip-address-space-overrides=127.0.0.1:80=public'], /refused/, 'a switch that changes which addresses are local');
+  // '*' with the local network: refused at the start, in either order; the escape switch starts.
+  startFails(['--allow-origin', '*', '--allow-local-network'], /refused: any public page/, "'*' with --allow-local-network");
+  startFails(['--allow-local-network', '--allow-origin', '*'], /refused: any public page/, "--allow-local-network with '*', the other order");
+  await withClient(['--allow-origin', '*', '--allow-local-network-for-any-origin'], async c => {
+    const page = await c.call('page_open', {});
+    check(!page.isError, "'*' with --allow-local-network-for-any-origin starts", page.text);
+  });
+  // A data: child frame has no address: it passes the address check (no address refused).
+  await withClient(['--allow-origin', SITE], async c => {
+    const page = (await c.call('page_open', { url: `${SITE}/data-frame` })).structured.page;
+    let got = null;
+    await until(async () => {
+      got = await c.call('page_evaluate', { page, script: 'got' });
+      return Array.isArray(got.structured?.value) && got.structured.value.length > 0;
+    }, 5000, 200);
+    const log = await c.call('page_network', { page });
+    check(JSON.stringify(got?.structured?.value) === '["DATA-RAN"]' && !/"what":"address"/.test(log.text),
+          'a data: child frame loads under the address check', { got: got?.text, log: log.text });
+  });
+
   // Whatever refuses a start leaves nothing, before the engine or inside it.
   const refusals = path.join(work, 'refusals');
   fs.mkdirSync(refusals);
@@ -1154,7 +1219,7 @@ async function reviewed() {
     }
     check(lost === 0, 'a click right after a load is not lost', `${lost} of 50`);
     const alerted = await c.call('page_evaluate', { page: clicker, script: "setTimeout(() => alert('x'), 0); 1" });
-    await sleep(300);
+    await until(async () => (await c.call('page_list', {})).structured.pages.find(item => item.page === clicker)?.openDialogs, 5000, 50);
     const whileOpen = await c.call('page_click', { page: clicker, selector: '#b', timeout: 1500 });
     check(!alerted.isError && whileOpen.isError && /dialog|Timeout/i.test(whileOpen.text), 'an action with a dialog open still comes back', whileOpen.text);
     await c.call('page_dialog', { page: clicker });
@@ -1254,7 +1319,7 @@ async function reviewed() {
     const huge = await c.call('auth_device_start', { provider: 'huge' });
     check(!huge.isError && huge.structured.flow, 'a provider asking for a time without end', huge.text);
     const long = await c.call('auth_device_start', { provider: 'long' });
-    await sleep(1100);
+    await sleep(POLL_INTERVAL);
     const longPoll = await c.call('auth_device_poll', { flow: long.structured.flow });
     check(longPoll.structured.status === 'approved', 'a token that lasts for ever', longPoll.text);
     check(!(await c.call('data_hash', { text: 'a' })).isError, 'and the server is still there');
@@ -1273,9 +1338,13 @@ async function reviewed() {
 
     // A poll that overtakes another must not fail the flow.
     const slow = await c.call('auth_device_start', { provider: 'slow' });
-    await sleep(1100);
+    const tokensBefore = provider.requests.filter(item => item.path === '/slow-token').length;
+    await sleep(POLL_INTERVAL);
     const first = c.call('auth_device_poll', { flow: slow.structured.flow });
-    await sleep(1200);
+    // The first on its way (the provider answers it after 2.5 s), and the
+    // interval past again.
+    await until(() => provider.requests.filter(item => item.path === '/slow-token').length > tokensBefore, 5000, 10);
+    await sleep(POLL_INTERVAL);
     const overtaking = await c.call('auth_device_poll', { flow: slow.structured.flow });
     const done = await first;
     check(overtaking.structured.status === 'pending' && done.structured.status === 'approved', 'a poll while one is on its way waits for it', { overtaking: overtaking.text, done: done.text });
@@ -1294,7 +1363,7 @@ async function withWindows() {
     setTimeout(() => resolve(null), 15000);
   });
   if (!display) {
-    console.log('note --windows: skipped (no Xvfb)');
+    skip('--windows', 'no Xvfb');
     return;
   }
   try {

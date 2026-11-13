@@ -1,11 +1,15 @@
 """Local HTTP and TLS origins for the hooks of tests/engine/hook_policies*: a page's
-links, downloads, client certificates, isolated worlds, file choosers and media."""
+links, downloads, client certificates, isolated worlds, file choosers and media.
+One fixture a mode, each on ports of its own, so that modes sharing an engine
+share no origin (no cookies, service workers or remembered client certificates,
+which Chromium keeps per host and port)."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import atexit
 import base64
 import hashlib
 import json
+import os
 import shutil
 import ssl
 import subprocess
@@ -161,6 +165,7 @@ class Server(ThreadingHTTPServer):
 
 
 _keys = None
+_big = None
 
 
 def _certificates():
@@ -178,6 +183,15 @@ def _certificates():
                             '-subj', '/CN=' + name, '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return Path(_keys.name)
+
+
+def _big_file():
+    """The 3 MiB file net-file answers with: written once per process too."""
+    global _big
+    if _big is None:
+        _big = _certificates() / 'big.bin'
+        _big.write_bytes(b'f' * (3 << 20))
+    return _big
 
 
 class HookFixture:
@@ -204,7 +218,10 @@ class HookFixture:
         (self.files / 'folder' / 'sub').mkdir(parents=True)
         (self.files / 'one.txt').write_text('first file')
         (self.files / 'two.txt').write_text('second file')
-        (self.files / 'big.bin').write_bytes(b'f' * (3 << 20))
+        try:
+            os.link(_big_file(), self.files / 'big.bin')
+        except OSError:
+            shutil.copyfile(_big_file(), self.files / 'big.bin')
         (self.files / 'folder' / 'a.txt').write_text('a')
         (self.files / 'folder' / 'sub' / 'b.txt').write_text('b')
 

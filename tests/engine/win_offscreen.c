@@ -5,6 +5,7 @@
  * Exit 0 when every check passes. */
 
 #define COBJMACROS
+#include "harness.h"
 #include <windows.h>
 
 #include <d3d11_1.h>
@@ -24,15 +25,8 @@ static const char page[] =
     "div{position:fixed;left:50%25;top:0;right:0;bottom:0;background:%230000ff}"
     "</style><div></div>";
 
-static int failures, frames;
+static int frames;
 static zebkit_view *view;
-
-static void check(int ok, const char *what) {
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
-    fflush(stdout);
-    if (!ok)
-        ++failures;
-}
 
 static uint32_t at(const uint8_t *pixels, size_t stride, int x, int y) {
     uint32_t value;
@@ -45,14 +39,14 @@ static void check_texture(const zebkit_frame *f) {
     ID3D11Device *device = NULL;
     ID3D11DeviceContext *context = NULL;
     HRESULT hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &device, NULL, &context);
-    check(SUCCEEDED(hr), "a D3D11 device of the application's");
+    check(SUCCEEDED(hr), "a D3D11 device of the application's", NULL);
     if (FAILED(hr))
         return;
     ID3D11Device1 *device1 = NULL;
     ID3D11Texture2D *shared = NULL, *staging = NULL;
     ID3D11Device_QueryInterface(device, &IID_ID3D11Device1, (void **)&device1);
     hr = ID3D11Device1_OpenSharedResource1(device1, (HANDLE)f->handle, &IID_ID3D11Texture2D, (void **)&shared);
-    check(SUCCEEDED(hr), "OpenSharedResource1() of the frame's handle");
+    check(SUCCEEDED(hr), "OpenSharedResource1() of the frame's handle", NULL);
     if (SUCCEEDED(hr)) {
         D3D11_TEXTURE2D_DESC desc;
         ID3D11Texture2D_GetDesc(shared, &desc);
@@ -73,8 +67,8 @@ static void check_texture(const zebkit_frame *f) {
         }
         D3D11_MAPPED_SUBRESOURCE map;
         if (SUCCEEDED(ID3D11DeviceContext_Map(context, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &map))) {
-            check(at(map.pData, map.RowPitch, f->width / 4, f->height / 2) == 0xff0000, "the texture: red on the left");
-            check(at(map.pData, map.RowPitch, f->width * 3 / 4, f->height / 2) == 0x0000ff, "the texture: blue on the right");
+            check(at(map.pData, map.RowPitch, f->width / 4, f->height / 2) == 0xff0000, "the texture: red on the left", NULL);
+            check(at(map.pData, map.RowPitch, f->width * 3 / 4, f->height / 2) == 0x0000ff, "the texture: blue on the right", NULL);
             ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)staging, 0);
         }
         ID3D11Texture2D_Release(staging);
@@ -87,7 +81,7 @@ static void check_texture(const zebkit_frame *f) {
 
 static void finish(void *data) {
     (void)data;
-    printf("%d frames, %d failures\n", frames, failures);
+    printf("%d frames\n", frames);
     fflush(stdout);
     zebkit_view_close(view);
     zebkit_quit();
@@ -105,17 +99,17 @@ static void frame(zebkit_view *v, const zebkit_frame *f, void *data) {
         check_texture(f);
         frames = 1000;
         zebkit_post_task(finish, NULL);
-    } else if (f->pixels && at(f->pixels, f->stride, f->width / 4, f->height / 2) == 0xff0000 && failures == 0 && frames < 1000) {
-        check(1, "the frame's own pixels: red on the left");
-        check(at(f->pixels, f->stride, f->width * 3 / 4, f->height / 2) == 0x0000ff, "the frame's own pixels: blue on the right");
-        check(f->handle != NULL, "a file mapping's handle");
-        check(f->fd == -1, "no file descriptor");
+    } else if (f->pixels && at(f->pixels, f->stride, f->width / 4, f->height / 2) == 0xff0000 && harness_failures == 0 && frames < 1000) {
+        check(1, "the frame's own pixels: red on the left", NULL);
+        check(at(f->pixels, f->stride, f->width * 3 / 4, f->height / 2) == 0x0000ff, "the frame's own pixels: blue on the right", NULL);
+        check(f->handle != NULL, "a file mapping's handle", NULL);
+        check(f->fd == -1, "no file descriptor", NULL);
         if (f->handle) {
             const uint8_t *mapped = MapViewOfFile((HANDLE)f->handle, FILE_MAP_READ, 0, 0, f->size);
-            check(mapped != NULL, "MapViewOfFile() of the handle");
+            check(mapped != NULL, "MapViewOfFile() of the handle", NULL);
             if (mapped) {
-                check(at(mapped + f->offset, f->stride, f->width / 4, f->height / 2) == 0xff0000, "through the mapping: red");
-                check(at(mapped + f->offset, f->stride, f->width * 3 / 4, f->height / 2) == 0x0000ff, "through the mapping: blue");
+                check(at(mapped + f->offset, f->stride, f->width / 4, f->height / 2) == 0xff0000, "through the mapping: red", NULL);
+                check(at(mapped + f->offset, f->stride, f->width * 3 / 4, f->height / 2) == 0x0000ff, "through the mapping: blue", NULL);
                 UnmapViewOfFile(mapped);
             }
         }
@@ -127,15 +121,15 @@ static void frame(zebkit_view *v, const zebkit_frame *f, void *data) {
 
 static void timeout(void *data) {
     (void)data;
-    check(0, "a frame with the page's picture in time");
+    check(0, "a frame with the page's picture in time", NULL);
     finish(NULL);
 }
 
 static void ready(void *data) {
     (void)data;
-    check(zebkit_is_headless(), "headless");
+    check(zebkit_is_headless(), "headless", NULL);
     view = zebkit_view_new_offscreen(page, 800, 600, 1);
-    check(view != NULL, "zebkit_view_new_offscreen()");
+    check(view != NULL, "zebkit_view_new_offscreen()", NULL);
     if (!view) {
         zebkit_quit();
         return;
@@ -170,6 +164,6 @@ int main(int argc, char **argv) {
     if (getenv("WIN_OFFSCREEN_TRACE"))
         AddVectoredExceptionHandler(1, on_exception);
     const int code = zebkit_main(argc, argv, ready, NULL);
-    printf("zebkit_main returned %d, %d failures\n", code, failures);
-    return code ? code : (failures != 0);
+    check(code == 0, "zebkit_main returned 0", "%d", code);
+    return summary();
 }

@@ -17,8 +17,6 @@ promptText).
 Exit 0 when every check passes.
 """
 
-import ctypes
-import json
 import os
 import queue
 import sys
@@ -26,8 +24,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import Server, check, ev, finish, pump, wait, zebkit  # noqa: E402
-from cdp_page import Cdp  # noqa: E402
+from harness import Cdp, Server, check, ev, finish, pump, wait, zebkit  # noqa: E402
 from zebkit import automation  # noqa: E402
 
 PAGE = b"""<!doctype html><title>Dialogs</title><body>
@@ -35,20 +32,16 @@ PAGE = b"""<!doctype html><title>Dialogs</title><body>
 <button id=prompt onclick="out.textContent = 'got:' + prompt('Your name?', 'Bob')">Prompt</button>
 <p id=out></p>"""
 
-# ctypes callbacks are not hashable: kept by id until called.
-_alive = {}
-
-
 def call(view, method, params):
-    """A native automation command: a list that gets (result, error)."""
+    """A native automation command (zebkit.automation.call): a list that gets (result, error)."""
     box = []
 
-    def done(handle, result, error, data):
-        _alive.pop(id(callback), None)
-        box.append((json.loads(result) if result else None, error.decode() if error else None))
-    callback = automation._DONE(done)
-    _alive[id(callback)] = callback
-    automation._call(view._check(), method.encode(), json.dumps(params).encode(), callback, None)
+    def done(future):
+        try:
+            box.append((future.result(), None))
+        except Exception as error:  # noqa: BLE001
+            box.append((None, str(error) or type(error).__name__))
+    automation.call(view, method, params).add_done_callback(done)
     return box
 
 
@@ -114,9 +107,7 @@ def main():
     # The page itself, not the blank document before it.
     wait(lambda: ev(view, "location.pathname + document.readyState") == "/complete")
     told = []
-    callback = automation._EVENT(lambda h, name, params, d: told.append(
-        (name.decode(), json.loads(params) if params else {})))
-    automation._on_event(view._check(), callback, None)
+    automation.on_event(view, lambda name, params: told.append((name, params)))
 
     def automation_events(name):
         return [p for n, p in told if n == name]
@@ -227,7 +218,7 @@ def main():
     check(again and again[0][1], "a dialog answered already cannot be answered again", again)
     wait(lambda: clicked, 10)
 
-    automation._on_event(view._check(), automation._EVENT(), None)
+    automation.on_event(view, None)
     view.close()
     server.close()
     zebkit.shutdown()

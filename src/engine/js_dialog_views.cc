@@ -1,7 +1,6 @@
 // A page's alert(), confirm(), prompt() and "leave this page?" with Chromium's
 // views (docs/SYSTEM_INTEGRATION.md, 9): the dialog Chrome shows for them,
-// window-modal on the page's window, on Linux, and for prompt() on Windows,
-// whose system message box has no text field.
+// window-modal on the page's window, on Linux and Windows.
 
 #include "zebkit/engine/js_dialog_views.h"
 

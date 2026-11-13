@@ -805,20 +805,14 @@ void zebkit_view_drop(zebkit_view* view,
   }
   // zebkit.pathForFile() knows the files' paths before the page gets them,
   // as for a drop on a window (view.cc).
-  base::ListValue paths;
+  std::vector<base::FilePath> paths;
   for (const ui::FileInfo& file : files)
-    paths.Append(file.path.AsUTF8Unsafe());
-  const std::string json =
-      base::WriteJson(base::Value(std::move(paths))).value_or("[]");
-  base::DictValue params;
-  params.Set("expression",
-             "globalThis.__zebkit_dropped && __zebkit_dropped(" + json + ")");
-  view->Send(
-      "Runtime.evaluate", std::move(params),
+    paths.push_back(file.path);
+  zebkit::TellDroppedPaths(
+      view, paths,
       base::BindOnce(
           [](base::WeakPtr<zebkit_view> view, gfx::PointF point, int blink,
-             base::OnceCallback<void(unsigned)> done, const base::DictValue*,
-             const std::string&) {
+             base::OnceCallback<void(unsigned)> done) {
             zebkit::DragState* state = view ? StateOf(view.get()) : nullptr;
             if (!state) {
               std::move(done).Run(ZEBKIT_DRAG_NONE);

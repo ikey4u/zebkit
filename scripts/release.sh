@@ -22,26 +22,58 @@
 # no .sha256) stops it, since the crates published with that release insist
 # on the first one. A version is published once.
 #
-# "mise run r" and "mise run r:github" are these two.
+# "mise run r", "mise run r:github" and "mise run r:github:publish" are these three.
 #
 # The build is scripts/dist.sh release, which does nothing when it is up to
-# date. The version is the one in VERSION, which is also the version of the
-# crates in bindings/rust/, of the Python package and of zebkit-mcp. The archive is dist/release under one top directory. Its
-# SHA-256 is written into bindings/rust/zebkit-rs/engines.txt, where the crate's
-# build script looks it up, so an archive is published together with the
-# commit that names its checksum: build, commit, then publish.
+# date: the slim profile, packaged into out/blink/slim/package (the package
+# "mise run check" tests, by its stamp) and copied to dist/release. The
+# version is the one in VERSION, which is also the version of the crates in
+# bindings/rust/, of the Python package and of zebkit-mcp; it is compiled into
+# the engine, so the build comes after the bump. The archive is dist/release
+# under one top directory. Its SHA-256 is written into
+# bindings/rust/zebkit-rs/engines.txt, where the crate's build script looks it
+# up, so an archive is published together with the commit that names its
+# checksum. engines.txt keeps only this version's lines (the crate reads only
+# its own version's); scripts/bump-version.sh empties it for the next one.
+#
+# The order of a release (docs/BUILD.md, "Releases"):
+#   1. scripts/bump-version.sh X.Y.Z, and the release notes' summary;
+#   2. mise run r: this script, building and packing the three systems;
+#   3. the reports measured again on that build (measure.sh, web-bench.sh,
+#      automation-bench.sh, ...; check-reports.py names the stale ones), and
+#      the release notes' "To fill at release" parts;
+#   4. a commit of all of it, engines.txt among them;
+#   5. mise run check: the checks, recorded for these sources and this package
+#      (after 3, since the reports are part of the sources; engines.txt is not);
+#   6. git push;
+#   7. mise run r:github:publish (--publish-only): the tags and the GitHub
+#      release, building nothing;
+#   8. mise run r:crate, then mise run r:python.
+# "mise run r:github" (--publish) is 2 and 7 in one run, for sources already
+# built, measured, committed, checked and pushed: its build then does nothing.
 #
 # --publish needs the GitHub CLI (gh), logged in with access to the
 # repository of the "origin" remote. "mise run r:github" brings gh with it
 # (mise.toml); GH_TOKEN in the environment stands in for a login. Crates
 # can only download from a release that anyone can read: the repository has
-# to be public.
+# to be public. The tags are read and pushed with git, at origin; where git
+# cannot reach origin itself (docker/'s image has no ssh client and no
+# credential helper, and GH_TOKEN authenticates only gh), at
+# https://github.com/<owner>/<repository> with gh's credentials.
 #
 # --publish also needs the checks passed on these sources: "mise run check"
 # (scripts/check.sh) records them, strict and of out/blink/slim/package as its
 # stamp is now. ZEBKIT_RELEASE_UNCHECKED=1 publishes without, and says so.
-# An interrupted "gh release create" leaves a draft without a tag: the next run
-# says so; delete the draft (gh release delete v<version>) and run again.
+# An interrupted "gh release create" leaves a draft: the next run says so;
+# delete the draft (gh release delete v<version>) and run again.
+#
+# The release has two tags at one commit, both pushed by --publish before the
+# release is created: v<version>, and bindings/golang/v<version>, which the Go
+# module (bindings/golang, a module in a subdirectory) is fetched at:
+# go get github.com/ikey4u/zebkit/bindings/golang@v<version>. Its
+# BindingVersion is <version> (check_versions). After publishing, the run checks
+# that "go list -m" finds the module at that version through the Go proxy,
+# when the repository is public; when it is not, it warns.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -67,10 +99,26 @@ engines="$ZEBKIT_ROOT/bindings/rust/zebkit-rs/engines.txt"
 rust_targets=(x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc)
 tag="v$version"
 
+# origin_git <ls-remote|push> <arguments...>: that git command at origin; when
+# git cannot reach origin (no ssh client or key, no credential helper: docker/'s
+# image, where GH_TOKEN authenticates only gh), at the same repository on GitHub
+# over HTTPS, with gh's credentials (gh auth git-credential).
+origin_git() {
+    local command="$1" repository
+    shift
+    git -C "$ZEBKIT_ROOT" "$command" origin "$@" 2> /dev/null && return 0
+    command -v gh > /dev/null || { git -C "$ZEBKIT_ROOT" "$command" origin "$@"; return; }
+    repository="$(cd "$ZEBKIT_ROOT" && gh repo view --json nameWithOwner --jq .nameWithOwner 2> /dev/null)" \
+        && [[ -n "$repository" ]] || { git -C "$ZEBKIT_ROOT" "$command" origin "$@"; return; }
+    log "git cannot reach origin itself: $command at https://github.com/$repository with gh's credentials"
+    GIT_TERMINAL_PROMPT=0 git -C "$ZEBKIT_ROOT" -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+        "$command" "https://github.com/$repository" "$@"
+}
+
 # tag_exists: v<version> is a tag here or on origin.
 tag_exists() {
     git -C "$ZEBKIT_ROOT" rev-parse -q --verify "refs/tags/$tag" > /dev/null && return 0
-    [[ -n "$(git -C "$ZEBKIT_ROOT" ls-remote --tags origin "refs/tags/$tag" 2> /dev/null || true)" ]]
+    [[ -n "$(origin_git ls-remote --tags "refs/tags/$tag" 2> /dev/null || true)" ]]
 }
 # release_has_archives: the GitHub release v<version> holds archives of
 # zebkit's; unknown (no gh, or not logged in) counts as yes.
@@ -111,6 +159,8 @@ if (( ! publish_only )); then
         || die "the macOS engine needs Apple's SDK laid out first: scripts/zsdk-create.sh (docs/MACOS.md)"
     [[ -d "$SDK_DIR/windows" ]] \
         || die "the Windows engine needs MSVC and the Windows SDK laid out first: scripts/zsdk-create.sh (docs/WINDOWS.md)"
+    # The pinned MSVC and Windows SDK, read from the disk.
+    "$ZEBKIT_ROOT/scripts/windows-toolchain.sh" --verify
     command -v cargo > /dev/null || die "zebkit-mcp needs cargo (Rust)"
     # Captured, then searched: grep -q stops reading, and under pipefail rustup's
     # broken pipe would fail the test.
@@ -129,7 +179,7 @@ if (( publish )); then
     [[ -n "$checked_key" ]] || die "no key for the sources"
     if ! checks_passed; then
         [[ "${ZEBKIT_RELEASE_UNCHECKED:-}" == 1 ]] \
-            || die "no passed checks for these sources: run 'mise run check' first (ZEBKIT_RELEASE_UNCHECKED=1 publishes without)"
+            || die "no passed checks for these sources: build (mise run r), measure the reports, commit, then run 'mise run check' (docs/BUILD.md, \"Releases\"; ZEBKIT_RELEASE_UNCHECKED=1 publishes without)"
         log "publishing WITHOUT the checks (ZEBKIT_RELEASE_UNCHECKED=1)"
         unchecked=1
     fi
@@ -141,7 +191,7 @@ if (( publish )); then
             die "$tag is a draft, left by an interrupted upload: delete it (gh release delete $tag --yes) and run again"
         fi
         # The commit, also of an annotated tag (its peeled line sorts last).
-        tagged="$(git -C "$ZEBKIT_ROOT" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")" \
+        tagged="$(origin_git ls-remote --tags "refs/tags/$tag" "refs/tags/$tag^{}")" \
             || die "could not read the tags of origin"
         tagged="$(sort -k2 <<< "$tagged" | tail -1 | cut -f1)"
         [[ -n "$tagged" ]] || die "the release $tag has no tag on origin"
@@ -184,9 +234,12 @@ pack() {
         fi
         log "note: $version $target was packed before with another checksum"
     fi
+    # Only this version's lines: the crate's build script takes the line of its
+    # own version and nothing else, so the lines of earlier releases, which their
+    # own crates carry, would ship unused.
     {
         grep -E '^#' "$engines" 2>/dev/null || true
-        { grep -vE "^#|^$version $target " "$engines" 2>/dev/null || true; echo "$version $target $sum"; } | sort
+        { grep -E "^$version " "$engines" 2>/dev/null | grep -vE "^$version $target " || true; echo "$version $target $sum"; } | sort
     } > "$engines.new"
     mv "$engines.new" "$engines"
     log "$archive ($(du -m "$archive" | cut -f1) MiB), sha256 $sum, recorded in bindings/rust/zebkit-rs/engines.txt"
@@ -319,8 +372,11 @@ log "release build of zebkit for Windows x64: $windows ($(du -sm "$windows" | cu
 pack "$windows" x86_64-pc-windows-msvc
 fi
 
-(( publish )) || exit 0
-[[ -z "$(git -C "$ZEBKIT_ROOT" status --porcelain)" ]] || die "commit bindings/rust/zebkit-rs/engines.txt and everything else first, then run this again: the release is made from a commit"
+if (( ! publish )); then
+    log "built and packed $version; next (docs/BUILD.md, \"Releases\"): measure the reports again on this build (scripts/check-reports.py names the stale ones) and fill the release notes' \"To fill at release\" parts; commit them with bindings/rust/zebkit-rs/engines.txt; mise run check; git push; mise run r:github:publish"
+    exit 0
+fi
+[[ -z "$(git -C "$ZEBKIT_ROOT" status --porcelain)" ]] || die "the tree has changes: commit bindings/rust/zebkit-rs/engines.txt with the reports measured on this build and everything else, run mise run check, push, then publish what was built: mise run r:github:publish (scripts/release.sh --publish-only); the release is made from a commit (docs/BUILD.md, \"Releases\")"
 [[ "$(source_tree_key)" == "$checked_key" ]] || die "the sources changed since the checks; run them again"
 # The build (dist.sh) repackages only what changed: the package is still the one tested.
 [[ -n "$unchecked" ]] || checks_passed || die "the checks do not cover what is published; run 'mise run check' again"
@@ -343,6 +399,50 @@ while read -r _ other sum; do
 done < <(grep -E "^$version " "$engines")
 
 (( ${#files[@]} )) || die "no archive of $version to publish in dist/"
+
+# The release's two tags, at its commit (the commit v<version> has on origin
+# when it is there, HEAD otherwise): v<version>, and bindings/golang/v<version>,
+# the tag Go fetches the module in that subdirectory at
+# (go get github.com/.../bindings/golang@v<version>). Pushed before the release
+# is created, which then takes v<version> as it is. A tag there at another
+# commit stops the run: a published tag is never moved.
+go_tag="bindings/golang/$tag"
+# remote_tag_commit <tag>: the commit of that tag on origin, also of an
+# annotated one (its peeled line sorts last); nothing when there is none.
+remote_tag_commit() {
+    local lines
+    lines="$(origin_git ls-remote --tags "refs/tags/$1" "refs/tags/$1^{}")" \
+        || die "could not read the tags of origin"
+    sort -k2 <<< "$lines" | tail -1 | cut -f1
+}
+# publish_tag <tag> <commit>: the tag at that commit, here and on origin.
+publish_tag() {
+    local name="$1" commit="$2" remote here
+    remote="$(remote_tag_commit "$name")"
+    if [[ -n "$remote" ]]; then
+        [[ "$remote" == "$commit" ]] || die "origin has the tag $name at $remote, not at the release's commit $commit"
+        return 0
+    fi
+    here="$(git -C "$ZEBKIT_ROOT" rev-parse -q --verify "refs/tags/$name^{commit}" || true)"
+    if [[ -z "$here" ]]; then
+        git -C "$ZEBKIT_ROOT" tag "$name" "$commit"
+    elif [[ "$here" != "$commit" ]]; then
+        die "the tag $name here is at $here, not at the release's commit $commit: git tag -d $name, then run again"
+    fi
+    log "pushing the tag $name ($commit)"
+    origin_git push -q "refs/tags/$name" || die "could not push the tag $name"
+}
+release_commit="$(remote_tag_commit "$tag")"
+[[ -n "$release_commit" ]] || release_commit="$(git -C "$ZEBKIT_ROOT" rev-parse HEAD)"
+git -C "$ZEBKIT_ROOT" merge-base --is-ancestor "$release_commit" HEAD \
+    || die "$tag is at $release_commit on origin, which is not in this branch's history"
+# The Go binding's own version is the release's (check_versions, above), at the
+# commit the tag names too.
+[[ "$(git -C "$ZEBKIT_ROOT" show "$release_commit:bindings/golang/zebkit.go" 2> /dev/null \
+    | sed -n 's/^const BindingVersion = "\(.*\)"/\1/p')" == "$version" ]] \
+    || die "the Go binding's BindingVersion at $release_commit is not $version"
+publish_tag "$tag" "$release_commit"
+publish_tag "$go_tag" "$release_commit"
 
 if gh release view "$tag" > /dev/null 2>&1; then
     # Only what the release does not have; what it has must be these bytes.
@@ -392,7 +492,35 @@ else
     prerelease=()
     [[ "$version" == *-* ]] && prerelease=(--prerelease)
     targets="$(grep -E "^$version " "$engines" | cut -d' ' -f2 | paste -sd' ' - | sed 's/ /, /g')"
-    gh release create "$tag" "${files[@]}" ${prerelease[@]+"${prerelease[@]}"} --title "zebkit $version" --target "$(git -C "$ZEBKIT_ROOT" rev-parse HEAD)" \
+    gh release create "$tag" "${files[@]}" ${prerelease[@]+"${prerelease[@]}"} --title "zebkit $version" --verify-tag \
         --notes "zebkit $version for $targets. The Rust crates zebkit and zebkit-rs $version download these archives when they are built."
 fi
 log "published: $(gh release view "$tag" --json url --jq .url)"
+
+# The Go module at this version, as a user's go get finds it: through the Go
+# proxy, which reads only a public repository; for a private one, a warning.
+go_module="$(sed -n 's/^module //p' "$ZEBKIT_ROOT/bindings/golang/go.mod")"
+visibility="$(gh repo view --json visibility --jq .visibility 2> /dev/null || true)"
+go_cmd=()
+if command -v go > /dev/null; then go_cmd=(go)
+elif command -v mise > /dev/null && (cd "$ZEBKIT_ROOT" && mise which go > /dev/null 2>&1); then go_cmd=(mise exec -C "$ZEBKIT_ROOT" -- go); fi
+if [[ "$visibility" != PUBLIC ]]; then
+    log "warning: the repository is ${visibility:-of a visibility gh could not read}, not public: $go_module@$tag is not checked (the Go proxy cannot read it)"
+elif (( ! ${#go_cmd[@]} )); then
+    log "warning: no Go here ('mise run r:github' brings it): $go_module@$tag is not checked"
+else
+    # Outside any module, into a module cache of the checkout's; the proxy can
+    # take a little while to see a new tag.
+    go_resolved=
+    mkdir -p "$TMPDIR/go-list"
+    for attempt in 1 2 3 4 5 6; do
+        if (cd "$TMPDIR/go-list" && GOPATH="$CACHE_DIR/go" GOFLAGS=-modcacherw "${go_cmd[@]}" list -m "$go_module@$tag"); then
+            go_resolved=1
+            break
+        fi
+        log "go list -m $go_module@$tag failed (attempt $attempt of 6); again in 20 s"
+        sleep 20
+    done
+    [[ -n "$go_resolved" ]] || die "the release is published, but go list -m $go_module@$tag does not resolve: see that $go_tag is on origin"
+    log "Go: $go_module@$tag resolves"
+fi

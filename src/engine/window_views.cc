@@ -37,6 +37,7 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/wm/core/wm_state.h"
+#include "zebkit/engine/dock.h"
 #include "ui/base/hit_test.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/geometry/insets.h"
@@ -337,12 +338,35 @@ END_METADATA
 class StateObserver : public views::WidgetObserver {
  public:
   explicit StateObserver(Window* window) : window_(window) {}
-  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override { Changed(widget); }
-  void OnWidgetActivationChanged(views::Widget* widget, bool active) override { Changed(widget); }
+  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override {
+    if (visible)
+      Shown(widget);
+    Changed(widget);
+  }
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override {
+    if (active)
+      Shown(widget);
+    Changed(widget);
+  }
   void OnWidgetBoundsChanged(views::Widget* widget, const gfx::Rect& bounds) override { Changed(widget); }
   void OnWidgetShowStateChanged(views::Widget* widget) override { Changed(widget); }
+  void OnWidgetDestroying(views::Widget* widget) override {
+#if BUILDFLAG(IS_WIN)
+    if (aura::Window* native = widget->GetNativeWindow(); native && native->GetHost())
+      ForgetDockWindow(native->GetHost()->GetAcceleratedWidget());
+#endif
+  }
 
  private:
+  // The taskbar's badge and progress, which a window made after they were set
+  // has not had: once its button is there (by its first activation, as
+  // Chrome's taskbar decorations).
+  void Shown(views::Widget* widget) {
+#if BUILDFLAG(IS_WIN)
+    if (aura::Window* native = widget->GetNativeWindow(); native && native->GetHost())
+      ApplyDockStateToWindow(native->GetHost()->GetAcceleratedWidget());
+#endif
+  }
   void Changed(views::Widget* widget) {
     if (auto* frame = static_cast<ZebkitFrameView*>(widget->non_client_view()
                                                    ? widget->non_client_view()->frame_view()

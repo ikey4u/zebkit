@@ -1,0 +1,97 @@
+Content: the hang monitor and the embedder's own DevTools clients.
+
+WebContentsImpl::ShouldIgnoreUnresponsiveRenderer() drops every hang report
+while any DevTools client is attached to the page, since the renderer may sit
+on a breakpoint. zebkit drives its own views through a DevTools session of
+their own (evaluation, init scripts, grants), which never pauses a page: with
+it attached, WebContentsDelegate::RendererUnresponsive() was never called and
+zebkit_view_on_responsiveness() could not work. SetDebuggerAttachedForHangs()
+(content/public/browser/zebkit_hang_monitor.h) lets the embedder answer
+instead; zebkit counts every client but a view's own, so an external
+debugger, a Playwright client and DevTools still hold the monitor, as in
+Chrome. A function in a new header rather than a ContentBrowserClient or
+WebContentsDelegate method, which nearly all of content would be rebuilt for.
+
+diff --git a/content/browser/web_contents/web_contents_impl.cc b/content/browser/web_contents/web_contents_impl.cc
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -183,6 +183,7 @@
+ #include "content/public/browser/webid/identity_credential_source.h"
+ #include "content/public/browser/webui_config.h"
+ #include "content/public/browser/webui_config_map.h"
++#include "content/public/browser/zebkit_hang_monitor.h"
+ #include "content/public/common/content_client.h"
+ #include "content/public/common/content_features.h"
+ #include "content/public/common/content_switches.h"
+@@ -293,6 +294,10 @@
+ 
+ namespace {
+ 
++// zebkit: the embedder's answer to whether a debugger holds a WebContents
++// (zebkit_hang_monitor.h).
++DebuggerAttachedForHangsFunction g_debugger_attached_for_hangs = nullptr;
++
+ // These values are persisted to logs. Entries should not be renumbered and
+ // numeric values should never be reused.
+ //
+@@ -6550,9 +6555,16 @@
+ 
+   // TODO(pfeldman): Fix this to only return true if the renderer is *actually*
+   // sitting on a breakpoint. https://crbug.com/684202
++  if (g_debugger_attached_for_hangs) {
++    return g_debugger_attached_for_hangs(this);
++  }
+   return DevToolsAgentHost::IsDebuggerAttached(this);
+ }
+ 
++void SetDebuggerAttachedForHangs(DebuggerAttachedForHangsFunction function) {
++  g_debugger_attached_for_hangs = function;
++}
++
+ ui::AXMode WebContentsImpl::GetAccessibilityMode() {
+   return accessibility_mode_;
+ }
+diff --git a/content/public/browser/BUILD.gn b/content/public/browser/BUILD.gn
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -509,6 +509,7 @@
+     "web_contents_observer.cc",
+     "web_contents_observer.h",
+     "zebkit_automation.h",
++    "zebkit_hang_monitor.h",
+     "zebkit_input.h",
+     "zebkit_websocket.h",
+     "web_contents_user_data.h",
+diff --git a/content/public/browser/zebkit_hang_monitor.h b/content/public/browser/zebkit_hang_monitor.h
+new file mode 100644
+--- /dev/null
++++ b/content/public/browser/zebkit_hang_monitor.h
+@@ -0,0 +1,28 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: which DevTools clients hold the hang monitor. A renderer that does
++// not answer input is not reported unresponsive while a debugger is attached
++// to its page (it may sit on a breakpoint), and upstream counts every DevTools
++// client as one: an embedder that drives its own pages through DevTools
++// sessions would never be told of a hang.
++
++#ifndef CONTENT_PUBLIC_BROWSER_ZEBKIT_HANG_MONITOR_H_
++#define CONTENT_PUBLIC_BROWSER_ZEBKIT_HANG_MONITOR_H_
++
++#include "content/common/content_export.h"
++
++namespace content {
++
++class WebContents;
++
++// Whether a debugger is attached to |contents|, for the hang monitor only.
++using DebuggerAttachedForHangsFunction = bool (*)(WebContents* contents);
++
++// Asked instead of DevToolsAgentHost::IsDebuggerAttached() when set (nullptr:
++// upstream's answer). The Windows check for a native debugger of the renderer
++// stays. UI thread only.
++CONTENT_EXPORT void SetDebuggerAttachedForHangs(
++    DebuggerAttachedForHangsFunction function);
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_ZEBKIT_HANG_MONITOR_H_

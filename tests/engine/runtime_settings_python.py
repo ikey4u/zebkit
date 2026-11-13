@@ -5,20 +5,17 @@ import os
 import subprocess
 import sys
 import time
-import zebkit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from harness import SETTLE, finish, must_wait, part, pump, zebkit  # noqa: E402
 
 BASE, OTHER = os.environ['RUNTIME_BASE'], os.environ['RUNTIME_OTHER']
 assert zebkit.init(sys.argv, settings={'logging': {'destination': 'none'}}) == 0
 
 
 def wait(condition, what, seconds=15):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        assert zebkit.pump()
-        if condition():
-            return
-        time.sleep(.002)
-    raise AssertionError(what)
+    must_wait(condition, what, seconds)
 
 
 def later(view, script):
@@ -52,7 +49,7 @@ def cookies_become(view, expected):
         name = f'c{next(names)}'
         if ev(view, f'probe({json.dumps(name)})') == expected:
             return name
-        time.sleep(.05)
+        pump(.05)
     raise AssertionError(f'third-party cookies never became {expected}')
 
 
@@ -92,161 +89,165 @@ def renderers():
 
 view = opened()
 other = opened()
+later_view = None
 
-# ---- What holds before anything is set: today's behaviour.
-assert zebkit.engine_settings() == {'explicit': {}, 'effective': {
-    'thirdPartyCookies': 'block', 'spareRenderer': False, 'spareRendererRunning': False,
-    'clientCertificateStores': False,
-    'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, zebkit.engine_settings()
-# The system's client certificate stores: the engine's, off by default.
-assert rejected(view.set_runtime_settings, {'clientCertificateStores': True}), 'stores of a view'
-zebkit.set_engine_settings({'clientCertificateStores': True})
-assert zebkit.engine_settings()['effective']['clientCertificateStores'] is True
-assert zebkit.engine_settings()['explicit'] == {'clientCertificateStores': True}
-zebkit.set_engine_settings({'clientCertificateStores': None})
-assert zebkit.engine_settings()['explicit'] == {}
-assert view.runtime_settings == {'explicit': {}, 'effective': {
-    'thirdPartyCookies': 'block', 'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, view.runtime_settings
+with part("What holds before anything is set: today's behaviour"):
+    assert zebkit.engine_settings() == {'explicit': {}, 'effective': {
+        'thirdPartyCookies': 'block', 'spareRenderer': False, 'spareRendererRunning': False,
+        'clientCertificateStores': False,
+        'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, zebkit.engine_settings()
+    # The system's client certificate stores: the engine's, off by default.
+    assert rejected(view.set_runtime_settings, {'clientCertificateStores': True}), 'stores of a view'
+    zebkit.set_engine_settings({'clientCertificateStores': True})
+    assert zebkit.engine_settings()['effective']['clientCertificateStores'] is True
+    assert zebkit.engine_settings()['explicit'] == {'clientCertificateStores': True}
+    zebkit.set_engine_settings({'clientCertificateStores': None})
+    assert zebkit.engine_settings()['explicit'] == {}
+    assert view.runtime_settings == {'explicit': {}, 'effective': {
+        'thirdPartyCookies': 'block', 'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, view.runtime_settings
 
-# ---- Nothing of a bad batch changes.
-zebkit.set_engine_settings({'downloads': 'save'})
-view.set_runtime_settings({'dialogs': 'accept'})
-engine_before, view_before = zebkit.engine_settings(), view.runtime_settings
-for bad in ['not json', '[]', '"block"', 'null', {'nothing': 1}, {'thirdPartyCookies': True}, {'thirdPartyCookies': 'maybe'},
-            {'dialogs': 3}, {'dialogs': 'never'}, {'downloads': 'ask'}, {'newWindows': False}, {'spareRenderer': 'yes'},
-            {'downloads': 'deny', 'newWindows': 'nope'}, {'dialogs': 'dismiss', 'nothing': None}]:
-    assert rejected(zebkit.set_engine_settings, bad), bad
-    assert rejected(view.set_runtime_settings, bad), bad
-    assert zebkit.engine_settings() == engine_before and view.runtime_settings == view_before, bad
-assert rejected(view.set_runtime_settings, {'spareRenderer': True}), 'spareRenderer of a view'
-assert view.runtime_settings == view_before
-view.set_runtime_settings({})
-zebkit.set_engine_settings({})
-assert zebkit.engine_settings() == engine_before and view.runtime_settings == view_before
-assert ev(view, "confirm('a batch that failed changed nothing')") is True
-view.set_runtime_settings({'dialogs': None})
-zebkit.set_engine_settings({'downloads': None})
+with part('Nothing of a bad batch changes'):
+    zebkit.set_engine_settings({'downloads': 'save'})
+    view.set_runtime_settings({'dialogs': 'accept'})
+    engine_before, view_before = zebkit.engine_settings(), view.runtime_settings
+    for bad in ['not json', '[]', '"block"', 'null', {'nothing': 1}, {'thirdPartyCookies': True}, {'thirdPartyCookies': 'maybe'},
+                {'dialogs': 3}, {'dialogs': 'never'}, {'downloads': 'ask'}, {'newWindows': False}, {'spareRenderer': 'yes'},
+                {'downloads': 'deny', 'newWindows': 'nope'}, {'dialogs': 'dismiss', 'nothing': None}]:
+        assert rejected(zebkit.set_engine_settings, bad), bad
+        assert rejected(view.set_runtime_settings, bad), bad
+        assert zebkit.engine_settings() == engine_before and view.runtime_settings == view_before, bad
+    assert rejected(view.set_runtime_settings, {'spareRenderer': True}), 'spareRenderer of a view'
+    assert view.runtime_settings == view_before
+    view.set_runtime_settings({})
+    zebkit.set_engine_settings({})
+    assert zebkit.engine_settings() == engine_before and view.runtime_settings == view_before
+    assert ev(view, "confirm('a batch that failed changed nothing')") is True
+    view.set_runtime_settings({'dialogs': None})
+    zebkit.set_engine_settings({'downloads': None})
 
-# ---- Third-party cookies, as the third party's server saw them.
-default_blocked = cookies_become(view, 'none')
-zebkit.set_engine_settings({'thirdPartyCookies': 'allow'})
-kept = cookies_become(view, 'cookie')
-assert ev(view, f'read({json.dumps(default_blocked)})') == 'none', 'it was not stored when blocked'
-assert ev(other, f'read({json.dumps(kept)})') == 'cookie', 'the engine-wide value is for every view'
-assert view.runtime_settings['effective']['thirdPartyCookies'] == 'allow'
-zebkit.set_engine_settings({'thirdPartyCookies': 'block'})
-cookies_become(view, 'none')
-assert ev(view, f'read({json.dumps(kept)})') == 'none', 'blocked again: the one kept is not sent'
-# A view's goes to its context, the same one here; another context in the C test.
-view.set_runtime_settings({'thirdPartyCookies': 'allow'})
-assert other.runtime_settings['effective']['thirdPartyCookies'] == 'allow'
-assert view.runtime_settings['explicit']['thirdPartyCookies'] == 'allow'
-cookies_become(other, 'cookie')
-# The engine's goes over what a view asked; null gives the default.
-zebkit.set_engine_settings({'thirdPartyCookies': None})
-assert view.runtime_settings['explicit'] == {} and view.runtime_settings['effective']['thirdPartyCookies'] == 'block'
-cookies_become(view, 'none')
+with part("Third-party cookies, as the third party's server saw them"):
+    default_blocked = cookies_become(view, 'none')
+    zebkit.set_engine_settings({'thirdPartyCookies': 'allow'})
+    kept = cookies_become(view, 'cookie')
+    assert ev(view, f'read({json.dumps(default_blocked)})') == 'none', 'it was not stored when blocked'
+    assert ev(other, f'read({json.dumps(kept)})') == 'cookie', 'the engine-wide value is for every view'
+    assert view.runtime_settings['effective']['thirdPartyCookies'] == 'allow'
+    zebkit.set_engine_settings({'thirdPartyCookies': 'block'})
+    cookies_become(view, 'none')
+    assert ev(view, f'read({json.dumps(kept)})') == 'none', 'blocked again: the one kept is not sent'
+    # A view's goes to its context, the same one here; another context in the C test.
+    view.set_runtime_settings({'thirdPartyCookies': 'allow'})
+    assert other.runtime_settings['effective']['thirdPartyCookies'] == 'allow'
+    assert view.runtime_settings['explicit']['thirdPartyCookies'] == 'allow'
+    cookies_become(other, 'cookie')
+    # The engine's goes over what a view asked; null gives the default.
+    zebkit.set_engine_settings({'thirdPartyCookies': None})
+    assert view.runtime_settings['explicit'] == {} and view.runtime_settings['effective']['thirdPartyCookies'] == 'block'
+    cookies_become(view, 'none')
 
-# ---- Dialogs: two views, two policies, then the engine's for one with none of its own.
-view.set_runtime_settings({'dialogs': 'dismiss'})
-other.set_runtime_settings({'dialogs': 'accept'})
-assert ev(view, "confirm('q')") is False and ev(other, "confirm('q')") is True
-assert ev(view, "prompt('q', 'text')") is None and ev(other, "prompt('q', 'text')") == 'text'
-view.set_runtime_settings({'dialogs': None})
-assert ev(view, "confirm('q')") is False, 'headless default: dismissed'
-zebkit.set_engine_settings({'dialogs': 'accept'})
-assert ev(view, "confirm('q')") is True and view.runtime_settings['effective']['dialogs'] == 'accept'
-zebkit.set_engine_settings({'dialogs': 'dismiss'})
-assert ev(other, "confirm('q')") is True, "a view's goes first"
-zebkit.set_engine_settings({'dialogs': None})
-held_view = opened()
-held_view.set_runtime_settings({'dialogs': 'hold'})
-held = later(held_view, "confirm('held')")
-end = time.monotonic() + .5
-while time.monotonic() < end:
-    assert zebkit.pump()
-    time.sleep(.002)
-assert not held, 'hold: the page waits'
-held_view.close()
-wait(lambda: held, 'a held dialog ends with its view')
-other.set_runtime_settings({'dialogs': None})
+with part("Dialogs: two views, two policies, then the engine's for one with none of its own"):
+    view.set_runtime_settings({'dialogs': 'dismiss'})
+    other.set_runtime_settings({'dialogs': 'accept'})
+    assert ev(view, "confirm('q')") is False and ev(other, "confirm('q')") is True
+    assert ev(view, "prompt('q', 'text')") is None and ev(other, "prompt('q', 'text')") == 'text'
+    view.set_runtime_settings({'dialogs': None})
+    assert ev(view, "confirm('q')") is False, 'headless default: dismissed'
+    zebkit.set_engine_settings({'dialogs': 'accept'})
+    assert ev(view, "confirm('q')") is True and view.runtime_settings['effective']['dialogs'] == 'accept'
+    zebkit.set_engine_settings({'dialogs': 'dismiss'})
+    assert ev(other, "confirm('q')") is True, "a view's goes first"
+    zebkit.set_engine_settings({'dialogs': None})
+    held_view = opened()
+    held_view.set_runtime_settings({'dialogs': 'hold'})
+    held = later(held_view, "confirm('held')")
+    pump(SETTLE)
+    assert not held, 'hold: the page waits'
+    held_view.close()
+    wait(lambda: held, 'a held dialog ends with its view')
+    other.set_runtime_settings({'dialogs': None})
 
-# ---- Downloads: denied and saved, told as such; a function goes first.
-told = []
-view.on_download_progress(lambda event: told.append(json.loads(event) if isinstance(event, str) else event))
+with part('Downloads: denied and saved, told as such; a function goes first'):
+    told = []
+    view.on_download_progress(lambda event: told.append(json.loads(event) if isinstance(event, str) else event))
 
 
-def outcome(name):
-    wait(lambda: any(item.get('url', '').endswith('name=' + name) and item.get('done') for item in told), name)
-    return next(item for item in told if item.get('url', '').endswith('name=' + name) and item.get('done'))['state']
+    def outcome(name):
+        wait(lambda: any(item.get('url', '').endswith('name=' + name) and item.get('done') for item in told), name)
+        return next(item for item in told if item.get('url', '').endswith('name=' + name) and item.get('done'))['state']
 
 
-view.set_runtime_settings({'downloads': 'deny'})
-ev(view, "save('denied.bin'); 1")
-assert outcome('denied.bin') == 'cancelled', told
-view.set_runtime_settings({'downloads': None})
-zebkit.set_engine_settings({'downloads': 'deny'})
-assert view.runtime_settings['effective']['downloads'] == 'deny'
-ev(view, "save('denied-engine.bin'); 1")
-assert outcome('denied-engine.bin') == 'cancelled', told
-asked = []
-view.on_download(lambda request: (asked.append(1), request.respond('cancel')))
-assert view.runtime_settings['effective']['downloads'] == 'ask'
-ev(view, "save('denied-asked.bin'); 1")
-wait(lambda: asked, 'a function is asked, deny or no deny')
-view.on_download(None)
-view.set_runtime_settings({'downloads': 'save'})
-ev(view, "save('saved.bin'); 1")
-assert outcome('saved.bin') == 'complete', told
-view.set_runtime_settings({'downloads': None})
-zebkit.set_engine_settings({'downloads': None})
+    view.set_runtime_settings({'downloads': 'deny'})
+    ev(view, "save('denied.bin'); 1")
+    assert outcome('denied.bin') == 'cancelled', told
+    view.set_runtime_settings({'downloads': None})
+    zebkit.set_engine_settings({'downloads': 'deny'})
+    assert view.runtime_settings['effective']['downloads'] == 'deny'
+    ev(view, "save('denied-engine.bin'); 1")
+    assert outcome('denied-engine.bin') == 'cancelled', told
+    asked = []
+    view.on_download(lambda request: (asked.append(1), request.respond('cancel')))
+    assert view.runtime_settings['effective']['downloads'] == 'ask'
+    ev(view, "save('denied-asked.bin'); 1")
+    wait(lambda: asked, 'a function is asked, deny or no deny')
+    view.on_download(None)
+    view.set_runtime_settings({'downloads': 'save'})
+    ev(view, "save('saved.bin'); 1")
+    assert outcome('saved.bin') == 'complete', told
+    view.set_runtime_settings({'downloads': None})
+    zebkit.set_engine_settings({'downloads': None})
 
-# ---- New windows. A script of the application counts as a person's act.
-view.set_runtime_settings({'newWindows': 'block'})
-other.set_runtime_settings({'newWindows': 'allow'})
-assert ev(view, 'opens()') is False and ev(other, 'opens()') is True
-assert view.popup_policy == 'block', 'the same value as the function'
-view.set_runtime_settings({'newWindows': None})
-other.set_runtime_settings({'newWindows': None})
-zebkit.set_engine_settings({'newWindows': 'block'})
-assert ev(view, 'opens()') is False and view.popup_policy == 'block'
-later_view = opened()
-assert ev(later_view, 'opens()') is False, 'a view made afterwards'
-other.set_runtime_settings({'newWindows': 'allow'})
-assert ev(other, 'opens()') is True, "a view's goes first"
-zebkit.set_engine_settings({'newWindows': None})
-other.set_runtime_settings({'newWindows': None})
-assert ev(view, 'opens()') is True, 'back to today: a gesture, which an application script has'
+with part("New windows. A script of the application counts as a person's act"):
+    view.set_runtime_settings({'newWindows': 'block'})
+    other.set_runtime_settings({'newWindows': 'allow'})
+    assert ev(view, 'opens()') is False and ev(other, 'opens()') is True
+    assert view.popup_policy == 'block', 'the same value as the function'
+    view.set_runtime_settings({'newWindows': None})
+    other.set_runtime_settings({'newWindows': None})
+    zebkit.set_engine_settings({'newWindows': 'block'})
+    assert ev(view, 'opens()') is False and view.popup_policy == 'block'
+    later_view = opened()
+    assert ev(later_view, 'opens()') is False, 'a view made afterwards'
+    other.set_runtime_settings({'newWindows': 'allow'})
+    assert ev(other, 'opens()') is True, "a view's goes first"
+    zebkit.set_engine_settings({'newWindows': None})
+    other.set_runtime_settings({'newWindows': None})
+    assert ev(view, 'opens()') is True, 'back to today: a gesture, which an application script has'
 
-# ---- The spare renderer: a process, there or not, and taken by a navigation.
-before = renderers()
-zebkit.set_engine_settings({'spareRenderer': True})
-assert zebkit.engine_settings()['effective'] == {**zebkit.engine_settings()['effective'], 'spareRenderer': True, 'spareRendererRunning': True}
-wait(lambda: renderers() - before, 'a spare renderer started')
-spare = renderers() - before
-assert len(spare) == 1, spare
-# A view with no process yet takes it, and a new one follows. Not `view`: its frames have
-# been on OTHER, so its navigation there asks for no process, and the spare goes when
-# the frame commits (PrepareForFutureRequests). A process that was told to go can take a
-# moment, so look a moment later.
-fresh = opened(OTHER + '/plain')
-end = time.monotonic() + 1
-while time.monotonic() < end:
-    assert spare <= renderers(), 'the spare was used, not dropped'
-    zebkit.pump()
-    time.sleep(.02)
-wait(lambda: zebkit.engine_settings()['effective']['spareRendererRunning'], 'another spare after the load')
-zebkit.set_engine_settings({'spareRenderer': False})
-assert not zebkit.engine_settings()['effective']['spareRendererRunning']
-reloaded = []
-view.on_load(lambda event, at: reloaded.append(at) if event == zebkit.LOAD_FINISHED else None)
-view.load(BASE + '/plain')
-wait(lambda: BASE + '/plain' in reloaded, 'back')
-assert not zebkit.engine_settings()['effective']['spareRendererRunning'], 'false: none after a load'
-zebkit.set_engine_settings({'spareRenderer': None})
-assert 'spareRenderer' not in zebkit.engine_settings()['explicit']
+with part('The spare renderer: a process, there or not, and taken by a navigation'):
+    before = renderers()
+    zebkit.set_engine_settings({'spareRenderer': True})
+    assert zebkit.engine_settings()['effective'] == {**zebkit.engine_settings()['effective'], 'spareRenderer': True, 'spareRendererRunning': True}
+    wait(lambda: renderers() - before, 'a spare renderer started')
+    spare = renderers() - before
+    assert len(spare) == 1, spare
+    # A view with no process yet takes it, and a new one follows. Not `view`: its frames have
+    # been on OTHER, so its navigation there asks for no process, and the spare goes when
+    # the frame commits (PrepareForFutureRequests). A process that was told to go can take a
+    # moment, so look a moment later.
+    fresh = opened(OTHER + '/plain')
+    # Asked for a moment (a negative check: what must not happen in it).
+    end = time.monotonic() + SETTLE
+    while time.monotonic() < end:
+        assert spare <= renderers(), 'the spare was used, not dropped'
+        zebkit.pump()
+        time.sleep(.02)
+    wait(lambda: zebkit.engine_settings()['effective']['spareRendererRunning'], 'another spare after the load')
+    zebkit.set_engine_settings({'spareRenderer': False})
+    assert not zebkit.engine_settings()['effective']['spareRendererRunning']
+    reloaded = []
+    view.on_load(lambda event, at: reloaded.append(at) if event == zebkit.LOAD_FINISHED else None)
+    view.load(BASE + '/plain')
+    wait(lambda: BASE + '/plain' in reloaded, 'back')
+    assert not zebkit.engine_settings()['effective']['spareRendererRunning'], 'false: none after a load'
+    zebkit.set_engine_settings({'spareRenderer': None})
+    assert 'spareRenderer' not in zebkit.engine_settings()['explicit']
 
 for each in (view, other, later_view):
-    each.close()
-print('ok python', flush=True)
+    if each is not None:
+        each.close()
 zebkit.shutdown()
+# The driver's line, when every part held.
+code = finish()
+if code == 0:
+    print('ok python', flush=True)
+sys.exit(code)

@@ -22,7 +22,7 @@ if (is_win) {
   import("//build/config/win/visual_studio_version.gni")
 }
 
-_version = read_file("VERSION", "trim string")
+_version = read_file("//zebkit/VERSION", "trim string")
 
 config("implementation") {
   defines = [
@@ -488,6 +488,8 @@ _sources = [
   "ui.cc",
   "ui.h",
   "ui_script.h",
+  "attached_views.h",
+  "c_api_util.h",
   "view.cc",
   "view.h",
   "webauthn.cc",

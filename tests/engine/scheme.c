@@ -3,25 +3,17 @@
  * and in a range, as a player seeking does. Prints one line per check;
  * exit 0 when all pass. */
 
+#include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <zebkit/zebkit.h>
 
-static int failures, checks;
 static char file_path[1024];
 /* The test file's directory and the directory's name, for a path through "..". */
 static char parent_dir[1024];
 static char parent_name[1100];
-
-static void check(int ok, const char *what, const char *detail) {
-    checks++;
-    if (!ok)
-        failures++;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-    fflush(stdout);
-}
 
 static const char page[] =
     "<!doctype html><title>loading</title><script>\n"
@@ -86,15 +78,15 @@ static zebkit_view *view;
 static void on_result(zebkit_view *v, const char *json, const char *error, void *data) {
     const char *r = json ? json : error;
 #define HAS(part) (r && strstr(r, part) != NULL)
-    check(HAS("\"origin\":\"app://ui\""), "a standard scheme: the page's origin is app://ui", r);
-    check(HAS("\"secure\":true"), "a secure scheme: a secure context", NULL);
-    check(HAS("\"data\":42"), "fetch() from the application's scheme", NULL);
-    check(HAS("\"posted\":\"POST zebkit\""), "a request's method and body", NULL);
-    check(HAS("\"whole\":\"0123456789\""), "zebkit_request_respond_file: the whole file", NULL);
-    check(HAS("\"status\":206") && HAS("\"part\":\"345\"") && HAS("\"range\":\"bytes 3-5/10\""),
+    check_text(HAS("\"origin\":\"app://ui\""), "a standard scheme: the page's origin is app://ui", r);
+    check_text(HAS("\"secure\":true"), "a secure scheme: a secure context", NULL);
+    check_text(HAS("\"data\":42"), "fetch() from the application's scheme", NULL);
+    check_text(HAS("\"posted\":\"POST zebkit\""), "a request's method and body", NULL);
+    check_text(HAS("\"whole\":\"0123456789\""), "zebkit_request_respond_file: the whole file", NULL);
+    check_text(HAS("\"status\":206") && HAS("\"part\":\"345\"") && HAS("\"range\":\"bytes 3-5/10\""),
           "zebkit_request_respond_file: a range", NULL);
-    check(HAS("\"missing\":404"), "zebkit_request_respond_file: a file that is not there", NULL);
-    check(HAS("\"parent\":404"), "zebkit_request_respond_file: a path with \"..\" is not served", NULL);
+    check_text(HAS("\"missing\":404"), "zebkit_request_respond_file: a file that is not there", NULL);
+    check_text(HAS("\"parent\":404"), "zebkit_request_respond_file: a path with \"..\" is not served", NULL);
     zebkit_quit();
 }
 
@@ -104,7 +96,7 @@ static void on_title(zebkit_view *v, const char *title, void *data) {
 }
 
 static void timeout(void *data) {
-    check(0, "the page finished", NULL);
+    check_text(0, "the page finished", NULL);
     zebkit_quit();
 }
 
@@ -128,11 +120,11 @@ int main(int argc, char **argv) {
         return 1;
     fputs("0123456789", file);
     fclose(file);
-    check(zebkit_scheme_register("app", ZEBKIT_SCHEME_STANDARD | ZEBKIT_SCHEME_SECURE | ZEBKIT_SCHEME_FETCH),
+    check_text(zebkit_scheme_register("app", ZEBKIT_SCHEME_STANDARD | ZEBKIT_SCHEME_SECURE | ZEBKIT_SCHEME_FETCH),
           "zebkit_scheme_register", NULL);
-    check(zebkit_scheme_register("asset", ZEBKIT_SCHEME_STANDARD | ZEBKIT_SCHEME_FETCH), "a second scheme", NULL);
-    check(!zebkit_scheme_register("https", 0), "zebkit_scheme_register refuses https", NULL);
+    check_text(zebkit_scheme_register("asset", ZEBKIT_SCHEME_STANDARD | ZEBKIT_SCHEME_FETCH), "a second scheme", NULL);
+    check_text(!zebkit_scheme_register("https", 0), "zebkit_scheme_register refuses https", NULL);
     int code = zebkit_main(argc, argv, ready, NULL);
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures || code ? 1 : 0;
+    check_text(code == 0, "zebkit_main returned 0", NULL);
+    return summary();
 }

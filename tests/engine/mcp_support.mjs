@@ -19,11 +19,19 @@ export function check(ok, what, detail) {
   checks++;
   if (!ok) failures++;
   const shown = detail === undefined ? '' : `: ${String(typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 400)}`;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${ok ? '' : shown}`);
+  console.log(`${ok ? 'ok   ' : 'FAIL '}${what}${ok ? '' : shown}`);
 }
+const skipped = [];
+/** A part not run on this machine: a "skip " line, never a pass. */
+export function skip(what, why) {
+  skipped.push(what);
+  console.log(`skip ${what}: ${why}`);
+}
+/** The summary line, last; the exit code: 0 only when there were checks and none failed. */
 export function finish() {
+  if (skipped.length) console.log(`${skipped.length} skipped: ${skipped.join('; ')}`);
   console.log(`${checks - failures} of ${checks} checks passed`);
-  return failures ? 1 : 0;
+  return failures || !checks ? 1 : 0;
 }
 
 /** A client whose calls give {result, structured, text, isError}, and keeps every result. */

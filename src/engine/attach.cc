@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -27,6 +28,7 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/linux/linux_ui_delegate.h"
 #endif
+#include "zebkit/engine/attached_views.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/view.h"
 
@@ -63,8 +65,7 @@ struct Attached {
 };
 
 std::map<const zebkit_view*, Attached>& AttachedViews() {
-  static base::NoDestructor<std::map<const zebkit_view*, Attached>> attached;
-  return *attached;
+  return AttachedViewsOf<Attached>();
 }
 
 views::Widget* WidgetOf(zebkit_view* view) {
@@ -161,18 +162,7 @@ void DetachView(zebkit_view* view, bool restore) {
 }
 
 void CloseViewsAttachedTo(zebkit_view* parent) {
-  for (const auto& [view, attached] : AttachedViews()) {
-    if (attached.parent.get() != parent)
-      continue;
-    // Not now: the parent is inside its own teardown.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(
-                       [](base::WeakPtr<zebkit_view> view) {
-                         if (view)
-                           view->Close();
-                       },
-                       const_cast<zebkit_view*>(view)->GetWeakPtr()));
-  }
+  CloseAttachedViewsOf<Attached>(parent, [](const Attached&) { return true; });
 }
 
 #if defined(ZEBKIT_X11)
@@ -252,13 +242,7 @@ class NativeWindows : public x11::EventObserver {
           continue;
         // The parent's end took the window with it, as for a view attached in
         // another view's window. Not now: this is inside the event's dispatch.
-        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-            FROM_HERE, base::BindOnce(
-                           [](base::WeakPtr<zebkit_view> view) {
-                             if (view)
-                               view->Close();
-                           },
-                           it->second.view));
+        CloseSoon(it->second.view);
         Remove(it->first);
         return;
       }
@@ -295,6 +279,90 @@ NativeWindows& Natives() {
 NativeAttached* NativeOf(const zebkit_view* view) {
   auto it = Natives().attached.find(view);
   return it == Natives().attached.end() ? nullptr : &it->second;
+}
+
+// The top-level window of a window (NativeWindowForView()): the child of the
+// root it is in, or before that the client window a window manager manages,
+// the one with WM_STATE (its frame, the next window up, is the manager's).
+// Found with a round trip a level, then kept until X tells that a window on
+// the way changed its parent, its WM_STATE or went, attached or not. Those
+// events reach the engine without asking: Chromium's x11::GeometryCache
+// selects StructureNotify on every X11Window's window and on each of its
+// ancestors, and X11Window PropertyChange on its own. So only the engine's
+// own windows are kept (@cache): an application's window a view was
+// attached to is told about only while the view's window is in it, and
+// after a detach it could move to another top-level window or go without a
+// word; its walk is made each time.
+class TopLevels : public x11::EventObserver {
+ public:
+  x11::Window Find(x11::Window start, bool cache) {
+    if (auto it = found_.find(start); it != found_.end())
+      return it->second.top;
+    auto* connection = x11::Connection::Get();
+    if (wm_state_ == x11::Atom::None)
+      wm_state_ = connection->GetAtom("WM_STATE");
+    Entry entry;
+    x11::Window window = start;
+    for (int depth = 0; depth < 64; ++depth) {
+      entry.chain.push_back(window);
+      uint32_t state = 0;
+      if (connection->GetPropertyAs(window, wm_state_, &state))
+        break;
+      auto tree = connection->QueryTree({window}).Sync();
+      if (!tree || tree->parent == tree->root || tree->parent == x11::Window::None)
+        break;
+      window = tree->parent;
+    }
+    entry.top = window;
+    if (!cache)
+      return window;
+    // A bound for windows that went without telling (another screen's).
+    if (found_.size() >= 256)
+      found_.clear();
+    if (!observing_) {
+      connection->AddEventObserver(this);
+      observing_ = true;
+    }
+    found_[start] = std::move(entry);
+    return window;
+  }
+
+  void OnEvent(const x11::Event& event) override {
+    x11::Window changed = x11::Window::None;
+    if (auto* reparent = event.As<x11::ReparentNotifyEvent>())
+      changed = reparent->window;
+    else if (auto* destroy = event.As<x11::DestroyNotifyEvent>())
+      changed = destroy->window;
+    else if (auto* property = event.As<x11::PropertyNotifyEvent>();
+             property && property->atom == wm_state_)
+      changed = property->window;
+    if (changed == x11::Window::None)
+      return;
+    const size_t before = found_.size();
+    std::erase_if(found_, [changed](const auto& item) {
+      return std::ranges::find(item.second.chain, changed) != item.second.chain.end();
+    });
+    if (before && found_.empty() && observing_) {
+      x11::Connection::Get()->RemoveEventObserver(this);
+      observing_ = false;
+    }
+  }
+
+ private:
+  struct Entry {
+    x11::Window top = x11::Window::None;
+    // The windows looked at, @top's included.
+    std::vector<x11::Window> chain;
+  };
+  std::map<x11::Window, Entry> found_;
+  x11::Atom wm_state_ = x11::Atom::None;
+  // Added as the connection's event observer.
+  bool observing_ = false;
+};
+
+TopLevels& TopLevelWindows() {
+  static base::NoDestructor<TopLevels> windows;
+  return *windows;
 }
 
 }  // namespace
@@ -653,29 +721,18 @@ zebkit_native_window NativeWindowForView(zebkit_view* view) {
     return {};
   auto window = static_cast<x11::Window>(
       widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  bool own = true;
   for (const auto& [owner, attached] : Natives().attached) {
     if (attached.window == window) {
       window = attached.parent;
+      own = false;
       break;
     }
   }
   // The top-level window, as GA_ROOT on Windows and the NSWindow on macOS: a
   // dialog is transient for that, not for the child an application attached
-  // the page to. Its child of the root window, before any reparenting by the
-  // window manager is looked through (_NET_WM frames are not the client's).
-  auto* connection = x11::Connection::Get();
-  const x11::Atom wm_state = connection->GetAtom("WM_STATE");
-  for (int depth = 0; depth < 64; ++depth) {
-    // Stop at the client window a window manager manages, the one with
-    // WM_STATE; its frame, the next window up, is the manager's.
-    uint32_t state = 0;
-    if (connection->GetPropertyAs(window, wm_state, &state))
-      break;
-    auto tree = connection->QueryTree({window}).Sync();
-    if (!tree || tree->parent == tree->root || tree->parent == x11::Window::None)
-      break;
-    window = tree->parent;
-  }
+  // the page to (TopLevels; kept for the engine's own windows only).
+  window = TopLevelWindows().Find(window, own);
   return {ZEBKIT_NATIVE_WINDOW_X11, static_cast<uintptr_t>(window)};
 #elif BUILDFLAG(IS_WIN)
   HWND window = widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget();

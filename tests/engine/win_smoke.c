@@ -3,20 +3,16 @@
  * first argument that does not start with "--", for the pixels to be looked at.
  * The rest of the arguments are the engine's.
  *
- * Exit 0 when each step happened. */
+ * Exit 0 when every check passes. */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "harness.h"
 
 #include <zebkit/page.h>
-#include <zebkit/zebkit.h>
 #ifdef ZEBKIT_TEST_SANDBOX
 #include <zebkit/win_sandbox.h>
 #endif
 
 static const char *picture = "win_smoke.png";
-static int result = 1;
 
 /* A page of known colours: the left half pure red, the right half pure blue. */
 static const char page[] =
@@ -27,42 +23,37 @@ static const char page[] =
 
 static void printed(zebkit_view *view, const uint8_t *pdf, size_t size, const char *error, void *data) {
     (void)data;
-    printf("print to PDF: %zu bytes, starts %.4s, error %s\n", size, pdf ? (const char *)pdf : "", error ? error : "none");
-    if (!pdf || size < 100 || memcmp(pdf, "%PDF", 4))
-        result = 1;
-    fflush(stdout);
+    check(pdf && size >= 100 && !memcmp(pdf, "%PDF", 4) && !error, "print to PDF", "%zu bytes, starts %.4s, error %s",
+          size, pdf ? (const char *)pdf : "", error ? error : "none");
     zebkit_view_close(view);
     zebkit_quit();
 }
 
 static void captured(zebkit_view *view, const uint8_t *png, size_t size, const char *error, void *data) {
     (void)data;
-    printf("capture: %zu bytes, error %s\n", size, error ? error : "none");
+    check(png && size, "a picture of the page", "%zu bytes, error %s", size, error ? error : "none");
     if (png && size) {
         FILE *file = fopen(picture, "wb");
-        if (file) {
-            fwrite(png, 1, size, file);
-            fclose(file);
-            printf("wrote %s\n", picture);
-            result = 0;
-        }
+        int written = file && fwrite(png, 1, size, file) == size;
+        if (file)
+            written = !fclose(file) && written;
+        check(written, "the picture written", "%s", picture);
     }
-    fflush(stdout);
     zebkit_view_print_to_pdf(view, NULL, printed, NULL);
 }
 
 static void evaluated(zebkit_view *view, const char *json, const char *error, void *data) {
     (void)data;
-    printf("evaluate: %s, error %s\n", json ? json : "null", error ? error : "none");
-    fflush(stdout);
+    check(json && !error && strstr(json, " | smoke"), "script runs in the page", "%s, error %s", json ? json : "null",
+          error ? error : "none");
     zebkit_view_capture(view, captured, NULL);
 }
 
 static void loaded(zebkit_view *view, zebkit_load_event event, const char *url, void *data) {
     (void)url;
     (void)data;
-    printf("load event %d\n", (int)event);
-    fflush(stdout);
+    if (event == ZEBKIT_LOAD_FINISHED || event == ZEBKIT_LOAD_FAILED)
+        check(event == ZEBKIT_LOAD_FINISHED, "the page loads", "load event %d", (int)event);
     if (event == ZEBKIT_LOAD_FINISHED)
         /* Two frames on, so that what is drawn is the page. */
         zebkit_view_evaluate(view,
@@ -80,8 +71,7 @@ static void ready(void *data) {
     printf("engine %s, %s; headless %d\n", zebkit_version(), zebkit_engine_version(), (int)zebkit_is_headless());
     fflush(stdout);
     zebkit_view *view = zebkit_view_new(page, 800, 600);
-    printf("view %p\n", (void *)view);
-    fflush(stdout);
+    check(view != NULL, "a view is made", NULL);
     if (!view) {
         zebkit_quit();
         return;
@@ -106,6 +96,7 @@ int main(int argc, char **argv) {
             engine[count++] = argv[i];
     }
     const int code = zebkit_main(count, engine, ready, NULL);
-    printf("zebkit_main returned %d\n", code);
-    return code ? code : result;
+    check(code == 0, "zebkit_main returns 0", "%d", code);
+    free(engine);
+    return summary();
 }

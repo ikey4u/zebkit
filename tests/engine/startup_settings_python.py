@@ -1,13 +1,22 @@
-"""Startup configuration reaches the real profile, proxy, UA and log backend."""
+"""Startup configuration reaches the real profile, proxy, UA and log backend:
+zebkit.init(settings=...) refuses an unknown setting, and the settings it takes
+win over the matching switches; logging as ZEBKIT_TEST_LOG_MODE (none, file)
+says, never into a default content_shell.log.
+
+    ZEBKIT_TEST_LOG_MODE=none|file python3 tests/engine/startup_settings_python.py
+
+Exit 0 when every check passes.
+"""
 import http.server
 import os
 import pathlib
 import sys
 import tempfile
 import threading
-import time
 
-import zebkit
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from harness import check, finish, wait, zebkit  # noqa: E402
 
 mode = os.environ.get("ZEBKIT_TEST_LOG_MODE", "none")
 requests = []
@@ -26,24 +35,25 @@ class Proxy(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
-thread = threading.Thread(target=server.serve_forever, daemon=True)
-thread.start()
-try:
+def main():
     with tempfile.TemporaryDirectory(prefix="zebkit-startup-") as directory:
         root = pathlib.Path(directory)
         profile, keys, log = root / "profile", root / "keys", root / "engine.log"
-        defaults = {parent / "content_shell.log" for parent in (
-            pathlib.Path(zebkit._lib._name).resolve().parent,
-            pathlib.Path(sys.executable).resolve().parent, pathlib.Path.cwd())}
+        # Where a default log would go: beside the engine (ZEBKIT_DIR, which the
+        # suite sets), beside Python, in the working directory.
+        parents = [pathlib.Path(sys.executable).resolve().parent, pathlib.Path.cwd()]
+        if os.environ.get("ZEBKIT_DIR"):
+            parents.append(pathlib.Path(os.environ["ZEBKIT_DIR"]).resolve())
+        defaults = {parent / "content_shell.log" for parent in parents}
         before = {path: (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None
                   for path in defaults}
         try:
             zebkit.init(settings={"profileDirectory": str(profile), "unknownSetting": True})
-            raise AssertionError("unknown setting was accepted")
-        except zebkit.Error:
-            pass
-        assert not profile.exists()
+            refused = None
+        except zebkit.Error as error:
+            refused = str(error)
+        check(refused is not None, "an unknown setting is refused", refused)
+        check(not profile.exists(), "and nothing of the refused settings is made")
         logging = {"destination": mode, "level": 0}
         if mode == "file":
             log.write_text("host-log-sentinel\n")
@@ -55,8 +65,10 @@ try:
             "logging": logging, "cookies": {"storage": "file", "keyDirectory": str(keys)},
             "applicationIntegration": False,
         }
-        assert zebkit.init([sys.argv[0], "--no-proxy-server", "--user-agent=argv-agent",
-                            f"--user-data-dir={root / 'unused-profile'}"], settings=config) == 0
+        if not check(zebkit.init([sys.argv[0], "--no-proxy-server", "--user-agent=argv-agent",
+                                  f"--user-data-dir={root / 'unused-profile'}"], settings=config) == 0,
+                     "zebkit.init() with the settings"):
+            return
         state = {"value": None, "error": None}
         view = zebkit.View()
 
@@ -73,25 +85,32 @@ try:
 
         view.on_load(loaded)
         view.load("http://zebkit-startup.invalid/page")
-        deadline = time.monotonic() + 15
-        while state["value"] is None and time.monotonic() < deadline:
-            assert zebkit.pump()
-            time.sleep(0.001)
-        assert state == {"value": [agent, "configured proxy"], "error": None}, state
-        assert ("http://zebkit-startup.invalid/page", agent) in requests, requests
-        assert profile.is_dir() and keys.is_dir() and any(keys.iterdir())
-        assert not (root / "unused-profile").exists(), "API settings must override matching switches"
-        assert zebkit.shutdown()
-        assert list(profile.rglob("Cookies.host")), "file cookie storage must be selected"
+        wait(lambda: state["value"] is not None, 15)
+        check(state == {"value": [agent, "configured proxy"], "error": None},
+              "the page through the configured proxy, with the configured user agent", state)
+        check(("http://zebkit-startup.invalid/page", agent) in requests, "the proxy saw the user agent", requests)
+        check(profile.is_dir() and keys.is_dir() and any(keys.iterdir()), "the profile and the cookies' key directory")
+        check(not (root / "unused-profile").exists(), "the settings win over the matching switches")
+        check(zebkit.shutdown(), "zebkit.shutdown()")
+        check(bool(list(profile.rglob("Cookies.host"))), "file cookie storage selected")
         if mode == "file":
-            assert log.read_text(encoding="utf-8", errors="replace").startswith("host-log-sentinel"), "logging must append, never truncate the host's file"
+            check(log.read_text(encoding="utf-8", errors="replace").startswith("host-log-sentinel"),
+                  "logging=file appends, never truncates the host's file")
         else:
-            assert not log.exists()
+            check(not log.exists(), "logging=none writes no log")
         after = {path: (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None
                  for path in defaults}
-        assert before == after, "startup must not create or modify a default content_shell.log"
-        print(f"ok startup settings: strict validation, real proxy/UA/profile/cookies, logging={mode}", flush=True)
+        check(before == after, "no default content_shell.log made or changed",
+              None if before == after else sorted(str(path) for path in defaults if before[path] != after[path]))
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+    main()
 finally:
     server.shutdown()
     thread.join()
     server.server_close()
+sys.exit(finish())

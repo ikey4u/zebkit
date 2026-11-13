@@ -19,21 +19,12 @@
 #include "zebkit/engine/view.h"
 #include "zebkit/engine/window.h"
 #include "zebkit/engine/window_options.h"
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/window_platform.h"
 
 namespace zebkit {
 
 namespace {
-
-bool OnEngineThread() {
-  return CurrentlyOnEngineThread();
-}
-
-bool Fail(char** error, std::string message) {
-  if (error)
-    *error = strdup(message.c_str());
-  return false;
-}
 
 base::DictValue RectValue(const gfx::Rect& rect) {
   base::DictValue value;
@@ -62,9 +53,16 @@ base::DictValue CapabilitiesValue(const WindowCapabilities& capabilities) {
 }
 
 const char* OwnerName(zebkit_view* view, Window* window) {
-  if (!window || window->kind() == Window::Kind::kOffscreen || zebkit_is_headless())
+  if (!window)
     return "none";
-  switch (ViewWindowOwner(view)) {
+  // In another view's window also without windows of the system's
+  // (--headless): zebkit_view_attach() put it there.
+  const WindowOwner owner = ViewWindowOwner(view);
+  if (owner == WindowOwner::kView)
+    return "view";
+  if (window->kind() == Window::Kind::kOffscreen || zebkit_is_headless())
+    return "none";
+  switch (owner) {
     case WindowOwner::kEngine: return "engine";
     case WindowOwner::kView: return "view";
     case WindowOwner::kApplication: return "application";
@@ -126,19 +124,19 @@ zebkit_view* zebkit_view_new_with_options(zebkit_context* context, const char* u
   using namespace zebkit;
   if (error)
     *error = nullptr;
-  if (!OnEngineThread()) {
-    Fail(error, "views are made on the engine's thread");
+  if (!CurrentlyOnEngineThread()) {
+    SetError(error, "views are made on the engine's thread");
     return nullptr;
   }
   WindowOptions options;
   std::string message;
   if (!ParseWindowOptions(options_json ? options_json : "{}", true, WindowOptions(), &options, &message)) {
-    Fail(error, message);
+    SetError(error, message);
     return nullptr;
   }
   // A frame the system cannot give: an error, unless the system's will do.
   if (Window::IsShutDown()) {
-    Fail(error, "the engine is stopping");
+    SetError(error, "the engine is stopping");
     return nullptr;
   }
   const WindowCapabilities capabilities = PlatformFor(Window::Kind::kNative)->Capabilities(nullptr);
@@ -146,18 +144,19 @@ zebkit_view* zebkit_view_new_with_options(zebkit_context* context, const char* u
                         (options.frame == WindowOptions::Frame::kOverlay && capabilities.overlay) ||
                         (options.frame == WindowOptions::Frame::kNone && capabilities.none);
   if (!frame_ok && !options.fallback_to_system && !zebkit_is_headless()) {
-    Fail(error, std::string("unsupported: frame ") + FrameName(options.frame) +
+    SetError(error, std::string("unsupported: frame ") + FrameName(options.frame) +
                     " on this system; \"fallback\": \"system\" takes the system's frame instead");
     return nullptr;
   }
   if (options.position && !capabilities.position && !zebkit_is_headless()) {
-    Fail(error, "unsupported: x and y; this system's windows are placed by its compositor");
+    SetError(error, "unsupported: x and y; this system's windows are placed by its compositor");
     return nullptr;
   }
+  std::string why;
   zebkit_view* view = NewView(context, url, options.size.width(), options.size.height(),
-                              Window::Kind::kNative, &options);
+                              Window::Kind::kNative, &options, &why);
   if (!view)
-    Fail(error, "the view could not be made");
+    SetError(error, why);
   return view;
 }
 
@@ -165,7 +164,7 @@ char* zebkit_view_get_window(zebkit_view* view) {
   using namespace zebkit;
   if (!LiveView(view) || !view->window())
     return nullptr;
-  return strdup(StateJson(view).c_str());
+  return CopyString(StateJson(view));
 }
 
 bool zebkit_view_set_window(zebkit_view* view, const char* options_json, char** error) {
@@ -173,15 +172,15 @@ bool zebkit_view_set_window(zebkit_view* view, const char* options_json, char** 
   if (error)
     *error = nullptr;
   if (!LiveView(view) || !view->window())
-    return Fail(error, "a live view on the engine's thread");
+    return SetError(error, "a live view on the engine's thread");
   Window* window = view->window();
   WindowOptions options;
   std::string message;
   if (!ParseWindowOptions(options_json ? options_json : "{}", false, window->options(), &options, &message))
-    return Fail(error, message);
+    return SetError(error, message);
   if (options.position != window->options().position && options.position &&
       !window->Capabilities().position && !zebkit_is_headless())
-    return Fail(error, "unsupported: x and y; this system's windows are placed by its compositor");
+    return SetError(error, "unsupported: x and y; this system's windows are placed by its compositor");
   // What was given before and now, as given.
   base::DictValue given = window->options().given.Clone();
   for (auto [key, value] : options.given)
@@ -196,10 +195,10 @@ bool zebkit_view_window_action(zebkit_view* view, const char* action, char** err
   if (error)
     *error = nullptr;
   if (!LiveView(view) || !view->window())
-    return Fail(error, "a live view on the engine's thread");
+    return SetError(error, "a live view on the engine's thread");
   auto parsed = WindowActionNamed(action ? action : "");
   if (!parsed)
-    return Fail(error, "unknown action; one of show, hide, minimize, maximize, restore, fullscreen, "
+    return SetError(error, "unknown action; one of show, hide, minimize, maximize, restore, fullscreen, "
                        "exit-fullscreen, close");
   if (*parsed == WindowAction::kClose) {
     zebkit_view_request_close(view);
@@ -207,10 +206,10 @@ bool zebkit_view_window_action(zebkit_view* view, const char* action, char** err
   }
   Window* window = view->window();
   if (ViewWindowOwner(view) != WindowOwner::kEngine)
-    return Fail(error, "not the engine's window: the view is in another window");
+    return SetError(error, "not the engine's window: the view is in another window");
   std::string message;
   if (!window->PerformAction(*parsed, &message))
-    return Fail(error, message);
+    return SetError(error, message);
   return true;
 }
 
@@ -229,12 +228,12 @@ bool zebkit_view_set_drag_regions(zebkit_view* view, const char* regions_json, c
   if (error)
     *error = nullptr;
   if (!LiveView(view) || !view->window())
-    return Fail(error, "a live view on the engine's thread");
+    return SetError(error, "a live view on the engine's thread");
   std::vector<DragRegion> regions;
   std::string message;
   if (!ParseDragRegions(regions_json ? regions_json : "[]", &regions, &message) ||
       !view->window()->SetHostDragRegions(std::move(regions), &message))
-    return Fail(error, message);
+    return SetError(error, message);
   return true;
 }
 
@@ -243,7 +242,7 @@ bool zebkit_view_set_popup_window_options(zebkit_view* view, const char* options
   if (error)
     *error = nullptr;
   if (!LiveView(view) || !view->window())
-    return Fail(error, "a live view on the engine's thread");
+    return SetError(error, "a live view on the engine's thread");
   if (!options_json) {
     view->window()->SetPopupOptions(std::nullopt);
     return true;
@@ -251,14 +250,14 @@ bool zebkit_view_set_popup_window_options(zebkit_view* view, const char* options
   WindowOptions options;
   std::string message;
   if (!ParsePopupWindowOptions(options_json, &options, &message))
-    return Fail(error, message);
+    return SetError(error, message);
   view->window()->SetPopupOptions(std::move(options));
   return true;
 }
 
 char* zebkit_get_capabilities(void) {
   using namespace zebkit;
-  if (!OnEngineThread())
+  if (!CurrentlyOnEngineThread())
     return nullptr;
   base::DictValue value;
   value.Set("headless", zebkit_is_headless());
@@ -272,7 +271,7 @@ char* zebkit_get_capabilities(void) {
   value.Set("window", CapabilitiesValue(zebkit_is_headless() || Window::IsShutDown()
                                             ? WindowCapabilities()
                                             : PlatformFor(Window::Kind::kNative)->Capabilities(nullptr)));
-  return strdup(base::WriteJson(value).value_or("{}").c_str());
+  return CopyString(base::WriteJson(value).value_or("{}"));
 }
 
 }  // extern "C"

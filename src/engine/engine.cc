@@ -306,7 +306,7 @@ std::vector<std::string> EngineArguments(int argc, char** argv) {
   // back for a while after. Without FedCM, sites sign in through a popup,
   // as in Firefox, which has no FedCM; zebkit opens it from the person's
   // click with its opener (docs/API.md). --zebkit-fedcm keeps it, for an
-  // application that answers its dialogs (docs/ROADMAP_HOOKS.md).
+  // application that answers its dialogs (docs/HOOKS.md).
   // Both are added to any --disable-features given.
   std::vector<std::string> disabled;
   if (!HasSwitch(argc, argv, "zebkit-spare-renderer"))
@@ -1424,6 +1424,7 @@ int BrowserMainParts::PreMainMessageLoopRun() {
   InstallPageHooks();
   InstallShareHooks();
   InstallDownloadHooks();
+  InstallHangMonitorPolicy();
   StartRuntimeSettings();
   InstallClientCertificateHooks();
   InstallNetworkHooks();
@@ -1532,8 +1533,18 @@ struct EmbeddedEngine {
 bool g_engine_started = false;
 EmbeddedEngine* g_embedded = nullptr;
 thread_local bool g_embedded_thread = false;
+// NoteUncaughtScriptError().
+bool g_script_error = false;
 
 }  // namespace
+
+namespace zebkit {
+
+void NoteUncaughtScriptError() {
+  g_script_error = true;
+}
+
+}  // namespace zebkit
 
 extern "C" {
 
@@ -1594,7 +1605,8 @@ int zebkit_main(int argc, char** argv, zebkit_task_func ready, void* data) {
   const int result = zebkit::RunContent(static_cast<int>(args.size()), engine_argv.data(),
                                         delegate.get());
   zebkit::DeleteTemporaryUserData();
-  return result;
+  // The engine ran; a script's uncaught error fails the program, as Node's.
+  return result ? result : g_script_error ? 1 : 0;
 }
 
 int zebkit_init(int argc, char** argv) {

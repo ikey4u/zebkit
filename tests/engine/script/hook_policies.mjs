@@ -1,9 +1,13 @@
-// The hooks through host JavaScript; run by tests/engine/hook_policies.py.
+// The hooks through host JavaScript; run by tests/engine/hook_policies.py: the
+// modes of env.runs (a JSON file's path) one after the other in one engine,
+// each on views of its own, or the one of ZEBKIT_HOOK_MODE. The first that
+// fails ends the script (FAIL).
 import {activated} from './helpers.mjs';
 
 const env = JSON.parse(zebkit.args[0]);
-const {ZEBKIT_HOOK_MODE: mode, ZEBKIT_HOOK_BASE: base, ZEBKIT_HOOK_TLS: tls, ZEBKIT_HOOK_FILES: files,
-       ZEBKIT_HOOK_DOWNLOADS: downloads, cert, key, otherKey} = env;
+const {cert, key, otherKey} = env;
+const runs = env.runs ? JSON.parse(await zebkit.fs.readText(env.runs)) : [env];
+let mode, base, tls, files, downloads;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function must(ok, what) { if (!ok) throw new Error(`${mode}: ${what}`); }
 async function until(test, what, ms = 15000) {
@@ -15,10 +19,14 @@ function rejects(fn, what) {
   try { fn(); } catch (error) { thrown = error instanceof TypeError; }
   must(thrown, `accepted: ${what}`);
 }
-const view = new zebkit.View('');
-let closed = false, finished = false, failed = false;
-view.on('close', () => { closed = true; });
-view.on('load', (phase, url) => { if (phase === 'finished') finished = true; if (phase === 'failed') failed = true; });
+let view, closed, finished, failed;
+// A view of the mode's own, the one the mode's functions use.
+function fresh() {
+  const own = view = new zebkit.View('');
+  closed = finished = failed = false;
+  own.on('close', () => { if (own === view) closed = true; });
+  own.on('load', phase => { if (own !== view) return; if (phase === 'finished') finished = true; if (phase === 'failed') failed = true; });
+}
 async function load(url) { finished = failed = false; view.load(url); }
 async function openPage() {
   await load(base + '/page');
@@ -56,9 +64,10 @@ async function download() {
   await zebkit.fs.writeFile(target, new TextEncoder().encode('old'));
   const size = async () => (await zebkit.fs.stat(target)).size;
   await openPage();
-  const progress = [];
+  const progress = [], results = [];
   let kept = null;
   view.onDownloadProgress(event => progress.push(event));
+  view.onDownloadResult(event => results.push(event));
   if (mode !== 'download-default') view.onDownload(request => {
     kept = request;
     must(request.metadata.suggestedName === 'report.bin' && request.metadata.totalBytes === 65536, 'metadata');
@@ -82,12 +91,13 @@ async function download() {
   await until(() => kept, 'asked');
   if (mode === 'download-save') {
     await until(() => progress.some(e => e.state === 'complete'), 'complete');
+    await until(() => results.some(e => e.state === 'saved' && e.reason === 'answered'), 'the outcome: saved');
     must(await size() === 65536, 'bytes');
   } else if (mode === 'download-cancel') {
     await until(() => progress.some(e => e.state === 'cancelled' && e.done), 'cancelled');
     must(await size() === 3, 'untouched');
   } else if (mode === 'download-timeout') {
-    await until(() => progress.some(e => e.reason === 'timeout'), 'timeout');
+    await until(() => results.some(e => e.state === 'cancelled' && e.reason === 'timeout'), 'timeout');
     must(kept.info === null && !kept.respond('save', target) && await size() === 3, 'late');
   } else if (mode === 'download-close') {
     await until(() => closed, 'closed');
@@ -101,7 +111,7 @@ async function download() {
   } else if (mode === 'download-replace') {
     view.onDownload(null);
     must(kept.info === null, 'stale');
-    await until(() => progress.some(e => e.reason === 'handler-changed'), 'replaced');
+    await until(() => results.some(e => e.state === 'cancelled' && e.reason === 'handler-changed'), 'replaced');
   }
   view.close();
 }
@@ -122,11 +132,23 @@ async function certificate() {
     } else if (mode === 'cert-none') must(request.respond('none'), 'none');
     else if (mode === 'cert-cancel') must(request.respond('cancel'), 'cancel');
     else if (mode === 'cert-close') view.close();
+    else if (mode === 'cert-store') {
+      // The system's store's identity, chosen; its key stays there.
+      const found = request.metadata.identities.find(i => i.subject === 'zebkit-client');
+      must(found && found.certificate.startsWith('-----BEGIN CERTIFICATE-----') && found.sha256.length === 64, JSON.stringify(request.metadata.identities));
+      must(!request.respond('choose', request.metadata.identities.length + 5), 'past the identities');
+      must(request.respond('choose', found.index), 'choose');
+    } else if (mode === 'cert-store-off') {
+      // Without the engine setting, the store is not offered.
+      must(request.metadata.identities.length === 0, JSON.stringify(request.metadata.identities));
+      must(request.respond('none'), 'none');
+    }
   });
+  if (mode === 'cert-store') zebkit.setEngineSettings({clientCertificateStores: true});
   if (mode === 'cert-timeout') view.setClientCertificateTimeout(50);
   await load(tls + '/secure');
-  if (mode === 'cert-provide') await until(() => view.title === 'cert:zebkit-client', 'with it');
-  else if (mode === 'cert-none' || mode === 'cert-default') await until(() => view.title === 'cert:none', 'without');
+  if (mode === 'cert-provide' || mode === 'cert-store') await until(() => view.title === 'cert:zebkit-client', 'with it');
+  else if (mode === 'cert-none' || mode === 'cert-default' || mode === 'cert-store-off') await until(() => view.title === 'cert:none', 'without');
   else if (mode === 'cert-cancel' || mode === 'cert-timeout') {
     await until(() => failed && results.length, 'failed');
     must(results[0].state === 'cancelled', 'state');
@@ -366,7 +388,7 @@ async function networkWorkers() {
   view.onNetwork(request => {
     ++asked;
     const m = request.metadata;
-    const type = {'net-sw-ws': 'shared-or-service', 'net-sw-block': 'service', 'net-sw-running': 'service'}[mode] || 'shared';
+    const type = {'net-sw-ws': 'service', 'net-sw-block': 'service', 'net-sw-running': 'service'}[mode] || 'shared';
     must(m.worker && m.frameId === '' && m.workerType === type, JSON.stringify(m));
     must(request.respond({action: 'block'}), 'block');
   });
@@ -533,7 +555,8 @@ async function network() {
     'net-observe': [{url: '**/echo', mode: 'observe'}, {url: '**/echo', mode: 'observe', stage: 'response'}], 'net-none': [],
     'net-filter': [{url: '**/echo', resourceTypes: ['image']}, {url: '**/echo', frames: 'sub'}],
     'net-server-redirect': [{url: '**/echo'}], 'net-post': [{url: '**/echo'}], 'net-headers': [{url: '**/echo'}],
-    'net-worker': [{url: '**/echo?worker'}], 'net-navigation': [{url: '**/held', frames: 'main', resourceTypes: ['document']}]}[mode] || [{url: '**/held'}];
+    'net-worker': [{url: '**/echo?worker'}], 'net-navigation': [{url: '**/held', frames: 'main', resourceTypes: ['document']}],
+    'net-flood': [{url: '**/held*'}]}[mode] || [{url: '**/held'}];
   rejects(() => view.setNetworkFilter([{mode: 'sometimes'}]), 'mode');
   view.setNetworkFilter(rules);
   let kept = null, asked = 0;
@@ -584,6 +607,9 @@ async function network() {
   let answer = null;
   const script = mode === 'net-worker'
       ? `new Promise(ok => { const w = new Worker('/net-worker'); w.onmessage = e => ok(e.data); })`
+      // What is past the queue is refused, not let through: nothing here is answered.
+      : mode === 'net-flood'
+      ? `Promise.race(Array.from({length: 1100}, (_, i) => fetch('/held?' + i).then(() => 'through', () => 'failed')))`
       : `fetch('${url}'${mode === 'net-post' ? `, {method: 'POST', body: 'posted'}` : ''}).then(async r => JSON.stringify({status: r.status, redirected: r.redirected, added: r.headers.get('x-added'), body: await r.text()}), e => 'failed')`;
   view.evaluate(script).then(value => { answer = value; }, () => { answer = 'closed'; });
   if (mode === 'net-close') { await until(() => closed, 'closed'); must(kept.info === null, 'stale'); return; }
@@ -602,6 +628,7 @@ async function network() {
   }
   await until(() => answer !== null, 'fetch ended');
   if (mode === 'net-worker') { must(answer === 'from-host', answer); view.close(); return; }
+  if (mode === 'net-flood') { must(answer === 'failed' && asked >= 1024, `${answer} ${asked}`); view.close(); return; }
   const r = answer === 'failed' ? null : JSON.parse(answer);
   if (mode === 'net-none' || mode === 'net-filter') must(r && r.status === 200 && !asked, 'passed');
   else if (['net-block', 'net-response-block', 'net-server-redirect'].includes(mode)) must(r === null && asked === 1, 'failed');
@@ -621,8 +648,190 @@ async function network() {
   view.close();
 }
 
-const group = mode.split('-')[0];
-await ({external, download, cert: certificate, world, file: chooser, media, keys, menu, fullscreen, net: network})[group]().catch(fail);
-await sleep(50);
-console.log(`ok javascript ${mode}`);
+// ---- popups, two views, a running download, a CDP client beside the hook, the workers' latch
+// Another view of the mode's, at url once loaded; closed with the mode's.
+const others = [];
+async function another(url = null) {
+  const other = {view: new zebkit.View(''), closed: false, loaded: false};
+  others.push(other);
+  other.view.on('close', () => { other.closed = true; });
+  other.view.on('load', (phase, at) => { if (phase === 'finished' && at === url) other.loaded = true; });
+  if (url) {
+    other.view.load(url);
+    await until(() => other.loaded, 'load ' + url);
+    await until(async () => await other.view.evaluate('location.href + " " + document.readyState') === url + ' complete', 'loaded ' + url);
+  }
+  return other;
+}
+const FULL = activated(`document.documentElement.requestFullscreen()`) + `.then(() => 'in', e => e.name)`;
+const passes = v => v.evaluate(`fetch('/held').then(() => 'passed', () => 'failed')`);
+
+async function popup() {
+  await openPage();
+  const children = [], progress = [], askedBy = [];
+  view.on('window-open', event => { if (event.phase === 'created') children.push(event.view); });
+  view.onDownload(request => { askedBy.push(request.metadata); request.respond('cancel'); });
+  view.setNetworkFilter([{url: '**/held'}]);
+  view.onNetwork(request => { askedBy.push(request.metadata); request.respond({action: 'block'}); });
+  await view.evaluate(`window.open('/page'); 1`);
+  await until(() => children.length, 'popup');
+  const child = {view: children[0], closed: false};
+  others.push(child);
+  child.view.on('close', () => { child.closed = true; });
+  child.view.onDownloadProgress(event => progress.push(event));
+  // The URL is there before the document: wait for that.
+  await until(async () => await child.view.evaluate('document.title') === 'page', 'popup loaded');
+  const cancelled = () => progress.some(e => e.state === 'cancelled' && e.done);
+  if (mode === 'popup-inherit') {
+    // The opener's functions decide for the popup.
+    await child.view.evaluate(`location.href = '/download.bin'; 1`);
+    await until(() => askedBy.length, 'the opener was asked about the popup');
+    must(askedBy[0].suggestedName === 'report.bin', JSON.stringify(askedBy[0]));
+    await until(cancelled, 'cancelled');
+    askedBy.length = 0;
+    must(await passes(child.view) === 'failed', 'the popup network');
+    must(askedBy.length, 'the opener was asked about the popup network');
+  } else if (mode === 'popup-own') {
+    // A function of its own replaces its opener's.
+    const own = [];
+    child.view.onDownload(request => { own.push(request); request.respond('cancel'); });
+    await child.view.evaluate(`location.href = '/download.bin'; 1`);
+    await until(() => own.length, 'the popup was asked');
+    must(!askedBy.some(m => 'suggestedName' in m), 'the opener was asked');
+  } else {
+    // With its opener gone, a popup without functions of its own has no policy left.
+    view.close();
+    await until(() => closed, 'opener closed');
+    must(await passes(child.view) === 'failed', 'refused');
+    must(!askedBy.length, 'asked');
+    // Its navigations are refused too; a link with download attribute is not one.
+    await child.view.evaluate(`const a = document.createElement('a'); a.href = '/download.bin'; a.download = ''; a.click(); 1`);
+    await until(cancelled, 'refused');
+    must(await child.view.evaluate(FULL) === 'TypeError', 'fullscreen');
+  }
+  child.view.close();
+  await until(() => child.closed, 'closed');
+  view.close();
+}
+
+async function cancelRunning() {
+  await openPage();
+  const progress = [], target = downloads + '/running.bin';
+  view.onDownload(request => request.respond('save', target));
+  view.onDownloadProgress(event => progress.push(event));
+  await view.evaluate(`location.href = '/slow.bin'; 1`);
+  await until(() => progress.some(e => e.state === 'in-progress' && e.receivedBytes > 0), 'running');
+  const id = progress.find(e => e.downloadId && e.state === 'in-progress').downloadId;
+  must(!view.cancelDownload('d999999'), 'an unknown download');
+  must(view.cancelDownload(id), 'cancel');
+  await until(() => progress.some(e => e.state === 'cancelled' && e.done), 'cancelled');
+  must(!view.cancelDownload(id), 'cancelled twice');
+  must(await zebkit.fs.stat(target).then(() => false, () => true), 'the file is gone');
+  view.close();
+}
+
+async function cdpOrder() {
+  await load(base + '/input');
+  view.setNetworkFilter([{url: '**/held'}]);
+  view.onNetwork(request => {
+    must(request.respond({action: 'continue', headers: [...request.metadata.headers, {name: 'X-Hook', value: 'first'}]}), 'continue');
+  });
+  await until(() => view.title === 'fetch-on', 'the CDP client has Fetch on');
+  must(await view.evaluate(`fetch('/held').then(r => r.text())`) === 'from-cdp', 'the CDP client answered');
+  view.close();
+}
+
+async function twoViews() {
+  await openPage();
+  const first = view, second = (await another(base + '/page')).view;
+  const target = downloads + '/first.bin', asked = [], done = [];
+  first.onDownload(request => { asked.push('first'); request.respond('save', target); });
+  second.onDownload(request => { asked.push('second'); request.respond('cancel'); });
+  first.onDownloadProgress(e => done.push('first ' + e.state));
+  second.onDownloadProgress(e => done.push('second ' + e.state));
+  first.setNetworkFilter([{url: '**/held'}]);
+  first.onNetwork(request => request.respond({action: 'block'}));
+  first.setFullscreenPolicy('deny');
+  await first.evaluate(`location.href = '/download.bin'; 1`);
+  await until(() => done.includes('first complete'), 'first saved');
+  await second.evaluate(`location.href = '/download.bin'; 1`);
+  await until(() => done.includes('second cancelled'), 'second cancelled');
+  must(JSON.stringify(asked) === '["first","second"]', JSON.stringify(asked));
+  must((await zebkit.fs.stat(target)).size === 65536, 'saved');
+  must(await passes(first) === 'failed' && await passes(second) === 'passed', 'network');
+  second.focus();
+  must(await first.evaluate(FULL) === 'TypeError' && await second.evaluate(FULL) === 'in', 'fullscreen');
+  second.close();
+  view.close();
+}
+
+async function workersLatch() {
+  // A policy outlives the view that held it: refused until a view takes over or says off.
+  await openPage();
+  const holder = view, second = await another(base + '/page'), other = await another();
+  const both = [swScript('fetch'), sharedScript('fetch')];
+  must(holder.setNetworkFilterForWorkers(false), 'nothing to say off to');
+  holder.setNetworkFilter([]);
+  must(holder.setNetworkFilterForWorkers(true), 'held');
+  for (const script of both) must(await second.view.evaluate(script) === 'through', script);
+  second.view.setNetworkFilter([]);
+  must(!second.view.setNetworkFilterForWorkers(false), "another view's, which is still there");
+  holder.close();
+  await until(() => closed, 'holder closed');
+  for (const script of both) must(await second.view.evaluate(script) === 'failed', script);
+  must(second.view.setNetworkFilterForWorkers(true), 'taken over');
+  for (const script of both) must(await second.view.evaluate(script) === 'through', script);
+  second.view.close();
+  await until(() => second.closed, 'second holder closed');
+  must(other.view.setNetworkFilterForWorkers(false), 'off, with nobody holding it');
+  const page = await another(base + '/page');
+  for (const script of both) must(await page.view.evaluate(script) === 'through', script);
+  page.view.close();
+  other.view.close();
+}
+
+// The modes this script has: any other is a failure, not a pass.
+const KNOWN = new Set([
+  'external-told', 'external-none', 'external-close',
+  'download-save', 'download-cancel', 'download-timeout', 'download-close', 'download-pending-close', 'download-replace',
+  'download-default',
+  'cert-provide', 'cert-none', 'cert-cancel', 'cert-timeout', 'cert-close', 'cert-pending-close', 'cert-replace',
+  'cert-default', 'cert-store', 'cert-store-off',
+  'world',
+  'file-open', 'file-multiple', 'file-folder', 'file-cancel', 'file-timeout', 'file-close', 'file-pending-close',
+  'file-replace', 'media-allow', 'media-deny', 'media-timeout', 'media-close', 'media-pending-close', 'media-replace',
+  'keys', 'menu', 'fullscreen-allow', 'fullscreen-deny',
+  'net-none', 'net-block', 'net-headers', 'net-redirect', 'net-fulfill', 'net-navigation', 'net-response',
+  'net-response-block', 'net-observe', 'net-timeout', 'net-close', 'net-pending-close', 'net-replace', 'net-filter',
+  'net-server-redirect', 'net-worker', 'net-post', 'net-redirect-manual', 'net-redirect-error',
+  'net-ws-none', 'net-ws-nofunc', 'net-ws-filter', 'net-ws-block', 'net-ws-continue', 'net-ws-timeout', 'net-ws-close',
+  'net-ws-abort', 'net-ws-replace',
+  'net-sw-none', 'net-sw-block', 'net-sw-running', 'net-sw-ws', 'net-shared-none', 'net-shared-block', 'net-shared-running',
+  'net-body', 'net-body-none', 'net-body-big', 'net-body-backpressure', 'net-body-error', 'net-body-close', 'net-body-abort',
+  'net-body-replace', 'net-file', 'net-file-missing', 'net-file-close',
+  'net-stream', 'net-stream-full', 'net-stream-fail', 'net-stream-close', 'net-flood',
+  'popup-inherit', 'popup-orphan', 'popup-own', 'two-views', 'cancel-running', 'cdp-order', 'workers-latch',
+]);
+const groups = {external, download, cert: certificate, world, file: chooser, media, keys, menu, fullscreen, net: network,
+                popup, two: twoViews, cancel: cancelRunning, cdp: cdpOrder, workers: workersLatch};
+
+async function runMode(run) {
+  ({ZEBKIT_HOOK_MODE: mode, ZEBKIT_HOOK_BASE: base, ZEBKIT_HOOK_TLS: tls, ZEBKIT_HOOK_FILES: files,
+    ZEBKIT_HOOK_DOWNLOADS: downloads} = run);
+  must(KNOWN.has(mode), 'an unknown mode');
+  others.length = 0;
+  fresh();
+  // The workers' network policy is the engine's, and outlives the view that
+  // set it: off, as an engine starts.
+  view.setNetworkFilterForWorkers(false);
+  await groups[mode.split('-')[0]]();
+  // Its views gone before the next mode's, and what they left pending told.
+  if (!closed) view.close();
+  for (const other of others) if (!other.closed) other.view.close();
+  await until(() => closed && others.every(other => other.closed), 'the views closed');
+  await sleep(50);
+  console.log(`ok javascript ${mode}`);
+}
+
+for (const run of runs) await runMode(run).catch(fail);
 zebkit.quit();

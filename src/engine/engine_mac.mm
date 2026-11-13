@@ -34,6 +34,7 @@
 #include "ui/views/views_delegate.h"
 #include "zebkit/engine/app.h"
 #include "zebkit/engine/dock.h"
+#include "zebkit/engine/attached_views.h"
 #include "zebkit/engine/view.h"
 
 // Menu items of the application's (zebkit_app_set_menu()).
@@ -385,8 +386,7 @@ struct Attached {
 };
 
 std::map<const zebkit_view*, Attached>& AttachedViews() {
-  static base::NoDestructor<std::map<const zebkit_view*, Attached>> attached;
-  return *attached;
+  return AttachedViewsOf<Attached>();
 }
 
 // @bounds, from the top left of @container, in Cocoa's coordinates, which
@@ -580,18 +580,8 @@ void DetachView(zebkit_view* view, bool /*restore*/) {
 }
 
 void CloseViewsAttachedTo(zebkit_view* parent) {
-  for (const auto& [view, attached] : AttachedViews()) {
-    if (attached.native || attached.parent.get() != parent)
-      continue;
-    // Not now: the parent is inside its own teardown.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(
-                       [](base::WeakPtr<zebkit_view> view) {
-                         if (view)
-                           view->Close();
-                       },
-                       const_cast<zebkit_view*>(view)->GetWeakPtr()));
-  }
+  // A view in an NSView of the application's stays (zebkit.h).
+  CloseAttachedViewsOf<Attached>(parent, [](const Attached& attached) { return !attached.native; });
 }
 
 void RegisterApplication() {

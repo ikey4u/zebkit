@@ -101,6 +101,20 @@ func goZkWindowOpen(opened *C.zebkit_view, url *C.char, h C.uintptr_t) {
 	}
 }
 
+//export goZkListen
+func goZkListen(port C.uint, url, failure *C.char, h C.uintptr_t) {
+	if f, ok := lookup[func(uint, string, error)](h); ok {
+		var err error
+		if failure != nil || port == 0 {
+			err = &Error{goString(failure)}
+			if failure == nil {
+				err = refused("CDP did not listen")
+			}
+		}
+		f(uint(port), goString(url), err)
+	}
+}
+
 //export goZkExport
 func goZkExport(text *C.char, h C.uintptr_t) {
 	if f, ok := lookup[func(string, bool)](h); ok {

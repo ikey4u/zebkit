@@ -1,6 +1,6 @@
 /* No link to zebkit: all host threads exist before dlopen. */
 #define _POSIX_C_SOURCE 200809L
-#include <zebkit/zebkit.h>
+#include "harness.h"
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -120,8 +120,10 @@ int main(int argc, char **argv) {
     if (!worker_owner) owner();
     for (int i = 0; i < 4; ++i) pthread_join(threads[i], NULL);
     free(engine_argv);
-    if (atomic_load(&failures)) return 1;
-    printf("ok C late load owner=%s: pre-existing threads, page, posted tasks and shutdown\n", argv[2]);
+    /* What failed is on standard error, from the thread it failed on. */
+    char what[128];
+    snprintf(what, sizeof what, "C late load owner=%s: pre-existing threads, page, posted tasks and shutdown", argv[2]);
+    check(!atomic_load(&failures), what, atomic_load(&failures) ? "%d failed, as above" : NULL, atomic_load(&failures));
     /* Chromium is kept loaded until process exit; unloading is not tested. */
-    return 0;
+    return summary();
 }

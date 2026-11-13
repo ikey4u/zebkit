@@ -261,9 +261,10 @@ DialogState* StateOf(zebkit_view* view) {
   return zebkit::LiveView(view) ? StateOf(view->web_contents()) : nullptr;
 }
 
-// A window's manager: the policy's, and the system's own when the
-// policy leaves the dialog to it (the system's alert on macOS, nothing on
-// Linux and without a window).
+// A window's manager: the policy's, and the window's own when the policy
+// leaves the dialog to it (js_dialog_manager.cc: a sheet on macOS, Chromium's
+// views dialog on Linux and Windows, which waits for the person; dismissed at
+// once without a window or a display).
 class DialogManager : public content::JavaScriptDialogManager {
  public:
   DialogManager() = default;

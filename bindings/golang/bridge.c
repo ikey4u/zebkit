@@ -47,7 +47,7 @@ void zk_wakeup(int64_t delay_ms, void *data) { goZkWakeup(delay_ms, handle(data)
 void zk_window_open(zebkit_view *opener, zebkit_view *opened, const char *url, void *data) {
     goZkWindowOpen(opened, (char *)url, handle(data));
 }
-void zk_export(void *data, const char *text) { goZkExport((char *)text, handle(data)); }
+void zk_export(zebkit_view *view, const char *text, void *data) { goZkExport((char *)text, handle(data)); }
 void zk_writable(zebkit_network_stream *stream, void *data) { goZkTask(handle(data)); }
 void zk_body(zebkit_view *view, const char *request_id, const void *bytes, size_t size, bool end, bool truncated,
              void *data) {
@@ -63,6 +63,12 @@ void zk_automation_event(zebkit_view *view, const char *event, const char *json,
 }
 void zk_listen(const char *url, const char *error, void *data) {
     goZkResult((char *)url, (char *)error, handle(data));
+}
+void zk_cdp_listen(unsigned port, const char *url, const char *error, void *data) {
+    goZkListen(port, (char *)url, (char *)error, handle(data));
+}
+void zk_desktop_done(bool done, const char *error, void *data) {
+    goZkResult(NULL, done ? NULL : (char *)(error ? error : "the system did not do it"), handle(data));
 }
 void zk_frame(zebkit_view *view, const zebkit_frame *frame, void *data) {
     goZkFrame((zebkit_frame *)frame, handle(data));

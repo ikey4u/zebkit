@@ -3,19 +3,17 @@ a view, script and a function bound for the page. Run with the engine's
 switches, as scripts/engine-test.sh does:
 
     ZEBKIT_DIR=<package> PYTHONPATH=bindings/python python3 tests/engine/test_python.py --no-sandbox --headless
+    ZEBKIT_DIR=<package> PYTHONPATH=bindings/python python3 tests/engine/test_python.py --services-only
+
+Exit 0 when every check passes.
 """
 
+import os
 import sys
 
-import zebkit
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-failures = []
-
-
-def check(ok, what, detail=None):
-    print(f"{'ok  ' if ok else 'FAIL'} {what}" + (f": {detail}" if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
+from harness import check, finish, zebkit  # noqa: E402
 
 
 PDF = b"""%PDF-1.7
@@ -76,8 +74,7 @@ def services():
 # Standalone services and Content startup have separate ICU/URL lifecycles.
 if "--services-only" in sys.argv:
     services()
-    print("all passed" if not failures else "services failed")
-    sys.exit(1 if failures else 0)
+    sys.exit(finish())
 
 
 check(zebkit.scheme_register("py"), "scheme_register")
@@ -151,5 +148,4 @@ def ready():
 
 code = zebkit.main(ready)
 check(code == 0, "main returned 0", code)
-print(f"{'all' if not failures else len(failures)} {'passed' if not failures else 'failed'}")
-sys.exit(1 if failures else 0)
+sys.exit(finish())

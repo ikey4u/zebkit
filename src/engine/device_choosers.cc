@@ -659,8 +659,8 @@ class SerialPorts : public content::SerialDelegate, public device::mojom::Serial
       base::ListValue list;
       for (const auto& filter : filters_) {
         base::DictValue entry;
-        if (filter->has_vendor_id) entry.Set("usbVendorId", static_cast<int>(filter->vendor_id));
-        if (filter->has_product_id) entry.Set("usbProductId", filter->product_id);
+        if (filter->has_vendor_id) entry.Set("vendorId", static_cast<int>(filter->vendor_id));
+        if (filter->has_product_id) entry.Set("productId", static_cast<int>(filter->product_id));
         if (filter->bluetooth_service_class_id)
           entry.Set("bluetoothServiceClassId", filter->bluetooth_service_class_id->canonical_value());
         list.Append(std::move(entry));

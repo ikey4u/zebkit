@@ -25,7 +25,7 @@
 //! may go to any thread, and gives its buffer back when it is dropped.
 
 use crate::view::{call_slot, Slot};
-use crate::{c_string, string_from, sys, View};
+use crate::{c_string, string_from, sys, Error, View};
 use std::ops::BitOr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::rc::Rc;
@@ -338,11 +338,12 @@ pub struct EditCommand<'a> {
     pub value: Option<&'a str>,
 }
 
-/// A cursor the page asks for that is an image of its own.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CursorImage {
+/// A cursor the page asks for that is an image of its own, the engine's
+/// for as long as the function it is given to runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorImage<'a> {
     /// BGRA, premultiplied.
-    pub pixels: Vec<u8>,
+    pub pixels: &'a [u8],
     pub width: u32,
     pub height: u32,
     pub hot_x: i32,
@@ -350,7 +351,7 @@ pub struct CursorImage {
     pub scale: f32,
 }
 
-type CursorFunction = dyn FnMut(&str, Option<CursorImage>);
+type CursorFunction = dyn FnMut(&str, Option<CursorImage<'_>>);
 
 /// `event` as the engine takes it, for as long as `send` runs.
 fn with_key_event<R>(event: &KeyEvent<'_>, send: impl FnOnce(&sys::zebkit_key_event) -> R) -> R {
@@ -401,20 +402,37 @@ fn int(value: u32) -> c_int {
 
 impl View {
     /// A view without a window, loading `url`, `width` by `height` CSS
-    /// pixels at `scale` device pixels per CSS pixel. `None` on Windows
-    /// when the process was not started with `--headless`.
-    pub fn new_offscreen(url: Option<&str>, width: u32, height: u32, scale: f32) -> Option<View> {
+    /// pixels at `scale` device pixels per CSS pixel. The engine's error
+    /// where it makes none: on Windows when the process was not started with
+    /// `--headless`, in a Wayland process, while the engine stops.
+    pub fn new_offscreen(url: Option<&str>, width: u32, height: u32, scale: f32) -> Result<View, Error> {
         crate::engine::require_engine_thread("View::new_offscreen()");
+        View::new_offscreen_in(std::ptr::null_mut(), url, width, height, scale)
+    }
+
+    pub(crate) fn new_offscreen_in(
+        context: *mut sys::zebkit_context,
+        url: Option<&str>,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<View, Error> {
         let url = url.map(c_string);
+        let mut error = std::ptr::null_mut();
         let raw = unsafe {
-            sys::zebkit_view_new_offscreen(
+            sys::zebkit_view_new_offscreen_ex(
+                context,
                 url.as_ref().map_or(std::ptr::null(), |url| url.as_ptr()),
                 int(width),
                 int(height),
                 scale,
+                &mut error,
             )
         };
-        (!raw.is_null()).then(|| View::wrap(raw))
+        if raw.is_null() {
+            return Err(unsafe { crate::take_error(error, "the engine made no off-screen view") });
+        }
+        Ok(View::wrap(raw))
     }
 
     /// Whether the view is off-screen.
@@ -441,8 +459,8 @@ impl View {
         unsafe { sys::zebkit_view_on_frame(raw, Some(on_frame), self.data()) }
     }
 
-    /// Stops the frames.
-    pub fn stop_frames(&self) {
+    /// Stops the frames, including from inside [`View::on_frame`]'s function.
+    pub fn clear_frame_handler(&self) {
         let Some(raw) = self.raw() else { return };
         unsafe { sys::zebkit_view_on_frame(raw, None, std::ptr::null_mut()) }
         self.inner.offscreen.on_frame.set(None);
@@ -564,7 +582,7 @@ impl View {
     }
 
     /// Uses the host's UI for WebAuthn requests. Events are versioned JSON
-    /// (see docs/PASSKEYS.md); copy their data to another thread if necessary.
+    /// (see docs/notes/passkeys.md); copy their data to another thread if necessary.
     /// Register before the request. Off-screen hosts must also opt into UI.
     pub fn on_authentication<F: FnMut(&str) + 'static>(&self, function: F) -> bool {
         let Some(raw) = self.raw() else { return false };
@@ -620,7 +638,7 @@ impl View {
 
     /// Calls `function` with the cursor the page asks for, as CSS names it
     /// ("default", "pointer", "text", ...), with its image for "custom".
-    pub fn on_cursor<F: FnMut(&str, Option<CursorImage>) + 'static>(&self, function: F) {
+    pub fn on_cursor<F: FnMut(&str, Option<CursorImage<'_>>) + 'static>(&self, function: F) {
         let Some(raw) = self.raw() else { return };
         self.inner.offscreen.on_cursor.set(Some(Box::new(function)));
         unsafe { sys::zebkit_view_on_cursor(raw, Some(on_cursor), self.data()) }
@@ -677,7 +695,7 @@ unsafe extern "C" fn on_cursor(
         let image = &*image;
         let (width, height) = (image.width.max(0) as u32, image.height.max(0) as u32);
         CursorImage {
-            pixels: std::slice::from_raw_parts(image.pixels, (width * height * 4) as usize).to_vec(),
+            pixels: std::slice::from_raw_parts(image.pixels, (width * height * 4) as usize),
             width,
             height,
             hot_x: image.hot_x,

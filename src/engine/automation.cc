@@ -122,6 +122,7 @@
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "net/base/filename_util.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -10981,9 +10982,13 @@ class Downloads : public content::DownloadManager::Observer,
     base::DictValue params;
     params.Set("download", id);
     params.Set("url", item->GetURL().spec());
-    params.Set("suggestedFilename", item->GetSuggestedFilename().empty()
-                                        ? item->GetTargetFilePath().BaseName().AsUTF8Unsafe()
-                                        : item->GetSuggestedFilename());
+    // The name the download is likely to get, as Chrome's DevTools gives
+    // Playwright (Page.downloadWillBegin): from Content-Disposition, the
+    // page's download attribute or the URL, before a target is chosen.
+    params.Set("suggestedFilename",
+               base::UTF16ToUTF8(net::GetSuggestedFilename(item->GetURL(), item->GetContentDisposition(),
+                                                           std::string(), item->GetSuggestedFilename(),
+                                                           item->GetMimeType(), "download")));
     automation->Emit("Page.download", std::move(params));
   }
 
@@ -11355,17 +11360,26 @@ void Automation::Download(Call* call) {
 struct Registry {
   std::map<std::string, raw_ptr<zebkit_context>> contexts;
   std::map<std::string, base::WeakPtr<zebkit_view>> pages;
+  // The other way, looked up, not scanned; an address a later view has again
+  // is told apart by the weak pointer.
+  std::map<zebkit_view*, std::string> ids;
   int next = 0;
 
   std::string IdOf(zebkit_view* view) {
-    // Closed pages go, so that this stays the size of what is open.
-    std::erase_if(pages, [](const auto& entry) { return !entry.second; });
-    for (auto& [id, page] : pages) {
-      if (page.get() == view)
-        return id;
+    auto known = ids.find(view);
+    if (known != ids.end()) {
+      auto page = pages.find(known->second);
+      if (page != pages.end() && page->second.get() == view)
+        return known->second;
+      ids.erase(known);
     }
+    // Closed pages go as a new one comes, so that these stay the size of
+    // what is open.
+    std::erase_if(pages, [](const auto& entry) { return !entry.second; });
+    std::erase_if(ids, [this](const auto& entry) { return !pages.contains(entry.second); });
     const std::string id = "p" + base::NumberToString(++next);
     pages[id] = view->GetWeakPtr();
+    ids[view] = id;
     return id;
   }
 

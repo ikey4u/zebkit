@@ -547,8 +547,11 @@ class Connection {
   explicit Connection(SendFunc send) : send_(std::move(send)) {}
 
   ~Connection() {
-    // No more events to this connection, before its pages go.
+    // No more events to this connection, before its pages go; not to a view
+    // that is not the page's any more.
     for (const auto& [view, guid] : pages_) {
+      if (!PageAlive(view))
+        continue;
       zebkit_automation_on_event(view, nullptr, nullptr);
       zebkit_view_on_window_open(view, nullptr, nullptr);
     }
@@ -821,6 +824,16 @@ class Connection {
   std::map<std::string, Object> objects_;
   std::map<std::string, std::string> known_;
   std::map<zebkit_view*, std::string> pages_;
+  // Each key's view, which may go without a Page.close (a host that replaced
+  // the view's automation function): its entry is stale then. It stays until
+  // that Page.close, which a closing view's automation still sends after the
+  // view has gone, but is never followed, and a later view at the same
+  // address replaces it.
+  std::map<zebkit_view*, base::WeakPtr<zebkit_view>> page_views_;
+  bool PageAlive(zebkit_view* view) const {
+    auto found = page_views_.find(view);
+    return found != page_views_.end() && found->second;
+  }
   // page.close()s waiting for their page's close event.
   std::map<std::string, std::vector<int>> close_replies_;
   // request.response() and allHeaders() of a request still going, by its
@@ -1923,7 +1936,13 @@ std::string Connection::AdoptPage(const std::string& context_guid,
     if (object.type == "Frame" && object.page == reserved)
       Adopt(reserved, guid);
   }
+  // An entry of a view that has gone, at this address: not this view's.
+  if (pages_.contains(view) && !PageAlive(view)) {
+    pages_.erase(view);
+    page_views_.erase(view);
+  }
   pages_[view] = reserved;
+  page_views_[view] = view->GetWeakPtr();
   zebkit_automation_on_event(view, &Connection::OnEvent, this);
   PreparePage(view, context_guid);
   for (auto& [har_id, har] : hars_) {
@@ -2613,6 +2632,7 @@ void Connection::PageEvent(const std::string& page_guid,
     }
     for (auto it = pages_.begin(); it != pages_.end(); ++it) {
       if (it->second == page_guid) {
+        page_views_.erase(it->first);
         pages_.erase(it);
         break;
       }
@@ -4429,7 +4449,7 @@ std::vector<zebkit_view*> Connection::ContextViews(const std::string& context) {
   std::vector<zebkit_view*> views;
   for (const auto& [view, page_guid] : pages_) {
     Object* page = Find(page_guid);
-    if (page && page->context == context)
+    if (page && page->context == context && PageAlive(view))
       views.push_back(view);
   }
   return views;
@@ -4784,7 +4804,7 @@ void Connection::Tracing(int id,
   std::string page_guid;
   for (const auto& [page_view, page] : pages_) {
     Object* object = Find(page);
-    if (object && object->context == tracing->context) {
+    if (object && object->context == tracing->context && PageAlive(page_view)) {
       view = page_view;
       page_guid = page;
       break;
@@ -6048,7 +6068,11 @@ class Endpoint {
 }  // namespace zebkit
 
 void zebkit_automation_listen(int port, zebkit_automation_listen_func func, void* data) {
-  if (!zebkit::CurrentlyOnEngineThread())
+  if (!zebkit::CurrentlyOnEngineThread()) {
+    // Told at once, on the caller's thread: there is no engine's thread to tell it on.
+    if (func)
+      func(nullptr, "zebkit_automation_listen is for the engine's thread", data);
     return;
+  }
   zebkit::Endpoint::Get()->Listen(port, func, data);
 }

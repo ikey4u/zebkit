@@ -5,6 +5,7 @@
  * exports none of the libraries' own names. */
 
 #define _GNU_SOURCE
+#include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -31,14 +32,6 @@
 #include <zebkit/vendor/zlib.h>
 #include <zebkit/vendor/zstd.h>
 
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *detail) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-}
 
 static const char text[] =
     "zebkit exposes the libraries inside the engine to applications. "
@@ -50,14 +43,14 @@ static void test_zlib(void) {
     int ok = compress2(packed, &packed_size, (const Bytef *)text, sizeof(text), 9) == Z_OK &&
              uncompress(unpacked, &unpacked_size, packed, packed_size) == Z_OK &&
              unpacked_size == sizeof(text) && memcmp(unpacked, text, sizeof(text)) == 0;
-    check(ok, "zlib: compress2 and uncompress", zlibVersion());
+    check_text(ok, "zlib: compress2 and uncompress", zlibVersion());
 }
 
 static void test_zstd(void) {
     char packed[512], unpacked[512];
     size_t packed_size = ZSTD_compress(packed, sizeof(packed), text, sizeof(text), 19);
     size_t unpacked_size = ZSTD_decompress(unpacked, sizeof(unpacked), packed, packed_size);
-    check(!ZSTD_isError(packed_size) && unpacked_size == sizeof(text) && memcmp(unpacked, text, sizeof(text)) == 0,
+    check_text(!ZSTD_isError(packed_size) && unpacked_size == sizeof(text) && memcmp(unpacked, text, sizeof(text)) == 0,
           "zstd: ZSTD_compress and ZSTD_decompress", ZSTD_versionString());
 }
 
@@ -68,22 +61,22 @@ static void test_brotli(void) {
                                    &packed_size, packed) &&
              BrotliDecoderDecompress(packed_size, packed, &unpacked_size, unpacked) == BROTLI_DECODER_RESULT_SUCCESS &&
              unpacked_size == sizeof(text) && memcmp(unpacked, text, sizeof(text)) == 0;
-    check(ok, "brotli: BrotliEncoderCompress and BrotliDecoderDecompress", NULL);
+    check_text(ok, "brotli: BrotliEncoderCompress and BrotliDecoderDecompress", NULL);
 }
 
 static void test_boringssl(void) {
     unsigned char digest[SHA512_DIGEST_LENGTH];
     SHA256((const uint8_t *)"abc", 3, digest);
     static const unsigned char expected[4] = {0xba, 0x78, 0x16, 0xbf};
-    check(memcmp(digest, expected, 4) == 0, "boringssl: SHA256(\"abc\")", NULL);
+    check_text(memcmp(digest, expected, 4) == 0, "boringssl: SHA256(\"abc\")", NULL);
     EVP_MD_CTX *context = EVP_MD_CTX_new();
     unsigned length = 0;
     int ok = context && EVP_DigestInit_ex(context, EVP_sha512(), NULL) && EVP_DigestUpdate(context, text, 10) &&
              EVP_DigestFinal_ex(context, digest, &length) && length == 64;
     EVP_MD_CTX_free(context);
-    check(ok, "boringssl: EVP_Digest* with SHA-512", NULL);
+    check_text(ok, "boringssl: EVP_Digest* with SHA-512", NULL);
     SSL_CTX *tls = SSL_CTX_new(TLS_method());
-    check(tls != NULL, "boringssl: SSL_CTX_new(TLS_method())", NULL);
+    check_text(tls != NULL, "boringssl: SSL_CTX_new(TLS_method())", NULL);
     SSL_CTX_free(tls);
 }
 
@@ -107,18 +100,18 @@ static void test_sqlite(void) {
          strcmp((const char *)sqlite3_column_text(statement, 0), "y") == 0;
     sqlite3_finalize(statement);
     sqlite3_close(db);
-    check(ok, "sqlite: exec, prepare, bind, step", sqlite3_libversion());
+    check_text(ok, "sqlite: exec, prepare, bind, step", sqlite3_libversion());
 }
 
 static void test_icu(void) {
-    check(zebkit_icu_init(), "icu: zebkit_icu_init", NULL);
+    check_text(zebkit_icu_init(), "icu: zebkit_icu_init", NULL);
     UErrorCode status = U_ZERO_ERROR;
     UChar text16[64], upper[64];
     u_strFromUTF8(text16, 64, NULL, "stra\xc3\x9f" "e", -1, &status);
     int32_t length = u_strToUpper(upper, 64, text16, -1, "de", &status);
     char utf8[64];
     u_strToUTF8(utf8, sizeof(utf8), NULL, upper, length, &status);
-    check(U_SUCCESS(status) && strcmp(utf8, "STRASSE") == 0, "icu: u_strToUpper(\"stra\xc3\x9f" "e\", de)", utf8);
+    check_text(U_SUCCESS(status) && strcmp(utf8, "STRASSE") == 0, "icu: u_strToUpper(\"stra\xc3\x9f" "e\", de)", utf8);
 
     UChar words16[64];
     status = U_ZERO_ERROR;
@@ -134,7 +127,7 @@ static void test_icu(void) {
     }
     char found[16];
     snprintf(found, sizeof(found), "%d words", words);
-    check(U_SUCCESS(status) && words == 3, "icu: ubrk word breaks, English and Chinese", found);
+    check_text(U_SUCCESS(status) && words == 3, "icu: ubrk word breaks, English and Chinese", found);
 }
 
 static void test_libxml(void) {
@@ -145,21 +138,21 @@ static void test_libxml(void) {
     xmlXPathFreeObject(result);
     xmlXPathFreeContext(context);
     xmlFreeDoc(doc);
-    check(ok, "libxml: xmlReadMemory and XPath", LIBXML_DOTTED_VERSION);
+    check_text(ok, "libxml: xmlReadMemory and XPath", LIBXML_DOTTED_VERSION);
 }
 
 static void test_media(void) {
-    check(avcodec_find_decoder(AV_CODEC_ID_H264) != NULL, "ffmpeg: avcodec_find_decoder(H264)", av_version_info());
-    check(avcodec_find_decoder(AV_CODEC_ID_AAC) != NULL, "ffmpeg: avcodec_find_decoder(AAC)", NULL);
+    check_text(avcodec_find_decoder(AV_CODEC_ID_H264) != NULL, "ffmpeg: avcodec_find_decoder(H264)", av_version_info());
+    check_text(avcodec_find_decoder(AV_CODEC_ID_AAC) != NULL, "ffmpeg: avcodec_find_decoder(AAC)", NULL);
     /* zebkit's FFmpeg: what applications need besides playing. */
-    check(avcodec_find_decoder(AV_CODEC_ID_VP9) != NULL && avcodec_find_decoder(AV_CODEC_ID_VP8) != NULL,
+    check_text(avcodec_find_decoder(AV_CODEC_ID_VP9) != NULL && avcodec_find_decoder(AV_CODEC_ID_VP8) != NULL,
           "ffmpeg: VP8 and VP9 decoders", NULL);
-    check(av_guess_format("mp4", NULL, NULL) != NULL && av_guess_format("webm", NULL, NULL) != NULL &&
+    check_text(av_guess_format("mp4", NULL, NULL) != NULL && av_guess_format("webm", NULL, NULL) != NULL &&
               av_guess_format("matroska", NULL, NULL) != NULL,
           "ffmpeg: MP4, WebM and Matroska muxers", NULL);
     AVFormatContext *output = NULL;
     int made = avformat_alloc_output_context2(&output, NULL, "mp4", "out.mp4");
-    check(made >= 0 && output, "ffmpeg: avformat_alloc_output_context2(mp4)", NULL);
+    check_text(made >= 0 && output, "ffmpeg: avformat_alloc_output_context2(mp4)", NULL);
     avformat_free_context(output);
     AVIOContext *io = NULL;
 #ifdef _WIN32
@@ -167,7 +160,7 @@ static void test_media(void) {
 #else
     const char *null_device = "/dev/null";
 #endif
-    check(avio_open(&io, null_device, AVIO_FLAG_WRITE) >= 0, "ffmpeg: the file protocol", NULL);
+    check_text(avio_open(&io, null_device, AVIO_FLAG_WRITE) >= 0, "ffmpeg: the file protocol", NULL);
     avio_closep(&io);
     /* 48 kHz stereo to 16 kHz mono, as speech recognition wants it. */
     SwrContext *resampler = NULL;
@@ -182,7 +175,7 @@ static void test_media(void) {
     int converted = set >= 0 && swr_init(resampler) >= 0 ? swr_convert(resampler, out_planes, 400, in_planes, 960) : -1;
     char detail[48];
     snprintf(detail, sizeof(detail), "%d samples", converted);
-    check(converted > 250 && converted <= 320, "libswresample: 48 kHz stereo to 16 kHz mono", detail);
+    check_text(converted > 250 && converted <= 320, "libswresample: 48 kHz stereo to 16 kHz mono", detail);
     swr_free(&resampler);
     /* A 64 by 32 YUV picture to RGB, half the size. */
     struct SwsContext *scaler =
@@ -197,33 +190,33 @@ static void test_media(void) {
     const int dst_stride[] = {32 * 3};
     int rows = scaler ? sws_scale(scaler, src, src_stride, 0, 32, dst, dst_stride) : -1;
     snprintf(detail, sizeof(detail), "%d rows, %d,%d,%d", rows, rgb[0], rgb[1], rgb[2]);
-    check(rows == 16 && rgb[0] > 200 && rgb[1] > 200 && rgb[2] > 200, "libswscale: YUV to RGB, scaled", detail);
+    check_text(rows == 16 && rgb[0] > 200 && rgb[1] > 200 && rgb[2] > 200, "libswscale: YUV to RGB, scaled", detail);
     sws_freeContext(scaler);
-    check(strlen(dav1d_version()) > 0, "dav1d: dav1d_version", dav1d_version());
-    check(strlen(opus_get_version_string()) > 0, "opus: opus_get_version_string", opus_get_version_string());
+    check_text(strlen(dav1d_version()) > 0, "dav1d: dav1d_version", dav1d_version());
+    check_text(strlen(opus_get_version_string()) > 0, "opus: opus_get_version_string", opus_get_version_string());
     int error = 0;
     OpusEncoder *encoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &error);
-    check(encoder && error == OPUS_OK, "opus: opus_encoder_create", NULL);
+    check_text(encoder && error == OPUS_OK, "opus: opus_encoder_create", NULL);
     opus_encoder_destroy(encoder);
-    check(strlen(vpx_codec_version_str()) > 0, "libvpx: vpx_codec_version_str", vpx_codec_version_str());
-    check(vpx_codec_vp9_dx() != NULL && vpx_codec_vp8_cx() != NULL, "libvpx: VP9 decoder and VP8 encoder", NULL);
+    check_text(strlen(vpx_codec_version_str()) > 0, "libvpx: vpx_codec_version_str", vpx_codec_version_str());
+    check_text(vpx_codec_vp9_dx() != NULL && vpx_codec_vp8_cx() != NULL, "libvpx: VP9 decoder and VP8 encoder", NULL);
 }
 
 static void test_images(void) {
     char version[32];
     int v = WebPGetDecoderVersion();
     snprintf(version, sizeof(version), "%d.%d.%d", v >> 16, (v >> 8) & 255, v & 255);
-    check(v > 0, "libwebp: WebPGetDecoderVersion", version);
+    check_text(v > 0, "libwebp: WebPGetDecoderVersion", version);
     struct jpeg_compress_struct compress;
     struct jpeg_error_mgr errors;
     compress.err = jpeg_std_error(&errors);
     jpeg_create_compress(&compress);
     jpeg_destroy_compress(&compress);
-    check(1, "libjpeg: jpeg_create_compress", NULL);
+    check_text(1, "libjpeg: jpeg_create_compress", NULL);
     hb_buffer_t *buffer = hb_buffer_create();
     hb_buffer_add_utf8(buffer, "zebkit", -1, 0, -1);
     hb_buffer_guess_segment_properties(buffer);
-    check(hb_buffer_get_length(buffer) == 6 && hb_buffer_get_direction(buffer) == HB_DIRECTION_LTR,
+    check_text(hb_buffer_get_length(buffer) == 6 && hb_buffer_get_direction(buffer) == HB_DIRECTION_LTR,
           "harfbuzz: a buffer of text", hb_version_string());
     hb_buffer_destroy(buffer);
 }
@@ -302,12 +295,12 @@ static void test_callbacks(void) {
     inflater.next_out = unpacked, inflater.avail_out = sizeof(unpacked);
     ok = ok && inflate(&inflater, Z_FINISH) == Z_STREAM_END && inflateEnd(&inflater) == Z_OK &&
          memcmp(unpacked, text, sizeof(text)) == 0;
-    check(ok && app_calls >= 4, "zlib: the application's zalloc and zfree", NULL);
+    check_text(ok && app_calls >= 4, "zlib: the application's zalloc and zfree", NULL);
 
     int destroyed = 0;
     hb_blob_t *blob = hb_blob_create(text, sizeof(text), HB_MEMORY_MODE_READONLY, &destroyed, app_destroy);
     hb_blob_destroy(blob);
-    check(destroyed == 1, "harfbuzz: a blob's destroy callback", NULL);
+    check_text(destroyed == 1, "harfbuzz: a blob's destroy callback", NULL);
 
     app_calls = 0;
     destroyed = 0;
@@ -338,7 +331,7 @@ static void test_callbacks(void) {
     hb_face_destroy(face);
     hb_blob_destroy(nothing);
     hb_font_funcs_destroy(funcs);
-    check(ok && destroyed == 3, "harfbuzz: the application's font, unicode and destroy functions", detail);
+    check_text(ok && destroyed == 3, "harfbuzz: the application's font, unicode and destroy functions", detail);
 
     app_calls = 0;
     struct FT_MemoryRec_ memory = {NULL, app_ft_alloc, app_ft_free, app_ft_realloc};
@@ -348,7 +341,7 @@ static void test_callbacks(void) {
         FT_Add_Default_Modules(library);
         FT_Done_Library(library);
     }
-    check(ok && app_calls > 0, "freetype: the application's memory functions", NULL);
+    check_text(ok && app_calls > 0, "freetype: the application's memory functions", NULL);
 }
 
 /* A one-page PDF with "Hello zebkit" on it, its cross-reference table
@@ -369,11 +362,11 @@ static const char pdf[] =
 static void test_freetype(const char *font_path) {
     FT_Library library = NULL;
     int ok = FT_Init_FreeType(&library) == 0;
-    check(ok, "freetype: independent library", NULL);
+    check_text(ok, "freetype: independent library", NULL);
     if (!ok) return;
     FT_Int major = 0, minor = 0, patch = 0;
     FT_Library_Version(library, &major, &minor, &patch);
-    check(major == FREETYPE_MAJOR && minor == FREETYPE_MINOR && patch == FREETYPE_PATCH,
+    check_text(major == FREETYPE_MAJOR && minor == FREETYPE_MINOR && patch == FREETYPE_PATCH,
           "freetype: headers match the linked library", NULL);
     FT_Outline outline = {0};
     ok = FT_Outline_New(library, 4, 1, &outline) == 0;
@@ -394,7 +387,7 @@ static void test_freetype(const char *font_path) {
              pixels[8 * 16 + 8] > 250 && pixels[0] == 0 && bounds.xMin == 128 && bounds.xMax == 896;
         FT_Outline_Done(library, &outline);
     }
-    check(ok, "freetype: outline rasterization and caller-owned bitmap", NULL);
+    check_text(ok, "freetype: outline rasterization and caller-owned bitmap", NULL);
     if (font_path) {
         FT_Face face = NULL;
         ok = FT_New_Face(library, font_path, 0, &face) == 0;
@@ -404,7 +397,7 @@ static void test_freetype(const char *font_path) {
                  face->glyph->bitmap.width > 0 && face->glyph->bitmap.rows > 0;
             FT_Done_Face(face);
         }
-        check(ok, "freetype: TrueType font loaded and glyph rendered", NULL);
+        check_text(ok, "freetype: TrueType font loaded and glyph rendered", NULL);
     }
     FT_Done_FreeType(library);
 }
@@ -418,7 +411,7 @@ static void test_leveldb(void) {
 #else
     char parent[] = "/tmp/zebkit-leveldb-XXXXXX";
 #endif
-    check(mkdtemp(parent) != NULL, "leveldb: temporary directory", NULL);
+    check_text(mkdtemp(parent) != NULL, "leveldb: temporary directory", NULL);
     char path[128];
     snprintf(path, sizeof(path), "%s/\xE6\x95\xB0\xE6\x8D\xAE", parent);
 
@@ -432,11 +425,11 @@ static void test_leveldb(void) {
 
     char *error = NULL;
     leveldb_t *db = leveldb_open(options, path, &error);
-    check(db && !error, "leveldb: opens a non-ASCII path under the C locale", error);
+    check_text(db && !error, "leveldb: opens a non-ASCII path under the C locale", error);
     if (!db) return;
 
     leveldb_t *second = leveldb_open(options, path, &error);
-    check(!second && error, "leveldb: a second open is refused by the lock", NULL);
+    check_text(!second && error, "leveldb: a second open is refused by the lock", NULL);
     if (second) leveldb_close(second);
     leveldb_free(error);
     error = NULL;
@@ -452,7 +445,7 @@ static void test_leveldb(void) {
         leveldb_put(db, async, key, strlen(key), value, sizeof(value), &error);
         written = !error;
     }
-    check(written, "leveldb: writes through compactions", error);
+    check_text(written, "leveldb: writes through compactions", error);
     leveldb_free(error);
     error = NULL;
 
@@ -460,7 +453,7 @@ static void test_leveldb(void) {
     leveldb_put(db, sync, binary, sizeof(binary), binary, sizeof(binary), &error);
     size_t size = 0;
     char *got = leveldb_get(db, read, binary, sizeof(binary), &size, &error);
-    check(got && size == sizeof(binary) && !memcmp(got, binary, size), "leveldb: binary keys and values", error);
+    check_text(got && size == sizeof(binary) && !memcmp(got, binary, size), "leveldb: binary keys and values", error);
     leveldb_free(got);
 
     const leveldb_snapshot_t *snapshot = leveldb_create_snapshot(db);
@@ -469,15 +462,15 @@ static void test_leveldb(void) {
     leveldb_writebatch_delete(batch, "key000000", 9);
     leveldb_write(db, sync, batch, &error);
     leveldb_writebatch_destroy(batch);
-    check(!error, "leveldb: a batch", error);
+    check_text(!error, "leveldb: a batch", error);
 
     got = leveldb_get(db, read, "key000000", 9, &size, &error);
-    check(!got, "leveldb: the batch deleted it", NULL);
+    check_text(!got, "leveldb: the batch deleted it", NULL);
     leveldb_free(got);
     leveldb_readoptions_t *old = leveldb_readoptions_create();
     leveldb_readoptions_set_snapshot(old, snapshot);
     got = leveldb_get(db, old, "key000000", 9, &size, &error);
-    check(got != NULL, "leveldb: the snapshot still has it", NULL);
+    check_text(got != NULL, "leveldb: the snapshot still has it", NULL);
     leveldb_free(got);
     leveldb_readoptions_destroy(old);
     leveldb_release_snapshot(db, snapshot);
@@ -487,19 +480,19 @@ static void test_leveldb(void) {
     for (leveldb_iter_seek(iterator, "key", 3); leveldb_iter_valid(iterator); leveldb_iter_next(iterator))
         count++;
     leveldb_iter_destroy(iterator);
-    check(count == 1999, "leveldb: an iterator sees every key in order", NULL);
+    check_text(count == 1999, "leveldb: an iterator sees every key in order", NULL);
 
     leveldb_close(db);
     db = leveldb_open(options, path, &error);
-    check(db && !error, "leveldb: reopens", error);
+    check_text(db && !error, "leveldb: reopens", error);
     if (db) {
         got = leveldb_get(db, read, "batch", 5, &size, &error);
-        check(got && size == 1 && *got == '1', "leveldb: a synced write survives closing", error);
+        check_text(got && size == 1 && *got == '1', "leveldb: a synced write survives closing", error);
         leveldb_free(got);
         leveldb_close(db);
     }
     leveldb_destroy_db(options, path, &error);
-    check(!error, "leveldb: destroys the database", error);
+    check_text(!error, "leveldb: destroys the database", error);
     rmdir(parent);
     leveldb_readoptions_destroy(read);
     leveldb_writeoptions_destroy(async);
@@ -510,14 +503,14 @@ static void test_leveldb(void) {
 static void test_pdfium(void) {
     FPDF_InitLibrary();
     FPDF_DOCUMENT document = FPDF_LoadMemDocument(pdf, (int)sizeof(pdf) - 1, NULL);
-    check(document != NULL, "pdfium: FPDF_LoadMemDocument", NULL);
+    check_text(document != NULL, "pdfium: FPDF_LoadMemDocument", NULL);
     if (!document) {
         FPDF_DestroyLibrary();
         return;
     }
-    check(FPDF_GetPageCount(document) == 1, "pdfium: FPDF_GetPageCount", NULL);
+    check_text(FPDF_GetPageCount(document) == 1, "pdfium: FPDF_GetPageCount", NULL);
     FPDF_PAGE page = FPDF_LoadPage(document, 0);
-    check(page && FPDF_GetPageWidthF(page) == 200 && FPDF_GetPageHeightF(page) == 100,
+    check_text(page && FPDF_GetPageWidthF(page) == 200 && FPDF_GetPageHeightF(page) == 100,
           "pdfium: FPDF_LoadPage, 200 by 100 points", NULL);
     FPDF_TEXTPAGE text = FPDFText_LoadPage(page);
     unsigned short utf16[32] = {0};
@@ -525,7 +518,7 @@ static void test_pdfium(void) {
     char found[16] = {0};
     for (int i = 0; i < 12 && i < count; i++)
         found[i] = (char)utf16[i];
-    check(strcmp(found, "Hello zebkit") == 0, "pdfium: FPDFText_GetText", found);
+    check_text(strcmp(found, "Hello zebkit") == 0, "pdfium: FPDFText_GetText", found);
     FPDFText_ClosePage(text);
     FPDF_BITMAP bitmap = FPDFBitmap_Create(200, 100, 0);
     FPDFBitmap_FillRect(bitmap, 0, 0, 200, 100, 0xFFFFFFFF);
@@ -538,7 +531,7 @@ static void test_pdfium(void) {
                 dark++;
     char detail[32];
     snprintf(detail, sizeof(detail), "%d dark pixels", dark);
-    check(dark > 100, "pdfium: FPDF_RenderPageBitmap draws the text", detail);
+    check_text(dark > 100, "pdfium: FPDF_RenderPageBitmap draws the text", detail);
     FPDFBitmap_Destroy(bitmap);
     FPDF_ClosePage(page);
     FPDF_CloseDocument(document);
@@ -559,6 +552,5 @@ int main(int argc, char **argv) {
     test_freetype(argc > 1 ? argv[1] : NULL);
     test_pdfium();
     test_callbacks();
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures ? 1 : 0;
+    return summary();
 }

@@ -1,7 +1,9 @@
 """How views, contexts and their callbacks end (<zebkit/zebkit.h>): an attached
 view closes with its parent, a context closed from a page's own callback, the
 C API's rule for a closed view and the wrong thread, zebkit_post_task()'s
-answer, and the window's "title" option. The rule is tried on every exported
+answer, the window's "title" option, the page's process going
+(zebkit_view_on_process_gone()) and the view loading again after it,
+zebkit_call_free(), and zebkit.pathForFile() for two dropped files of one name. The rule is tried on every exported
 function that takes a zebkit_view* (read from the headers): with NULL, with a
 closed view, and with a live view from another thread, each does nothing and
 returns its failure value.
@@ -41,6 +43,21 @@ LOAD = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ct
 VIEW = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
 lib.zebkit_view_on_load.argtypes = [ctypes.c_void_p, LOAD, ctypes.c_void_p]
 lib.zebkit_view_on_close.argtypes = [ctypes.c_void_p, VIEW, ctypes.c_void_p]
+TOLD = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+lib.zebkit_view_on_process_gone.argtypes = [ctypes.c_void_p, TOLD, ctypes.c_void_p]
+lib.zebkit_view_reload.argtypes = [ctypes.c_void_p]
+BIND = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p)
+lib.zebkit_view_bind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, BIND, ctypes.c_void_p]
+lib.zebkit_call_free.argtypes = [ctypes.c_void_p]
+DRAG = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p)
+lib.zebkit_view_drag_enter.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_float, ctypes.c_float,
+                                       ctypes.c_uint, ctypes.c_uint]
+lib.zebkit_view_drag_over.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_uint,
+                                      ctypes.c_uint, DRAG, ctypes.c_void_p]
+lib.zebkit_view_drop.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_uint, DRAG,
+                                 ctypes.c_void_p]
+DRAG_COPY = 1
+ALLOW_APP = 1
 
 PAGE = "data:text/html,<title>page</title>"
 
@@ -90,8 +107,8 @@ def attached_closes_with_parent():
     ok = lib.zebkit_view_attach(child._check(), parent._check(), 10, 20, 300, 200)
     check(ok is True, "zebkit_view_attach() says the view is attached", ok)
     owner = (child.window or {}).get("owner")
-    # Without windows (--headless) there is no window to own.
-    check(owner == ("none" if zebkit.is_headless() else "view"), "its window's owner is \"view\"", owner)
+    # Under --headless too: the view is in another view's window.
+    check(owner == "view", "its window's owner is \"view\"", owner)
     check(lib.zebkit_view_attach(child._check(), child._check(), 0, 0, 10, 10) is False,
           "a view is not attached to itself")
     parent.close()
@@ -212,6 +229,48 @@ def every_view_function():
     wait(lambda: live._closed)
 
 
+CONSOLE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+
+
+def observers_kept_off_thread():
+    """The sweep above calls the void observers (on_console,
+    on_window_open_event) with NULL, which cannot show whether another thread's
+    call was refused: here each has an observer, another thread tries to
+    replace it, and the engine's own still gets the reports. (Through the
+    library itself: the Python binding's own thread guard would stop the call
+    before the engine sees it.)"""
+    live = opened()
+    handle = live._check()
+    lib.zebkit_view_on_console.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    lib.zebkit_view_on_window_open_event.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    told = {"console": [], "console-other": [], "open": [], "open-other": []}
+
+    def keep(key):
+        return CONSOLE(lambda view, json_text, data: told[key].append(json_text.decode() if json_text else None))
+    callbacks = {key: keep(key) for key in told}
+    as_pointer = {key: ctypes.cast(function, ctypes.c_void_p) for key, function in callbacks.items()}
+    lib.zebkit_view_on_console(handle, as_pointer["console"], None)
+    lib.zebkit_view_on_window_open_event(handle, as_pointer["open"], None)
+
+    def elsewhere():
+        lib.zebkit_view_on_console(handle, as_pointer["console-other"], None)
+        lib.zebkit_view_on_window_open_event(handle, as_pointer["open-other"], None)
+    thread = threading.Thread(target=elsewhere)
+    thread.start()
+    thread.join()
+    ev(live, "console.log('zebkit-kept-off-thread'), 1")
+    check(wait(lambda: any(t and "zebkit-kept-off-thread" in t for t in told["console"]), 10)
+          and not told["console-other"],
+          "on_console from another thread: refused, the engine's observer kept", told)
+    ev(live, "window.open('about:blank#zebkit-kept', '_blank'), 1")
+    check(wait(lambda: told["open"], 10) and not told["open-other"],
+          "on_window_open_event from another thread: refused, the engine's observer kept", told)
+    lib.zebkit_view_on_console(handle, None, None)
+    lib.zebkit_view_on_window_open_event(handle, None, None)
+    live.close()
+    wait(lambda: live._closed)
+
+
 def context_closed_from_callback():
     context = lib.zebkit_context_new()
     check(bool(context), "zebkit_context_new()")
@@ -250,13 +309,108 @@ def title_option():
     view.close()
 
 
+def process_gone():
+    view = opened()
+    handle = view._check()
+    told = []
+    on_gone = TOLD(lambda h, text, data: told.append((h, json.loads(text.decode()))))
+    lib.zebkit_view_on_process_gone(handle, on_gone, None)
+    for url, reason in ((b"chrome://crash", "crashed"), (b"chrome://kill", "killed")):
+        told.clear()
+        lib.zebkit_view_load_url(handle, url)
+        wait(lambda: told, 20)
+        event = told[0][1] if told else {}
+        check(len(told) == 1 and told[0][0] == handle and event.get("reason") == reason
+              and isinstance(event.get("exitCode"), int),
+              "the page's process went: zebkit_view_on_process_gone() says " + reason, told)
+        check(not view._closed, "and the view stays open")
+        loads = []
+        view.on_load(lambda phase, u: loads.append(phase))
+        lib.zebkit_view_load_url(handle, PAGE.encode())
+        wait(lambda: zebkit.LOAD_FINISHED in loads, 20)
+        check(zebkit.LOAD_FINISHED in loads and ev(view, "document.title") == "page",
+              "a page loads in it again, in a new process", loads)
+        loads.clear()
+        lib.zebkit_view_reload(handle)
+        wait(lambda: zebkit.LOAD_FINISHED in loads, 20)
+        check(zebkit.LOAD_FINISHED in loads, "and reloads", loads)
+    lib.zebkit_view_on_process_gone(handle, TOLD(), None)
+    told.clear()
+    lib.zebkit_view_load_url(handle, b"chrome://crash")
+    pump()
+    wait(lambda: told, 2)
+    check(not told, "with NULL nothing is told", told)
+    view.close()
+    wait(lambda: view._closed)
+
+
+def call_freed():
+    view = opened()
+    handle = view._check()
+    view.grant("*", ALLOW_APP)
+    on_call = BIND(lambda h, origin, args, call, data: lib.zebkit_call_free(call))
+    lib.zebkit_view_bind(handle, b"dropped", on_call, None)
+    view.load(PAGE)
+    pump()
+    wait(lambda: ev(view, "typeof zebkit") == "object")
+    result = ev(view, "zebkit.app.dropped(1).then(() => 'resolved', (e) => 'rejected: ' + e.message)")
+    check(result == "rejected: the application dropped the call",
+          "zebkit_call_free(): the page's promise is rejected", result)
+    view.close()
+    wait(lambda: view._closed)
+
+
+def dropped_same_names():
+    base = os.environ.get("ZEBKIT_TEST_FILES") or os.environ.get("TMPDIR") or "/tmp"
+    root = os.path.join(base, "view-lifetime-drop-%d" % os.getpid())
+    paths = []
+    for folder in ("one", "two"):
+        os.makedirs(os.path.join(root, folder), exist_ok=True)
+        path = os.path.join(root, folder, "same.txt")
+        with open(path, "w") as file:
+            file.write(folder)
+        paths.append(path)
+    page = ("data:text/html,<body style='margin:0'><div id=zone style='width:400px;height:300px'></div><script>"
+            "window.got=null;zone.ondragover=(e)=>e.preventDefault();"
+            "zone.ondrop=(e)=>{e.preventDefault();const f=[...e.dataTransfer.files];"
+            "window.got=f.slice().reverse().map((x)=>zebkit.pathForFile(x)).concat(f.map((x)=>zebkit.pathForFile(x)));};"
+            "</script>")
+    view = opened()
+    view.grant("*", ALLOW_APP)
+    loads = []
+    view.on_load(lambda phase, u: loads.append(phase))
+    view.load(page)
+    wait(lambda: zebkit.LOAD_FINISHED in loads)
+    handle = view._check()
+    told = []
+    over = DRAG(lambda h, operation, data: told.append(("over", operation)))
+    dropped = DRAG(lambda h, operation, data: told.append(("drop", operation)))
+    lib.zebkit_view_drag_enter(handle, json.dumps({"files": paths}).encode(), 100, 100, DRAG_COPY, 0)
+    lib.zebkit_view_drag_over(handle, 110, 110, DRAG_COPY, 0, over, None)
+    wait(lambda: told)
+    lib.zebkit_view_drop(handle, 110, 110, 0, dropped, None)
+    wait(lambda: any(kind == "drop" for kind, _ in told))
+    wait(lambda: ev(view, "window.got !== null"))
+    got = ev(view, "window.got")
+    # Asked for the second first: by name it would get the first's path.
+    check(got == paths[::-1] + paths,
+          "two dropped files of one name: each File its own path, whatever the order asked", got)
+    view.close()
+    wait(lambda: view._closed)
+    for path in paths:
+        os.remove(path)
+        os.rmdir(os.path.dirname(path))
+    os.rmdir(root)
+
+
 def main():
     if zebkit.init(["view-lifetime"] + sys.argv[1:]) != 0:
         print("FAIL zebkit.init()")
         return 1
     try:
         for test in (post_task, attached_closes_with_parent, closed_view_rule, every_view_function,
-                     context_closed_from_callback, title_option):
+                     observers_kept_off_thread, context_closed_from_callback, title_option, process_gone, call_freed,
+                     dropped_same_names):
             try:
                 test()
             except Exception as error:  # noqa: BLE001

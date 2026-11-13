@@ -1,7 +1,9 @@
-// The asked model of docs/ROADMAP_HOOKS.md for one hook: single-use requests
+// The asked model of docs/HOOKS.md for one hook: single-use requests
 // on the engine's thread, with a deadline, whose function is the view's or that
 // of the view that opened it (zebkit_view::Decider), and whose outcome is told
-// afterwards. Traits names the hook's members of zebkit_view and its decisions.
+// afterwards, as every hook's ({state, reason}, <zebkit/hooks.h>). Traits names
+// the hook's members of zebkit_view and its decisions. Every asked hook but
+// permissions (permissions.cc, with what is remembered) keeps its requests here.
 
 #ifndef ZEBKIT_ENGINE_HOOK_REQUESTS_H_
 #define ZEBKIT_ENGINE_HOOK_REQUESTS_H_
@@ -50,6 +52,16 @@ class HookRequests {
   bool Ready() const {
     return active_ && content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
   }
+  // What an unanswered request does (a deadline passed, a function replaced):
+  // Traits::Unanswered(view) when it depends on the view (navigation's
+  // fail-closed), else Traits::Unanswered().
+  static Decision Unanswered(zebkit_view* view) {
+    if constexpr (requires { Traits::Unanswered(view); })
+      return Traits::Unanswered(view);
+    else
+      return Traits::Unanswered();
+  }
+
   // Ends every request with the refusal, for the engine going down.
   void Stop() {
     active_ = false;
@@ -156,7 +168,7 @@ class HookRequests {
       return;
     auto weak = view->GetWeakPtr();
     for (uintptr_t id : IdsOf(view)) {
-      Settle(id, Traits::Unanswered(), "handler-changed");
+      Settle(id, Unanswered(view), "handler-changed");
       if (!weak)
         return;
     }
@@ -172,9 +184,16 @@ class HookRequests {
     view->*(Traits::kResultData) = data;
   }
 
+  // For new requests; those past their deadline already are settled first.
   bool SetTimeout(zebkit_view* view, uint32_t milliseconds) {
     if (!Ready() || !zebkit::LiveView(view) || !view->web_contents() || !milliseconds || milliseconds > 300000)
       return false;
+    auto weak = view->GetWeakPtr();
+    for (uintptr_t id : IdsOf(view)) {
+      Check(id);
+      if (!weak)
+        return false;
+    }
     view->*(Traits::kTimeout) = milliseconds;
     return true;
   }
@@ -204,7 +223,7 @@ class HookRequests {
     if (!entry->view || !entry->view->web_contents())
       self.Settle(id, Traits::Refusal(), "cancelled");
     else if (base::TimeTicks::Now() >= entry->deadline)
-      self.Settle(id, Traits::Unanswered(), "timeout");
+      self.Settle(id, Unanswered(entry->view.get()), "timeout");
   }
 
   static void Deliver(uintptr_t id) {
@@ -219,7 +238,7 @@ class HookRequests {
       return;
     }
     if (!(decider->*(Traits::kHandler))) {
-      self.Settle(id, Traits::Unanswered(), "handler-changed");
+      self.Settle(id, Unanswered(view.get()), "handler-changed");
       return;
     }
     const std::string json = base::WriteJson(entry->metadata).value_or("{}");

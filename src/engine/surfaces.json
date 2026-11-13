@@ -1434,10 +1434,14 @@
   },
   {
    "id": "clipboard",
-   "status": "default only",
-   "default": "Chromium's default",
-   "control": [],
-   "tests": []
+   "status": "done",
+   "default": "writing after a click granted, as Chrome grants clipboard-write; reading (clipboard-read) denied until the application grants it",
+   "control": [
+    "decide"
+   ],
+   "tests": [
+    "tests/engine/clipboard_permission.py"
+   ]
   },
   {
    "id": "notification.web",

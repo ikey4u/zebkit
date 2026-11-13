@@ -1,31 +1,29 @@
 """No sandbox, no start: tests/engine/sandbox_startup.py <zebkit-run>. What the engine says where
 there is no sandbox, and that --no-sandbox is stated, not silent (docs/SANDBOX.md)."""
 import os
-import subprocess
 import sys
 import tempfile
 
-checks = failed = 0
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import harness  # noqa: E402
+from harness import Engine, finish  # noqa: E402
 
 
-def check(ok, what, detail=''):
-    global checks, failed
-    checks += 1
-    failed += not ok
-    print(('ok   ' if ok else 'FAIL ') + what + (f': {detail!r}' if detail and not ok else ''), flush=True)
+def check(ok, what, detail=None):
+    # What the engine said, only when it is not what was expected.
+    harness.check(ok, what, None if ok else detail)
 
 
 def run(*switches):
+    """(None, its standard error) when it started (served CDP); (exit status,
+    standard error) when it ended first."""
     with tempfile.TemporaryDirectory(prefix='zebkit-sandbox-') as profile:
-        process = subprocess.Popen([sys.argv[1], '--headless', f'--user-data-dir={profile}', *switches, 'about:blank'],
-                                   stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
-        try:
-            _, err = process.communicate(timeout=4)
-            return process.returncode, err
-        except subprocess.TimeoutExpired:  # It started: it stays until told.
-            process.terminate()
-            _, err = process.communicate(timeout=30)
-            return None, err
+        engine = Engine([sys.argv[1], '--headless', f'--user-data-dir={profile}', *switches])
+        # Running after the wait without the line is running too.
+        started = engine.url is not None or engine.poll() is None
+        code = engine.stop()
+        return (None if started else code), ''.join(engine.lines)
 
 
 code, err = run('--no-sandbox')
@@ -46,5 +44,4 @@ else:
 
 code, err = run('--disable-setuid-sandbox', '--disable-namespace-sandbox')
 check(code not in (None, 0), 'told not to use either: refuses', code)
-print(f'{checks - failed} of {checks} checks passed', flush=True)
-sys.exit(1 if failed else 0)
+sys.exit(finish())

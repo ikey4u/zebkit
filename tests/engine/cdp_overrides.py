@@ -17,8 +17,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cdp_page import Cdp, check, launch_engine  # noqa: E402
-import cdp_page  # noqa: E402
+from harness import Cdp, check, failures, finish, launch_engine  # noqa: E402
 
 seen = []
 
@@ -66,7 +65,7 @@ def main():
     check(url is not None, "the engine serves CDP", url)
     if not url:
         engine.stop(True)
-        return 1
+        return finish()
     try:
         cdp = Cdp(url)
         target = cdp.call("Target.createTarget", {"url": "about:blank"})["targetId"]
@@ -179,10 +178,9 @@ def main():
         check(metrics == [411, 733, 2.5, 1234, 987], "device metrics and screen: what the page reads", metrics)
         cdp.call("Emulation.clearDeviceMetricsOverride", session=session)
         # The page is laid out again after the answer, as it is in Chrome.
-        for _ in range(100):
-            if evaluate("innerWidth") != 411:
-                break
-            time.sleep(.05)
+        end = time.monotonic() + 5
+        while evaluate("innerWidth") == 411 and time.monotonic() < end:
+            time.sleep(.01)
         check(evaluate("innerWidth") != 411, "device metrics: cleared", evaluate("innerWidth"))
 
         # ---- Cookies
@@ -249,9 +247,9 @@ def main():
         # A method the engine does not serve, or an answer of the wrong shape, is said.
         check(False, "the test went on", repr(error))
     finally:
-        engine.stop(bool(cdp_page.failures))
-    print(f"{cdp_page.checks - len(cdp_page.failures)} of {cdp_page.checks} checks passed")
-    return 1 if cdp_page.failures else 0
+        engine.stop(bool(failures))
+        server.shutdown()
+    return finish()
 
 
 if __name__ == "__main__":

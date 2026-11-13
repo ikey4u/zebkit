@@ -1,5 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
-#include <zebkit/zebkit.h>
+#include "harness.h"
 #include <glib.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
     pthread_mutex_unlock(&lock);
     pthread_join(guard, NULL);
     g_main_loop_unref(loop);
-    printf("%s GLib idle host: page=%d delayed=%d posted=%d pumps=%d shutdown=%d\n",
-        evaluated && delayed && posted && pumps < 500 && stopped ? "ok" : "FAIL", evaluated, delayed, posted, pumps, stopped);
-    return !(evaluated && delayed && posted && pumps < 500 && stopped);
+    check(evaluated && delayed && posted && pumps < 500 && stopped, "GLib idle host",
+          "page=%d delayed=%d posted=%d pumps=%d shutdown=%d", evaluated, delayed, posted, pumps, stopped);
+    return summary();
 }

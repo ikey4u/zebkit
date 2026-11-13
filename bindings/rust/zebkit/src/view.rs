@@ -73,30 +73,6 @@ pub enum PopupPolicy {
 #[repr(i32)]
 pub enum PermissionState { Prompt = 0, Granted = 1, Denied = 2 }
 
-/// An engine-thread permission request. Clones refer to the same single-use prompt.
-/// Holding this object does not extend its deadline or the document lifetime.
-#[derive(Clone)]
-pub struct PermissionRequest {
-    raw: *mut sys::zebkit_permission_request,
-    metadata: String,
-    _thread: std::marker::PhantomData<Rc<()>>,
-}
-impl PermissionRequest {
-    /// Original request metadata as JSON, retained after the prompt is settled.
-    pub fn metadata(&self) -> &str { &self.metadata }
-    /// Current metadata, or None once answered, expired or cancelled.
-    pub fn info(&self) -> Option<String> {
-        require_engine_thread("PermissionRequest::info()");
-        unsafe { take_string(sys::zebkit_permission_request_info(self.raw)) }
-    }
-    /// Reply once, optionally storing a view rule for the requesting origin.
-    /// False means the request was already settled or the reply was invalid.
-    pub fn respond(&self, state: PermissionState, remember: bool) -> bool {
-        require_engine_thread("PermissionRequest::respond()");
-        unsafe { sys::zebkit_permission_respond(self.raw, state as i32, remember) }
-    }
-}
-
 /// A borrowed system window containing a view's page. No ownership transfers.
 /// Requery after attaching/detaching. Never destroy or release this handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,95 +88,6 @@ pub enum NativeWindow {
 /// A decision for one stage of a navigation. Redirect starts a GET in the same frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationAction<'a> { Continue, Cancel, Redirect(&'a str) }
-
-/// An engine-thread navigation request. Clones share a single-use, expiring token.
-#[derive(Clone)]
-pub struct NavigationRequest {
-    raw: *mut sys::zebkit_navigation_request,
-    metadata: String,
-    _thread: std::marker::PhantomData<Rc<()>>,
-}
-impl NavigationRequest {
-    /// Original JSON metadata, retained after settlement.
-    pub fn metadata(&self) -> &str { &self.metadata }
-    /// Current JSON metadata, or None after settlement, cancellation or timeout.
-    pub fn info(&self) -> Option<String> {
-        require_engine_thread("NavigationRequest::info()");
-        unsafe { take_string(sys::zebkit_navigation_request_info(self.raw)) }
-    }
-    /// Reply once. Invalid URLs and stale or expired requests return an error.
-    pub fn respond(&self, action: NavigationAction<'_>) -> Result<(), Error> {
-        require_engine_thread("NavigationRequest::respond()");
-        let (kind, replacement) = match action {
-            NavigationAction::Continue => (sys::ZEBKIT_NAVIGATION_CONTINUE, None),
-            NavigationAction::Cancel => (sys::ZEBKIT_NAVIGATION_CANCEL, None),
-            NavigationAction::Redirect(url) => {
-                if url.contains('\0') { return Err(Error::new("replacement URL contains NUL")); }
-                (sys::ZEBKIT_NAVIGATION_REDIRECT, Some(c_string(url)))
-            }
-        };
-        let mut error = std::ptr::null_mut();
-        let ok = unsafe { sys::zebkit_navigation_respond(self.raw, kind,
-            replacement.as_ref().map_or(std::ptr::null(), |url| url.as_ptr()), &mut error) };
-        if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "navigation reply rejected") }) }
-    }
-}
-
-/// An engine-thread document certificate error with a single-use, expiring token.
-#[derive(Clone)]
-pub struct CertificateRequest {
-    raw: *mut sys::zebkit_certificate_request,
-    metadata: String,
-    _thread: std::marker::PhantomData<Rc<()>>,
-}
-impl CertificateRequest {
-    /// Original JSON, retained after the request is settled.
-    pub fn metadata(&self) -> &str { &self.metadata }
-    /// Current JSON, or None after reply, expiration or cancellation.
-    pub fn info(&self) -> Option<String> {
-        require_engine_thread("CertificateRequest::info()");
-        unsafe { take_string(sys::zebkit_certificate_request_info(self.raw)) }
-    }
-    /// Reply once. False means stale, expired or a forbidden strict-error bypass.
-    pub fn respond(&self, allow: bool) -> bool {
-        require_engine_thread("CertificateRequest::respond()");
-        unsafe { sys::zebkit_certificate_respond(self.raw, allow) }
-    }
-}
-
-/// An expiring engine-thread HTTP/proxy challenge. Credentials are not retained.
-#[derive(Clone)]
-pub struct HttpAuthRequest {
-    raw: *mut sys::zebkit_http_auth_request,
-    metadata: String,
-    _thread: std::marker::PhantomData<Rc<()>>,
-}
-impl HttpAuthRequest {
-    /// Original metadata JSON, retained after settlement.
-    pub fn metadata(&self) -> &str { &self.metadata }
-    /// Current JSON, or None after reply, expiration or cancellation.
-    pub fn info(&self) -> Option<String> {
-        require_engine_thread("HttpAuthRequest::info()");
-        unsafe { take_string(sys::zebkit_http_auth_request_info(self.raw)) }
-    }
-    /// Provide credentials once; false means the request has already settled.
-    pub fn provide(&self, username: &str, password: &str) -> Result<bool, Error> {
-        require_engine_thread("HttpAuthRequest::provide()");
-        if username.len() > 65536 || password.len() > 65536 {
-            return Err(Error::new("each HTTP authentication credential is limited to 65536 UTF-8 bytes"));
-        }
-        let username = std::ffi::CString::new(username)
-            .map_err(|_| Error::new("HTTP authentication credentials cannot contain NUL"))?;
-        let password = std::ffi::CString::new(password)
-            .map_err(|_| Error::new("HTTP authentication credentials cannot contain NUL"))?;
-        Ok(unsafe { sys::zebkit_http_auth_respond(self.raw, username.as_ptr(), password.as_ptr()) })
-    }
-    /// Cancel once. Keeping this object does not extend the deadline.
-    pub fn cancel(&self) -> bool {
-        require_engine_thread("HttpAuthRequest::cancel()");
-        unsafe { sys::zebkit_http_auth_respond(self.raw, std::ptr::null(), std::ptr::null()) }
-    }
-}
 
 // The view's closures, each in a slot: written once here, so that closing
 // the view lets every one of them go.
@@ -258,18 +145,6 @@ inner! {
     on_close: dyn FnOnce(),
     on_new_window: dyn FnMut(&str),
     on_window_open: dyn FnMut(View, &str),
-    on_popup_blocked: dyn FnMut(&str),
-    on_permission: dyn FnMut(PermissionRequest),
-    on_permission_result: dyn FnMut(&str),
-    on_navigation: dyn FnMut(NavigationRequest),
-    on_navigation_result: dyn FnMut(&str),
-    on_window_open_event: dyn FnMut(&str),
-    on_console: dyn FnMut(&str),
-    on_window_state: dyn FnMut(&str),
-    on_certificate: dyn FnMut(CertificateRequest),
-    on_certificate_result: dyn FnMut(&str),
-    on_http_auth: dyn FnMut(HttpAuthRequest),
-    on_http_auth_result: dyn FnMut(&str),
     on_drop: dyn FnMut(&str),
     automation_event: dyn FnMut(&str, &str),
 }
@@ -379,19 +254,6 @@ impl View {
         if ok { Ok(()) } else { Err(unsafe { crate::take_error(error, "window action refused") }) }
     }
 
-    /// Observe every change of the window's state, as JSON.
-    pub fn on_window_state<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_window_state.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_window_state(raw, Some(on_window_state), data); }
-    }
-    /// Remove the window state observer, including inside that observer.
-    pub fn clear_window_state_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_window_state.set(None);
-        unsafe { sys::zebkit_view_on_window_state(raw, None, std::ptr::null_mut()); }
-    }
 
     /// With `dragRegions.source` `"host"`: `[{"x", "y", "width", "height", "drag"}]`.
     pub fn set_drag_regions(&self, regions_json: &str) -> Result<(), Error> {
@@ -578,8 +440,9 @@ impl View {
     /// `"x11:<XID>"` or `"wayland:<handle>"` (exported through xdg-foreign),
     /// for a portal's dialog to be the window's own. `done` runs once, later,
     /// on the engine's thread: `None` when there is none (headless,
-    /// off-screen, no xdg-foreign, the view closed; always on Windows and
-    /// macOS, where [`View::native_window`] is the handle).
+    /// off-screen, no xdg-foreign; always on Windows and macOS, where
+    /// [`View::native_window`] is the handle), and for a view that closes
+    /// first, before its [`View::on_close`] function.
     pub fn export_native_window<F: FnOnce(Option<String>) + 'static>(&self, done: F) {
         let Some(raw) = self.raw() else {
             done(None);
@@ -653,21 +516,51 @@ impl View {
 
     /// Sets the UA string and optional client hints using CDP parameter JSON.
     /// Completion reports Chromium validation; rejected updates do not persist.
-    pub fn set_user_agent_override<F: FnOnce(Result<String, Error>) + 'static>(&self, options: &str, done: F) {
-        let Some(raw) = self.raw() else {
-            done(Err(Error::new("the view is closed")));
-            return;
-        };
+    /// True when it was taken: `done` is then called exactly once, after this
+    /// returns, with `{}` or the error (options it cannot read, a NUL in
+    /// them, the view closing first). False, and `done` never called, only
+    /// when the engine refused it at once: a closed view (a `View` is not
+    /// `Send`, so never the wrong thread). Every binding has this rule, the
+    /// engine's.
+    pub fn set_user_agent_override<F: FnOnce(Result<String, Error>) + 'static>(&self, options: &str, done: F) -> bool {
+        let Some(raw) = self.raw() else { return false };
         let Ok(options) = std::ffi::CString::new(options) else {
-            done(Err(Error::new("user agent options must not contain a literal NUL")));
-            return;
+            // Invalid input, as the engine tells it: once, after this returns.
+            crate::after(std::time::Duration::ZERO, move || done(Err(Error::new("user agent options must not contain a literal NUL"))));
+            return true;
         };
-        let data = Box::into_raw(Box::new(done));
-        unsafe { sys::zebkit_view_set_user_agent_override(raw, options.as_ptr(), Some(on_result::<F>), data.cast()); }
+        // The engine gets a number, not the closure: an answer after a refusal,
+        // or a second one, finds nothing to call.
+        let id = USER_AGENT_DONE.with(|pending| {
+            let id = pending.next.get().wrapping_add(1).max(1);
+            pending.next.set(id);
+            pending.waiting.borrow_mut().insert(id, Box::new(done));
+            id
+        });
+        let outer = USER_AGENT_DONE.with(|pending| pending.calling.replace(id));
+        let queued = unsafe {
+            sys::zebkit_view_set_user_agent_override(raw, options.as_ptr(), Some(on_user_agent_done), id as *mut c_void)
+        };
+        let early = USER_AGENT_DONE.with(|pending| {
+            pending.calling.set(outer);
+            pending.early.borrow_mut().take()
+        });
+        if !queued {
+            // Refused at once: done is never called, whatever the engine told.
+            let refused = USER_AGENT_DONE.with(|pending| pending.waiting.borrow_mut().remove(&id));
+            drop(refused);
+        } else if let Some(result) = early {
+            // Told inside the call: told to done after it has returned.
+            if let Some(done) = USER_AGENT_DONE.with(|pending| pending.waiting.borrow_mut().remove(&id)) {
+                crate::after(std::time::Duration::ZERO, move || done(result));
+            }
+        }
+        queued
     }
 
-    /// A PNG of what the view shows.
-    pub fn capture<F: FnOnce(Result<Vec<u8>, Error>) + 'static>(&self, done: F) {
+    /// A PNG of what the view shows: the engine's bytes, for as long as
+    /// `done` runs (copy them to keep them).
+    pub fn capture<F: FnOnce(Result<&[u8], Error>) + 'static>(&self, done: F) {
         let Some(raw) = self.raw() else {
             done(Err(Error::new("the view is closed")));
             return;
@@ -759,104 +652,14 @@ impl View {
     pub fn set_permission_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_permission_timeout(raw, milliseconds) })
     }
-    /// Handle permission prompts. Replacing the handler settles its pending prompts.
-    pub fn on_permission<F: FnMut(PermissionRequest) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_permission.set(Some(Box::new(function)));
-        // Native callback/data remain the same when only the Rust closure changes.
-        unsafe { sys::zebkit_view_on_permission(raw, None, std::ptr::null_mut()); }
-        // Clearing settles pending prompts, whose handlers can close the view.
-        let Some(raw) = self.raw() else { return };
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_permission(raw, Some(on_permission), data); }
-    }
-    /// Restore default permission handling and settle this handler's pending prompts.
-    pub fn clear_permission_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_permission.set(None);
-        unsafe { sys::zebkit_view_on_permission(raw, None, std::ptr::null_mut()); }
-    }
-    /// Observe asynchronous permission outcomes as JSON.
-    pub fn on_permission_result<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_permission_result.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_permission_result(raw, Some(on_permission_result), data); }
-    }
-    /// Remove the permission outcome observer, including from inside that observer.
-    pub fn clear_permission_result_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_permission_result.set(None);
-        unsafe { sys::zebkit_view_on_permission_result(raw, None, std::ptr::null_mut()); }
-    }
-
     /// Deadline for future document certificate requests, from 1 to 300000 ms.
     pub fn set_certificate_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_certificate_timeout(raw, milliseconds) })
     }
-    /// Handle document certificate errors; the default is denial.
-    pub fn on_certificate<F: FnMut(CertificateRequest) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_certificate.set(Some(Box::new(function)));
-        unsafe { sys::zebkit_view_on_certificate(raw, None, std::ptr::null_mut()); }
-        // Cancelling a pending TLS request can synchronously close the view.
-        let Some(raw) = self.raw() else { return };
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_certificate(raw, Some(on_certificate), data); }
-    }
-    /// Remove the handler and deny its outstanding requests.
-    pub fn clear_certificate_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_certificate.set(None);
-        unsafe { sys::zebkit_view_on_certificate(raw, None, std::ptr::null_mut()); }
-    }
-    /// Observe document certificate outcomes as JSON.
-    pub fn on_certificate_result<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_certificate_result.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_certificate_result(raw, Some(on_certificate_result), data); }
-    }
-    /// Remove the result observer, including inside its callback.
-    pub fn clear_certificate_result_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_certificate_result.set(None);
-        unsafe { sys::zebkit_view_on_certificate_result(raw, None, std::ptr::null_mut()); }
-    }
-
     /// Deadline for future HTTP authentication challenges, from 1 to 300000 ms.
     pub fn set_http_auth_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_http_auth_timeout(raw, milliseconds) })
     }
-    /// Own HTTP/proxy challenges at the browser login delegate.
-    pub fn on_http_auth<F: FnMut(HttpAuthRequest) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_http_auth.set(Some(Box::new(function)));
-        unsafe { sys::zebkit_view_on_http_auth(raw, None, std::ptr::null_mut()); }
-        let Some(raw) = self.raw() else { return };
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_http_auth(raw, Some(on_http_auth), data); }
-    }
-    /// Cancel pending challenges and remove the handler, including from its callback.
-    pub fn clear_http_auth_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_http_auth.set(None);
-        unsafe { sys::zebkit_view_on_http_auth(raw, None, std::ptr::null_mut()); }
-    }
-    /// Observe credential provision/cancellation as JSON, not HTTP success.
-    pub fn on_http_auth_result<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_http_auth_result.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_http_auth_result(raw, Some(on_http_auth_result), data); }
-    }
-    /// Remove the outcome observer and cancel queued deliveries.
-    pub fn clear_http_auth_result_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_http_auth_result.set(None);
-        unsafe { sys::zebkit_view_on_http_auth_result(raw, None, std::ptr::null_mut()); }
-    }
-
     /// Deadline for future navigation stages, from 1 to 300000 milliseconds.
     pub fn set_navigation_timeout(&self, milliseconds: u32) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_navigation_timeout(raw, milliseconds) })
@@ -864,64 +667,6 @@ impl View {
     /// With true, an unanswered navigation is cancelled instead of continued.
     pub fn set_navigation_fail_closed(&self, fail_closed: bool) -> bool {
         self.raw().is_some_and(|raw| unsafe { sys::zebkit_view_set_navigation_fail_closed(raw, fail_closed) })
-    }
-    /// Decide document navigations at start, redirects, response, failure or loader-less commit.
-    /// Unanswered stages continue. Replacing the handler continues its pending stages.
-    pub fn on_navigation<F: FnMut(NavigationRequest) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_navigation.set(Some(Box::new(function)));
-        unsafe { sys::zebkit_view_on_navigation(raw, None, std::ptr::null_mut()); }
-        // Clearing settles pending stages, whose handlers can close the view.
-        let Some(raw) = self.raw() else { return };
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_navigation(raw, Some(on_navigation), data); }
-    }
-    /// Remove navigation policy and continue its pending stages.
-    pub fn clear_navigation_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_navigation.set(None);
-        unsafe { sys::zebkit_view_on_navigation(raw, None, std::ptr::null_mut()); }
-    }
-    /// Observe asynchronous navigation decisions as JSON.
-    pub fn on_navigation_result<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_navigation_result.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_navigation_result(raw, Some(on_navigation_result), data); }
-    }
-    /// Remove the navigation outcome observer, including inside that observer.
-    pub fn clear_navigation_result_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_navigation_result.set(None);
-        unsafe { sys::zebkit_view_on_navigation_result(raw, None, std::ptr::null_mut()); }
-    }
-
-    /// Observe asynchronous new-window decisions and creation metadata as JSON.
-    pub fn on_window_open_event<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_window_open_event.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_window_open_event(raw, Some(on_window_open_event), data); }
-    }
-    /// Remove the new-window metadata observer, including inside that observer.
-    pub fn clear_window_open_event_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_window_open_event.set(None);
-        unsafe { sys::zebkit_view_on_window_open_event(raw, None, std::ptr::null_mut()); }
-    }
-
-    /// Observe asynchronous native document-console messages as JSON.
-    pub fn on_console<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_console.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_console(raw, Some(on_console), data); }
-    }
-    /// Remove the console observer, including inside that observer.
-    pub fn clear_console_handler(&self) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_console.set(None);
-        unsafe { sys::zebkit_view_on_console(raw, None, std::ptr::null_mut()); }
     }
 
     /// Creation JSON for a popup, or an empty JSON object for an ordinary view.
@@ -943,22 +688,6 @@ impl View {
         })
     }
 
-    /// Reports a blocked popup as JSON after the decision. The callback can
-    /// navigate or close this view. It does not reopen the blocked popup.
-    pub fn on_popup_blocked<F: FnMut(&str) + 'static>(&self, function: F) {
-        let Some(raw) = self.raw() else { return };
-        self.inner.on_popup_blocked.set(Some(Box::new(function)));
-        let data = Rc::as_ptr(&self.inner).cast_mut().cast::<c_void>();
-        unsafe { sys::zebkit_view_on_popup_blocked(raw, Some(on_popup_blocked), data) }
-    }
-
-    /// Removes the [`View::on_popup_blocked`] closure, including from inside it.
-    pub fn clear_popup_blocked_handler(&self) {
-        if let Some(raw) = self.raw() {
-            unsafe { sys::zebkit_view_on_popup_blocked(raw, None, std::ptr::null_mut()) }
-        }
-        self.inner.on_popup_blocked.set(None);
-    }
 
     /// A window a page opens comes here as a view of its own, with the URL
     /// it opened, still linked to the page that opened it (`window.opener`,
@@ -1052,13 +781,18 @@ impl View {
 }
 
 /// A call from a page: `zebkit.app.<name>(...args)`. Answer it, now or
-/// later, with [`Call::resolve`] or [`Call::reject`]; one that is dropped
-/// unanswered rejects the page's promise.
+/// later, from any thread, with [`Call::resolve`] or [`Call::reject`]; one that is dropped
+/// unanswered is freed (`zebkit_call_free`), which rejects the page's
+/// promise with "the application dropped the call".
 pub struct Call {
     raw: *mut sys::zebkit_call,
     origin: String,
     args: String,
 }
+
+// The engine takes a call's answer, or its zebkit_call_free(), from any
+// thread; an answer consumes the Call, so only one of them reaches it.
+unsafe impl Send for Call {}
 
 impl Call {
     /// The origin of the page that called.
@@ -1066,9 +800,22 @@ impl Call {
         &self.origin
     }
 
-    /// The arguments, as a JSON array.
+    /// The arguments.
+    pub fn args(&self) -> Vec<crate::json::Value> {
+        match crate::json::Value::parse(&self.args) {
+            Ok(crate::json::Value::Array(args)) => args,
+            _ => Vec::new(),
+        }
+    }
+
+    /// The arguments as the page sent them: a JSON array.
     pub fn args_json(&self) -> &str {
         &self.args
+    }
+
+    /// Resolves the page's promise with `value`.
+    pub fn resolve_value(self, value: &crate::json::Value) {
+        self.resolve(&value.to_string());
     }
 
     /// Resolves the page's promise with `json`, a JSON value.
@@ -1094,7 +841,9 @@ impl Call {
 impl Drop for Call {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { sys::zebkit_call_reject(self.raw, c_string("the application did not answer").as_ptr()) }
+            // Answered calls are consumed (their pointer taken), so only an
+            // unanswered one is freed, once: the page's promise is rejected.
+            unsafe { sys::zebkit_call_free(self.raw) }
         }
     }
 }
@@ -1184,7 +933,7 @@ pub(crate) fn release_automation_closures() {
     }
 }
 
-unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
+unsafe extern "C" fn on_capture<F: FnOnce(Result<&[u8], Error>)>(
     _view: *mut sys::zebkit_view,
     png: *const u8,
     size: usize,
@@ -1195,12 +944,16 @@ unsafe extern "C" fn on_capture<F: FnOnce(Result<Vec<u8>, Error>)>(
     let result = if png.is_null() {
         Err(Error::new(string_from(error).unwrap_or_else(|| "no picture".to_string())))
     } else {
-        Ok(std::slice::from_raw_parts(png, size).to_vec())
+        Ok(std::slice::from_raw_parts(png, size))
     };
     crate::guard(|| done(result));
 }
 
-unsafe extern "C" fn on_native_window_export<F: FnOnce(Option<String>)>(data: *mut c_void, handle: *const c_char) {
+unsafe extern "C" fn on_native_window_export<F: FnOnce(Option<String>)>(
+    _view: *mut sys::zebkit_view,
+    handle: *const c_char,
+    data: *mut c_void,
+) {
     let done = Box::from_raw(data.cast::<F>());
     let handle = string_from(handle);
     crate::guard(|| done(handle));
@@ -1210,63 +963,6 @@ unsafe extern "C" fn on_new_window(_view: *mut sys::zebkit_view, url: *const c_c
     let inner = hold(data);
     let url = string_from(url).unwrap_or_default();
     inner.on_new_window.call(|function| function(&url));
-}
-
-unsafe extern "C" fn on_certificate(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_certificate_request, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_certificate.call(|function| function(CertificateRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
-}
-unsafe extern "C" fn on_certificate_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_certificate_result.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_http_auth(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_http_auth_request, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_http_auth.call(|function| function(HttpAuthRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
-}
-unsafe extern "C" fn on_http_auth_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_http_auth_result.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_navigation(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_navigation_request, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_navigation.call(|function| function(NavigationRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
-}
-unsafe extern "C" fn on_navigation_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_navigation_result.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_window_open_event(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_window_open_event.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_window_state(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_window_state.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_console(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_console.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_permission(_view: *mut sys::zebkit_view, raw: *mut sys::zebkit_permission_request, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_permission.call(|function| function(PermissionRequest { raw, metadata: string_from(json).unwrap_or_default(), _thread: std::marker::PhantomData }));
-}
-unsafe extern "C" fn on_permission_result(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    inner.on_permission_result.call(|function| function(&string_from(json).unwrap_or_default()));
-}
-
-unsafe extern "C" fn on_popup_blocked(_view: *mut sys::zebkit_view, json: *const c_char, data: *mut c_void) {
-    let inner = hold(data);
-    let json = string_from(json).unwrap_or_default();
-    inner.on_popup_blocked.call(|function| function(&json));
 }
 
 unsafe extern "C" fn on_window_open(
@@ -1295,6 +991,45 @@ unsafe extern "C" fn on_result<F: FnOnce(Result<String, Error>)>(
 ) {
     let done = Box::from_raw(data.cast::<F>());
     let result = script_result(json, error);
+    crate::guard(|| done(result));
+}
+
+type UserAgentDone = Box<dyn FnOnce(Result<String, Error>)>;
+
+#[derive(Default)]
+struct PendingUserAgents {
+    next: Cell<usize>,
+    waiting: RefCell<HashMap<usize, UserAgentDone>>,
+    /// The request inside its call now: an answer then is held, and told
+    /// once the call has returned (and only if it was queued).
+    calling: Cell<usize>,
+    early: RefCell<Option<Result<String, Error>>>,
+}
+
+thread_local! {
+    static USER_AGENT_DONE: PendingUserAgents = PendingUserAgents::default();
+}
+
+unsafe extern "C" fn on_user_agent_done(
+    _view: *mut sys::zebkit_view,
+    json: *const c_char,
+    error: *const c_char,
+    data: *mut c_void,
+) {
+    let id = data as usize;
+    let result = script_result(json, error);
+    let told_inside = USER_AGENT_DONE.with(|pending| {
+        if pending.calling.get() == id && pending.waiting.borrow().contains_key(&id) {
+            *pending.early.borrow_mut() = Some(result.clone());
+            true
+        } else {
+            false
+        }
+    });
+    if told_inside {
+        return;
+    }
+    let Some(done) = USER_AGENT_DONE.with(|pending| pending.waiting.borrow_mut().remove(&id)) else { return };
     crate::guard(|| done(result));
 }
 

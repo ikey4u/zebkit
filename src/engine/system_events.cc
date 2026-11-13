@@ -1,6 +1,7 @@
 // What the system tells of itself (docs/SYSTEM_INTEGRATION.md, section 14):
 // suspend and resume and the power source, from base's PowerMonitor which the
-// engine runs; the screens, from display::Screen; and keeping the system
+// engine runs; the session's lock, from the system's notifications
+// (ui/base/idle); the screens, from display::Screen; and keeping the system
 // awake for the application, through the device service's wake locks.
 
 #include <string.h>
@@ -11,6 +12,8 @@
 #include <string>
 #include <utility>
 
+#include "base/callback_list.h"
+#include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
 #include "base/power_monitor/power_monitor.h"
@@ -18,6 +21,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/device_service.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -48,14 +52,28 @@ class PowerEvents : public base::PowerSuspendObserver, public base::PowerStateOb
     if (func && !func_) {
       monitor->AddPowerSuspendObserver(this);
       monitor->AddPowerStateObserver(this);
-      // The session's lock: the system's own state (ui/base/idle), asked each
-      // second while the application listens, told when it changes.
+      // The session's lock, told when it changes: the system's notifications
+      // (ui/base/idle): com.apple.screenIsLocked and screenIsUnlocked on macOS,
+      // WTSRegisterSessionNotification's WTS_SESSION_LOCK and UNLOCK on
+      // Windows, the desktop screen saver's ActiveChanged over D-Bus on Linux
+      // (org.freedesktop.ScreenSaver and the GNOME, Cinnamon, MATE and Xfce
+      // ones). A Linux build without D-Bus has no notification: the X11
+      // screen saver's state is asked each second there.
       locked_ = ui::CheckIdleStateIsLocked();
-      lock_check_.Start(FROM_HERE, base::Seconds(1), this, &PowerEvents::CheckLock);
+      lock_subscription_ =
+          ui::AddScreenLockCallback(base::BindRepeating(&PowerEvents::LockChanged, base::Unretained(this)));
+#if BUILDFLAG(IS_LINUX) && !defined(ZEBKIT_USE_DBUS)
+      lock_check_.Start(FROM_HERE, base::Seconds(1),
+                        base::BindRepeating([](PowerEvents* self) { self->LockChanged(ui::CheckIdleStateIsLocked()); },
+                                            base::Unretained(this)));
+#endif
     } else if (!func && func_) {
       monitor->RemovePowerSuspendObserver(this);
       monitor->RemovePowerStateObserver(this);
+      lock_subscription_ = {};
+#if BUILDFLAG(IS_LINUX) && !defined(ZEBKIT_USE_DBUS)
       lock_check_.Stop();
+#endif
     }
     func_ = func;
     data_ = data;
@@ -75,15 +93,17 @@ class PowerEvents : public base::PowerSuspendObserver, public base::PowerStateOb
     event.Set("event", name);
     Tell(func_, data_, std::move(event));
   }
-  void CheckLock() {
-    const bool locked = ui::CheckIdleStateIsLocked();
-    if (locked == locked_)
+  void LockChanged(bool locked) {
+    if (locked == locked_ || !func_)
       return;
     locked_ = locked;
     Event(locked ? "lock" : "unlock");
   }
   bool locked_ = false;
+  base::CallbackListSubscription lock_subscription_;
+#if BUILDFLAG(IS_LINUX) && !defined(ZEBKIT_USE_DBUS)
   base::RepeatingTimer lock_check_;
+#endif
   zebkit_system_event_func func_ = nullptr;
   void* data_ = nullptr;
 };

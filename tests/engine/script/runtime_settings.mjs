@@ -1,10 +1,12 @@
-// Runtime settings through host JavaScript; run by tests/engine/runtime_settings.py.
+// Runtime settings through host JavaScript; run by tests/engine/runtime_settings.py,
+// which looks for its last line, "ok javascript". Each must() is a check; the
+// first that fails ends the run, the rest depending on it.
+import {finish, sleep, until as poll, verify} from './helpers.mjs';
+
 const { RUNTIME_BASE: base } = JSON.parse(zebkit.args[0]);
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const must = (ok, what) => { if (!ok) throw new Error(what); };
+const must = (ok, what) => { if (!verify(ok, what)) throw new Error(what); };
 async function until(test, what, ms = 15000) {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(5)) if (await test()) return;
-  throw new Error(`timed out: ${what}`);
+  if (!await poll(test, ms, 5)) throw new Error(`timed out: ${what}`);
 }
 const opened = () => new Promise(resolve => {
   const view = new zebkit.View('');
@@ -15,15 +17,15 @@ const opened = () => new Promise(resolve => {
 function refused(fn, what) {
   let thrown = false;
   try { fn(); } catch (error) { thrown = error instanceof TypeError; }
-  must(thrown, `took ${what}`);
+  must(thrown, `refused ${what}`);
 }
 let name = 0;
 async function cookiesBecome(view, expected) {
   for (let i = 0; i < 60; i++) {
-    if (await view.evaluate(`probe('c${++name}')`) === expected) return;
+    if (await view.evaluate(`probe('c${++name}')`) === expected) return verify(true, `third-party cookies became ${expected}`);
     await sleep(50);
   }
-  throw new Error(`third-party cookies never became ${expected}`);
+  must(false, `third-party cookies became ${expected}`);
 }
 
 async function test() {
@@ -90,5 +92,13 @@ async function test() {
   view.close();
   other.close();
 }
-test().then(() => { console.log('ok javascript'); zebkit.quit(); },
-            error => { console.log(`FAIL ${error && error.stack || error}`); zebkit.quit(); });
+try {
+  await test();
+} catch (error) {
+  verify(false, 'the run', String(error && error.stack || error));
+}
+try {
+  finish('javascript');
+} finally {
+  zebkit.quit();
+}

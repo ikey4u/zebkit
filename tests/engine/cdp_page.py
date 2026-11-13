@@ -16,197 +16,20 @@ would use it, from tools/zebkit-run serving CDP:
 
     python3 tests/engine/cdp_page.py <zebkit-run> <base URL> <files dir> [engine switches...]
 
-A WebSocket client of its own, on the standard library alone.
+The engine and the CDP client are harness.py's (Engine, Cdp).
 """
 
 import base64
 import json
 import os
 import re
-import socket
-import struct
 import subprocess
 import sys
-import tempfile
-import threading
 import time
 
-failures = []
-checks = 0
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(f"{'ok  ' if ok else 'FAIL'} {what}" + (f": {detail}" if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
-
-
-class Engine:
-    """The engine serving CDP on a free port: command plus
-    --remote-debugging-port=0 about:blank. Its standard error is drained by
-    a thread of its own into a file, so that the engine never blocks on a full
-    pipe and what it said is still there when a check fails; url is its
-    DevTools WebSocket, waited for with a real timeout (None when none came).
-
-        engine = Engine([run, *switches])
-        ...
-        engine.stop(failed)  # the log's end on standard error when failed
-    """
-
-    def __init__(self, command, seconds=30):
-        self.log = tempfile.NamedTemporaryFile(prefix="zebkit-cdp-engine-", suffix=".log", delete=False)
-        self.process = subprocess.Popen([*command, "--remote-debugging-port=0", "about:blank"],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self.url = None
-        found = threading.Event()
-
-        def drain():
-            for line in self.process.stderr:
-                self.log.write(line)
-                self.log.flush()
-                if not found.is_set():
-                    match = re.search(rb"ws://\S+", line)
-                    if match:
-                        self.url = match.group(0).decode()
-                        found.set()
-            found.set()
-        self.thread = threading.Thread(target=drain, daemon=True)
-        self.thread.start()
-        found.wait(seconds)
-
-    def poll(self):
-        return self.process.poll()
-
-    def tail(self, lines=40):
-        with open(self.log.name, "rb") as log:
-            return b"".join(log.readlines()[-lines:]).decode(errors="replace")
-
-    def stop(self, failed=False):
-        self.process.terminate()
-        try:
-            self.process.wait(10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-        self.thread.join(5)
-        if failed:
-            sys.stderr.write("the engine's standard error, its end:\n" + self.tail())
-        self.log.close()
-        os.unlink(self.log.name)
-
-
-def launch_engine(command, seconds=30):
-    """Engine(command, seconds): see there."""
-    return Engine(command, seconds)
-
-
-class Cdp:
-    """One WebSocket to the browser target, with flat sessions."""
-
-    def __init__(self, url):
-        host, port, path = re.match(r"ws://([^:/]+):(\d+)(/.*)", url).groups()
-        self.sock = socket.create_connection((host, int(port)), timeout=30)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
-                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           "Sec-WebSocket-Version: 13\r\n\r\n").encode())
-        response = b""
-        while b"\r\n\r\n" not in response:
-            response += self.sock.recv(4096)
-        self.buffer = response.split(b"\r\n\r\n", 1)[1]
-        self.next_id = 0
-        self.events = []
-
-    def _recv_exact(self, n):
-        while len(self.buffer) < n:
-            chunk = self.sock.recv(1 << 16)
-            if not chunk:
-                raise EOFError("the WebSocket closed")
-            self.buffer += chunk
-        data, self.buffer = self.buffer[:n], self.buffer[n:]
-        return data
-
-    def _read_message(self):
-        payload = b""
-        while True:
-            head = self._recv_exact(2)
-            fin, opcode, length = head[0] & 0x80, head[0] & 0x0F, head[1] & 0x7F
-            if length == 126:
-                length = struct.unpack(">H", self._recv_exact(2))[0]
-            elif length == 127:
-                length = struct.unpack(">Q", self._recv_exact(8))[0]
-            payload += self._recv_exact(length)
-            if opcode == 8:
-                raise EOFError("closed")
-            if fin:
-                return json.loads(payload)
-
-    def send(self, method, params=None, session=None):
-        self.next_id += 1
-        message = {"id": self.next_id, "method": method, "params": params or {}}
-        if session:
-            message["sessionId"] = session
-        data = json.dumps(message).encode()
-        mask = os.urandom(4)
-        head = bytes([0x81])
-        if len(data) < 126:
-            head += bytes([0x80 | len(data)])
-        elif len(data) < 65536:
-            head += bytes([0x80 | 126]) + struct.pack(">H", len(data))
-        else:
-            head += bytes([0x80 | 127]) + struct.pack(">Q", len(data))
-        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
-        return self.next_id
-
-    def call(self, method, params=None, session=None, timeout=30):
-        wanted = self.send(method, params, session)
-        end = time.time() + timeout
-        while time.time() < end:
-            message = self._read_message()
-            if message.get("id") == wanted:
-                if "error" in message:
-                    raise RuntimeError(message["error"].get("message"))
-                return message.get("result", {})
-            if "method" in message:
-                self.events.append(message)
-        raise TimeoutError(method)
-
-    def event(self, method, timeout=10):
-        end = time.time() + timeout
-        while time.time() < end:
-            for i, message in enumerate(self.events):
-                if message.get("method") == method:
-                    return self.events.pop(i)
-            self.sock.settimeout(max(0.05, end - time.time()))
-            try:
-                message = self._read_message()
-            except socket.timeout:
-                continue
-            finally:
-                self.sock.settimeout(30)
-            if "method" in message:
-                self.events.append(message)
-            elif "id" in message:
-                self.events.append({"method": "#reply", **message})
-        return None
-
-    def reply(self, wanted, timeout=10):
-        end = time.time() + timeout
-        while time.time() < end:
-            for i, message in enumerate(self.events):
-                if message.get("method") == "#reply" and message.get("id") == wanted:
-                    return self.events.pop(i)
-            self.sock.settimeout(max(0.05, end - time.time()))
-            try:
-                message = self._read_message()
-            except socket.timeout:
-                continue
-            finally:
-                self.sock.settimeout(30)
-            self.events.append(message if "method" in message else {"method": "#reply", **message})
-        return None
+from harness import Cdp, check, failures, finish, launch_engine  # noqa: E402
 
 
 def main():
@@ -217,7 +40,7 @@ def main():
     check(url is not None, "the engine serves CDP", url)
     if not url:
         engine.stop(True)
-        return 1
+        return finish()
     try:
         cdp = Cdp(url)
         target = cdp.call("Target.createTarget", {"url": "about:blank"})["targetId"]
@@ -233,6 +56,16 @@ def main():
             result = cdp.call("Runtime.evaluate", {"expression": expression, "returnByValue": True,
                                                    "awaitPromise": True}, session=session)
             return result.get("result", {}).get("value")
+
+        def wait(expression, seconds=20):
+            """Whether expression became true in the page, asked every 10 ms."""
+            end = time.monotonic() + seconds
+            while True:
+                if evaluate(expression):
+                    return True
+                if time.monotonic() >= end:
+                    return False
+                time.sleep(0.01)
 
         navigate(f"{base}/page.html")
 
@@ -293,7 +126,7 @@ def main():
         for kind in ("dragEnter", "dragOver"):
             cdp.call("Input.dispatchDragEvent", {"type": kind, "x": 100, "y": 250, "data": data}, session=session)
         cdp.call("Input.dispatchDragEvent", {"type": "drop", "x": 100, "y": 250, "data": data}, session=session)
-        time.sleep(0.3)
+        wait("typeof dropped !== 'undefined' && JSON.stringify(dropped).includes('from CDP')", 5)
         dropped = evaluate("JSON.stringify(dropped)") or ""
         check("cdp-dropped.txt" in dropped and "from CDP" in dropped, "Input.dispatchDragEvent drops a file", dropped)
 
@@ -317,7 +150,7 @@ def main():
             for kind in ("dragEnter", "dragOver", "drop"):
                 cdp.call("Input.dispatchDragEvent", {"type": kind, "x": 50, "y": 100, "data": drag}, session=session)
         mouse("mouseReleased", 50, 100)
-        time.sleep(0.3)
+        wait("order() === 'bcade'", 5)
         check(evaluate("order()") == "bcade", "dropped where the client said: the list reordered",
               evaluate("order() + ' ' + events.join(' ')"))
         cdp.call("Input.setInterceptDrags", {"enabled": False}, session=session)
@@ -329,7 +162,7 @@ def main():
         for y in (106, 114, 60, 30, 20):
             mouse("mouseMoved", 50, y, 1)
         mouse("mouseReleased", 50, 20)
-        time.sleep(0.3)
+        wait("order() === 'abcde'", 5)
         check(evaluate("order()") == "abcde", "a drag in the page from Input.dispatchMouseEvent",
               evaluate("order() + ' ' + events.join(' ')"))
 
@@ -351,13 +184,6 @@ def main():
                 and 7.4 < p.get("duration", 0) < 8.6 and p.get("videoFrames", 0) >= 185
                 and p.get("audioFrames", 0) >= 350 and p.get("errors") == 0)
 
-        def wait(expression, tries=200):
-            for _ in range(tries):
-                if evaluate(expression):
-                    return True
-                time.sleep(0.1)
-            return False
-
         def record(name, during, options=None):
             path = os.path.join(files, name)
             media = cdp.call("Zebkit.mediaList", session=session)["media"]
@@ -377,7 +203,7 @@ def main():
         # capture starts from from now on.
         check(cdp.call("Zebkit.mediaList", session=session)["media"] == [], "Zebkit.mediaList: none yet")
         evaluate("file('video', 'media/clip.mp4')")
-        wait("ready()", 100)
+        wait("ready()", 15)
         media = cdp.call("Zebkit.mediaList", session=session)["media"]
         check(len(media) == 1 and media[0]["codecs"].get("video") == "h264", "Zebkit.mediaList", media)
         at = cdp.call("Zebkit.mediaAt", {"x": 160, "y": 90}, session=session)["media"]
@@ -405,7 +231,7 @@ def main():
 
         # Media Source Extensions: what a DASH player appends.
         evaluate("mse(3)")
-        wait("ready()", 100)
+        wait("ready()", 15)
         media, capture, path, ended, done = record("cdp-mse.mp4", lambda: evaluate("more()"))
         check(media[0]["kind"] == "mse", "Zebkit.mediaList: Media Source Extensions", media[0].get("kind"))
         files_written = done and done["params"]["result"].get("files") or []
@@ -415,7 +241,7 @@ def main():
         # A session that detaches: its capture stops, and its file is written.
         other = cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         evaluate("file('video', 'media/clip.mp4')")
-        wait("ready()", 100)
+        wait("ready()", 15)
         media = cdp.call("Zebkit.mediaList", session=other)["media"]
         path = os.path.join(files, "cdp-detached.mp4")
         capture = cdp.call("Zebkit.mediaCaptureStart", {"mediaId": media[0]["id"], "path": path},
@@ -467,8 +293,7 @@ def main():
         check(False, "the CDP session", repr(error))
     finally:
         engine.stop(bool(failures))
-    print(f"{checks - len(failures)} of {checks} checks passed")
-    return 1 if failures or not checks else 0
+    return finish()
 
 
 if __name__ == "__main__":

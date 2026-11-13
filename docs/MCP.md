@@ -39,10 +39,23 @@ The client sends `Authorization: Bearer <the file's content>`. Without
 `--http-token-file` a token is generated and printed once on standard error.
 
 Chromium's switches go after `--`, as `-- --no-sandbox` where the machine cannot
-give the engine a sandbox (`docs/SANDBOX.md`; never by default, and said at the start). Those that would pass the bounds are refused, with one dash
-or two: `--remote-debugging-*`, `--host-resolver-rules`, `--host-rules`, `--proxy-*`,
-`--user-data-dir` (use `--profile`), `--disable-web-security`, `--disable-features`,
-`--enable-features`, WebRTC's policy, extensions, and programs for the engine to start.
+give the engine a sandbox (`docs/SANDBOX.md`; never by default, and said at the start).
+Those known to pass the bounds are refused, with one dash or two and with every
+variant of the name (each is a prefix: `--remote-debugging-port`, `-pipe` and
+`-address` alike), and so is anything after `--` that is not a switch:
+
+| What it would open | Switches refused |
+|---|---|
+| Another way in: CDP, Playwright, the profile, the network's routing | `--remote-debugging*`, `--remote-allow-origins`, `--host-resolver-rules`, `--host-rules`, `--user-data-dir` (use `--profile`), `--proxy-*`, `--no-proxy-server`, `--playwright-port` |
+| Which addresses count as local: Chromium's Local Network Access, behind the check of the address that answered | `--ip-address-space-overrides` |
+| The web's own bounds: the same-origin policy, site isolation, V8 | `--disable-web-security`, `--disable-site-isolation*`, `--single-process`, `--js-flags`, `--allow-file-access*` |
+| Features the bounds do not know (MojoJS gives pages the browser's own interfaces) | `--disable-features`, `--enable-features`, `--enable-blink-features`, `--force-webrtc-ip-handling-policy` |
+| TLS and mixed content | `--ignore-certificate-errors*`, `--unsafely-treat-insecure-origin-as-secure`, `--allow-running-insecure-content`, `--allow-insecure-localhost` |
+| Files written outside `--allow-write` | `--log-net-log`, `--ssl-key-log-file`, `--log-file`, `--disk-cache-dir` |
+| Code the engine would load, programs it would start | `--load-extension`, `--disable-extensions-except`, `--renderer-cmd-prefix`, `--utility-cmd-prefix`, `--gpu-launcher`, `--zygote-cmd-prefix`, `--browser-subprocess-path` |
+
+The list is a guard for the operator, not a boundary: give only switches you
+understand.
 
 ## Bounds
 
@@ -56,6 +69,7 @@ can widen them. What is not given is denied.
 | Directories | `--allow-read DIR`, `--allow-write DIR` | None: no file is read or written |
 | Windows | `--windows` | None: pages and `zebkit.ui` are drawn off-screen |
 | Settings | `--allow-settings KEY,KEY` | None: `settings_set` refuses every key |
+| Local addresses | `--allow-local-network` (named origins), `--allow-local-network-for-any-origin` (with `*`) | Refused: a public name answered from this machine or a local network fails (below) |
 
 `*` means every public origin, not this machine or private addresses: not
 `localhost`, `*.localhost`, `*.local`, `*.internal`, `*.localdomain`, `*.lan`, `*.home`,
@@ -65,6 +79,49 @@ can widen them. What is not given is denied.
 `::a.b.c.d`, `64:ff9b::a.b.c.d`, `2002:a.b:c.d::`), in any way a URL can write them
 (`http://2130706433/`), since the browser's own parser reads them. Name a private origin
 exactly to allow it.
+
+**The address that answered.** A name is checked again once DNS has answered.
+Every http and https response of a page, of `net_fetch` and of the device flow is
+held at the network hook's `response` stage, which carries `remoteAddress` and comes
+before the page has any of the body. A response is refused when that address is this
+machine's or a local network's, or one the IANA special-purpose registries mark not
+globally reachable (loopback, 10/8, 172.16/12, 192.168/16, fc00::/7, 169.254/16,
+fe80::/10, 100.64/10, unspecified, reserved, multicast, documentation and benchmarking
+ranges, Teredo 2001::/32, or an IPv4 address of those inside an IPv6 one: mapped, SIIT,
+compatible, NAT64 including 64:ff9b:1::/48, 6to4), but the URL's host is a public
+name: DNS rebinding, under `*` and under named origins alike. A host that is local by
+its own name or address, which only an exact origin can allow, passes. An http or
+https response without an address (as through some proxies) is refused. A response
+from the HTTP cache carries the address it was fetched from and is checked by it.
+`data:` and `about:` documents and resources pass, and `blob:` passes by its inner
+URL. A refused response fails with `ERR_ADDRESS_UNREACHABLE` (so `page_network` shows
+it), and `refusedByBounds` has `{"what": "address", "why"}`. A cross-origin `fetch()`
+that CORS refuses fails inside the network first, and is not listed there. The hold
+is answered at once in the server, at about 5% of a page's load time.
+
+**What is sent before the refusal.** The check stops reading, not sending: a refused
+response's request has reached that address. Chromium's Local Network Access, on by
+default and denied here, stops more. A page from a public address (the page of a real
+rebinding attack, loaded before its name rebinds) has its requests to local addresses
+refused before they are sent: `fetch` of any method, `sendBeacon`, images, frames and
+forms into frames. Local Network Access does not cover a page's own top-level
+navigation, so a form POST or `location` change to a rebinding name goes out; only its
+answer is refused. A page whose own response was refused never loads and sends nothing
+more; only its document's request was sent. A page served from a local address (only
+an origin local by name can allow one) is not held by Local Network Access, so its
+requests to rebinding names are sent and their answers refused. Pages cannot open
+WebSockets: `ws:` and `wss:` are refused at the request stage.
+
+`--allow-local-network` turns the address check off and grants Local Network Access's
+permissions. Give it behind a proxy (the address the network sees is the proxy's, and
+the proxy resolves names) or where allowed names live on a local network. It is
+refused with `--allow-origin '*'`, in either order, and the server does not start
+(exit 2), because any public page could then reach local services through a name that
+resolves there. `--allow-local-network-for-any-origin` (which implies
+`--allow-local-network`) allows that combination, and is meant only behind a proxy
+that resolves names itself and has no service of its own, or on its network, that a
+page must not reach. An `http:` public name that resolves locally still cannot be
+fetched from a document of its own: that is Chromium's rule for non-secure contexts.
 
 Every tool's arguments are checked against the schema it publishes before it runs:
 types, ranges, lengths, no property it does not name. A failure comes back as a tool
@@ -80,11 +137,13 @@ An origin is not checked once: everything of a page goes through it, whoever ask
   and `data:` only in child frames; `file:` and every other scheme never.
 - **Requests** of frames and dedicated workers: `zebkit_view_set_network_filter`, each
   held and answered.
-- **WebSockets**: the same hook takes a page's handshakes (2026-10-31); before it, as well: a
-  `connect-src` policy added to the response of every document and of every script (a worker's policy is its script's,
-  not its document's), and put as an element into a blank page, which has no response;
-  a page cannot undo either. Under `*` there is no such policy, which cannot say
-  "not private": the next but one line holds it.
+- **WebSockets** are not opened at all: the same hook takes a page's handshakes, and
+  `ws:` and `wss:` are refused there, under every origin rule. Before the hook, as
+  well, a `connect-src` policy is added to the response of every document and of every
+  script (a worker's policy is its script's, not its document's), and put as an
+  element into a blank page, which has no response; a page cannot undo either. The
+  policy names the allowed origins' `ws:` and `wss:` too, but the hook refuses those
+  schemes whatever it says. Under `*` there is no such policy.
 - **Service and shared workers**, which have no view for the hook: they are removed
   from each page before its scripts, as Playwright's `serviceWorkers: "block"` does.
 - **The whole network stack** resolves only the allowed names; under `*`, resolves no
@@ -312,10 +371,10 @@ the cheaper way to read a long document. Without it: `page_capture` and `page_mo
 
 Plainly, what these bounds do not do:
 
-- **DNS rebinding of a page's own requests under `*`.** A public name that resolves to a
-  private address is not seen: the check is on names. Naming origins exactly holds here, as
-  only those names resolve. Asking the resolver first would not close it: whoever serves the
-  name's DNS can answer differently the second time.
+- **A rebinding name's request can be sent before its answer is refused**: a top-level
+  navigation of a public page (Local Network Access does not hold those), and any request
+  of a page from a local address. Redirects are told, not held, so a page can learn a
+  local server's redirect target, never a body.
 - **Under `*`, what the hooks do not see can reach a name with no dot.** The resolver's rules
   have no way to say it, and they know no digits: a public name shaped like `10.a.b.c` does not
   resolve under `*`, the price of holding `10.0.0.1`.

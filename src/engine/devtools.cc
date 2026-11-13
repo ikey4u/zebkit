@@ -38,6 +38,7 @@
 #include "content/public/browser/devtools_agent_host_client_channel.h"
 #include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/zebkit_hang_monitor.h"
 #include "zebkit/engine/window.h"
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
@@ -491,6 +492,10 @@ bool HasExternalDevToolsClient(content::WebContents* contents) {
       return true;
   }
   return false;
+}
+
+void InstallHangMonitorPolicy() {
+  content::SetDebuggerAttachedForHangs(&HasExternalDevToolsClient);
 }
 
 std::unique_ptr<content::DevToolsManagerDelegate>

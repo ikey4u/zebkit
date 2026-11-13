@@ -247,7 +247,9 @@ func (v *View) OnPermissionResult(function func(map[string]any)) {
 	})
 }
 
-// OnNavigationResult tells function the outcome of each navigation asked about: its metadata, action, reason and replacementUrl; nil stops.
+// OnNavigationResult tells function the outcome of each navigation asked about: its metadata, state (continued, cancelled,
+// redirected), reason (answered, timeout, cancelled, handler-changed, opener-closed) and replacementUrl;
+// a popup's go to its opener's function until it has one of its own. nil stops.
 func (v *View) OnNavigationResult(function func(map[string]any)) {
 	v.told("navigation-result", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_navigation_result(raw, C.zebkit_navigation_result_func(f), d)
@@ -268,7 +270,8 @@ func (v *View) OnWindowOpenEvent(function func(map[string]any)) {
 	})
 }
 
-// OnConsole tells function the page's console messages: level, message, source, line, frameId, mainFrame, origin, stackTrace, truncated, dropped; nil stops.
+// OnConsole tells function the page's console messages: level, message, source, line, frameId, mainFrame, origin, stackTrace, truncated,
+// dropped (a number: the reports skipped since the previous one); nil stops.
 func (v *View) OnConsole(function func(map[string]any)) {
 	v.told("console", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_console(raw, C.zebkit_console_func(f), d)
@@ -282,7 +285,8 @@ func (v *View) OnCertificateResult(function func(map[string]any)) {
 	})
 }
 
-// OnHTTPAuthResult tells function the outcome of each HTTP authentication asked about; nil stops.
+// OnHTTPAuthResult tells function the outcome of each HTTP authentication asked about: its metadata, state (provided, cancelled)
+// and reason; nil stops.
 func (v *View) OnHTTPAuthResult(function func(map[string]any)) {
 	v.told("http-auth-result", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_http_auth_result(raw, C.zebkit_http_auth_result_func(f), d)
@@ -296,12 +300,23 @@ func (v *View) OnExternalProtocol(function func(map[string]any)) {
 	})
 }
 
-// OnDownloadProgress tells function the view's downloads as they go: downloadId, guid, url, state, outcome
-// (in-progress, complete, cancelled, failed), path, savedPath, receivedBytes, totalBytes, mimeType, reason,
-// error ({category, code, name, message, resumable} or nil), done; nil stops.
+// OnDownloadProgress tells function the view's downloads as they go, asked or not: downloadId, guid, url,
+// state (in-progress, complete, cancelled, interrupted), outcome (in-progress, complete, cancelled, failed),
+// path, savedPath, receivedBytes, totalBytes, mimeType, reason, error ({category, code, name, message,
+// resumable} or nil), done; nil stops. What OnDownload's function decided is OnDownloadResult's.
 func (v *View) OnDownloadProgress(function func(map[string]any)) {
 	v.told("download-progress", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_download_progress(raw, C.zebkit_download_progress_func(f), d)
+	})
+}
+
+// OnDownloadResult tells function the outcome of each download OnDownload's function was asked about: its
+// request's metadata with state "saved" or "cancelled" and reason (answered, timeout, handler-changed,
+// cancelled, opener-closed), as every hook's outcome; a popup's go to its opener's function while
+// that decides for it. nil stops.
+func (v *View) OnDownloadResult(function func(map[string]any)) {
+	v.told("download-result", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
+		C.zebkit_view_on_download_result(raw, C.zebkit_download_result_func(f), d)
 	})
 }
 
@@ -361,7 +376,9 @@ func (v *View) OnFullscreen(function func(map[string]any)) {
 	})
 }
 
-// OnNetworkEvent tells function what the observe rules of SetNetworkFilter match: request, response, redirect, finished or failed, and the held requests' outcomes; nil stops.
+// OnNetworkEvent tells function what the observe rules of SetNetworkFilter match: request, response, redirect, finished or failed,
+// with dropped (a number) counting reports skipped, and the held requests' outcomes: state (continued, blocked, redirected,
+// fulfilled; refused for a stage that fails closed) and reason; nil stops.
 func (v *View) OnNetworkEvent(function func(map[string]any)) {
 	v.told("network-event", function, func(raw *C.zebkit_view, f, d unsafe.Pointer) {
 		C.zebkit_view_on_network_event(raw, C.zebkit_network_event_func(f), d)

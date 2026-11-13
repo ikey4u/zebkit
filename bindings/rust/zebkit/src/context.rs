@@ -58,22 +58,12 @@ impl Context {
     }
 
     /// An off-screen view in this context, as [`View::new_offscreen`].
-    pub fn new_offscreen_view(&self, url: Option<&str>, width: u32, height: u32, scale: f32) -> Option<View> {
+    pub fn new_offscreen_view(&self, url: Option<&str>, width: u32, height: u32, scale: f32) -> Result<View, Error> {
         require_engine_thread("Context::new_offscreen_view()");
         if self.raw().is_null() {
-            return None;
+            return Err(Error::new("the context is closed"));
         }
-        let url = url.map(c_string);
-        let raw = unsafe {
-            sys::zebkit_view_new_offscreen_in(
-                self.raw(),
-                url.as_ref().map_or(std::ptr::null(), |url| url.as_ptr()),
-                int(width),
-                int(height),
-                scale,
-            )
-        };
-        (!raw.is_null()).then(|| View::wrap(raw))
+        View::new_offscreen_in(self.raw(), url, width, height, scale)
     }
 
     /// Closes the context's views; its data is let go when the engine stops.

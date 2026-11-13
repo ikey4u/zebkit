@@ -229,7 +229,7 @@ void SweepDocuments(Requests& requests, std::map<uintptr_t, DocumentOf>& documen
                             : !found->second.document.AsRenderFrameHostIfValid();
     if (gone) {
       documents.erase(found);
-      requests.Settle(id, typename Requests::Decision(), "navigation");
+      requests.Settle(id, typename Requests::Decision(), "cancelled");
       if (!weak)
         return;
     }

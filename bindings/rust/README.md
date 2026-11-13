@@ -31,6 +31,7 @@ fn main() {
 
 ```rust
 // src/main.rs
+use zebkit::json::Value;
 use zebkit::{Allow, View};
 
 fn main() {
@@ -39,10 +40,10 @@ fn main() {
         // The page may call zebkit.app.greet(name); nothing else of zebkit.*.
         view.grant("https://app.example", Allow::APP, None);
         view.bind("greet", |call| {
-            // The arguments are a JSON array, as the page gave them; the
-            // answer is a JSON value too.
-            let answer = format!("{{\"hello\": {}}}", call.args_json());
-            call.resolve(&answer);
+            // The arguments as JSON values (args_json() has them as the
+            // page sent them); the answer is a JSON value too.
+            let name = call.args().first().cloned().unwrap_or_default();
+            call.resolve_value(&Value::object([("hello", name)]));
         });
         view.on_close(zebkit::quit);
     }));
@@ -101,20 +102,22 @@ helpers immediately without starting the engine.
 |---|---|
 | The engine | `run`, `run_with_args`, `init`, `pump`, `shutdown`, `set_wakeup`, `quit`, `post` and `post_after` (from any thread), `after`, `is_headless`, `version`, `engine_version`, engine settings, cookie storage |
 | Views | `View`: `new`, `try_new`, `new_with_options` (`<zebkit/window.h>`), `load_url`, `reload`, `go_back`, `go_forward`, `resize`, `close`, URL and title, callbacks for loads, the title and closing, the window's state and actions, attaching to a parent (`attach`, `try_attach`), settings; `evaluate` for the page's script, `capture`, `print_to_pdf` |
-| The page and the application | `View::grant` with `Allow`, `View::bind` and `Call` |
-| What pages ask | permissions, navigations, certificates, HTTP authentication, new windows and popups, downloads, client certificates, file choosers, camera and microphone, the eye dropper, device choosers, sharing, the network filter, keys, the context menu, fullscreen, console messages (`View::on_*`, with `clear_*_handler`) |
-| Off-screen views | `offscreen`: `View::new_offscreen`, frames (`Frame`, `FrameBuffer`), mouse, wheel, keys, input methods, the caret, the cursor, popups, passkeys |
-| Dialogs and drags | `page`: JavaScript dialogs, beforeunload, drag and drop, both ways |
+| The page and the application | `View::grant` with `Allow`, `View::bind` and `Call` (answered later, from any thread; one dropped unanswered rejects the page's promise) |
+| What pages ask | permissions, navigations, certificates, HTTP authentication, new windows and popups, downloads, client certificates, file choosers, camera and microphone, the eye dropper, device choosers, sharing, the network filter, keys, the context menu, fullscreen, console messages, how decided downloads ended (`on_download_result`), the page's process gone (`on_process_gone`) (`View::on_*`, with `clear_*_handler`) |
+| Off-screen views | `offscreen`: `View::new_offscreen` (the engine's error when it makes none), frames (`Frame`, `FrameBuffer`), mouse, wheel, keys, input methods, the caret, the cursor, popups, passkeys |
+| Dialogs, drags, find | `page`: JavaScript dialogs, beforeunload, drag and drop, both ways, find in page (`View::find`, `stop_finding`, `on_find`, `find_result`, `FindResult`) |
 | Contexts | `Context`: cookies, storage and cache of their own, for its views |
-| Automation | `automation`: Playwright's commands on a view's page (`Page`, `Frame`, `Locator`, `BrowserContext`), its events, its endpoint (`listen`) |
+| Automation | `automation`: Playwright's API on a view's page, as Python's `zebkit.automation` has it: `Page` (its events with `on`), `Frame`, `Locator`, `FrameLocator`, `ElementHandle`, `JSHandle`, `Route`, `Request`, `Response`, `Dialog`, `FileChooser`, `Download`, `Worker`, `ConsoleMessage`, `Keyboard`, `Mouse`, `Touchscreen`, `Clock`, `Tracing`, `APIRequestContext`, `BrowserContext` (`new_context`), `expect`; any command with `call`; `add_init_script`'s `Disposable`; its endpoint (`listen`) |
+| JSON | `json::Value`: what the engine gives and takes as JSON, read and written without a dependency |
 | Script outside any page | `Script`: `run_module`, `evaluate`, `on_idle` |
-| CDP | `cdp::listen`, `port`, `url`, `stop` |
+| CDP | `cdp::listen`, `listen_async`, `port`, `url`, `stop` |
 | Media | `media`: what a page plays, listed, captured to files (`MediaCapture`) and tapped (`MediaTap`); `media_tools`: `probe`, `remux`, `extract_audio`, `extract_video` on the engine's FFmpeg |
+| Bytes | What the engine makes (pixels, files, compressed or decrypted data) comes as `Bytes`, its own buffer without a copy, freed when dropped; what a callback is given (a capture, a PDF, a drag's or cursor's picture, a fetched body) is borrowed for the call |
 | Services | `services`: compression (gzip, zlib, raw deflate, Brotli, Zstandard), digests, HMAC, random bytes, AES-GCM, URL parts, registrable domains, image decoding and encoding, `fetch` through the engine's network stack |
 | Canvas and text | `canvas`: drawing on the engine's Skia, text shaped on its HarfBuzz |
 | PDF | `pdf::Document`: open, render (whole or tiles), text and its layout, search, outline, links, annotations, forms, pages, attachments, signatures, metadata, save; hooks |
 | URL schemes | `scheme::register`, `scheme::handle`, `Request` with `respond` and `respond_file` (ranges) |
-| The system | `system`: screens, power, sleep, notifications, the system's handlers, its appearance; `Tray`; `app`: the menu, the Dock's menu, the badge, progress, attention, files to open, reopen, quit |
+| The system | `system`: screens, power, sleep, notifications, the system's handlers (`open_external`, `show_in_folder` and their `_async` forms), its appearance; `Tray`; `app`: the menu, the Dock's menu, the badge, progress, attention, files to open, reopen, quit |
 | FFmpeg | `vendor::ffmpeg`: version and decoders |
 
 The other libraries inside the engine (`<zebkit/vendor/*.h>`) are not
@@ -139,6 +142,6 @@ panic once the engine has returned.
 The crates and the engine have one version, in `VERSION` and
 `bindings/rust/Cargo.toml`. A release is an archive of the engine's package for each
 system, whose SHA-256 goes into `zebkit-rs/engines.txt`, published on
-GitHub before the crates (`mise run r`, then `mise run r:github`;
+GitHub before the crates (`mise run r`, then `mise run r:github:publish`;
 `docs/BUILD.md`, "Releases"). Where the release archives cannot be
 reached, point `ZEBKIT_DIR` at a package you built.

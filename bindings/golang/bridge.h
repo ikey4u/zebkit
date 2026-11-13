@@ -43,7 +43,7 @@ void zk_scheme(zebkit_request *request, void *data);
 void zk_asked(zebkit_view *view, void *request, const char *json, void *data);
 void zk_wakeup(int64_t delay_ms, void *data);
 void zk_window_open(zebkit_view *opener, zebkit_view *opened, const char *url, void *data);
-void zk_export(void *data, const char *handle);
+void zk_export(zebkit_view *view, const char *handle, void *data);
 void zk_writable(zebkit_network_stream *stream, void *data);
 void zk_body(zebkit_view *view, const char *request_id, const void *bytes, size_t size, bool end, bool truncated,
              void *data);
@@ -53,6 +53,8 @@ void zk_pixels(zebkit_view *view, const unsigned char *pixels, int width, int he
                void *data);
 void zk_automation_event(zebkit_view *view, const char *event, const char *json, void *data);
 void zk_listen(const char *url, const char *error, void *data);
+void zk_cdp_listen(unsigned port, const char *url, const char *error, void *data);
+void zk_desktop_done(bool done, const char *error, void *data);
 void zk_frame(zebkit_view *view, const zebkit_frame *frame, void *data);
 void zk_caret(zebkit_view *view, const zebkit_rect *caret, void *data);
 void zk_cursor(zebkit_view *view, const char *cursor, const zebkit_cursor_image *image, void *data);

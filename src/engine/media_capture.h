@@ -17,6 +17,7 @@ class CommandLine;
 }  // namespace base
 
 namespace content {
+class RenderFrameHost;
 class DevToolsAgentHostClientChannel;
 class WebContents;
 }  // namespace content
@@ -37,6 +38,13 @@ void MediaAt(content::WebContents* contents,
              float x,
              float y,
              MediaJsonCallback done);
+// The frame of a media id of the media list ("<process>.<frame>.<element>"),
+// live and of @contents, and the element's number in it; null, with why in
+// @error, otherwise (zebkit_media_capture_start(), zebkit_media_tap_start()).
+content::RenderFrameHost* FrameOfMediaId(content::WebContents* contents,
+                                         const std::string& media_id,
+                                         int* element,
+                                         std::string* error);
 zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
                                         const std::string& media_id,
                                         const std::string& path,

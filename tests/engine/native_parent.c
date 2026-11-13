@@ -6,6 +6,7 @@
  * here, as a host links it. Under --headless or ZEBKIT_TEST_REFUSED (a Wayland compositor),
  * the refusal and what it names. */
 #define _DEFAULT_SOURCE
+#include "harness.h"
 #include <zebkit/zebkit.h>
 #include <zebkit/offscreen.h>
 #include <X11/Xlib.h>
@@ -28,7 +29,7 @@ static const char PAGE[] =
     "addEventListener('click',e=>clicks.push(e.clientX,e.clientY));"
     "addEventListener('keydown',e=>keys.push(e.key));</script>";
 
-static int failures, x_errors;
+static int x_errors;
 static uintptr_t standalone_window;
 static Display *display;
 static Window root;
@@ -43,12 +44,6 @@ static fake_button_func fake_button;
 static fake_motion_func fake_motion;
 static fake_key_func fake_key;
 static int pointer_x, pointer_y;
-
-static void check(int ok, const char *what, const char *detail) {
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-    fflush(stdout);
-    failures += !ok;
-}
 
 static int on_x_error(Display *d, XErrorEvent *event) {
     (void)d, (void)event;
@@ -221,7 +216,7 @@ static int shown_before;
 #define HOST_Y 80
 #define CHECK_THEN(condition, what) \
     if (!(condition)) break; \
-    check(1, what, NULL); \
+    check_text(1, what, NULL); \
     next = 1
 
 static void step(void *data);
@@ -236,27 +231,27 @@ static void step(void *data) {
     case 0: /* The refusals that need no display of its own. */
         if (!loaded) break;
         zebkit_native_window window = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
-        check(zebkit_view_get_native_window(view, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_X11 && window.handle,
+        check_text(zebkit_view_get_native_window(view, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_X11 && window.handle,
               "native window: real standalone X11 window", NULL);
         standalone_window = window.handle;
         XWindowAttributes native_attributes;
-        check(window.handle && window.handle <= UINT32_MAX &&
+        check_text(window.handle && window.handle <= UINT32_MAX &&
               XGetWindowAttributes(display, (Window)window.handle, &native_attributes),
               "native window: standalone handle is a valid X11 resource", NULL);
 
-        check(!zebkit_view_get_native_window(view, NULL), "native window: NULL output refused", NULL);
+        check_text(!zebkit_view_get_native_window(view, NULL), "native window: NULL output refused", NULL);
 
-        check(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no window: refused", error);
+        check_text(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no window: refused", error);
         zebkit_free(error), error = NULL;
-        check(!zebkit_view_attach_native(view, 0x7ffffff0u, 0, 0, 100, 100, &error) && error, "a window that is not there: refused", error);
+        check_text(!zebkit_view_attach_native(view, 0x7ffffff0u, 0, 0, 100, 100, &error) && error, "a window that is not there: refused", error);
         zebkit_free(error), error = NULL;
-        check(!zebkit_view_attach_native(view, host, 0, 0, 0, 100, &error) && error, "empty bounds: refused", error);
+        check_text(!zebkit_view_attach_native(view, host, 0, 0, 0, 100, &error) && error, "empty bounds: refused", error);
         zebkit_free(error), error = NULL;
-        check(zebkit_view_attach_native(view, host, 40, 30, 400, 300, &error), "attached in the host's window", error);
-        check(zebkit_view_get_native_window(view, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_X11 && window.handle == host,
+        check_text(zebkit_view_attach_native(view, host, 40, 30, 400, 300, &error), "attached in the host's window", error);
+        check_text(zebkit_view_get_native_window(view, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_X11 && window.handle == host,
               "native window: attached page reports host window", NULL);
 
-        check(!zebkit_view_detach_native(second), "a view in no window of the host's does not detach", NULL);
+        check_text(!zebkit_view_detach_native(second), "a view in no window of the host's does not detach", NULL);
         next = 1;
         break;
     case 1:
@@ -271,7 +266,7 @@ static void step(void *data) {
                    "XGetImage: the page's pixels in the host's window, to its corners");
         break;
     case 4:
-        if (!tries) check(pixel(host, 39, 30) == HOST_COLOR && pixel(host, 440, 329) == HOST_COLOR && pixel(host, 40, 330) == HOST_COLOR,
+        if (!tries) check_text(pixel(host, 39, 30) == HOST_COLOR && pixel(host, 440, 329) == HOST_COLOR && pixel(host, 40, 330) == HOST_COLOR,
               "XGetImage: the host's own pixels around it", NULL);
         CHECK_THEN(says(view, "JSON.stringify([screenX,screenY])", "\"[740,110]\""), "the page's screen position is the true one");
         break;
@@ -389,7 +384,7 @@ static void step(void *data) {
         break;
     case 35: /* Another view and another host at once. */
         if (loaded < 2) break;
-        check(zebkit_view_attach_native(second, second_host, 0, 0, 200, 150, &error), "a second view in a second host", error);
+        check_text(zebkit_view_attach_native(second, second_host, 0, 0, 200, 150, &error), "a second view in a second host", error);
         next = 1;
         break;
     case 36:
@@ -398,9 +393,9 @@ static void step(void *data) {
         break;
     case 37:
         if (zebkit_view_detach_native(second)) {
-            check(1, "zebkit_view_detach_native", NULL);
+            check_text(1, "zebkit_view_detach_native", NULL);
             zebkit_native_window detached = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
-            check(zebkit_view_get_native_window(second, &detached) && detached.kind == ZEBKIT_NATIVE_WINDOW_X11 &&
+            check_text(zebkit_view_get_native_window(second, &detached) && detached.kind == ZEBKIT_NATIVE_WINDOW_X11 &&
                   detached.handle && detached.handle != second_host && detached.handle != standalone_window,
                   "native window: detaching restores own window", NULL);
             next = 1;
@@ -414,7 +409,7 @@ static void step(void *data) {
         break;
     }
     case 39:
-        check(zebkit_view_attach_native(second, second_host, 5, 5, 200, 150, &error), "attached again", error);
+        check_text(zebkit_view_attach_native(second, second_host, 5, 5, 200, 150, &error), "attached again", error);
         next = 1;
         break;
     case 40:
@@ -446,10 +441,10 @@ static void step(void *data) {
         third_panel = XCreateSimpleWindow(display, third_host, 0, 0, 640, 480, 0, 0, HOST_COLOR);
         XMapWindow(display, third_panel);
         XSync(display, False);
-        check(zebkit_view_attach_native(third, third_panel, 0, 0, 300, 200, &error), "a view attached after both", error);
+        check_text(zebkit_view_attach_native(third, third_panel, 0, 0, 300, 200, &error), "a view attached after both", error);
         {
             zebkit_native_window native = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
-            check(zebkit_view_get_native_window(third, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_X11 &&
+            check_text(zebkit_view_get_native_window(third, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_X11 &&
                   native.handle == third_host, "native window: the top-level window, not the panel it is in", NULL);
         }
         next = 1;
@@ -471,7 +466,7 @@ static void step(void *data) {
         CHECK_THEN(says(third, "JSON.stringify(clicks)", "\"[150,100]\""), "and takes a click");
         break;
     case 50:
-        check(x_errors == 0, "the host's connection saw no X error", NULL);
+        check_text(x_errors == 0, "the host's connection saw no X error", NULL);
         zebkit_view_close(third);
         next = 1;
         break;
@@ -479,8 +474,6 @@ static void step(void *data) {
         CHECK_THEN(closed_third == 1, "closed");
         break;
     default:
-        printf("%d failures\n", failures);
-        fflush(stdout);
         zebkit_quit();
         return;
     }
@@ -493,12 +486,10 @@ static void step(void *data) {
     if (++tries > 200) {
         char what[64];
         snprintf(what, sizeof what, "step %d timed out", stage);
-        check(0, what, answer);
+        check_text(0, what, answer);
         free(answer);
         answer = NULL;
         waiting = 0;
-        printf("%d failures\n", failures);
-        fflush(stdout);
         zebkit_quit();
         return;
     }
@@ -510,24 +501,24 @@ static void refused_ready(void *data) {
     char *error = NULL;
     zebkit_view *plain = zebkit_view_new("about:blank", 200, 100);
     zebkit_native_window window = {ZEBKIT_NATIVE_WINDOW_APPKIT, 123};
-    check(!zebkit_view_get_native_window(plain, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
+    check_text(!zebkit_view_get_native_window(plain, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
           "native window: unavailable under headless or Wayland, output cleared", NULL);
     window = (zebkit_native_window){ZEBKIT_NATIVE_WINDOW_APPKIT, 123};
-    check(!zebkit_view_get_native_window(NULL, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
+    check_text(!zebkit_view_get_native_window(NULL, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
           "native window: NULL view clears output", NULL);
 
     int refused = !zebkit_view_attach_native(plain, 1, 0, 0, 100, 100, &error);
-    check(refused && error && strstr(error, "off-screen"), "the window cannot be put in another: refused, naming off-screen views", error);
+    check_text(refused && error && strstr(error, "off-screen"), "the window cannot be put in another: refused, naming off-screen views", error);
     zebkit_free(error), error = NULL;
-    check(!zebkit_view_detach_native(plain), "nothing to detach", NULL);
+    check_text(!zebkit_view_detach_native(plain), "nothing to detach", NULL);
     zebkit_view_close(plain);
     zebkit_view *offscreen = zebkit_view_new_offscreen("about:blank", 200, 100, 1.0f);
-    check(offscreen != NULL, "an off-screen view", NULL);
-    check(!zebkit_view_get_native_window(offscreen, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
+    check_text(offscreen != NULL, "an off-screen view", NULL);
+    check_text(!zebkit_view_get_native_window(offscreen, &window) && window.kind == ZEBKIT_NATIVE_WINDOW_NONE && !window.handle,
           "native window: off-screen view has no system window", NULL);
 
     refused = offscreen && !zebkit_view_attach_native(offscreen, 1, 0, 0, 100, 100, &error);
-    check(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
+    check_text(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
     zebkit_free(error);
     if (offscreen)
         zebkit_view_close(offscreen);
@@ -542,7 +533,7 @@ static void ready(void *data) {
     }
     display = XOpenDisplay(NULL);
     if (!display) {
-        check(0, "the display", NULL);
+        check_text(0, "the display", NULL);
         zebkit_quit();
         return;
     }
@@ -556,9 +547,9 @@ static void ready(void *data) {
         fake_button = (fake_button_func)dlsym(test, "XTestFakeButtonEvent");
         fake_motion = (fake_motion_func)dlsym(test, "XTestFakeMotionEvent");
         fake_key = (fake_key_func)dlsym(test, "XTestFakeKeyEvent");
-        check(1, "input through XTEST", NULL);
+        check_text(1, "input through XTEST", NULL);
     } else {
-        check(1, "no XTEST: input through XSendEvent", NULL);
+        check_text(1, "no XTEST: input through XSendEvent", NULL);
     }
     host = make_host(HOST_X, HOST_Y);
     second_host = make_host(1400, 60);
@@ -578,5 +569,6 @@ int main(int argc, char **argv) {
     int code = zebkit_main(argc, argv, ready, NULL);
     if (display)
         XCloseDisplay(display);
-    return code || failures ? 1 : 0;
+    check_text(code == 0, "zebkit_main returned 0", NULL);
+    return summary();
 }

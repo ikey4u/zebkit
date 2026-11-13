@@ -11,25 +11,14 @@ Exit 0 when every check passes.
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bindings", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import zebkit  # noqa: E402
+from harness import check, finish, zebkit  # noqa: E402
 from zebkit.automation import Page, run  # noqa: E402
-
-failures = []
-checks = 0
 
 # Where the page draws the button: at (60, 50) in the canvas, 120 by 80.
 CANVAS = (0, 0)
 DRAWN = (60, 50, 120, 80)
-
-
-def check(ok, what, detail=None):
-    global checks
-    checks += 1
-    print(("ok   " if ok else "FAIL ") + what + (": %r" % (detail,) if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
 
 
 def rgb(pixels, x, y):
@@ -111,12 +100,12 @@ def main():
         def finished(done):
             if done._error is not None:
                 check(False, "the test ran to the end", repr(done._error))
-            print("%d of %d checks passed" % (checks - len(failures), checks), flush=True)
             zebkit.quit()
         future.add_done_callback(finished)
 
     code = zebkit.main(ready, ["python"] + sys.argv[2:])
-    sys.exit(1 if code or failures or not checks else 0)
+    result = finish()
+    sys.exit(1 if code else result)
 
 
 if __name__ == "__main__":

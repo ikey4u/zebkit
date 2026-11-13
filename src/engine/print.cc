@@ -38,10 +38,6 @@
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/web/web_element.h"
-#include "zebkit/engine/automation.h"
-#include "zebkit/engine/automation.mojom.h"
-#include "zebkit/engine/call.h"
-#include "zebkit/engine/page_call.mojom.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/page_internal.h"
 #include "zebkit/engine/view.h"
@@ -209,24 +205,14 @@ void PrintToPdf(content::WebContents* contents,
           std::move(callback)));
 }
 
-void RendererClient::DidInitializeWorkerContextOnWorkerThread(
-    v8::Local<v8::Context> context) {
-  AutomationWorkerStarted(context);
-}
-
-void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
+void InstallPrintAgent(content::RenderFrame* render_frame) {
   // Deletes itself with the frame.
   new printing::PrintRenderFrameHelper(render_frame,
                                        std::make_unique<PrintDelegate>());
-  InstallChromeObject(render_frame);
-  InstallMediaCaptureAgent(render_frame);
-  InstallAutomationAgent(render_frame);
-  InstallPageCallAgent(render_frame);
 }
 
-void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
-    content::RenderFrameHost& render_frame_host,
-    blink::AssociatedInterfaceRegistry& associated_registry) {
+void AddPrintBinder(content::RenderFrameHost& render_frame_host,
+                    blink::AssociatedInterfaceRegistry& associated_registry) {
   associated_registry.AddInterface<printing::mojom::PrintManagerHost>(
       base::BindRepeating(
           [](content::RenderFrameHost* frame,
@@ -239,10 +225,6 @@ void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
                                                         frame);
           },
           &render_frame_host));
-  associated_registry.AddInterface<mojom::AutomationHost>(
-      base::BindRepeating(&BindAutomationHost, &render_frame_host));
-  associated_registry.AddInterface<mojom::PageCallHost>(
-      base::BindRepeating(&BindPageCallHost, &render_frame_host));
 }
 
 }  // namespace zebkit

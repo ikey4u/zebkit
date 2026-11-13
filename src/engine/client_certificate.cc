@@ -37,6 +37,13 @@
 namespace zebkit {
 namespace {
 
+// The store's identities of each pending request, by its id, for
+// zebkit_client_certificate_choose(); freed as the request settles.
+std::map<uintptr_t, net::ClientCertIdentityList>& Identities() {
+  static base::NoDestructor<std::map<uintptr_t, net::ClientCertIdentityList>> identities;
+  return *identities;
+}
+
 struct Traits {
   struct Decision {
     zebkit_client_certificate_action action = ZEBKIT_CLIENT_CERTIFICATE_CANCEL;
@@ -52,6 +59,11 @@ struct Traits {
   static constexpr auto kTimeout = &zebkit_view::client_certificate_timeout_ms_;
   static Decision Refusal() { return {}; }
   static Decision Unanswered() { return {}; }
+  static void Settling(const base::DictValue& metadata, Decision&) {
+    uint64_t id = 0;
+    if (const std::string* text = metadata.FindString("id"); text && base::StringToUint64(*text, &id))
+      Identities().erase(static_cast<uintptr_t>(id));
+  }
   static const char* State(const Decision& decision) {
     return decision.action == ZEBKIT_CLIENT_CERTIFICATE_PROVIDE ? "provided"
            : decision.action == ZEBKIT_CLIENT_CERTIFICATE_NONE  ? "none"
@@ -68,21 +80,6 @@ void Answer(std::unique_ptr<content::ClientCertificateDelegate> delegate,
     delegate->ContinueWithCertificate(std::move(decision.certificate), std::move(decision.key));
 }
 
-// The store's identities of each pending request, by its id, for
-// zebkit_client_certificate_choose().
-std::map<uintptr_t, net::ClientCertIdentityList>& Identities() {
-  static base::NoDestructor<std::map<uintptr_t, net::ClientCertIdentityList>> identities;
-  return *identities;
-}
-void PruneIdentities() {
-  auto& identities = Identities();
-  for (auto it = identities.begin(); it != identities.end();) {
-    if (Requests::Get().Find(it->first))
-      ++it;
-    else
-      it = identities.erase(it);
-  }
-}
 
 }  // namespace
 
@@ -133,10 +130,19 @@ base::OnceClosure HandleClientCertificate(
                     state, std::move(certificate)));
           },
           shared);
-      if (ShowCertificatePicker(contents, base::UTF8ToUTF16(info.host_and_port.ToString()), names, answer)) {
+      base::OnceClosure close =
+          ShowCertificatePicker(contents, base::UTF8ToUTF16(info.host_and_port.ToString()), names, answer);
+      if (close) {
         shared->first = std::move(identities);
         shared->second = std::move(delegate);
-        return base::OnceClosure();
+        // Content ends the request (the page went): the picker goes, and the
+        // delegate is not used again.
+        return base::BindOnce(
+            [](base::OnceClosure close, decltype(shared) state) {
+              state->second.reset();
+              std::move(close).Run();
+            },
+            std::move(close), shared);
       }
     }
     // As Chrome with no certificates to offer.
@@ -174,7 +180,6 @@ base::OnceClosure HandleClientCertificate(
   Requests::Reply reply = base::BindOnce(&Answer, std::move(delegate));
   if (!requests.Ask(view, std::move(metadata), reply))
     return base::OnceClosure();
-  PruneIdentities();
   if (!identities.empty())
     Identities()[requests.last_id()] = std::move(identities);
   return base::BindOnce([](uintptr_t id) { Requests::Get().Abandon(id); }, requests.last_id());

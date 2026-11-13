@@ -3,23 +3,9 @@
  * from another thread, close the view and quit. Prints one line per check
  * and exits 0 when all of them pass. scripts/engine-test.sh runs it. */
 
+#include "harness.h"
+
 #include <pthread.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <zebkit/zebkit.h>
-
-static int failures;
-static int checks;
-
-static void check(int ok, const char *what, const char *detail) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-    fflush(stdout);
-}
 
 static zebkit_view *view;
 static int loaded;
@@ -28,13 +14,13 @@ static int posted;
 
 static void finish(void *data) {
     (void)data;
-    check(posted == 1, "zebkit_post_task from another thread", NULL);
+    check_text(posted == 1, "zebkit_post_task from another thread", NULL);
     zebkit_view_close(view);
 }
 
 static void on_close(zebkit_view *closed, void *data) {
     (void)data;
-    check(closed == view, "on_close", NULL);
+    check_text(closed == view, "on_close", NULL);
     view = NULL;
     zebkit_quit();
 }
@@ -59,7 +45,7 @@ static int new_windows;
 static void on_new_window(zebkit_view *v, const char *url, void *data) {
     (void)v, (void)data;
     new_windows++;
-    check(strcmp(url, "https://example.invalid/popup") == 0, "zebkit_view_on_new_window: window.open's URL", url);
+    check_text(strcmp(url, "https://example.invalid/popup") == 0, "zebkit_view_on_new_window: window.open's URL", url);
 }
 
 static void after_open(zebkit_view *v, const char *json, const char *error, void *data);
@@ -68,13 +54,13 @@ static void after_capture(zebkit_view *v, const uint8_t *png, size_t size, const
     (void)v, (void)data;
     char detail[64];
     snprintf(detail, sizeof(detail), "%zu bytes", size);
-    check(png && size > 100 && memcmp(png, "\x89PNG", 4) == 0, "zebkit_view_capture: a PNG", error ? error : detail);
-    check(!zebkit_view_is_loading(view), "zebkit_view_is_loading", NULL);
+    check_text(png && size > 100 && memcmp(png, "\x89PNG", 4) == 0, "zebkit_view_capture: a PNG", error ? error : detail);
+    check_text(!zebkit_view_is_loading(view), "zebkit_view_is_loading", NULL);
     /* The window's title and focus: not seen without a window, but made. */
     zebkit_view_set_title(view, "the application's title");
     zebkit_view_focus(view);
     char *title = zebkit_view_get_title(view);
-    check(title && strcmp(title, "the application's title") != 0, "zebkit_view_set_title leaves the page's title",
+    check_text(title && strcmp(title, "the application's title") != 0, "zebkit_view_set_title leaves the page's title",
           title);
     zebkit_free(title);
     zebkit_view_set_title(view, NULL);
@@ -88,7 +74,7 @@ static void after_threads(void);
 
 static void after_resized(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "[200,100]") == 0, "zebkit_view_set_bounds: the page's new size", json ? json : error);
+    check_text(json && strcmp(json, "[200,100]") == 0, "zebkit_view_set_bounds: the page's new size", json ? json : error);
     zebkit_view_close(child);
     after_threads();
 }
@@ -100,7 +86,7 @@ static void measure_resized(void *data) {
 
 static void after_attached(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "[300,200]") == 0, "zebkit_view_attach: the page is the size it was given",
+    check_text(json && strcmp(json, "[300,200]") == 0, "zebkit_view_attach: the page is the size it was given",
           json ? json : error);
     zebkit_view_set_bounds(child, 0, 0, 200, 100);
     zebkit_post_delayed_task(measure_resized, NULL, 500);
@@ -122,7 +108,7 @@ static void on_child_load(zebkit_view *v, zebkit_load_event event, const char *u
 
 static void after_open(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "true") == 0 && new_windows == 1, "no window is made: window.open gives null",
+    check_text(json && strcmp(json, "true") == 0 && new_windows == 1, "no window is made: window.open gives null",
           json ? json : error);
     /* A second view, inside the first's window. */
     child = zebkit_view_new("data:text/html,<title>child</title>", 640, 480);
@@ -138,34 +124,34 @@ static void after_threads(void) {
 
 static void after_error(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json == NULL && error && strstr(error, "boom"), "evaluate: an exception", error);
+    check_text(json == NULL && error && strstr(error, "boom"), "evaluate: an exception", error);
     zebkit_view_evaluate(view, "document.title = 'second'", after_title, NULL);
 }
 
 static void after_promise(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "{\"a\":[1,\"x\"]}") == 0, "evaluate: a promise", json ? json : error);
+    check_text(json && strcmp(json, "{\"a\":[1,\"x\"]}") == 0, "evaluate: a promise", json ? json : error);
     zebkit_view_evaluate(view, "throw new Error('boom')", after_error, NULL);
 }
 
 static void after_sum(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "3") == 0, "evaluate: 1 + 2", json ? json : error);
+    check_text(json && strcmp(json, "3") == 0, "evaluate: 1 + 2", json ? json : error);
     zebkit_view_evaluate(view, "new Promise(r => setTimeout(() => r({a: [1, 'x']}), 50))", after_promise, NULL);
 }
 
 static void after_added(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)data;
-    check(json && strcmp(json, "[\"yes\",\"zebkit-test/1\"]") == 0,
+    check_text(json && strcmp(json, "[\"yes\",\"zebkit-test/1\"]") == 0,
           "zebkit_view_add_script before the page's, and zebkit_view_set_user_agent", json ? json : error);
     zebkit_view_capture(view, after_capture, NULL);
 }
 
 static void after_title(zebkit_view *v, const char *json, const char *error, void *data) {
     (void)v, (void)json, (void)data;
-    check(error == NULL, "evaluate: assignment", error);
+    check_text(error == NULL, "evaluate: assignment", error);
     char *url = zebkit_view_get_url(view);
-    check(url && strncmp(url, "data:text/html", 14) == 0, "zebkit_view_get_url", url);
+    check_text(url && strncmp(url, "data:text/html", 14) == 0, "zebkit_view_get_url", url);
     zebkit_free(url);
     /* A script for every new document, and another User-Agent, then a load. */
     zebkit_view_add_script(view, "window.__added = 'yes'");
@@ -182,10 +168,10 @@ static void on_load(zebkit_view *v, zebkit_load_event event, const char *url, vo
         return;
     }
     if (event == ZEBKIT_LOAD_FINISHED && !loaded++) {
-        check(1, "on_load: finished", url);
+        check_text(1, "on_load: finished", url);
         zebkit_view_evaluate(view, "1 + 2", after_sum, NULL);
     } else if (event == ZEBKIT_LOAD_FAILED) {
-        check(0, "on_load", url);
+        check_text(0, "on_load", url);
         zebkit_quit();
     }
 }
@@ -193,7 +179,7 @@ static void on_load(zebkit_view *v, zebkit_load_event event, const char *url, vo
 static void on_title(zebkit_view *v, const char *title, void *data) {
     (void)v, (void)data;
     if (strcmp(title, "second") == 0 && !titled++)
-        check(1, "on_title", title);
+        check_text(1, "on_title", title);
 }
 
 static void on_menu(const char *id, void *data) {
@@ -210,27 +196,27 @@ static void on_app(void *data) {
 
 static void ready(void *data) {
     (void)data;
-    check(strncmp(zebkit_engine_version(), "Chromium ", 9) == 0, "zebkit_engine_version", zebkit_engine_version());
+    check_text(strncmp(zebkit_engine_version(), "Chromium ", 9) == 0, "zebkit_engine_version", zebkit_engine_version());
     char *error = NULL;
     unsigned port = zebkit_cdp_listen(NULL, 0, &error);
-    check(port > 0 && port == zebkit_cdp_get_port(), "zebkit_cdp_listen", error);
+    check_text(port > 0 && port == zebkit_cdp_get_port(), "zebkit_cdp_listen", error);
     zebkit_free(error);
     char *url = zebkit_cdp_get_url();
-    check(url && strncmp(url, "ws://127.0.0.1:", 15) == 0 && strstr(url, "/devtools/browser/"), "zebkit_cdp_get_url", url);
+    check_text(url && strncmp(url, "ws://127.0.0.1:", 15) == 0 && strstr(url, "/devtools/browser/"), "zebkit_cdp_get_url", url);
     zebkit_free(url);
 
     /* The application's menu: checked, and taken. */
-    check(!zebkit_app_set_menu("{}", on_menu, NULL, &error) && error, "zebkit_app_set_menu refuses what is not a list",
+    check_text(!zebkit_app_set_menu("{}", on_menu, NULL, &error) && error, "zebkit_app_set_menu refuses what is not a list",
           error);
     zebkit_free(error);
     error = NULL;
-    check(!zebkit_app_set_menu("[{\"title\": \"Edit\", \"items\": [{\"role\": \"juggle\"}]}]", on_menu, NULL,
+    check_text(!zebkit_app_set_menu("[{\"title\": \"Edit\", \"items\": [{\"role\": \"juggle\"}]}]", on_menu, NULL,
                                &error) &&
               error && strstr(error, "juggle"),
           "zebkit_app_set_menu refuses an unknown role", error);
     zebkit_free(error);
     error = NULL;
-    check(zebkit_app_set_menu("[{\"title\": \"File\", \"items\": [{\"title\": \"Open\", \"id\": \"open\", \"key\": "
+    check_text(zebkit_app_set_menu("[{\"title\": \"File\", \"items\": [{\"title\": \"Open\", \"id\": \"open\", \"key\": "
                               "\"o\"}, {\"separator\": true}, {\"title\": \"Zoom\", \"items\": [{\"title\": \"In\", "
                               "\"id\": \"in\", \"key\": \"=\", \"modifiers\": [\"shift\"]}]}]}, {\"title\": \"Edit\", "
                               "\"items\": [{\"role\": \"copy\"}, {\"role\": \"selectAll\", \"title\": \"All\"}]}]",
@@ -242,7 +228,7 @@ static void ready(void *data) {
     for (int i = 0; i < 2; i++) {
         zebkit_free(error);
         error = NULL;
-        check(zebkit_app_set_menu("[{\"role\": \"appMenu\", \"items\": [{\"role\": \"about\"}, {\"separator\": "
+        check_text(zebkit_app_set_menu("[{\"role\": \"appMenu\", \"items\": [{\"role\": \"about\"}, {\"separator\": "
                                   "true}, {\"role\": \"services\"}, {\"separator\": true}, {\"role\": \"quit\"}]}, "
                                   "{\"title\": \"Edit\", \"items\": [{\"role\": \"copy\"}]}]",
                                   on_menu, NULL, &error),
@@ -253,7 +239,7 @@ static void ready(void *data) {
     zebkit_app_on_quit_request(on_app, NULL);
 
     view = zebkit_view_new("data:text/html,<title>first</title><p>hello</p>", 800, 600);
-    check(view != NULL, "zebkit_view_new", NULL);
+    check_text(view != NULL, "zebkit_view_new", NULL);
     zebkit_view_on_load(view, on_load, NULL);
     zebkit_view_on_title(view, on_title, NULL);
     zebkit_view_on_close(view, on_close, NULL);
@@ -261,8 +247,7 @@ static void ready(void *data) {
 
 int main(int argc, char **argv) {
     int code = zebkit_main(argc, argv, ready, NULL);
-    check(code == 0, "zebkit_main returned 0", NULL);
-    check(titled == 1, "the title changed", NULL);
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures ? 1 : 0;
+    check_text(code == 0, "zebkit_main returned 0", NULL);
+    check_text(titled == 1, "the title changed", NULL);
+    return summary();
 }

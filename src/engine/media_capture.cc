@@ -51,6 +51,7 @@
 #include "zebkit/engine/media_capture.mojom.h"
 #include "zebkit/engine/media_capture_writer.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/c_api_util.h"
 #include "zebkit/engine/view.h"
 
 namespace zebkit {
@@ -316,15 +317,8 @@ struct zebkit_media_capture {
 
 namespace {
 
-char* Duplicate(const std::string& text) {
-  return strdup(text.c_str());
-}
-
-void SetError(char** error, const std::string& message) {
-  if (error) {
-    *error = Duplicate(message);
-  }
-}
+using zebkit::CopyString;
+using zebkit::SetError;
 
 }  // namespace
 
@@ -458,6 +452,30 @@ void MediaAt(content::WebContents* contents,
                std::move(done));
 }
 
+content::RenderFrameHost* FrameOfMediaId(content::WebContents* contents,
+                                         const std::string& media_id,
+                                         int* element,
+                                         std::string* error) {
+  std::vector<std::string> parts = base::SplitString(
+      media_id, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  int process = 0, routing = 0;
+  if (parts.size() != 3 || !base::StringToInt(parts[0], &process) ||
+      !base::StringToInt(parts[1], &routing) ||
+      !base::StringToInt(parts[2], element)) {
+    *error = "not a media id of the media list";
+    return nullptr;
+  }
+  content::RenderFrameHost* frame =
+      content::RenderFrameHost::FromID(process, routing);
+  if (!frame || !contents ||
+      content::WebContents::FromRenderFrameHost(frame) != contents ||
+      !frame->IsRenderFrameLive()) {
+    *error = "the media's frame is gone (list the media again)";
+    return nullptr;
+  }
+  return frame;
+}
+
 zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
                                         const std::string& media_id,
                                         const std::string& path,
@@ -468,23 +486,10 @@ zebkit_media_capture* StartMediaCapture(content::WebContents* contents,
     *error = "the view is closed";
     return nullptr;
   }
-  // "<process>.<frame>.<element>"
-  std::vector<std::string> parts = base::SplitString(
-      media_id, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
-  int process = 0, routing = 0, element = 0;
-  if (parts.size() != 3 || !base::StringToInt(parts[0], &process) ||
-      !base::StringToInt(parts[1], &routing) ||
-      !base::StringToInt(parts[2], &element)) {
-    *error = "not a media id of the media list";
+  int element = 0;
+  content::RenderFrameHost* frame = FrameOfMediaId(contents, media_id, &element, error);
+  if (!frame)
     return nullptr;
-  }
-  content::RenderFrameHost* frame =
-      content::RenderFrameHost::FromID(process, routing);
-  if (!frame || content::WebContents::FromRenderFrameHost(frame) != contents ||
-      !frame->IsRenderFrameLive()) {
-    *error = "the media's frame is gone (list the media again)";
-    return nullptr;
-  }
   const base::FilePath file = base::FilePath::FromUTF8Unsafe(path);
   if (file.empty() || !file.IsAbsolute() || file.EndsWithSeparator()) {
     *error = "the path must be an absolute path of a file";
@@ -624,7 +629,7 @@ void zebkit_media_capture_stop(zebkit_media_capture* capture) {
 char* zebkit_media_capture_status(zebkit_media_capture* capture) {
   if (!capture || !zebkit::CurrentlyOnEngineThread())
     return nullptr;
-  return Duplicate(capture->Status());
+  return CopyString(capture->Status());
 }
 
 void zebkit_media_capture_free(zebkit_media_capture* capture) {

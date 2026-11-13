@@ -8,13 +8,20 @@
 #include <string>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "url/gurl.h"
 
 namespace zebkit {
 
+// What the system did: done, or the error. Run on the engine's thread, after
+// the call that asked returns; what may block (a launch, the shell's calls
+// on Windows) runs off it.
+using DesktopDone = base::OnceCallback<void(bool done, std::string error)>;
+
 // desktop_actions_linux.cc, desktop_actions_mac.mm, desktop_actions_win.cc.
-bool OpenWithSystem(const GURL& url, std::string* error);
-bool ShowInFileManager(const base::FilePath& path, std::string* error);
+// ShowInFileManager() is given a path that exists.
+void OpenWithSystem(const GURL& url, DesktopDone done);
+void ShowInFileManager(const base::FilePath& path, DesktopDone done);
 
 }  // namespace zebkit
 

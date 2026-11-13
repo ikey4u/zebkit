@@ -5,16 +5,20 @@
 //
 //   node cdp_clients.mjs <clients dir> <expected differences file> \
 //       --zebkit <zebkit-run> --chrome <chrome> [--work DIR] [--only REGEX] [--json FILE]
-//       [--default-context]
+//       [--default-context] [--cache DIR]
 //
 // --default-context runs each case in the browser's default context, for an
-// engine without Target.createBrowserContext.
+// engine without Target.createBrowserContext. --cache keeps Chrome's results
+// in DIR, by Chrome's version, this file, the clients' versions and the
+// options: a run with the same of all of them takes them from there.
 //
 // A difference named in the expected list (with its reason) is reported and
-// does not fail the run. Prints a table of the differences, then a count;
-// exits 1 on a difference not in the list. docs/AUTOMATION.md, section 7.
+// does not fail the run; nor does a case that fails alike in both, when listed.
+// Prints a table of the differences, a FAIL line for each that is not listed,
+// then "N of M checks passed" (a check a case); exits 1 on a difference not in
+// the list. docs/AUTOMATION.md, section 7.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -296,9 +300,12 @@ pp('frames: out of process', async ({ page }) => {
 });
 pp('frames: click into out of process frame', async ({ page }) => {
   await page.goto(`${origin}/cross.html?o=${encodeURIComponent(other)}`);
+  // The frame and its button first. A failed click is an error of the case, never a
+  // result: swallowed, Chrome's "press" of a click that came too early was cached.
+  const frame = await (await page.waitForSelector('#x')).contentFrame();
+  await frame.waitForSelector('#b');
   await page.mouse.click(30, 20);
-  const frame = page.frames()[1];
-  await frame.click('#b').catch(() => {});
+  await frame.click('#b');
   return frame.evaluate(() => document.querySelector('#b').textContent);
 });
 pp('frames: attach, navigate, detach events', async ({ page }) => {
@@ -1314,7 +1321,30 @@ for (const line of fs.readFileSync(expectedFile, 'utf8').split('\n')) {
 // others are not throttled while a case waits for them, and history
 // navigations answer with a response.
 const unthrottled = ['--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-back-forward-cache'];
-const chromeResults = await runAll(chromePath, ['--headless=new', '--no-sandbox', ...unthrottled], 'chrome');
+const chromeArgs = ['--headless=new', '--no-sandbox', ...unthrottled];
+// Chrome's results, from the cache when nothing they depend on changed.
+const cacheDir = option('--cache');
+let cacheFile = null, chromeResults = null;
+if (cacheDir) {
+  const version = spawnSync(chromePath, ['--version'], { encoding: 'utf8' }).stdout || '';
+  const clients = ['puppeteer-core', 'playwright-core'].map(name => require(`${name}/package.json`).version);
+  const hash = crypto.createHash('sha256').update(JSON.stringify([version.trim(), clients, chromeArgs, defaultContext,
+    option('--only') || '', fs.readFileSync(new URL(import.meta.url))])).digest('hex').slice(0, 24);
+  cacheFile = path.join(cacheDir, `chrome-${hash}.json`);
+  if (version.trim() && fs.existsSync(cacheFile)) {
+    chromeResults = new Map(JSON.parse(fs.readFileSync(cacheFile, 'utf8')));
+    console.log(`Chrome's results from ${path.basename(cacheFile)} (${version.trim()})`);
+  }
+}
+if (!chromeResults) {
+  chromeResults = await runAll(chromePath, chromeArgs, 'chrome');
+  // Only a run in which every case gave Chrome's value is kept: an error (a
+  // timeout on a loaded machine, a browser that died) is not a reference.
+  if (cacheFile && [...chromeResults.values()].every(outcome => outcome.ok)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify([...chromeResults]));
+  }
+}
 const zebkitResults = await runAll(zebkitPath, ['--headless', '--no-sandbox', ...unthrottled], 'zebkit');
 server.closeAllConnections();
 server.close();
@@ -1349,8 +1379,12 @@ for (const [key, chrome] of chromeResults) {
 }
 for (const row of rows)
   console.log(`\n${row.kind}  ${row.key}\n  chrome: ${row.chrome}\n  zebkit: ${row.zebkit}${row.reason ? `\n  reason: ${row.reason}` : ''}`);
+console.log('');
+for (const row of rows.filter(r => r.kind === 'DIFFERENT' || r.kind === 'BOTH-FAIL'))
+  console.log(`FAIL ${row.key}: ${row.kind === 'DIFFERENT' ? 'differs from Chrome, not listed' : 'fails alike in both, not listed'}`);
 const expectedCount = rows.filter(r => r.kind === 'expected').length;
 console.log(`\n| Result | Cases |\n|---|---|\n| same as Chrome | ${same - sameError} |\n| both fail alike | ${sameError} |\n| expected differences | ${expectedCount} |\n| unexpected (differences, failures not listed) | ${unexpected} |\n| listed but no longer different | ${stale} |\n| total | ${chromeResults.size} |`);
 if (option('--json'))
   fs.writeFileSync(option('--json'), JSON.stringify({ rows, same, sameError, expectedCount, unexpected, stale, total: chromeResults.size, chrome: [...chromeResults], zebkit: [...zebkitResults] }, null, 1));
-process.exit(unexpected ? 1 : 0);
+console.log(`${chromeResults.size - unexpected} of ${chromeResults.size} checks passed`);
+process.exit(unexpected || !chromeResults.size ? 1 : 0);

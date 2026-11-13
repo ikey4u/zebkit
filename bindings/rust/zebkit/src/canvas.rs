@@ -1,7 +1,7 @@
 //! 2D drawing on the engine's Skia, `<zebkit/canvas.h>`, and shaping a line of
 //! text on its HarfBuzz, `<zebkit/text.h>`. None of it needs [`crate::run`].
 
-use crate::{c_string, sys, take_bytes, take_error, take_string, Error};
+use crate::{c_string, sys, take_bytes, take_error, take_string, Bytes, Error};
 use std::os::raw::c_int;
 
 /// A font from its bytes, for [`Canvas::set_font`].
@@ -88,7 +88,7 @@ impl Canvas {
     }
 
     /// The pixels, RGBA not premultiplied.
-    pub fn pixels(&self) -> Result<Vec<u8>, Error> {
+    pub fn pixels(&self) -> Result<Bytes, Error> {
         let mut error = std::ptr::null_mut();
         unsafe {
             let data = sys::zebkit_canvas_pixels(self.raw, &mut error);
@@ -100,7 +100,7 @@ impl Canvas {
     }
 
     /// The pixels as a PNG file.
-    pub fn png(&self) -> Result<Vec<u8>, Error> {
+    pub fn png(&self) -> Result<Bytes, Error> {
         let (mut size, mut error) = (0, std::ptr::null_mut());
         unsafe {
             let data = sys::zebkit_canvas_png(self.raw, &mut size, &mut error);
@@ -213,6 +213,7 @@ impl Canvas {
         unsafe { sys::zebkit_canvas_clear(self.raw, rgba) }
     }
     /// RGBA pixels, not premultiplied, over a rectangle. False for what is not `width` by `height`.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_image(&mut self, rgba: &[u8], width: u32, height: u32, x: f64, y: f64, dest_width: f64, dest_height: f64) -> bool {
         rgba.len() == width as usize * height as usize * 4
             && unsafe {

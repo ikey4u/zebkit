@@ -37,7 +37,8 @@
  * passes. */
 
 #define _GNU_SOURCE
-#include <stdarg.h>
+#include "harness.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,23 +49,6 @@
 #include <zebkit/automation.h>
 #include <zebkit/offscreen.h>
 #include <zebkit/services.h>
-
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *format, ...) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    char detail[1024] = "";
-    if (format) {
-        va_list args;
-        va_start(args, format);
-        vsnprintf(detail, sizeof(detail), format, args);
-        va_end(args);
-    }
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, *detail ? ": " : "", detail);
-    fflush(stdout);
-}
 
 static int64_t now_us(void) {
     struct timespec ts;
@@ -539,7 +523,6 @@ static void answered(zebkit_view *v, const char *json, const char *error, void *
 static void run_next(void *data) {
     (void)data;
     if (current >= command_count) {
-        printf("%d of %d checks passed\n", checks - failures, checks);
         zebkit_quit();
         return;
     }
@@ -619,7 +602,7 @@ static void bench_answered(zebkit_view *v, const char *json, const char *error, 
                          : bench_runs;
     if (error) {
         fprintf(stderr, "%s: %s\n", timings[bench_index].name, error);
-        ++failures;
+        ++harness_failures;
     }
     /* Three warm-up runs first, as the Playwright side has. */
     if (bench_run >= 3)
@@ -660,7 +643,7 @@ static void bench_loaded(zebkit_view *v, const char *json, const char *error, vo
     (void)v, (void)json, (void)data;
     if (error) {
         fprintf(stderr, "the page did not load: %s\n", error);
-        failures = 1;
+        ++harness_failures;
         zebkit_quit();
         return;
     }
@@ -695,12 +678,7 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
-    if (!getenv("ZEBKIT_TEST_BASE")) {
-        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
-        return 2;
-    }
-    const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env);
+    snprintf(base, sizeof(base), "%s", test_base());
     const char *runs = getenv("ZEBKIT_AUTOMATION_BENCH");
     if (runs && *runs) {
         benchmark = 1;
@@ -712,6 +690,7 @@ int main(int argc, char **argv) {
     if (code)
         return code;
     if (benchmark)
-        return failures ? 1 : 0;
-    return failures || checks < command_count ? 1 : 0;
+        return harness_failures ? 1 : 0;
+    /* Every command was checked: a run that ended early is a failure. */
+    return summary() || harness_checks < command_count ? 1 : 0;
 }

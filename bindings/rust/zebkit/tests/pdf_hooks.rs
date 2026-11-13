@@ -71,7 +71,8 @@ fn annotations_and_interchange() {
     let file = document.add_annotation(0, r#"{"type":"fileAttachment","rect":[1,1,9,9]}"#).unwrap();
     document.attach_file(0, file, "a.bin", b"\x00data").unwrap();
     let mut saved = Document::open(&document.save(false).unwrap(), None).unwrap();
-    assert_eq!(saved.annotation_file(0, file).unwrap(), ("a.bin".to_string(), b"\x00data".to_vec()));
+    let (name, data) = saved.annotation_file(0, file).unwrap();
+    assert_eq!((name.as_str(), &data[..]), ("a.bin", &b"\x00data"[..]));
 }
 
 #[test]

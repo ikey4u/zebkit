@@ -218,7 +218,7 @@ fn image_decode(bounds: &'static Bounds, args: &Value) -> Outcome {
 fn image_encode(bounds: &'static Bounds, args: &Value) -> Outcome {
     let image = if let Some(width) = args["width"].as_u64() {
         let height = args["height"].as_u64().ok_or("height goes with width")?;
-        Image { width: width as u32, height: height as u32, rgba: input(bounds, args)? }
+        Image { width: width as u32, height: height as u32, rgba: input(bounds, args)?.into() }
     } else {
         // Another image's file: a conversion.
         decode(&input(bounds, args)?)?

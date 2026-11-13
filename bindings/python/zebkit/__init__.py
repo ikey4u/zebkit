@@ -26,6 +26,7 @@ thread once the engine has started.
 """
 
 import ctypes
+import itertools
 import json
 import os
 import pathlib
@@ -34,7 +35,7 @@ import threading
 
 __all__ = [
     "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "NetworkStream", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless", "set_engine_settings", "engine_settings",
-    "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_port", "cdp_url", "cdp_stop", "fetch",
+    "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_listen_async", "cdp_port", "cdp_url", "cdp_stop", "fetch", "Call", "FindResult",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
     "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
@@ -49,7 +50,7 @@ __all__ = [
     "Tray", "DeviceChooserRequest", "EyeDropperRequest", "ShareRequest", "UNDEFINED",
     "environment", "on_environment_changed", "capabilities", "displays", "on_displays_changed",
     "on_notification", "notification_clicked", "notification_closed", "on_power_event",
-    "prevent_sleep", "allow_sleep", "open_external", "show_in_folder",
+    "prevent_sleep", "allow_sleep", "open_external", "show_in_folder", "open_external_async", "show_in_folder_async",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -75,6 +76,99 @@ class _Undefined:
 # What a function bound with View.bind() returns to resolve the page's
 # promise with undefined rather than a JSON value.
 UNDEFINED = _Undefined()
+
+
+def _user_agent_answered(view, result, error, data):
+    if data is None or data not in _user_agent_waiting:
+        return
+    if data in _user_agent_calling:
+        # Told inside the call: kept until it returns, given only if queued.
+        _user_agent_calling[data] = (result, error)
+        return
+    function = _user_agent_waiting.pop(data)
+    if function is not None:
+        function(json.loads(result) if result else None, _text(error, None))
+
+
+
+class FindResult(dict):
+    """A result of View.find(), as View.on_find() and View.find_result()
+    give it (Rust's FindResult): the engine's JSON object ("requestId",
+    "text", "matches", "activeMatch", "final", "rect", "stopped"), with
+    these names for its members."""
+
+    __slots__ = ()
+
+    request_id = property(lambda self: int(self.get("requestId", 0)))
+    text = property(lambda self: self.get("text", ""))
+    matches = property(lambda self: int(self.get("matches", 0)))
+    active_match = property(lambda self: int(self.get("activeMatch", 0)))
+    final_update = property(lambda self: bool(self.get("final", False)))
+    rect = property(lambda self: self.get("rect"))
+    stopped = property(lambda self: bool(self.get("stopped", False)))
+
+
+class Call:
+    """A call from a page, zebkit.app.<name>(...args), given to View.bind_call()'s
+    function: answer it, now or later, from any thread, with exactly one of
+    resolve(), resolve_undefined() and reject(). An answer takes the engine's
+    call, so a second one raises Error and nothing is freed twice; a Call let go
+    unanswered (garbage collected) is dropped with zebkit_call_free(), which
+    rejects the page's promise with "the application dropped the call"."""
+
+    __slots__ = ("origin", "args", "_raw", "_lock", "__weakref__")
+
+    def __init__(self, raw, origin, args):
+        self._raw = raw
+        self._lock = threading.Lock()
+        self.origin = origin
+        self.args = args
+
+    def _take(self):
+        with self._lock:
+            raw, self._raw = self._raw, None
+        if not raw:
+            raise Error("the call is already answered")
+        return raw
+
+    @property
+    def answered(self):
+        return self._raw is None
+
+    def resolve(self, value=None):
+        """Resolves the page's promise with value (JSON-able)."""
+        answer = json.dumps(value).encode()
+        _call_resolve_json(self._take(), answer, len(answer))
+
+    def resolve_json(self, text):
+        """Resolves the page's promise with text, a JSON value."""
+        answer = text.encode() if isinstance(text, str) else bytes(text)
+        _call_resolve_json(self._take(), answer, len(answer))
+
+    def resolve_undefined(self):
+        _call_resolve(self._take(), None)
+
+    def reject(self, message):
+        """Rejects the page's promise with an Error of message."""
+        _call_reject(self._take(), str(message).encode())
+
+    def close(self):
+        """Drops the call unanswered, now (Rust's drop(call), Go's
+        Call.Close()): the page's promise is rejected with "the application
+        dropped the call". Nothing once it is answered or closed; any
+        thread may call it."""
+        with self._lock:
+            raw, self._raw = self._raw, None
+        if raw:
+            _call_free(raw)
+
+    def __del__(self):
+        raw, self._raw = getattr(self, "_raw", None), None
+        if raw:
+            try:
+                _call_free(raw)
+            except Exception:  # noqa: BLE001 - interpreter shutdown
+                pass
 
 
 def _find_library():
@@ -150,6 +244,9 @@ _is_headless = _declare("zebkit_is_headless", _B)
 _view_new = _declare("zebkit_view_new", _V, _S, _I, _I)
 _view_load_url = _declare("zebkit_view_load_url", None, _V, _S)
 _view_user_agent_override = _declare("zebkit_view_set_user_agent_override", _B, _V, _S, _RESULT, _P)
+_user_agent_waiting = {}
+_user_agent_calling = {}
+_user_agent_keys = itertools.count(1)
 _cookie_storage = _declare("zebkit_set_cookie_storage", _B, _I, _S)
 _cookie_key = _declare("zebkit_set_cookie_encryption_key", _B, _P, ctypes.c_size_t)
 _view_target = _declare("zebkit_view_get_target_id", _P, _V)
@@ -199,6 +296,9 @@ _prevent_sleep = _declare("zebkit_prevent_sleep", ctypes.c_uint64, _B, _S)
 _allow_sleep = _declare("zebkit_allow_sleep", _B, ctypes.c_uint64)
 _open_external = _declare("zebkit_open_external", _B, _S, ctypes.POINTER(_P))
 _show_in_folder = _declare("zebkit_show_in_folder", _B, _S, ctypes.POINTER(_P))
+_DESKTOP_DONE = ctypes.CFUNCTYPE(None, _B, _S, _P)
+_open_external_async = _declare("zebkit_open_external_async", None, _S, _DESKTOP_DONE, _P)
+_show_in_folder_async = _declare("zebkit_show_in_folder_async", None, _S, _DESKTOP_DONE, _P)
 _TRAY_CLICK = ctypes.CFUNCTYPE(None, _P)
 _TRAY_MENU = ctypes.CFUNCTYPE(None, _S, _P)
 _tray_new = _declare("zebkit_tray_new", _P, ctypes.c_char_p, ctypes.c_size_t, _S, ctypes.POINTER(_P))
@@ -261,6 +361,8 @@ _TOLD = ctypes.CFUNCTYPE(None, _V, _S, _P)
 _view_on_external_protocol = _declare("zebkit_view_on_external_protocol", None, _V, _TOLD, _P)
 _view_on_download = _declare("zebkit_view_on_download", None, _V, _ASKED, _P)
 _view_on_download_progress = _declare("zebkit_view_on_download_progress", None, _V, _TOLD, _P)
+_view_on_download_result = _declare("zebkit_view_on_download_result", None, _V, _TOLD, _P)
+_view_on_process_gone = _declare("zebkit_view_on_process_gone", None, _V, _TOLD, _P)
 _view_download_timeout = _declare("zebkit_view_set_download_timeout", _B, _V, ctypes.c_uint32)
 _download_info = _declare("zebkit_download_request_info", _P, _P)
 _download_respond = _declare("zebkit_download_respond", _B, _P, _I, _S, _EP)
@@ -280,7 +382,7 @@ class _NativeWindowInfo(ctypes.Structure):
 
 
 _view_get_native_window = _declare("zebkit_view_get_native_window", _B, _V, ctypes.POINTER(_NativeWindowInfo))
-_NATIVE_WINDOW_EXPORT = ctypes.CFUNCTYPE(None, _P, _S)
+_NATIVE_WINDOW_EXPORT = ctypes.CFUNCTYPE(None, _V, _S, _P)
 _view_export_native_window = _declare("zebkit_view_export_native_window", _B, _V, _NATIVE_WINDOW_EXPORT, _P)
 _view_set_bounds = _declare("zebkit_view_set_bounds", None, _V, _I, _I, _I, _I)
 _view_add_world_script = _declare("zebkit_view_add_world_script", _B, _V, _S, _S, _B, _EP)
@@ -603,7 +705,6 @@ class NavigationRequest:
                     replacement_url.encode() if replacement_url is not None else None, None))
 
 
-
 def _permission_state(state):
     if state not in _PERMISSION_STATES:
         raise ValueError("permission state must be prompt, granted or denied")
@@ -647,7 +748,10 @@ _view_bind = _declare("zebkit_view_bind", None, _V, _S, _BIND, _P)
 _call_resolve = _declare("zebkit_call_resolve", None, _P, _S)
 _call_resolve_json = _declare("zebkit_call_resolve_json", None, _P, _S, ctypes.c_size_t)
 _call_reject = _declare("zebkit_call_reject", None, _P, _S)
+_call_free = _declare("zebkit_call_free", None, _P)
 _cdp_listen = _declare("zebkit_cdp_listen", _U, _S, _U, _EP)
+_CDP_LISTEN = ctypes.CFUNCTYPE(None, _U, _S, _S, _P)
+_cdp_listen_async = _declare("zebkit_cdp_listen_async", None, _S, _U, _CDP_LISTEN, _P)
 _cdp_get_port = _declare("zebkit_cdp_get_port", _U)
 _cdp_get_url = _declare("zebkit_cdp_get_url", _P)
 _cdp_stop = _declare("zebkit_cdp_stop", None)
@@ -744,6 +848,9 @@ def _guard(function):
     return call
 
 
+_user_agent_done = _RESULT(_guard(_user_agent_answered))
+
+
 # ---- the engine ----
 
 def version():
@@ -832,7 +939,8 @@ def allow_sleep(token):
 
 
 def open_external(url):
-    """The system's handler for url."""
+    """The system's handler for url. Returns once the URL is valid and the
+    system is asked; open_external_async() tells how it went."""
     _require_thread("open_external()")
     error = _P()
     if not _open_external(url.encode(), ctypes.byref(error)):
@@ -840,11 +948,39 @@ def open_external(url):
 
 
 def show_in_folder(path):
-    """The file manager, with path selected."""
+    """The file manager, with path selected. Returns once the path is valid and
+    the system is asked; show_in_folder_async() tells how it went."""
     _require_thread("show_in_folder()")
     error = _P()
     if not _show_in_folder(os.fsencode(path), ctypes.byref(error)):
         _raise(error, "the file was not shown")
+
+
+def _desktop(what, call, argument, function):
+    _require_thread(what)
+    if not callable(function):
+        raise TypeError("function must be callable")
+    def done(ok, error, data):
+        _alive.discard(callback)
+        function(bool(ok), None if ok else (_text(error, None) or "the system did not do it"))
+    callback = _DESKTOP_DONE(_guard(done))
+    _alive.add(callback)
+    call(argument, callback, None)
+
+
+def open_external_async(url, function):
+    """open_external(), telling function(done, error) how it went, once, on the
+    engine's thread, after this returns: (True, None), or (False, the error: an
+    invalid URL, no program for it)."""
+    _desktop("open_external_async()", _open_external_async, url.encode(), function)
+
+
+def show_in_folder_async(path, function):
+    """show_in_folder(), telling function(done, error) how it went, once, later:
+    (True, None), or (False, the error: a relative path, a file that is not
+    there, a file manager that failed). macOS's Finder says nothing of itself:
+    done once it is asked."""
+    _desktop("show_in_folder_async()", _show_in_folder_async, os.fsencode(path), function)
 
 
 class Tray:
@@ -1028,639 +1164,6 @@ def post(function, delay_ms=0):
     return bool(posted)
 
 
-class View:
-    """A page, in a window when the machine has a display."""
-
-    def __init__(self, url=None, width=0, height=0, options=None, context=None):
-        """A view loading url. options (<zebkit/window.h>): the window's, before
-        it is made, such as {"frame": "overlay", "show": False}; width and
-        height go into them. context: a Context of its own cookies and
-        storage, else the default one."""
-        _require_thread("View()")
-        context_handle = context._check() if context is not None else None
-        if options is None and context_handle:
-            self._handle = _view_new_in(context_handle, url.encode() if url else None, width, height)
-        elif options is None:
-            self._handle = _view_new(url.encode() if url else None, width, height)
-        else:
-            given = dict(options)
-            if width:
-                given.setdefault("width", width)
-            if height:
-                given.setdefault("height", height)
-            error = _P()
-            self._handle = _view_new_with_options(context_handle, url.encode() if url else None,
-                                                  json.dumps(given).encode(), ctypes.byref(error))
-            if not self._handle:
-                _raise(error, "cannot create a view with these window options")
-        if not self._handle:
-            raise Error("cannot create a view")
-        self._initialize_callbacks()
-
-    @property
-    def window(self):
-        """The window's state (<zebkit/window.h>): state, bounds, frame,
-        titlebarArea, controls, capabilities."""
-        value = _string(_view_get_window(self._check()))
-        return json.loads(value) if value else None
-
-    def set_window(self, options=None, **fields):
-        """Changes the window's runtime options, merged by key."""
-        given = dict(options or {}, **fields)
-        error = _P()
-        if not _view_set_window(self._check(), json.dumps(given).encode(), ctypes.byref(error)):
-            _raise(error, "window options rejected")
-
-    def window_action(self, action):
-        """show, hide, minimize, maximize, restore, fullscreen,
-        exit-fullscreen, close: asked of the system; the state tells."""
-        error = _P()
-        if not _view_window_action(self._check(), action.encode(), ctypes.byref(error)):
-            _raise(error, "window action refused")
-
-    def on_window_state(self, function):
-        """function(dict) for every change of the window's state; None removes it."""
-        callback = _WINDOW_STATE(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
-            if function is not None else _WINDOW_STATE()
-        self._set("window-state", callback, _view_on_window_state)
-
-    def set_drag_regions(self, regions):
-        """With dragRegions.source "host": [{"x", "y", "width", "height", "drag"}]."""
-        error = _P()
-        if not _view_set_drag_regions(self._check(), json.dumps(list(regions)).encode(), ctypes.byref(error)):
-            _raise(error, "drag regions rejected")
-
-    def set_popup_window_options(self, options):
-        """Options for the windows this view's pages open; None: the system's frame."""
-        error = _P()
-        text = json.dumps(options).encode() if options is not None else None
-        if not _view_set_popup_window_options(self._check(), text, ctypes.byref(error)):
-            _raise(error, "popup window options rejected")
-
-    @classmethod
-    def _adopt(cls, handle):
-        """Wrap a newly created native popup exactly once, from its creation callback."""
-        view = cls.__new__(cls)
-        view._handle = handle
-        view._initialize_callbacks()
-        return view
-
-    def _initialize_callbacks(self):
-        self._callbacks = {}
-        self._on_close_user = None
-        self._close_hooks = []
-        self._closed = False
-        callback = _VIEW(_guard(self._closed_by_engine))
-        self._callbacks["close"] = callback
-        _view_on_close(self._handle, callback, None)
-        _alive.add(self)
-
-    def _set(self, kind, callback, setter):
-        """Gives the engine callback (a NULL one removes it) for kind. The
-        one it replaces lives until a task after this one: it may be the
-        one running."""
-        handle = self._check()
-        previous = self._callbacks.get(kind)
-        setter(handle, callback, None)
-        self._callbacks[kind] = callback
-        _retire(previous)
-
-    def _closed_by_engine(self, handle, data):
-        self._closed = True
-        _alive.discard(self)
-        try:
-            if self._on_close_user:
-                self._on_close_user()
-        finally:
-            for hook in self._close_hooks:
-                hook()
-            self._close_hooks = []
-            # What the callbacks hold may hold the view; this one is running.
-            callbacks, self._callbacks = self._callbacks, {}
-            _retire(callbacks)
-
-    def _check(self):
-        _require_thread("a view")
-        if self._closed:
-            raise Error("the view is closed")
-        return self._handle
-
-    def load(self, url):
-        _view_load_url(self._check(), url.encode())
-
-    def reload(self):
-        _view_reload(self._check())
-
-    def back(self):
-        _view_go_back(self._check())
-
-    def forward(self):
-        _view_go_forward(self._check())
-
-    def target_id(self):
-        return _string(_view_target(self._check()))
-
-    def resize(self, width, height):
-        _view_resize(self._check(), width, height)
-
-    def attach_native(self, parent, x, y, width, height):
-        """In a window of the application's: an X11 window id, or an NSView* as an int."""
-        error = ctypes.c_void_p()
-        if not _view_attach_native(self._check(), parent, x, y, width, height, ctypes.byref(error)):
-            _raise(error, "the window cannot be attached")
-
-    def native_window(self):
-        """Borrowed containing system window as {kind, handle}, or None.
-
-        kind is x11, win32 or appkit; appkit means NSWindow*, not NSView*.
-        Requery after attach/detach. Never destroy or release this handle.
-        """
-        info = _NativeWindowInfo()
-        if not _view_get_native_window(self._check(), ctypes.byref(info)):
-            return None
-        return {"kind": {1: "x11", 2: "win32", 3: "appkit"}[info.kind], "handle": info.handle}
-
-    def export_native_window(self, function):
-        """function(handle) once, later: "x11:<XID>" or "wayland:<handle>" for
-        the system's portals to parent a dialog to, or None when there is none
-        (always on Windows and macOS, where native_window() is the handle)."""
-        def done(data, handle):
-            _alive.discard(callback)
-            function(handle.decode() if handle else None)
-        callback = _NATIVE_WINDOW_EXPORT(_guard(done))
-        _alive.add(callback)
-        if not _view_export_native_window(self._check(), callback, None):
-            _alive.discard(callback)
-            function(None)
-
-    def detach_native(self):
-        """Back to its own window; False when it was in none of the application's."""
-        return _view_detach_native(self._check())
-
-    def focus(self):
-        """Focus to the view, as when a person clicks it; a page goes
-        fullscreen only from a view with focus."""
-        _view_focus(self._check())
-
-    def set_bounds(self, x, y, width, height):
-        """Where an attached view is in its parent."""
-        _view_set_bounds(self._check(), x, y, width, height)
-
-    def set_settings(self, settings):
-        """Merge native preferences; None values reset individual keys."""
-        source = settings if isinstance(settings, str) else json.dumps(settings)
-        if '\0' in source:
-            raise Error("view settings contain NUL")
-        error = ctypes.c_void_p()
-        if not _view_set_settings(self._check(), source.encode(), ctypes.byref(error)):
-            _raise(error, "view settings rejected")
-
-    @property
-    def settings(self):
-        """Explicit native preferences; temporary CDP emulation is separate."""
-        return json.loads(_string(_view_get_settings(self._check())))
-
-    def set_runtime_settings(self, settings):
-        """What zebkit decides for this view (<zebkit/hooks.h>): thirdPartyCookies,
-        dialogs, downloads, newWindows. All of it applies or none."""
-        source = settings if isinstance(settings, str) else json.dumps(settings)
-        if '\0' in source:
-            raise Error("runtime settings contain NUL")
-        error = ctypes.c_void_p()
-        if not _view_set_runtime_settings(self._check(), source.encode(), ctypes.byref(error)):
-            _raise(error, "runtime settings rejected")
-
-    @property
-    def runtime_settings(self):
-        """{"explicit": ..., "effective": ...}."""
-        return json.loads(_string(_view_get_runtime_settings(self._check())))
-
-    def set_permission(self, permission, state, origin=None):
-        """Set a view rule; None uses the current origin, '*' a default rule."""
-        error = _P()
-        if not _view_set_permission(self._check(), _permission_text(origin),
-                                    _permission_text(permission), _permission_state(state), ctypes.byref(error)):
-            _raise(error, "permission rule rejected")
-
-    def get_permission(self, permission, origin=None):
-        """Effective policy for a concrete origin; document security still applies."""
-        state = _view_get_permission(self._check(), _permission_text(origin), _permission_text(permission))
-        if state < 0:
-            raise Error("invalid permission or origin")
-        return ("prompt", "granted", "denied")[state]
-
-    def reset_permissions(self, origin=None):
-        """Remove all view rules, or only rules at the supplied origin/default."""
-        error = _P()
-        if not _view_reset_permissions(self._check(), _permission_text(origin), ctypes.byref(error)):
-            _raise(error, "permission reset rejected")
-
-    def set_permission_timeout(self, milliseconds):
-        """Deadline for future prompts, from 1 to 300000 milliseconds."""
-        self._deadline(_view_permission_timeout, milliseconds, "permission timeout")
-
-    def on_permission(self, function):
-        """function(PermissionRequest); None restores the default permission policy."""
-        self._asked("permission", _view_on_permission, PermissionRequest, function, _PERMISSION)
-
-    def on_permission_result(self, function):
-        """function(dict) receives asynchronous outcomes; None removes it."""
-        self._told("permission-result", _view_on_permission_result, function, _PERMISSION_RESULT)
-
-    def set_certificate_timeout(self, milliseconds):
-        """Deadline for future certificate decisions, from 1 to 300000 milliseconds."""
-        self._deadline(_view_certificate_timeout, milliseconds, "certificate timeout")
-
-    def on_certificate(self, function):
-        """function(CertificateRequest); None denies pending requests and removes it."""
-        self._asked("certificate", _view_on_certificate, CertificateRequest, function, _CERTIFICATE)
-
-    def on_certificate_result(self, function):
-        """function(dict) observes asynchronous outcomes; None removes it."""
-        self._told("certificate-result", _view_on_certificate_result, function, _CERTIFICATE_RESULT)
-
-    def set_http_auth_timeout(self, milliseconds):
-        """Deadline for future HTTP challenges, from 1 to 300000 milliseconds."""
-        self._deadline(_view_http_auth_timeout, milliseconds, "HTTP authentication timeout")
-
-    def on_http_auth(self, function):
-        """function(HttpAuthRequest); None cancels pending challenges and removes it."""
-        self._asked("http-auth", _view_on_http_auth, HttpAuthRequest, function, _HTTP_AUTH)
-
-    def on_http_auth_result(self, function):
-        """function(dict) observes credential provision/cancellation, not HTTP success."""
-        self._told("http-auth-result", _view_on_http_auth_result, function, _HTTP_AUTH_RESULT)
-
-    def _asked(self, kind, setter, request_type, function, kind_type=None):
-        """function(request_type) for what the page asks; None removes it."""
-        kind_type = kind_type or _ASKED
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError(kind + " handler must be callable or None")
-        callback = kind_type(_guard(lambda h, request, payload, d:
-                    function(request_type(request, json.loads(_text(payload, "{}")))))) \
-            if function is not None else kind_type()
-        self._set(kind, callback, setter)
-
-    def _told(self, kind, setter, function, kind_type=None):
-        """function(dict) for what the engine tells; None removes it."""
-        kind_type = kind_type or _TOLD
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError(kind + " observer must be callable or None")
-        callback = kind_type(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
-            if function is not None else kind_type()
-        self._set(kind, callback, setter)
-
-    def _deadline(self, setter, milliseconds, what=None):
-        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
-            raise ValueError(f"{what} must be an integer from 1 to 300000" if what
-                             else "a deadline is an integer from 1 to 300000")
-        if not setter(self._check(), milliseconds):
-            raise Error(f"{what or 'deadline'} rejected")
-
-    def on_external_protocol(self, function):
-        """function(dict): a link to another program. The engine opens nothing."""
-        self._told('external-protocol', _view_on_external_protocol, function)
-
-    def on_download(self, function):
-        """function(DownloadRequest); None cancels pending ones and removes it."""
-        self._asked('download', _view_on_download, DownloadRequest, function)
-
-    def on_download_progress(self, function):
-        self._told('download-progress', _view_on_download_progress, function)
-
-    def set_download_timeout(self, milliseconds):
-        self._deadline(_view_download_timeout, milliseconds)
-
-    def cancel_download(self, download_id):
-        return bool(_view_cancel_download(self._check(), download_id.encode()))
-
-    def on_client_certificate(self, function):
-        """function(ClientCertificateRequest); without one no certificate is sent."""
-        self._asked('client-certificate', _view_on_client_certificate, ClientCertificateRequest, function)
-
-    def on_client_certificate_result(self, function):
-        self._told('client-certificate-result', _view_on_client_certificate_result, function)
-
-    def set_client_certificate_timeout(self, milliseconds):
-        self._deadline(_view_client_certificate_timeout, milliseconds)
-
-    def add_world_script(self, source, world=None, main_frame_only=False):
-        """A script before the page's, in the named isolated world or the page's."""
-        error = _P()
-        if not _view_add_world_script(self._check(), None if world is None else world.encode(),
-                                      source.encode(), bool(main_frame_only), ctypes.byref(error)):
-            _raise(error, "script or world name rejected")
-
-    def on_file_chooser(self, function):
-        """function(FileChooserRequest); None cancels pending ones and removes it."""
-        self._asked('file-chooser', _view_on_file_chooser, FileChooserRequest, function)
-
-    def on_eye_dropper(self, function):
-        """function(EyeDropperRequest) for the page's EyeDropper.open(); without
-        one it is cancelled."""
-        self._asked('eye-dropper', _view_on_eye_dropper, EyeDropperRequest, function)
-
-    def on_device_chooser(self, function):
-        """function(DeviceChooserRequest) for the page's USB, HID and serial
-        choosers; without one the page gets no device."""
-        self._asked('device-chooser', _view_on_device_chooser, DeviceChooserRequest, function)
-
-    def on_device_chooser_result(self, function):
-        self._told('device-chooser-result', _view_on_device_chooser_result, function)
-
-    def set_device_chooser_timeout(self, milliseconds):
-        self._deadline(_view_device_chooser_timeout, milliseconds)
-
-    def on_share(self, function):
-        """function(ShareRequest) for the page's navigator.share()."""
-        self._asked('share', _view_on_share, ShareRequest, function)
-
-    def set_share_timeout(self, milliseconds):
-        self._deadline(_view_share_timeout, milliseconds)
-
-    def on_file_chooser_result(self, function):
-        self._told('file-chooser-result', _view_on_file_chooser_result, function)
-
-    def set_file_chooser_timeout(self, milliseconds):
-        self._deadline(_view_file_chooser_timeout, milliseconds)
-
-    def on_media_access(self, function):
-        """function(MediaAccessRequest) for camera and microphone."""
-        self._asked('media-access', _view_on_media_access, MediaAccessRequest, function)
-
-    def on_media_access_result(self, function):
-        self._told('media-access-result', _view_on_media_access_result, function)
-
-    def set_media_access_timeout(self, milliseconds):
-        self._deadline(_view_media_access_timeout, milliseconds)
-
-    def set_reserved_keys(self, keys):
-        """Keys the page does not get, as ['Ctrl+Shift+KeyI']."""
-        error = _P()
-        if not _view_set_reserved_keys(self._check(), json.dumps(list(keys)).encode(), ctypes.byref(error)):
-            _raise(error, "reserved keys rejected")
-
-    def on_reserved_key(self, function):
-        self._told('reserved-key', _view_on_reserved_key, function)
-
-    def on_context_menu(self, function):
-        """function(dict) with what was right-clicked, its menuId and the
-        default items; while set, the engine shows no menu itself."""
-        self._told('context-menu', _view_on_context_menu, function)
-
-    def context_menu_run(self, menu_id, command):
-        """Runs a default item's command against what was right-clicked."""
-        error = _P()
-        if not _view_context_menu_run(self._check(), int(menu_id), command.encode(), ctypes.byref(error)):
-            _raise(error, "the context menu's command was refused")
-
-    def context_menu_show(self, menu_id, items=None, function=None):
-        """Shows a menu where it was asked for: the default items (None) or a
-        list mixing default ids and the application's own; function(id) for
-        an item of the application's ("" when none is chosen)."""
-        handle = self._check()
-        error = _P()
-        callback = _CONTEXT_MENU_ITEM(_guard(lambda h, item, d: function(_text(item)))) if function else \
-            _CONTEXT_MENU_ITEM()
-        text = json.dumps(items).encode() if items is not None else None
-        if not _view_context_menu_show(handle, int(menu_id), text, callback, None, ctypes.byref(error)):
-            _raise(error, "the context menu was not shown")
-        _retire(self._callbacks.get("context-menu-item"))
-        self._callbacks["context-menu-item"] = callback
-
-    def set_fullscreen_policy(self, policy):
-        if policy not in ("allow", "deny"):
-            raise ValueError("fullscreen is allow or deny")
-        if not _view_set_fullscreen_policy(self._check(), 0 if policy == "allow" else 1):
-            raise Error("fullscreen policy rejected")
-
-    def on_fullscreen(self, function):
-        self._told('fullscreen', _view_on_fullscreen, function)
-
-    def set_network_filter(self, rules):
-        """A list of rules, as <zebkit/hooks.h> says; [] holds and tells nothing."""
-        error = _P()
-        if not _view_set_network_filter(self._check(), json.dumps(rules).encode(), ctypes.byref(error)):
-            _raise(error, "network filter rejected")
-
-    def on_network(self, function):
-        """function(NetworkRequest) for what a hold rule holds."""
-        self._asked('network', _view_on_network, NetworkRequest, function)
-
-    def on_network_event(self, function):
-        self._told('network-event', _view_on_network_event, function)
-
-    def set_network_filter_for_workers(self, on):
-        """This view's filter also decides for its profile's shared and service workers."""
-        return bool(_view_network_for_workers(self._check(), bool(on)))
-
-    def on_network_body(self, function):
-        """function(request_id, bytes, end, truncated) for what a rule with body: true matches."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("network-body observer must be callable or None")
-        callback = _NETWORK_BODY(_guard(lambda h, request_id, data, size, end, truncated, d:
-                    function(request_id.decode(), ctypes.string_at(data, size) if size else b"",
-                             bool(end), bool(truncated)))) if function is not None else _NETWORK_BODY()
-        self._set('network-body', callback, _view_on_network_body)
-
-    def set_network_timeout(self, milliseconds):
-        self._deadline(_view_network_timeout, milliseconds)
-
-    def set_navigation_fail_closed(self, fail_closed):
-        """With True, an unanswered navigation is cancelled instead of continued."""
-        if not _view_navigation_fail_closed(self._check(), bool(fail_closed)):
-            raise Error("cannot set the navigation policy of this view")
-
-    def set_navigation_timeout(self, milliseconds):
-        """Deadline for future navigation decisions, from 1 to 300000 milliseconds."""
-        self._deadline(_view_navigation_timeout, milliseconds, "navigation timeout")
-
-    def on_navigation(self, function):
-        """function(NavigationRequest); None continues pending requests and removes policy."""
-        self._asked("navigation", _view_on_navigation, NavigationRequest, function, _NAVIGATION)
-
-    def on_navigation_result(self, function):
-        """function(dict) observes asynchronous decisions; None removes it."""
-        self._told("navigation-result", _view_on_navigation_result, function, _NAVIGATION_RESULT)
-
-    def set_popup_policy(self, policy):
-        """Set block-without-gesture, allow or block for future new windows."""
-        policies = {"block-without-gesture": 0, "allow": 1, "block": 2}
-        if policy not in policies:
-            raise ValueError("unknown popup policy")
-        return bool(_view_popup_policy(self._check(), policies[policy]))
-
-    @property
-    def popup_policy(self):
-        return ("block-without-gesture", "allow", "block")[_view_get_popup_policy(self._check())]
-
-    @property
-    def window_open_info(self):
-        """Creation snapshot for a popup; an ordinary view returns an empty dict."""
-        value = _view_window_open_info(self._check())
-        if not value:
-            raise Error("window metadata unavailable on this thread")
-        return json.loads(_string(value))
-
-    def on_window_open(self, function):
-        """function(child_view, url) receives the original popup with its opener."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("window handler must be callable or None")
-        callback = _WINDOW_OPEN(_guard(lambda h, child, url, d:
-                    function(View._adopt(child), _text(url)))) if function is not None else _WINDOW_OPEN()
-        self._set('window-open', callback, _view_on_window_open)
-
-    def on_window_open_event(self, function):
-        """function(dict) observes decision/created metadata; None removes it."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("window observer must be callable or None")
-        callback = _WINDOW_OPEN_EVENT(_guard(lambda h, payload, d:
-                    function(json.loads(payload)))) if function is not None else _WINDOW_OPEN_EVENT()
-        self._set('window-open-event', callback, _view_on_window_open_event)
-
-    def on_console(self, function):
-        """function(dict) observes native document-console messages; None removes it."""
-        self._check()
-        if function is not None and not callable(function):
-            raise TypeError("console observer must be callable or None")
-        callback = _CONSOLE(_guard(lambda h, payload, d:
-                    function(json.loads(payload)))) if function is not None else _CONSOLE()
-        self._set('console', callback, _view_on_console)
-
-    def on_popup_blocked(self, function):
-        """Report a blocked popup as a dict, after the decision; None removes it."""
-        self._check()
-        callback = _POPUP_BLOCKED(_guard(lambda view, event, data: function(json.loads(event)))) if function else _POPUP_BLOCKED()
-        self._set("popup-blocked", callback, _view_on_popup_blocked)
-
-    def on_authentication(self, function):
-        """Receive host-owned Passkey events as dictionaries; None restores native UI.
-
-        Never log/persist these events or PIN actions. Off-screen hosts must
-        opt into authentication UI. See docs/PASSKEYS.md for the schema.
-        """
-        handle = self._check()
-        # Cleared first: that cancels the outstanding requests.
-        self._set("authentication", _AUTHENTICATION(), _view_on_authentication)
-        if function is None:
-            return True
-        callback = _AUTHENTICATION(_guard(lambda h, event, data: function(json.loads(_text(event, "{}")))))
-        self._callbacks["authentication"] = callback
-        return bool(_view_on_authentication(handle, callback, None))
-
-    def authentication_action(self, action):
-        """Queue a current request/revision action; True is not authentication success."""
-        return bool(_view_authentication_action(self._check(), json.dumps(action).encode()))
-
-    def set_authentication_ui(self, enabled):
-        """Allow Passkey UI for this view."""
-        return bool(_view_authentication_ui(self._check(), bool(enabled)))
-
-    def close(self):
-        if not self._closed:
-            _view_close(self._handle)
-
-    @property
-    def url(self):
-        return _string(_view_get_url(self._check()))
-
-    @property
-    def title(self):
-        return _string(_view_get_title(self._check()))
-
-    def on_load(self, function):
-        """function(event, url), event one of LOAD_STARTED, LOAD_COMMITTED,
-        LOAD_FINISHED and LOAD_FAILED; None removes it."""
-        callback = _LOAD(_guard(lambda h, e, u, d: function(e, _text(u)))) if function is not None else _LOAD()
-        self._set("load", callback, _view_on_load)
-
-    def on_title(self, function):
-        """function(title) whenever the page's title changes; None removes it."""
-        callback = _TITLE(_guard(lambda h, t, d: function(_text(t)))) if function is not None else _TITLE()
-        self._set("title", callback, _view_on_title)
-
-    def on_close(self, function):
-        self._on_close_user = function
-
-    def evaluate(self, script, function=None):
-        """Run script in the page; function(value, error), value as from JSON."""
-        handle = self._check()
-        def done(view, result, error, data):
-            _alive.discard(callback)
-            if function:
-                if error is not None:
-                    function(None, _text(error))
-                else:
-                    function(json.loads(_text(result)) if result else None, None)
-        callback = _RESULT(_guard(done))
-        _alive.add(callback)
-        _view_evaluate(handle, script.encode(), callback, None)
-
-    def set_user_agent_override(self, options, function=None):
-        """Set UA/client hints together; function(value, error) reports validation."""
-        handle = self._check()
-        if function is not None and not callable(function):
-            raise TypeError("completion must be callable or None")
-        source = options if isinstance(options, str) else json.dumps(options, ensure_ascii=False)
-        encoded = source.encode('utf-8')
-        if b'\0' in encoded:
-            raise ValueError("user agent options must not contain a literal NUL")
-        def done(view, result, error, data):
-            _alive.discard(callback)
-            if function is not None:
-                function(json.loads(result) if result else None, _text(error, None))
-        callback = _RESULT(_guard(done))
-        _alive.add(callback)
-        if not _view_user_agent_override(handle, encoded, callback, None):
-            # Refused at once: it calls nothing back.
-            _alive.discard(callback)
-            return False
-        return True
-
-    def grant(self, origin, allow, files_root=None):
-        """Give pages of origin the zebkit.* capabilities in allow (ALLOW_*)."""
-        _view_grant(self._check(), origin.encode(), allow,
-                    str(files_root).encode() if files_root else None)
-
-    def bind(self, name, function):
-        """Make zebkit.app.<name>(...args) in the page call
-        function(*args, origin=...), whose return value (JSON-able) the
-        page's promise resolves with; an exception rejects it."""
-        def called(handle, origin, args, call, data):
-            try:
-                result = function(*json.loads(_text(args, "[]")), origin=_text(origin))
-                if result is UNDEFINED:
-                    _call_resolve(call, None)
-                    return
-                answer = json.dumps(result).encode()
-                _call_resolve_json(call, answer, len(answer))
-            except Exception as e:  # noqa: BLE001
-                _call_reject(call, str(e).encode())
-        handle = self._check()
-        callback = _BIND(called) if function is not None else _BIND()
-        _view_bind(handle, name.encode(), callback, None)
-        _retire(self._callbacks.pop("bind:" + name, None))
-        if function is not None:
-            self._callbacks["bind:" + name] = callback
-
-    # The three of <zebkit/hooks.h> the binding had declared and not given.
-    def on_eye_dropper_result(self, function):
-        """function(dict): how an EyeDropper.open() ended."""
-        self._told('eye-dropper-result', _view_on_eye_dropper_result, function)
-
-    def set_eye_dropper_timeout(self, milliseconds):
-        self._deadline(_view_eye_dropper_timeout, milliseconds)
-
-    def on_share_result(self, function):
-        """function(dict): how a navigator.share() ended."""
-        self._told('share-result', _view_on_share_result, function)
-
-
 def cdp_listen(address=None, port=0):
     _require_thread("cdp_listen()")
     error = ctypes.c_void_p()
@@ -1668,6 +1171,26 @@ def cdp_listen(address=None, port=0):
     if not bound:
         _raise(error, "cannot listen")
     return bound
+
+
+def cdp_listen_async(address, port, function):
+    """cdp_listen() without waiting for the server's thread: function(port, url,
+    error) once, on the engine's thread, after this returns: the port and the
+    browser's WebSocket address, or (0, None, the error). cdp_stop() while it
+    starts answers with an error. The arguments are in Rust's and Go's order
+    (address, port, done); address None for the loopback, port 0 for any."""
+    _require_thread("cdp_listen_async()")
+    if not callable(function):
+        raise TypeError("function must be callable")
+    def done(bound, url, error, data):
+        _alive.discard(callback)
+        if bound:
+            function(int(bound), _text(url, None), None)
+        else:
+            function(0, None, _text(error, None) or "cannot listen")
+    callback = _CDP_LISTEN(_guard(done))
+    _alive.add(callback)
+    _cdp_listen_async(address.encode() if address else None, int(port), callback, None)
 
 
 def cdp_port():
@@ -1853,170 +1376,6 @@ _pdf_detach = _declare("zebkit_pdf_detach", _B, _P, _I, _EP)
 
 RENDER_ANNOTATIONS, RENDER_FORMS, RENDER_LCD_TEXT, RENDER_GRAYSCALE, RENDER_PRINTING, RENDER_NO_SMOOTHING = \
     1, 2, 4, 8, 16, 32
-
-
-class Pdf:
-    """A PDF document on the engine's PDFium (<zebkit/pdf.h>), from bytes or
-    a path. Structured answers are Python values; coordinates are PDF page
-    space. Needs no main(); any thread may use it, one at a time."""
-
-    def __init__(self, source, password=None):
-        error = ctypes.c_void_p()
-        password = password.encode() if password else None
-        if isinstance(source, (bytes, bytearray, memoryview)):
-            data = bytes(source)
-            self._handle = _pdf_open(data, len(data), password, ctypes.byref(error))
-        else:
-            self._handle = _pdf_open_file(os.fspath(source).encode(), password, ctypes.byref(error))
-        if not self._handle:
-            _raise(error, "the document cannot be opened")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-
-    def __del__(self):
-        self.close()
-
-    def close(self):
-        if getattr(self, "_handle", None):
-            _pdf_close(self._handle)
-            self._handle = None
-
-    def _check(self):
-        if not getattr(self, "_handle", None):
-            raise Error("the document is closed")
-        return self._handle
-
-    def _json(self, function, *args, fallback="failed"):
-        error = ctypes.c_void_p()
-        out = function(self._check(), *args, ctypes.byref(error))
-        if not out:
-            _raise(error, fallback)
-        return json.loads(_string(out))
-
-    def _ok(self, function, *args, fallback="failed"):
-        error = ctypes.c_void_p()
-        if not function(self._check(), *args, ctypes.byref(error)):
-            _raise(error, fallback)
-
-    def info(self):
-        value = _string(_pdf_info(self._check()))
-        if value is None:
-            raise Error("the document has no information")
-        return json.loads(value)
-
-    def set_metadata(self, **entries):
-        self._ok(_pdf_set_metadata, json.dumps(entries).encode())
-
-    @property
-    def page_count(self):
-        return _pdf_page_count(self._check())
-
-    def page(self, index):
-        return self._json(_pdf_page, index, fallback="no page")
-
-    def render(self, index, scale=1.0, rotation=0, flags=RENDER_ANNOTATIONS, background=0xFFFFFFFF,
-               x=0, y=0, width=0, height=0):
-        """(width, height, RGBA bytes) of a page, or of a tile of it."""
-        options = _RenderOptions(scale, rotation, flags, background, x, y, width, height)
-        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
-        out = _pdf_render(self._check(), index, ctypes.byref(options), ctypes.byref(out_width),
-                          ctypes.byref(out_height), ctypes.byref(error))
-        if not out:
-            _raise(error, "the page cannot be rendered")
-        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
-
-    def render_annotation(self, index, annotation, mode=0, scale=1.0, rotation=0, background=0):
-        """(width, height, RGBA bytes) of an annotation's appearance alone (mode 0
-        normal, 1 rollover, 2 down), or None when it has no such appearance."""
-        options = _RenderOptions(scale, rotation, 0, background, 0, 0, 0, 0)
-        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
-        out = _pdf_render_annotation(self._check(), index, annotation, mode, ctypes.byref(options),
-                                     ctypes.byref(out_width), ctypes.byref(out_height), ctypes.byref(error))
-        if not out:
-            message = _string(error.value) if error.value else "the annotation cannot be rendered"
-            if message == "no appearance":
-                return None
-            raise Error(message)
-        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
-
-    def text(self, index):
-        error = ctypes.c_void_p()
-        out = _pdf_text(self._check(), index, ctypes.byref(error))
-        if not out:
-            _raise(error, "no text")
-        return _string(out)
-
-    def text_layout(self, index):
-        return self._json(_pdf_text_layout, index)
-
-    def text_rects(self, index, start, count):
-        return self._json(_pdf_text_rects, index, start, count)
-
-    def char_at(self, index, x, y, tolerance=2.0):
-        found = _pdf_char_at(self._check(), index, x, y, tolerance)
-        return None if found < 0 else found
-
-    def search(self, query, match_case=False, whole_word=False, first=0, limit=0):
-        flags = (1 if match_case else 0) | (2 if whole_word else 0)
-        return self._json(_pdf_search, query.encode(), flags, first, limit)
-
-    def set_outline(self, items):
-        """Replace the bookmark tree; [] removes it. Validated before mutation."""
-        self._ok(_pdf_set_outline, json.dumps(items).encode())
-
-    def outline(self):
-        return self._json(_pdf_outline)
-
-    def links(self, index):
-        return self._json(_pdf_links, index)
-
-    def annotations(self, index):
-        return self._json(_pdf_annotations, index)
-
-    def add_annotation(self, index, annotation):
-        error = ctypes.c_void_p()
-        added = _pdf_annotation_add(self._check(), index, json.dumps(annotation).encode(), ctypes.byref(error))
-        if added < 0:
-            _raise(error, "the annotation cannot be made")
-        return added
-
-    def update_annotation(self, index, annotation, changes):
-        self._ok(_pdf_annotation_update, index, annotation, json.dumps(changes).encode())
-
-    def remove_annotation(self, index, annotation):
-        self._ok(_pdf_annotation_remove, index, annotation)
-
-    def flatten(self, index, for_print=False):
-        self._ok(_pdf_flatten, index, for_print)
-
-    def attachments(self):
-        return self._json(_pdf_attachments)
-
-    def attachment(self, index):
-        size, error = ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_attachment(self._check(), index, ctypes.byref(size), ctypes.byref(error))
-        if not out:
-            _raise(error, "no attachment")
-        return _buffer(out, size.value)
-
-    def attach(self, name, data):
-        data = _bytes(data)
-        self._ok(_pdf_attach, name.encode(), data, len(data))
-
-    def detach(self, index):
-        self._ok(_pdf_detach, index)
-
-    def save(self, incremental=False, no_security=False):
-        size, error = ctypes.c_size_t(), ctypes.c_void_p()
-        out = _pdf_save(self._check(), (1 if incremental else 0) | (2 if no_security else 0), ctypes.byref(size),
-                        ctypes.byref(error))
-        if not out:
-            _raise(error, "the document cannot be saved")
-        return _buffer(out, size.value)
 
 
 # ---- URL schemes of the application's own ----
@@ -2750,7 +2109,9 @@ def pdf_filter_input(points, options=None):
     return json.loads(_string(out))
 
 
-def _pdf_more(cls):
+class _PdfMore:
+    """Annotations, forms, pages and the document's other parts."""
+
     """What Pdf has beyond the first part of this file."""
     def annotation_at(self, index, x, y, tolerance=2.0):
         """The top annotation at a point, or None."""
@@ -2835,14 +2196,7 @@ def _pdf_more(cls):
             _raise(error, "the points cannot be filtered")
         return json.loads(_string(out))
 
-    for function in (annotation_at, move_annotation, copy_annotation, flatten_annotation, stamp_from_page,
-                     attach_file, annotation_file, draw_annotation, annotation_action, export_annotations,
-                     import_annotations, apply, page_data, add_font, filter_input):
-        setattr(cls, function.__name__, function)
-    cls.hooks = property(lambda self: PdfHooks(self))
-
-
-_pdf_more(Pdf)
+    hooks = property(lambda self: PdfHooks(self))
 
 
 # ---- Contexts, views' windows, script outside pages: <zebkit/zebkit.h> ----
@@ -2963,7 +2317,9 @@ class Script:
         self.close()
 
 
-def _view_core(cls):
+class _ViewCore:
+    """The view's window and page: limits, attaching, scripts, its target id."""
+
     def set_size_limits(self, min_width=0, min_height=0, resizable=True):
         """The window's smallest size, and whether it may be resized."""
         _view_set_size_limits(self._check(), min_width, min_height, bool(resizable))
@@ -3023,13 +2379,6 @@ def _view_core(cls):
             return self._set("drop", _DROP(), _view_on_drop)
         self._set("drop", _DROP(_guard(lambda h, paths, d: function(json.loads(_text(paths, "[]"))))), _view_on_drop)
 
-    for function in (set_size_limits, attach, set_visible, set_title, add_script, stop, is_loading,
-                     set_user_agent, capture, on_new_window, on_drop):
-        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
-
-
-_view_core(View)
-
 
 # ---- Off-screen views: <zebkit/offscreen.h> ----
 
@@ -3069,8 +2418,7 @@ _FRAME = ctypes.CFUNCTYPE(None, _V, ctypes.POINTER(_Frame), _P)
 _CARET = ctypes.CFUNCTYPE(None, _V, ctypes.POINTER(_Rect), _P)
 _CURSOR = ctypes.CFUNCTYPE(None, _V, _S, ctypes.POINTER(_CursorImage), _P)
 _POPUP = ctypes.CFUNCTYPE(None, _V, _B, ctypes.POINTER(_Rect), _P)
-_view_new_offscreen = _declare("zebkit_view_new_offscreen", _V, _S, _I, _I, ctypes.c_float)
-_view_new_offscreen_in = _declare("zebkit_view_new_offscreen_in", _V, _P, _S, _I, _I, ctypes.c_float)
+_view_new_offscreen_ex = _declare("zebkit_view_new_offscreen_ex", _V, _P, _S, _I, _I, ctypes.c_float, _EP)
 _view_is_offscreen = _declare("zebkit_view_is_offscreen", _B, _V)
 _view_set_size = _declare("zebkit_view_set_size", None, _V, _I, _I, ctypes.c_float)
 _view_on_frame = _declare("zebkit_view_on_frame", None, _V, _FRAME, _P)
@@ -3183,18 +2531,22 @@ def _key_event(kind, key_code=0, code=None, key=None, text=None, unmodified_text
     return _KeyEvent(kind, modifiers, key_code, native_key_code, enc(code), enc(key), enc(text), enc(unmodified_text))
 
 
-def _view_offscreen(cls):
+class _ViewOffscreen:
+    """Off-screen views (<zebkit/offscreen.h>): frames, input, IME, caret, cursor, popups."""
+
     @classmethod
     def offscreen(cls, url=None, width=800, height=600, scale=1.0, context=None):
         """A view with no window: its frames go to on_frame, and the
-        application sends its input (send_mouse, send_key, ...)."""
+        application sends its input (send_mouse, send_key, ...). Error with
+        the engine's reason when it makes none (on Windows without
+        --headless, in a Wayland process, a closed context, the engine
+        stopping)."""
         url = url.encode() if url else None
-        if context is not None:
-            handle = _view_new_offscreen_in(context._check(), url, width, height, scale)
-        else:
-            handle = _view_new_offscreen(url, width, height, scale)
+        error = _P()
+        handle = _view_new_offscreen_ex(context._check() if context is not None else None, url, width, height,
+                                        scale, ctypes.byref(error))
         if not handle:
-            raise Error("cannot create an off-screen view")
+            _raise(error, "cannot create an off-screen view")
         view = cls.__new__(cls)
         view._handle = handle
         view._initialize_callbacks()
@@ -3292,21 +2644,12 @@ def _view_offscreen(cls):
         self._set("cursor", _CURSOR(_guard(cursor)), _view_on_cursor)
 
     def on_popup(self, function):
-        """function(shown, bounds_or_None): a popup (a <select>'s list) over the view."""
+        """function(bounds): a popup (a <select>'s list) shown over the view at
+        bounds (CSS pixels), or gone (None). None removes it."""
         if function is None:
             return self._set("popup", _POPUP(), _view_on_popup)
-        self._set("popup", _POPUP(_guard(lambda h, shown, rect, d: function(bool(shown),
-                                                                            _rect(rect.contents) if rect else None))),
-                  _view_on_popup)
-
-    cls.offscreen = offscreen
-    for function in (is_offscreen, set_size, on_frame, set_frame_rate, set_max_frames_in_flight, set_frame_buffers,
-                     request_frame, send_mouse, send_wheel, send_key, send_key_with_commands, ime_set_composition,
-                     ime_commit, ime_cancel, set_focus, on_caret, on_cursor, on_popup):
-        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
-
-
-_view_offscreen(View)
+        self._set("popup", _POPUP(_guard(lambda h, shown, rect, d: function(
+            _rect(rect.contents) if shown and rect else None))), _view_on_popup)
 
 
 # ---- Dialogs, closing, printing, drag and drop: <zebkit/page.h> ----
@@ -3359,7 +2702,9 @@ FIND_MATCH_CASE, FIND_BACKWARD, FIND_HIGHLIGHT_ONLY = 1, 2, 4
 FIND_STOP_CLEAR, FIND_STOP_KEEP, FIND_STOP_ACTIVATE = 0, 1, 2
 
 
-def _view_page(cls):
+class _ViewPage:
+    """What a page asks of its window (<zebkit/page.h>): dialogs, printing, closing, drag and drop, find."""
+
     def on_dialog(self, function):
         """function(dialog): {"id", "type", "message", "defaultPrompt", "url",
         "isReload", "held"} for each alert, confirm, prompt, beforeunload or
@@ -3488,8 +2833,19 @@ def _view_page(cls):
         and shadow tree, all matches highlighted, the active one distinctly.
         The same text again goes to the next match (FIND_BACKWARD: the
         previous). Returns the request's number (its results' "requestId"),
-        0 for empty text."""
-        return _view_find(self._check(), text.encode(), flags)
+        0 for empty text, which stops the search. Error for a closed view
+        or text with a NUL or that is not UTF-8 (a lone surrogate)."""
+        handle = self._check()
+        if "\0" in text:
+            raise Error("find: the text holds a NUL")
+        try:
+            encoded = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Error("find: the text is not UTF-8") from None
+        request = _view_find(handle, encoded, flags)
+        if request == 0 and encoded:
+            raise Error("find: the engine refused it (the view has gone)")
+        return request
 
     def stop_finding(self, action=FIND_STOP_CLEAR):
         """Stops the search and clears its highlights: FIND_STOP_CLEAR,
@@ -3497,24 +2853,16 @@ def _view_page(cls):
         _view_stop_finding(self._check(), action)
 
     def on_find(self, function):
-        """function(result): {"requestId", "text", "matches", "activeMatch",
-        "final", "rect", "stopped"} for each result. None removes it."""
+        """function(result), a FindResult, for each result. None removes it."""
         if function is None:
             return self._set("find", _FIND(), _view_on_find)
-        self._set("find", _FIND(_guard(lambda h, text, d: function(json.loads(text.decode())))), _view_on_find)
+        self._set("find", _FIND(_guard(lambda h, text, d: function(FindResult(json.loads(text.decode()))))), _view_on_find)
 
     def find_result(self):
-        """The last result of the search on, as on_find() has them."""
+        """The last result of the search on, a FindResult as on_find() has
+        them; None before any."""
         value = _string(_view_find_result(self._check()))
-        return json.loads(value) if value else None
-
-    for function in (on_dialog, on_dialog_closed, set_dialog_policy, dialog_policy, respond_dialog, dialogs,
-                     request_close, print_to_pdf, on_drag_start, on_drag_end, is_dragging, drag_enter, _operation,
-                     drag_over, drag_leave, drop, drag_source_end, find, stop_finding, on_find, find_result):
-        setattr(cls, getattr(function, "__name__", None) or function.fget.__name__, function)
-
-
-_view_page(View)
+        return FindResult(json.loads(value)) if value else None
 
 
 # ---- Media a page plays: <zebkit/media.h> ----
@@ -3593,7 +2941,9 @@ class MediaCapture:
         _alive.discard(self)
 
 
-def _view_media(cls):
+class _ViewMedia:
+    """The page's media (<zebkit/media.h>): listing and capturing it."""
+
     def _media_result(self, function):
         def done(view, result, error, data):
             _alive.discard(callback)
@@ -3616,12 +2966,6 @@ def _view_media(cls):
     def media_capture(self, media_id, path, **options):
         """Starts writing media_id (from media_list) to path: a MediaCapture."""
         return MediaCapture(self, media_id, path, **options)
-
-    for function in (_media_result, media_list, media_at, media_capture):
-        setattr(cls, function.__name__, function)
-
-
-_view_media(View)
 
 
 # ---- PDF, the rest of <zebkit/pdf.h> ----
@@ -3649,7 +2993,9 @@ def _ints(values):
     return (ctypes.c_int * len(values))(*values), len(values)
 
 
-def _pdf_rest(cls):
+class _PdfRest:
+    """Text, images, signatures, redaction and the document's remaining parts."""
+
     @classmethod
     def new(cls):
         """A new, empty document, for building one from others' pages."""
@@ -3745,14 +3091,873 @@ def _pdf_rest(cls):
             at = self.page_count
         self._ok(_pdf_pages_import, source._handle, array, count, at, fallback="the pages cannot be imported")
 
-    cls.new = new
-    for function in (text_lines, images, image_data, signatures, signature_contents, set_annotation_image, redact,
-                     form_fields, set_field, reset_form, rotate_page, delete_pages, move_pages, insert_page,
-                     import_pages):
-        setattr(cls, function.__name__, function)
+
+class Pdf(_PdfMore, _PdfRest):
+    """A PDF document on the engine's PDFium (<zebkit/pdf.h>), from bytes or
+    a path. Structured answers are Python values; coordinates are PDF page
+    space. Needs no main(); any thread may use it, one at a time."""
+
+    def __init__(self, source, password=None):
+        error = ctypes.c_void_p()
+        password = password.encode() if password else None
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            data = bytes(source)
+            self._handle = _pdf_open(data, len(data), password, ctypes.byref(error))
+        else:
+            self._handle = _pdf_open_file(os.fspath(source).encode(), password, ctypes.byref(error))
+        if not self._handle:
+            _raise(error, "the document cannot be opened")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        if getattr(self, "_handle", None):
+            _pdf_close(self._handle)
+            self._handle = None
+
+    def _check(self):
+        if not getattr(self, "_handle", None):
+            raise Error("the document is closed")
+        return self._handle
+
+    def _json(self, function, *args, fallback="failed"):
+        error = ctypes.c_void_p()
+        out = function(self._check(), *args, ctypes.byref(error))
+        if not out:
+            _raise(error, fallback)
+        return json.loads(_string(out))
+
+    def _ok(self, function, *args, fallback="failed"):
+        error = ctypes.c_void_p()
+        if not function(self._check(), *args, ctypes.byref(error)):
+            _raise(error, fallback)
+
+    def info(self):
+        value = _string(_pdf_info(self._check()))
+        if value is None:
+            raise Error("the document has no information")
+        return json.loads(value)
+
+    def set_metadata(self, **entries):
+        self._ok(_pdf_set_metadata, json.dumps(entries).encode())
+
+    @property
+    def page_count(self):
+        return _pdf_page_count(self._check())
+
+    def page(self, index):
+        return self._json(_pdf_page, index, fallback="no page")
+
+    def render(self, index, scale=1.0, rotation=0, flags=RENDER_ANNOTATIONS, background=0xFFFFFFFF,
+               x=0, y=0, width=0, height=0):
+        """(width, height, RGBA bytes) of a page, or of a tile of it."""
+        options = _RenderOptions(scale, rotation, flags, background, x, y, width, height)
+        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
+        out = _pdf_render(self._check(), index, ctypes.byref(options), ctypes.byref(out_width),
+                          ctypes.byref(out_height), ctypes.byref(error))
+        if not out:
+            _raise(error, "the page cannot be rendered")
+        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
+
+    def render_annotation(self, index, annotation, mode=0, scale=1.0, rotation=0, background=0):
+        """(width, height, RGBA bytes) of an annotation's appearance alone (mode 0
+        normal, 1 rollover, 2 down), or None when it has no such appearance."""
+        options = _RenderOptions(scale, rotation, 0, background, 0, 0, 0, 0)
+        out_width, out_height, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_void_p()
+        out = _pdf_render_annotation(self._check(), index, annotation, mode, ctypes.byref(options),
+                                     ctypes.byref(out_width), ctypes.byref(out_height), ctypes.byref(error))
+        if not out:
+            message = _string(error.value) if error.value else "the annotation cannot be rendered"
+            if message == "no appearance":
+                return None
+            raise Error(message)
+        return out_width.value, out_height.value, _buffer(out, out_width.value * out_height.value * 4)
+
+    def text(self, index):
+        error = ctypes.c_void_p()
+        out = _pdf_text(self._check(), index, ctypes.byref(error))
+        if not out:
+            _raise(error, "no text")
+        return _string(out)
+
+    def text_layout(self, index):
+        return self._json(_pdf_text_layout, index)
+
+    def text_rects(self, index, start, count):
+        return self._json(_pdf_text_rects, index, start, count)
+
+    def char_at(self, index, x, y, tolerance=2.0):
+        found = _pdf_char_at(self._check(), index, x, y, tolerance)
+        return None if found < 0 else found
+
+    def search(self, query, match_case=False, whole_word=False, first=0, limit=0):
+        flags = (1 if match_case else 0) | (2 if whole_word else 0)
+        return self._json(_pdf_search, query.encode(), flags, first, limit)
+
+    def set_outline(self, items):
+        """Replace the bookmark tree; [] removes it. Validated before mutation."""
+        self._ok(_pdf_set_outline, json.dumps(items).encode())
+
+    def outline(self):
+        return self._json(_pdf_outline)
+
+    def links(self, index):
+        return self._json(_pdf_links, index)
+
+    def annotations(self, index):
+        return self._json(_pdf_annotations, index)
+
+    def add_annotation(self, index, annotation):
+        error = ctypes.c_void_p()
+        added = _pdf_annotation_add(self._check(), index, json.dumps(annotation).encode(), ctypes.byref(error))
+        if added < 0:
+            _raise(error, "the annotation cannot be made")
+        return added
+
+    def update_annotation(self, index, annotation, changes):
+        self._ok(_pdf_annotation_update, index, annotation, json.dumps(changes).encode())
+
+    def remove_annotation(self, index, annotation):
+        self._ok(_pdf_annotation_remove, index, annotation)
+
+    def flatten(self, index, for_print=False):
+        self._ok(_pdf_flatten, index, for_print)
+
+    def attachments(self):
+        return self._json(_pdf_attachments)
+
+    def attachment(self, index):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_attachment(self._check(), index, ctypes.byref(size), ctypes.byref(error))
+        if not out:
+            _raise(error, "no attachment")
+        return _buffer(out, size.value)
+
+    def attach(self, name, data):
+        data = _bytes(data)
+        self._ok(_pdf_attach, name.encode(), data, len(data))
+
+    def detach(self, index):
+        self._ok(_pdf_detach, index)
+
+    def save(self, incremental=False, no_security=False):
+        size, error = ctypes.c_size_t(), ctypes.c_void_p()
+        out = _pdf_save(self._check(), (1 if incremental else 0) | (2 if no_security else 0), ctypes.byref(size),
+                        ctypes.byref(error))
+        if not out:
+            _raise(error, "the document cannot be saved")
+        return _buffer(out, size.value)
 
 
-_pdf_rest(Pdf)
+class View(_ViewCore, _ViewOffscreen, _ViewPage, _ViewMedia):
+    """A page, in a window when the machine has a display."""
+
+    def __init__(self, url=None, width=0, height=0, options=None, context=None):
+        """A view loading url. options (<zebkit/window.h>): the window's, before
+        it is made, such as {"frame": "overlay", "show": False}; width and
+        height go into them. context: a Context of its own cookies and
+        storage, else the default one."""
+        _require_thread("View()")
+        context_handle = context._check() if context is not None else None
+        if options is None and context_handle:
+            self._handle = _view_new_in(context_handle, url.encode() if url else None, width, height)
+        elif options is None:
+            self._handle = _view_new(url.encode() if url else None, width, height)
+        else:
+            given = dict(options)
+            if width:
+                given.setdefault("width", width)
+            if height:
+                given.setdefault("height", height)
+            error = _P()
+            self._handle = _view_new_with_options(context_handle, url.encode() if url else None,
+                                                  json.dumps(given).encode(), ctypes.byref(error))
+            if not self._handle:
+                _raise(error, "cannot create a view with these window options")
+        if not self._handle:
+            raise Error("cannot create a view")
+        self._initialize_callbacks()
+
+    @property
+    def window(self):
+        """The window's state (<zebkit/window.h>): state, bounds, frame,
+        titlebarArea, controls, capabilities."""
+        value = _string(_view_get_window(self._check()))
+        return json.loads(value) if value else None
+
+    def set_window(self, options=None, **fields):
+        """Changes the window's runtime options, merged by key."""
+        given = dict(options or {}, **fields)
+        error = _P()
+        if not _view_set_window(self._check(), json.dumps(given).encode(), ctypes.byref(error)):
+            _raise(error, "window options rejected")
+
+    def window_action(self, action):
+        """show, hide, minimize, maximize, restore, fullscreen,
+        exit-fullscreen, close: asked of the system; the state tells."""
+        error = _P()
+        if not _view_window_action(self._check(), action.encode(), ctypes.byref(error)):
+            _raise(error, "window action refused")
+
+    def on_window_state(self, function):
+        """function(dict) for every change of the window's state; None removes it."""
+        callback = _WINDOW_STATE(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
+            if function is not None else _WINDOW_STATE()
+        self._set("window-state", callback, _view_on_window_state)
+
+    def set_drag_regions(self, regions):
+        """With dragRegions.source "host": [{"x", "y", "width", "height", "drag"}]."""
+        error = _P()
+        if not _view_set_drag_regions(self._check(), json.dumps(list(regions)).encode(), ctypes.byref(error)):
+            _raise(error, "drag regions rejected")
+
+    def set_popup_window_options(self, options):
+        """Options for the windows this view's pages open; None: the system's frame."""
+        error = _P()
+        text = json.dumps(options).encode() if options is not None else None
+        if not _view_set_popup_window_options(self._check(), text, ctypes.byref(error)):
+            _raise(error, "popup window options rejected")
+
+    @classmethod
+    def _adopt(cls, handle):
+        """Wrap a newly created native popup exactly once, from its creation callback."""
+        view = cls.__new__(cls)
+        view._handle = handle
+        view._initialize_callbacks()
+        return view
+
+    def _initialize_callbacks(self):
+        self._callbacks = {}
+        self._on_close_user = None
+        self._close_hooks = []
+        self._closed = False
+        callback = _VIEW(_guard(self._closed_by_engine))
+        self._callbacks["close"] = callback
+        _view_on_close(self._handle, callback, None)
+        _alive.add(self)
+
+    def _set(self, kind, callback, setter):
+        """Gives the engine callback (a NULL one removes it) for kind. The
+        one it replaces lives until a task after this one: it may be the
+        one running."""
+        handle = self._check()
+        previous = self._callbacks.get(kind)
+        setter(handle, callback, None)
+        self._callbacks[kind] = callback
+        _retire(previous)
+
+    def _closed_by_engine(self, handle, data):
+        self._closed = True
+        _alive.discard(self)
+        try:
+            if self._on_close_user:
+                self._on_close_user()
+        finally:
+            for hook in self._close_hooks:
+                hook()
+            self._close_hooks = []
+            # What the callbacks hold may hold the view; this one is running.
+            callbacks, self._callbacks = self._callbacks, {}
+            _retire(callbacks)
+
+    def _check(self):
+        _require_thread("a view")
+        if self._closed:
+            raise Error("the view is closed")
+        return self._handle
+
+    def load(self, url):
+        _view_load_url(self._check(), url.encode())
+
+    def reload(self):
+        _view_reload(self._check())
+
+    def back(self):
+        _view_go_back(self._check())
+
+    def forward(self):
+        _view_go_forward(self._check())
+
+    def target_id(self):
+        return _string(_view_target(self._check()))
+
+    def resize(self, width, height):
+        _view_resize(self._check(), width, height)
+
+    def attach_native(self, parent, x, y, width, height):
+        """In a window of the application's: an X11 window id, or an NSView* as an int."""
+        error = ctypes.c_void_p()
+        if not _view_attach_native(self._check(), parent, x, y, width, height, ctypes.byref(error)):
+            _raise(error, "the window cannot be attached")
+
+    def native_window(self):
+        """Borrowed containing system window as {kind, handle}, or None.
+
+        kind is x11, win32 or appkit; appkit means NSWindow*, not NSView*.
+        Requery after attach/detach. Never destroy or release this handle.
+        """
+        info = _NativeWindowInfo()
+        if not _view_get_native_window(self._check(), ctypes.byref(info)):
+            return None
+        return {"kind": {1: "x11", 2: "win32", 3: "appkit"}[info.kind], "handle": info.handle}
+
+    def export_native_window(self, function):
+        """function(handle) once, later: "x11:<XID>" or "wayland:<handle>" for
+        the system's portals to parent a dialog to, or None when there is none
+        (always on Windows and macOS, where native_window() is the handle, and
+        for a view that closes first, before its on_close function)."""
+        def done(view, handle, data):
+            _alive.discard(callback)
+            function(handle.decode() if handle else None)
+        callback = _NATIVE_WINDOW_EXPORT(_guard(done))
+        _alive.add(callback)
+        if not _view_export_native_window(self._check(), callback, None):
+            _alive.discard(callback)
+            function(None)
+
+    def detach_native(self):
+        """Back to its own window; False when it was in none of the application's."""
+        return _view_detach_native(self._check())
+
+    def focus(self):
+        """Focus to the view, as when a person clicks it; a page goes
+        fullscreen only from a view with focus."""
+        _view_focus(self._check())
+
+    def set_bounds(self, x, y, width, height):
+        """Where an attached view is in its parent."""
+        _view_set_bounds(self._check(), x, y, width, height)
+
+    def set_settings(self, settings):
+        """Merge native preferences; None values reset individual keys."""
+        source = settings if isinstance(settings, str) else json.dumps(settings)
+        if '\0' in source:
+            raise Error("view settings contain NUL")
+        error = ctypes.c_void_p()
+        if not _view_set_settings(self._check(), source.encode(), ctypes.byref(error)):
+            _raise(error, "view settings rejected")
+
+    @property
+    def settings(self):
+        """Explicit native preferences; temporary CDP emulation is separate."""
+        return json.loads(_string(_view_get_settings(self._check())))
+
+    def set_runtime_settings(self, settings):
+        """What zebkit decides for this view (<zebkit/hooks.h>): thirdPartyCookies,
+        dialogs, downloads, newWindows. All of it applies or none."""
+        source = settings if isinstance(settings, str) else json.dumps(settings)
+        if '\0' in source:
+            raise Error("runtime settings contain NUL")
+        error = ctypes.c_void_p()
+        if not _view_set_runtime_settings(self._check(), source.encode(), ctypes.byref(error)):
+            _raise(error, "runtime settings rejected")
+
+    @property
+    def runtime_settings(self):
+        """{"explicit": ..., "effective": ...}."""
+        return json.loads(_string(_view_get_runtime_settings(self._check())))
+
+    def set_permission(self, permission, state, origin=None):
+        """Set a view rule; None uses the current origin, '*' a default rule."""
+        error = _P()
+        if not _view_set_permission(self._check(), _permission_text(origin),
+                                    _permission_text(permission), _permission_state(state), ctypes.byref(error)):
+            _raise(error, "permission rule rejected")
+
+    def get_permission(self, permission, origin=None):
+        """Effective policy for a concrete origin; document security still applies."""
+        state = _view_get_permission(self._check(), _permission_text(origin), _permission_text(permission))
+        if state < 0:
+            raise Error("invalid permission or origin")
+        return ("prompt", "granted", "denied")[state]
+
+    def reset_permissions(self, origin=None):
+        """Remove all view rules, or only rules at the supplied origin/default."""
+        error = _P()
+        if not _view_reset_permissions(self._check(), _permission_text(origin), ctypes.byref(error)):
+            _raise(error, "permission reset rejected")
+
+    def set_permission_timeout(self, milliseconds):
+        """Deadline for future prompts, from 1 to 300000 milliseconds."""
+        self._deadline(_view_permission_timeout, milliseconds, "permission timeout")
+
+    def on_permission(self, function):
+        """function(PermissionRequest); None restores the default permission policy."""
+        self._asked("permission", _view_on_permission, PermissionRequest, function, _PERMISSION)
+
+    def on_permission_result(self, function):
+        """function(dict) receives asynchronous outcomes; None removes it."""
+        self._told("permission-result", _view_on_permission_result, function, _PERMISSION_RESULT)
+
+    def set_certificate_timeout(self, milliseconds):
+        """Deadline for future certificate decisions, from 1 to 300000 milliseconds."""
+        self._deadline(_view_certificate_timeout, milliseconds, "certificate timeout")
+
+    def on_certificate(self, function):
+        """function(CertificateRequest); None denies pending requests and removes it."""
+        self._asked("certificate", _view_on_certificate, CertificateRequest, function, _CERTIFICATE)
+
+    def on_certificate_result(self, function):
+        """function(dict) observes asynchronous outcomes: state "allowed" or
+        "denied" and reason ("opener-closed"
+        for an orphaned popup's); None removes it."""
+        self._told("certificate-result", _view_on_certificate_result, function, _CERTIFICATE_RESULT)
+
+    def set_http_auth_timeout(self, milliseconds):
+        """Deadline for future HTTP challenges, from 1 to 300000 milliseconds."""
+        self._deadline(_view_http_auth_timeout, milliseconds, "HTTP authentication timeout")
+
+    def on_http_auth(self, function):
+        """function(HttpAuthRequest); None cancels pending challenges and removes it."""
+        self._asked("http-auth", _view_on_http_auth, HttpAuthRequest, function, _HTTP_AUTH)
+
+    def on_http_auth_result(self, function):
+        """function(dict) observes credential provision/cancellation, not HTTP
+        success: state "provided" or "cancelled" and reason ("opener-closed"
+        for an orphaned popup's)."""
+        self._told("http-auth-result", _view_on_http_auth_result, function, _HTTP_AUTH_RESULT)
+
+    def _asked(self, kind, setter, request_type, function, kind_type=None):
+        """function(request_type) for what the page asks; None removes it."""
+        kind_type = kind_type or _ASKED
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError(kind + " handler must be callable or None")
+        callback = kind_type(_guard(lambda h, request, payload, d:
+                    function(request_type(request, json.loads(_text(payload, "{}")))))) \
+            if function is not None else kind_type()
+        self._set(kind, callback, setter)
+
+    def _told(self, kind, setter, function, kind_type=None):
+        """function(dict) for what the engine tells; None removes it."""
+        kind_type = kind_type or _TOLD
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError(kind + " observer must be callable or None")
+        callback = kind_type(_guard(lambda h, payload, d: function(json.loads(_text(payload, "{}"))))) \
+            if function is not None else kind_type()
+        self._set(kind, callback, setter)
+
+    def _deadline(self, setter, milliseconds, what=None):
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int) or not 1 <= milliseconds <= 300000:
+            raise ValueError(f"{what} must be an integer from 1 to 300000" if what
+                             else "a deadline is an integer from 1 to 300000")
+        if not setter(self._check(), milliseconds):
+            raise Error(f"{what or 'deadline'} rejected")
+
+    def on_external_protocol(self, function):
+        """function(dict): a link to another program. The engine opens nothing."""
+        self._told('external-protocol', _view_on_external_protocol, function)
+
+    def on_download(self, function):
+        """function(DownloadRequest); None cancels pending ones and removes it."""
+        self._asked('download', _view_on_download, DownloadRequest, function)
+
+    def on_download_progress(self, function):
+        """function(dict) as the view's downloads go: downloadId, guid, url, state,
+        outcome (in-progress, complete, cancelled, failed), path, savedPath (once
+        complete), receivedBytes, totalBytes, mimeType, reason, error ({category,
+        code, name, message, resumable} for one cancelled or failed, else None),
+        done. None removes it. How an on_download decision ended is
+        on_download_result's, not this."""
+        self._told('download-progress', _view_on_download_progress, function)
+
+    def on_download_result(self, function):
+        """function(dict): the outcome of each download on_download's function
+        was asked about: its metadata with state "saved" or "cancelled" and
+        reason ("answered", "timeout", "handler-changed", "cancelled",
+        "opener-closed"), as every hook's outcome. A popup's go to
+        its opener's function while that decides for it. None removes it."""
+        self._told('download-result', _view_on_download_result, function)
+
+    def on_process_gone(self, function):
+        """function(dict): the page's process went (Electron's
+        render-process-gone): {"reason", "exitCode"}, reason one of "crashed",
+        "killed", "oom", "abnormal-exit", "clean-exit", "launch-failed",
+        "integrity-failure", "memory-eviction". The view stays open with a
+        blank page: reload() or load() start a process again. None
+        removes it."""
+        self._told('process-gone', _view_on_process_gone, function)
+
+    def set_download_timeout(self, milliseconds):
+        self._deadline(_view_download_timeout, milliseconds)
+
+    def cancel_download(self, download_id):
+        return bool(_view_cancel_download(self._check(), download_id.encode()))
+
+    def on_client_certificate(self, function):
+        """function(ClientCertificateRequest); without one no certificate is sent."""
+        self._asked('client-certificate', _view_on_client_certificate, ClientCertificateRequest, function)
+
+    def on_client_certificate_result(self, function):
+        self._told('client-certificate-result', _view_on_client_certificate_result, function)
+
+    def set_client_certificate_timeout(self, milliseconds):
+        self._deadline(_view_client_certificate_timeout, milliseconds)
+
+    def add_world_script(self, source, world=None, main_frame_only=False):
+        """A script before the page's, in the named isolated world or the page's."""
+        error = _P()
+        if not _view_add_world_script(self._check(), None if world is None else world.encode(),
+                                      source.encode(), bool(main_frame_only), ctypes.byref(error)):
+            _raise(error, "script or world name rejected")
+
+    def on_file_chooser(self, function):
+        """function(FileChooserRequest); None cancels pending ones and removes it."""
+        self._asked('file-chooser', _view_on_file_chooser, FileChooserRequest, function)
+
+    def on_eye_dropper(self, function):
+        """function(EyeDropperRequest) for the page's EyeDropper.open(); without
+        one it is cancelled."""
+        self._asked('eye-dropper', _view_on_eye_dropper, EyeDropperRequest, function)
+
+    def on_device_chooser(self, function):
+        """function(DeviceChooserRequest) for the page's USB, HID and serial
+        choosers; without one the page gets no device."""
+        self._asked('device-chooser', _view_on_device_chooser, DeviceChooserRequest, function)
+
+    def on_device_chooser_result(self, function):
+        self._told('device-chooser-result', _view_on_device_chooser_result, function)
+
+    def set_device_chooser_timeout(self, milliseconds):
+        self._deadline(_view_device_chooser_timeout, milliseconds)
+
+    def on_share(self, function):
+        """function(ShareRequest) for the page's navigator.share()."""
+        self._asked('share', _view_on_share, ShareRequest, function)
+
+    def set_share_timeout(self, milliseconds):
+        self._deadline(_view_share_timeout, milliseconds)
+
+    def on_file_chooser_result(self, function):
+        self._told('file-chooser-result', _view_on_file_chooser_result, function)
+
+    def set_file_chooser_timeout(self, milliseconds):
+        self._deadline(_view_file_chooser_timeout, milliseconds)
+
+    def on_media_access(self, function):
+        """function(MediaAccessRequest) for camera and microphone."""
+        self._asked('media-access', _view_on_media_access, MediaAccessRequest, function)
+
+    def on_media_access_result(self, function):
+        self._told('media-access-result', _view_on_media_access_result, function)
+
+    def set_media_access_timeout(self, milliseconds):
+        self._deadline(_view_media_access_timeout, milliseconds)
+
+    def set_reserved_keys(self, keys):
+        """Keys the page does not get, as ['Ctrl+Shift+KeyI']."""
+        error = _P()
+        if not _view_set_reserved_keys(self._check(), json.dumps(list(keys)).encode(), ctypes.byref(error)):
+            _raise(error, "reserved keys rejected")
+
+    def on_reserved_key(self, function):
+        self._told('reserved-key', _view_on_reserved_key, function)
+
+    def on_context_menu(self, function):
+        """function(dict) with what was right-clicked, its menuId and the
+        default items; while set, the engine shows no menu itself."""
+        self._told('context-menu', _view_on_context_menu, function)
+
+    def context_menu_run(self, menu_id, command):
+        """Runs a default item's command against what was right-clicked."""
+        error = _P()
+        if not _view_context_menu_run(self._check(), int(menu_id), command.encode(), ctypes.byref(error)):
+            _raise(error, "the context menu's command was refused")
+
+    def context_menu_show(self, menu_id, items=None, function=None):
+        """Shows a menu where it was asked for: the default items (None) or a
+        list mixing default ids and the application's own; function(id) for
+        an item of the application's ("" when none is chosen)."""
+        handle = self._check()
+        error = _P()
+        callback = _CONTEXT_MENU_ITEM(_guard(lambda h, item, d: function(_text(item)))) if function else \
+            _CONTEXT_MENU_ITEM()
+        text = json.dumps(items).encode() if items is not None else None
+        if not _view_context_menu_show(handle, int(menu_id), text, callback, None, ctypes.byref(error)):
+            _raise(error, "the context menu was not shown")
+        _retire(self._callbacks.get("context-menu-item"))
+        self._callbacks["context-menu-item"] = callback
+
+    def set_fullscreen_policy(self, policy):
+        if policy not in ("allow", "deny"):
+            raise ValueError("fullscreen is allow or deny")
+        if not _view_set_fullscreen_policy(self._check(), 0 if policy == "allow" else 1):
+            raise Error("fullscreen policy rejected")
+
+    def on_fullscreen(self, function):
+        self._told('fullscreen', _view_on_fullscreen, function)
+
+    def set_network_filter(self, rules):
+        """A list of rules, as <zebkit/hooks.h> says; [] holds and tells nothing."""
+        error = _P()
+        if not _view_set_network_filter(self._check(), json.dumps(rules).encode(), ctypes.byref(error)):
+            _raise(error, "network filter rejected")
+
+    def on_network(self, function):
+        """function(NetworkRequest) for what a hold rule holds."""
+        self._asked('network', _view_on_network, NetworkRequest, function)
+
+    def on_network_event(self, function):
+        """function(dict): what network rules told, and the outcome of each
+        request they held: state "continued", "blocked", "redirected",
+        "fulfilled" or "refused" and reason; dropped (a number) counts events
+        lost to the cap. None removes it."""
+        self._told('network-event', _view_on_network_event, function)
+
+    def set_network_filter_for_workers(self, on):
+        """This view's filter also decides for its profile's shared and service workers."""
+        return bool(_view_network_for_workers(self._check(), bool(on)))
+
+    def on_network_body(self, function):
+        """function(request_id, bytes, end, truncated) for what a rule with body: true matches."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("network-body observer must be callable or None")
+        callback = _NETWORK_BODY(_guard(lambda h, request_id, data, size, end, truncated, d:
+                    function(request_id.decode(), ctypes.string_at(data, size) if size else b"",
+                             bool(end), bool(truncated)))) if function is not None else _NETWORK_BODY()
+        self._set('network-body', callback, _view_on_network_body)
+
+    def set_network_timeout(self, milliseconds):
+        self._deadline(_view_network_timeout, milliseconds)
+
+    def set_navigation_fail_closed(self, fail_closed):
+        """With True, an unanswered navigation is cancelled instead of continued."""
+        if not _view_navigation_fail_closed(self._check(), bool(fail_closed)):
+            raise Error("cannot set the navigation policy of this view")
+
+    def set_navigation_timeout(self, milliseconds):
+        """Deadline for future navigation decisions, from 1 to 300000 milliseconds."""
+        self._deadline(_view_navigation_timeout, milliseconds, "navigation timeout")
+
+    def on_navigation(self, function):
+        """function(NavigationRequest); None continues pending requests and removes policy."""
+        self._asked("navigation", _view_on_navigation, NavigationRequest, function, _NAVIGATION)
+
+    def on_navigation_result(self, function):
+        """function(dict) observes asynchronous decisions: the stage's metadata
+        with state "continued", "cancelled" or "redirected" and reason, as
+        every hook's outcome; None removes it."""
+        self._told("navigation-result", _view_on_navigation_result, function, _NAVIGATION_RESULT)
+
+    def set_popup_policy(self, policy):
+        """Set block-without-gesture, allow or block for future new windows."""
+        policies = {"block-without-gesture": 0, "allow": 1, "block": 2}
+        if policy not in policies:
+            raise ValueError("unknown popup policy")
+        return bool(_view_popup_policy(self._check(), policies[policy]))
+
+    @property
+    def popup_policy(self):
+        return ("block-without-gesture", "allow", "block")[_view_get_popup_policy(self._check())]
+
+    @property
+    def window_open_info(self):
+        """Creation snapshot for a popup; an ordinary view returns an empty dict."""
+        value = _view_window_open_info(self._check())
+        if not value:
+            raise Error("window metadata unavailable on this thread")
+        return json.loads(_string(value))
+
+    def on_window_open(self, function):
+        """function(child_view, url) receives the original popup with its opener."""
+        self._check()
+        if function is not None and not callable(function):
+            raise TypeError("window handler must be callable or None")
+        callback = _WINDOW_OPEN(_guard(lambda h, child, url, d:
+                    function(View._adopt(child), _text(url)))) if function is not None else _WINDOW_OPEN()
+        self._set('window-open', callback, _view_on_window_open)
+
+    def on_window_open_event(self, function):
+        """function(dict) observes decision/created metadata; None removes it."""
+        self._told("window-open-event", _view_on_window_open_event, function, _WINDOW_OPEN_EVENT)
+
+    def on_console(self, function):
+        """function(dict) observes native document-console messages; None removes it."""
+        self._told("console", _view_on_console, function, _CONSOLE)
+
+    def on_popup_blocked(self, function):
+        """Report a blocked popup as a dict, after the decision; None removes it."""
+        self._told("popup-blocked", _view_on_popup_blocked, function, _POPUP_BLOCKED)
+
+    def on_authentication(self, function):
+        """Receive host-owned Passkey events as dictionaries; None restores native UI.
+
+        Never log/persist these events or PIN actions. Off-screen hosts must
+        opt into authentication UI. See docs/notes/passkeys.md for the schema.
+        """
+        handle = self._check()
+        # Cleared first: that cancels the outstanding requests.
+        self._set("authentication", _AUTHENTICATION(), _view_on_authentication)
+        if function is None:
+            return True
+        callback = _AUTHENTICATION(_guard(lambda h, event, data: function(json.loads(_text(event, "{}")))))
+        self._callbacks["authentication"] = callback
+        return bool(_view_on_authentication(handle, callback, None))
+
+    def authentication_action(self, action):
+        """Queue a current request/revision action; True is not authentication success."""
+        return bool(_view_authentication_action(self._check(), json.dumps(action).encode()))
+
+    def set_authentication_ui(self, enabled):
+        """Allow Passkey UI for this view."""
+        return bool(_view_authentication_ui(self._check(), bool(enabled)))
+
+    def close(self):
+        if not self._closed:
+            _view_close(self._handle)
+
+    @property
+    def url(self):
+        return _string(_view_get_url(self._check()))
+
+    @property
+    def title(self):
+        return _string(_view_get_title(self._check()))
+
+    def on_load(self, function):
+        """function(event, url), event one of LOAD_STARTED, LOAD_COMMITTED,
+        LOAD_FINISHED and LOAD_FAILED; None removes it."""
+        callback = _LOAD(_guard(lambda h, e, u, d: function(e, _text(u)))) if function is not None else _LOAD()
+        self._set("load", callback, _view_on_load)
+
+    def on_title(self, function):
+        """function(title) whenever the page's title changes; None removes it."""
+        callback = _TITLE(_guard(lambda h, t, d: function(_text(t)))) if function is not None else _TITLE()
+        self._set("title", callback, _view_on_title)
+
+    def on_close(self, function):
+        self._on_close_user = function
+
+    def evaluate(self, script, function=None):
+        """Run script in the page; function(value, error), value as from JSON."""
+        handle = self._check()
+        def done(view, result, error, data):
+            _alive.discard(callback)
+            if function:
+                if error is not None:
+                    function(None, _text(error))
+                else:
+                    function(json.loads(_text(result)) if result else None, None)
+        callback = _RESULT(_guard(done))
+        _alive.add(callback)
+        _view_evaluate(handle, script.encode(), callback, None)
+
+    def set_user_agent_override(self, options, function=None):
+        """Set UA/client hints together. True when it was taken:
+        function(value, error) is then told once, after this returns, {} or
+        the error (options it cannot read, a NUL in them, the view closing
+        first). False, and function never called, only when the engine
+        refused it at once: a closed view, or a thread not the engine's.
+        (Every binding has this rule, the engine's.)"""
+        if function is not None and not callable(function):
+            raise TypeError("completion must be callable or None")
+        if self._closed or (_engine_thread is not None and threading.get_ident() != _engine_thread):
+            return False
+        handle = self._handle
+        try:
+            source = options if isinstance(options, str) else json.dumps(options, ensure_ascii=False)
+            encoded = source.encode('utf-8')
+            problem = "user agent options must not contain a literal NUL" if b'\0' in encoded else None
+        except (TypeError, ValueError) as e:
+            problem = "user agent options are not JSON: %s" % e
+        if problem is not None:
+            # Invalid input, as the engine tells it: once, after this returns.
+            if function is not None:
+                post(lambda: function(None, problem))
+            return True
+        # The engine gets a number and one trampoline that lives as long as the
+        # module: an answer after a refusal, or a second one, finds nothing.
+        key = next(_user_agent_keys)
+        _user_agent_waiting[key] = function
+        _user_agent_calling[key] = None
+        try:
+            queued = _view_user_agent_override(handle, encoded, _user_agent_done, key)
+        finally:
+            early = _user_agent_calling.pop(key, None)
+        if not queued:
+            # Refused at once: function is not called, whatever the engine told.
+            _user_agent_waiting.pop(key, None)
+            return False
+        if early is not None:
+            # An engine that answered inside the call: told after it returns.
+            post(lambda: _user_agent_answered(None, early[0], early[1], key))
+        return True
+
+    def grant(self, origin, allow, files_root=None):
+        """Give pages of origin the zebkit.* capabilities in allow (ALLOW_*)."""
+        _view_grant(self._check(), origin.encode(), allow,
+                    str(files_root).encode() if files_root else None)
+
+    def bind(self, name, function):
+        """Make zebkit.app.<name>(...args) in the page call
+        function(*args, origin=...), whose return value (JSON-able) the
+        page's promise resolves with; an exception rejects it. bind_call()
+        answers later."""
+        def called(handle, origin, args, call, data):
+            try:
+                result = function(*json.loads(_text(args, "[]")), origin=_text(origin))
+                if result is UNDEFINED:
+                    _call_resolve(call, None)
+                    return
+                answer = json.dumps(result).encode()
+                _call_resolve_json(call, answer, len(answer))
+            except Exception as e:  # noqa: BLE001
+                _call_reject(call, str(e).encode())
+        self._bind(name, called if function is not None else None)
+
+    def bind_call(self, name, function):
+        """Make zebkit.app.<name>(...args) in the page call function(call), a
+        Call (call.args, call.origin) to answer now or later, from any thread.
+        An exception from function before it answers rejects the promise; a
+        call it neither answers nor keeps is dropped, which rejects it. None
+        removes the binding."""
+        def called(handle, origin, args, raw, data):
+            call = Call(raw, _text(origin), json.loads(_text(args, "[]")))
+            try:
+                function(call)
+            except Exception as e:  # noqa: BLE001
+                if not call.answered:
+                    call.reject(str(e))
+                else:
+                    sys.excepthook(*sys.exc_info())
+        self._bind(name, called if function is not None else None)
+
+    def _bind(self, name, called):
+        handle = self._check()
+        callback = _BIND(called) if called is not None else _BIND()
+        _view_bind(handle, name.encode(), callback, None)
+        _retire(self._callbacks.pop("bind:" + name, None))
+        if called is not None:
+            self._callbacks["bind:" + name] = callback
+
+    # The three of <zebkit/hooks.h> the binding had declared and not given.
+    def on_eye_dropper_result(self, function):
+        """function(dict): how an EyeDropper.open() ended."""
+        self._told('eye-dropper-result', _view_on_eye_dropper_result, function)
+
+    def set_eye_dropper_timeout(self, milliseconds):
+        self._deadline(_view_eye_dropper_timeout, milliseconds)
+
+    def on_share_result(self, function):
+        """function(dict): how a navigator.share() ended."""
+        self._told('share-result', _view_on_share_result, function)
+
+    # zebkit_view_on_responsiveness, kept apart: its engine side is not settled yet.
+    def on_responsiveness(self, function):
+        """function(dict): the page's process stopped answering input for a
+        while, {"responsive": False}, and answers again, {"responsive": True}
+        (as Chrome's "page unresponsive" dialog, which zebkit does not show).
+        None removes it."""
+        self._told('responsiveness', _declare("zebkit_view_on_responsiveness", None, _V, _TOLD, _P), function)
 
 __all__ += [
     "Context", "Script", "Frame", "MediaCapture", "media_keep_history",

@@ -1,28 +1,20 @@
-"""Media outside the light DOM, stable IDs, and no accidental GC roots."""
-import ctypes
-import json
-import time
+"""Media outside the light DOM, stable IDs, and no accidental GC roots: what
+View.media_list() lists of a page's audio and video elements, connected,
+detached, in open, closed and nested shadow roots.
 
-import zebkit
+    python3 tests/engine/media_inventory.py [engine switches...]  (--js-flags=--expose-gc)
 
-assert zebkit.init() == 0
-view = zebkit.View()
-state = {"evaluated": False, "error": None, "list": None}
-list_media = zebkit._declare("zebkit_view_media_list", None, zebkit._V, zebkit._RESULT, zebkit._P)
+Exit 0 when every check passes.
+"""
 
-def wait(key):
-    deadline = time.monotonic() + 10
-    while not state[key] and time.monotonic() < deadline:
-        assert zebkit.pump()
-        time.sleep(0.001)
-    assert state[key], state
-    assert state["error"] is None, state
+import os
+import sys
 
-def evaluated(value, error):
-    state["evaluated"] = True
-    state["error"] = error
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-view.evaluate("""(() => {
+from harness import check, ev, finish, wait, zebkit  # noqa: E402
+
+PAGE = """(() => {
   const keep = window.mediaInventory = {};
   const connected = document.createElement('audio');
   connected.id = 'connected'; document.body.append(connected);
@@ -38,30 +30,44 @@ view.evaluate("""(() => {
     }
   }
   return true;
-})()""", evaluated)
-wait("evaluated")
+})()"""
 
-@zebkit._RESULT
-def listed(view_handle, result, error, data):
-    state["list"] = json.loads(result) if result else []
-    state["error"] = error
 
-def inventory():
-    state["list"] = None
-    list_media(view._check(), listed, None)
-    wait("list")
-    return {entry["path"]: entry["id"] for entry in state["list"]}
+def inventory(view):
+    """path -> id of what media_list() gives; None when it gave none."""
+    box = []
+    view.media_list(lambda media, error: box.append((media, error)))
+    if not wait(lambda: box) or box[0][1] is not None:
+        return None
+    return {entry["path"]: entry["id"] for entry in box[0][0] or []}
 
-first = inventory()
-assert set(first) == {"audio#connected", "audio#detached", "video#open", "video#closed", "audio#nested"}, first
-assert inventory() == first, "IDs must remain stable across lists"
-print("ok media inventory includes detached Audio, open/closed and nested shadow roots with stable IDs", flush=True)
 
-state["evaluated"] = False
-view.evaluate("mediaInventory.detached = null; gc(); gc(); true", evaluated)
-wait("evaluated")
-after_gc = inventory()
-assert "audio#detached" not in after_gc, "listing media must not retain otherwise unreachable Audio"
-assert {key: value for key, value in first.items() if key != "audio#detached"} == after_gc
-assert zebkit.shutdown()
-print("ok media inventory does not keep unreachable detached elements alive", flush=True)
+def main():
+    if zebkit.init(["media-inventory"] + sys.argv[1:]) != 0:
+        print("FAIL zebkit.init()")
+        return 1
+    try:
+        view = zebkit.View()
+        made = ev(view, PAGE)
+        check(made is True, "the page's media made", made)
+        first = inventory(view)
+        check(first is not None and set(first) == {"audio#connected", "audio#detached", "video#open",
+                                                   "video#closed", "audio#nested"},
+              "media inventory includes detached Audio, open/closed and nested shadow roots", first)
+        again = inventory(view)
+        check(first is not None and again == first, "its IDs stay the same from list to list", again)
+        collected = ev(view, "mediaInventory.detached = null; gc(); gc(); true")
+        check(collected is True, "the detached Audio dropped and collected (--js-flags=--expose-gc)", collected)
+        after = inventory(view)
+        check(after is not None and "audio#detached" not in after,
+              "media inventory does not keep unreachable detached elements alive", after)
+        check(first is not None and after == {k: v for k, v in first.items() if k != "audio#detached"},
+              "and the rest keep their IDs", after)
+        view.close()
+    finally:
+        check(zebkit.shutdown(), "zebkit.shutdown()")
+    return finish()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

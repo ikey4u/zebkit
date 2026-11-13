@@ -7,13 +7,17 @@
 #   scripts/windows-toolchain.sh          fetch and lay out what is missing, and link it in
 #   scripts/windows-toolchain.sh --link   only link in what is there
 #   scripts/windows-toolchain.sh --no-link   fetch and lay out, leaving the tree alone
+#   scripts/windows-toolchain.sh --verify    only check that what is laid out is what is pinned
 #
 # Running it means accepting Microsoft's licence terms for Visual Studio and
 # the Windows SDK. Those files stay on this machine, in $SDK_DIR/windows
 # (scripts/lib.sh), which nothing cleans: never in the repository, nor in a package.
 #
-# From Microsoft, by SHA-256 (scripts/windows-toolchain.py): MSVC and the DIA
-# SDK from Visual Studio's manifest, the SDK and the debuggers from NuGet.
+# From Microsoft, pinned by version and SHA-256 (scripts/windows-toolchain.py):
+# MSVC and the DIA SDK from Visual Studio's servers, the SDK and the debuggers
+# from NuGet. Every mode first checks, from the disk alone, that what is laid
+# out is the pinned toolchain, and stops if it is not; a laid-out toolchain is
+# never deleted or replaced here (a new one is a change of the pins).
 # The rest comes from where Chromium's DEPS says, at the versions it pins, for
 # a checkout that builds Windows on Linux: clang's runtime library for Windows,
 # the resource compiler for Linux, Windows' PGO profile, and the libraries only
@@ -146,10 +150,19 @@ link_in() {
     cp -a -u "$windows/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
 }
 
-if [[ "${1:-}" == --link ]]; then
-    link_in
-    exit 0
-fi
+# verify_pins: what $windows holds is what windows-toolchain.py pins (no network).
+verify_pins() {
+    python3 -I "$ZEBKIT_ROOT/scripts/windows-toolchain.py" --verify "$windows" \
+        || die "the Windows toolchain in $windows is not the pinned one (above)"
+}
+
+case "${1:-}" in
+    --verify) verify_pins; exit 0 ;;
+    --link) verify_pins; link_in; exit 0 ;;
+    ""|--no-link) ;;
+    *) die "usage: $(basename "$0") [--link|--no-link|--verify]" ;;
+esac
+[[ -f "$windows/win_toolchain.json" ]] && verify_pins
 
 mkdir -p "$windows"
 python3 -I "$ZEBKIT_ROOT/scripts/windows-toolchain.py" "$windows" "$SRC_DIR"

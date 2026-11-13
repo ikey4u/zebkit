@@ -6,6 +6,10 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include <map>
+#include <string>
+#include <vector>
+
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/scoped_gdi_object.h"
@@ -60,6 +64,30 @@ base::win::ScopedGDIObject<HICON> BadgeIcon(const std::string& text) {
   return IconUtil::CreateHICONFromSkBitmap(bitmap);
 }
 
+// What each window's button was given last, so that showing or activating a
+// window applies only what it lacks.
+std::map<HWND, DockState>& Applied() {
+  static base::NoDestructor<std::map<HWND, DockState>> applied;
+  return *applied;
+}
+
+void ApplyTo(ITaskbarList3* taskbar, HWND window, const DockState& state, HICON badge) {
+  if (state.progress < 0) {
+    taskbar->SetProgressState(window, TBPF_NOPROGRESS);
+  } else {
+    taskbar->SetProgressState(window, TBPF_NORMAL);
+    taskbar->SetProgressValue(window, static_cast<ULONGLONG>(state.progress * 1000), 1000);
+  }
+  // Before its button is there the taskbar refuses: tried again when the
+  // window is next shown or activated.
+  if (SUCCEEDED(taskbar->SetOverlayIcon(window, badge, base::UTF8ToWide(state.badge).c_str())))
+    Applied()[window] = state;
+}
+
+bool Same(const DockState& a, const DockState& b) {
+  return a.badge == b.badge && a.progress == b.progress;
+}
+
 }  // namespace
 
 void ApplyDockState(const DockState& state) {
@@ -69,16 +97,29 @@ void ApplyDockState(const DockState& state) {
   base::win::ScopedGDIObject<HICON> badge;
   if (!state.badge.empty())
     badge = BadgeIcon(state.badge);
-  const std::wstring description = base::UTF8ToWide(state.badge);
-  for (HWND window : Windows()) {
-    if (state.progress < 0) {
-      taskbar->SetProgressState(window, TBPF_NOPROGRESS);
-    } else {
-      taskbar->SetProgressState(window, TBPF_NORMAL);
-      taskbar->SetProgressValue(window, static_cast<ULONGLONG>(state.progress * 1000), 1000);
-    }
-    taskbar->SetOverlayIcon(window, badge.get(), description.c_str());
-  }
+  std::erase_if(Applied(), [](const auto& entry) { return !::IsWindow(entry.first); });
+  for (HWND window : Windows())
+    ApplyTo(taskbar.Get(), window, state, badge.get());
+}
+
+void ApplyDockStateToWindow(gfx::AcceleratedWidget window) {
+  const DockState& state = CurrentDockState();
+  auto found = Applied().find(window);
+  // Nothing set yet, or this button has it already.
+  if ((found == Applied().end() && state.badge.empty() && state.progress < 0) ||
+      (found != Applied().end() && Same(found->second, state)))
+    return;
+  auto taskbar = Taskbar();
+  if (!taskbar)
+    return;
+  base::win::ScopedGDIObject<HICON> badge;
+  if (!state.badge.empty())
+    badge = BadgeIcon(state.badge);
+  ApplyTo(taskbar.Get(), window, state, badge.get());
+}
+
+void ForgetDockWindow(gfx::AcceleratedWidget window) {
+  Applied().erase(window);
 }
 
 void RequestDockAttention(bool critical) {

@@ -13,7 +13,9 @@
 #
 #   scripts/automation-bench.sh [--profile PROFILE] [--runs N] [--check]
 #
-# The report goes to docs/reports/automation-bench.md and .json. --check
+# The report goes to docs/reports/automation-bench.md and .json, with the
+# engine's and Chromium's versions, the profile and the date (lib.sh's
+# report_engine). --check
 # fails when a native command is slower than Playwright over CDP on the
 # same build (docs/AUTOMATION.md, "How it is checked"), and writes no
 # report. Needs Python 3, Node.js (at mise.toml's pin) and the package
@@ -45,14 +47,10 @@ node=("${node_cmd[@]}")
 tools="$CACHE_DIR/playwright-tools"
 ensure_npm "$tools" "${playwright_tools[@]}"
 
-port=$(( 20000 + RANDOM % 20000 ))
-python3 -u "$ZEBKIT_ROOT/tests/serve.py" "$ZEBKIT_ROOT/tests/bench/automation" "$port" > "$work/server.log" 2>&1 &
-server=$!
-trap 'kill $server 2> /dev/null' EXIT
-for _ in $(seq 50); do
-    curl -sf "http://127.0.0.1:$port/" > /dev/null && break
-    sleep 0.1
-done
+# The page server on a port the system gives it (lib.sh).
+start_page_server "$ZEBKIT_ROOT/tests/bench/automation" "$work/server.log"
+port="$page_port"
+trap 'kill $page_server 2> /dev/null || true' EXIT
 url="http://127.0.0.1:$port/"
 switches=(--no-sandbox --headless)
 
@@ -75,9 +73,11 @@ if (( ! check )) && [[ -x "$chrome" ]]; then
         chrome "$chrome" > "$work/chrome.json"
 fi
 
-python3 - "$work" "$check" "$ZEBKIT_ROOT/docs/reports" "$runs" "$PLAYWRIGHT_CORE_VERSION" <<'EOF'
+python3 -I - "$work" "$check" "$ZEBKIT_ROOT/docs/reports" "$runs" "$PLAYWRIGHT_CORE_VERSION" \
+    "$(report_engine "$package" "$profile")" <<'EOF'
 import json, os, sys
 work, check, reports, runs, core = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4], sys.argv[5]
+engine = sys.argv[6]
 def load(name):
     path = os.path.join(work, name)
     text = open(path).read().strip() if os.path.exists(path) else ""
@@ -93,7 +93,7 @@ if check:
         print(f"FAIL {name}: native {native['results'][name]['median']} ms, over CDP {cdp['results'][name]['median']} ms")
     sys.exit(1 if slower else 0)
 columns = [native] + ([endpoint] if endpoint else []) + [cdp] + ([chrome] if chrome else [])
-lines = ["# Playwright's commands: native, zebkit's endpoint and over CDP", "",
+lines = ["# Playwright's commands: native, zebkit's endpoint and over CDP", "", f"{engine}.", "",
          f"`scripts/automation-bench.sh`, {runs} runs of each (20 of `goto` and of each screenshot) after three to warm up,",
          f"headless, tests/bench/automation/index.html served locally. Playwright is playwright-core {core} in Node.js.",
          "Medians in milliseconds; p90 in parentheses.", "",
@@ -108,6 +108,6 @@ for name, r in native["results"].items():
     ratio = f"{over['median'] / r['median']:.1f}x faster" if over and r["median"] > 0 and r["median"] <= over["median"] else ("slower" if over else "")
     lines.append(f"| {name} | " + " | ".join(cells) + f" | {ratio} |")
 open(os.path.join(reports, "automation-bench.md"), "w").write("\n".join(lines) + "\n")
-json.dump({"native": native, "endpoint": endpoint, "cdp": cdp, "chrome": chrome}, open(os.path.join(reports, "automation-bench.json"), "w"), indent=1)
+json.dump({"engine": engine, "native": native, "endpoint": endpoint, "cdp": cdp, "chrome": chrome}, open(os.path.join(reports, "automation-bench.json"), "w"), indent=1)
 print("\n".join(lines))
 EOF

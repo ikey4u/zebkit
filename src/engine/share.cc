@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <utility>
+#include <vector>
 
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
@@ -40,6 +41,12 @@ class ShareService : public content::DocumentService<blink::mojom::ShareService>
  public:
   ShareService(content::RenderFrameHost& frame, mojo::PendingReceiver<blink::mojom::ShareService> receiver)
       : DocumentService(frame, std::move(receiver)) {}
+  // The document has gone: what it asked ends, answered as cancelled while its
+  // pipe is still there.
+  ~ShareService() override {
+    for (uintptr_t id : asked_)
+      ShareRequests::Get().Settle(id, ShareTraits::Refusal(), "cancelled");
+  }
 
   void Share(const std::string& title, const std::string& text, const GURL& url,
              std::vector<blink::mojom::SharedFilePtr> files, ShareCallback callback) override {
@@ -67,8 +74,14 @@ class ShareService : public content::DocumentService<blink::mojom::ShareService>
                                                     : blink::mojom::ShareError::CANCELED);
           },
           std::move(callback));
-      if (!ShareRequests::Get().Ask(view, std::move(metadata), reply) && reply)
-        std::move(reply).Run(ShareTraits::Decision());
+      auto& requests = ShareRequests::Get();
+      if (!requests.Ask(view, std::move(metadata), reply)) {
+        if (reply)
+          std::move(reply).Run(ShareTraits::Decision());
+        return;
+      }
+      std::erase_if(asked_, [&](uintptr_t id) { return !requests.Pending(id); });
+      asked_.push_back(requests.last_id());
       return;
     }
     base::OnceCallback<void(bool)> done = base::BindOnce(answer, std::move(callback));
@@ -76,6 +89,9 @@ class ShareService : public content::DocumentService<blink::mojom::ShareService>
       return;
     std::move(done).Run(false);
   }
+
+ private:
+  std::vector<uintptr_t> asked_;
 };
 
 }  // namespace

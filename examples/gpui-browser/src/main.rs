@@ -130,7 +130,7 @@ impl Smoke {
         cx.spawn(async move |cx| {
             cx.background_executor().timer(Duration::from_millis(1500)).await;
             let title = view.title().unwrap_or_default();
-            view.capture(move |png| drop(done.send((png, title))));
+            view.capture(move |png| drop(done.send((png.map(<[u8]>::to_vec), title))));
             let Ok((png, title)) = result.await else { return };
             let code =
                 match png.map_err(|e| e.to_string()).and_then(|png| check(&png, &out).map(|(w, h, colors)| (png.len(), w, h, colors))) {

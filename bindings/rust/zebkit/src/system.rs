@@ -61,11 +61,18 @@ pub fn on_displays_changed<F: FnMut(&str) + 'static>(function: Option<F>) {
     unsafe { sys::zebkit_on_displays_changed(set.then_some(on_displays as _), std::ptr::null_mut()) }
 }
 
-/// [`crate::environment`] and [`crate::capabilities`], here beside the
-/// functions that tell of their changes.
-pub use crate::{capabilities, environment};
+/// What the system says of how things should look, as JSON: `colorScheme`,
+/// `contrast`, `forcedColors`, `locale`, `accessibility`, `following`.
+pub fn environment() -> Option<String> {
+    unsafe { take_string(sys::zebkit_get_environment()) }
+}
 
-/// The system's appearance changing, with what [`crate::environment`] returns. `None` stops.
+/// What this build can do on this system and display, as JSON (`<zebkit/window.h>`).
+pub fn capabilities() -> Option<String> {
+    unsafe { take_string(sys::zebkit_get_capabilities()) }
+}
+
+/// The system's appearance changing, with what [`environment`] returns. `None` stops.
 pub fn on_environment_changed<F: FnMut(&str) + 'static>(function: Option<F>) {
     require_engine_thread("system::on_environment_changed()");
     let set = function.is_some();
@@ -89,7 +96,9 @@ pub fn allow_sleep(token: u64) -> bool {
 }
 
 /// Opens `url` with the system's handler for its scheme, as one argument,
-/// never through a shell.
+/// never through a shell. `Ok` once the URL is valid and the system is asked,
+/// which then goes on off the engine's thread: [`open_external_async`] tells
+/// how it went.
 pub fn open_external(url: &str) -> Result<(), Error> {
     require_engine_thread("system::open_external()");
     let mut error = std::ptr::null_mut();
@@ -100,7 +109,9 @@ pub fn open_external(url: &str) -> Result<(), Error> {
     }
 }
 
-/// Shows the absolute `path` in the system's file manager.
+/// Shows the absolute `path` in the system's file manager. `Ok` once the
+/// path is valid and the system is asked: [`show_in_folder_async`] tells how
+/// it went.
 pub fn show_in_folder(path: &str) -> Result<(), Error> {
     require_engine_thread("system::show_in_folder()");
     let mut error = std::ptr::null_mut();
@@ -109,6 +120,31 @@ pub fn show_in_folder(path: &str) -> Result<(), Error> {
     } else {
         Err(unsafe { take_error(error, "the folder was not shown") })
     }
+}
+
+unsafe extern "C" fn on_desktop_done<F: FnOnce(Result<(), Error>)>(done: bool, error: *const c_char, data: *mut c_void) {
+    let function = Box::from_raw(data.cast::<F>());
+    let result = if done { Ok(()) } else { Err(Error::new(string_from(error).unwrap_or_else(|| "the system did not do it".into()))) };
+    crate::guard(|| function(result));
+}
+
+/// [`open_external`], telling `done` how it went, once, on the engine's
+/// thread, after this returns: `Ok`, or the error (an invalid URL, no program
+/// for it).
+pub fn open_external_async<F: FnOnce(Result<(), Error>) + 'static>(url: &str, done: F) {
+    require_engine_thread("system::open_external_async()");
+    let data = Box::into_raw(Box::new(done)).cast::<c_void>();
+    unsafe { sys::zebkit_open_external_async(c_string(url).as_ptr(), Some(on_desktop_done::<F>), data) }
+}
+
+/// [`show_in_folder`], telling `done` how it went, once, on the engine's
+/// thread, after this returns: `Ok`, or the error (a relative path, a file
+/// that is not there, a file manager that failed). macOS's Finder says
+/// nothing of itself: `Ok` once it is asked.
+pub fn show_in_folder_async<F: FnOnce(Result<(), Error>) + 'static>(path: &str, done: F) {
+    require_engine_thread("system::show_in_folder_async()");
+    let data = Box::into_raw(Box::new(done)).cast::<c_void>();
+    unsafe { sys::zebkit_show_in_folder_async(c_string(path).as_ptr(), Some(on_desktop_done::<F>), data) }
 }
 
 /// The pages' web notifications are the application's to show while this is

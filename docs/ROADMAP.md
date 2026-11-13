@@ -3,8 +3,7 @@
 Where zebkit stands and what comes next. How the engine is made is
 `docs/ARCHITECTURE.md`; its size and speed, `docs/SIZE_AND_SPEED.md`;
 what `zebkit.ui` is for, `docs/UI.md`. How an application decides what
-the engine does, through hooks rather than patches, has its own roadmap:
-`docs/ROADMAP_HOOKS.md`.
+the engine does, through hooks rather than patches, is `docs/HOOKS.md`.
 
 ## Requirements
 
@@ -70,17 +69,75 @@ engine (`docs/SYSTEM_INTEGRATION.md`, section 19).
 | System integration | The window's frame, menus, dialogs, device choosers, screen capture, notifications, the tray, the Dock and taskbar, sharing, the system's theme, power and displays, each the application's to decide (`docs/SYSTEM_INTEGRATION.md`) | 0.4.0, 2026-11-08 |
 | MCP server | `tools/zebkit-mcp`, on Linux, macOS and Windows, in every release archive (`docs/MCP.md`) | 2026-10-31; on every system since 0.3.0 |
 | Late loading | The library loaded after the host's threads have started: Linux (`patches/1045`), and on a Mac on the main thread (`docs/MACOS.md`) | 2026-10-29, macOS 2026-10-31 |
-| Hooks | Every decision the engine makes, in C and every binding, on Linux, macOS and Windows (`docs/ROADMAP_HOOKS.md`) | 2026-10-24 to 2026-11-03 |
+| Hooks | Every decision the engine makes, in C and every binding, on Linux, macOS and Windows (`docs/HOOKS.md`) | 2026-10-24 to 2026-11-03 |
 | Input methods in X11 windows | IBus (ibus-daemon, fcitx5's IBus frontend), composition in the page (`docs/ARCHITECTURE.md`, `tests/engine/input_method.py`) | 2026-11-10 |
+| Own embedder | The content shell out of the engine: `zebkit::Window` (`window.h`, `window_views.cc`, `window_mac.mm`), `zebkit::Profile`, the content clients directly on content's interfaces (`engine.cc`, `client_defaults.cc`), a `zebkit.pak` of the engine's own; 19 patches of `content/shell` gone | 2026-11-01 |
+| A window's native handle | `zebkit_view_get_native_window()` (an X11 window, an `HWND`, an `NSWindow*`) for parenting the system's dialogs, and `zebkit_view_export_native_window()` as a portal names its parent; in every binding | 2026-11-07 |
+| CDP against real clients | `tests/engine/cdp_clients.mjs`: 137 cases with Puppeteer and Playwright, Chrome's results recorded by the same run (`docs/AUTOMATION.md`, section 7) | 2026-11-01 |
+| Off-screen views beside windows | On Linux and macOS in one process (`tests/engine/mixed_views.c`); each view's scale its own (`tests/engine/offscreen_scale.c`) | 2026-11-01 |
+| More of media capture | Elements outside the document (`media_inventory.py`), one file through a change of resolution (`media_resolution.py`), frames of other sites, live streams' source UTC | 2026-10-29 to 2026-10-31 |
+| Input after a navigation | A command waits for a new widget's first frame, and fails if its input was dropped anyway (`patches/1062`, `docs/AUTOMATION.md` 4.4) | 2026-10-31 |
+| Settings at runtime | `zebkit_set_engine_settings()`, `zebkit_view_set_runtime_settings()`, the MCP group `settings`; what CDP changes is checked in `cdp_overrides.py` | 2026-10-31 |
+| Chrome as sites see it | `window.chrome` by Chrome's code, `chrome.app`'s queries, popups blocked without a click, a real screen under `--headless`, V8's inspector running none of the page's code (`patches/1026`, `cdp_browser.py`) | 2026-10-24, 2026-10-26 |
+| Network quality | Chromium's network estimator feeding renderers; 3G and Slow-2G test modes (`network_quality.py`) | 2026-10-31 |
+| Playwright's API natively | `<zebkit/automation.h>` and Playwright's protocol over a WebSocket (`zebkit_automation_listen`, `zebkit-run --playwright-port`), in every binding (`docs/AUTOMATION.md`) | 2026-10-27 |
+| Find in page, download outcomes | `zebkit_view_find()` on Chrome's own find, and each download's outcome and error (`docs/API.md`, `docs/HOOKS.md`) | 2026-11-11 |
+
+How some of the finished items were made, where that is not written
+elsewhere:
+
+- **PDF in pages: Chromium's plugin, zebkit's viewer.** Chrome's viewer is two
+  parts: the plugin (`//pdf`, `PdfViewWebPlugin` and `PDFiumEngine`, which draw only visible pages,
+  select, find, follow links, fill forms and print) and an extension (`chrome/browser/resources/pdf`)
+  with its scrolling and toolbar, which needs the extensions system and WebUI that `slim` removed. So
+  the plugin is Chromium's, in a sandboxed renderer: a dedicated `--pdf-renderer` one without JIT as
+  Chrome's, and the browser process never parses a page's PDF (sandboxed: the release archive runs it
+  in the seatbelt on macOS, checked 2026-11-09; the suite runs it with `--no-sandbox`, as this build
+  machine has no user namespaces and the Mac's test bundle does not enter the seatbelt,
+  `docs/MACOS.md`); and the part the extension does is a small viewer of zebkit's
+  (`src/engine/pdf_viewer.js`, 12 KB of script), in an isolated world and a closed shadow
+  root of Chrome's stub document, so the page sees what Chrome's page sees. A viewer of zebkit's over
+  `zebkit.pdf` would be smaller by the plugin's code but would parse in the browser process, or need
+  PDFium bound into renderers all the same, and would write selection, find, forms and accessibility
+  again. Size and what was measured: `docs/SIZE_AND_SPEED.md`.
+- **Input lost after a navigation.** A new top-level widget takes no input until its first frame: the
+  browser's `RenderInputRouter::FilterInputEvent` answers each event itself with `kNoConsumerExists`,
+  and the page never hears. Commands wait for that signal (`patches/1062`). The two
+  `tests/engine/hook_policies.py` modes that failed had another cause, in the test: two readers on one
+  pipe took the DevTools line from each other, so no input was sent. Unexplained: in an earlier
+  harness, a page stayed at `about:blank` for over ten seconds in 2 of 40 runs of those modes while the
+  machine was loaded by a build; not seen in 80 runs after.
+- **A spare renderer at runtime.** `spareRenderer` is made again at each load's end, not after each
+  commit as `--zebkit-spare-renderer` keeps it, since content fixes that choice at startup. A
+  navigation that needs no new process drops the spare at its commit (`PrepareForFutureRequests`), as
+  content does while the spare's feature is off.
+- **Legacy `chrome.app` queries** (2026-10-26), for the uninstalled hosted-app state, without an
+  extension runtime. The same slim binary passed Google's email/Next check with these queries,
+  was rejected without them, and passed again after restoring them
+  ([the investigation](notes/google-signin.md)).
+- **The sandbox where there is none** (owner, 2026-10-31; `docs/SANDBOX.md`). Chromium's
+  set-user-ID helper is in the package, not set-user-ID until root runs `zebkit-sandbox-install`,
+  and `--no-sandbox` is documented for containers and said on standard error each time. Without
+  any of them the engine refuses to start, saying what to do, instead of Chromium's fatal message.
+- **Text layout.** Level with Electron 45.2.1 within noise since 2026-11-06: 7.5 against 7.4 ms
+  on Chromium 157, 2026-11-08 (`docs/reports/electron-compare.md`). Before, on Chromium 155
+  (2026-10-27), a chapter of a book took 4.4 ms of CPU to lay out in zebkit `slim` and 3.5 ms in
+  Electron 44.9 (`scripts/layout-bench.sh`, `docs/SIZE_AND_SPEED.md`): the engines did the same
+  work, and `slim`'s code ran slower for being compiled for size. `slim-speed` (`-O2` throughout,
+  no size-trained inliner) took 3.9 ms for 30 MiB more and 20 to 50 MB more a page. The release
+  stays `slim` (owner, 2026-10-27). What closed the gap was Chrome's PGO profile matched
+  (2026-11-06: CFI on virtual and indirect calls, `patches/1078` keeping the checks off the
+  application's functions, and the size model kept to what the profile calls cold below 99.9%,
+  for 5.1% of the package).
 
 ## Next
 
+Open work only; what is finished is in the table above.
+
 ### The library
 
-zebkit fits into the application (owner, 2026-10-25). The application's
-loop, its windows and its process are its own: `zebkit_init()`,
-`zebkit_pump()`, `zebkit_set_wakeup()` and `zebkit_shutdown()`; the examples
-in `examples/native-host` (Done table). What is left:
+zebkit fits into the application (owner, 2026-10-25): the application's loop,
+its windows and its process are its own.
 
 - **AppKit with a person.** The AppKit example, the macOS startup settings and
   `zebkit_view_attach_native()` on an `NSView` ran on a Mac on 2026-10-31
@@ -102,301 +159,82 @@ in `examples/native-host` (Done table). What is left:
     main thread, which the toolkit owns, and `zebkit_init()` is for that thread
     only on macOS (`<zebkit/zebkit.h>`). There the only way is to join the loop with `zebkit_pump()`.
   - **Windows: not known.** Nothing has been tried.
-- **Views with a window and off-screen views in one process: done on Linux and
-  macOS** (2026-11-01). See "Off-screen views" below. Windows: not yet.
+- **Native unloading** of the library is not supported.
 
 ### The engine
 
-- **zebkit's own embedder: done** (2026-11-01). The content shell is out of the
-  engine: `zebkit::Window` (`window.h`, `window_views.cc`, `window_mac.mm`) for the
-  windows, `zebkit::Profile` for the context, the content clients directly on
-  content's interfaces (`engine.cc`, `client_defaults.cc`), `zebkit.pak` of the
-  engine's own. 19 patches of `content/shell` are gone. What stays copied from it,
-  small and now the engine's: the permission and download delegates, the file
-  chooser, background sync and accept-language delegates, the protocol handler
-  registry's delegate. Left out: test services, DevTools front-end windows, the
-  "Inspect Element" menu, crash reporter setup, metrics and variations prefs.
-- **A window's native handle: implemented** (2026-11-07).
-  `zebkit_view_get_native_window()` borrows the top-level system window that
-  contains a page, with its kind (an X11 window, an `HWND`, an `NSWindow*`), so
-  that an application can parent the system's dialogs to it; also Rust's
-  `View::native_window()`, Python's `View.native_window()` and host JavaScript's
-  `view.nativeWindow` (the handle a BigInt). A page attached to an application's
-  window reports the top-level window containing it, also when it is attached
-  to a panel inside that window. Checked 2026-11-07: Linux X11 in C, Python,
-  Rust and host JavaScript, headless, off-screen, the wrong thread and glibc
-  2.17; Windows 10 (`win_native_parent`, with the sandbox and without); macOS
-  on an Apple M4 (`native_parent_mac`).
-  For the system's portals, `zebkit_view_export_native_window()` gives the
-  window as a portal names its parent, `"x11:<XID>"` or on Wayland
-  `"wayland:<handle>"` through xdg-foreign (Chromium's own export), checked on
-  Wayland in a headless labwc. The other way, an application's handle as a
-  view's parent, is done.
 - **Wayland** (`--ozone-platform=wayland`; X11 is the default): windows and the
   portal export run in a headless labwc (2026-11-07). Not done: off-screen
   views beside Wayland windows (refused, `zebkit_view_new_offscreen()` returns
   NULL: their root's stub platform window crashed there), attaching to an
   application's window, input methods; not run with a person or a GPU.
-- **A real input method in X11 windows: done** (2026-11-10), through IBus
-  (`docs/ARCHITECTURE.md`, `tests/engine/input_method.py`; run with ibus-rime).
-  Left: XIM-only input methods (fcitx 4 without an IBus frontend).
-- **The sandbox where there is none: answered** (owner, 2026-10-31; `docs/SANDBOX.md`).
-  Both: Chromium's set-user-ID helper is in the package, not set-user-ID until root
-  runs `zebkit-sandbox-install`, and `--no-sandbox` is documented for containers and said
-  on standard error each time. Without any of them the engine refuses to start, saying
-  what to do, instead of Chromium's fatal message. Left: the helper has not been run from
-  this package, as the build machine has no root.
-- **Text layout at Chrome's speed.** Level with Electron 45.2.1 within
-  noise since 2026-11-06: 7.5 against 7.4 ms on Chromium 157, 2026-11-08
-  (`docs/reports/electron-compare.md`). History, before: a chapter of a book took 4.4 ms of
-  CPU to lay out in zebkit `slim` and 3.5 ms in Electron 44.9
-  (`scripts/layout-bench.sh`, `docs/SIZE_AND_SPEED.md`). Taken apart on
-  2026-10-27: the engines do the same work; `slim`'s code runs slower
-  for being compiled for size. `slim-speed` (`-O2` throughout, no
-  size-trained inliner) takes 3.9 ms for 30 MiB more and 20 to 50 MB more
-  a page; Google's own build of Chromium 155 takes 3.8. The release stays
-  `slim` (owner, 2026-10-27): a build that costs more in size than it
-  gains in speed is not an improvement. Beyond that the gap is Chromium
-  155's against Electron's Chromium 152, not the build's.
-- **CDP checked against Puppeteer and Playwright: done** (2026-11-01). `tests/engine/cdp_clients.mjs`,
-  137 cases with real clients, Chrome's results recorded by the same run: `docs/AUTOMATION.md`, section 7.
+- **Input methods in X11 windows:** XIM-only input methods (fcitx 4 without an
+  IBus frontend) are left; IBus is done (Done table).
+- **The set-user-ID sandbox helper** has not been run from this package, as the
+  build machine has no root.
 
 ### Off-screen views
 
-- **Mixed: off-screen views in a process with windows: done on Linux and macOS**
-  (`tests/engine/mixed_views.c`). On Linux with a display a view's root has a stub
-  platform window and viz draws it in memory (patches/1072, 1073), so no X11 or
-  Wayland window exists for it, its `<select>` lists or what its page opens; its
-  screen, with its scale and sRGB, is its own per widget (patches/1053, 1074). On
-  macOS it is a view in no window with the same screen, per view rather than per
-  process. Not done: Windows, which still needs
-  `--headless`; Wayland, where making such a root crashed in a headless labwc
-  (2026-11-07), so `zebkit_view_new_offscreen()` refuses there; GPU compositing
-  of such a root on Linux (no GPU here); a window's own input on macOS in the test.
-- **Independent scale: Linux foundation implemented.** Separate headless
-  displays and root hosts preserve each view's DPR, CSS layout and frame
-  pixels, including fractional scales. Pixel/DIP space reservation prevents
-  large resizes overlapping other views. Multi-view input/frame regressions,
-  the complete Linux/glibc 2.17 suites and Rust integration pass. The Mac
-  per-widget screen snapshot path (patch 1053) passes `offscreen_scale.c` on a
-  Mac (2026-10-31).
+- **Beside windows:** not done on Windows, which still needs `--headless` for
+  off-screen views; on Wayland (above); GPU compositing of such a root on
+  Linux (no GPU here); a window's own input on macOS in the test. On Linux with
+  a display a view's root has a stub platform window and viz draws it in memory
+  (`patches/1072`, `1073`); its screen, with its scale and sRGB, is its own per
+  widget (`patches/1053`, `1074`).
 - **viz's own IOSurfaces on macOS.** Frames are read back and copied into
   IOSurfaces of the engine's; viz's blit into mappable shared images
   (`ZEBKIT_BUFFERS_GPU`) gives no frame for a page in no window. With it,
   the read-back and the copy go.
-- **GPU validation.** Done on macOS (2026-10-31, Apple M4): hardware compositing
-  and WebGL on Metal, attached views drawn with it, IOSurface frames from a page
-  composited on the GPU (`tests/engine/gpu_status.py`, `docs/MACOS.md`). Open on
-  Linux, where no machine with a GPU exists: dmabufs below, and attached windows
-  (`zebkit_view_attach_native()`, only software compositing has drawn in them).
-- **dmabufs checked on a GPU.** The path is there (`ZEBKIT_BUFFERS_GPU` on
-  Linux, the planes, strides and modifier passed on), but the build
-  machine has no GPU: it has only been seen to fall back to shared
-  memory.
-- **What a window does besides:** drags and drops in and out, the context
-  menu (`ShowContextMenu` to the application), touch and accessibility remain.
-  Native editing commands now accompany one key via
-  `zebkit_view_send_key_with_commands` (C and Rust); the AppKit example
-  collects system editing selectors. Word deletion, Unicode command batches
-  and `preventDefault()` pass Linux behavior tests, and `edit_commands.c` on a Mac;
+- **GPU validation on Linux.** Done on macOS (2026-10-31, Apple M4): hardware
+  compositing and WebGL on Metal, attached views drawn with it, IOSurface frames
+  from a page composited on the GPU (`tests/engine/gpu_status.py`,
+  `docs/MACOS.md`). Open on Linux, where no machine with a GPU exists: dmabufs
+  (`ZEBKIT_BUFFERS_GPU`, the planes, strides and modifier passed on; only seen to
+  fall back to shared memory) and attached windows (`zebkit_view_attach_native()`,
+  only software compositing has drawn in them).
+- **What a window does besides:** drags and drops in and out, touch and
+  accessibility remain. Native editing commands accompany one key via
+  `zebkit_view_send_key_with_commands`; word deletion, Unicode command batches
+  and `preventDefault()` pass Linux behaviour tests, and `edit_commands.c` on a Mac;
   AppKit's selectors from real keys remain.
 
 ### Media capture
 
-- **Elements outside the document: done** (2026-10-29). The inventory
-  uses Blink's weak document-to-media registry: detached `Audio` objects,
-  open/closed and nested shadow roots, stable DOM node IDs without retaining
-  unreachable elements. Active captures retain their element. Held by
-  `tests/engine/media_inventory.py`; the existing capture suite still passes.
-- **One file through a change of resolution: implemented.** Compatible
-  H.264/HEVC configurations use in-band parameter sets (`avc3`, `hev1`) in
-  one MP4. H.264 up/down changes, AAC preservation, decoding and browser
-  replay pass `tests/engine/media_resolution.py`. Incompatible changes and
-  explicit Matroska remain separate files. Real HEVC playback and macOS
-  runtime validation remain (Linux slim does not enable HEVC decoding).
-- **`zebkit_view_media_at()` in frames of other sites: implemented.** Each
-  frame is asked in its own coordinates. Its existing implementation and
-  cross-site assertion in `tests/engine/media.c` were verified on Linux on
-  2026-10-29; the old description of this gap was stale.
-- **Live streams' source UTC: implemented.** Native HLS program dates
-  and WebM DateUTC are propagated through the demuxer; MSE/DASH applications
-  can supply a media/Unix anchor. Piecewise mappings survive buffered date
-  discontinuities and closed gaps, in result JSON and container metadata.
-  Native HLS, buffered jumps, WebM, explicit anchors, opt-out and unknown
-  dates pass on Linux and on a Mac (2026-10-31).
+- Real HEVC playback, and a change of resolution checked at run time on macOS
+  (Linux `slim` does not enable HEVC decoding). Incompatible changes of
+  configuration and explicit Matroska still give separate files.
 
 ### Agents
 
-- **Hooks for every decision the engine makes: implemented** on Linux, macOS
-  and Windows (owner, 2026-10-24; `docs/ROADMAP_HOOKS.md` has each one). Permissions, navigation,
-  popups, console, certificates, sign-in, user agent, settings, links to other
-  programs, downloads (saved in the profile's `Downloads` without a function),
-  isolated worlds, file choosers, camera and microphone, keys, context menu and
-  fullscreen, in C, Rust, Python and host JavaScript. Still partial: network
-  requests (the headers the network adds are seen, a WebSocket's Cookie too since 2026-11-02;
-  `docs/ROADMAP_HOOKS.md`). Client certificates from the system's stores (NSS, Keychain, the
-  Windows store) behind the engine setting `clientCertificateStores`, the key staying in the store:
-  built 2026-11-03 and tested on Linux, the Mac and Windows (`hook-python-certstore`).
-  The hook sources compile for macOS (framework built on 2026-10-31); the suite ran there on 2026-11-01.
-- **Input lost after a navigation: found and fixed** (2026-10-31; `docs/AUTOMATION.md` 4.4).
-  A new top-level widget takes no input until its first frame: the browser's
-  `RenderInputRouter::FilterInputEvent` answers each event itself with
-  `kNoConsumerExists`, and the page never hears. Commands wait for that signal (`patches/1062`)
-  and a command whose input was dropped anyway fails. The two `tests/engine/hook_policies.py`
-  modes that failed had another cause, in the test: two readers on one pipe took the DevTools line
-  from each other, so no input was sent. Their retry and the MCP server's wait are gone.
-  Unexplained: in an earlier harness, a page stayed at `about:blank` for over ten seconds in 2 of
-  40 runs of those modes while the machine was loaded by a build; not seen in 80 runs after; and
-  an off-screen view's frame timing out under load was not investigated further.
-- **Every setting changeable at runtime: implemented** (2026-10-31). What Chromium's CDP
-  changes is checked in `tests/engine/cdp_overrides.py`, by what the page or the server saw.
-  What zebkit decides: `zebkit_set_engine_settings()` and `zebkit_view_set_runtime_settings()`,
-  in C, Rust, Python and host JavaScript, and the MCP group `settings` (`docs/API.md`,
-  `docs/MCP.md`): `thirdPartyCookies`, `spareRenderer`, `dialogs`, `downloads`, `newWindows`.
-  Defaults are today's; changing them is an explicit act. A spare renderer kept by
-  `spareRenderer` is made again at each load's end, not after each commit as
-  `--zebkit-spare-renderer` keeps it, since content fixes that choice at startup. A navigation that needs no
-  new process, as to a site a frame of that view has been on, drops the spare at its commit
-  (`PrepareForFutureRequests`), as content does while the spare's feature is off.
-- **Chrome as sites see it, and nothing of a CDP client: done**
-  (2026-10-24, measured against rebrowser-bot-detector's checks and
-  Electron 44.9): `window.chrome` by Chrome's own code, popups blocked
-  without a click, a real screen under `--headless`, and V8's inspector
-  running none of the page's code when it describes the page's errors
-  (`patches/1026`; Chrome and Electron still do). Held by
-  `tests/engine/cdp_browser.py`.
-  - **Legacy `chrome.app` queries: done** (2026-10-26), implemented natively
-    for the actual uninstalled hosted-app state, without an extension runtime.
-    The same slim binary passes Google's email/Next check with these queries,
-    rejects it without them, and passes again after restoring them
-    ([comparison](GOOGLE_SIGNIN.md)).
-- **PDF in pages: done** (2026-11-01; Done table). How it is made: Chromium's plugin, zebkit's viewer. Chrome's viewer is two
-  parts: the plugin (`//pdf`, `PdfViewWebPlugin` and `PDFiumEngine`, which draw only visible pages,
-  select, find, follow links, fill forms and print) and an extension (`chrome/browser/resources/pdf`)
-  with its scrolling and toolbar, which needs the extensions system and WebUI that `slim` removed. So
-  the plugin is Chromium's, in a sandboxed renderer: a dedicated `--pdf-renderer` one without JIT as
-  Chrome's, and the browser process never parses a page's PDF (sandboxed: the release archive runs it in the seatbelt on macOS, checked 2026-11-09; the suite runs it with `--no-sandbox`, as this build machine has no user namespaces and the Mac's test bundle does not enter the seatbelt, `docs/MACOS.md`); and the part the extension does is a small
-  viewer of zebkit's (`src/engine/pdf_viewer.js`, 12 KB of script), in an isolated world and a closed shadow
-  root of Chrome's stub document, so the page sees what Chrome's page sees. A viewer of zebkit's over
-  `zebkit.pdf` would be smaller by the plugin's code but would parse in the browser process, or need
-  PDFium bound into renderers all the same, and would write selection, find, forms and accessibility
-  again. Size and what was measured: `docs/SIZE_AND_SPEED.md`.
-- **Network quality estimates: implemented.** Chromium's network-service
-  estimator now feeds its native tracker and render-process observer, for
-  existing and new renderers. Chromium's 3G and Slow-2G test modes pass
-  `tests/engine/network_quality.py`, with standard web privacy rounding;
-  they pass on a Mac too (2026-10-31); a real network remains.
+- **Network hooks, still partial**: what is open is listed under the hook
+  (`docs/HOOKS.md`), among it early hints, prefetch and background fetch, which
+  do not pass the hook.
+- **An off-screen view's frame timing out under load** was seen and not
+  investigated further.
+- **Playwright's own test suite against the endpoint: not at parity**
+  (`scripts/playwright-suite.sh`): 4047 passed and 148 failed on Chromium 157 (2026-11-08),
+  Chrome 4196; each run's counts and what is left are in `docs/AUTOMATION.md`, section 7.
+- **The MCP server** (`docs/MCP.md`): the device flow against the real providers,
+  refresh tokens, and a client of the protocol's current revision (no SDK speaks
+  it yet).
 - **The privacy defaults tested on every change**: browserleaks.com's
   checks (WebRTC, permissions, client hints, TLS, JavaScript) in
-  scripts/web-bench.sh, against what zebkit's defaults promise.
+  `scripts/web-bench.sh`, against what zebkit's defaults promise; a real
+  network for the network quality estimates.
 
-- **Playwright's API, natively: built** (owner, 2026-10-27;
-  `docs/AUTOMATION.md`). `<zebkit/automation.h>` runs Playwright's
-  protocol commands inside the engine, without CDP or a driver: Playwright's
-  injected script in an isolated world of each frame, input to the
-  widgets, routes in front of the network; 3.4 to 10 times faster than
-  Playwright over CDP for what does not wait for a frame. Python
-  (`zebkit.automation`) and Rust (`zebkit::automation`) have it with
-  Playwright's names. Contexts as profiles of their own, workers,
-  WebSocket routes, geolocation, HTTP credentials, print media, touch
-  events, mouse input into frames of other sites, traces, HAR, video and
-  frames on demand for views without a display are built (2026-10-27), and
-  Playwright's own protocol over a WebSocket (`zebkit_automation_listen`,
-  `zebkit-run --playwright-port`), so Playwright's clients drive zebkit
-  unchanged with `chromium.connect()`. Held by `tests/engine/automation.c`,
-  `automation_python.py`, `playwright_connect.mjs`,
-  `scripts/automation-bench.sh`.
-  - **Playwright's own test suite against the endpoint: running, not at parity**
-    (`scripts/playwright-suite.sh`): 4047 passed and 148 failed on Chromium 157 (2026-11-08),
-    Chrome 4196; each run's counts and what is left are in `docs/AUTOMATION.md`, section 7.
-    `Disposable.dispose` now removes binding/script registrations and context
-    replay entries. Request timing and encoded sizes use Chromium network
-    measurements; compressed responses and POST uploads pass client tests.
-- **zebkit as an MCP server: built** (2026-10-31, `docs/MCP.md`), on Linux, macOS
-  and Windows, in every release archive.
-  One program, `tools/zebkit-mcp`,
-  that gives an AI agent the engine's capabilities as MCP tools, over
-  standard input and over HTTP, on Linux and macOS alike. CDP stays for
-  clients that speak it; MCP is what agents are given. 68 tools, the protocol's
-  current revision and the handshake ones; a program of its own in Rust, about
-  1 MiB, outside the library. An outside agent (Claude Code, headless, this server its
-  only tools) did five real tasks on the open web on 2026-11-02 (a form, research on three
-  sites, a 15-page PDF, a site's own search, a public Google Doc): all done; what it hit was
-  fixed the same day (stale references failing at once, actions answering after their
-  navigation, `page_read`'s `find`, a clearer missing-directory error; `docs/MCP.md`). Pages
-  drawn on a canvas have coordinates (`page_mouse`, `page_keyboard`, a capture at one pixel per
-  CSS pixel). Still to do: the device flow against the real providers,
-  and refresh tokens. The engine fixes it needed were made on 2026-10-31 (`docs/MCP.md`).
-  - **Pages:** open, navigate, wait for a load; read a page as text,
-    Markdown or its accessibility tree, with references to its elements;
-    click, type, select, scroll and upload by those references; run
-    script; a capture of the page or an element; the network's requests;
-    several pages and profiles at once, with or without windows.
-  - **PDF:** open, read text with its layout, search, render pages, the
-    outline and links, fill forms, annotate, redact, edit pages, check
-    signatures, and print a page to PDF.
-  - **Files and data:** read and write within the directories granted,
-    fetch through the engine's network stack, compress, hash, decode and
-    encode images, parse URLs.
-  - **Media:** probe, cut, convert and extract audio and frames with the
-    FFmpeg in the engine.
-  - **Native windows:** `zebkit.ui`'s tree read, clicked, typed into and
-    captured, as pages are.
-  - **Bounds set by whoever runs it:** which tools, which origins, which
-    directories, with or without a window; every tool's arguments
-    checked, as `zebkit.*` checks a page's calls.
-  - **Sign-in to a provider's API without a screen:** OAuth's device flow
-    (RFC 8628) as a tool of the server, for its own tools that need a
-    Google, Microsoft or GitHub token: the code and URL shown to the
-    person, approved on any device. A tool of the server only (owner,
-    2026-10-28), not an API of the engine: it is three HTTPS requests any
-    host can make itself, and it gives a token, not a signed-in page.
-  - **Checked by:** an MCP client's own test suite and an agent doing
-    real tasks (research on the web, filling a form, reading a long PDF),
-    with every tool covered by `tests/engine/`. Today: the official client
-    over both transports with every tool and bounds' escapes
-    (`mcp_server.mjs`), four scenarios of the project's conformance suite
-    (`mcp_conformance.mjs`), and those tasks as a scripted run on a local site,
-    no model deciding (`mcp_agent_run.mjs`), and an outside agent's runs on the open web
-    (2026-11-02, by hand: they cost a model's tokens). Not yet a client of the current
-    revision: no SDK speaks it yet.
 ### Measurements
 
-- **Web pages against Electron 44.9 (history, 2026-10): done for 14 pages, one left over**
-  (`scripts/web-bench.sh`; the current comparison is Electron 45.2.1's, below).
-  `slim` costs 16% less CPU and 16% less memory on a page, over 14 of the
-  15 pages of `scripts/web-bench.sh --sites`, both engines in a 1280 by
-  800 window (`docs/SIZE_AND_SPEED.md`); less memory on every page, less
-  CPU on 12, level on BBC News and Stack Overflow.
-  - **TODO: Reddit** showed zebkit a reCAPTCHA in place of the page, and
-    Electron a challenge it passed; until both are shown the page, it is
-    out of the comparison.
-- **A fully equal comparison with Electron: done for thin hosts, Linux and
-  macOS, 2026-11-02** (`scripts/electron-compare.sh`, `docs/SIZE_AND_SPEED.md`,
-  "Against Electron, measured the same way"): Electron 45.2.1, one harness,
-  the same pages, two thin hosts, every process counted. zebkit wins size,
-  startup, memory, CPU while loading and, since 2026-11-02, calls between
-  the page and its host (level to 64 KiB, a fifth faster from 1 MiB, over
-  each frame's Mojo channel); since 2026-11-06 the DOM workload (280
-  against 278 ms), the long document and text layout are level within
-  noise. It runs one process more (storage, as Chrome). The cold start lost
-  in the run of 2026-11-06 (7.4 against 6.5 s) is won since the engine is read
-  into the page cache first: 2.3 against 5.8 s on Chromium 157, 2026-11-08
-  (`docs/reports/electron-compare.md`, the current numbers).
-  - **Done 2026-11-02: calls between the page and the host** as fast as
-    Electron's IPC, and faster for large ones.
-  - **Done 2026-11-06: the DOM and layout gap**: Chrome's PGO profile
-    matched (CFI on virtual and indirect calls, `patches/1078` keeping the
-    checks off the application's functions) and the size model kept to
-    what the profile calls cold below 99.9%, for 5.1% of the package.
-    Chrome 155 itself is still faster on a fresh page's first DOM layout
-    (204 against 222 ms).
-  - **TODO: a headless capture one frame later than Chrome's** over CDP
+- **The comparison with Electron** (`scripts/electron-compare.sh`, the current
+  numbers in `docs/reports/electron-compare.md`, Electron 45.2.1 on Chromium 157,
+  2026-11-08). Left of it:
+  - **A headless capture one frame later than Chrome's** over CDP
     (`Page.captureScreenshot`, JPEG too).
-  - **TODO: what is left of the conditions below**: one real application
-    on both hosts, an EPUB, the sandbox on (this machine allows neither
-    engine's), cold start on macOS.
-- **The conditions of that comparison.** The comparison of
+  - **Conditions not met yet**: one real application on both hosts, an EPUB,
+    the sandbox on (this machine allows neither engine's), cold start on macOS.
+  - **Reddit** showed zebkit a reCAPTCHA in place of the page in the web pages
+    comparison (`scripts/web-bench.sh`), and Electron a challenge it passed; until
+    both are shown the page, it is out of the comparison.
+- **The conditions of a comparison of whole applications.** The comparison of
   whole applications that was published (a document reader against its
   build on Electron 36) was withdrawn on 2026-10-23: an old Electron, and
   two builds of an application that differed in more than the runtime. To
@@ -419,34 +257,32 @@ in `examples/native-host` (Done table). What is left:
     longest freeze, scrolling frames at p50, p95 and max, CPU time,
     memory); calls between page and host (latency and throughput, small
     and large bytes); the download and the installed size.
-  - **Linux and macOS**, each on its own machine; Windows when zebkit
-    runs there.
+  - **Linux, macOS and Windows**, each on its own machine.
   - **Repeatable:** the application, both hosts and the harness in
     `tests/bench/`, one command to run it; the results with the date, the
-    versions and the machine in `docs/SIZE_AND_SPEED.md`, losses shown as
+    versions and the machine in `docs/reports/`, losses shown as
     plainly as wins.
 
 ### Platforms
 
-- **Windows**: `zebkit.dll`, sandbox on by default; the suite and the bindings pass on
-  Windows 10 (Done table, `docs/WINDOWS.md`). Left: D3D11 textures for off-screen frames
-  on a real GPU, Windows' own WebAuthn route, `zebkit.ui` beyond its script's test, off-screen
-  views beside windows (Windows still needs `--headless` for them).
+- **Windows**: D3D11 textures for off-screen frames on a real GPU, Windows' own
+  WebAuthn route, `zebkit.ui` beyond its script's test, off-screen views beside
+  windows (Windows still needs `--headless` for them).
 - **macOS**: what a person at the Mac has to check (`docs/MACOS.md`: real input and
   devices, the real Keychain, WebRTC's peers, drops, the menu bar's keys); Chromium's PGO profile for macOS;
   signing with a Developer ID and notarization.
 
 ### Releases
 
-- The latest engine, 0.4.0 (system integration: the window's frame, menus, dialogs, device choosers, screen capture, notifications, the tray, the Dock and taskbar, the system's theme and power, each the application's to decide; `docs/releases/0.4.0.md`), after 0.3.0 (Chromium 157, HTML in canvas, pages in the system's locale again; `docs/releases/0.3.0.md`), 0.2.1 (native screenshots at 12 ms and their pixels unencoded, the tools in every archive; `docs/releases/0.2.1.md`) and 0.2.0 (level with Electron 45.2.1 on the DOM, faster on page calls and starting, input into every frame, a window's handle for the system's dialogs, Wayland's first run, Playwright's suite at 4,046; `docs/releases/0.2.0.md`), is published for Linux, macOS and Windows;
-  the Rust crates download a release only from a repository anyone can
-  read, so the repository has to be public for them. What is on `main` since
-  0.4.0 is in `docs/releases/next.md`.
+- The latest release is 0.4.0 (`docs/releases/0.4.0.md`), for Linux, macOS and
+  Windows; what is on `main` since is in `docs/releases/next.md`, the draft of
+  the next release's notes. The Rust crates download a release only from a
+  repository anyone can read.
 
 ### The API
 
 - **Annotations as a full PDF editor has them: what is left.** Implemented
-  (2026-10-30, in `<zebkit/pdf.h>`, `zebkit.pdf`, Rust and Python; `docs/API.md`).
+  (2026-10-30, in `<zebkit/pdf.h>`, `zebkit.pdf` and every binding; `docs/API.md`).
   Not done:
   - Checked against Acrobat's and PDF.js's rendering of the same file: not done.
     Appearances are checked in PDFium's pixels, and looked at once in poppler
@@ -463,7 +299,7 @@ in `examples/native-host` (Done table). What is left:
     marks. Free text's own glyphs are not shaped (no ligatures, no right-to-left);
     `<zebkit/text.h>` and a canvas appearance are.
 - **PDF extensible by applications: what is left.** Implemented (2026-10-30,
-  `zebkit_pdf_hook_*`, Rust, Python, `zebkit.pdf.use()`; `docs/API.md`,
+  `zebkit_pdf_hook_*`, every binding, `zebkit.pdf.use()`; `docs/API.md`,
   `examples/pdf-plugin/`). Not done:
   - The canvas an appearance is drawn on is not Skia written into the stream: it
     writes PDF operators through the same `<zebkit/canvas.h>` calls, because Skia
@@ -478,34 +314,15 @@ in `examples/native-host` (Done table). What is left:
     a move of several pages has none.
 - **PDF, beyond annotations**: trust in a signer's certificate (the chain,
   revocation), encrypted documents saved with new permissions, form fields
-  renamed, a page's JavaScript actions. Outline replacement now supports
-  hierarchy, page positions and URLs through C/Rust/Python/host JavaScript;
-  atomic validation and full/incremental-save regressions pass on Linux. PDFium in
-  a sandboxed utility process for pages' documents, as Chrome's printing
-  runs it.
+  renamed, a page's JavaScript actions. PDFium in a sandboxed utility process
+  for pages' documents, as Chrome's printing runs it.
 - **Services, later areas**: decoding media frames; the desktop's clipboard
-  and keychain as services of their own. Notifications, file dialogs, screens and
-  power are the application's since 0.4.0 (`docs/SYSTEM_INTEGRATION.md`). 2D drawing
-  (`<zebkit/canvas.h>`) and shaping a line of text (`<zebkit/text.h>`) are
-  implemented. Left of them: colour fonts draw nothing in a canvas (outlines only;
+  and keychain as services of their own. Left of `<zebkit/canvas.h>` and
+  `<zebkit/text.h>`: colour fonts draw nothing in a canvas (outlines only;
   HarfBuzz's own drawing is compiled out of the engine, so glyphs come from Skia),
   no image filters or text decoration, and `zebkit.canvas` keeps its operations
   in the script until pixels are asked for.
-- **LevelDB export: implemented** (2026-10-30). The engine's own LevelDB,
-  exported through its C API as `zebkit_vendor_leveldb_*` in `leveldb/c.h`,
-  like the other libraries, with no key-value API of zebkit's beside it.
-  Non-ASCII paths, compaction without the engine's thread pool, binary values,
-  snapshots, batches and iterators pass in `tests/engine/vendor.c`.
-- **FreeType export: implemented** (2026-10-29). The engine's 189 public
-  compiled functions, package-relative macro headers and actual configuration;
-  C/C++ initialization, outline rasterization and TrueType glyph loading pass
-  on Linux and glibc 2.17. macOS framework packaging and C/C++ ARM64
-  cross-linking pass, and `vendor.c` on a Mac (2026-10-31).
-- **Bindings** for more languages: C#, Node's N-API. Go is done (Done table).
-- **Loading after threads have started: implemented** (2026-10-29; Done table).
-  Patch 1045 removes all deferred TLS pointer initializers. ELF audit, C/Python
-  main/worker loops and the glibc 2.17 C regressions pass; on a Mac, late loading
-  on the main thread passes (`docs/MACOS.md`). Native unloading is not supported.
+- **Bindings** for more languages: C#, Node's N-API.
 
 ## Decided
 
@@ -520,7 +337,7 @@ in `examples/native-host` (Done table). What is left:
 
 ## Costs to plan for
 
-- **Builds.** The checkout is about 30 GB; a full build takes hours, and a
+- **Builds.** The checkout and a build take about 120 GB of disk; a full build takes hours, and a
   change of compiler flags rebuilds everything. Changes are batched into
   one rebuild where possible.
 - **Patches.** Chromium releases every four weeks, and every patch has to

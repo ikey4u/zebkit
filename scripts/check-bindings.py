@@ -30,6 +30,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 HEADERS = ROOT / "src/engine/include/zebkit"
 # Declared for one system's program and not a binding's to call.
 EXEMPT = {"zebkit_win_set_sandbox", "zebkit_helper_main"}
+# Older forms a newer one does all of: a binding that reaches the newer one (which
+# also says why it failed) has the older ones too.
+SUPERSEDED_BY = {
+    "zebkit_view_new_offscreen": "zebkit_view_new_offscreen_ex",
+    "zebkit_view_new_offscreen_in": "zebkit_view_new_offscreen_ex",
+}
 
 
 COMMENT = re.compile(r"^\s*(#|//|/\*|\*)")
@@ -100,8 +106,9 @@ def main():
             continue
         row = []
         for binding, (source, pattern) in BINDINGS.items():
-            absent = [n for n in names if not re.search(pattern.format(n), source)
-                      and not (binding == "javascript" and n in JAVASCRIPT_REACHED)]
+            def reached(name):
+                return re.search(pattern.format(name), source) or (binding == "javascript" and name in JAVASCRIPT_REACHED)
+            absent = [n for n in names if not reached(n) and not (n in SUPERSEDED_BY and reached(SUPERSEDED_BY[n]))]
             gaps[binding] += [(header.name, n) for n in absent]
             row.append("%10s" % ("%d/%d" % (len(names) - len(absent), len(names))))
         print("%-16s %5d %s" % (header.name, len(names), " ".join(row)))

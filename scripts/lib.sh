@@ -51,6 +51,11 @@ SDK_DIR="${ZEBKIT_SDK_DIR:-$CACHE_DIR/sdk}"
 UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
 # Packages and reports per profile. The builds themselves are in
 # $SRC_DIR/out/<profile>, where Chromium's tools expect them.
+# "blink" is left from the switch from WebKit (2026-10-17), when out/ held both
+# engines. It stays: the name is in the Rust crates' search for a package
+# (bindings/rust), the examples, the docs, the run paths of the programs that
+# --build-only bundles for macOS and Windows, and every machine's existing
+# packages and check records; renaming it would orphan those for a word.
 OUT_DIR="$ZEBKIT_ROOT/out/blink"
 PATCHES_DIR="$ZEBKIT_ROOT/patches"
 PROFILES_DIR="$ZEBKIT_ROOT/profiles"
@@ -106,6 +111,23 @@ compressed_size() {
         zip) (cd "$2" && zip -q -9 -r -X -y - .) | wc -c ;;
         *) die "compressed_size: unknown method $1" ;;
     esac
+}
+
+# report_engine <package dir> <profile>: the line each measurement report
+# starts with, of what was measured: "Engine: zebkit <version> (Chromium
+# <version>), profile <profile>, measured <date>". The versions are the
+# package's own, from its NOTICE (package.sh), so that a package made before a
+# bump is not reported as the new one; VERSION and upstream.lock's for a package
+# without one. scripts/check-reports.py holds the reports to it.
+report_engine() {
+    local version="" chromium=""
+    if [[ -f "$1/NOTICE" ]]; then
+        version="$(sed -n '1s/^zebkit \([^ ]*\)$/\1/p' "$1/NOTICE" | tr -d '\r')"
+        chromium="$(sed -n 's/^It contains Chromium \([0-9.]*\) .*/\1/p' "$1/NOTICE" | head -1)"
+    fi
+    [[ -n "$version" ]] || version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
+    [[ -n "$chromium" ]] || chromium="$CHROMIUM_VERSION"
+    printf 'Engine: zebkit %s (Chromium %s), profile %s, measured %s\n' "$version" "$chromium" "$2" "$(date -u +%Y-%m-%d)"
 }
 
 # heavy <command...>: a step that loads the machine (a build, a sync): at the
@@ -293,7 +315,6 @@ limited() {
 # What a program is built for: the system this runs on, or macOS for a profile
 # that builds it, cross-compiled here on Linux as the engine is (docs/MACOS.md).
 ZEBKIT_TARGET="$ZEBKIT_HOST"
-ZEBKIT_TARGET_RPATHS=""
 # set_target_for_profile <name>: the programs are for that profile's system.
 set_target_for_profile() {
     case "$1" in
@@ -364,21 +385,24 @@ engine_library() {
     esac
 }
 
-# engine_link_options <package dir>: how a program links the engine. Its rpaths are
-# the package unless ZEBKIT_TARGET_RPATHS, for programs that move with it, says.
+# engine_link_options <package dir>: how a program links the engine, as the
+# array engine_link (paths with spaces stay one word each). Its rpaths are the
+# package unless the array ZEBKIT_TARGET_RPATHS, for programs that move with
+# it, names others.
+ZEBKIT_TARGET_RPATHS=()
 engine_link_options() {
-    local rpath rpaths="${ZEBKIT_TARGET_RPATHS:-$1}" options
+    local rpath rpaths=("$1")
     if [[ "$ZEBKIT_TARGET" == windows ]]; then
         # A DLL is found beside the program; no run paths.
-        echo "$1/zebkit.dll.lib"
+        engine_link=("$1/zebkit.dll.lib")
         return
     elif [[ "$ZEBKIT_TARGET" == macos ]]; then
-        options="-F$1 -framework Zebkit"
+        engine_link=("-F$1" -framework Zebkit)
     else
-        options="-L$1 -l:libzebkit.so.1"
+        engine_link=("-L$1" -l:libzebkit.so.1)
     fi
-    for rpath in $rpaths; do options+=" -Wl,-rpath,$rpath"; done
-    echo "$options"
+    (( ${#ZEBKIT_TARGET_RPATHS[@]} )) && rpaths=("${ZEBKIT_TARGET_RPATHS[@]}")
+    for rpath in "${rpaths[@]}"; do engine_link+=("-Wl,-rpath,$rpath"); done
 }
 
 # build_against_package <package dir> <output> <source...> [-- cc options]:
@@ -393,7 +417,7 @@ build_against_package() {
     (( $# )) && shift
     options=("$@")
     mkdir -p "$(dirname "$output")"
-    # shellcheck disable=SC2046
+    engine_link_options "$package"
     target_cc -std=c11 -O1 -Wall -Werror -I"$package/include" "${sources[@]}" "${options[@]}" \
-        $(engine_link_options "$package") -o "$output"
+        "${engine_link[@]}" -o "$output"
 }

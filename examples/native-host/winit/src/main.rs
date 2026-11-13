@@ -782,11 +782,11 @@ impl ApplicationHandler<Event> for App {
                 .last_pixels
                 .iter()
                 .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255])
-                .collect();
+                .collect::<Vec<u8>>();
             let image = zebkit::services::Image {
                 width: size.width,
                 height: size.height,
-                rgba,
+                rgba: rgba.into(),
             };
             let png =
                 zebkit::services::encode_image(zebkit::services::ImageFormat::Png, &image, 100)

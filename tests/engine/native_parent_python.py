@@ -1,11 +1,19 @@
 """View.attach_native() from Python, under Xvfb: a window of plain Xlib as the parent, the
 tree and the pixels read back, resized, detached, attached again, the parent destroyed
-first. tests/engine/native_parent.c has the rest. Run by scripts/engine-test.sh."""
+first. tests/engine/native_parent.c has the rest. Run by scripts/engine-test.sh, under its
+Xvfb:
+
+    DISPLAY=:N python3 tests/engine/native_parent_python.py --no-sandbox --user-data-dir=<dir>
+
+Exit 0 when every check passes."""
 
 import ctypes as C
+import os
 import sys
 
-import zebkit
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from harness import check, finish, zebkit  # noqa: E402
 
 x = C.CDLL("libX11.so.6")
 x.XOpenDisplay.restype = C.c_void_p
@@ -25,7 +33,6 @@ x.XGetPixel.argtypes = [C.c_void_p, C.c_int, C.c_int]
 x.XGetPixel.restype = C.c_ulong
 x.XDestroyImage.argtypes = [C.c_void_p]
 
-failures = []
 display = x.XOpenDisplay(None)
 root = x.XDefaultRootWindow(display)
 host = x.XCreateSimpleWindow(display, root, 700, 50, 640, 480, 0, 0, 0x202020)
@@ -33,12 +40,6 @@ x.XMapWindow(display, host)
 x.XSync(display, 0)
 PAGE_COLOR = 0x12a456
 state = {"stage": 0, "tries": 0, "closed": False}
-
-
-def check(ok, what, detail=None):
-    print(f"{'ok  ' if ok else 'FAIL'} {what}" + (f": {detail}" if detail is not None else ""), flush=True)
-    if not ok:
-        failures.append(what)
 
 
 def children():
@@ -63,8 +64,7 @@ def attached_and_drawn():
     return len(children()) == 1 and pixel(150, 150) == PAGE_COLOR
 
 
-def finish():
-    print(f"{len(failures)} failures", flush=True)
+def done():
     zebkit.quit()
 
 
@@ -127,7 +127,7 @@ def _destroyed():
 
 def tick():
     if state["stage"] == len(STEPS):
-        finish()
+        done()
         return
     what, function = STEPS[state["stage"]]
     x.XSync(display, 0)
@@ -140,7 +140,7 @@ def tick():
         # 15 s a step, looked at every 10 ms.
         if state["tries"] > 1500:
             check(False, what)
-            finish()
+            done()
             return
     zebkit.post(tick, 10)
 
@@ -165,4 +165,5 @@ def ready():
 
 
 code = zebkit.main(ready, sys.argv)
-sys.exit(1 if code or failures else 0)
+check(code == 0, "main returned 0", code)
+sys.exit(finish())

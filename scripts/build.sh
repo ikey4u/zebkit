@@ -26,6 +26,9 @@ fi
 targets=("${@:-zebkit/engine:engine}")
 
 [[ -f "$GCLIENT_DIR/.zebkit-stamp" ]] || die "no complete upstream tree; run scripts/fetch-upstream.sh first"
+# //zebkit/VERSION, which fetch-upstream.sh links in too: a tree synced before
+# it did has it from here.
+[[ -L "$SRC_DIR/zebkit/VERSION" ]] || ln -sfn "$ZEBKIT_ROOT/VERSION" "$SRC_DIR/zebkit/VERSION"
 
 build_dir="$SRC_DIR/out/$profile"
 mkdir -p "$build_dir"

@@ -2,6 +2,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use zebkit::json::Value;
 use zebkit::{ClientCertificateAction, FullscreenPolicy, LoadEvent, View};
 
 fn env(name: &str) -> String { std::env::var(name).unwrap_or_else(|_| panic!("{name}")) }
@@ -36,6 +37,36 @@ fn ev(view: &View, script: &str) -> String {
 type Log = Rc<RefCell<Vec<String>>>;
 fn log() -> Log { Rc::new(RefCell::new(Vec::new())) }
 fn logged(log: &Log, text: &str) -> bool { log.borrow().iter().any(|line| line.contains(text)) }
+/// The JSON lines of a log that have `key` equal to `value`.
+fn has(log: &Log, test: impl Fn(&Value) -> bool) -> bool {
+    log.borrow().iter().any(|line| Value::parse(line).is_ok_and(|value| test(&value)))
+}
+fn is(value: &Value, key: &str, text: &str) -> bool { value[key].as_str() == Some(text) }
+/// Requested after the browser has the evaluation's user activation (harness.activated()).
+const FULL: &str = "new Promise(r => setTimeout(r, 200)).then(() => document.documentElement.requestFullscreen()).then(() => 'in', e => e.name)";
+
+/// Another view of a mode's, as hook_policies_python.py's opened().
+struct Opened { view: View, closed: Rc<Cell<bool>> }
+fn opened(url: Option<&str>) -> Opened {
+    let view = View::new(None, 640, 480);
+    let (closed, finished) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+    let signal = closed.clone();
+    view.on_close(move || signal.set(true));
+    let done = finished.clone();
+    view.on_load(move |phase, _| if phase == LoadEvent::Finished { done.set(true) });
+    if let Some(url) = url {
+        view.load_url(url);
+        wait("load", || finished.get() && view.url().as_deref() == Some(url));
+        wait("loaded", || ev(&view, "location.href + ' ' + document.readyState") == format!("\"{url} complete\""));
+    }
+    Opened { view, closed }
+}
+impl Opened {
+    fn close(&self) {
+        self.view.close();
+        wait("closed", || self.closed.get());
+    }
+}
 
 struct Run { mode: String, base: String, tls: String, view: View, closed: Rc<Cell<bool>>, finished: Rc<Cell<bool>>, failed: Rc<Cell<bool>> }
 impl Run {
@@ -45,12 +76,13 @@ impl Run {
         self.failed.set(false);
         self.view.load_url(url);
     }
-    fn open_page(&self) {
-        let url = format!("{}/page", self.base);
+    fn open_page(&self) { self.open("/page") }
+    fn open(&self, path: &str) {
+        let url = format!("{}{path}", self.base);
         self.load(&url);
         wait("page", || self.finished.get() && self.view.url().as_deref() == Some(url.as_str()));
         // The first document's own "finished" may be what was seen.
-        wait("page ready", || ev(&self.view, "location.pathname + ' ' + document.readyState").contains("/page complete"));
+        wait("page ready", || ev(&self.view, "location.pathname + ' ' + document.readyState").contains(&format!("{path} complete")));
     }
     fn wait_closed(&self) { wait("closed", || self.closed.get()); }
 }
@@ -90,11 +122,19 @@ fn download(run: &Run) {
     let progress = log();
     let sink = progress.clone();
     run.view.on_download_progress(move |json| sink.borrow_mut().push(json.to_string()));
+    // How each decision ended: zebkit_view_on_download_result.
+    let results = log();
+    let sink = results.clone();
+    run.view.on_download_result(move |json| sink.borrow_mut().push(json.to_string()));
     let kept = Rc::new(RefCell::new(None));
     if !run.is("download-default") {
         let (slot, mode, owner, path) = (kept.clone(), run.mode.clone(), run.view.clone(), target.clone());
         run.view.on_download(move |request: zebkit::DownloadRequest| {
-            assert!(request.metadata().contains("\"suggestedName\":\"report.bin\""));
+            let metadata = Value::parse(request.metadata()).unwrap();
+            assert!(is(&metadata, "suggestedName", "report.bin") && metadata["totalBytes"].as_i64() == Some(65536), "{metadata}");
+            assert!(is(&metadata, "mimeType", "application/x-zebkit"), "{metadata}");
+            let deadline = if mode == "download-timeout" { 50 } else { 30000 };
+            assert_eq!(metadata["timeoutMs"].as_i64(), Some(deadline), "{metadata}");
             assert_eq!(request.info().as_deref(), Some(request.metadata()));
             *slot.borrow_mut() = Some(request.clone());
             match mode.as_str() {
@@ -105,14 +145,15 @@ fn download(run: &Run) {
                     assert!(!request.cancel());
                     assert!(request.info().is_none());
                 }
-                "download-cancel" => assert!(request.cancel()),
+                "download-cancel" => assert!(request.cancel() && !request.cancel()),
                 "download-close" => owner.close(),
-                _ => {}
+                "download-timeout" | "download-pending-close" | "download-replace" => {}
+                other => panic!("an unknown mode: {other}"),
             }
         });
     }
     if run.is("download-timeout") {
-        assert!(!run.view.set_download_timeout(0));
+        assert!(!run.view.set_download_timeout(0) && !run.view.set_download_timeout(300001));
         assert!(run.view.set_download_timeout(50));
     }
     ev(&run.view, "location.href = '/download.bin'; 1");
@@ -126,10 +167,15 @@ fn download(run: &Run) {
     wait("asked", || kept.borrow().is_some());
     let request = kept.borrow().clone().unwrap();
     match run.mode.as_str() {
-        "download-save" => { wait("complete", || logged(&progress, "\"state\":\"complete\"")); assert_eq!(size(), 65536); }
+        "download-save" => {
+            wait("complete", || logged(&progress, "\"state\":\"complete\""));
+            wait("the outcome: saved", || has(&results, |e| is(e, "state", "saved") && is(e, "reason", "answered")));
+            assert_eq!(size(), 65536);
+        }
         "download-cancel" => { wait("cancelled", cancelled); assert_eq!(size(), 3); }
         "download-timeout" => {
-            wait("timeout", || logged(&progress, "\"reason\":\"timeout\""));
+            wait("timeout told", || has(&results, |e| is(e, "state", "cancelled") && is(e, "reason", "timeout")));
+            assert!(request.info().is_none());
             assert!(!request.save(&target).unwrap());
             assert_eq!(size(), 3);
         }
@@ -143,9 +189,10 @@ fn download(run: &Run) {
         "download-replace" => {
             run.view.clear_download_handler();
             assert!(request.info().is_none());
-            wait("replaced", || logged(&progress, "\"reason\":\"handler-changed\""));
+            wait("replaced told", || has(&results, |e| is(e, "state", "cancelled") && is(e, "reason", "handler-changed")));
+            assert_eq!(size(), 3);
         }
-        _ => {}
+        other => panic!("an unknown mode: {other}"),
     }
     run.view.close();
 }
@@ -175,16 +222,35 @@ fn certificate(run: &Run) {
                 "cert-none" => assert!(request.respond(ClientCertificateAction::None)),
                 "cert-cancel" => assert!(request.respond(ClientCertificateAction::Cancel)),
                 "cert-close" => owner.close(),
-                _ => {}
+                "cert-store" => {
+                    // The system's store's identity, chosen; its key stays there.
+                    let metadata = Value::parse(request.metadata()).unwrap();
+                    let identities = metadata["identities"].as_array().unwrap_or_default();
+                    let found = identities.iter().find(|i| is(i, "subject", "zebkit-client")).unwrap_or_else(|| panic!("{metadata}"));
+                    assert!(found["certificate"].as_str().unwrap().starts_with("-----BEGIN CERTIFICATE-----"));
+                    assert!(found["sha256"].as_str().unwrap().len() == 64);
+                    assert!(found["validFromUnixMs"].as_f64().unwrap() < found["validUntilUnixMs"].as_f64().unwrap());
+                    assert!(!request.choose(identities.len() + 5));
+                    assert!(request.choose(usize::try_from(found["index"].as_i64().unwrap()).unwrap()));
+                }
+                "cert-store-off" => {
+                    // Without the engine setting, the store is not offered.
+                    let metadata = Value::parse(request.metadata()).unwrap();
+                    assert!(metadata["identities"].as_array().is_some_and(<[Value]>::is_empty), "{metadata}");
+                    assert!(request.respond(ClientCertificateAction::None));
+                }
+                "cert-timeout" | "cert-pending-close" | "cert-replace" => {}
+                other => panic!("an unknown mode: {other}"),
             }
         });
     }
+    if run.is("cert-store") { zebkit::set_engine_settings(r#"{"clientCertificateStores":true}"#).unwrap(); }
     if run.is("cert-timeout") { assert!(run.view.set_client_certificate_timeout(50)); }
     run.load(&format!("{}/secure", run.tls));
     let title = |text: &str| run.view.title().as_deref() == Some(text);
     match run.mode.as_str() {
-        "cert-provide" => wait("with it", || title("cert:zebkit-client")),
-        "cert-none" | "cert-default" => wait("without", || title("cert:none")),
+        "cert-provide" | "cert-store" => wait("with it", || title("cert:zebkit-client")),
+        "cert-none" | "cert-default" | "cert-store-off" => wait("without", || title("cert:none")),
         "cert-cancel" | "cert-timeout" => {
             wait("failed", || run.failed.get() && !results.borrow().is_empty());
             assert!(logged(&results, "\"state\":\"cancelled\""));
@@ -204,8 +270,9 @@ fn certificate(run: &Run) {
             wait("failed", || run.failed.get() && !results.borrow().is_empty());
             assert!(logged(&results, "\"reason\":\"handler-changed\""));
         }
-        _ => {}
+        other => panic!("an unknown mode: {other}"),
     }
+    if !run.is("cert-default") { assert!(kept.borrow().is_some(), "not asked"); }
     run.view.close();
 }
 
@@ -246,7 +313,8 @@ fn chooser(run: &Run) {
             "file-folder" => assert!(request.respond(&[&format!("{root}/folder")]).unwrap()),
             "file-cancel" => assert!(request.respond(&[]).unwrap()),
             "file-close" => owner.close(),
-            _ => {}
+            "file-timeout" | "file-pending-close" | "file-replace" => {}
+            other => panic!("an unknown mode: {other}"),
         }
     });
     if run.is("file-timeout") { assert!(run.view.set_file_chooser_timeout(50)); }
@@ -275,7 +343,7 @@ fn chooser(run: &Run) {
             assert!(kept.borrow().as_ref().unwrap().info().is_none());
             wait("told", || logged(&results, "\"reason\":\"handler-changed\""));
         }
-        _ => {}
+        other => panic!("an unknown mode: {other}"),
     }
     run.view.close();
 }
@@ -300,7 +368,8 @@ fn media(run: &Run) {
                 assert!(request.respond(false, None, None).unwrap());
             }
             "media-close" => owner.close(),
-            _ => {}
+            "media-timeout" | "media-pending-close" | "media-replace" => {}
+            other => panic!("an unknown mode: {other}"),
         }
     });
     if run.is("media-timeout") { assert!(run.view.set_media_access_timeout(50)); }
@@ -325,7 +394,7 @@ fn media(run: &Run) {
             assert!(kept.borrow().as_ref().unwrap().info().is_none());
             assert_eq!(answered(), "\"NotAllowedError\"");
         }
-        _ => {}
+        other => panic!("an unknown mode: {other}"),
     }
     run.view.close();
 }
@@ -357,7 +426,6 @@ fn menu(run: &Run) {
 }
 
 fn fullscreen(run: &Run) {
-    const FULL: &str = "document.documentElement.requestFullscreen().then(() => 'in', e => e.name)";
     run.open_page();
     let told = log();
     let sink = told.clone();
@@ -422,7 +490,8 @@ fn network_ws(run: &Run) {
                 }
                 "net-ws-continue" => assert!(reply(r#"{"action":"continue","headers":[{"name":"X-Zebkit","value":"yes"}]}"#)),
                 "net-ws-close" => owner.close(),
-                _ => {}
+                "net-ws-none" | "net-ws-filter" | "net-ws-timeout" | "net-ws-abort" | "net-ws-replace" => {}
+                other => panic!("an unknown mode: {other}"),
             }
         });
     }
@@ -461,7 +530,7 @@ fn network_workers(run: &Run) {
     run.view.on_network(move |request: zebkit::NetworkRequest| {
         count.set(count.get() + 1);
         let m = request.metadata().to_string();
-        let kind = match mode.as_str() { "net-sw-ws" => "shared-or-service", "net-sw-block" | "net-sw-running" => "service", _ => "shared" };
+        let kind = match mode.as_str() { "net-sw-ws" => "service", "net-sw-block" | "net-sw-running" => "service", _ => "shared" };
         assert!(m.contains("\"worker\":true") && m.contains("\"frameId\":\"\"") && m.contains(&format!("\"workerType\":\"{kind}\"")), "{m}");
         assert!(request.respond(r#"{"action":"block"}"#, b"").unwrap());
     });
@@ -680,6 +749,7 @@ fn network(run: &Run) {
         "net-server-redirect" | "net-post" | "net-headers" => r#"[{"url":"**/echo"}]"#,
         "net-worker" => r#"[{"url":"**/echo?worker"}]"#,
         "net-navigation" => r#"[{"url":"**/held","frames":"main","resourceTypes":["document"]}]"#,
+        "net-flood" => r#"[{"url":"**/held*"}]"#,
         _ => r#"[{"url":"**/held"}]"#,
     };
     assert!(!run.view.set_network_filter(r#"[{"mode":"sometimes"}]"#).unwrap());
@@ -734,7 +804,9 @@ fn network(run: &Run) {
                 assert!(m.contains("\"method\":\"POST\"") && m.contains("\"bodySize\":6") && m.contains("\"body\":\"cG9zdGVk\""));
                 assert!(reply(r#"{"action":"continue"}"#, b""));
             }
-            _ => {}
+            // Held: answered by the deadline, a close, a replacement, or not at all.
+            "net-none" | "net-observe" | "net-filter" | "net-timeout" | "net-pending-close" | "net-replace" | "net-flood" => {}
+            other => panic!("an unknown mode: {other}"),
         }
     });
     if run.is("net-timeout") { assert!(run.view.set_network_timeout(50)); }
@@ -749,7 +821,10 @@ fn network(run: &Run) {
         "net-server-redirect" => "/server-redirect",
         _ => "/held",
     };
-    let script = if run.is("net-worker") {
+    let script = if run.is("net-flood") {
+        // What is past the queue is refused, not let through: nothing here is answered.
+        "Promise.race(Array.from({length: 1100}, (_, i) => fetch('/held?' + i).then(() => 'through', () => 'failed')))".to_string()
+    } else if run.is("net-worker") {
         "new Promise(ok => { const w = new Worker('/net-worker'); w.onmessage = e => ok(e.data); })".to_string()
     } else {
         let post = if run.is("net-post") { ", {method: 'POST', body: 'posted'}" } else { "" };
@@ -787,10 +862,195 @@ fn network(run: &Run) {
         }
         "net-timeout" => {
             wait("timeout", || logged(&events, "\"reason\":\"timeout\""));
-            assert!(kept.borrow().as_ref().unwrap().info().is_none());
+            let request = kept.borrow().clone().unwrap();
+            assert!(request.info().is_none() && !request.respond(r#"{"action":"block"}"#, b"").unwrap());
         }
-        _ => {}
+        "net-flood" => assert!(text == "\"failed\"" && asked.get() >= 1024, "{text} {}", asked.get()),
+        "net-post" | "net-replace" => {}
+        other => panic!("an unknown mode: {other}"),
     }
+    run.view.close();
+}
+
+fn fetch_held(view: &View) -> String { ev(view, "fetch('/held').then(() => 'passed', () => 'failed')") }
+fn cancelled_done(log: &Log) -> bool { has(log, |e| is(e, "state", "cancelled") && e["done"].as_bool() == Some(true)) }
+
+fn popup(run: &Run) {
+    run.open_page();
+    let view = &run.view;
+    let children: Rc<RefCell<Vec<View>>> = Rc::new(RefCell::new(Vec::new()));
+    let asked_by = log();
+    let sink = children.clone();
+    view.on_window_open(move |child, _| sink.borrow_mut().push(child));
+    let sink = asked_by.clone();
+    view.on_download(move |request: zebkit::DownloadRequest| {
+        sink.borrow_mut().push(request.metadata().to_string());
+        assert!(request.cancel());
+    });
+    assert!(view.set_network_filter(r#"[{"url":"**/held"}]"#).unwrap());
+    let sink = asked_by.clone();
+    view.on_network(move |request: zebkit::NetworkRequest| {
+        sink.borrow_mut().push(request.metadata().to_string());
+        assert!(request.respond(r#"{"action":"block"}"#, b"").unwrap());
+    });
+    ev(view, "window.open('/page'); 1");
+    wait("popup", || !children.borrow().is_empty());
+    let child = children.borrow()[0].clone();
+    let child_closed = Rc::new(Cell::new(false));
+    let signal = child_closed.clone();
+    child.on_close(move || signal.set(true));
+    let progress = log();
+    let sink = progress.clone();
+    child.on_download_progress(move |json| sink.borrow_mut().push(json.to_string()));
+    // The URL is there before the document: wait for that.
+    wait("popup loaded", || ev(&child, "document.title") == "\"page\"");
+    match run.mode.as_str() {
+        "popup-inherit" => {
+            // The opener's functions decide for the popup.
+            ev(&child, "location.href = '/download.bin'; 1");
+            wait("the opener was asked about the popup", || !asked_by.borrow().is_empty());
+            assert!(asked_by.borrow()[0].contains("\"suggestedName\":\"report.bin\""));
+            wait("cancelled", || cancelled_done(&progress));
+            asked_by.borrow_mut().clear();
+            assert_eq!(fetch_held(&child), "\"failed\"");
+            assert!(!asked_by.borrow().is_empty(), "the opener was asked about the popup network");
+        }
+        "popup-own" => {
+            // A function of its own replaces its opener's.
+            let own = log();
+            let sink = own.clone();
+            child.on_download(move |request: zebkit::DownloadRequest| {
+                sink.borrow_mut().push(request.metadata().to_string());
+                assert!(request.cancel());
+            });
+            ev(&child, "location.href = '/download.bin'; 1");
+            wait("the popup was asked", || !own.borrow().is_empty());
+            assert!(!logged(&asked_by, "suggestedName"), "{:?}", asked_by.borrow());
+        }
+        "popup-orphan" => {
+            // With its opener gone, a popup without functions of its own has no policy left.
+            view.close();
+            run.wait_closed();
+            assert_eq!(fetch_held(&child), "\"failed\"");
+            assert!(asked_by.borrow().is_empty());
+            // Its navigations are refused too; a link with download attribute is not one.
+            ev(&child, "const a = document.createElement('a'); a.href = '/download.bin'; a.download = ''; a.click(); 1");
+            wait("refused", || cancelled_done(&progress));
+            assert_eq!(ev(&child, FULL), "\"TypeError\"");
+            child.close();
+            wait("closed", || child_closed.get());
+            return;
+        }
+        other => panic!("an unknown mode: {other}"),
+    }
+    child.close();
+    wait("popup closed", || child_closed.get());
+    view.close();
+}
+
+fn cancel_running(run: &Run) {
+    run.open_page();
+    let target = format!("{}/running.bin", env("ZEBKIT_HOOK_DOWNLOADS"));
+    let path = target.clone();
+    run.view.on_download(move |request: zebkit::DownloadRequest| assert!(request.save(&path).unwrap()));
+    let progress = log();
+    let sink = progress.clone();
+    run.view.on_download_progress(move |json| sink.borrow_mut().push(json.to_string()));
+    ev(&run.view, "location.href = '/slow.bin'; 1");
+    let running = |e: &Value| is(e, "state", "in-progress") && e["receivedBytes"].as_f64().unwrap_or(0.0) > 0.0;
+    wait("running", || has(&progress, running));
+    let id = progress.borrow().iter().filter_map(|line| Value::parse(line).ok())
+        .find(|e| is(e, "state", "in-progress") && e["downloadId"].as_str().is_some())
+        .map(|e| e["downloadId"].as_str().unwrap().to_string()).unwrap();
+    assert!(!run.view.cancel_download("d999999"));
+    assert!(run.view.cancel_download(&id));
+    wait("cancelled", || cancelled_done(&progress));
+    assert!(!run.view.cancel_download(&id));
+    assert!(!std::path::Path::new(&target).exists());
+    run.view.close();
+}
+
+fn cdp_order(run: &Run) {
+    run.open("/input");
+    assert!(run.view.set_network_filter(r#"[{"url":"**/held"}]"#).unwrap());
+    run.view.on_network(|request: zebkit::NetworkRequest| {
+        let metadata = Value::parse(request.metadata()).unwrap();
+        let mut headers = metadata["headers"].as_array().unwrap_or_default().to_vec();
+        headers.push(Value::object([("name", Value::from("X-Hook")), ("value", Value::from("first"))]));
+        let reply = Value::object([("action", Value::from("continue")), ("headers", Value::from(headers))]);
+        assert!(request.respond(&reply.to_json(), b"").unwrap());
+    });
+    wait("the CDP client has Fetch on", || run.view.title().as_deref() == Some("fetch-on"));
+    assert_eq!(ev(&run.view, "fetch('/held').then(r => r.text())"), "\"from-cdp\"");
+    run.view.close();
+}
+
+fn two_views(run: &Run) {
+    run.open_page();
+    let first = &run.view;
+    let second = opened(Some(&format!("{}/page", run.base)));
+    let target = format!("{}/first.bin", env("ZEBKIT_HOOK_DOWNLOADS"));
+    let asked = log();
+    let (sink, path) = (asked.clone(), target.clone());
+    first.on_download(move |request: zebkit::DownloadRequest| {
+        sink.borrow_mut().push("first".into());
+        assert!(request.save(&path).unwrap());
+    });
+    let sink = asked.clone();
+    second.view.on_download(move |request: zebkit::DownloadRequest| {
+        sink.borrow_mut().push("second".into());
+        assert!(request.cancel());
+    });
+    let done = log();
+    for (view, name) in [(first, "first"), (&second.view, "second")] {
+        let sink = done.clone();
+        view.on_download_progress(move |json| {
+            let state = Value::parse(json).ok().and_then(|e| e["state"].as_str().map(str::to_string)).unwrap_or_default();
+            sink.borrow_mut().push(format!("{name} {state}"));
+        });
+    }
+    assert!(first.set_network_filter(r#"[{"url":"**/held"}]"#).unwrap());
+    first.on_network(|request: zebkit::NetworkRequest| assert!(request.respond(r#"{"action":"block"}"#, b"").unwrap()));
+    assert!(first.set_fullscreen_policy(FullscreenPolicy::Deny));
+    let seen = |line: &str| done.borrow().iter().any(|each| each == line);
+    ev(first, "location.href = '/download.bin'; 1");
+    wait("first saved", || seen("first complete"));
+    ev(&second.view, "location.href = '/download.bin'; 1");
+    wait("second cancelled", || seen("second cancelled"));
+    assert_eq!(*asked.borrow(), ["first", "second"]);
+    assert_eq!(std::fs::metadata(&target).unwrap().len(), 65536);
+    assert_eq!(fetch_held(first), "\"failed\"");
+    assert_eq!(fetch_held(&second.view), "\"passed\"");
+    second.view.focus();
+    assert_eq!(ev(first, FULL), "\"TypeError\"");
+    assert_eq!(ev(&second.view, FULL), "\"in\"");
+    first.close();
+    second.close();
+}
+
+fn workers_latch(run: &Run) {
+    // A policy outlives the view that held it: refused until a view takes over or says off.
+    let page = format!("{}/page", run.base);
+    let holder = opened(Some(&page));
+    let view = opened(Some(&page));
+    let other = opened(None);
+    let both = [sw_script("fetch"), shared_script("fetch")];
+    assert!(holder.view.set_network_filter_for_workers(false), "nothing to say off to");
+    assert!(holder.view.set_network_filter("[]").unwrap());
+    assert!(holder.view.set_network_filter_for_workers(true));
+    for script in &both { assert_eq!(ev(&view.view, script), "\"through\"", "{script}"); }
+    assert!(view.view.set_network_filter("[]").unwrap());
+    assert!(!view.view.set_network_filter_for_workers(false), "another view's, which is still there");
+    holder.close();
+    for script in &both { assert_eq!(ev(&view.view, script), "\"failed\"", "{script}"); }
+    assert!(view.view.set_network_filter_for_workers(true));
+    for script in &both { assert_eq!(ev(&view.view, script), "\"through\"", "{script}"); }
+    view.close();
+    assert!(other.view.set_network_filter_for_workers(false), "off, with nobody holding it");
+    let last = opened(Some(&page));
+    for script in &both { assert_eq!(ev(&last.view, script), "\"through\"", "{script}"); }
+    last.close();
+    other.close();
     run.view.close();
 }
 
@@ -819,7 +1079,12 @@ fn main() {
         "menu" => menu(&run),
         "fullscreen" => fullscreen(&run),
         "net" => network(&run),
-        other => panic!("{other}"),
+        "popup" => popup(&run),
+        "cancel" => cancel_running(&run),
+        "cdp" => cdp_order(&run),
+        "two" => two_views(&run),
+        "workers" => workers_latch(&run),
+        other => panic!("an unknown mode: {other}"),
     }
     pump_for(50);
     println!("ok rust {mode}");

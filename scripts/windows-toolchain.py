@@ -2,9 +2,15 @@
 """Lay out MSVC and the Windows SDK as Chromium's Windows toolchain, on Linux.
 
     windows-toolchain.py <.cache/sdk/windows> <chromium src>
+    windows-toolchain.py --verify <.cache/sdk/windows>
 
-Run by scripts/windows-toolchain.sh, which says what comes from where. Lays
-the tree out as build/vs_toolchain.py's packaged toolchain has it
+Run by scripts/windows-toolchain.sh, which says what comes from where. Every
+package is pinned below, by version and SHA-256: the toolchain is the same
+whenever and wherever it is laid out, and never what Microsoft's channel
+happens to offer that day. --verify reads only the disk (no network): what is
+laid out is what is pinned, or it fails and says what differs.
+
+It lays the tree out as build/vs_toolchain.py's packaged toolchain has it
 (depot_tools/win_toolchain/package_from_installed.py makes that on a Windows
 machine):
 
@@ -15,6 +21,7 @@ machine):
     vs_files/Windows Kits/10/bin/SetEnv.{x86,x64}.json
     vs_files/sys64                       the runtime's DLLs, for vs_toolchain.py
     win_toolchain.json                   what build/win_toolchain.json points to
+    VERSIONS, PINS                       the versions, and each package by version and SHA-256
 
 A second run with everything in place only refreshes the links for names in
 another case (see add_case_links).
@@ -35,18 +42,46 @@ import zipfile
 # names, from NuGet, the one place Microsoft publishes that exact release.
 SDK_VERSION = "10.0.28000.0"
 VS_YEAR = "2026"
+# MSVC, pinned: each package of Visual Studio's manifest by its version and the
+# SHA-256 the manifest gives it, and the URL it was served from where that is
+# known. These are what $SDK_DIR/windows was laid out from (2026-10-31), read
+# from its downloads/; Visual Studio's channels have since moved on (on
+# 2026-11-11 the stable channel, 18.12, and the LTSC 18.11 one had
+# Tools.HostX64.TargetX64 14.50.35740 and the DIA SDK 14.52.37029, and no
+# folder of theirs served the pinned two any more). A package
+# without a URL is looked up by its SHA-256 in VS_CHANNEL's current manifest;
+# when the manifest no longer has it, the run stops and says so: a new toolset
+# is a decision, made by changing these pins (and MSVC_DIR), never by a
+# download. The C++ library's directory, VC/Tools/MSVC/<MSVC_DIR>, is named
+# after the version the CRT's headers carry.
 VS_CHANNEL = "https://aka.ms/vs/18/stable/channel"
 MSVC_PREFIX = "Microsoft.VC.14.50.18.0."
-MSVC_PACKAGES = [
-    "CRT.Headers.base",
-    "CRT.x64.Desktop.base",
-    "CRT.x64.Store.base",
-    "ATL.Headers.base",
-    "ATL.X64.base",
-    "CRT.Redist.X64.base",
-    "Tools.HostX64.TargetX64.base",
-]
-OTHER_VS_PACKAGES = ["Microsoft.VisualCpp.DIA.SDK"]
+MSVC_DIR = "14.50.35717"
+_VS_DOWNLOADS = "https://download.visualstudio.microsoft.com/download/pr/"
+VS_PACKAGES = {
+    MSVC_PREFIX + "CRT.Headers.base": ("14.50.35735",
+        "654cfc02cdf49da62a5b505abe46717f1523205595c5bc41539d05559bf2335a",
+        _VS_DOWNLOADS + "1a817b2a-dbb5-4611-b77a-4bfa03333858/"),
+    MSVC_PREFIX + "CRT.x64.Desktop.base": ("14.50.35735",
+        "34482fdf6b6c69e3bf02db87e61d0e712ea318c208ca9d9d5acf339e002a3dc9",
+        _VS_DOWNLOADS + "1a817b2a-dbb5-4611-b77a-4bfa03333858/"),
+    MSVC_PREFIX + "CRT.x64.Store.base": ("14.50.35735",
+        "308a6a67db2eb840874c54bf0d3a3ea1de0852808c92299af67b1adad0001784",
+        _VS_DOWNLOADS + "1a817b2a-dbb5-4611-b77a-4bfa03333858/"),
+    MSVC_PREFIX + "ATL.Headers.base": ("14.50.35717",
+        "64e638a9e62e056a14b16cf66c2d7710291a6d408953065e2a8caf45ab995e42",
+        _VS_DOWNLOADS + "eef0996f-4334-4b1a-a344-4d13e27ac052/"),
+    MSVC_PREFIX + "ATL.X64.base": ("14.50.35717",
+        "6625a6d9749797d140f64460dc9a846dc702d133e790b2eb636485f0fa8021db",
+        _VS_DOWNLOADS + "eef0996f-4334-4b1a-a344-4d13e27ac052/"),
+    MSVC_PREFIX + "CRT.Redist.X64.base": ("14.50.35719",
+        "a4ab48822362df6e478eb4ed33bf825a07a6faacd6879c1e3d59929cd38b984b",
+        _VS_DOWNLOADS + "a424e95b-20f6-4af6-844f-9d9a806080a7/"),
+    MSVC_PREFIX + "Tools.HostX64.TargetX64.base": ("14.50.35739",
+        "5151bf213431423046eefdf256f3bd70fe36c5df8d5b4c6bc36fc53b0cadc96c", None),
+    "Microsoft.VisualCpp.DIA.SDK": ("14.51.36257",
+        "a99bd36306e536b80662c064cc76e0e143d20bc58832fa3e82ec79fecf9cefb7", None),
+}
 
 NUGET = "https://api.nuget.org/v3-flatcontainer/{0}/{1}/{0}.{1}.nupkg"
 SDK_PACKAGES = {
@@ -88,29 +123,110 @@ def download(url, path, sha256):
     return path
 
 
+def vs_package_path(downloads, name):
+    return downloads / f"{name}-{VS_PACKAGES[name][0]}.vsix"
+
+
 def vs_packages(downloads):
-    """The packages wanted from the current Visual Studio manifest, each with
-    its SHA-256 from that manifest."""
+    """The pinned packages of Visual Studio (VS_PACKAGES), each checked against
+    its pinned SHA-256: from downloads/ when they are there, from their pinned
+    URL, or found by that SHA-256 in the current manifest."""
+    paths, unknown = {}, []
+    for name, (version, sha256, base) in sorted(VS_PACKAGES.items()):
+        path = vs_package_path(downloads, name)
+        if path.exists() and sha256_of(path) == sha256:
+            paths[name] = path
+        elif base:
+            # The manifest's URLs are <base><SHA-256>/<package>.vsix.
+            paths[name] = download(f"{base}{sha256}/{name}.vsix", path, sha256)
+        else:
+            unknown.append(name)
+    if not unknown:
+        return paths
     with urllib.request.urlopen(VS_CHANNEL, timeout=120) as response:
         channel = json.load(response)
     item = next(i for i in channel["channelItems"] if i["type"] == "Manifest")
     with urllib.request.urlopen(item["payloads"][0]["url"], timeout=300) as response:
         manifest = json.load(response)
-    wanted = {MSVC_PREFIX + name for name in MSVC_PACKAGES} | set(OTHER_VS_PACKAGES)
-    found = {}
+    offered = {}
     for package in manifest["packages"]:
-        if package["id"] in wanted:
-            found[package["id"]] = package
-    missing = wanted - set(found)
-    if missing:
-        raise SystemExit(f"not in the Visual Studio manifest: {sorted(missing)}")
-    paths = {}
-    for name, package in sorted(found.items()):
-        payload = package["payloads"][0]
-        paths[name] = download(
-            payload["url"], downloads / f"{name}-{package['version']}.vsix", payload["sha256"].lower()
-        )
+        if package["id"] in unknown and package.get("payloads"):
+            offered[package["id"]] = package
+    gone = []
+    for name in unknown:
+        version, sha256, _ = VS_PACKAGES[name]
+        package = offered.get(name)
+        payload = package and package["payloads"][0]
+        if not payload or payload["sha256"].lower() != sha256:
+            now = package["version"] if package else "none"
+            gone.append(f"{name} {version} (the channel has {now})")
+            continue
+        paths[name] = download(payload["url"], vs_package_path(downloads, name), sha256)
+    if gone:
+        raise SystemExit(
+            "the pinned MSVC packages are not in Visual Studio's channel any more and not in "
+            f"{downloads}: {'; '.join(gone)}. Pinning a newer toolset is a change of "
+            "scripts/windows-toolchain.py's VS_PACKAGES and MSVC_DIR, tested by a Windows build.")
     return paths
+
+
+def verify(cache):
+    """What is laid out in cache is what is pinned here; read from the disk
+    only. Returns the differences, none when it matches."""
+    problems = []
+    tree, downloads = cache / "vs_files", cache / "downloads"
+    if not (cache / "win_toolchain.json").exists():
+        return [f"no toolchain laid out in {cache}"]
+    # What it was laid out from: the packages in downloads/, or, once they
+    # have been checked, PINS, which records them, for a cache whose
+    # downloads were removed to save the space.
+    record = cache / "PINS"
+    if record.exists() and not downloads.is_dir():
+        if record.read_text() != pins_text():
+            problems.append(f"PINS, what the toolchain was laid out from, is not what is pinned now:\n"
+                            + record.read_text())
+        downloads = None
+    for name, (version, sha256, _) in sorted(VS_PACKAGES.items()) if downloads else ():
+        path = vs_package_path(downloads, name)
+        if not path.exists():
+            others = sorted(p.name for p in downloads.glob(f"{name}-*.vsix"))
+            problems.append(f"{name}: no {path.name}" + (f" (there is {', '.join(others)})" if others else ""))
+        elif sha256_of(path) != sha256:
+            problems.append(f"{path.name}: SHA-256 {sha256_of(path)}, pinned {sha256}")
+    nuget = [(f"{key[0]}.{key[1]}.nupkg", sha256) for key, sha256 in sorted(SDK_PACKAGES.items())]
+    nuget.append((f"{DEBUGGERS_PACKAGE[0]}.{DEBUGGERS_PACKAGE[1]}.nupkg", DEBUGGERS_SHA256))
+    for name, sha256 in nuget if downloads else ():
+        path = downloads / name
+        if not path.exists() or sha256_of(path) != sha256:
+            problems.append(f"{name}: missing or not the pinned SHA-256")
+    def entries(directory):
+        return sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
+    for directory, wanted in ((tree / "VC/Tools/MSVC", MSVC_DIR), (tree / "VC/Redist/MSVC", MSVC_DIR),
+                              (tree / "Windows Kits/10/Include", SDK_VERSION),
+                              (tree / "Windows Kits/10/Lib", SDK_VERSION)):
+        if entries(directory) != [wanted]:
+            problems.append(f"{directory.relative_to(cache)} holds {entries(directory) or 'nothing'}, pinned {wanted}")
+    versions = cache / "VERSIONS"
+    expected = versions_text()
+    if not versions.exists() or versions.read_text() != expected:
+        problems.append(f"VERSIONS is not {expected!r}")
+    if not problems and downloads and (not record.exists() or record.read_text() != pins_text()):
+        record.write_text(pins_text())
+    return problems
+
+
+def pins_text():
+    """PINS: each package the toolchain is laid out from, by name, version and SHA-256."""
+    lines = [f"{name} {version} {sha256}" for name, (version, sha256, _) in sorted(VS_PACKAGES.items())]
+    lines += [f"{key[0]} {key[1]} {sha256}" for key, sha256 in sorted(SDK_PACKAGES.items())]
+    lines.append(f"{DEBUGGERS_PACKAGE[0]} {DEBUGGERS_PACKAGE[1]} {DEBUGGERS_SHA256}")
+    return "\n".join(lines) + "\n"
+
+
+def versions_text():
+    return (f"MSVC {MSVC_DIR} ({MSVC_PREFIX[:-1]})\n"
+            f"Windows SDK {SDK_VERSION} ({' '.join(k[1] for k in SDK_PACKAGES)})\n"
+            f"Debuggers {DEBUGGERS_PACKAGE[1]}\n")
 
 
 def unzip(archive, root, rename):
@@ -190,6 +306,8 @@ def assemble(cache, downloads, tree):
         msvc = next(
             m.group(1) for m in map(re.compile(r"Contents/VC/Tools/MSVC/([\d.]+)/").match, z.namelist()) if m
         )
+    if msvc != MSVC_DIR:
+        raise SystemExit(f"the CRT's headers are of MSVC {msvc}, pinned {MSVC_DIR}")
 
     def vs_path(name):
         if not name.startswith("Contents/"):
@@ -258,11 +376,7 @@ def assemble(cache, downloads, tree):
         "wdk": str(tree / "wdk"),
         "runtime_dirs": [str(tree / "sys64"), str(tree / "sys32"), str(tree / "sysarm64")],
     }, indent=2) + "\n")
-    (cache / "VERSIONS").write_text(
-        f"MSVC {msvc} ({MSVC_PREFIX[:-1]})\n"
-        f"Windows SDK {SDK_VERSION} ({' '.join(k[1] for k in SDK_PACKAGES)})\n"
-        f"Debuggers {DEBUGGERS_PACKAGE[1]}\n"
-    )
+    (cache / "VERSIONS").write_text(versions_text())
 
 
 INCLUDE = re.compile(rb'^[ \t]*#[ \t]*(?:include|import)[ \t]*[<"]([^">\r\n]+)[">]', re.M)
@@ -391,6 +505,13 @@ def walk_links(root):
 
 
 def main():
+    if sys.argv[1:2] == ["--verify"]:
+        problems = verify(pathlib.Path(sys.argv[2]).resolve())
+        if problems:
+            raise SystemExit("the Windows toolchain is not the one scripts/windows-toolchain.py pins:\n  "
+                             + "\n  ".join(problems))
+        log(f"the Windows toolchain is the pinned one: MSVC {MSVC_DIR}, Windows SDK {SDK_VERSION}")
+        return
     cache = pathlib.Path(sys.argv[1]).resolve()
     src = pathlib.Path(sys.argv[2]).resolve()
     downloads = cache / "downloads"
@@ -398,6 +519,10 @@ def main():
     tree = cache / "vs_files"
     if not (cache / "win_toolchain.json").exists():
         assemble(cache, downloads, tree)
+    problems = verify(cache)
+    if problems:
+        raise SystemExit("the Windows toolchain laid out is not the pinned one:\n  " + "\n  ".join(problems)
+                         + "\n(an older or newer one is never replaced here: lay it out again only by decision)")
     add_case_links(src, tree)
 
 

@@ -5,7 +5,30 @@
  * requests and responses, downloads, client certificates, file choosers,
  * media access, the eye dropper, share, device choosers); told hooks report
  * after the fact (console, popups, external protocols, results). Each
- * outcome is told as JSON. The design and the reference: docs/ROADMAP_HOOKS.md.
+ * outcome is told as JSON. The design and the reference: docs/HOOKS.md.
+ *
+ * One outcome for every asked hook (its *_result function, the network's
+ * events of held requests, zebkit_view_on_download_result): the request's
+ * metadata with "state", what was decided, the reply's action in the past
+ * tense (continued, cancelled, redirected, denied, granted, provided, saved,
+ * selected, shared, allowed, blocked, fulfilled; "none" for a client
+ * certificate's NONE, "prompt" for a permission left to ask; "refused" for a
+ * network stage that fails closed), and "reason": answered, timeout,
+ * handler-changed (the function replaced or removed), cancelled (what asked
+ * went: its document or frame, whether a navigation replaced it or the frame
+ * was removed, or its request), opener-closed (a popup whose opener has
+ * closed), navigation (an HTTP authentication or certificate request whose
+ * page started another main-frame navigation), policy-changed (permissions)
+ * or no-key (a client certificate's key the store did not give). Requests of
+ * a closing view end without an outcome: zebkit_view_on_close() is the signal
+ * (respond() returns false from then on). Requests the engine ends as it
+ * stops are refused and never told (the "shutdown" reason is not delivered).
+ * A popup's go to its opener's result
+ * function until it has one of its own (not permissions': the popup's own only).
+ * A request refused before it is asked (no function, a popup whose opener has
+ * closed, more than 1024 waiting) has no outcome. Each request's JSON has id,
+ * state "pending", timeoutMs and deadlineUnixMs besides its metadata; deadlines
+ * are 30000 ms by default (device choosers 60000), 1..300000.
  *
  * Host policy for a view. Defaults apply until explicitly replaced.
  */
@@ -22,7 +45,7 @@ extern "C" {
  * {} is a no-op. Invalid input changes nothing. Applies to every frame,
  * existing documents and future navigations through Chromium WebPreferences.
  * Getter returns explicit overrides (not temporary CDP emulation), caller frees.
- * See docs/ROADMAP_HOOKS.md for the supported fields. Engine thread only.
+ * See docs/HOOKS.md for the supported fields. Engine thread only.
  */
 ZEBKIT_API bool zebkit_view_set_settings(zebkit_view *view, const char *settings_json, char **error);
 ZEBKIT_API char *zebkit_view_get_settings(zebkit_view *view);
@@ -108,9 +131,12 @@ ZEBKIT_API char *zebkit_permission_request_info(zebkit_permission_request *reque
  */
 ZEBKIT_API bool zebkit_permission_respond(zebkit_permission_request *request, zebkit_permission_state state,
                                          bool remember);
-/* Outcomes of host-handled requests, asynchronously: metadata plus state,
- * reason (answered/timeout/cancelled/handler-changed/policy-changed), remembered.
- * Closing the view cancels pending reports. NULL removes the observer.
+/* Outcomes of host-handled requests, asynchronously: metadata plus state
+ * (granted/denied/prompt), reason (answered/timeout/cancelled/handler-changed/
+ * policy-changed), remembered. A document gone, a navigation or a closed view is
+ * cancelled (denied). Told to this view's own function, a popup's too, never its
+ * opener's; nothing is told as the engine stops. Closing the view cancels pending
+ * reports. NULL removes the observer.
  */
 typedef void (*zebkit_permission_result_func)(zebkit_view *view, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_permission_result(zebkit_view *view, zebkit_permission_result_func func, void *data);
@@ -144,8 +170,9 @@ ZEBKIT_API void zebkit_view_on_navigation(zebkit_view *view, zebkit_navigation_f
  *
  * More than 1024 requests pending on a view are cancelled, not continued. A
  * popup is decided for by the handlers of the view that opened it, called with
- * the popup as the view, until it has its own; result events are only sent to
- * a handler on the popup itself. Once the opener has closed, a popup without
+ * the popup as the view, until it has its own, and its outcomes go to the
+ * opener's result function until it has one of its own (with the opener's
+ * deadline while the opener decides). Once the opener has closed, a popup without
  * its own handlers is refused navigations, permissions, certificates and
  * credentials.
  */
@@ -163,9 +190,10 @@ ZEBKIT_API char *zebkit_navigation_request_info(zebkit_navigation_request *reque
  */
 ZEBKIT_API bool zebkit_navigation_respond(zebkit_navigation_request *request, zebkit_navigation_action action,
                                         const char *replacement_url, char **error);
-/* Outcomes: request metadata plus action (continue/cancel/redirect), reason
- * (answered/timeout/cancelled/handler-changed/shutdown), and replacementUrl
- * for redirects. Destruction cancels queued reports. NULL removes observer.
+/* Outcomes: request metadata with state (continued/cancelled/redirected), reason
+ * (answered/timeout/cancelled/handler-changed/opener-closed; a navigation
+ * superseded or ended is cancelled), and replacementUrl for redirects. Closing the
+ * view or replacing the function drops queued reports. NULL removes observer.
  */
 typedef void (*zebkit_navigation_result_func)(zebkit_view *view, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_navigation_result(zebkit_view *view, zebkit_navigation_result_func func, void *data);
@@ -218,7 +246,7 @@ ZEBKIT_API char *zebkit_view_get_window_open_info(zebkit_view *view);
  * JavaScript frames. Worker/DevTools-only console events are outside this hook.
  * Delivery is asynchronous on the engine thread. Closing or replacing/removing
  * the observer cancels queued reports. NULL removes it. Per view, at most 256
- * reports wait; dropped is a decimal string counting skipped reports since
+ * reports wait; dropped is a number counting skipped reports since
  * the previous delivery.
  * Text/source/stack are bounded to 65536/16384/65536 UTF-16 code units.
  */
@@ -234,6 +262,9 @@ ZEBKIT_API void zebkit_view_on_console(zebkit_view *view, zebkit_console_func fu
  * the URL, error, mainFrame, strictEnforcement/canIgnore, certificate subject,
  * issuer, validity, certStatus, knownRoot, a bounded PEM certificateChain and
  * chainTruncated. It does not claim to be a certificate trust verdict.
+ * Outcomes (zebkit_view_on_certificate_result): state continued or denied; reason
+ * navigation when a main-frame navigation starts, cancelled when the main-frame
+ * navigation to its URL finishes.
  */
 typedef struct zebkit_certificate_request zebkit_certificate_request;
 typedef void (*zebkit_certificate_func)(zebkit_view *view, zebkit_certificate_request *request, const char *json, void *data);
@@ -252,6 +283,8 @@ ZEBKIT_API bool zebkit_certificate_respond(zebkit_certificate_request *request, 
  * URL userinfo is redacted. mainFrame describes a primary-main-frame navigation,
  * not an inferred initiator for fetch. Request handles are engine-owned tokens:
  * do not free or dereference them. All methods require the engine thread.
+ * Outcomes: state provided or cancelled; reason navigation when a main-frame
+ * navigation starts, cancelled when the network request goes.
  */
 typedef struct zebkit_http_auth_request zebkit_http_auth_request;
 typedef void (*zebkit_http_auth_func)(zebkit_view *view, zebkit_http_auth_request *request, const char *json, void *data);
@@ -302,9 +335,18 @@ ZEBKIT_API char *zebkit_download_request_info(zebkit_download_request *request);
 /* Path only with SAVE. Invalid input leaves the request pending. */
 ZEBKIT_API bool zebkit_download_respond(zebkit_download_request *request, zebkit_download_action action,
                                         const char *path, char **error);
-/* Told for this view's downloads, asked or not: the decision (state save or
- * cancelled with its reason), then downloadId, guid (CDP's for it), url, state
- * (in-progress, complete, cancelled, interrupted), outcome, path, savedPath,
+/* The outcome of each download a function was asked about (zebkit_view_on_download):
+ * its request's metadata with state saved or cancelled and reason, as every hook's
+ * outcome (docs/HOOKS.md). saved is the decision; how the file ends is
+ * on_download_progress's. A download that ends while asked is cancelled (reason
+ * cancelled). A popup's go to its opener's function until it has one of its own.
+ * NULL removes it.
+ */
+typedef void (*zebkit_download_result_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_download_result(zebkit_view *view, zebkit_download_result_func func, void *data);
+/* Told for this view's downloads, asked or not, as they go: downloadId, guid
+ * (CDP's for it), url, state (in-progress, complete, cancelled, interrupted),
+ * outcome, path, savedPath,
  * receivedBytes, totalBytes, mimeType, reason, error, done. outcome is
  * "in-progress", "complete", "cancelled" (by the application, a hook's answer,
  * CDP's Browser.cancelDownload or a closed opener) or "failed"; savedPath is the
@@ -324,13 +366,15 @@ ZEBKIT_API void zebkit_view_on_download_progress(zebkit_view *view, zebkit_downl
 /* Cancels a download of this view by its downloadId; false when it has ended. */
 ZEBKIT_API bool zebkit_view_cancel_download(zebkit_view *view, const char *download_id);
 
-/* Client certificates a TLS server asks for. Without a function, none is sent.
- * Metadata: host, port, proxy, certificateAuthorities (base64 DER names),
- * timeoutMs, deadlineUnixMs. NONE continues without one; PROVIDE sends a PEM
- * chain, leaf first, with its PEM private key (RSA or EC); CANCEL fails the
+/* Client certificates a TLS server asks for. Without a function, none is sent, or,
+ * when the system's stores (below) offer identities and the view has a window, a
+ * picker asks, as Chrome's. Metadata: host, port, proxy, certificateAuthorities
+ * (base64 DER names), timeoutMs, deadlineUnixMs. NONE continues without one;
+ * PROVIDE sends a PEM chain, leaf first, with its PEM private key (RSA or EC); CANCEL fails the
  * request. Unanswered, a replaced handler and a closed view cancel. Chromium
  * remembers NONE and PROVIDE for that host and port in the whole context, so that
- * other views are not asked again, and CANCEL is not remembered.
+ * other views are not asked again, and CANCEL is not remembered. Outcomes: state
+ * none, provided or cancelled (unanswered, replaced, closed).
  *
  * The operating system's certificate stores are offered only when the engine
  * setting clientCertificateStores is true (zebkit_set_engine_settings): then
@@ -363,7 +407,8 @@ ZEBKIT_API bool zebkit_client_certificate_respond(zebkit_client_certificate_requ
                                                   const char *certificate_pem, const char *key_pem, char **error);
 /* Answers with metadata.identities[index], the system store's: true when taken;
  * the request then ends once the store has given its key (PROVIDE), or, when it
- * gives none, as CANCEL. False with the reason in *error otherwise.
+ * gives none, as CANCEL with reason no-key; its deadline still runs meanwhile.
+ * False with the reason in *error otherwise.
  */
 ZEBKIT_API bool zebkit_client_certificate_choose(zebkit_client_certificate_request *request, size_t index,
                                                  char **error);
@@ -387,10 +432,11 @@ ZEBKIT_API bool zebkit_view_add_world_script(zebkit_view *view, const char *worl
  * or "file-system-access"), title, defaultFileName, acceptTypes, capture, frameId,
  * mainFrame, origin. Reply once with absolute paths: none cancels, one for open,
  * save, directory and upload-folder (a directory, whose files the page gets).
- * Unanswered, replaced, closed or a frame that has gone: cancelled. What a File
- * System Access page may then do: it reads what was picked and writes where it saves;
- * writing to a file it opened, or reading or writing beyond what was picked, is the
- * "file-system-write" or "file-system-read" permission (zebkit_view_on_permission).
+ * Unanswered, replaced, closed or a frame that has gone: cancelled. Outcomes: state
+ * selected or cancelled. What a File System Access page may then do: it reads what
+ * was picked and writes where it saves; writing to a file it opened, or reading or
+ * writing beyond what was picked, is the "file-system-write" or "file-system-read"
+ * permission (zebkit_view_on_permission).
  */
 typedef struct zebkit_file_chooser_request zebkit_file_chooser_request;
 typedef void (*zebkit_file_chooser_func)(zebkit_view *view, zebkit_file_chooser_request *request, const char *json, void *data);
@@ -405,7 +451,8 @@ ZEBKIT_API bool zebkit_file_chooser_respond(zebkit_file_chooser_request *request
 /* The page's EyeDropper.open(): a colour from the screen. Without a function, cancelled,
  * as there is no eye dropper of the engine's (Chrome's is its browser's). Metadata:
  * origin, frameId, mainFrame. Reply once with "#rrggbb", or NULL to cancel. Unanswered,
- * replaced, closed or a frame that has gone: cancelled.
+ * replaced, closed or a frame that has gone: cancelled. Outcomes: state selected or
+ * cancelled.
  */
 typedef struct zebkit_eye_dropper_request zebkit_eye_dropper_request;
 typedef void (*zebkit_eye_dropper_func)(zebkit_view *view, zebkit_eye_dropper_request *request, const char *json, void *data);
@@ -420,13 +467,15 @@ ZEBKIT_API bool zebkit_eye_dropper_respond(zebkit_eye_dropper_request *request, 
  * A page's device chooser (docs/SYSTEM_INTEGRATION.md, 10):
  * navigator.usb.requestDevice(), navigator.hid.requestDevice() and
  * navigator.serial.requestPort(). The request's JSON has "kind" ("usb", "hid",
- * "serial"), "origin", "frameId", the page's "filters", and "devices", those
- * of the system's that match, each with an "id", a "name" and what the kind
+ * "serial"), "origin", "frameId", "mainFrame", the page's "filters", and "devices",
+ * those of the system's that match, each with an "id", a "name" and what the kind
  * has (vendorId, productId, serialNumber, path, ...). The list follows devices
  * as they come and go: zebkit_device_chooser_request_info() returns it as it
  * is now. Answered with a device's id, which the origin may then use for the
- * engine's run (and forget() ends), or NULL for none. Without a function the
- * page gets none, as before; there is no chooser of the engine's own.
+ * engine's run (and forget() ends), or NULL for none; an id not listed now is
+ * refused. Without a function the page gets none, as before; there is no chooser of
+ * the engine's own. Outcomes: state selected or cancelled (also when the page's
+ * chooser closes).
  */
 typedef struct zebkit_device_chooser_request zebkit_device_chooser_request;
 typedef void (*zebkit_device_chooser_func)(zebkit_view *view, zebkit_device_chooser_request *request, const char *json, void *data);
@@ -440,7 +489,8 @@ ZEBKIT_API bool zebkit_device_chooser_respond(zebkit_device_chooser_request *req
 /* The page's navigator.share(): the application answers it shared or not. Without a
  * function, the system's share sheet where there is one (macOS); otherwise cancelled
  * (AbortError), as Linux has none. Metadata: title, text, url, files (their names),
- * origin. Unanswered, replaced or closed: cancelled.
+ * origin, frameId, mainFrame. Unanswered, replaced, closed or its document gone:
+ * cancelled. Outcomes: state shared or cancelled.
  */
 typedef struct zebkit_share_request zebkit_share_request;
 typedef void (*zebkit_share_func)(zebkit_view *view, zebkit_share_request *request, const char *json, void *data);
@@ -453,11 +503,17 @@ ZEBKIT_API bool zebkit_share_respond(zebkit_share_request *request, bool shared)
 
 /* Camera and microphone (getUserMedia). Without a function, Chromium's permission
  * controller decides (zebkit_view_on_permission). With one it replaces that decision
- * for this request; Permissions Policy still refuses first. Screen and tab capture
- * stay refused. Metadata: audio, video, origin, frameId, mainFrame, userGesture,
- * requestedAudioDevices, requestedVideoDevices, audioDevices and videoDevices ({id,
- * name}). A device id NULL takes what the page asked for, else the first; a device
- * that does not exist fails as without hardware. Unanswered: refused.
+ * for this request; Permissions Policy still refuses first. Metadata: audio, video,
+ * origin, frameId, mainFrame, userGesture, requestedAudioDevices,
+ * requestedVideoDevices, audioDevices and videoDevices ({id, name}). A device id
+ * NULL takes what the page asked for, else the first; a device that does not exist
+ * fails as without hardware. Unanswered: refused. Outcomes: state allowed or denied.
+ * getDisplayMedia() comes here too, refused without a function: type "display",
+ * audio, video, origin, frameId, mainFrame, userGesture and "sources" the engine can
+ * capture ({id, kind, name}: "view", the view itself, and "screen", the whole screen
+ * where the system's capturer reaches it: not Wayland). Answered with a source's id
+ * as the video device: the page gets that capture. Other capture (another window or
+ * tab, an extension's) stays refused.
  */
 typedef struct zebkit_media_access_request zebkit_media_access_request;
 typedef void (*zebkit_media_access_func)(zebkit_view *view, zebkit_media_access_request *request, const char *json, void *data);
@@ -542,17 +598,19 @@ ZEBKIT_API bool zebkit_view_set_network_filter(zebkit_view *view, const char *fi
  * takes over or any view says off: closing a view does not end a policy, only off does,
  * which another view's still there refuses. Workers' metadata has frameId "", mainFrame
  * false, worker true, workerType "shared" or "service" ("dedicated" for those of a
- * frame). Their WebSockets say "shared-or-service": content gives them no frame and no
- * profile, so that they go to the one profile with a policy whichever they are from,
- * and with two such profiles they fail. Their requests answered from a service
- * worker's own cache never reach this, nor do background fetches.
+ * frame), their WebSockets too, each decided by its own profile's policy. Their
+ * requests answered from a service worker's own cache never reach this, nor do
+ * background fetches.
  */
 ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view *view, bool on);
 /* What a hold rule holds is asked: stage, requestId (the same across redirects), url,
  * method, headers as the page gave them (at the request stage the network has yet to add Cookie,
  * Origin, Referer and more), resourceType, frameId, mainFrame, worker, workerType, navigation, initiator, hasBody,
  * bodySize, body (base64, up to 64 KiB), bodyComplete; for the response, status,
- * statusText, responseHeaders, mimeType; timeoutMs, deadlineUnixMs. Each redirect's
+ * statusText, responseHeaders, mimeType, and remoteAddress, the IP address it came
+ * from ("127.0.0.1", "::1"; absent when the network gives none, as for a response
+ * of a service worker or through some proxies), as at headersReceived below but without a rule
+ * inside the network; timeoutMs, deadlineUnixMs. Each redirect's
  * destination is a request again; a redirect response is told, not held.
  * Unanswered or with its function replaced, a request goes on. A view closed ends its
  * requests. At most 1024 of a view's requests are held: past that, a further request
@@ -572,9 +630,10 @@ ZEBKIT_API bool zebkit_view_set_network_filter_for_workers(zebkit_view *view, bo
  *   when the network gives none, as through some proxies).
  *   Continue, with headers (a Set-Cookie left out is not stored), or block.
  * A rule at these fails closed: without a function, no policy left, too many held, no answer by
- * the deadline, or the function replaced, the request ends with ERR_BLOCKED_BY_CLIENT and
- * its outcome is told as state refused. A CORS preflight has its own requestId, preflight
- * true, resourceType "preflight", and no body. A rule must be set before a request starts to reach it.
+ * the deadline, or the function replaced, the request ends with ERR_BLOCKED_BY_CLIENT; the
+ * last two, which were asked, are told as state refused. A CORS preflight has its own
+ * requestId, preflight true, resourceType "preflight", and no body. A rule must be set
+ * before a request starts to reach it.
  */
 typedef struct zebkit_network_request zebkit_network_request;
 typedef void (*zebkit_network_func)(zebkit_view *view, zebkit_network_request *request, const char *json, void *data);
@@ -627,10 +686,13 @@ ZEBKIT_API void zebkit_network_stream_end(zebkit_network_stream*, bool failed);
 /* Default 30000 ms; accepted range 1..300000. */
 ZEBKIT_API bool zebkit_view_set_network_timeout(zebkit_view *view, uint32_t milliseconds);
 ZEBKIT_API char *zebkit_network_request_info(zebkit_network_request *request);
-/* What an observe rule matches, holding nothing: kind request, response, redirect,
- * finished or failed (with error), and the fields above; dropped counts reports over
- * 4096 waiting. Outcomes of held requests too: state, reason. A WebSocket is told
- * request only. Bodies are not read.
+/* What an observe rule matches, holding nothing: kind request, sendHeaders, sent,
+ * headersReceived, response, redirect, finished or failed (with error), and the fields
+ * above; dropped is a number, the reports skipped over 4096 waiting since the previous
+ * one. Outcomes of held requests too, without kind or dropped: the request's metadata
+ * (stage) with state (continued, blocked, redirected, fulfilled; refused, above;
+ * cancelled when what asked went) and reason. A WebSocket is told request
+ * only. Bodies are not read.
  */
 typedef void (*zebkit_network_event_func)(zebkit_view *view, const char *json, void *data);
 ZEBKIT_API void zebkit_view_on_network_event(zebkit_view *view, zebkit_network_event_func func, void *data);

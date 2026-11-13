@@ -37,7 +37,12 @@ struct ContentMainParams;
 class BrowserMainRunner;
 class BrowserContext;
 class RenderFrame;
+class RenderFrameHost;
 class WebContents;
+}
+
+namespace blink {
+class AssociatedInterfaceRegistry;
 }
 
 namespace performance_manager {
@@ -129,6 +134,12 @@ void InstallChromeObject(content::RenderFrame* render_frame);
 
 // The frame's media elements for captures (media_capture_renderer.cc).
 void InstallMediaCaptureAgent(content::RenderFrame* render_frame);
+
+// Printing to PDF in the frame (print.cc): the renderer's helper, and the
+// browser's end of it among the frame's associated interfaces.
+void InstallPrintAgent(content::RenderFrame* render_frame);
+void AddPrintBinder(content::RenderFrameHost& render_frame_host,
+                    blink::AssociatedInterfaceRegistry& associated_registry);
 
 class RendererClient : public content::ContentRendererClient {
  public:
@@ -445,6 +456,10 @@ void DestroyClosedProfiles();
 // To the engine thread from any thread (zebkit_post_task()); false when the
 // engine has no loop, before it starts or once it stops.
 bool PostEngineTask(base::OnceClosure task, base::TimeDelta delay);
+// A script (zebkit_script, script.cc) left an error uncaught: thrown from one
+// of its callbacks or a promise rejected with no handler. zebkit_main()
+// returns 1 then, as zebkit-js exits.
+void NoteUncaughtScriptError();
 
 // The C API's one rule (zebkit.h, "Threads"): a function is for the engine's
 // thread and a view that has not closed; called otherwise it does nothing and
@@ -463,6 +478,7 @@ void ForgetWorkerPolicy(content::BrowserContext* profile);
 
 // CDP (cdp.cc).
 unsigned CdpListen(const std::string& address, unsigned port, std::string* error);
+void CdpListenAsync(const std::string& address, unsigned port, zebkit_cdp_listen_func func, void* data);
 unsigned CdpPort();
 std::string CdpUrl();
 void CdpStop();
@@ -470,13 +486,16 @@ void CdpStop();
 // Starts CDP if the command line asks for it, as Chrome's switches do.
 void StartCdpFromCommandLine();
 
-// zebkit_view_new_in(), of a kind (window.h).
+// zebkit_view_new_in(), of a kind (window.h). NULL, with the reason in @error
+// when given, off the engine's thread, for a closed context, or while the
+// engine stops.
 zebkit_view* NewView(zebkit_context* context,
                      const char* url,
                      int width,
                      int height,
                      Window::Kind kind,
-                     const WindowOptions* options = nullptr);
+                     const WindowOptions* options = nullptr,
+                     std::string* error = nullptr);
 // Nobody sees the page's window: an off-screen view, or all under --headless.
 // What a window would show is then answered without one.
 bool HasNoDisplay(content::WebContents* contents);

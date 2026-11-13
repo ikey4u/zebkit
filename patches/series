@@ -64,3 +64,5 @@
 1083-the-system-locale-as-base-first-default.patch
 1084-file-system-access-through-the-embedder-file-chooser.patch
 1085-serial-ports-without-a-platform-bluetooth.patch
+1086-content-whose-a-frameless-websocket-is.patch
+1087-content-hang-monitor-and-the-embedder-own-devtools.patch

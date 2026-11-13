@@ -1,4 +1,4 @@
-// Network requests and responses (network_hooks.cc): docs/ROADMAP_HOOKS.md.
+// Network requests and responses (network_hooks.cc): docs/HOOKS.md.
 
 #ifndef ZEBKIT_ENGINE_NETWORK_HOOKS_H_
 #define ZEBKIT_ENGINE_NETWORK_HOOKS_H_

@@ -37,6 +37,11 @@
 //!   to PDF ([`View::print_to_pdf`]); drag and drop, from the page and into
 //!   it ([`View::on_drag_start`], [`View::drop_data`]).
 //!
+//! - [`automation`] is Playwright's API on a view's page, inside the
+//!   engine: pages, frames, locators, handles, routes, dialogs, downloads,
+//!   workers, tracing, `expect`; [`json`] reads and writes the JSON the
+//!   engine speaks; [`Bytes`] is a buffer the engine made, not copied.
+//!
 //! This crate is safe Rust over [`zebkit_rs`], the raw bindings, which it
 //! re-exports as [`sys`] for whatever is not wrapped here yet. The C API it
 //! wraps is the same on Linux, macOS and Windows, and so is this crate.
@@ -59,6 +64,7 @@ pub mod automation;
 pub mod canvas;
 pub mod cdp;
 mod context;
+pub mod json;
 mod engine;
 pub mod media;
 pub mod media_tools;
@@ -78,13 +84,15 @@ pub use engine::{
     set_cookie_encryption_key, set_cookie_storage, set_engine_settings, set_wakeup, shutdown, version, CookieStorage,
 };
 pub use script::Script;
+
 pub use context::Context;
 pub use media::{MediaCapture, MediaTap};
 mod view_hooks;
 pub use tray::Tray;
 pub use view_hooks::{
-    ClientCertificateAction, ClientCertificateRequest, DeviceChooserRequest, DownloadRequest, EyeDropperRequest, FileChooserRequest, FullscreenPolicy,
-    MediaAccessRequest, NetworkRequest, NetworkStream, ShareRequest,
+    CertificateRequest, ClientCertificateAction, ClientCertificateRequest, DeviceChooserRequest, DownloadRequest, EyeDropperRequest,
+    FileChooserRequest, FullscreenPolicy, HttpAuthRequest, MediaAccessRequest, NavigationRequest, NetworkRequest, NetworkStream,
+    PermissionRequest, ShareRequest,
 };
 /// On Windows, with the static C runtime (`+crt-static`): this executable as the
 /// engine's sandboxed child process, which Chromium's sandbox there needs. Call it
@@ -98,7 +106,7 @@ pub fn win_startup() -> Option<i32> {
     unsafe { zebkit_rs::zebkit_win_startup(&mut code) }.then_some(code)
 }
 
-pub use view::{NativeWindow, Allow, Call, CertificateRequest, HttpAuthRequest, LoadEvent, NavigationAction, NavigationRequest, PermissionRequest, PermissionState, PopupPolicy, View};
+pub use view::{Allow, Call, LoadEvent, NativeWindow, NavigationAction, PermissionState, PopupPolicy, View};
 
 /// The raw bindings this crate is built on.
 pub use zebkit_rs as sys;
@@ -143,22 +151,138 @@ pub(crate) unsafe fn take_string(text: *mut c_char) -> Option<String> {
     copy
 }
 
-/// A copy of a buffer the engine gave away, which is then freed.
-pub(crate) unsafe fn take_bytes(data: *mut u8, size: usize) -> Vec<u8> {
-    let copy = if data.is_null() { Vec::new() } else { std::slice::from_raw_parts(data, size).to_vec() };
-    sys::zebkit_free(data.cast());
-    copy
+/// A buffer the engine gave away, kept as it is: freed when dropped.
+pub(crate) unsafe fn take_bytes(data: *mut u8, size: usize) -> Bytes {
+    if data.is_null() {
+        return Bytes(Repr::Vec(Vec::new()));
+    }
+    Bytes(Repr::Engine(data, size))
 }
 
-/// What the system says of how things should look, as JSON: `colorScheme`,
-/// `contrast`, `forcedColors`, `locale`, `accessibility`, `following`.
-pub fn environment() -> Option<String> {
-    unsafe { take_string(sys::zebkit_get_environment()) }
+/// Bytes the engine made (pixels, files, compressed or decrypted data): its
+/// own buffer, not copied, given back when this is dropped; or bytes of the
+/// application's (`Bytes::from(vec)`). Use it as a `&[u8]`;
+/// [`Bytes::into_vec`] copies an engine's buffer into a `Vec`.
+#[derive(Default)]
+pub struct Bytes(Repr);
+
+enum Repr {
+    Engine(*mut u8, usize),
+    Vec(Vec<u8>),
 }
 
-/// What this build can do on this system and display, as JSON (`<zebkit/window.h>`).
-pub fn capabilities() -> Option<String> {
-    unsafe { take_string(sys::zebkit_get_capabilities()) }
+impl Default for Repr {
+    fn default() -> Self {
+        Repr::Vec(Vec::new())
+    }
+}
+
+// The engine's buffer is plain memory of its allocator, freed from any thread.
+unsafe impl Send for Bytes {}
+unsafe impl Sync for Bytes {}
+
+impl Bytes {
+    /// The bytes in a `Vec`: the application's as they are, the engine's copied.
+    pub fn into_vec(mut self) -> Vec<u8> {
+        match std::mem::take(&mut self.0) {
+            Repr::Vec(vec) => vec,
+            Repr::Engine(data, size) => {
+                let vec = unsafe { std::slice::from_raw_parts(data, size) }.to_vec();
+                unsafe { sys::zebkit_free(data.cast()) };
+                vec
+            }
+        }
+    }
+}
+
+impl Drop for Bytes {
+    fn drop(&mut self) {
+        if let Repr::Engine(data, _) = self.0 {
+            unsafe { sys::zebkit_free(data.cast()) }
+        }
+    }
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match &self.0 {
+            Repr::Engine(data, size) => unsafe { std::slice::from_raw_parts(*data, *size) },
+            Repr::Vec(vec) => vec,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Bytes {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match &mut self.0 {
+            Repr::Engine(data, size) => unsafe { std::slice::from_raw_parts_mut(*data, *size) },
+            Repr::Vec(vec) => vec,
+        }
+    }
+}
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl From<Vec<u8>> for Bytes {
+    fn from(vec: Vec<u8>) -> Bytes {
+        Bytes(Repr::Vec(vec))
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(bytes: Bytes) -> Vec<u8> {
+        bytes.into_vec()
+    }
+}
+
+impl Clone for Bytes {
+    /// A copy in a `Vec`.
+    fn clone(&self) -> Bytes {
+        Bytes(Repr::Vec(self.to_vec()))
+    }
+}
+
+impl std::fmt::Debug for Bytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Bytes({} bytes)", self.len())
+    }
+}
+
+impl PartialEq for Bytes {
+    fn eq(&self, other: &Bytes) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Bytes {}
+
+impl PartialEq<[u8]> for Bytes {
+    fn eq(&self, other: &[u8]) -> bool {
+        **self == *other
+    }
+}
+
+impl PartialEq<&[u8]> for Bytes {
+    fn eq(&self, other: &&[u8]) -> bool {
+        **self == **other
+    }
+}
+
+impl PartialEq<Vec<u8>> for Bytes {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        **self == **other
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for Bytes {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        **self == other[..]
+    }
 }
 
 /// The error a failed call set, or `fallback` when it set none.

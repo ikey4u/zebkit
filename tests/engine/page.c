@@ -21,6 +21,7 @@
  * passes. */
 
 #define _GNU_SOURCE
+#include "harness.h"
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,22 +33,6 @@
 #include <zebkit/page.h>
 #include <zebkit/pdf.h>
 
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *format, ...) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    char detail[768] = "";
-    if (format) {
-        va_list args;
-        va_start(args, format);
-        vsnprintf(detail, sizeof(detail), format, args);
-        va_end(args);
-    }
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, *detail ? ": " : "", detail);
-    fflush(stdout);
-}
 
 static int64_t now_us(void) {
     struct timespec ts;
@@ -69,7 +54,6 @@ static int result_ready;
 static void run_step(void *data) {
     (void)data;
     if (current >= step_count) {
-        printf("%d of %d checks passed\n", checks - failures, checks);
         zebkit_quit();
         return;
     }
@@ -692,8 +676,7 @@ static void s_request_close_leave(void) {
 
 static void ready(void *data) {
     (void)data;
-    const char *env = getenv("ZEBKIT_TEST_BASE");
-    snprintf(base, sizeof(base), "%s", env);
+    snprintf(base, sizeof(base), "%s", test_base());
     snprintf(page_url, sizeof(page_url), "%s/page.html", base);
     snprintf(print_url, sizeof(print_url), "%s/print.html", base);
     const char *files = getenv("ZEBKIT_TEST_FILES");
@@ -737,12 +720,9 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
-    if (!getenv("ZEBKIT_TEST_BASE")) {
-        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
-        return 2;
-    }
+    test_base();
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;
-    return failures || checks < 60 ? 1 : 0;
+    return summary() || harness_checks < 60 ? 1 : 0;
 }

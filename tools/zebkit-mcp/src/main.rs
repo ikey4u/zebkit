@@ -135,11 +135,31 @@ Bounds (everything is denied that is not given):
   --allow-origin ORIGIN       A web origin pages and net_fetch may reach, for every
                               request: https://example.com, https://*.example.com, or *
                               for all public ones: not this machine's or private
-                              names and addresses. A public name whose DNS answer
-                              is a private address (DNS rebinding) is not caught:
-                              with *, keep the server where private services do
-                              not trust its address. Repeatable. None: no page can
-                              load anything.
+                              names and addresses. Repeatable. None: no page can
+                              load anything. A response from an address of this
+                              machine or a local network (loopback, private,
+                              link-local, 100.64/10, ...) to a name that is not
+                              one of those (DNS rebinding) is refused once its
+                              headers come, before the page has any of it. Its
+                              request has been sent by then. Chromium's Local
+                              Network Access refuses a public page's requests to
+                              local addresses before they are sent (fetch, POST,
+                              beacons, images, frames, forms into frames), but
+                              not its own top-level navigation: a form POST to
+                              the page's own frame goes out, its answer refused.
+                              A page whose own response was refused never loads,
+                              so sends nothing more. All this holds unless:
+  --allow-local-network       Public names may be answered from local addresses,
+                              as behind a proxy (whose address the network sees)
+                              or with names of a local network's DNS; Local
+                              Network Access is granted too. Refused with
+                              --allow-origin '*': any public page could then
+                              reach this machine's and the local network's
+                              services through a name that resolves there.
+  --allow-local-network-for-any-origin
+                              --allow-local-network, with '*' too: only behind a
+                              proxy that resolves names itself, with no service
+                              of its own or of its network a page must not reach.
   --allow-read DIRECTORY      Files may be read under it. Repeatable. None: none.
   --allow-write DIRECTORY     Files may be read and written under it. Repeatable.
   --windows                   Pages and zebkit.ui have real windows. Default: none.
@@ -193,6 +213,7 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
     let (mut port, mut bind, mut remote) = (None, "127.0.0.1".to_string(), false);
     let (mut allow_origins, mut allow_hosts) = (Vec::new(), Vec::new());
     let (mut tools_given, mut denied): (Option<String>, Vec<String>) = (None, Vec::new());
+    let mut any_origin_local = false;
     let mut iterator = args.iter();
     while let Some(arg) = iterator.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -228,6 +249,8 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
             "--allow-origin" => options.origins.push(value()),
             "--allow-read" => bounds.grant(&value(), false).unwrap_or_else(|why| fail(&why)),
             "--allow-write" => bounds.grant(&value(), true).unwrap_or_else(|why| fail(&why)),
+            "--allow-local-network" => bounds.local_network = true,
+            "--allow-local-network-for-any-origin" => (bounds.local_network, any_origin_local) = (true, true),
             "--windows" => bounds.windows = true,
             "--oauth-config" => options.oauth_config = Some(value()),
             "--allow-settings" => {
@@ -246,6 +269,11 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
             _ => fail(&format!("{arg}: unknown; see --help")),
         }
     }
+    // Under '*', a rebinding name of any public page would reach local services,
+    // Local Network Access granted: not without saying so by name.
+    if bounds.local_network && !any_origin_local && options.origins.iter().any(|origin| origin == "*") {
+        fail("--allow-local-network with --allow-origin '*' is refused: any public page could then reach this machine's and the local network's services through a name that resolves there. Name the origins, or, only behind a proxy that resolves names itself, give --allow-local-network-for-any-origin");
+    }
     for switch in &options.engine_switches {
         // Chromium takes `-name` as it takes `--name`; anything without a dash is
         // not a switch. Programs it would start count too.
@@ -254,6 +282,9 @@ fn parse(args: &[String], bounds: &mut Bounds) -> Options {
         let refused = [
             // Another way in: CDP, Playwright, the profile, the network's routing.
             "remote-debugging", "remote-allow-origins", "host-resolver-rules", "host-rules", "user-data-dir", "proxy-", "no-proxy-server", "playwright-port",
+            // Which addresses count as local: Chromium's Local Network Access, behind
+            // the bounds' own check of the address that answered (check_address).
+            "ip-address-space-overrides",
             // The web's own bounds: the same-origin policy, site isolation, V8.
             "disable-web-security", "disable-site-isolation", "single-process", "js-flags", "allow-file-access",
             // Features the bounds do not know: MojoJS (enable-blink-features=MojoJS)

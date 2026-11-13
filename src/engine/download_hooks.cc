@@ -42,13 +42,13 @@ struct Traits {
   using Request = zebkit_download_request;
   static constexpr auto kHandler = &zebkit_view::on_download_;
   static constexpr auto kData = &zebkit_view::on_download_data_;
-  static constexpr auto kResult = &zebkit_view::on_download_progress_;
-  static constexpr auto kResultData = &zebkit_view::on_download_progress_data_;
-  static constexpr auto kGeneration = &zebkit_view::download_generation_;
+  static constexpr auto kResult = &zebkit_view::on_download_result_;
+  static constexpr auto kResultData = &zebkit_view::on_download_result_data_;
+  static constexpr auto kGeneration = &zebkit_view::download_result_generation_;
   static constexpr auto kTimeout = &zebkit_view::download_timeout_ms_;
   static Decision Refusal() { return {}; }
   static Decision Unanswered() { return {}; }
-  static const char* State(const Decision& decision) { return decision.save ? "save" : "cancelled"; }
+  static const char* State(const Decision& decision) { return decision.save ? "saved" : "cancelled"; }
 };
 using Requests = HookRequests<Traits>;
 
@@ -501,9 +501,18 @@ void zebkit_view_on_download(zebkit_view* view, zebkit_download_func function, v
 void zebkit_view_on_download_progress(zebkit_view* view, zebkit_download_progress_func function, void* data) {
   ZEBKIT_LIVE_VIEW_OR_RETURN(view);
   auto& requests = zebkit::Requests::Get();
-  if (function && requests.Ready() && view->web_contents())
+  if (!requests.Ready() || !view->web_contents())
+    return;
+  if (function)
     zebkit::Watcher::Get().WatchProfileOf(view);
-  requests.Observe(view, function, data);
+  // Reports on their way to the function replaced are not told.
+  ++view->download_generation_;
+  view->on_download_progress_ = function;
+  view->on_download_progress_data_ = data;
+}
+void zebkit_view_on_download_result(zebkit_view* view, zebkit_download_result_func function, void* data) {
+  ZEBKIT_LIVE_VIEW_OR_RETURN(view);
+  zebkit::Requests::Get().Observe(view, function, data);
 }
 bool zebkit_view_set_download_timeout(zebkit_view* view, uint32_t milliseconds) {
   ZEBKIT_LIVE_VIEW_OR_RETURN(view, false);

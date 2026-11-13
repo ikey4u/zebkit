@@ -18,10 +18,12 @@ class WebContents;
 namespace zebkit {
 
 // An index into @names, or nothing for cancelled; answered after this
-// returns. False, and @answer the caller's, with no window.
+// returns. Returns what closes it unanswered when its request ends first
+// (@answer is then never run); a null closure, and @answer the caller's, with
+// no window.
 using CertificateAnswer = base::OnceCallback<void(std::optional<size_t>)>;
-bool ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
-                           const std::vector<std::u16string>& names, CertificateAnswer& answer);
+base::OnceClosure ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
+                                        const std::vector<std::u16string>& names, CertificateAnswer& answer);
 
 }  // namespace zebkit
 

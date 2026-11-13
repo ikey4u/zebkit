@@ -13,6 +13,18 @@ scripts/build.sh slim-windows-sandbox zebkit/engine:zebkit_sandbox
 scripts/package.sh slim-windows
 ```
 
+**Keep `.cache/sdk/windows/downloads`** (about 343 MB; `$SDK_DIR/windows/downloads`),
+and keep a copy of it somewhere durable. `scripts/windows-toolchain.py` pins
+every package of MSVC by version and SHA-256, and two of them,
+`Tools.HostX64.TargetX64` 14.50.35739 and the DIA SDK 14.51.36257, are no
+longer served by any channel of Visual Studio's (on 2026-11-11 the channels
+had 14.50.35740 and 14.52.37029). Without that directory a new machine, or a
+container whose cache lost it, cannot lay out the Windows toolchain: the run
+stops with "not in Visual Studio's channel any more". Copied back into place,
+the run takes the packages from there by their checksums. A toolset that can
+be downloaded again is a change of the pins, decided apart, not a fix of the
+cache.
+
 ## The package
 
 | File | What it is |
@@ -58,7 +70,8 @@ with `zebkit-helper.exe` as the children.
 The release archive's tools do this: `zebkit-run.exe` and `zebkit-js.exe` are built
 with `ZEBKIT_WIN_SANDBOX` defined and `zebkit_sandbox.lib` linked (`scripts/release.sh`),
 and `zebkit-mcp.exe` with `+crt-static`, which links it through the Rust crate and
-calls `zebkit::win_startup()`. Each, with an 8 MiB main stack as `chrome.exe`'s, is its own
+calls `zebkit::win_startup()`. The Go binding calls it from a C initializer
+(`.CRT$XCU`), before the Go runtime starts (`bindings/golang/win_sandbox.go`). Each, with an 8 MiB main stack as `chrome.exe`'s, is its own
 renderer, GPU and utility processes, and runs sandboxed without a switch; `zebkit-helper.exe`
 is not used then. The suite's own builds of the C tools (`engine-test.sh`) leave the
 define out and run with `--no-sandbox`. `zebkit-mcp.exe` serves MCP over standard

@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "build/build_config.h"
+#include "ui/gfx/native_ui_types.h"
 #include "zebkit/engine/app.h"
 
 namespace zebkit {
@@ -19,8 +21,19 @@ struct DockState {
   double progress = -1;   // 0..1, or below 0 for none
 };
 
+// What zebkit_app_set_badge() and zebkit_app_set_progress() set last.
+const DockState& CurrentDockState();
+
 // dock_mac.mm, dock_win.cc, dock_linux.cc.
 void ApplyDockState(const DockState& state);
+#if BUILDFLAG(IS_WIN)
+// A window shown or activated (window_views.cc): its taskbar button, which a
+// window made after the state was set has not had, gets the state too.
+void ApplyDockStateToWindow(gfx::AcceleratedWidget window);
+// A window going (window_views.cc): what its button had is forgotten, so that
+// a later window given the same HWND is not judged to have it.
+void ForgetDockWindow(gfx::AcceleratedWidget window);
+#endif
 void RequestDockAttention(bool critical);
 // macOS: whether the Dock has a menu of the application's (engine_mac.mm asks).
 bool DockMenuSupported();

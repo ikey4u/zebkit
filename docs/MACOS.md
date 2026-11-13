@@ -119,7 +119,7 @@ ad hoc signing does for tests.
   requires an approved entitlement on the signed host application. The C
   example supplies the privacy description and supports an optional signing
   identity, entitlements file and provisioning profile. See
-  [passkey support](PASSKEYS.md).
+  [passkey support](notes/passkeys.md).
 
 ## Off-screen views and IOSurfaces
 

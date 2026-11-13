@@ -4,8 +4,9 @@
 //
 //   node playwright_connect.mjs <playwright-core dir> <zebkit-run> [switches...]
 //
-// Prints "ok <name>" or "FAIL <name>: <error>" for each check, and exits 1
-// when one failed.
+// Prints "ok   <name>" or "FAIL <name>: <error>" for each check, then "N of M
+// checks passed", and exits 1 when one failed. Its files are in a directory of
+// its own, removed as it exits, whatever the way.
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -19,7 +20,12 @@ const [coreDir, executable, ...switches] = process.argv.slice(2);
 const require = createRequire(path.resolve(coreDir, 'package.json'));
 const { chromium } = require('playwright-core');
 
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'zebkit-connect-'));
 const engine = spawn(executable, [...switches, '--playwright-port=0'], { stdio: ['ignore', 'ignore', 'pipe'] });
+process.on('exit', () => {
+  engine.kill();
+  fs.rmSync(scratch, { recursive: true, force: true });
+});
 const endpoint = await new Promise((resolve, reject) => {
   let text = '';
   engine.stderr.on('data', data => {
@@ -32,7 +38,7 @@ const endpoint = await new Promise((resolve, reject) => {
   setTimeout(() => reject(new Error('zebkit-run serves no Playwright endpoint')), 30000);
 });
 
-let failed = 0;
+let failed = 0, checks = 0;
 // The status of a WebSocket upgrade: 101 when the endpoint takes it.
 function upgrade(url, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -47,9 +53,10 @@ function upgrade(url, headers = {}) {
   });
 }
 async function check(name, body) {
+  ++checks;
   try {
     await body();
-    console.log(`ok ${name}`);
+    console.log(`ok   ${name}`);
   } catch (error) {
     ++failed;
     console.log(`FAIL ${name}: ${String(error && error.message || error).split('\n')[0]}`);
@@ -301,7 +308,7 @@ await check('request and response events', async () => {
   equal(request.method(), 'GET');
 });
 await check('setInputFiles', async () => {
-  const file = path.join(os.tmpdir(), `zebkit-connect-${process.pid}.txt`);
+  const file = path.join(scratch, 'chosen.txt');
   fs.writeFileSync(file, 'hello');
   try {
     await page.locator('#file').setInputFiles(file);
@@ -325,7 +332,7 @@ await check('screenshot', async () => {
   equal([...png.subarray(1, 4)].map(c => String.fromCharCode(c)).join(''), 'PNG');
 });
 await check('tracing', async () => {
-  const file = path.join(os.tmpdir(), `zebkit-connect-${process.pid}.zip`);
+  const file = path.join(scratch, 'trace.zip');
   try {
     await context.tracing.start({ screenshots: true });
     await page.locator('#go').click();
@@ -519,4 +526,5 @@ await check('close', async () => {
 });
 
 engine.kill();
-process.exit(failed ? 1 : 0);
+console.log(`${checks - failed} of ${checks} checks passed`);
+process.exit(failed || !checks ? 1 : 0);

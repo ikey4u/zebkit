@@ -200,7 +200,7 @@ impl Browser {
                 if self.host.overlays_above() {
                     let _ = done.send(None);
                 } else {
-                    self.tabs[index].view.capture(move |png| drop(done.send(png.ok())));
+                    self.tabs[index].view.capture(move |png| drop(done.send(png.ok().map(<[u8]>::to_vec))));
                 }
             }
             None => drop(done.send(None)),
@@ -944,7 +944,7 @@ fn fetch_icon(mut links: Vec<String>, done: impl FnOnce(Vec<u8>) + 'static) {
         let png = zebkit::services::decode_image(bytes)
             .and_then(|image| zebkit::services::encode_image(zebkit::services::ImageFormat::Png, &image, 100));
         match png {
-            Ok(png) => done(png),
+            Ok(png) => done(png.to_vec()),
             Err(_) => fetch_icon(links, done),
         }
     });

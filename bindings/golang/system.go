@@ -65,7 +65,10 @@ func AllowSleep(token uint64) error {
 	return check(C.zebkit_allow_sleep(C.uint64_t(token)), "no such token")
 }
 
-// OpenExternal gives url to the system's handler, never through a shell.
+// OpenExternal gives url to the system's handler, never through a shell: an
+// error for javascript:, data:, blob:, about: and invalid URLs; nil once the
+// system is asked, which goes on off the engine's thread (OpenExternalAsync
+// tells how it went).
 func OpenExternal(url string) error {
 	onEngineThread()
 	curl := cString(url)
@@ -74,13 +77,36 @@ func OpenExternal(url string) error {
 	return failed(C.zebkit_open_external(curl, &message), message, "the URL was not opened")
 }
 
-// ShowInFolder shows path, absolute, selected in the file manager.
+// ShowInFolder shows path, absolute, selected in the file manager: an error
+// for a relative path; nil once the system is asked (ShowInFolderAsync tells
+// how it went).
 func ShowInFolder(path string) error {
 	onEngineThread()
 	cpath := cString(path)
 	defer free(cpath)
 	var message *C.char
 	return failed(C.zebkit_show_in_folder(cpath, &message), message, "the file was not shown")
+}
+
+// OpenExternalAsync is OpenExternal telling done how it went, once, on the
+// engine's thread after it returns: nil once the system has opened url, or
+// the error (an invalid URL, no program for it). done may be nil.
+func OpenExternalAsync(url string, done func(err error)) {
+	onEngineThread()
+	curl := cString(url)
+	defer free(curl)
+	C.zebkit_open_external_async(curl, C.zebkit_desktop_done_func(C.zk_desktop_done), data(errorOnce(done)))
+}
+
+// ShowInFolderAsync is ShowInFolder telling done how it went, once, on the
+// engine's thread after it returns: nil once the file manager shows path,
+// or the error (a relative path, a file that is not there, a file manager
+// that failed; macOS's Finder says nothing of itself). done may be nil.
+func ShowInFolderAsync(path string, done func(err error)) {
+	onEngineThread()
+	cpath := cString(path)
+	defer free(cpath)
+	C.zebkit_show_in_folder_async(cpath, C.zebkit_desktop_done_func(C.zk_desktop_done), data(errorOnce(done)))
 }
 
 // OnNotification makes the application show the pages' notifications:

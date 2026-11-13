@@ -101,7 +101,7 @@ ZEBKIT_API char *zebkit_automation_page_id(zebkit_view *view);
  * drives the engine and writes files (Page.screenshot's "path"), so give it
  * only to what should. Only that path connects, and no request with an Origin
  * header (a web page's WebSocket has one). A client's contexts close when it
- * disconnects.
+ * disconnects. Called off the engine's thread, @func is told the error at once.
  */
 typedef void (*zebkit_automation_listen_func)(const char *url, const char *error, void *data);
 ZEBKIT_API void zebkit_automation_listen(int port, zebkit_automation_listen_func func, void *data);

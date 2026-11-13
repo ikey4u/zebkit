@@ -925,9 +925,10 @@ uint8_t* zebkit_pdf_render_annotation(zebkit_pdf* pdf,
   const float r = std::max(rect.left, rect.right);
   const float b = std::min(rect.bottom, rect.top);
   const float t = std::max(rect.bottom, rect.top);
-  const int upright_width = std::max(1, static_cast<int>((r - l) * scale + 0.5));
+  // Saturated, as a page's render: the size limit below refuses what is huge.
+  const int upright_width = std::max(1, base::saturated_cast<int>((r - l) * scale + 0.5));
   const int upright_height =
-      std::max(1, static_cast<int>((t - b) * scale + 0.5));
+      std::max(1, base::saturated_cast<int>((t - b) * scale + 0.5));
   const int quarter_turns = ((options.rotation / 90) % 4 + 4) % 4;
   const int image_width = quarter_turns % 2 ? upright_height : upright_width;
   const int image_height = quarter_turns % 2 ? upright_width : upright_height;
@@ -1773,6 +1774,10 @@ uint8_t* zebkit_pdf_signature_contents(zebkit_pdf* pdf,
   }
   const std::vector<uint8_t> contents = SignatureContents(signature);
   auto* bytes = static_cast<uint8_t*>(malloc(std::max<size_t>(contents.size(), 1)));
+  if (!bytes) {
+    Fail(error, "out of memory");
+    return nullptr;
+  }
   std::copy(contents.begin(), contents.end(), bytes);
   *size = contents.size();
   return bytes;

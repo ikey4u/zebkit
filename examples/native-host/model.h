@@ -215,7 +215,8 @@ struct PdfPane {
   }
   void Compose() {
     dirty = false;
-    if (width <= 0 || height <= 0) return;
+    // Closed (Close()): the last picture stays, and nothing is rendered.
+    if (width <= 0 || height <= 0 || !pdf) return;
     canvas.width = width; canvas.height = height; canvas.scale = scale;
     canvas.bgra.resize(static_cast<size_t>(width) * height * 4);
     uint32_t* out = reinterpret_cast<uint32_t*>(canvas.bgra.data());

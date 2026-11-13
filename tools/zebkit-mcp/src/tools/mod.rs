@@ -98,6 +98,72 @@ pub fn image_output(base64: String, mime: &str, details: Value) -> Output {
     }
 }
 
+/// How deep a value the server passes either way may be nested: serde_json's own
+/// limit, and the binding's reader's. What is deeper is an error, never `null`.
+const DEPTH: usize = 128;
+
+/// The largest integer a JSON number (an `f64`, as in JavaScript) holds exactly.
+const EXACT: u64 = 1 << 53;
+
+/// A value of the server's JSON as the binding's (automation commands take it),
+/// converted member by member. Numbers become `f64`, as the engine reads them:
+/// an integer beyond 2^53, which would arrive as another, is an error.
+pub fn to_engine(value: &Value) -> Result<zebkit::json::Value, String> {
+    fn convert(value: &Value, depth: usize) -> Result<zebkit::json::Value, String> {
+        use zebkit::json::Value as Engine;
+        if depth > DEPTH {
+            return Err(format!("a value nested deeper than {DEPTH} levels"));
+        }
+        Ok(match value {
+            Value::Null => Engine::Null,
+            Value::Bool(value) => Engine::Bool(*value),
+            Value::Number(number) => {
+                let exact = number.as_u64().map(|n| n <= EXACT).or_else(|| number.as_i64().map(|n| n.unsigned_abs() <= EXACT)).unwrap_or(true);
+                if !exact {
+                    return Err(format!("{number}: an integer beyond 2^53, which JavaScript cannot hold exactly"));
+                }
+                Engine::Number(number.as_f64().ok_or_else(|| format!("{number}: not a number the engine can read"))?)
+            }
+            Value::String(text) => Engine::String(text.clone()),
+            Value::Array(items) => Engine::Array(items.iter().map(|item| convert(item, depth + 1)).collect::<Result<_, _>>()?),
+            Value::Object(members) => Engine::Object(
+                members.iter().map(|(key, item)| Ok((key.clone(), convert(item, depth + 1)?))).collect::<Result<_, String>>()?,
+            ),
+        })
+    }
+    convert(value, 1)
+}
+
+/// A value of the binding's JSON as the server's, converted member by member.
+/// An integral number is an integer, exactly the `f64` the engine gave; one
+/// not finite is `null`, as JSON.stringify writes it. A member named twice
+/// keeps its last value, as in JavaScript. Deeper than 128 levels is an error.
+pub fn from_engine(value: &zebkit::json::Value) -> Result<Value, String> {
+    fn convert(value: &zebkit::json::Value, depth: usize) -> Result<Value, String> {
+        use zebkit::json::Value as Engine;
+        if depth > DEPTH {
+            return Err(format!("the engine's result is nested deeper than {DEPTH} levels"));
+        }
+        Ok(match value {
+            Engine::Null => Value::Null,
+            Engine::Bool(value) => Value::Bool(*value),
+            // Every integral f64 of this range is an i64 exactly.
+            Engine::Number(number) if number.fract() == 0.0 && number.abs() < 9.0e18 => Value::from(*number as i64),
+            Engine::Number(number) => serde_json::Number::from_f64(*number).map_or(Value::Null, Value::Number),
+            Engine::String(text) => Value::String(text.clone()),
+            Engine::Array(items) => Value::Array(items.iter().map(|item| convert(item, depth + 1)).collect::<Result<_, _>>()?),
+            Engine::Object(members) => {
+                let mut object = serde_json::Map::new();
+                for (key, item) in members {
+                    object.insert(key.clone(), convert(item, depth + 1)?);
+                }
+                Value::Object(object)
+            }
+        })
+    }
+    convert(value, 1)
+}
+
 /// A required string the schema has checked.
 pub fn text<'a>(args: &'a Value, name: &str) -> &'a str {
     args[name].as_str().unwrap_or("")
@@ -139,4 +205,42 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn conversions() {
+        let value = json!({"a": [1, -2, 2.5, true, null, "x\u{1f600}"], "b": {"c": 9007199254740992u64}});
+        assert_eq!(from_engine(&to_engine(&value).unwrap()).unwrap(), value);
+        // Integers: exact to 2^53 either way; beyond, refused on the way in, and
+        // on the way out exactly the f64 the engine holds, not a float's text.
+        assert!(to_engine(&json!(9007199254740993u64)).is_err());
+        assert!(to_engine(&json!(-9007199254740993i64)).is_err());
+        assert!(to_engine(&json!(u64::MAX)).is_err());
+        let big = zebkit::json::Value::Number(2f64.powi(60));
+        assert_eq!(from_engine(&big).unwrap(), json!(1152921504606846976i64));
+        assert_eq!(from_engine(&zebkit::json::Value::Number(3.0)).unwrap().to_string(), "3");
+        assert_eq!(from_engine(&zebkit::json::Value::Number(f64::INFINITY)).unwrap(), Value::Null);
+        assert_eq!(from_engine(&zebkit::json::Value::Number(1e300)).unwrap(), json!(1e300));
+        // A member named twice: the last, as in JavaScript.
+        let twice = zebkit::json::Value::Object(vec![("k".into(), 1.into()), ("k".into(), 2.into())]);
+        assert_eq!(from_engine(&twice).unwrap(), json!({"k": 2}));
+        // Nesting: 128 levels pass, deeper is an error, never null.
+        let deep: Value = serde_json::from_str(&nested(127)).unwrap();
+        assert!(to_engine(&deep).is_ok());
+        let mut engine = zebkit::json::Value::Array(vec![]);
+        for _ in 0..127 {
+            engine = zebkit::json::Value::Array(vec![engine]);
+        }
+        assert!(from_engine(&engine).is_ok());
+        let engine = zebkit::json::Value::Array(vec![zebkit::json::Value::Array(vec![engine])]);
+        assert!(from_engine(&engine).unwrap_err().contains("deeper than 128"));
+    }
 }

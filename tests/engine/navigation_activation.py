@@ -1,11 +1,25 @@
-"""A cached document must pass policy again before becoming the active page."""
+"""A cached document must pass policy again before becoming the active page:
+the navigation hook's activation phase for documents from the back/forward
+cache and for prerendered ones, each answered, timed out, replaced, closed and
+superseded. The suite's variants (ZEBKIT_TEST_PRERENDER_*) give the prerendered
+page's view a user agent, client hints, an evaluation, init scripts and a
+removed one first, which the activated document must have as the view's.
+
+    [ZEBKIT_TEST_PRERENDER_...=1] python3 tests/engine/navigation_activation.py
+
+Exit 0 when every check passes.
+"""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import sys
 import tempfile
 import threading
-import time
-import zebkit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from harness import check, ev, finish, must_wait, part, pump, zebkit  # noqa: E402
+from zebkit import automation  # noqa: E402
 
 received = []
 user_agents = {}
@@ -44,40 +58,24 @@ class Server(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError): pass
 
 def wait(condition, label):
-    end = time.monotonic() + 15
-    while time.monotonic() < end:
-        assert zebkit.pump()
-        if condition(): return
-        time.sleep(.002)
-    raise AssertionError(label)
+    must_wait(condition, label)
 
 def evaluate(view, script):
-    answers = []
-    view.evaluate(script, lambda value, error: answers.append((value,error)))
-    wait(lambda: bool(answers), script)
-    assert answers[0][1] is None, answers
-    return answers[0][0]
+    """ev(), raising when the script threw or did not answer."""
+    value = ev(view, script)
+    assert not (isinstance(value, tuple) and value[:1] in (('error',), ('timeout',))), (script, value)
+    return value
 
 def automate(view, method, params):
-    answers = []
-    callback = zebkit._RESULT(lambda handle, result, error, data:
-                              answers.append((json.loads(result) if result else None,
-                                              error.decode() if error else None)))
-    call = zebkit._declare('zebkit_automation_call',None,zebkit._V,zebkit._S,zebkit._S,zebkit._RESULT,zebkit._P)
-    call(view._check(),method.encode(),json.dumps(params).encode(),callback,None)
-    wait(lambda: bool(answers),method)
-    assert answers[0][1] is None, answers
-    return answers[0][0]
+    # A native automation command by its protocol name: Page.addInitScript with
+    # a registration of the caller's and Page.removeRegistration are no method of
+    # zebkit.automation.Page (automation.call, a Future).
+    answer = automation.call(view, method, params)
+    wait(answer.done, method)
+    return answer.result()
 
-server = ThreadingHTTPServer(('127.0.0.1',0),Server)
-thread = threading.Thread(target=server.serve_forever,daemon=True)
-thread.start()
-base = f'http://127.0.0.1:{server.server_port}'
-with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as profile:
-    assert zebkit.init(['navigation-activation','--no-sandbox','--headless','--disable-gpu',
-                        '--enable-features=BackForwardCache,Prerender2',
-                        '--disable-features=Prerender2MemoryControls', f'--user-data-dir={profile}']) == 0
-    try:
+def bfcache(base):
+    with part('BFCache restoration passes navigation activation policy'):
         view = zebkit.View(None,320,200)
         events = []
         def policy(request):
@@ -94,9 +92,11 @@ with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as prof
         assert received.count('/first') == 1, received
         assert any(e['phase']=='activation' and e.get('activationType')=='back-forward-cache'
                    for e in events), events
-        print('ok BFCache restoration passes navigation activation policy')
         view.close()
-        for action in ('continue','cancel','redirect','timeout','replace','close','supersede'):
+
+
+def bfcache_activation(base, action):
+    with part('BFCache activation '+action):
             view = zebkit.View(None,320,200)
             pending, outcomes = [], []
             def decide(request):
@@ -138,22 +138,22 @@ with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as prof
             wait(lambda: request.info is None, 'settled activation token')
             assert not request.respond(), 'settled activation token accepted another reply'
             if action != 'close': view.close()
-            print('ok BFCache activation '+action)
-        for action in ('continue','cancel','redirect','timeout','replace','close','supersede'):
+
+
+def prerender_activation(base, action):
+    with part('prerender activation '+action):
             view = zebkit.View(None,320,200)
             pending = []
             if os.environ.get('ZEBKIT_TEST_PRERENDER_EVALUATE'):
                 assert evaluate(view,'1+1') == 2
             if os.environ.get('ZEBKIT_TEST_PRERENDER_INIT_SCRIPT'):
-                add_script = zebkit._declare('zebkit_view_add_script',None,zebkit._V,zebkit._S)
-                add_script(view._check(),b'globalThis.hostInitialization=(globalThis.hostInitialization||0)+1;')
+                view.add_script('globalThis.hostInitialization=(globalThis.hostInitialization||0)+1;')
             if os.environ.get('ZEBKIT_TEST_PRERENDER_USER_AGENT'):
-                set_agent = zebkit._declare('zebkit_view_set_user_agent',None,zebkit._V,zebkit._S)
-                set_agent(view._check(),b'zebkit-prerender-native/1')
+                view.set_user_agent('zebkit-prerender-native/1')
                 if os.environ.get('ZEBKIT_TEST_PRERENDER_INVALID_USER_AGENT'):
                     # A rejected native override must not poison replay into
                     # a future prerender target.
-                    set_agent(view._check(),b'invalid\r\nuser-agent')
+                    view.set_user_agent('invalid\r\nuser-agent')
                 if os.environ.get('ZEBKIT_TEST_PRERENDER_USER_AGENT_METADATA'):
                     def metadata_done(value,error):
                         assert error is None,(value,error)
@@ -179,7 +179,6 @@ with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as prof
             if os.environ.get('ZEBKIT_TEST_PRERENDER_INIT_SCRIPT'):
                 initial_state = evaluate(view,'({seen:initializationSeen,current:globalThis.hostInitialization||null})')
                 assert initial_state == {'seen':1,'current':1}, ('initiator',initial_state)
-            target = base+'/prerender-'+action
             # No legacy DevTools evaluation session before prerender starts:
             # Chromium disables prerender with clients lacking tab-target support.
             wait(lambda: '/ready/prerender-'+action in received, 'real prerender ready '+action)
@@ -245,16 +244,41 @@ with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as prof
             elif action=='supersede':
                 wait(lambda: view.title=='/superseding','prerender superseded')
             elif action=='cancel':
-                until=time.monotonic()+.1
-                while time.monotonic()<until:
-                    assert zebkit.pump()
-                    time.sleep(.002)
+                pump()
                 assert view.url==base+'/initiator-'+action
             wait(lambda: request.info is None,'settled prerender token')
             assert not request.respond()
             assert received.count('/prerender-'+action)==1, received
             if action!='close': view.close()
-            print('ok prerender activation '+action)
+
+
+ACTIONS = ('continue','cancel','redirect','timeout','replace','close','supersede')
+
+
+def main():
+    server = ThreadingHTTPServer(('127.0.0.1',0),Server)
+    thread = threading.Thread(target=server.serve_forever,daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        with tempfile.TemporaryDirectory(prefix='zebkit-navigation-activation-') as profile:
+            if zebkit.init(['navigation-activation','--no-sandbox','--headless','--disable-gpu',
+                            '--enable-features=BackForwardCache,Prerender2',
+                            '--disable-features=Prerender2MemoryControls', f'--user-data-dir={profile}']) != 0:
+                print('FAIL zebkit.init()')
+                return 1
+            try:
+                bfcache(base)
+                for action in ACTIONS:
+                    bfcache_activation(base, action)
+                for action in ACTIONS:
+                    prerender_activation(base, action)
+            finally:
+                check(zebkit.shutdown(), 'zebkit.shutdown()')
     finally:
-        zebkit.shutdown()
         server.shutdown();server.server_close();thread.join()
+    return finish()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

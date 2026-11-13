@@ -3,25 +3,14 @@
 #ifndef ZEBKIT_TESTS_PDF_SUPPORT_H_
 #define ZEBKIT_TESTS_PDF_SUPPORT_H_
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "harness.h"
 
 #include <zebkit/pdf.h>
 #include <zebkit/services.h>
 
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *detail) {
-    checks++;
-    if (!ok)
-        failures++;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-}
-
 /* What fails must say why. */
 static void refused(int failed, char **error, const char *what) {
-    check(failed && *error && **error, what, *error);
+    check_text(failed && *error && **error, what, *error);
     zebkit_free(*error);
     *error = NULL;
 }

@@ -47,6 +47,10 @@ recorded_os="${recorded_os:-linux}"
 link_engine() {
     mkdir -p "$SRC_DIR/zebkit"
     ln -sfn "$ZEBKIT_ROOT/src/engine" "$SRC_DIR/zebkit/engine"
+    # The version, as //zebkit/VERSION for src/engine/BUILD.gn: a link made
+    # here, not one in the repository, which a checkout without symbolic links
+    # (Windows) would turn into a file holding its target.
+    ln -sfn "$ZEBKIT_ROOT/VERSION" "$SRC_DIR/zebkit/VERSION"
     # zebkit's configuration of FFmpeg (scripts/ffmpeg-config.sh).
     ln -sfn "$ZEBKIT_ROOT/src/ffmpeg" "$SRC_DIR/zebkit/ffmpeg"
     # What scripts/macos-toolchain.sh set up for building macOS on Linux:

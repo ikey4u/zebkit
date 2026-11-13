@@ -1,0 +1,114 @@
+Content: whose a WebSocket without a frame is, for the embedder.
+
+ContentBrowserClient::WillInterceptWebSocket() and CreateWebSocket() get a
+null frame for a shared or service worker's socket and nothing else of it,
+although WebSocketConnectorImpl knows the process that asked. An embedder with
+a network policy per BrowserContext could not tell which applies: zebkit sent
+every such socket to the one profile with a policy, and refused them all with
+two. CurrentWebSocketInitiator() (content/public/browser/zebkit_websocket.h)
+gives the process and the worker's DevTools token during those calls (and
+GetWebSocketOptions()). A static set for the call's length rather than a new
+field of WebSocketOptions, which content_browser_client.h, and so nearly all
+of content, would be rebuilt for.
+
+diff --git a/content/browser/websockets/websocket_connector_impl.cc b/content/browser/websockets/websocket_connector_impl.cc
+--- a/content/browser/websockets/websocket_connector_impl.cc
++++ b/content/browser/websockets/websocket_connector_impl.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ 
++#include "base/auto_reset.h"
+ #include "base/command_line.h"
+ #include "base/not_fatal_until.h"
+ #include "content/browser/devtools/devtools_instrumentation.h"
+@@ -15,6 +16,7 @@
+ #include "content/public/browser/render_process_host.h"
+ #include "content/public/browser/storage_partition.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/zebkit_websocket.h"
+ #include "content/public/common/child_process_id_util.h"
+ #include "content/public/common/content_client.h"
+ #include "content/public/common/content_switches.h"
+@@ -30,6 +32,9 @@
+ 
+ namespace {
+ 
++// zebkit: the socket the embedder is asked about (zebkit_websocket.h).
++const WebSocketInitiator* g_websocket_initiator = nullptr;
++
+ url::Origin MaybeTreatLocalOriginAsOpaque(const url::Origin& origin) {
+   if (std::ranges::contains(url::GetLocalSchemes(), origin.scheme()) &&
+       !base::CommandLine::ForCurrentProcess()->HasSwitch(
+@@ -68,6 +73,10 @@
+         })");
+ }
+ 
++const WebSocketInitiator* CurrentWebSocketInitiator() {
++  return g_websocket_initiator;
++}
++
+ WebSocketConnectorImpl::WebSocketConnectorImpl(
+     const content::GlobalRenderFrameHostId& frame_id,
+     WeakDocumentPtr weak_document,
+@@ -133,6 +142,9 @@
+     }
+   }
+ 
++  WebSocketInitiator initiator{frame_id_.child_id, devtools_worker_token_};
++  base::AutoReset<const WebSocketInitiator*> current_initiator(
++      &g_websocket_initiator, &initiator);
+   content::ContentBrowserClient::WebSocketOptions options =
+       GetContentClient()->browser()->GetWebSocketOptions(frame);
+ 
+diff --git a/content/public/browser/BUILD.gn b/content/public/browser/BUILD.gn
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -510,6 +510,7 @@
+     "web_contents_observer.h",
+     "zebkit_automation.h",
+     "zebkit_input.h",
++    "zebkit_websocket.h",
+     "web_contents_user_data.h",
+     "web_contents_view_delegate.cc",
+     "web_contents_view_delegate.h",
+diff --git a/content/public/browser/zebkit_websocket.h b/content/public/browser/zebkit_websocket.h
+new file mode 100644
+--- /dev/null
++++ b/content/public/browser/zebkit_websocket.h
+@@ -0,0 +1,35 @@
++// Copyright 2026 The zebkit Authors
++// zebkit: whose a WebSocket is when it has no frame. ContentBrowserClient's
++// WillInterceptWebSocket() and CreateWebSocket() are given a null frame for a
++// shared or service worker's socket, and nothing else of the worker: an
++// embedder with a policy per BrowserContext cannot tell which applies.
++
++#ifndef CONTENT_PUBLIC_BROWSER_ZEBKIT_WEBSOCKET_H_
++#define CONTENT_PUBLIC_BROWSER_ZEBKIT_WEBSOCKET_H_
++
++#include <optional>
++
++#include "base/unguessable_token.h"
++#include "content/common/content_export.h"
++#include "content/public/common/child_process_id.h"
++
++namespace content {
++
++struct WebSocketInitiator {
++  // The process that asked for the socket: RenderProcessHost::FromID().
++  ChildProcessId process_id;
++  // A worker's DevTools token (a dedicated worker's too); for a shared or
++  // service worker, the id of its DevToolsAgentHost:
++  // DevToolsAgentHost::GetForId(token.ToString()), of type "shared_worker" or
++  // "service_worker". nullopt for a frame's socket.
++  std::optional<base::UnguessableToken> devtools_worker_token;
++};
++
++// The socket being created, during the embedder's GetWebSocketOptions(),
++// WillInterceptWebSocket() and CreateWebSocket() for it; nullptr at any other
++// time. UI thread only.
++CONTENT_EXPORT const WebSocketInitiator* CurrentWebSocketInitiator();
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_ZEBKIT_WEBSOCKET_H_

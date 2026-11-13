@@ -6,6 +6,7 @@
  *
  * Exit 0 when every check passes. */
 
+#include "harness.h"
 #include <windows.h>
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -29,15 +30,8 @@ static const char page[] =
 
 static HWND window;
 static HANDLE wake;
-static int failures, done;
+static int done;
 static zebkit_view *view;
-
-static void check(int ok, const char *what) {
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
-    fflush(stdout);
-    if (!ok)
-        ++failures;
-}
 
 /* From any thread: the application's loop looks again. */
 static void wakeup(int64_t delay_ms, void *data) {
@@ -100,7 +94,7 @@ static void evaluated(zebkit_view *v, const char *json, const char *error, void 
     (void)data;
     printf("page says %s, error %s\n", json ? json : "null", error ? error : "none");
     /* The parent's pixels, at the display's scale (zebkit_view_attach_native). */
-    check(json && !strcmp(json, "780"), "the page is the attached size, the client area less its margins");
+    check(json && !strcmp(json, "780"), "the page is the attached size, the client area less its margins", NULL);
     done = 1;
 }
 
@@ -108,10 +102,10 @@ static void loaded(zebkit_view *v, zebkit_load_event event, const char *url, voi
     (void)url;
     (void)data;
     if (event == ZEBKIT_LOAD_FAILED) {
-        check(0, "the page loads");
+        check(0, "the page loads", NULL);
         done = 2;
     } else if (event == ZEBKIT_LOAD_FINISHED) {
-        check(1, "the page loads");
+        check(1, "the page loads", NULL);
         zebkit_view_evaluate(v,
                              "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => "
                              "setTimeout(() => r(Math.round(innerWidth * devicePixelRatio)), 1000))))",
@@ -128,7 +122,7 @@ int main(int argc, char **argv) {
         return child_code;
 #endif
     wake = CreateEventW(NULL, FALSE, FALSE, NULL);
-    check(zebkit_set_wakeup(wakeup, NULL), "zebkit_set_wakeup() before the engine");
+    check(zebkit_set_wakeup(wakeup, NULL), "zebkit_set_wakeup() before the engine", NULL);
 
     WNDCLASSW type = {0};
     type.lpfnWndProc = proc;
@@ -140,19 +134,19 @@ int main(int argc, char **argv) {
     AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
     window = CreateWindowW(L"zebkit-win-host", L"zebkit host", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 50, 50,
                            frame.right - frame.left, frame.bottom - frame.top, NULL, NULL, type.hInstance, NULL);
-    check(window != NULL, "the application's window");
+    check(window != NULL, "the application's window", NULL);
 
     char *error = NULL;
     const int code = zebkit_init(argc, argv);
-    check(code == 0, "zebkit_init()");
+    check(code == 0, "zebkit_init()", NULL);
     if (code)
         return code;
 
     view = zebkit_view_new(page, 780, 580);
-    check(view != NULL, "zebkit_view_new()");
+    check(view != NULL, "zebkit_view_new()", NULL);
     zebkit_view_on_load(view, loaded, NULL);
     const bool attached = zebkit_view_attach_native(view, (uintptr_t)window, 10, 10, 780, 580, &error);
-    check(attached, error ? error : "zebkit_view_attach_native()");
+    check(attached, error ? error : "zebkit_view_attach_native()", NULL);
 
     ULONGLONG deadline = GetTickCount64() + 60000;
     while (!done && GetTickCount64() < deadline) {
@@ -164,7 +158,7 @@ int main(int argc, char **argv) {
         }
         zebkit_pump();
     }
-    check(done == 1, "the page answered, under the application's loop");
+    check(done == 1, "the page answered, under the application's loop", NULL);
 
     /* A moment of the application's own loop, for the compositor's frame. */
     const char *hold = getenv("WIN_HOST_HOLD_MS");
@@ -181,17 +175,17 @@ int main(int argc, char **argv) {
     /* Near the top: on a machine with a person, little covers it there. */
     const COLORREF margin = pixel(4, 40), left = pixel(200, 40), right = pixel(600, 40);
     printf("screen: margin %06lx left %06lx right %06lx (GDI's 00bbggrr)\n", margin, left, right);
-    check(margin == RGB(0, 0, 0), "the application's own window shows at the margin");
+    check(margin == RGB(0, 0, 0), "the application's own window shows at the margin", NULL);
     /* Within what a display's colour handling takes away. */
     check(GetRValue(left) >= 250 && GetGValue(left) <= 5 && GetBValue(left) <= 5,
-          "red on the screen, inside the application's window");
+          "red on the screen, inside the application's window", NULL);
     check(GetRValue(right) <= 5 && GetGValue(right) <= 5 && GetBValue(right) >= 250,
-          "blue on the screen, inside the application's window");
+          "blue on the screen, inside the application's window", NULL);
 
     const DWORD lowest = children();
 #ifdef ZEBKIT_TEST_SANDBOX
     /* A renderer is at untrusted, the lowest there is. */
-    check(lowest == 0, "a child at untrusted integrity: the sandbox is on");
+    check(lowest == 0, "a child at untrusted integrity: the sandbox is on", NULL);
 #else
     (void)lowest;
 #endif
@@ -202,8 +196,6 @@ int main(int argc, char **argv) {
         Sleep(10);
         zebkit_pump();
     }
-    check(zebkit_shutdown(), "zebkit_shutdown()");
-    printf("%d failures\n", failures);
-    fflush(stdout);
-    return failures ? 1 : 0;
+    check(zebkit_shutdown(), "zebkit_shutdown()", NULL);
+    return summary();
 }

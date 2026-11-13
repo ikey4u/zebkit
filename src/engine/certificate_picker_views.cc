@@ -36,13 +36,13 @@ class Names : public ui::ComboboxModel {
 
 }  // namespace
 
-bool ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
-                           const std::vector<std::u16string>& names, CertificateAnswer& answer) {
+base::OnceClosure ShowCertificatePicker(content::WebContents* contents, const std::u16string& host,
+                                        const std::vector<std::u16string>& names, CertificateAnswer& answer) {
   if (HasNoDisplay(contents) || names.empty())
-    return false;
+    return base::OnceClosure();
   gfx::NativeWindow window = contents->GetTopLevelNativeWindow();
   if (!window || !views::Widget::GetWidgetForNativeWindow(window))
-    return false;
+    return base::OnceClosure();
   auto form = std::make_unique<views::View>();
   form->SetLayoutManager(std::make_unique<views::BoxLayout>(views::BoxLayout::Orientation::kVertical,
                                                             gfx::Insets(12), 8));
@@ -71,8 +71,16 @@ bool ShowCertificatePicker(content::WebContents* contents, const std::u16string&
   delegate->SetCancelCallback(base::BindOnce(cancel, shared));
   delegate->SetCloseCallback(base::BindOnce(cancel, shared));
   delegate->SetContentsView(std::move(form));
-  views::DialogDelegate::CreateDialogWidget(std::move(delegate), gfx::NativeWindow(), window)->Show();
-  return true;
+  views::Widget* widget = views::DialogDelegate::CreateDialogWidget(std::move(delegate), gfx::NativeWindow(), window);
+  widget->Show();
+  // Closed unanswered: the answer is dropped first, so that closing runs nothing.
+  return base::BindOnce(
+      [](base::WeakPtr<views::Widget> widget, std::shared_ptr<CertificateAnswer> answer) {
+        answer->Reset();
+        if (widget)
+          widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
+      },
+      widget->GetWeakPtr(), shared);
 }
 
 }  // namespace zebkit

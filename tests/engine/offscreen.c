@@ -13,6 +13,7 @@
  * passes. */
 
 #define _GNU_SOURCE
+#include "harness.h"
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,22 +29,6 @@
 #include <IOSurface/IOSurfaceRef.h>
 #endif
 
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *format, ...) {
-    ++checks;
-    if (!ok)
-        ++failures;
-    char detail[512] = "";
-    if (format) {
-        va_list args;
-        va_start(args, format);
-        vsnprintf(detail, sizeof(detail), format, args);
-        va_end(args);
-    }
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, *detail ? ": " : "", detail);
-    fflush(stdout);
-}
 
 static int64_t now_us(void) {
     struct timespec ts;
@@ -64,6 +49,8 @@ struct picture {
     uint64_t sequence;
     zebkit_frame_kind kind;
     zebkit_rect damage;
+    zebkit_pixel_format format;
+    const void *handle;
     uint8_t *pixels;
 };
 
@@ -77,6 +64,17 @@ static int held_count;
 static int64_t latency_sum, latency_n, latency_max;
 static int64_t input_at;       /* when the input a check waits on was sent */
 static int64_t first_change_us; /* when the first frame after it came */
+/* A D3D11 texture came (Windows, GPU buffers): this test does not read its
+ * pixels. What it can check of one is (size, format, a handle); the checks of
+ * pixels are one counted skip, and the waits for pixels wait for the frame. */
+static int d3d11_seen, d3d11_skip_said;
+static int pixels_unread(void) {
+    if (!d3d11_seen)
+        return 0;
+    if (!d3d11_skip_said++)
+        skip("the pixels of the frames", "D3D11 textures, which this test does not read");
+    return 1;
+}
 
 /* The frame's pixels as BGRA rows, in this process. */
 static int read_pixels(const zebkit_frame *frame, uint8_t *out) {
@@ -230,6 +228,11 @@ static void on_frame(zebkit_view *v, const zebkit_frame *frame, void *data) {
     }
     p->width = frame->width, p->height = frame->height, p->scale = frame->scale;
     p->bounds = frame->bounds, p->sequence = frame->sequence, p->kind = frame->kind;
+    p->format = frame->format, p->handle = frame->handle;
+#ifdef _WIN32
+    if (frame->kind == ZEBKIT_FRAME_D3D11)
+        d3d11_seen = 1;
+#endif
     p->damage = frame->damage_count ? frame->damage[0] : (zebkit_rect){0, 0, 0, 0};
 #if !defined(__APPLE__) && !defined(_WIN32)
     if (frame->kind == ZEBKIT_FRAME_SHARED_MEMORY && frame->fd < 0)
@@ -288,7 +291,6 @@ static char result[1024];
 static void run_step(void *data) {
     (void)data;
     if (current >= step_count) {
-        printf("%d of %d checks passed\n", checks - failures, checks);
         zebkit_view_close(view);
         return;
     }
@@ -346,7 +348,7 @@ static void key(int code, const char *dom_code, const char *dom_key, const char 
 
 /* 1. The first frame: its size, scale, kind and the page's pixels. */
 static int frames_at_start;
-static int have_frame(void) { return frames[0] > 0 && pixel_at(0, 300, 280) == 0x102030; }
+static int have_frame(void) { return frames[0] > 0 && (d3d11_seen || pixel_at(0, 300, 280) == 0x102030); }
 static void s_first_frame(void) { wait_for(have_frame, 15000, "the first frame, the page drawn"); }
 static void s_check_first(void) {
     struct picture *p = &last[0];
@@ -358,6 +360,12 @@ static void s_check_first(void) {
         check(p->kind == ZEBKIT_FRAME_SHARED_MEMORY, "shared memory, as asked", "kind %d", p->kind);
     else
         check(p->kind == ZEBKIT_FRAME_IOSURFACE, "an IOSurface", "kind %d", p->kind);
+#elif defined(_WIN32)
+    check(p->kind == ZEBKIT_FRAME_SHARED_MEMORY || (getenv("ZEBKIT_TEST_BUFFERS") && p->kind == ZEBKIT_FRAME_D3D11),
+          "shared memory (or a D3D11 texture, when GPU buffers are asked for)", "kind %d", p->kind);
+    if (p->kind == ZEBKIT_FRAME_D3D11)
+        check(p->handle != NULL && p->format == ZEBKIT_FORMAT_BGRA8, "a D3D11 texture: a shared handle, BGRA",
+              "handle %p, format %d", p->handle, (int)p->format);
 #else
     check(p->kind == ZEBKIT_FRAME_SHARED_MEMORY || (getenv("ZEBKIT_TEST_BUFFERS") && p->kind == ZEBKIT_FRAME_DMABUF),
           "shared memory (or a dmabuf, when GPU buffers are asked for)", "kind %d", p->kind);
@@ -366,16 +374,17 @@ static void s_check_first(void) {
     /* macOS's shared memory is a mach port, not an fd: IOSurfaces are for another process there. */
     check(fds_ok, "the buffer maps through its fd, as another process would map it", NULL);
 #endif
-    check(pixel_at(0, 300, 280) == 0x102030 && pixel_at(0, 40, 35) == 0xff0000,
-          "the pixels are the page's: its background, the red box", "%06x %06x", pixel_at(0, 300, 280),
-          pixel_at(0, 40, 35));
+    if (!pixels_unread())
+        check(pixel_at(0, 300, 280) == 0x102030 && pixel_at(0, 40, 35) == 0xff0000,
+              "the pixels are the page's: its background, the red box", "%06x %06x", pixel_at(0, 300, 280),
+              pixel_at(0, 40, 35));
     save("offscreen-first", 0);
     next(300);
 }
 
 /* 2. A small change damages a small part. */
 static uint64_t seq_before;
-static int changed(void) { return last[0].sequence > seq_before && pixel_at(0, 40, 35) == 0x0000ff; }
+static int changed(void) { return last[0].sequence > seq_before && (d3d11_seen || pixel_at(0, 40, 35) == 0x0000ff); }
 static void s_change(void) {
     seq_before = last[0].sequence;
     input_at = now_us(), first_change_us = 0;
@@ -469,7 +478,8 @@ static void s_check_wheel(void) { evaluate("Math.round(scrollY)"); }
 static void s_after_wheel(void) {
     int y = atoi(result);
     check(y >= 900, "the wheel scrolled the page, a trackpad's deltas and a notch", "scrollY %d", y);
-    check(pixel_at(0, 200, 1025 - y) == 0x00ff00, "the frame shows it scrolled", "%06x", pixel_at(0, 200, 1025 - y));
+    if (!pixels_unread())
+        check(pixel_at(0, 200, 1025 - y) == 0x00ff00, "the frame shows it scrolled", "%06x", pixel_at(0, 200, 1025 - y));
     save("offscreen-scrolled", 0);
     zebkit_view_evaluate(view, "scrollTo(0, 0)", NULL, NULL);
     next(400);
@@ -534,7 +544,8 @@ static void s_check_backpressure(void) {
     next(300);
 }
 static void s_after_release(void) {
-    check(frames[0] - frames_at_start == 2 && last[0].sequence == seq_before + 1 && pixel_at(0, 40, 35) == 0xff0000,
+    check(frames[0] - frames_at_start == 2 && last[0].sequence == seq_before + 1 &&
+              (pixels_unread() || pixel_at(0, 40, 35) == 0xff0000),
           "released, the newest frame comes, the animation's end", "%d frames, sequence %llu, %06x",
           frames[0] - frames_at_start, (unsigned long long)last[0].sequence, pixel_at(0, 40, 35));
     zebkit_view_set_max_frames_in_flight(view, 2);
@@ -564,8 +575,8 @@ static void s_check_rate(void) {
  * intermediate frame (the same race occurs with the previous engine). */
 static int resized(void) {
     return last[0].width == 640 && last[0].height == 480 && last[0].scale == 2 &&
-           pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 &&
-           pixel_at(0, 290, 210) == 0x102030;
+           (d3d11_seen || (pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 &&
+           pixel_at(0, 290, 210) == 0x102030));
 }
 static void s_resize(void) {
     zebkit_view_set_size(view, 320, 240, 2);
@@ -573,9 +584,10 @@ static void s_resize(void) {
 }
 static void s_check_resize(void) {
     check(last[0].scale == 2, "at the new scale", "%g", last[0].scale);
-    check(pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 && pixel_at(0, 290, 210) == 0x102030,
-          "the page laid out again, drawn at twice the pixels", "%06x %06x", pixel_at(0, 40, 35),
-          pixel_at(0, 290, 210));
+    if (!pixels_unread())
+        check(pixel_at(0, 40, 35) == 0xff0000 && pixel_at(0, 21, 21) == 0xff0000 && pixel_at(0, 290, 210) == 0x102030,
+              "the page laid out again, drawn at twice the pixels", "%06x %06x", pixel_at(0, 40, 35),
+              pixel_at(0, 290, 210));
     /* A new scale reaches the page as two changes, the display's scale and
      * then the window's size, and a busy machine runs the page's script
      * between them: the page sees the size it was given within a moment of
@@ -600,7 +612,7 @@ static void on_close(zebkit_view *v, void *data) {
 
 static void ready(void *data) {
     (void)data;
-    const char *base = getenv("ZEBKIT_TEST_BASE");
+    const char *base = test_base();
     shots = getenv("ZEBKIT_TEST_SHOTS");
     char url[512];
     snprintf(url, sizeof(url), "%s/offscreen.html", base);
@@ -614,6 +626,10 @@ static void ready(void *data) {
     zebkit_view_on_close(view, on_close, NULL);
     /* ZEBKIT_TEST_BUFFERS=shm: frames in shared memory on macOS too; =gpu: GPU buffers on Linux. */
     const char *buffers = getenv("ZEBKIT_TEST_BUFFERS");
+    /* Another kind of buffer, not less of the test: said, not "narrowed". */
+    if (buffers && *buffers)
+        printf("note: ZEBKIT_TEST_BUFFERS=%s: frames in %s\n", buffers,
+               strcmp(buffers, "gpu") == 0 ? "GPU buffers" : strcmp(buffers, "shm") == 0 ? "shared memory" : "the default buffers");
     if (buffers && strcmp(buffers, "shm") == 0)
         zebkit_view_set_frame_buffers(view, ZEBKIT_BUFFERS_SHARED_MEMORY);
     else if (buffers && strcmp(buffers, "gpu") == 0)
@@ -637,12 +653,9 @@ static void ready(void *data) {
 }
 
 int main(int argc, char **argv) {
-    if (!getenv("ZEBKIT_TEST_BASE")) {
-        fprintf(stderr, "set ZEBKIT_TEST_BASE: http://127.0.0.1:<port>, serving tests/engine/pages\n");
-        return 2;
-    }
+    test_base();
     int code = zebkit_main(argc, argv, ready, NULL);
     if (code)
         return code;
-    return failures || checks < 20 ? 1 : 0;
+    return summary() || harness_checks < 20 ? 1 : 0;
 }

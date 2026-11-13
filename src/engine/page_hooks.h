@@ -1,6 +1,6 @@
 // External protocols, file choosers, media, keys, context menus, fullscreen
 // (page_hooks.cc); downloads (download_hooks.cc); client certificates
-// (client_certificate.cc). docs/ROADMAP_HOOKS.md.
+// (client_certificate.cc). docs/HOOKS.md.
 
 #ifndef ZEBKIT_ENGINE_PAGE_HOOKS_H_
 #define ZEBKIT_ENGINE_PAGE_HOOKS_H_

@@ -60,7 +60,11 @@
 #include "url/origin.h"
 #include "v8/include/v8-initialization.h"
 #include "v8/include/v8.h"
+#include "zebkit/engine/automation.h"
+#include "zebkit/engine/automation.mojom.h"
+#include "zebkit/engine/call.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/page_call.mojom.h"
 #include "zebkit/engine/share.h"
 #include "zebkit/engine/protocol_handlers.h"
 #include "zebkit/engine/speech_delegate.h"
@@ -237,29 +241,35 @@ void BrowserClient::OpenURL(content::SiteInstance* site_instance,
     return;
   }
   const url::Origin& worker = *params.initiator_origin;
-  for (zebkit_view* view : zebkit_view::Views()) {
-    content::WebContents* source = view->web_contents();
-    if (!source || source->GetBrowserContext() != context ||
-        !source->GetPrimaryMainFrame()->GetLastCommittedOrigin().IsSameOriginWith(worker))
-      continue;
-    // Only a view that blocks every popup refuses it: openWindow() carries no
-    // user gesture here (the worker's activation, from a notification click,
-    // is checked in the renderer before the request is sent), so "without a
-    // gesture" would refuse every one.
-    if (zebkit_view_get_popup_policy(view) == ZEBKIT_POPUP_POLICY_BLOCK) {
-      std::move(callback).Run(nullptr);
-      return;
-    }
-    Window* window = Window::OpenFrom(source, nullptr, params.url, params.disposition,
-                                      params.user_gesture);
-    content::WebContents* opened = window ? window->web_contents() : nullptr;
-    if (opened)
-      opened->GetController().LoadURLWithParams(
-          content::NavigationController::LoadURLParams(params));
-    std::move(callback).Run(opened);
+  // The oldest such view, the same one each time: a window the worker opened
+  // is a page of its origin too, and does not take the policy over.
+  zebkit_view* view = nullptr;
+  for (zebkit_view* each : zebkit_view::Views()) {
+    content::WebContents* source = each->web_contents();
+    if (source && source->GetBrowserContext() == context &&
+        source->GetPrimaryMainFrame()->GetLastCommittedOrigin().IsSameOriginWith(worker) &&
+        (!view || each->created_ < view->created_))
+      view = each;
+  }
+  if (!view) {
+    std::move(callback).Run(nullptr);
     return;
   }
-  std::move(callback).Run(nullptr);
+  // Only a view that blocks every popup refuses it: openWindow() carries no
+  // user gesture here (the worker's activation, from a notification click,
+  // is checked in the renderer before the request is sent), so "without a
+  // gesture" would refuse every one.
+  if (zebkit_view_get_popup_policy(view) == ZEBKIT_POPUP_POLICY_BLOCK) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+  Window* window = Window::OpenFrom(view->web_contents(), nullptr, params.url, params.disposition,
+                                    params.user_gesture);
+  content::WebContents* opened = window ? window->web_contents() : nullptr;
+  if (opened)
+    opened->GetController().LoadURLWithParams(
+        content::NavigationController::LoadURLParams(params));
+  std::move(callback).Run(opened);
 }
 
 base::DictValue BrowserClient::GetNetLogConstants() {
@@ -424,6 +434,31 @@ RendererClient::CreateURLLoaderThrottleProvider(
 std::unique_ptr<blink::WebPrescientNetworking> RendererClient::CreatePrescientNetworking(
     content::RenderFrame* render_frame) {
   return std::make_unique<network_hints::WebPrescientNetworkingImpl>(render_frame);
+}
+
+// What every frame of a page has, in its renderer and in the browser.
+
+void RendererClient::DidInitializeWorkerContextOnWorkerThread(
+    v8::Local<v8::Context> context) {
+  AutomationWorkerStarted(context);
+}
+
+void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
+  InstallPrintAgent(render_frame);
+  InstallChromeObject(render_frame);
+  InstallMediaCaptureAgent(render_frame);
+  InstallAutomationAgent(render_frame);
+  InstallPageCallAgent(render_frame);
+}
+
+void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(
+    content::RenderFrameHost& render_frame_host,
+    blink::AssociatedInterfaceRegistry& associated_registry) {
+  AddPrintBinder(render_frame_host, associated_registry);
+  associated_registry.AddInterface<mojom::AutomationHost>(
+      base::BindRepeating(&BindAutomationHost, &render_frame_host));
+  associated_registry.AddInterface<mojom::PageCallHost>(
+      base::BindRepeating(&BindPageCallHost, &render_frame_host));
 }
 
 }  // namespace zebkit

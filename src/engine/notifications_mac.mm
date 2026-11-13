@@ -113,8 +113,18 @@ bool ShowSystemNotification(const std::string& id, const base::DictValue& notifi
   UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:base::SysUTF8ToNSString(id)
                                                                         content:content
                                                                         trigger:nil];
-  [center addNotificationRequest:request withCompletionHandler:^(NSError* error){
-         }];
+  // Refused (the person has not allowed the application's notifications, an
+  // application without a bundle identifier): closed, not left as shown. The
+  // handler runs on a queue of the system's.
+  // `id` is a reference: a block captures it as one, so the handler, which
+  // runs after this function has returned, takes a copy of its own.
+  scoped_refptr<base::SingleThreadTaskRunner> runner = base::SingleThreadTaskRunner::GetCurrentDefault();
+  const std::string closed_id = id;
+  [center addNotificationRequest:request
+           withCompletionHandler:^(NSError* error) {
+             if (error)
+               runner->PostTask(FROM_HERE, base::BindOnce(&SystemNotificationClosed, closed_id, false));
+           }];
   return true;
 }
 

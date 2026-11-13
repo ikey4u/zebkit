@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
@@ -22,13 +23,13 @@
 
 namespace zebkit {
 
-bool ShowSignInDialog(content::WebContents* contents, const std::u16string& title,
-                      const std::u16string& message, SignInAnswer& answer) {
+base::OnceClosure ShowSignInDialog(content::WebContents* contents, const std::u16string& title,
+                                   const std::u16string& message, SignInAnswer& answer) {
   if (HasNoDisplay(contents))
-    return false;
+    return base::OnceClosure();
   gfx::NativeWindow window = contents->GetTopLevelNativeWindow();
   if (!window || !views::Widget::GetWidgetForNativeWindow(window))
-    return false;
+    return base::OnceClosure();
   auto form = std::make_unique<views::View>();
   form->SetLayoutManager(std::make_unique<views::BoxLayout>(views::BoxLayout::Orientation::kVertical,
                                                             gfx::Insets(12), 6));
@@ -66,8 +67,16 @@ bool ShowSignInDialog(content::WebContents* contents, const std::u16string& titl
   delegate->SetCancelCallback(base::BindOnce(cancel, shared));
   delegate->SetCloseCallback(base::BindOnce(cancel, shared));
   delegate->SetContentsView(std::move(form));
-  views::DialogDelegate::CreateDialogWidget(std::move(delegate), gfx::NativeWindow(), window)->Show();
-  return true;
+  views::Widget* widget = views::DialogDelegate::CreateDialogWidget(std::move(delegate), gfx::NativeWindow(), window);
+  widget->Show();
+  // Closed unanswered: the answer is dropped first, so that closing runs nothing.
+  return base::BindOnce(
+      [](base::WeakPtr<views::Widget> widget, std::shared_ptr<SignInAnswer> answer) {
+        answer->Reset();
+        if (widget)
+          widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
+      },
+      widget->GetWeakPtr(), shared);
 }
 
 }  // namespace zebkit

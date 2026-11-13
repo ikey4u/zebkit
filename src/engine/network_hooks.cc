@@ -34,10 +34,13 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/global_request_id.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/zebkit_automation.h"
+#include "content/public/browser/zebkit_websocket.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -149,7 +152,20 @@ struct Traits {
       decision.state = "refused";
     }
   }
-  static const char* State(const Decision& decision) { return decision.state; }
+  // What the application's answer did; otherwise what happened unanswered.
+  static const char* State(const Decision& decision) {
+    if (strcmp(decision.state, "answered"))
+      return decision.state;
+    switch (decision.action) {
+      case Action::kContinue: return "continued";
+      case Action::kBlock: return "blocked";
+      case Action::kRedirect: return "redirected";
+      case Action::kFulfill:
+      case Action::kFile:
+      case Action::kStream: return "fulfilled";
+    }
+    return "continued";
+  }
 };
 using Requests = HookRequests<Traits>;
 
@@ -326,7 +342,7 @@ void PostEvent(zebkit_view* view, base::DictValue event) {
             --view->network_events_pending_;
             if (!teller || teller->network_generation_ != generation || !teller->on_network_event_)
               return;
-            event.Set("dropped", base::NumberToString(view->network_events_dropped_));
+            event.Set("dropped", static_cast<double>(view->network_events_dropped_));
             view->network_events_dropped_ = 0;
             const std::string json = base::WriteJson(event).value_or("{}");
             auto function = teller->on_network_event_;
@@ -594,12 +610,17 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
   void OnBeforeSendHeaders(const GURL& url, const net::HttpRequestHeaders& headers,
                            OnBeforeSendHeadersCallback callback) override {
     url_ = url;
+    send_ = std::move(callback);
+    Requests::Reply reply = base::BindOnce(&HeaderWatch::SendDecided, weak_factory_.GetWeakPtr());
+    // Described only for a rule of this stage: the description has the body.
+    if (!Wanted(kSendHeaders)) {
+      std::move(reply).Run(Pass());
+      return;
+    }
     base::DictValue description = describe_.Run(kSendHeaders);
     description.Set("url", url.spec());
     description.Set("headers", RequestHeaderList(headers));
     Tell(kSendHeaders, description);
-    send_ = std::move(callback);
-    Requests::Reply reply = base::BindOnce(&HeaderWatch::SendDecided, weak_factory_.GetWeakPtr());
     if (!Hold(kSendHeaders, std::move(description), reply) && reply)
       std::move(reply).Run(Pass());
   }
@@ -607,6 +628,10 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
                          const std::optional<net::SSLInfo>& ssl_info, OnHeadersReceivedCallback callback) override {
     auto parsed = base::MakeRefCounted<net::HttpResponseHeaders>(headers);
     status_line_ = parsed->GetStatusLine();
+    if (!Wanted(kHeadersReceived)) {
+      std::move(callback).Run(net::OK, std::nullopt, std::nullopt);
+      return;
+    }
     base::DictValue description = describe_.Run(kHeadersReceived);
     description.Set("url", url_.spec());
     description.Set("status", parsed->response_code());
@@ -623,6 +648,8 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
       std::move(reply).Run(Pass());
   }
   void OnRequestHeadersSent(std::vector<network::mojom::HttpRawHeaderPairPtr> headers) override {
+    if (!Wanted(kSent))
+      return;
     base::DictValue description = describe_.Run(kSent);
     base::ListValue list;
     for (const auto& header : headers) {
@@ -647,6 +674,20 @@ class HeaderWatch : public network::mojom::TrustedHeaderClient {
     decision.action = Action::kBlock;
     decision.state = "refused";
     return decision;
+  }
+
+  // Whether a rule tells or holds @stage of this request, or it is to be refused:
+  // what Tell() and Hold() would do anything for.
+  bool Wanted(const char* stage) {
+    bool refused = false;
+    zebkit_view* view = PolicyViewFor(view_, profile_, worker_, &refused);
+    zebkit_view* decider = view ? view->Decider(&zebkit_view::network_rules_) : nullptr;
+    if (refused || (!view && had_view_) || (view && !decider))
+      return true;
+    if (!decider)
+      return false;
+    return NetworkStageMatches(decider, stage, type_, url_, main_frame_, true) ||
+           (EventTeller(view) && NetworkStageMatches(decider, stage, type_, url_, main_frame_, false));
   }
 
   void Tell(const char* stage, const base::DictValue& description) {
@@ -1050,6 +1091,10 @@ class Loader : public network::mojom::URLLoader,
       value.Set("statusText", head->headers ? head->headers->GetStatusText() : "");
       value.Set("responseHeaders", ResponseHeaderList(head->headers.get()));
       value.Set("mimeType", head->mime_type);
+      // The address it came from, as at headersReceived: checked here without
+      // a rule inside the network.
+      if (head->remote_endpoint.address().IsValid())
+        value.Set("remoteAddress", head->remote_endpoint.ToStringWithoutPort());
     }
     return value;
   }
@@ -1745,12 +1790,37 @@ void InterceptNetworkHookFactory(content::BrowserContext* profile, content::Rend
               !frame->GetParentOrOuterDocument(), worker, std::move(receiver), std::move(target), header_client);
 }
 
+// A shared or service worker's socket, which has no frame: its profile and kind,
+// from what content says of the socket it is making (patches/1086).
+bool FramelessWebSocketOwner(content::BrowserContext** profile, Worker* worker) {
+  const content::WebSocketInitiator* initiator = content::CurrentWebSocketInitiator();
+  content::RenderProcessHost* process =
+      initiator ? content::RenderProcessHost::FromID(initiator->process_id) : nullptr;
+  if (!process)
+    return false;
+  *profile = process->GetBrowserContext();
+  *worker = Worker::kShared;
+  if (initiator->devtools_worker_token) {
+    scoped_refptr<content::DevToolsAgentHost> host =
+        content::DevToolsAgentHost::GetForId(initiator->devtools_worker_token->ToString());
+    if (host && host->GetType() == content::DevToolsAgentHost::kTypeServiceWorker)
+      *worker = Worker::kService;
+  }
+  return true;
+}
+
 bool WillInterceptNetworkHookWebSocket(content::RenderFrameHost* frame) {
   if (!Requests::Get().Ready())
     return false;
-  // Shared and service workers' have no frame, and nothing says whose they are.
-  if (!frame)
+  // A worker's of a profile with a policy; one whose profile is unknown is
+  // refused while any profile has one.
+  if (!frame) {
+    content::BrowserContext* profile = nullptr;
+    Worker worker = Worker::kShared;
+    if (FramelessWebSocketOwner(&profile, &worker))
+      return WorkerPolicies().contains(profile);
     return !WorkerPolicies().empty();
+  }
   zebkit_view* view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
   return view && HasNetworkPolicy(view);
 }
@@ -1764,8 +1834,11 @@ void CreateNetworkHookWebSocket(content::RenderFrameHost* frame,
   bool refused = false;
   bool main_frame = false;
   std::string frame_id;
+  content::BrowserContext* profile = nullptr;
+  Worker worker = Worker::kNone;
   base::DictValue description;
   if (frame) {
+    profile = frame->GetBrowserContext();
     view = ViewOf(content::WebContents::FromRenderFrameHost(frame));
     main_frame = !frame->GetParentOrOuterDocument();
     frame_id = "f" + base::NumberToString(frame->GetFrameTreeNodeId().value());
@@ -1773,14 +1846,19 @@ void CreateNetworkHookWebSocket(content::RenderFrameHost* frame,
     // A dedicated worker's is given its frame, and is not told from the frame's own.
     description.Set("worker", false);
   } else {
-    // Two profiles with a policy: nothing says which this one's is.
-    auto& policies = WorkerPolicies();
-    refused = policies.size() != 1 || !policies.begin()->second;
-    if (!refused)
-      view = policies.begin()->second.get();
+    // Its profile's policy decides; it is refused when that policy's view has
+    // gone, or when nothing says whose it is.
+    worker = Worker::kShared;
+    if (!FramelessWebSocketOwner(&profile, &worker)) {
+      refused = true;
+    } else {
+      bool gone = false;
+      view = PolicyViewFor(base::WeakPtr<zebkit_view>(), profile, worker, &gone);
+      refused = gone;
+    }
     description.Set("initiator", "");
     description.Set("worker", true);
-    description.Set("workerType", "shared-or-service");
+    description.Set("workerType", WorkerName(worker));
   }
   net::HttpRequestHeaders headers;
   if (user_agent)
@@ -1799,10 +1877,7 @@ void CreateNetworkHookWebSocket(content::RenderFrameHost* frame,
   description.Set("bodyComplete", true);
   auto* hold = new WebSocketHold(std::move(factory), url, std::move(headers), std::move(client),
                                  std::move(header_client));
-  hold->SetOwner(frame ? frame->GetBrowserContext() : view && view->web_contents()
-                                                          ? view->web_contents()->GetBrowserContext()
-                                                          : nullptr,
-                 frame ? Worker::kNone : Worker::kShared);
+  hold->SetOwner(profile, worker);
   hold->Start(view, refused, std::move(description), main_frame);
 }
 

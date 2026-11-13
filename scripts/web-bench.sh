@@ -9,7 +9,9 @@
 #   scripts/web-bench.sh --check         # the local pages in zebkit, against tests/bench/web/limits.json
 #   scripts/web-bench.sh --profile slim-dev ...
 #
-# The report goes to docs/reports/web-bench.md and .json (not with --check).
+# The report goes to docs/reports/web-bench.md and .json (not with --check),
+# with the engine's and Chromium's versions, the profile, the date (lib.sh's
+# report_engine) and Electron's version.
 # --check fails when zebkit is over a limit: a page costs more CPU or
 # memory, or more processes, than it did when the limits were set. Raising
 # a limit is a decision to write in the commit that does it. --check also
@@ -176,9 +178,10 @@ PY
     exit $?
 fi
 
-python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" "$ZEBKIT_ROOT" "$load" "$rest" <<'PY'
+python3 -I - "$results" "$ZEBKIT_ROOT/docs/reports" "$ELECTRON_VERSION" "$ZEBKIT_ROOT" "$load" "$rest" \
+    "$(report_engine "$package" "$profile")" <<'PY'
 import json, sys, datetime
-results, reports, electron, root, load, rest = sys.argv[1:7]
+results, reports, electron, root, load, rest, engine_line = sys.argv[1:8]
 rows = {}
 for line in open(results):
     r = json.loads(line)
@@ -186,12 +189,12 @@ for line in open(results):
     r["url"] = r["url"].replace(f"file://{root}/", "file://./")
     engine, page = r["label"].split("|", 1)
     rows.setdefault(page, {})[engine] = r
-json.dump(rows, open(f"{reports}/web-bench.json", "w"), indent=1)
+json.dump({"engine": engine_line, "electron": electron, "pages": rows}, open(f"{reports}/web-bench.json", "w"), indent=1)
 def cell(z, e, key, fmt):
     zv, ev = z[key], e[key]
     win = "**" if zv < ev else ""
     return f"{win}{fmt.format(zv)}{win} / {fmt.format(ev)}"
-lines = [f"# Web pages: zebkit and Electron {electron}", "",
+lines = [f"# Web pages: zebkit and Electron {electron}", "", f"{engine_line}; Electron {electron}.", "",
          f"scripts/web-bench.sh, {datetime.date.today()}. Each cell is zebkit / Electron, the median of {next(iter(rows.values()))['zebkit'].get('runs', 1)} runs; bold where zebkit costs less.",
          f"Loading: CPU seconds in the first {load} s. At rest: share of one core in the {rest} s after. Memory: PSS of every process.", "",
          "| Page | Loaded (title) | Loading, s | At rest, % | Memory, MB | Renderers |", "|---|---|---:|---:|---:|---:|"]

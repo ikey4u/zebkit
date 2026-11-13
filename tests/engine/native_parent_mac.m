@@ -9,6 +9,7 @@
  * whatever started this. Without it they are skipped, and that is said: the window is
  * not worth a prompt. A <select>'s list is the system's modal menu and is not tried. */
 #define _DARWIN_C_SOURCE
+#include "harness.h"
 #import <Cocoa/Cocoa.h>
 #include <zebkit/zebkit.h>
 #include <zebkit/offscreen.h>
@@ -41,20 +42,13 @@ static const char PAGE[] =
 - (BOOL)acceptsFirstResponder { return YES; }
 @end
 
-static int failures, passed, skipped_pixels, can_see_pixels = -1;
+static int can_see_pixels = -1;
 static NSWindow *host, *second_host, *third_host;
 static NSView *container, *second_container, *third_container, *page, *second_page;
 static zebkit_view *view, *second, *third;
 static int closed_first, closed_second, closed_third, loaded;
 static int stage, tries;
 static double start_x, start_y;
-
-static void check(int ok, const char *what, const char *detail) {
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-    fflush(stdout);
-    failures += !ok;
-    passed += !!ok;
-}
 
 static NSWindow *make_host(NSRect frame, NSView *content) {
     NSWindow *window = [[HostWindow alloc] initWithContentRect:frame
@@ -124,8 +118,8 @@ static int pixels_show(NSWindow *window, NSView *in, double px, double py, doubl
     {                                                                  \
         int seen = pixels_show(window, in, px, py, hx, hy);            \
         if (seen == 0) break;                                          \
-        if (seen < 0) ++skipped_pixels, printf("skip %s: no picture of the window\n", what), fflush(stdout); \
-        else check(1, what, NULL);                                     \
+        if (seen < 0) skip(what, "no picture of the window");          \
+        else check_text(1, what, NULL);                                     \
         next = 1;                                                      \
     }
 
@@ -222,7 +216,7 @@ static int visible_windows(void) {
 
 #define CHECK_THEN(condition, what) \
     if (!(condition)) break;        \
-    check(1, what, NULL);           \
+    check_text(1, what, NULL);           \
     next = 1
 
 static void step(void *data);
@@ -235,14 +229,14 @@ static void step(void *data) {
     switch (stage) {
     case 0:
         if (loaded < 3) break;
-        check(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no parent: refused", error);
+        check_text(!zebkit_view_attach_native(view, 0, 0, 0, 100, 100, &error) && error, "no parent: refused", error);
         zebkit_free(error), error = NULL;
-        check(!zebkit_view_attach_native(view, (uintptr_t)(__bridge void *)container, 0, 0, 0, 100, &error) && error, "empty bounds: refused", error);
+        check_text(!zebkit_view_attach_native(view, (uintptr_t)(__bridge void *)container, 0, 0, 0, 100, &error) && error, "empty bounds: refused", error);
         zebkit_free(error), error = NULL;
-        check(!zebkit_view_detach_native(view), "nothing to detach yet", NULL);
-        check(zebkit_view_attach_native(view, (uintptr_t)(__bridge void *)container, 40, 30, 400, 300, &error), "attached on the host's NSView", error);
+        check_text(!zebkit_view_detach_native(view), "nothing to detach yet", NULL);
+        check_text(zebkit_view_attach_native(view, (uintptr_t)(__bridge void *)container, 40, 30, 400, 300, &error), "attached on the host's NSView", error);
         zebkit_native_window native = {ZEBKIT_NATIVE_WINDOW_NONE, 0};
-        check(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_APPKIT &&
+        check_text(zebkit_view_get_native_window(view, &native) && native.kind == ZEBKIT_NATIVE_WINDOW_APPKIT &&
               native.handle == (uintptr_t)(__bridge void *)host,
               "native window: NSWindow of the host, not its NSView", NULL);
 
@@ -276,7 +270,7 @@ static void step(void *data) {
             for (int i = 0; corners && i < 4; i++)
                 corners = pixel(image, host, container, outside[i][0], outside[i][1], c) && is_host(c);
             if (!corners) break;
-            check(1, "drawn to its corners, no further", NULL);
+            check_text(1, "drawn to its corners, no further", NULL);
         }
         next = 1;
         break;
@@ -371,7 +365,7 @@ static void step(void *data) {
             NSBitmapImageRep *image = capture(host);
             double c[3];
             if (!image || !pixel(image, host, container, 150, 100, c) || !is_host(c)) break;
-            check(1, "hidden: the host's pixels only", NULL);
+            check_text(1, "hidden: the host's pixels only", NULL);
         }
         next = 1;
         break;
@@ -383,7 +377,7 @@ static void step(void *data) {
         PIXELS(host, container, 150, 100, 400, 300, "shown again: the page's pixels");
         break;
     case 33: /* Another view and another host, an unflipped parent: (x, y) from its top left all the same. */
-        check(zebkit_view_attach_native(second, (uintptr_t)(__bridge void *)second_container, 10, 20, 200, 150, &error),
+        check_text(zebkit_view_attach_native(second, (uintptr_t)(__bridge void *)second_container, 10, 20, 200, 150, &error),
               "a second view in a second host, its parent not flipped", error);
         zebkit_free(error), error = NULL;
         next = 1;
@@ -410,7 +404,7 @@ static void step(void *data) {
                    "detached: in a window of its own again, shown");
         break;
     case 40:
-        check(zebkit_view_attach_native(second, (uintptr_t)(__bridge void *)second_container, 5, 5, 200, 150, &error), "attached again", error);
+        check_text(zebkit_view_attach_native(second, (uintptr_t)(__bridge void *)second_container, 5, 5, 200, 150, &error), "attached again", error);
         zebkit_free(error), error = NULL;
         next = 1;
         break;
@@ -432,7 +426,7 @@ static void step(void *data) {
             NSBitmapImageRep *image = capture(host);
             double c[3];
             if (!image || !pixel(image, host, container, 150, 100, c) || !is_host(c)) break;
-            check(1, "the host's pixels where it was", NULL);
+            check_text(1, "the host's pixels where it was", NULL);
         }
         next = 1;
         break;
@@ -456,7 +450,7 @@ static void step(void *data) {
         CHECK_THEN(closed_second == 1, "and closes when the application says");
         break;
     case 51: /* The engine and its GPU process go on; WebGL's renderer in an attached view. */
-        check(zebkit_view_attach_native(third, (uintptr_t)(__bridge void *)third_container, 0, 0, 300, 200, &error), "a view attached after both", error);
+        check_text(zebkit_view_attach_native(third, (uintptr_t)(__bridge void *)third_container, 0, 0, 300, 200, &error), "a view attached after both", error);
         zebkit_free(error), error = NULL;
         next = 1;
         break;
@@ -474,7 +468,7 @@ static void step(void *data) {
         if (waiting) break;
         if (answer) {
             int hardware = strstr(answer, "Metal") && !strstr(answer, "SwiftShader") && !strstr(answer, "Software");
-            check(hardware, "an attached view's WebGL runs on the GPU through Metal", answer);
+            check_text(hardware, "an attached view's WebGL runs on the GPU through Metal", answer);
             free(answer), answer = NULL;
             next = 1;
             break;
@@ -494,9 +488,6 @@ static void step(void *data) {
         CHECK_THEN(closed_third == 1, "closed");
         break;
     default:
-        printf("%d pixel checks skipped\n", skipped_pixels);
-        printf("%d of %d checks passed\n", passed, passed + failures);
-        fflush(stdout);
         zebkit_quit();
         return;
     }
@@ -509,9 +500,7 @@ static void step(void *data) {
     if (++tries > 100) {
         char what[64];
         snprintf(what, sizeof what, "step %d timed out", stage);
-        check(0, what, answer);
-        printf("%d of %d checks passed\n", passed, passed + failures);
-        fflush(stdout);
+        check_text(0, what, answer);
         zebkit_quit();
         return;
     }
@@ -524,18 +513,16 @@ static void refused_ready(void) {
     zebkit_view *plain = zebkit_view_new("about:blank", 200, 100);
     NSView *anything = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 10, 10)];
     int refused = !zebkit_view_attach_native(plain, (uintptr_t)(__bridge void *)anything, 0, 0, 100, 100, &error);
-    check(refused && error && strstr(error, "off-screen"), "the view has no window to parent: refused, naming off-screen views", error);
+    check_text(refused && error && strstr(error, "off-screen"), "the view has no window to parent: refused, naming off-screen views", error);
     zebkit_free(error), error = NULL;
-    check(!zebkit_view_detach_native(plain), "nothing to detach", NULL);
+    check_text(!zebkit_view_detach_native(plain), "nothing to detach", NULL);
     zebkit_view_close(plain);
     zebkit_view *offscreen = zebkit_view_new_offscreen("about:blank", 200, 100, 1.0f);
     refused = offscreen && !zebkit_view_attach_native(offscreen, (uintptr_t)(__bridge void *)anything, 0, 0, 100, 100, &error);
-    check(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
+    check_text(refused && error && strstr(error, "off-screen"), "an off-screen view: refused", error);
     zebkit_free(error);
     if (offscreen)
         zebkit_view_close(offscreen);
-    printf("%d of %d checks passed\n", passed, passed + failures);
-    fflush(stdout);
     zebkit_quit();
 }
 
@@ -565,5 +552,6 @@ static void ready(void *data) {
 
 int main(int argc, char **argv) {
     int code = zebkit_main(argc, argv, ready, NULL);
-    return code || failures ? 1 : 0;
+    check_text(code == 0, "zebkit_main returned 0", NULL);
+    return summary();
 }

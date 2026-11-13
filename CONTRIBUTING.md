@@ -22,7 +22,7 @@ minutes; a change of compiler flags rebuilds everything.
 ## Testing
 
 ```sh
-mise run check:static           # scripts/check.sh --static: bash -n, Python syntax, check-bindings.py; no build
+mise run check:static           # scripts/check.sh --static: bash -n, Python syntax, check-bindings.py, check-view-guards.py; no build
 scripts/engine-test.sh slim     # every layer of the API, from programs built against the package
 scripts/glibc-test.sh slim      # the C tests on glibc 2.17
 scripts/check-bindings.py       # every binding has every function of the C API
@@ -36,7 +36,11 @@ mise run check                  # scripts/check.sh: all of it, strict, as before
 except those `ENGINE_TEST_EXPECTED_SKIPS` names. `mise run check` is strict
 with the short list of skips a Linux build machine cannot avoid, written out
 in `scripts/check.sh` (`docs/BUILD.md`, "Testing"); a release is published
-only after it has passed on the same sources. For macOS
+only after it has passed on the same sources. A release goes: bump
+(`scripts/bump-version.sh`), `mise run r`, the reports measured on that
+build, a commit (`engines.txt`, reports, notes), `mise run check`, push,
+`mise run r:github:publish`, then the crates and PyPI (`docs/BUILD.md`,
+"Releases"). For macOS
 and Windows the suite is built on Linux (`--build-only`) and run on the
 machine (`--prebuilt`; `docs/MACOS.md`, `docs/WINDOWS.md`). The Rust crates
 have `cargo test` in `bindings/rust`, the Go binding the checks in
@@ -49,6 +53,9 @@ have `cargo test` in `bindings/rust`, the Go binding the checks in
   JavaScript (`tools/zebkit-js`) in the same change;
   `scripts/check-bindings.py` fails otherwise. A binding never gives more
   than C does.
+- **Every view function checks its view.** A `zebkit_view_*()` function is
+  safe on NULL, on a closed view and off the engine's thread, and returns its
+  failure value there; `scripts/check-view-guards.py` fails otherwise.
 - **Every surface is in the registry.** What the engine shows the person
   or asks of the system is listed in `src/engine/surfaces.json` with its
   default, its status and its tests (`docs/SYSTEM_INTEGRATION.md`);

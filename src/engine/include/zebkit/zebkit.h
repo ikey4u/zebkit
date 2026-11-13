@@ -26,6 +26,13 @@
  * Strings are UTF-8. A string the engine returns is the caller's, to free
  * with zebkit_free(); one it passes to a callback is the engine's, valid
  * for the call.
+ *
+ * A function that returns bool and takes a function to answer it (its
+ * completion: zebkit_post_task(), zebkit_view_set_user_agent_override(),
+ * zebkit_view_export_native_window(), zebkit_view_context_menu_show()) never
+ * calls that function when it returns false: what was given for it can be
+ * released at once. Functions that take a handler of events (zebkit_view_on_*,
+ * menus) are not completions.
  */
 
 #ifndef ZEBKIT_ZEBKIT_H
@@ -111,7 +118,10 @@ ZEBKIT_API int zebkit_init_with_settings(int argc, char **argv,
  * Call on the initializing thread, outside an engine callback. Returns false
  * before init, after shutdown, on another thread or during a nested pump.
  * The host remains responsible for its own loop and for calling this again
- * when delayed work becomes due (for example from a toolkit timer).
+ * when delayed work becomes due (for example from a toolkit timer). Native
+ * events are the platform loop's: on macOS the application's own timers and
+ * events can run inside this call, where zebkit_shutdown() is refused; stop
+ * after it returns.
  */
 ZEBKIT_API bool zebkit_pump(void);
 
@@ -142,6 +152,8 @@ ZEBKIT_API bool zebkit_shutdown(void);
  *
  * The loop runs until zebkit_quit(), also with no view open: closing the
  * last window is the application's to act on (zebkit_view_on_close()).
+ * Returns the engine's exit code; 1 also when a zebkit_script (below) left an
+ * error uncaught while it ran.
  */
 ZEBKIT_API int zebkit_main(int argc, char **argv, zebkit_task_func ready, void *data);
 
@@ -201,7 +213,9 @@ ZEBKIT_API char *zebkit_get_environment(void);
 /*
  * Web notifications (new Notification(), a service worker's
  * showNotification()), once a page has the "notifications" permission, which is
- * denied by default (zebkit_view_on_permission). With @func the application shows
+ * undecided until the application decides (zebkit_view_on_permission,
+ * zebkit_view_set_permission): Notification.permission is "default", and a
+ * request nobody answers is denied. With @func the application shows
  * them: @func gets {"event": "show", id, persistent, origin, title, body, icon,
  * image, badge, tag, lang, silent, requireInteraction, renotify, actions: [{action,
  * title}]} and {"event": "close", id} when the page closes one; it tells what the
@@ -220,17 +234,30 @@ typedef void (*zebkit_notification_func)(const char *json, void *data);
  * @path selected in its folder. For the application: pages reach neither
  * (zebkit_view_on_external_protocol tells their links to other programs). The
  * URL or path is one argument to the system, never a shell's. False with
- * @error for javascript:, data:, blob:, about: and invalid URLs, a relative
- * path, or a system that cannot.
+ * @error for javascript:, data:, blob:, about: and invalid URLs, or a
+ * relative path; true once the system is asked, which then goes on off the
+ * engine's thread: the _async forms tell how it went.
  */
 ZEBKIT_API bool zebkit_open_external(const char *url, char **error);
 ZEBKIT_API bool zebkit_show_in_folder(const char *path, char **error);
+/*
+ * The same, telling @func how it went, once, on the engine's thread, after
+ * the call returns: done, or false with the error (an invalid URL or path, a
+ * file that is not there, no program for the URL, a file manager that
+ * failed). macOS's Finder says nothing of itself: done once it is asked.
+ * Off the engine's thread, @func is told the error at once. Not called if the
+ * engine stops first: what @data holds is the application's to free then.
+ */
+typedef void (*zebkit_desktop_done_func)(bool done, const char *error, void *data);
+ZEBKIT_API void zebkit_open_external_async(const char *url, zebkit_desktop_done_func func, void *data);
+ZEBKIT_API void zebkit_show_in_folder_async(const char *path, zebkit_desktop_done_func func, void *data);
 
 /*
  * What the system tells of itself, as JSON to @func on the engine's thread.
  * zebkit_on_power_event(): {"event": "suspend"}, {"event": "resume"},
  * {"event": "power-source", "onBattery"}, {"event": "lock"} and
- * {"event": "unlock"} for the session's lock (checked each second). zebkit_get_displays(): the screens,
+ * {"event": "unlock"} for the session's lock, from the system's notifications (on Linux the
+ * desktop screen saver's, over D-Bus; nothing is told on a desktop without one). zebkit_get_displays(): the screens,
  * [{id, bounds, workArea, scale, rotation, primary}] in DIPs (free it);
  * zebkit_on_displays_changed() tells {"event": "displays", "displays": [...]}.
  * NULL @func stops.
@@ -474,9 +501,11 @@ ZEBKIT_API bool zebkit_view_get_native_window(zebkit_view *view, zebkit_native_w
  * handle, or NULL when there is none (headless, off-screen, a compositor
  * without xdg-foreign, the view closed meanwhile; on Windows and macOS always,
  * where zebkit_view_get_native_window() is the handle). The string is the
- * callback's to copy. A handle stays valid while its window is open. False,
- * and no callback, for a NULL view or callback or on another thread. */
-typedef void (*zebkit_native_window_export_func)(void *data, const char *handle);
+ * callback's to copy. A handle stays valid while its window is open. A view
+ * that closes first is told NULL before its on_close, @view still valid, as
+ * every callback the engine owes a view. False, and no callback, for a NULL
+ * view or callback or on another thread. */
+typedef void (*zebkit_native_window_export_func)(zebkit_view *view, const char *handle, void *data);
 ZEBKIT_API bool zebkit_view_export_native_window(zebkit_view *view, zebkit_native_window_export_func callback,
                                                  void *data);
 
@@ -506,6 +535,49 @@ typedef void (*zebkit_title_func)(zebkit_view *view, const char *title, void *da
 ZEBKIT_API void zebkit_view_on_load(zebkit_view *view, zebkit_load_func func, void *data);
 ZEBKIT_API void zebkit_view_on_title(zebkit_view *view, zebkit_title_func func, void *data);
 ZEBKIT_API void zebkit_view_on_close(zebkit_view *view, zebkit_view_func func, void *data);
+
+/*
+ * The page's process went (Electron's render-process-gone), told
+ * asynchronously as JSON: {"reason", "exitCode"}, reason one of "crashed" (a
+ * crash, chrome://crash), "killed" (a signal, the system, chrome://kill),
+ * "oom" (out of memory), "abnormal-exit" (a non-zero exit), "clean-exit",
+ * "launch-failed", "integrity-failure" (Windows' code integrity),
+ * "memory-eviction"; exitCode is the process's exit code or signal as the
+ * system gives it. The view stays open, its page blank: zebkit_view_reload()
+ * or zebkit_view_load_url() start a process again. One function per view;
+ * NULL removes it.
+ */
+typedef void (*zebkit_process_func)(zebkit_view *view, const char *json, void *data);
+ZEBKIT_API void zebkit_view_on_process_gone(zebkit_view *view, zebkit_process_func func, void *data);
+
+/*
+ * The page stopped answering input, as Chrome's "page unresponsive" dialog
+ * (which zebkit does not show) and Electron's unresponsive/responsive events:
+ * {"responsive": false}, then {"responsive": true} once it answers again. Only
+ * the changes are told, asynchronously.
+ *
+ * It is Chromium's hang monitor, so it is told when:
+ * - input that waits on the page's main thread (a key, a mouse button, a
+ *   wheel or touch the page listens to) has not been answered after 15
+ *   seconds and a ping of that thread a second more; a page that hangs
+ *   without input is not told until input comes. The delay is the feature
+ *   --enable-features=RendererHangWatcher:delay/2s (a switch at start);
+ *   --disable-hang-monitor turns it off. Input is the user's in a window or
+ *   attached view, or zebkit_view_send_key() / zebkit_view_send_mouse() to an
+ *   off-screen view;
+ * - or a navigation or its cancellation waits on a page that does not answer;
+ * - and the view is shown (not minimised, or hidden with zebkit_view_set_visible());
+ * - and no debugger is attached to the page: a CDP client (zebkit_cdp_listen(),
+ *   --remote-debugging-port, a CDP session a Playwright client opens on the
+ *   endpoint) holds it, as in Chrome, since its page may sit on a breakpoint.
+ *   Automation is not a debugger: a page driven by zebkit_automation_*() or
+ *   through a Playwright endpoint (<zebkit/automation.h>) is told, as is one
+ *   driven by the view's own session (zebkit_view_evaluate(), init scripts,
+ *   grants).
+ * A page whose process goes is told by zebkit_view_on_process_gone() instead,
+ * and starts responsive. One function per view; NULL removes it.
+ */
+ZEBKIT_API void zebkit_view_on_responsiveness(zebkit_view *view, zebkit_process_func func, void *data);
 
 /*
  * The result of a script, or of a call from the page. @json is the value as
@@ -545,10 +617,12 @@ ZEBKIT_API void zebkit_view_set_user_agent(zebkit_view *view, const char *user_a
 /* Atomically set the string and optional client hints using
  * Emulation.setUserAgentOverride JSON: userAgent is required; acceptLanguage,
  * platform and userAgentMetadata are optional. Up to 65536 UTF-8 bytes.
- * Returns true when queued. Validation errors arrive through func; successful
- * completion supplies {}. Only successful settings persist into future pages.
- * Loads wait for completion. Engine thread only; closing reports an error
- * for pending callbacks before the view's close notification.
+ * True when queued: func is then told once, after this returns, {} on success
+ * or the error (invalid JSON or options among them). False, func never
+ * called, for a NULL or closed view or off the engine's thread. Only
+ * successful settings persist into future pages. Loads wait for completion.
+ * Closing reports an error for pending callbacks before the view's close
+ * notification.
  */
 ZEBKIT_API bool zebkit_view_set_user_agent_override(zebkit_view *view, const char *json,
                                                     zebkit_result_func func, void *data);
@@ -654,7 +728,8 @@ typedef struct zebkit_call zebkit_call;
  * arguments as a JSON array, @origin the calling page's. Answer it, now or
  * later, with exactly one of zebkit_call_resolve() and zebkit_call_reject(),
  * from any thread (an answer from another thread reaches the page through the
- * engine's thread). A call never answered stays in memory until the end.
+ * engine's thread), or drop it with zebkit_call_free(). A call never answered
+ * nor freed stays in memory until the end, its promise pending.
  */
 typedef void (*zebkit_bind_func)(zebkit_view *view, const char *origin, const char *args_json, zebkit_call *call,
                                  void *data);
@@ -673,6 +748,12 @@ ZEBKIT_API void zebkit_call_resolve_json(zebkit_call *call, const char *json, si
 /* Rejects the page's promise with an Error of @message. */
 ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
 
+/* Drops a call the application will not answer, a binding's object for it
+ * gone unanswered: the page's promise is rejected with an Error ("the
+ * application dropped the call") and @call is freed. From any thread, as the
+ * answers; after one of them @call is gone, and is not to be freed. */
+ZEBKIT_API void zebkit_call_free(zebkit_call *call);
+
 /* ---- Script outside any page ---------------------------------------- */
 
 /*
@@ -680,7 +761,11 @@ ZEBKIT_API void zebkit_call_reject(zebkit_call *call, const char *message);
  * engine's thread: V8 with the whole of zebkit.* (no grants: it is the
  * application's code, as an Electron application's main process is), and
  * zebkit.View to make views, load pages in them and answer their calls.
- * <zebkit/zebkit.h>'s script reference is docs/API.md.
+ * <zebkit/zebkit.h>'s script reference is docs/API.md. An error thrown from
+ * one of its callbacks, or a promise rejected with no handler, is printed to
+ * stderr ("Uncaught ...") and the script runs on; zebkit_main() then returns 1.
+ * A page's call to a bound function whose result never settles is dropped
+ * (zebkit_call_free()) once that result is collected or the script ends.
  */
 typedef struct zebkit_script zebkit_script;
 
@@ -717,9 +802,23 @@ ZEBKIT_API void zebkit_script_destroy(zebkit_script *script);
  * @port (0 for one the system chooses), as Chrome does with
  * --remote-debugging-port. Returns the port, or 0 with @error set (free it
  * with zebkit_free(); @error may be NULL). If the endpoint already runs,
- * returns its port.
+ * returns its port; asking for another address or port then is an error.
+ * Waits, on the engine's thread, for the server's thread to bind (up to ten
+ * seconds): zebkit_cdp_listen_async() does not.
  */
 ZEBKIT_API unsigned zebkit_cdp_listen(const char *address, unsigned port, char **error);
+/*
+ * zebkit_cdp_listen() without waiting: @func gets the port and the browser
+ * target's WebSocket address (as zebkit_cdp_get_url() gives it), or 0, NULL
+ * and the error, once, on the engine's thread, after this returns. Calls
+ * while it starts are answered together; zebkit_cdp_stop() answers them with
+ * an error. Off the engine's thread, @func is told the error at once. Not
+ * called if the engine stops first (a call refused at once is answered by a
+ * task of the engine's thread, which then does not run): what @data holds is
+ * the application's to free then.
+ */
+typedef void (*zebkit_cdp_listen_func)(unsigned port, const char *url, const char *error, void *data);
+ZEBKIT_API void zebkit_cdp_listen_async(const char *address, unsigned port, zebkit_cdp_listen_func func, void *data);
 
 /* The port CDP is served on, or 0. */
 ZEBKIT_API unsigned zebkit_cdp_get_port(void);
@@ -727,6 +826,8 @@ ZEBKIT_API unsigned zebkit_cdp_get_port(void);
 /*
  * The browser target's WebSocket address, what Puppeteer calls
  * browserWSEndpoint, or NULL when CDP is not served. Free with zebkit_free().
+ * Right after zebkit_cdp_listen() it may wait a little for the server to
+ * write it; zebkit_cdp_listen_async() gives it without waiting.
  */
 ZEBKIT_API char *zebkit_cdp_get_url(void);
 
@@ -800,7 +901,7 @@ ZEBKIT_API int zebkit_helper_main(int argc, char **argv);
 
 /* Host-owned WebAuthn UI. Register before a request; NULL restores default UI
  * for future requests. This interface is shared by supported desktop platforms.
- * Events are versioned JSON, valid during the callback (see PASSKEYS.md).
+ * Events are versioned JSON, valid during the callback (see docs/notes/passkeys.md).
  * Calls run on the engine thread. Respond using the request and revision from
  * the latest event. Never log events (QR pairing data) or PIN actions.
  * Removing/replacing a handler cancels its active requests. Hosts must retain

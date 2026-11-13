@@ -2,6 +2,7 @@
  * read, rendered, searched, changed, saved and opened again. Prints one
  * line per check; exit 0 when all pass. */
 
+#include "harness.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,14 +10,6 @@
 #include <zebkit/pdf.h>
 #include <zebkit/services.h>
 
-static int failures, checks;
-
-static void check(int ok, const char *what, const char *detail) {
-    checks++;
-    if (!ok)
-        failures++;
-    printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", what, detail ? ": " : "", detail ? detail : "");
-}
 
 /* Two pages: "Hello zebkit" and a link out, and "Second page zebkit". */
 static const char document[] =
@@ -244,35 +237,35 @@ static void test_redaction(void) {
     int mark = zebkit_pdf_annotation_add(
         pdf, 0, "{\"type\": \"redact\", \"rect\": [18, 112, 80, 148], \"quads\": [[18, 148, 80, 148, 18, 112, 80, 112]]}",
         &error);
-    check(mark >= 0, "a redaction mark", error);
+    check_text(mark >= 0, "a redaction mark", error);
     int areas = zebkit_pdf_redact(pdf, 0, NULL, 0x000000ff, &error);
     char detail[64];
     snprintf(detail, sizeof(detail), "%d", areas);
-    check(areas == 1, "zebkit_pdf_redact: the page's mark", error ? error : detail);
+    check_text(areas == 1, "zebkit_pdf_redact: the page's mark", error ? error : detail);
     char *text = zebkit_pdf_text(pdf, 0, &error);
-    check(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "the word under it is gone, the rest is there",
+    check_text(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "the word under it is gone, the rest is there",
           text);
     zebkit_free(text);
     char *annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(annotations && !strstr(annotations, "redact"), "the mark is gone", annotations);
+    check_text(annotations && !strstr(annotations, "redact"), "the mark is gone", annotations);
     zebkit_free(annotations);
     int width = 0, height = 0;
     uint8_t *pixels = zebkit_pdf_render(pdf, 0, NULL, &width, &height, &error);
     /* The middle of the area, in pixels from the top: x 50, y 200 - 130. */
     const uint8_t *middle = pixels ? pixels + ((size_t)(200 - 130) * width + 50) * 4 : NULL;
-    check(middle && middle[0] < 20 && middle[1] < 20 && middle[2] < 20, "a black box over the area", NULL);
+    check_text(middle && middle[0] < 20 && middle[1] < 20 && middle[2] < 20, "a black box over the area", NULL);
     zebkit_free(pixels);
     /* Saved and opened again, the word is not in the file's text. */
     size_t size = 0;
     uint8_t *saved = zebkit_pdf_save(pdf, 0, &size, &error);
     zebkit_pdf *again = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
     text = again ? zebkit_pdf_text(again, 0, &error) : NULL;
-    check(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "and not in the saved document", text);
+    check_text(text && !strstr(text, "Hello") && strstr(text, "zebkit"), "and not in the saved document", text);
     zebkit_free(text);
     /* An area given, on the second page: "Second" goes, with no box. */
     areas = again ? zebkit_pdf_redact(again, 1, "[[15, 110, 80, 145]]", 0, &error) : -1;
     text = again ? zebkit_pdf_text(again, 1, &error) : NULL;
-    check(areas == 1 && text && !strstr(text, "Second") && strstr(text, "page zebkit"), "zebkit_pdf_redact: an area",
+    check_text(areas == 1 && text && !strstr(text, "Second") && strstr(text, "page zebkit"), "zebkit_pdf_redact: an area",
           text);
     zebkit_free(text);
     zebkit_pdf_close(again);
@@ -283,23 +276,23 @@ static void test_redaction(void) {
 static void test_forms_and_pages(void) {
     char *error = NULL;
     zebkit_pdf *pdf = zebkit_pdf_open(form, sizeof(form) - 1, NULL, &error);
-    check(pdf != NULL, "a document with a form", error);
+    check_text(pdf != NULL, "a document with a form", error);
     if (!pdf)
         return;
     char *fields = zebkit_pdf_form_fields(pdf, &error);
-    check(contains(fields, "\"name\":\"name\"") && contains(fields, "\"type\":\"text\"") &&
+    check_text(contains(fields, "\"name\":\"name\"") && contains(fields, "\"type\":\"text\"") &&
               contains(fields, "\"value\":\"Ada\"") && contains(fields, "\"type\":\"checkbox\"") &&
               contains(fields, "\"exportValue\":\"Yes\"") && contains(fields, "\"checked\":false"),
           "zebkit_pdf_form_fields", fields);
     zebkit_free(fields);
-    check(zebkit_pdf_form_set(pdf, "name", "Grace Hopper", &error), "zebkit_pdf_form_set: a text field", error);
-    check(zebkit_pdf_form_set(pdf, "agree", "Yes", &error), "zebkit_pdf_form_set: a check box", error);
-    check(!zebkit_pdf_form_set(pdf, "nobody", "x", &error) && contains(error, "no field"),
+    check_text(zebkit_pdf_form_set(pdf, "name", "Grace Hopper", &error), "zebkit_pdf_form_set: a text field", error);
+    check_text(zebkit_pdf_form_set(pdf, "agree", "Yes", &error), "zebkit_pdf_form_set: a check box", error);
+    check_text(!zebkit_pdf_form_set(pdf, "nobody", "x", &error) && contains(error, "no field"),
           "zebkit_pdf_form_set refuses a field that is not there", error);
     zebkit_free(error);
     error = NULL;
     fields = zebkit_pdf_form_fields(pdf, &error);
-    check(contains(fields, "\"value\":\"Grace Hopper\"") && contains(fields, "\"checked\":true"),
+    check_text(contains(fields, "\"value\":\"Grace Hopper\"") && contains(fields, "\"checked\":true"),
           "the values are set", fields);
     zebkit_free(fields);
     /* The text drawn into the field's new appearance, with forms on. */
@@ -312,52 +305,52 @@ static void test_forms_and_pages(void) {
             dark += pixels[(y * width + x) * 4] < 128;
     char detail[64];
     snprintf(detail, sizeof(detail), "%d dark pixels in the field", dark);
-    check(dark > 30, "the field draws its new value", detail);
+    check_text(dark > 30, "the field draws its new value", detail);
     zebkit_free(pixels);
     size_t size = 0;
     uint8_t *saved = zebkit_pdf_save(pdf, 0, &size, &error);
-    check(zebkit_pdf_form_reset(pdf, &error), "zebkit_pdf_form_reset", error);
+    check_text(zebkit_pdf_form_reset(pdf, &error), "zebkit_pdf_form_reset", error);
     fields = zebkit_pdf_form_fields(pdf, &error);
-    check(!contains(fields, "Grace") && contains(fields, "\"checked\":false"), "the values are reset", fields);
+    check_text(!contains(fields, "Grace") && contains(fields, "\"checked\":false"), "the values are reset", fields);
     zebkit_free(fields);
     zebkit_pdf_close(pdf);
     zebkit_pdf *again = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
     fields = again ? zebkit_pdf_form_fields(again, &error) : NULL;
-    check(contains(fields, "Grace Hopper") && contains(fields, "\"checked\":true"), "the saved form keeps its values",
+    check_text(contains(fields, "Grace Hopper") && contains(fields, "\"checked\":true"), "the saved form keeps its values",
           fields);
     zebkit_free(fields);
     zebkit_free(saved);
 
     /* Pages: one blank page inserted, turned, moved, others copied in. */
-    check(zebkit_pdf_page_insert(again, 1, 100, 50, &error), "zebkit_pdf_page_insert", error);
-    check(zebkit_pdf_page_rotate(again, 1, 90, &error), "zebkit_pdf_page_rotate", error);
+    check_text(zebkit_pdf_page_insert(again, 1, 100, 50, &error), "zebkit_pdf_page_insert", error);
+    check_text(zebkit_pdf_page_rotate(again, 1, 90, &error), "zebkit_pdf_page_rotate", error);
     char *page = zebkit_pdf_page(again, 1, &error);
-    check(contains(page, "\"rotation\":90") && contains(page, "\"width\":50.0"), "the new page, turned", page);
+    check_text(contains(page, "\"rotation\":90") && contains(page, "\"width\":50.0"), "the new page, turned", page);
     zebkit_free(page);
     int first[] = {1};
-    check(zebkit_pdf_pages_move(again, first, 1, 0, &error), "zebkit_pdf_pages_move", error);
+    check_text(zebkit_pdf_pages_move(again, first, 1, 0, &error), "zebkit_pdf_pages_move", error);
     page = zebkit_pdf_page(again, 0, &error);
-    check(contains(page, "\"rotation\":90"), "the moved page is first", page);
+    check_text(contains(page, "\"rotation\":90"), "the moved page is first", page);
     zebkit_free(page);
     zebkit_pdf *merged = zebkit_pdf_new(&error);
-    check(merged && zebkit_pdf_pages_import(merged, again, NULL, 0, 0, &error) &&
+    check_text(merged && zebkit_pdf_pages_import(merged, again, NULL, 0, 0, &error) &&
               zebkit_pdf_page_count(merged) == 2,
           "zebkit_pdf_new and zebkit_pdf_pages_import, all pages", error);
     int second[] = {1};
-    check(merged && zebkit_pdf_pages_import(merged, again, second, 1, 2, &error) &&
+    check_text(merged && zebkit_pdf_pages_import(merged, again, second, 1, 2, &error) &&
               zebkit_pdf_page_count(merged) == 3,
           "zebkit_pdf_pages_import, one page", error);
     int both[] = {0, 2};
-    check(merged && zebkit_pdf_pages_delete(merged, both, 2, &error) && zebkit_pdf_page_count(merged) == 1,
+    check_text(merged && zebkit_pdf_pages_delete(merged, both, 2, &error) && zebkit_pdf_page_count(merged) == 1,
           "zebkit_pdf_pages_delete", error);
     int bad[] = {5};
-    check(!zebkit_pdf_pages_delete(merged, bad, 1, &error), "zebkit_pdf_pages_delete refuses a page not there",
+    check_text(!zebkit_pdf_pages_delete(merged, bad, 1, &error), "zebkit_pdf_pages_delete refuses a page not there",
           error);
     zebkit_free(error);
     error = NULL;
     saved = merged ? zebkit_pdf_save(merged, 0, &size, &error) : NULL;
     zebkit_pdf *built = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
-    check(built && zebkit_pdf_page_count(built) == 1, "the built document saved and opened", error);
+    check_text(built && zebkit_pdf_page_count(built) == 1, "the built document saved and opened", error);
     zebkit_pdf_close(built);
     zebkit_free(saved);
     zebkit_pdf_close(merged);
@@ -367,30 +360,30 @@ static void test_forms_and_pages(void) {
 int main(void) {
     char *error = NULL;
     zebkit_pdf *pdf = zebkit_pdf_open("not a pdf", 9, NULL, &error);
-    check(pdf == NULL && error != NULL, "zebkit_pdf_open refuses what is not a PDF", error);
+    check_text(pdf == NULL && error != NULL, "zebkit_pdf_open refuses what is not a PDF", error);
     zebkit_free(error);
     error = NULL;
 
     pdf = zebkit_pdf_open(document, sizeof(document) - 1, NULL, &error);
-    check(pdf != NULL, "zebkit_pdf_open", error);
+    check_text(pdf != NULL, "zebkit_pdf_open", error);
     if (!pdf)
         return 1;
 
     char *info = zebkit_pdf_info(pdf);
-    check(contains(info, "\"pages\":2") && contains(info, "\"language\":\"en-US\"") &&
+    check_text(contains(info, "\"pages\":2") && contains(info, "\"language\":\"en-US\"") &&
               contains(info, "\"encrypted\":false") && contains(info, "\"permissionBits\":"),
           "zebkit_pdf_info", info);
     zebkit_free(info);
-    check(zebkit_pdf_page_count(pdf) == 2, "zebkit_pdf_page_count", NULL);
+    check_text(zebkit_pdf_page_count(pdf) == 2, "zebkit_pdf_page_count", NULL);
 
     char *page = zebkit_pdf_page(pdf, 1, &error);
-    check(contains(page, "\"rotation\":90") && contains(page, "\"width\":200.0") && contains(page, "\"height\":300.0") &&
+    check_text(contains(page, "\"rotation\":90") && contains(page, "\"width\":200.0") && contains(page, "\"height\":300.0") &&
               contains(page, "\"mediaBox\":[0.0,0.0,300.0,200.0]") && contains(page, "\"objectNumber\":") &&
               !contains(page, "\"objectNumber\":0"),
           "zebkit_pdf_page", page);
     zebkit_free(page);
     page = zebkit_pdf_page(pdf, 2, &error);
-    check(page == NULL && error != NULL, "zebkit_pdf_page refuses a page that is not there", error);
+    check_text(page == NULL && error != NULL, "zebkit_pdf_page refuses a page that is not there", error);
     zebkit_free(error);
     error = NULL;
 
@@ -402,7 +395,7 @@ int main(void) {
             dark++;
     char detail[96];
     snprintf(detail, sizeof(detail), "%dx%d, %d dark pixels", width, height, dark);
-    check(pixels && width == 300 && height == 200 && dark > 200, "zebkit_pdf_render", detail);
+    check_text(pixels && width == 300 && height == 200 && dark > 200, "zebkit_pdf_render", detail);
     zebkit_free(pixels);
 
     /* Rotated by the page's own 90 degrees, at twice the size, on red. */
@@ -410,7 +403,7 @@ int main(void) {
     pixels = zebkit_pdf_render(pdf, 1, &options, &width, &height, &error);
     snprintf(detail, sizeof(detail), "%dx%d, first pixel %d,%d,%d,%d", width, height, pixels ? pixels[0] : -1,
              pixels ? pixels[1] : -1, pixels ? pixels[2] : -1, pixels ? pixels[3] : -1);
-    check(pixels && width == 400 && height == 600 && pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0 &&
+    check_text(pixels && width == 400 && height == 600 && pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0 &&
               pixels[3] == 255,
           "zebkit_pdf_render: rotation, scale, background", detail);
     zebkit_free(pixels);
@@ -418,53 +411,53 @@ int main(void) {
     /* A tile: the top left 50 by 40 pixels. */
     zebkit_pdf_render_options tile = {.scale = 1, .background = 0xffffffff, .x = 10, .y = 20, .width = 50, .height = 40};
     pixels = zebkit_pdf_render(pdf, 0, &tile, &width, &height, &error);
-    check(pixels && width == 50 && height == 40, "zebkit_pdf_render: a tile", NULL);
+    check_text(pixels && width == 50 && height == 40, "zebkit_pdf_render: a tile", NULL);
     if (pixels) {
         size_t size = 0;
         uint8_t *png = zebkit_image_encode(ZEBKIT_IMAGE_PNG, pixels, width, height, 0, &size, NULL);
-        check(png && size > 8, "the tile as PNG (zebkit_image_encode)", NULL);
+        check_text(png && size > 8, "the tile as PNG (zebkit_image_encode)", NULL);
         zebkit_free(png);
     }
     zebkit_free(pixels);
 
     char *text = zebkit_pdf_text(pdf, 0, &error);
-    check(contains(text, "Hello zebkit"), "zebkit_pdf_text", text);
+    check_text(contains(text, "Hello zebkit"), "zebkit_pdf_text", text);
     zebkit_free(text);
     char *layout = zebkit_pdf_text_layout(pdf, 0, &error);
-    check(contains(layout, "\"c\":\"H\"") && contains(layout, "\"font\":\"Helvetica\"") &&
+    check_text(contains(layout, "\"c\":\"H\"") && contains(layout, "\"font\":\"Helvetica\"") &&
               contains(layout, "\"size\":24.0") && contains(layout, "\"loose\":[") &&
               contains(layout, "\"object\":0") && contains(layout, "\"objects\":[{") &&
               contains(layout, "\"family\":\"") && contains(layout, "\"color\":[0,0,0,255]"),
           "zebkit_pdf_text_layout", layout);
     zebkit_free(layout);
     char *rects = zebkit_pdf_text_rects(pdf, 0, 0, 5, &error);
-    check(rects && rects[0] == '[' && rects[1] == '[', "zebkit_pdf_text_rects", rects);
+    check_text(rects && rects[0] == '[' && rects[1] == '[', "zebkit_pdf_text_rects", rects);
     zebkit_free(rects);
     int at = zebkit_pdf_char_at(pdf, 0, 25, 128, 2);
     snprintf(detail, sizeof(detail), "%d", at);
-    check(at == 0, "zebkit_pdf_char_at: the H", detail);
-    check(zebkit_pdf_char_at(pdf, 0, 280, 10, 1) == -1, "zebkit_pdf_char_at: nothing there", NULL);
+    check_text(at == 0, "zebkit_pdf_char_at: the H", detail);
+    check_text(zebkit_pdf_char_at(pdf, 0, 280, 10, 1) == -1, "zebkit_pdf_char_at: nothing there", NULL);
 
     char *found = zebkit_pdf_search(pdf, "ZEBKIT", 0, 0, 0, &error);
-    check(contains(found, "\"page\":0") && contains(found, "\"page\":1") && contains(found, "\"count\":6") &&
+    check_text(contains(found, "\"page\":0") && contains(found, "\"page\":1") && contains(found, "\"count\":6") &&
               contains(found, "Second page"),
           "zebkit_pdf_search, both pages", found);
     zebkit_free(found);
     found = zebkit_pdf_search(pdf, "ZEBKIT", ZEBKIT_PDF_SEARCH_CASE, 0, 0, &error);
-    check(found && strcmp(found, "[]") == 0, "zebkit_pdf_search, matching case", found);
+    check_text(found && strcmp(found, "[]") == 0, "zebkit_pdf_search, matching case", found);
     zebkit_free(found);
 
     char *links = zebkit_pdf_links(pdf, 0, &error);
-    check(contains(links, "\"url\":\"https://example.com/\"") && contains(links, "[20.0,20.0,120.0,40.0]"),
+    check_text(contains(links, "\"url\":\"https://example.com/\"") && contains(links, "[20.0,20.0,120.0,40.0]"),
           "zebkit_pdf_links", links);
     zebkit_free(links);
     char *outline = zebkit_pdf_outline(pdf, &error);
-    check(outline && strcmp(outline, "[]") == 0, "zebkit_pdf_outline, none", outline);
+    check_text(outline && strcmp(outline, "[]") == 0, "zebkit_pdf_outline, none", outline);
     zebkit_free(outline);
 
     /* Annotations: the link the document has, then one of each kind made. */
     char *annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(contains(annotations, "\"type\":\"link\"") && contains(annotations, "https://example.com/"),
+    check_text(contains(annotations, "\"type\":\"link\"") && contains(annotations, "https://example.com/"),
           "zebkit_pdf_annotations: the link", annotations);
     zebkit_free(annotations);
     static const struct {
@@ -498,18 +491,18 @@ int main(void) {
         int index = zebkit_pdf_annotation_add(pdf, 0, kinds[i].json, &error);
         char what[64];
         snprintf(what, sizeof(what), "zebkit_pdf_annotation_add: %s", kinds[i].what);
-        check(index > last, what, error);
+        check_text(index > last, what, error);
         zebkit_free(error);
         error = NULL;
         last = index;
     }
-    check(zebkit_pdf_annotation_add(pdf, 0, "{\"type\": \"sound\", \"rect\": [0, 0, 1, 1]}", &error) == -1 &&
+    check_text(zebkit_pdf_annotation_add(pdf, 0, "{\"type\": \"sound\", \"rect\": [0, 0, 1, 1]}", &error) == -1 &&
               contains(error, "sound"),
           "zebkit_pdf_annotation_add refuses a sound", error);
     zebkit_free(error);
     error = NULL;
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(contains(annotations, "\"type\":\"highlight\"") && contains(annotations, "\"color\":[255,230,0]") &&
+    check_text(contains(annotations, "\"type\":\"highlight\"") && contains(annotations, "\"color\":[255,230,0]") &&
               contains(annotations, "\"contents\":\"a note\"") && contains(annotations, "\"author\":\"zebkit\"") &&
               contains(annotations, "\"quads\":[[18.0,145.0,160.0,145.0,18.0,115.0,160.0,115.0]]") &&
               contains(annotations, "\"ink\":[[[210.0,110.0],[270.0,170.0]]") &&
@@ -539,12 +532,12 @@ int main(void) {
                 green += y < 50 && x > 140 && x < 200;
         }
     snprintf(detail, sizeof(detail), "yellow %d, blue %d, red %d, green %d", yellow, blue, red, green);
-    check(yellow > 1000 && blue > 50 && red > 200 && green > 200, "the annotations are drawn", detail);
+    check_text(yellow > 1000 && blue > 50 && red > 200 && green > 200, "the annotations are drawn", detail);
     zebkit_free(pixels);
 
     /* Each one's appearance alone, as an annotation layer draws it. */
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(contains(annotations, "\"appearances\":[\"normal\"]") &&
+    check_text(contains(annotations, "\"appearances\":[\"normal\"]") &&
               contains(annotations, "\"Subtype\":\"/Highlight\"") && contains(annotations, "\"QuadPoints\":["),
           "zebkit_pdf_annotations: appearances and entries", annotations);
     zebkit_free(annotations);
@@ -558,79 +551,79 @@ int main(void) {
     pixels = zebkit_pdf_render_annotation(pdf, 0, 1, 0, &twice, &w2, &h2, &error);
     zebkit_free(pixels);
     snprintf(detail, sizeof(detail), "%dx%d, turned %dx%d, %d drawn", w1, h1, w2, h2, opaque);
-    check(w1 > 200 && h1 > 40 && w2 == h1 && h2 == w1 && opaque > w1 * h1 / 4,
+    check_text(w1 > 200 && h1 > 40 && w2 == h1 && h2 == w1 && opaque > w1 * h1 / 4,
           "zebkit_pdf_render_annotation", detail);
     pixels = zebkit_pdf_render_annotation(pdf, 0, 1, 2, NULL, &w1, &h1, &error);
-    check(pixels == NULL && contains(error, "no appearance"),
+    check_text(pixels == NULL && contains(error, "no appearance"),
           "zebkit_pdf_render_annotation: none for a mode it has not", error);
     zebkit_free(error);
     error = NULL;
 
-    check(zebkit_pdf_annotation_update(pdf, 0, 1,
+    check_text(zebkit_pdf_annotation_update(pdf, 0, 1,
                                        "{\"entries\": {\"IT\": \"/HighlightNote\", \"ZNote\": \"//slash\","
                                        " \"ZList\": [1, 2.5, true, {\"ref\": 3}], \"ZFont\": {\"ref\": 5}}}",
                                        &error),
           "zebkit_pdf_annotation_update: entries", error);
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(contains(annotations, "\"IT\":\"/HighlightNote\"") && contains(annotations, "\"ZNote\":\"//slash\"") &&
+    check_text(contains(annotations, "\"IT\":\"/HighlightNote\"") && contains(annotations, "\"ZNote\":\"//slash\"") &&
               contains(annotations, "\"ZList\":[1,2.5,true,{\"ref\":3}]") &&
               contains(annotations, "\"ZFont\":{\"BaseFont\":\"/Helvetica\"") &&
               contains(annotations, "\"object\":8"),
           "the entries are there: a page referred to, a font followed", annotations);
     zebkit_free(annotations);
-    check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"ZNote\": null, \"ZList\": null, \"ZFont\": null}}", &error),
+    check_text(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"ZNote\": null, \"ZList\": null, \"ZFont\": null}}", &error),
           "zebkit_pdf_annotation_update: entries removed", error);
-    check(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"AP\": null}}", &error) && contains(error, "AP"),
+    check_text(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"entries\": {\"AP\": null}}", &error) && contains(error, "AP"),
           "zebkit_pdf_annotation_update refuses /AP", error);
     zebkit_free(error);
     error = NULL;
 
-    check(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"color\": [255, 0, 255], \"contents\": null}", &error),
+    check_text(zebkit_pdf_annotation_update(pdf, 0, 1, "{\"color\": [255, 0, 255], \"contents\": null}", &error),
           "zebkit_pdf_annotation_update", error);
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(contains(annotations, "\"color\":[255,0,255]") && !contains(annotations, "a note"),
+    check_text(contains(annotations, "\"color\":[255,0,255]") && !contains(annotations, "a note"),
           "the change is there", NULL);
     zebkit_free(annotations);
-    check(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"ink\": [[[0, 0], [1, 1]]]}", &error) && error,
+    check_text(!zebkit_pdf_annotation_update(pdf, 0, 1, "{\"ink\": [[[0, 0], [1, 1]]]}", &error) && error,
           "zebkit_pdf_annotation_update refuses ink on a highlight", error);
     zebkit_free(error);
     error = NULL;
-    check(zebkit_pdf_annotation_remove(pdf, 0, last, &error), "zebkit_pdf_annotation_remove", error);
+    check_text(zebkit_pdf_annotation_remove(pdf, 0, last, &error), "zebkit_pdf_annotation_remove", error);
     annotations = zebkit_pdf_annotations(pdf, 0, &error);
-    check(!contains(annotations, "sticky"), "the note is gone", NULL);
+    check_text(!contains(annotations, "sticky"), "the note is gone", NULL);
     zebkit_free(annotations);
 
     /* An image as a stamp's appearance: red, over its rectangle. */
     int stamp = zebkit_pdf_annotation_add(pdf, 0, "{\"type\": \"stamp\", \"rect\": [230, 150, 290, 190]}", &error);
-    check(stamp >= 0, "zebkit_pdf_annotation_add: stamp", error);
+    check_text(stamp >= 0, "zebkit_pdf_annotation_add: stamp", error);
     static const uint8_t stamp_pixels[16] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
-    check(zebkit_pdf_annotation_set_image(pdf, 0, stamp, stamp_pixels, 2, 2, &error), "zebkit_pdf_annotation_set_image",
+    check_text(zebkit_pdf_annotation_set_image(pdf, 0, stamp, stamp_pixels, 2, 2, &error), "zebkit_pdf_annotation_set_image",
           error);
     pixels = zebkit_pdf_render(pdf, 0, NULL, &width, &height, &error);
     /* (260, 170) in the page, from the top left of 300 by 200. */
     const uint8_t *there = pixels ? pixels + (30 * width + 260) * 4 : NULL;
     snprintf(detail, sizeof(detail), "%d,%d,%d", there ? there[0] : -1, there ? there[1] : -1, there ? there[2] : -1);
-    check(there && there[0] > 200 && there[1] < 60 && there[2] < 60, "the stamp draws its image", detail);
+    check_text(there && there[0] > 200 && there[1] < 60 && there[2] < 60, "the stamp draws its image", detail);
     zebkit_free(pixels);
-    check(!zebkit_pdf_annotation_set_image(pdf, 0, 0, stamp_pixels, 2, 2, &error) && contains(error, "stamp"),
+    check_text(!zebkit_pdf_annotation_set_image(pdf, 0, 0, stamp_pixels, 2, 2, &error) && contains(error, "stamp"),
           "zebkit_pdf_annotation_set_image refuses what is not a stamp", error);
     zebkit_free(error);
     error = NULL;
 
     char *lines = zebkit_pdf_text_lines(pdf, 0, &error);
-    check(contains(lines, "\"text\":\"Hello zebkit\"") && contains(lines, "\"box\":[") &&
+    check_text(contains(lines, "\"text\":\"Hello zebkit\"") && contains(lines, "\"box\":[") &&
               contains(lines, "\"unmapped\":0"),
           "zebkit_pdf_text_lines", lines);
     zebkit_free(lines);
     char *images = zebkit_pdf_images(pdf, 0, &error);
-    check(images && strcmp(images, "[]") == 0, "zebkit_pdf_images: a page of text has none", images);
+    check_text(images && strcmp(images, "[]") == 0, "zebkit_pdf_images: a page of text has none", images);
     zebkit_free(images);
 
     /* PDFium's mark for a broken word's hyphen, given as a hyphen. */
     zebkit_pdf *broken = zebkit_pdf_open(hyphenated, sizeof(hyphenated) - 1, NULL, &error);
     char *broken_text = broken ? zebkit_pdf_text(broken, 0, &error) : NULL;
     char *broken_lines = broken ? zebkit_pdf_text_lines(broken, 0, &error) : NULL;
-    check(broken_text && !strchr(broken_text, 0x2) && strstr(broken_text, "two-") && broken_lines &&
+    check_text(broken_text && !strchr(broken_text, 0x2) && strstr(broken_text, "two-") && broken_lines &&
               !strstr(broken_lines, "\\u0002") && strstr(broken_lines, "two-"),
           "zebkit_pdf_text and _text_lines: a hyphen, not U+0002", broken_lines);
     zebkit_free(broken_text);
@@ -640,7 +633,7 @@ int main(void) {
     /* A page with a 2 by 2 picture, red, green, blue and white. */
     zebkit_pdf *pictured = zebkit_pdf_open(picture, sizeof(picture) - 1, NULL, &error);
     images = pictured ? zebkit_pdf_images(pictured, 0, &error) : NULL;
-    check(contains(images, "\"width\":2") && contains(images, "\"height\":2") &&
+    check_text(contains(images, "\"width\":2") && contains(images, "\"height\":2") &&
               contains(images, "\"jpeg\":false") && contains(images, "\"rect\":[50.0,50.0,150.0,150.0]"),
           "zebkit_pdf_images", images);
     zebkit_free(images);
@@ -651,12 +644,12 @@ int main(void) {
     uint8_t *decoded = png ? zebkit_image_decode(png, png_size, &png_width, &png_height, &error) : NULL;
     snprintf(detail, sizeof(detail), "%dx%d, first pixel %d,%d,%d", png_width, png_height,
              decoded ? decoded[0] : -1, decoded ? decoded[1] : -1, decoded ? decoded[2] : -1);
-    check(decoded && !jpeg && png_width == 2 && png_height == 2 && decoded[0] == 255 && decoded[1] == 0 &&
+    check_text(decoded && !jpeg && png_width == 2 && png_height == 2 && decoded[0] == 255 && decoded[1] == 0 &&
               decoded[4] == 0 && decoded[5] == 255,
           "zebkit_pdf_image_data: its pixels as PNG", detail);
     zebkit_free(decoded);
     zebkit_free(png);
-    check(pictured && !zebkit_pdf_image_data(pictured, 0, 1, &png_size, &jpeg, &error) && error,
+    check_text(pictured && !zebkit_pdf_image_data(pictured, 0, 1, &png_size, &jpeg, &error) && error,
           "zebkit_pdf_image_data refuses an image not there", error);
     zebkit_free(error);
     error = NULL;
@@ -664,7 +657,7 @@ int main(void) {
 
     zebkit_pdf *signed_pdf = zebkit_pdf_open(signed_form, sizeof(signed_form) - 1, NULL, &error);
     char *signatures = signed_pdf ? zebkit_pdf_signatures(signed_pdf, &error) : NULL;
-    check(contains(signatures, "\"field\":\"Signatures.Approval\"") &&
+    check_text(contains(signatures, "\"field\":\"Signatures.Approval\"") &&
               contains(signatures, "\"subFilter\":\"adbe.pkcs7.detached\"") &&
               contains(signatures, "\"reason\":\"Approved\"") &&
               contains(signatures, "\"time\":\"D:20261021120000Z\"") &&
@@ -675,11 +668,11 @@ int main(void) {
     zebkit_free(signatures);
     size_t signature_size = 0;
     uint8_t *signature = signed_pdf ? zebkit_pdf_signature_contents(signed_pdf, 0, &signature_size, &error) : NULL;
-    check(signature && signature_size >= 587 && signature[0] == 0x30, "zebkit_pdf_signature_contents: the DER",
+    check_text(signature && signature_size >= 587 && signature[0] == 0x30, "zebkit_pdf_signature_contents: the DER",
           error);
     zebkit_free(signature);
     signatures = zebkit_pdf_signatures(pdf, &error);
-    check(signatures && strcmp(signatures, "[]") == 0, "zebkit_pdf_signatures: none in an unsigned document",
+    check_text(signatures && strcmp(signatures, "[]") == 0, "zebkit_pdf_signatures: none in an unsigned document",
           signatures);
     zebkit_free(signatures);
     zebkit_pdf_close(signed_pdf);
@@ -687,14 +680,14 @@ int main(void) {
     /* Checked against the bytes: intact, then with one signed byte changed. */
     zebkit_pdf *real = zebkit_pdf_open(really_signed, sizeof(really_signed) - 1, NULL, &error);
     signatures = real ? zebkit_pdf_signatures(real, &error) : NULL;
-    check(contains(signatures, "\"intact\":true") && contains(signatures, "\"coversDocument\":true") &&
+    check_text(contains(signatures, "\"intact\":true") && contains(signatures, "\"coversDocument\":true") &&
               contains(signatures, "\"digest\":\"SHA256\""),
           "zebkit_pdf_signatures: a signature checked, intact", signatures);
     zebkit_free(signatures);
     zebkit_pdf_close(real);
     real = zebkit_pdf_open(signed_by_key_id, sizeof(signed_by_key_id) - 1, NULL, &error);
     signatures = real ? zebkit_pdf_signatures(real, &error) : NULL;
-    check(contains(signatures, "\"intact\":true"), "zebkit_pdf_signatures: a signer named by its key", signatures);
+    check_text(contains(signatures, "\"intact\":true"), "zebkit_pdf_signatures: a signer named by its key", signatures);
     zebkit_free(signatures);
     zebkit_pdf_close(real);
     char *changed = malloc(sizeof(really_signed));
@@ -704,56 +697,55 @@ int main(void) {
         reason[1] = 'a';
     real = zebkit_pdf_open(changed, sizeof(really_signed) - 1, NULL, &error);
     signatures = real ? zebkit_pdf_signatures(real, &error) : NULL;
-    check(contains(signatures, "\"intact\":false") && contains(signatures, "changed after it was signed"),
+    check_text(contains(signatures, "\"intact\":false") && contains(signatures, "changed after it was signed"),
           "zebkit_pdf_signatures: a byte changed after signing", signatures);
     zebkit_free(signatures);
     zebkit_pdf_close(real);
     free(changed);
 
-    check(zebkit_pdf_attach(pdf, "data.csv", "a,b\n1,2\n", 8, &error), "zebkit_pdf_attach", error);
+    check_text(zebkit_pdf_attach(pdf, "data.csv", "a,b\n1,2\n", 8, &error), "zebkit_pdf_attach", error);
     char *attachments = zebkit_pdf_attachments(pdf, &error);
-    check(contains(attachments, "\"name\":\"data.csv\"") && contains(attachments, "\"size\":8"),
+    check_text(contains(attachments, "\"name\":\"data.csv\"") && contains(attachments, "\"size\":8"),
           "zebkit_pdf_attachments", attachments);
     zebkit_free(attachments);
     size_t size = 0;
     uint8_t *file = zebkit_pdf_attachment(pdf, 0, &size, &error);
-    check(file && size == 8 && memcmp(file, "a,b\n1,2\n", 8) == 0, "zebkit_pdf_attachment", NULL);
+    check_text(file && size == 8 && memcmp(file, "a,b\n1,2\n", 8) == 0, "zebkit_pdf_attachment", NULL);
     zebkit_free(file);
 
-    check(zebkit_pdf_set_metadata(pdf, "{\"title\": \"Résumé 履历\", \"author\": \"zebkit\"}", &error),
+    check_text(zebkit_pdf_set_metadata(pdf, "{\"title\": \"Résumé 履历\", \"author\": \"zebkit\"}", &error),
           "zebkit_pdf_set_metadata", error);
-    check(!zebkit_pdf_set_metadata(pdf, "{\"colour\": \"red\"}", &error) && contains(error, "colour"),
+    check_text(!zebkit_pdf_set_metadata(pdf, "{\"colour\": \"red\"}", &error) && contains(error, "colour"),
           "zebkit_pdf_set_metadata refuses an unknown entry", error);
     zebkit_free(error);
     error = NULL;
 
     uint8_t *saved = zebkit_pdf_save(pdf, 0, &size, &error);
-    check(saved && size > 100, "zebkit_pdf_save", error);
+    check_text(saved && size > 100, "zebkit_pdf_save", error);
     zebkit_pdf_close(pdf);
 
     zebkit_pdf *again = saved ? zebkit_pdf_open(saved, size, NULL, &error) : NULL;
     info = again ? zebkit_pdf_info(again) : NULL;
-    check(contains(info, "\"title\":\"Résumé 履历\"") && contains(info, "\"author\":\"zebkit\""),
+    check_text(contains(info, "\"title\":\"Résumé 履历\"") && contains(info, "\"author\":\"zebkit\""),
           "the saved document has its new metadata", info);
     zebkit_free(info);
     attachments = again ? zebkit_pdf_attachments(again, &error) : NULL;
-    check(contains(attachments, "data.csv"), "and its attachment", attachments);
+    check_text(contains(attachments, "data.csv"), "and its attachment", attachments);
     zebkit_free(attachments);
     annotations = again ? zebkit_pdf_annotations(again, 0, &error) : NULL;
-    check(contains(annotations, "\"type\":\"polygon\"") && contains(annotations, "\"color\":[255,0,255]"),
+    check_text(contains(annotations, "\"type\":\"polygon\"") && contains(annotations, "\"color\":[255,0,255]"),
           "and its annotations", NULL);
     zebkit_free(annotations);
-    check(again && zebkit_pdf_flatten(again, 0, false, &error), "zebkit_pdf_flatten", error);
+    check_text(again && zebkit_pdf_flatten(again, 0, false, &error), "zebkit_pdf_flatten", error);
     annotations = again ? zebkit_pdf_annotations(again, 0, &error) : NULL;
-    check(annotations && !contains(annotations, "polygon"), "the flattened page has no polygon annotation",
+    check_text(annotations && !contains(annotations, "polygon"), "the flattened page has no polygon annotation",
           annotations);
     zebkit_free(annotations);
-    check(again && zebkit_pdf_detach(again, 0, &error), "zebkit_pdf_detach", error);
+    check_text(again && zebkit_pdf_detach(again, 0, &error), "zebkit_pdf_detach", error);
     zebkit_pdf_close(again);
     zebkit_free(saved);
 
     test_forms_and_pages();
     test_redaction();
-    printf("%d of %d checks passed\n", checks - failures, checks);
-    return failures ? 1 : 0;
+    return summary();
 }

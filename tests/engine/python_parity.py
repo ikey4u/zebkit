@@ -2,7 +2,8 @@
 (scripts/check-bindings.py): contexts, the view's window and script calls,
 script outside pages, off-screen views (frames, input, IME, caret, cursor),
 dialogs, printing, closing, drag and drop, media capture, the rest of the PDF
-API, the automation page id and the media probe.
+API, the automation page id and the media probe, and the C API's newer
+functions (check_new_api).
 
     python3 tests/engine/python_parity.py [engine switches...]
 
@@ -83,6 +84,8 @@ class Server(http.server.BaseHTTPRequestHandler):
             body, kind = (MEDIA / self.path[len("/media/"):]).read_bytes(), "video/mp4"
         elif self.path == "/video":
             body, kind = VIDEO, "text/html"
+        elif self.path == "/automation":
+            body, kind = AUTOMATION, "text/html"
         elif self.path == "/cookies":
             # A header given twice (the engine keeps Set-Cookie to itself).
             self.send_response(200)
@@ -206,7 +209,8 @@ def check_offscreen(url):
     carets, cursors = [], []
     view.on_caret(lambda rect: carets.append(rect))
     view.on_cursor(lambda name, image: cursors.append(name))
-    view.on_popup(lambda shown, bounds: None)
+    popups = []
+    view.on_popup(popups.append)
     view.send_mouse(zebkit.MOUSE_MOVE, 60, 75)
     view.send_mouse(zebkit.MOUSE_DOWN, 60, 75, zebkit.BUTTON_LEFT, 1)
     view.send_mouse(zebkit.MOUSE_UP, 60, 75, zebkit.BUTTON_LEFT, 1)
@@ -239,6 +243,16 @@ def check_offscreen(url):
     view.request_frame()
     check(wait(lambda: any(f["width"] == 640 and f["height"] == 480 for f in frames), 10), "set_size at scale 2",
           [(f["width"], f["height"]) for f in frames[-3:]])
+    # A <select>'s list: on_popup(bounds), then None when it is gone (Rust's and Go's shape).
+    ev(view, "document.body.insertAdjacentHTML('beforeend', '<select id=pick style=\"position:absolute;left:250px;"
+             "top:10px\"><option>a</option><option>b</option></select>'); 1")
+    view.send_mouse(zebkit.MOUSE_DOWN, 265, 20, zebkit.BUTTON_LEFT, 1)
+    view.send_mouse(zebkit.MOUSE_UP, 265, 20, zebkit.BUTTON_LEFT, 1)
+    shown = wait(lambda: any(isinstance(p, dict) and p.get("width", 0) > 0 for p in popups), 10)
+    view.send_key(zebkit.KEY_DOWN, key_code=27, code="Escape", key="Escape")
+    view.send_key(zebkit.KEY_UP, key_code=27, code="Escape", key="Escape")
+    check(shown and wait(lambda: popups and popups[-1] is None, 10), "on_popup(bounds), None once gone", popups[-3:])
+    view.on_popup(None)
     view.on_frame(None)
     return view
 
@@ -551,6 +565,271 @@ def check_review_fixes(url):
           "__all__ names what the module has", [n for n in zebkit.__all__ if not hasattr(zebkit, n)])
 
 
+AUTOMATION = b"""<title>Automation parity</title>
+<iframe id=inner srcdoc="<button id=deep onclick=&quot;this.textContent='pressed'&quot;>Deep</button>"></iframe>
+<p id=out>none</p>"""
+
+
+def check_automation(base):
+    """What Rust's automation has that Python got for parity: Locator.content_frame,
+    BrowserContext.id, call(), on_event(), the command() methods,
+    on_protocol_event(), a goto()'s Response and its body, and the requests that
+    requestfinished names."""
+    from zebkit.automation import Page, call, new_context, on_event, run
+    results = {}
+
+    async def test():
+        page = Page(width=400, height=300)
+        events, finished = [], []
+        page.on_protocol_event(lambda name, params: events.append(name))
+        page.on("requestfinished", finished.append)
+        response = await page.goto(base + "/automation")
+        results["response"] = (response.status, (await response.text())[:40])
+        await page.locator("#inner").content_frame.locator("#deep").click()
+        results["content_frame"] = await page.frame_locator("#inner").locator("#deep").text_content()
+        results["command"] = (await page.command("Frame.title")).get("value")
+        results["locator_command"] = (await page.locator("#out").command("Frame.textContent")).get("value")
+        results["call"] = (await call(page.view, "Frame.evaluateExpression", {"expression": "1 + 2"})).get("value")
+        results["events"] = "Page.request" in events
+        results["finished"] = [r.url for r in finished]
+        context = await new_context()
+        results["context"] = context.id
+        results["context_command"] = isinstance(await context.command("BrowserContext.cookies"), dict)
+        await context.close()
+        # (Before on_event(), which takes the page's events.)
+        # The only dialog listener gone (wait_for_event()'s after its event,
+        # one cancelled): a dialog no longer holds the page.
+        waiting = page.wait_for_event("dialog")
+        await page.evaluate("() => { setTimeout(() => alert('one'), 0); }")
+        dialog = await waiting
+        await dialog.accept()
+        cancelled = page.wait_for_event("filechooser")
+        results["cancel"] = cancelled.cancel() and not page._listeners.get("filechooser")
+        try:
+            await cancelled
+        except zebkit.Error:
+            results["cancel"] = results["cancel"] and True
+        results["after"] = await page.evaluate("() => { alert('two'); return 'after ' + confirm('three'); }")
+        await page.evaluate("() => { const i = document.createElement('input'); i.type = 'file'; i.id = 'f';"
+                            " window.__closed = null; i.oncancel = () => window.__closed = 'cancel';"
+                            " i.onchange = () => window.__closed = 'change'; document.body.append(i); }")
+        await page.locator("#f").click()
+        for _ in range(100):
+            results["chooser"] = await page.evaluate("() => window.__closed")
+            if results["chooser"]:
+                break
+            await page.wait_for_timeout(30)
+        seen = []
+        on_event(page.view, lambda name, params: seen.append(name))
+        await call(page.view, "Frame.evaluateExpression", {"expression": "location.reload()"})
+        for _ in range(100):
+            if seen:
+                break
+            await page.wait_for_timeout(20)
+        results["on_event"] = bool(seen)
+        on_event(page.view, None)
+        page.view.close()
+
+    future = run(test())
+    wait(future.done, 60)
+    if future.done() and future._error is not None:
+        check(False, "automation parity ran", repr(future._error))
+    check(results.get("after") == "after false", "a dialog after the last listener went is dismissed",
+          results.get("after"))
+    check(results.get("cancel") is True, "wait_for_event(): Future.cancel() removes its listener",
+          results.get("cancel"))
+    check(bool(results.get("chooser")), "a file chooser after its listener was cancelled is not held",
+          results.get("chooser"))
+    check(results.get("response") == (200, "<title>Automation parity</title>\n<iframe"),
+          "goto()'s Response and its body", results.get("response"))
+    check(results.get("content_frame") == "pressed", "Locator.content_frame", results.get("content_frame"))
+    check(results.get("command") == "Automation parity" and results.get("locator_command") == "none",
+          "Page.command() and Locator.command()", (results.get("command"), results.get("locator_command")))
+    check(results.get("call") == 3 and results.get("events"), "call() and on_protocol_event()",
+          (results.get("call"), results.get("events")))
+    check(any(url.endswith("/automation") for url in results.get("finished", [])),
+          "requestfinished names the whole request", results.get("finished"))
+    check(bool(results.get("context")) and results.get("context_command"), "BrowserContext.id and command()",
+          results.get("context"))
+    check(results.get("on_event"), "on_event()")
+
+
+def check_new_api(url, base):
+    """What came with the C API's new functions: bind_call() and Call (answered
+    later, from another thread, once; dropped unanswered, zebkit_call_free), the
+    _async forms of cdp_listen, open_external and show_in_folder, the off-screen
+    constructor's error, on_process_gone, on_download_result,
+    on_responsiveness, export_native_window's new callback, a refused user
+    agent override, and Page.add_init_script()'s Disposable."""
+    view = zebkit.View(url, 320, 240)
+    loaded(view, url)
+    view.grant("*", zebkit.ALLOW_APP)
+    kept = []
+
+    def later(call):
+        kept.append(call)
+
+    view.bind_call("later", later)
+    view.bind_call("dropped", lambda call: None)
+    view.bind_call("twice", lambda call: (call.resolve(call.args[0] * 2), kept.append(call)))
+    view.bind_call("raises", lambda call: 1 / 0)
+    view.reload()
+    loaded(view, url)
+    ev(view, "window.answer = zebkit.app.later(20, 1).then(v => 'later ' + v, e => 'rejected'); 1")
+    check(wait(lambda: kept), "bind_call(): the function gets the call")
+    call = kept.pop()
+    check(call.args == [20, 1] and call.origin.startswith("http://127.0.0.1"), "Call.args and Call.origin",
+          (call.args, call.origin))
+    threading.Thread(target=lambda: call.resolve(call.args[0] + call.args[1])).start()
+    check(ev(view, "window.answer") == "later 21", "a Call answered later, from another thread")
+    try:
+        call.reject("again")
+        again = None
+    except zebkit.Error as error:
+        again = str(error)
+    check(again is not None and call.answered, "a second answer raises, and frees nothing", again)
+    answer = ev(view, "zebkit.app.dropped().then(() => 'resolved', e => 'rejected: ' + e.message)")
+    check(answer == "rejected: the application dropped the call", "a Call let go unanswered: zebkit_call_free",
+          answer)
+    answer = ev(view, "zebkit.app.twice(4)")
+    check(answer == 8 and kept and kept[-1].answered, "resolve() in the function, the call kept", answer)
+    del kept[:]
+    answer = ev(view, "zebkit.app.raises().then(() => 'resolved', e => 'rejected')")
+    check(answer == "rejected", "an exception before the answer rejects", answer)
+
+    # The _async forms: told later, on the engine's thread.
+    told = {}
+    zebkit.cdp_listen_async(None, 0, lambda port, ws, error: told.update(cdp=(port, ws, error)))
+    check("cdp" not in told, "cdp_listen_async(): told after it returns")
+    check(wait(lambda: "cdp" in told, 15), "cdp_listen_async(): told")
+    port, ws, error = told.get("cdp", (0, None, "none"))
+    check(port > 0 and ws and ws.startswith("ws://") and error is None and zebkit.cdp_port() == port,
+          "cdp_listen_async(): the port and the browser's address", told.get("cdp"))
+    zebkit.cdp_listen_async(None, port + 1, lambda port, ws, error: told.update(other=(port, ws, error)))
+    check(wait(lambda: "other" in told) and told["other"][0] == 0 and told["other"][2],
+          "cdp_listen_async(): another port while it listens is an error", told.get("other"))
+    zebkit.cdp_stop()
+    zebkit.open_external_async("javascript:alert(1)", lambda done, error: told.update(external=(done, error)))
+    check(wait(lambda: "external" in told) and told["external"][0] is False and told["external"][1],
+          "open_external_async(): a javascript: URL refused", told.get("external"))
+    missing = os.path.join(tempfile.gettempdir(), "zebkit-parity-not-there", "nothing.txt")
+    zebkit.show_in_folder_async(missing, lambda done, error: told.update(folder=(done, error)))
+    check(wait(lambda: "folder" in told, 15) and told["folder"][0] is False and told["folder"][1],
+          "show_in_folder_async(): a file that is not there", told.get("folder"))
+
+    # The off-screen constructor's error is the engine's.
+    context = zebkit.Context()
+    context.close()
+    try:
+        zebkit.View.offscreen(url, 10, 10, 1.0, context=context)
+        refused = None
+    except zebkit.Error as error:
+        refused = str(error)
+    check(bool(refused), "View.offscreen(): the engine's error", refused)
+
+    # export_native_window: (view, handle, data) now; an off-screen view has none.
+    offscreen = zebkit.View.offscreen(url, 40, 40, 1.0)
+    handles = []
+    offscreen.export_native_window(handles.append)
+    check(wait(lambda: handles) and handles == [None], "export_native_window(): an off-screen view has none",
+          handles)
+    offscreen.close()
+
+    # The user agent override's rule, the engine's and every binding's:
+    # invalid options are taken (True) and told once, after the call returns;
+    # False, never called back, only for a closed view.
+    answers = []
+    queued = view.set_user_agent_override({"userAgent": 42}, lambda value, error: answers.append(error))
+    nul = view.set_user_agent_override('{"userAgent":"a\0b"}', lambda value, error: answers.append(error))
+    told_at_once = list(answers)
+    not_json = view.set_user_agent_override({"userAgent": object()}, lambda value, error: answers.append(error))
+    wait(lambda: len(answers) >= 3, 5)
+    end = time.monotonic() + .3
+    while time.monotonic() < end:
+        zebkit.pump()
+        time.sleep(.005)
+    check(queued and nul and not_json and told_at_once == [] and len(answers) == 3 and all(answers),
+          "set_user_agent_override(): invalid options taken, each told once after it returns",
+          (queued, nul, not_json, told_at_once, answers))
+    closed = zebkit.View(None, 20, 20)
+    closed.close()
+    wait(lambda: closed._closed, 5)
+    late = []
+    refused = closed.set_user_agent_override({"userAgent": "x"}, lambda value, error: late.append(error))
+    wait(lambda: late, .3)
+    check(refused is False and late == [], "set_user_agent_override(): a closed view is False, never told",
+          (refused, late))
+
+    # Call.close(): drops the call now, as Rust's drop(call) and Go's Close().
+    view.bind_call("closed", lambda call: (kept.append(call), call.close()))
+    answer = ev(view, "zebkit.app.closed().then(() => 'resolved', e => 'rejected: ' + e.message)")
+    check(answer == "rejected: the application dropped the call" and kept and kept[-1].answered,
+          "Call.close() drops it unanswered", answer)
+    kept[-1].close()
+    try:
+        kept[-1].resolve(1)
+        again = None
+    except zebkit.Error as error:
+        again = str(error)
+    check(again is not None, "an answer after Call.close() raises; a second close() does nothing", again)
+    del kept[:]
+
+    # find(): a NUL or text that is not UTF-8 is refused, as in Go and Rust;
+    # the result is a FindResult.
+    refusals = []
+    for text in ("app\0le", "\ud83d"):
+        try:
+            view.find(text)
+        except zebkit.Error as error:
+            refusals.append(str(error))
+    check(len(refusals) == 2, "find(): a NUL or a lone surrogate is an Error", refusals)
+    results = []
+    view.on_find(results.append)
+    ev(view, "document.body.innerHTML = '<p>pear</p><p>pear</p>'; 1")
+    request = view.find("pear")
+    wait(lambda: any(r.request_id == request and r.final_update for r in results), 10)
+    last = view.find_result()
+    check(isinstance(last, zebkit.FindResult) and last.request_id == request and last.matches == 2
+          and last.active_match == 1 and last["matches"] == 2 and last.text == "pear",
+          "find_result() and on_find(): a FindResult", last)
+    view.on_find(None)
+    view.stop_finding()
+
+    # The page's process gone: told, the view stays and loads again.
+    gone = []
+    view.on_process_gone(gone.append)
+    view.on_responsiveness(lambda event: None)
+    view.on_download_result(lambda event: None)
+    view.load("chrome://crash")
+    check(wait(lambda: gone, 20) and gone[0].get("reason") == "crashed" and "exitCode" in gone[0],
+          "on_process_gone(): crashed", gone)
+    view.load(url)
+    check(loaded(view, url), "the view loads again after its process went")
+    view.on_process_gone(None)
+    view.on_responsiveness(None)
+    view.on_download_result(None)
+
+    # Page.add_init_script(): a Disposable that takes it away.
+    from zebkit.automation import Page, run
+    results = {}
+
+    async def test():
+        page = Page(width=200, height=100)
+        disposable = await page.add_init_script("window.initialized = (window.initialized || 0) + 1")
+        await page.goto(base + "/automation")
+        results["with"] = await page.evaluate("window.initialized")
+        await disposable.dispose()
+        await page.reload()
+        results["without"] = await page.evaluate("window.initialized === undefined")
+        page.view.close()
+
+    future = run(test())
+    wait(future.done, 60)
+    check(results == {"with": 1, "without": True}, "add_init_script(): a Disposable whose dispose() removes it",
+          (results, future._error if future.done() else "not done"))
+    view.close()
+
+
 def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -569,6 +848,8 @@ def main():
         check_media(base)
         check_pdf()
         check_review_fixes(url)
+        check_automation(base)
+        check_new_api(url, base)
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
