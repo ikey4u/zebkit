@@ -32,6 +32,7 @@
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "gin/array_buffer.h"
 #include "gin/public/isolate_holder.h"
 #include "url/gurl.h"
@@ -57,6 +58,22 @@ namespace zebkit {
 namespace {
 
 constexpr int kMaxModules = 4096;
+
+// The path absolute with every link resolved (symbolic links, and on Windows
+// junctions and short names too); empty when nothing is there. On Windows
+// base::MakeAbsoluteFilePath() is only _wfullpath(): it neither resolves a link
+// nor asks whether the path exists, so there the final path of the file or
+// folder as opened, the way GetFinalPathNameByHandle() tells it.
+base::FilePath RealPath(const base::FilePath& path) {
+#if BUILDFLAG(IS_WIN)
+  base::FilePath real;
+  if (!base::NormalizeFilePath(path, &real))
+    return base::FilePath();
+  return real;
+#else
+  return base::MakeAbsoluteFilePath(path);
+#endif
+}
 
 v8::Local<v8::String> String8(v8::Isolate* isolate, std::string_view text) {
   return v8::String::NewFromUtf8(isolate, text.data(), v8::NewStringType::kNormal, static_cast<int>(text.size()))
@@ -525,7 +542,7 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::Resolve(v8::Local<v8::Context> contex
     return refuse("its importer is unknown");
   const base::FilePath path = PathFromUTF8(*from).DirName().Append(PathFromUTF8(name));
   // Links resolved: the file itself must be inside the folder.
-  const base::FilePath absolute = base::MakeAbsoluteFilePath(path);
+  const base::FilePath absolute = RealPath(path);
   if (absolute.empty())
     return refuse("no such file");
   if (!self->library_->root.IsParent(absolute))
@@ -1012,7 +1029,7 @@ zebkit_library* zebkit_library_load(const char* path, const char* options_json, 
   bool single_file = false;
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    const base::FilePath absolute = base::MakeAbsoluteFilePath(zebkit::PathFromUTF8(path));
+    const base::FilePath absolute = zebkit::RealPath(zebkit::PathFromUTF8(path));
     if (absolute.empty())
       return fail(std::string("no library at ") + path);
     if (base::DirectoryExists(absolute)) {
@@ -1020,7 +1037,9 @@ zebkit_library* zebkit_library_load(const char* path, const char* options_json, 
       entry = absolute.AppendASCII("index.mjs");
       if (!base::PathExists(entry) || base::DirectoryExists(entry))
         return fail(std::string("the folder ") + path + " has no index.mjs");
-      entry = base::MakeAbsoluteFilePath(entry);
+      entry = zebkit::RealPath(entry);
+      if (entry.empty())
+        return fail(std::string("the index.mjs of ") + path + " cannot be opened");
       if (!root.IsParent(entry))
         return fail(std::string("the index.mjs of ") + path + " is outside its folder");
     } else if (absolute.MatchesExtension(FILE_PATH_LITERAL(".mjs"))) {

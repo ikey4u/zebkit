@@ -703,6 +703,16 @@ if [[ -n "$build_only" ]]; then
         mkdir -p "$build_only/.cache/pdf"
         cp "$real_pdf" "$build_only/.cache/pdf/"
     fi
+    # The examples' library bundles (--fetch) are plain JavaScript, the same on
+    # every system: library.py tests them there too. Not work/ (node_modules,
+    # esbuild of this system): js-bundle.mjs is checked only where node runs it.
+    for js_library in markdown charts; do
+        if [[ -f "$CACHE_DIR/js-libraries/$js_library/index.mjs" ]]; then
+            mkdir -p "$build_only/.cache/js-libraries"
+            rm -rf "$build_only/.cache/js-libraries/$js_library"
+            cp -a "$CACHE_DIR/js-libraries/$js_library" "$build_only/.cache/js-libraries/"
+        fi
+    done
     log "built: run $build_only/scripts/engine-test.sh $profile --prebuilt $build_only/programs where they run"
     exit 0
 fi

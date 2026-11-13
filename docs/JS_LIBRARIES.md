@@ -258,7 +258,9 @@ change:
 - **A one-file library imports nothing**: its folder may hold other things
   (the application's resources), which "imports stay in the folder" would let
   it read as modules. A folder with `index.mjs` imports inside it, with links
-  resolved; bare and absolute specifiers are refused.
+  resolved (symbolic links everywhere; on Windows junctions and short names
+  too, by the final path of the opened file); bare and absolute specifiers
+  are refused.
 - **`fetch()` does not go through `zebkit_fetch()`**, which sends the
   profile's cookies: `library_web.cc` makes its own request on the same
   network stack (the default profile's loader factory, its cache and proxy)

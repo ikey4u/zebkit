@@ -175,13 +175,61 @@ for name, files, expect in cases:
         kind, error = outcome(lib.ready)
         assert kind == "LOAD_FAILED" and expect in str(error), (kind, str(error))
         lib.close()
-if hasattr(os, "symlink"):
-    with part("a link inside the folder to a file outside it is refused"):
-        folder = library("import-link", {"index.mjs": "import {secret} from './link.mjs'; export const s = () => secret;"})
-        os.symlink(os.path.join(outside, "secret.mjs"), os.path.join(folder, "link.mjs"))
+
+
+def make_link(target, link, kind):
+    """A link at link to target, of kind "symlink" or (Windows) "junction":
+    None, or why this machine cannot make one. A copy or a hard link would be
+    a file inside the folder, no escape, so neither stands in for a link."""
+    try:
+        if kind == "junction":
+            import _winapi
+            _winapi.CreateJunction(target, link)
+        else:
+            os.symlink(target, link, target_is_directory=os.path.isdir(target))
+    except (OSError, NotImplementedError, AttributeError) as error:
+        return "no %s: %s" % (kind, error)
+    return None
+
+
+def leads_to(link, target):
+    """Really a way out: the link resolves to the target."""
+    return os.path.normcase(os.path.realpath(link)) == os.path.normcase(os.path.realpath(target))
+
+
+link_cases = [("a file", "symlink", os.path.join(outside, "secret.mjs"), "link.mjs", "./link.mjs"),
+              ("a folder", "symlink", outside, "dir", "./dir/secret.mjs")]
+if os.name == "nt":
+    link_cases.append(("a folder (a junction)", "junction", outside, "junction", "./junction/secret.mjs"))
+for what, kind, target, name, specifier in link_cases:
+    title = "a %s inside the folder to %s outside it is refused" % ("junction" if kind == "junction" else "link", what)
+    folder = library("import-link-" + name, {
+        "index.mjs": "import {secret} from '%s'; export const s = () => secret;" % specifier})
+    why = make_link(target, os.path.join(folder, name), kind)
+    if why:
+        skip(title, why)
+        continue
+    with part(title):
+        assert leads_to(os.path.join(folder, name), target), (name, os.path.realpath(os.path.join(folder, name)))
         lib = L.load(folder)
-        kind, error = outcome(lib.ready)
-        assert kind == "LOAD_FAILED" and "outside" in str(error), (kind, str(error))
+        kind_, error = outcome(lib.ready)
+        assert kind_ == "LOAD_FAILED" and "outside" in str(error), (kind_, str(error))
+        lib.close()
+# The library itself through a link: its folder is where the link leads, and a
+# file there is inside it.
+real = library("linked-real", {"index.mjs": "import {v} from './v.mjs'; export const get = () => v;",
+                               "v.mjs": "export const v = 7;"})
+via = os.path.join(work, "linked-via")
+why = make_link(real, via, "symlink")
+if why and os.name == "nt":
+    why = make_link(real, via, "junction")
+if why:
+    skip("a library loaded through a link to its folder", why)
+else:
+    with part("a library loaded through a link to its folder works: its folder is the real one"):
+        assert leads_to(via, real), os.path.realpath(via)
+        lib = L.load(via)
+        assert outcome(lib.call("get")) == ("ok", 7)
         lib.close()
 with part("a one-file library loads, and imports nothing"):
     single = os.path.join(library("single", {"one.mjs": "export const hi = () => 'hi';"}), "one.mjs")
