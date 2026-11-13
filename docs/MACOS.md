@@ -47,8 +47,8 @@ An application links it with `-F<dir> -framework Zebkit -Wl,-rpath,<dir>`
 and calls `zebkit_main()` as on Linux. The framework loads only the
 system's frameworks and libraries; `scripts/engine-test.sh` checks that.
 
-The 0.4.0 archive is 153.3 MiB unpacked and 41.8 MiB as `.tar.xz`
-(`docs/releases/0.4.0.md`). Of the package as measured on 2026-10-31
+The 0.5.0 archive is 155.5 MiB unpacked and 42.0 MiB as `.tar.xz`
+(`docs/releases/0.5.0.md`; 0.4.0's was 153.3 and 41.8 MiB). Of the package as measured on 2026-10-31
 (Chromium 155, 150.1 MiB): `Zebkit` 133.3 MiB, ICU's data 6.5 MiB, the
 headers 8.4 MiB. `slim-macos` has `slim`'s `-O2` directories and
 link-time optimization, but not PGO, whose profile for macOS is not fetched yet

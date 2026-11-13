@@ -1,22 +1,24 @@
 # Playwright's commands: native, zebkit's endpoint and over CDP
 
+Engine: zebkit 0.5.0 (Chromium 157.0.8103.38), profile slim, measured 2026-11-13.
+
 `scripts/automation-bench.sh`, 50 runs of each (20 of `goto` and of each screenshot) after three to warm up,
 headless, tests/bench/automation/index.html served locally. Playwright is playwright-core 1.64.1 in Node.js.
 Medians in milliseconds; p90 in parentheses.
 
-| Operation | zebkit native | zebkit endpoint (Playwright protocol) (155.0.8059.84) | zebkit over CDP (155.0.8059.84) | Chrome over CDP (156.0.8078.4) | native vs over CDP |
+| Operation | zebkit native | zebkit endpoint (Playwright protocol) (157.0.8103.38) | zebkit over CDP (157.0.8103.38) | Chrome over CDP (156.0.8078.4) | native vs over CDP |
 |---|---|---|---|---|---|
-| goto | 11.15 (12.40) | 12.98 (13.67) | 11.15 (13.75) | 18.24 (21.40) | 1.0x faster |
-| evaluate 1+1 | 0.24 (0.29) | 0.65 (0.75) | 0.57 (0.69) | 0.49 (0.60) | 2.4x faster |
-| locator.textContent | 0.23 (0.33) | 0.70 (0.82) | 1.12 (1.31) | 0.81 (1.08) | 4.9x faster |
-| locator.click | 2.04 (3.08) | 3.47 (4.04) | 33.40 (34.05) | 33.31 (34.34) | 16.4x faster |
-| locator.fill | 2.14 (2.30) | 2.01 (2.57) | 3.52 (5.02) | 2.86 (5.43) | 1.6x faster |
-| locator.press Enter | 0.59 (0.93) | 0.98 (1.48) | 3.36 (5.17) | 2.64 (2.96) | 5.7x faster |
-| locator.isVisible | 0.48 (0.51) | 0.86 (0.97) | 0.76 (1.20) | 0.62 (0.78) | 1.6x faster |
-| locator.count (200) | 0.23 (0.27) | 0.71 (1.20) | 0.93 (1.54) | 0.64 (0.72) | 4.0x faster |
-| allTextContents (200) | 0.34 (0.37) | 1.86 (2.46) | 2.29 (3.32) | 1.91 (3.29) | 6.7x faster |
-| getByRole click | 3.01 (3.09) | 3.65 (4.63) | 33.39 (34.44) | 33.30 (34.15) | 11.1x faster |
-| screenshot | 12.43 (14.50) | 16.71 (17.63) | 50.20 (53.87) | 33.82 (47.16) | 4.0x faster |
-| screenshot jpeg | 13.88 (20.05) | 14.43 (17.01) | 49.57 (52.72) | 32.89 (39.62) | 3.6x faster |
-| screenshot clip | 13.19 (17.43) | 18.80 (27.57) | 51.16 (53.69) | 33.44 (51.21) | 3.9x faster |
-| screenshot pixels | 9.27 (15.89) |  |  |  |  |
+| goto | 10.67 (14.48) | 12.56 (13.71) | 11.86 (16.04) | 18.12 (21.76) | 1.1x faster |
+| evaluate 1+1 | 0.27 (0.35) | 0.66 (0.85) | 0.61 (0.86) | 0.46 (0.68) | 2.3x faster |
+| locator.textContent | 0.23 (0.32) | 0.74 (0.97) | 1.14 (1.39) | 0.90 (1.01) | 5.0x faster |
+| locator.click | 1.93 (3.00) | 3.57 (4.52) | 33.40 (34.23) | 33.40 (33.88) | 17.3x faster |
+| locator.fill | 2.11 (2.18) | 2.13 (2.63) | 3.83 (5.79) | 3.20 (8.28) | 1.8x faster |
+| locator.press Enter | 0.77 (0.99) | 0.91 (1.11) | 3.24 (4.68) | 2.36 (2.63) | 4.2x faster |
+| locator.isVisible | 0.29 (0.31) | 0.63 (0.73) | 0.71 (0.77) | 0.84 (1.21) | 2.4x faster |
+| locator.count (200) | 0.23 (0.26) | 0.68 (0.75) | 0.76 (0.80) | 0.73 (1.05) | 3.3x faster |
+| allTextContents (200) | 0.30 (0.40) | 1.86 (2.80) | 2.13 (2.44) | 1.96 (2.41) | 7.1x faster |
+| getByRole click | 2.92 (3.09) | 3.67 (4.60) | 33.33 (34.64) | 33.29 (33.81) | 11.4x faster |
+| screenshot | 13.41 (14.63) | 17.16 (26.88) | 50.34 (53.45) | 33.43 (35.82) | 3.8x faster |
+| screenshot jpeg | 13.50 (15.04) | 13.58 (16.01) | 47.16 (50.25) | 33.16 (35.45) | 3.5x faster |
+| screenshot clip | 13.60 (15.47) | 17.38 (25.12) | 50.00 (51.70) | 33.84 (44.92) | 3.7x faster |
+| screenshot pixels | 9.59 (10.96) |  |  |  |  |

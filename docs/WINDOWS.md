@@ -192,6 +192,6 @@ under it. Not tried here. Chrome decides it in its own code, not by the default.
 - The example of frames in another process.
 - D3D11 frames on a real GPU. The size-trained inliner with `lld-link`.
 
-The 0.4.0 archive is 252.6 MiB unpacked and 75.7 MiB as `.tar.xz`, against Linux's 184.1
-and 62.5 MiB (`docs/releases/0.4.0.md`); `zebkit_sandbox.lib`, which an application links
+The 0.5.0 archive is 255.0 MiB unpacked and 75.6 MiB as `.tar.xz`, against Linux's 186.4
+and 62.6 MiB (`docs/releases/0.5.0.md`; 0.4.0's was 252.6 and 75.7 MiB); `zebkit_sandbox.lib`, which an application links
 but does not ship, is in it.

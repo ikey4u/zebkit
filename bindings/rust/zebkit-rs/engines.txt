@@ -4,6 +4,6 @@
 #
 # Written by scripts/release.sh. The build script refuses an archive whose
 # checksum is not the one here.
-0.4.0 aarch64-apple-darwin b94bf42c6485b6226b667fe5cdb80f341b24d1a4a1d41297039d79ccd02945c8
-0.4.0 x86_64-pc-windows-msvc dc3f5a7fb41b37b6e57ee0ff26acee3a1efaf1a1e18006845943a06923806637
-0.4.0 x86_64-unknown-linux-gnu 8d46b2d1265cb9d6e492c902073670a43e1e975d173f169dbd878ed931b1e385
+0.5.0 aarch64-apple-darwin 7054d6f2079445c008ae78d99ce7ceec697cc927a8632b9e99f0c4d2a632dbd1
+0.5.0 x86_64-pc-windows-msvc f048a644729611b589f887c6e6d5ed901fd597eeef845a0790254c720b825948
+0.5.0 x86_64-unknown-linux-gnu 1115f031d4a331bd30d147586fcfebb3976046f0a5c6b250afae042ed8804b64

@@ -27,7 +27,7 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 - **The real Chrome engine.** Pages see Chromium 157, its user agent and
   client hints, and nothing of a debugger attached.
 - **Lighter than Electron.** Against the latest Electron, 45.2.1, on Linux
-  (2026-11-08, Chromium 157):
+  (2026-11-08, Chromium 157 as released in 0.3.0):
   33% smaller as an application ships it, a cold start in 2.3 s against
   5.8, a blank page in 27% less memory, JavaScript and the DOM 6% faster,
   text layout level ([Benchmark](#benchmark)).
@@ -35,7 +35,7 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
   API, media saved as it plays, 2D drawing, find in page as Chrome finds,
   the 17 C libraries inside the engine, your own URL schemes.
 - **For agents and tests.** Playwright's API inside the engine, a click in
-  2 to 4 ms where Playwright over CDP takes 33 (2026-11-07, Chromium 155);
+  1.93 to 2.92 ms where Playwright over CDP takes 33 (2026-11-13, Chromium 157);
   CDP; an MCP server.
 - **The desktop is the application's.** Every decision the engine would
   take, and everything it would show the person, goes through a hook of
@@ -47,7 +47,7 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later), X11, and Wayland with `--ozone-platform=wayland` (experimental: `docs/ROADMAP.md`): `libzebkit.so.1` and `zebkit-helper` |
 | macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |
-| Version | `VERSION`: 0.4.0 |
+| Version | `VERSION`: 0.5.0 |
 
 ## Quick start
 
@@ -59,9 +59,9 @@ and `include/`. A release has one archive for each system, on
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `zebkit-0.4.0-x86_64-unknown-linux-gnu.tar.xz` |
-| macOS, Apple silicon | `zebkit-0.4.0-aarch64-apple-darwin.tar.xz` |
-| Windows x64 | `zebkit-0.4.0-x86_64-pc-windows-msvc.tar.xz` |
+| Linux x86-64 | `zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz` |
+| macOS, Apple silicon | `zebkit-0.5.0-aarch64-apple-darwin.tar.xz` |
+| Windows x64 | `zebkit-0.5.0-x86_64-pc-windows-msvc.tar.xz` |
 
 Each archive also holds the tools, built for its system beside the library
 and ready to run from where it is unpacked: `zebkit-run`, `zebkit-js` and
@@ -169,9 +169,9 @@ On Windows the executable takes part in Chromium's sandbox: it links
 ### Linux
 
 ```sh
-curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.4.0/zebkit-0.4.0-x86_64-unknown-linux-gnu.tar.xz
-tar -xJf zebkit-0.4.0-x86_64-unknown-linux-gnu.tar.xz
-PKG=$PWD/zebkit-0.4.0-x86_64-unknown-linux-gnu
+curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.5.0/zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz
+tar -xJf zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz
+PKG=$PWD/zebkit-0.5.0-x86_64-unknown-linux-gnu
 
 cc thumb.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o thumb
 ./thumb report.pdf                      # 2 pages; page 1 says: Quarterly report ...
@@ -188,9 +188,9 @@ of its own, add `--no-sandbox` (`docs/SANDBOX.md`).
 ### macOS
 
 ```sh
-curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.4.0/zebkit-0.4.0-aarch64-apple-darwin.tar.xz
-tar -xJf zebkit-0.4.0-aarch64-apple-darwin.tar.xz
-PKG=$PWD/zebkit-0.4.0-aarch64-apple-darwin
+curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.5.0/zebkit-0.5.0-aarch64-apple-darwin.tar.xz
+tar -xJf zebkit-0.5.0-aarch64-apple-darwin.tar.xz
+PKG=$PWD/zebkit-0.5.0-aarch64-apple-darwin
 
 cc thumb.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o thumb
 ./thumb report.pdf
@@ -209,7 +209,7 @@ Unpack the archive (7-Zip, or `tar -xJf` in Git Bash), then, in a command
 prompt with LLVM's `clang-cl` on the path:
 
 ```bat
-set PKG=%CD%\zebkit-0.4.0-x86_64-pc-windows-msvc
+set PKG=%CD%\zebkit-0.5.0-x86_64-pc-windows-msvc
 clang-cl /MT thumb.c /I%PKG%\include %PKG%\zebkit.dll.lib /Fe%PKG%\thumb.exe
 %PKG%\thumb.exe report.pdf
 clang-cl /MT app.c /I%PKG%\include %PKG%\zebkit.dll.lib %PKG%\zebkit_sandbox.lib /Fe%PKG%\app.exe
@@ -337,11 +337,11 @@ checks its SHA-256. `ZEBKIT_DIR` points it at a package instead
 
 ```toml
 [dependencies]
-zebkit = "0.4.0"
+zebkit = "0.5.0"
 serde_json = "1"   # for the example's JSON
 
 [build-dependencies]
-zebkit-build = "0.4.0"
+zebkit-build = "0.5.0"
 ```
 
 ```rust
@@ -373,7 +373,7 @@ with `ZEBKIT_DIR` pointing at it (`bindings/python/README.md`):
 
 ```sh
 pip install zebkit
-export ZEBKIT_DIR=/path/to/zebkit-0.4.0-x86_64-unknown-linux-gnu
+export ZEBKIT_DIR=/path/to/zebkit-0.5.0-x86_64-unknown-linux-gnu
 ```
 
 ```python
@@ -397,7 +397,7 @@ the same version (`zebkit.BindingVersion`); 0.4.0 had no Go binding. Build
 with the engine's headers and library:
 
 ```sh
-go get github.com/ikey4u/zebkit/bindings/golang@v0.4.0
+go get github.com/ikey4u/zebkit/bindings/golang@v0.5.0
 export CGO_CFLAGS="-I$ZEBKIT_DIR/include" CGO_LDFLAGS="-L$ZEBKIT_DIR -Wl,-rpath,$ZEBKIT_DIR"   # Linux
 ```
 
@@ -578,9 +578,9 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
 - **Playwright's API, natively.** The whole of Playwright (locators,
   actions that wait until they can be done, keyboard, mouse and touch,
   routes, dialogs, downloads, contexts, workers, traces, HAR, video) runs
-  inside the engine, without CDP or a Node.js driver: up to 16 times as fast
-  as the same commands over CDP, a click in 2 to 4 ms instead of 33
-  (2026-11-07, Chromium 155; `<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
+  inside the engine, without CDP or a Node.js driver: up to 17.3 times as fast
+  as the same commands over CDP, a click in 1.93 to 2.92 ms instead of 33
+  (2026-11-13, zebkit 0.5.0 on Chromium 157.0.8103.38; `<zebkit/automation.h>`, `docs/AUTOMATION.md`). Playwright's own
   clients, in any of its languages, connect to it unchanged with
   `chromium.connect()`.
 - **Made for agents.** `tools/zebkit-mcp` gives them pages, PDFs, files, media
@@ -638,6 +638,11 @@ its hot paths as they were (`docs/releases/0.4.0.md`).
 | Ten popular sites: CPU loading / memory | **18.3 s / 4495 MB** | 19.8 s / 4661 MB | 8% / 4% less |
 | Processes, a page | 7 | **6** | one more: storage sandboxed in its own, as Chrome |
 
+0.5.0's release build, measured on 2026-11-13 on the same Chromium
+157.0.8103.38, is 185.2 MiB uncompressed and 62.2 MiB as `.tar.xz`, against
+Electron 45.2.1 trimmed's 260.5 MiB (`docs/reports/slim.md`, the package
+with its headers).
+
 - **Size.** zebkit keeps the whole web platform applications use: HTML, CSS,
   JavaScript with every JIT tier, WebAssembly, WebGL, media with H.264 and AAC,
   HTTP/3, PDF.
@@ -649,24 +654,23 @@ its hot paths as they were (`docs/releases/0.4.0.md`).
   The Verge and the CPU they take loading, where advertising and video decide.
 - How each number is made: `docs/SIZE_AND_SPEED.md`.
 
-### Playwright's commands (2026-11-07, Chromium 155)
+### Playwright's commands (2026-11-13, Chromium 157)
 
-The same Playwright commands three ways, headless, medians, 2026-11-07:
-zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
-1.64.1; not run again on Chromium 157 (`docs/reports/automation-bench.md`,
-`scripts/automation-bench.sh`):
+The same Playwright commands three ways, headless, medians, 2026-11-13:
+zebkit 0.5.0 on Chromium 157.0.8103.38, Chrome 156.0.8078.4, playwright-core
+1.64.1 (`docs/reports/automation-bench.md`, `scripts/automation-bench.sh`):
 
 | | zebkit's API, in-process | Your Playwright scripts, connected to zebkit | Playwright with Chrome 156 |
 |---|---:|---:|---:|
-| `locator.click()` | **2.0 ms** | 3.5 ms | 33.3 ms |
-| `locator.fill()` | 2.1 ms | **2.0 ms** | 2.9 ms |
-| `locator.press('Enter')` | **0.59 ms** | 0.98 ms | 2.6 ms |
-| `locator.textContent()` | **0.23 ms** | 0.70 ms | 0.81 ms |
-| `allTextContents()` of 200 | **0.34 ms** | 1.9 ms | 1.9 ms |
-| `page.goto()` | **11.2 ms** | 13.0 ms | 18.2 ms |
-| `page.screenshot()` | **12.4 ms** | 16.7 ms | 33.8 ms |
-| `page.screenshot({type: 'jpeg'})` | **13.9 ms** | 14.4 ms | 32.9 ms |
-| the screenshot's pixels, unencoded | **9.3 ms** | | |
+| `locator.click()` | **1.93 ms** | 3.57 ms | 33.40 ms |
+| `locator.fill()` | **2.11 ms** | 2.13 ms | 3.20 ms |
+| `locator.press('Enter')` | **0.77 ms** | 0.91 ms | 2.36 ms |
+| `locator.textContent()` | **0.23 ms** | 0.74 ms | 0.90 ms |
+| `allTextContents()` of 200 | **0.30 ms** | 1.86 ms | 1.96 ms |
+| `page.goto()` | **10.67 ms** | 12.56 ms | 18.12 ms |
+| `page.screenshot()` | **13.41 ms** | 17.16 ms | 33.43 ms |
+| `page.screenshot({type: 'jpeg'})` | **13.50 ms** | 13.58 ms | 33.16 ms |
+| the screenshot's pixels, unencoded | **9.59 ms** | | |
 
 - **zebkit's API, in-process**: your program calls the command through
   `<zebkit/automation.h>`, Python's `zebkit.automation`, Rust's
@@ -680,14 +684,15 @@ zebkit on Chromium 155.0.8059.84, Chrome 156.0.8078.4, playwright-core
   several round trips over CDP, no JSON between processes, no Node.js process
   (Playwright's alone reached 175 MiB); and the frames a click's checks wait for
   are made at once instead of at 60 Hz on a page without a display.
-- **A screenshot is 2.7 times faster**: the fresh frame it takes is made at
+- **A screenshot is 2.5 times faster** (13.41 against 33.43 ms): the fresh frame it takes is made at
   once instead of at the next 60 Hz tick, the PNG is deflated at level 1 with
   the Up filter (2 ms where Chrome's default level takes 13, for 59 KB
   instead of 40 KB on this page), and the picture's shared memory is made in
-  one call instead of a page fault at a time. What is left of the 12 ms is the
-  page's frame (4 ms), copying the picture out of the compositor (4 ms) and
-  encoding it (4 ms). The pixels themselves, with no encoding
-  (`zebkit_automation_screenshot_pixels()`, zebkit's own), take 9 ms. Over CDP
+  one call instead of a page fault at a time. What was left of the 12 ms of
+  2026-11-07 (Chromium 155) was the page's frame (4 ms), copying the picture
+  out of the compositor (4 ms) and encoding it (4 ms). The pixels themselves,
+  with no encoding (`zebkit_automation_screenshot_pixels()`, zebkit's own),
+  take 9.59 ms. Over CDP
   zebkit does what Chrome does: frames at 60 Hz, Chrome's PNG.
 
 ## Reference

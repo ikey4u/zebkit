@@ -758,45 +758,46 @@ disposal also removes the replay entry used for future pages. Linux client
 regressions cover these cases, compressed-response timings and sizes, POST
 uploads, navigation response identity and response-body reads.
 
-## 6. What it costs (2026-11-07, Chromium 155)
+## 6. What it costs (2026-11-13, Chromium 157)
 
 `scripts/automation-bench.sh` (`docs/reports/automation-bench.md`), the
 page of section 1, 50 runs each (20 of `goto` and of each screenshot),
-headless, on one machine, 2026-11-07, zebkit on Chromium 155.0.8059.84; not
-run again on Chromium 157. Medians; the endpoint is Playwright's
+headless, on one machine, 2026-11-13, zebkit 0.5.0 on Chromium
+157.0.8103.38, profile slim. Medians; the endpoint is Playwright's
 own client (playwright-core 1.64.1) connected to `zebkit_automation_listen()`,
 with no CDP in between:
 
 | Operation | zebkit native | zebkit endpoint, Playwright's client | zebkit, Playwright over CDP | Chrome 156, Playwright over CDP | native vs over CDP |
 |---|---|---|---|---|---|
-| `evaluate(() => 1 + 1)` | 0.24 ms | 0.65 ms | 0.57 ms | 0.49 ms | 2.4x |
-| `locator.textContent()` | 0.23 ms | 0.70 ms | 1.12 ms | 0.81 ms | 4.9x |
-| `locator.isVisible()` | 0.48 ms | 0.86 ms | 0.76 ms | 0.62 ms | 1.6x |
-| `locator.count()` (200) | 0.23 ms | 0.71 ms | 0.93 ms | 0.64 ms | 4.0x |
-| `allTextContents()` (200) | 0.34 ms | 1.86 ms | 2.29 ms | 1.91 ms | 6.7x |
-| `locator.fill()` | 2.14 ms | 2.01 ms | 3.52 ms | 2.86 ms | 1.6x |
-| `locator.press('Enter')` | 0.59 ms | 0.98 ms | 3.36 ms | 2.64 ms | 5.7x |
-| `locator.click()` | 2.04 ms | 3.47 ms | 33.40 ms | 33.31 ms | 16.4x |
-| `getByRole().click()` | 3.01 ms | 3.65 ms | 33.39 ms | 33.30 ms | 11.1x |
-| `page.screenshot()` | 12.43 ms | 16.71 ms | 50.20 ms | 33.82 ms | 4.0x |
-| `page.screenshot({type: 'jpeg'})` | 13.88 ms | 14.43 ms | 49.57 ms | 32.89 ms | 3.6x |
-| `page.screenshot({clip})`, the viewport | 13.19 ms | 18.80 ms | 51.16 ms | 33.44 ms | 3.9x |
-| `zebkit_automation_screenshot_pixels()` | 9.27 ms | | | | |
-| `page.goto()` (local) | 11.15 ms | 12.98 ms | 11.15 ms | 18.24 ms | 1.0x |
+| `evaluate(() => 1 + 1)` | 0.27 ms | 0.66 ms | 0.61 ms | 0.46 ms | 2.3x |
+| `locator.textContent()` | 0.23 ms | 0.74 ms | 1.14 ms | 0.90 ms | 5.0x |
+| `locator.isVisible()` | 0.29 ms | 0.63 ms | 0.71 ms | 0.84 ms | 2.4x |
+| `locator.count()` (200) | 0.23 ms | 0.68 ms | 0.76 ms | 0.73 ms | 3.3x |
+| `allTextContents()` (200) | 0.30 ms | 1.86 ms | 2.13 ms | 1.96 ms | 7.1x |
+| `locator.fill()` | 2.11 ms | 2.13 ms | 3.83 ms | 3.20 ms | 1.8x |
+| `locator.press('Enter')` | 0.77 ms | 0.91 ms | 3.24 ms | 2.36 ms | 4.2x |
+| `locator.click()` | 1.93 ms | 3.57 ms | 33.40 ms | 33.40 ms | 17.3x |
+| `getByRole().click()` | 2.92 ms | 3.67 ms | 33.33 ms | 33.29 ms | 11.4x |
+| `page.screenshot()` | 13.41 ms | 17.16 ms | 50.34 ms | 33.43 ms | 3.8x |
+| `page.screenshot({type: 'jpeg'})` | 13.50 ms | 13.58 ms | 47.16 ms | 33.16 ms | 3.5x |
+| `page.screenshot({clip})`, the viewport | 13.60 ms | 17.38 ms | 50.00 ms | 33.84 ms | 3.7x |
+| `zebkit_automation_screenshot_pixels()` | 9.59 ms | | | | |
+| `page.goto()` (local) | 10.67 ms | 12.56 ms | 11.86 ms | 18.12 ms | 1.1x |
 
 - **A click no longer waits for the display**: frames on demand (4.6) make
   the frames Playwright's stability check and the input's delivery wait for
-  at once, so a click takes 2 to 3 ms instead of the display's two frames
+  at once, so a click takes 1.93 to 2.92 ms (2026-11-13) instead of the display's two frames
   (33 ms at 60 Hz, which Playwright over CDP still pays on zebkit and on
   Chrome alike). A click through the endpoint gets the same. Since
   2026-11-07 a frame on demand comes within a millisecond (it was 2), and
   the frames stay on demand 100 ms after a command: a click went from 4.9 to
-  2.0 ms. `fill` went from 0.7 to 2.1 ms in this benchmark for the same
+  2.0 ms (2026-11-07, Chromium 155). `fill` went from 0.7 to 2.1 ms in this benchmark for the same
   reason: the frame its change asks for is made at once, and the next
   `fill` comes in behind it (a 2 ms frame of this page's 200 items); it used
   to be made after the command, at 60 Hz.
-- **A screenshot, 31.5 ms natively on 2026-11-02, is 12.4 ms**, where
-  Playwright with Chrome takes 33.8 ms. It already had frames on demand; a
+- **A screenshot, 31.5 ms natively on 2026-11-02, was 12.4 ms on 2026-11-07
+  (Chromium 155) and is 13.41 ms on 2026-11-13 (Chromium 157)**, where
+  Playwright with Chrome takes 33.43 ms. It already had frames on demand; a
   native screenshot of the bench page, traced (`--trace-startup`), was:
   messaging and the renderer's steps 3.5 ms, the frame of the page's new
   surface 3.9 ms, the compositor's copy 2.1 ms, the copy put in shared
@@ -818,25 +819,25 @@ with no CDP in between:
   - Frames on demand within a millisecond, and kept 100 ms after a command
     (a screenshot's emulation, undone after it, was otherwise drawn at 60 Hz
     and the next screenshot waited for it, 16 ms more one time in five).
-  What is left: the page's frame 3.8 ms, the compositor's copy and its shared
+  What was left on 2026-11-07 (Chromium 155): the page's frame 3.8 ms, the compositor's copy and its shared
   memory 3.7 ms, the PNG 4.2 ms, the steps 3 ms. The pixels with no
-  encoding (`zebkit_automation_screenshot_pixels()`, `patches/1081`) take
-  9.3 ms. Taking the viewport without a clip (no emulation) was tried and
+  encoding (`zebkit_automation_screenshot_pixels()`, `patches/1081`) took
+  9.3 ms then, 9.59 ms on 2026-11-13. Taking the viewport without a clip (no emulation) was tried and
   saved nothing. Over CDP zebkit does what Chrome does (Playwright's
   `Page.captureScreenshot`, Chromium's own handler, frames at 60 Hz, the
-  Balanced PNG), and still takes a frame more than Chrome there (50 against
-  34 ms).
-- **Everything else that is not a navigation is 1.6 to 6.7 times faster**
+  Balanced PNG), and still takes a frame more than Chrome there (50.34
+  against 33.43 ms on 2026-11-13).
+- **Everything else that is not a navigation is 1.8 to 7.1 times faster**
   natively: one renderer call where Playwright makes several round trips,
   no JSON between processes.
 - **The endpoint sits between the two**: Playwright's client still runs in
   Node.js and speaks its protocol over a WebSocket, but the server's work is
   native; for commands that are round trips (press, textContent, fill) it
-  is 1.3 to 3.9 times faster than Playwright over CDP, and the same for
-  single-round-trip ones (evaluate, count). A screenshot through the
-  endpoint costs a base64 PNG in JSON over the socket and Playwright's
-  client (16.7 ms against 12.4 ms natively, twice as fast as Chrome's
-  33.8).
+  is 1.5 to 3.6 times faster than Playwright over CDP on zebkit, and about
+  the same for single-round-trip ones (evaluate, count). A screenshot
+  through the endpoint costs a base64 PNG in JSON over the socket and
+  Playwright's client (17.16 ms against 13.41 ms natively, about twice as
+  fast as Chrome's 33.43).
 - **`goto` answers at the load event, as Chromium's lifecycle does**: it
   waited for `DidFinishLoad` until 2026-11-02, which Blink sends only after
   it has laid the page out once more after the load event (`Document::

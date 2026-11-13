@@ -225,8 +225,8 @@ its windows and its process are its own.
 ### Measurements
 
 - **The comparison with Electron** (`scripts/electron-compare.sh`, the current
-  numbers in `docs/reports/electron-compare.md`, Electron 45.2.1 on Chromium 157,
-  2026-11-08). Left of it:
+  numbers in `docs/reports/electron-compare.md`: Electron 45.2.1 against zebkit
+  on Chromium 157.0.8103.38 as released in 0.3.0, 2026-11-08). Left of it:
   - **A headless capture one frame later than Chrome's** over CDP
     (`Page.captureScreenshot`, JPEG too).
   - **Conditions not met yet**: one real application on both hosts, an EPUB,

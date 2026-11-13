@@ -88,7 +88,7 @@ import (
 // BindingVersion is the version of zebkit this binding is made for. Init and
 // Main compare it with the engine's (Version): a different major or minor
 // version fails, a different patch level only warns.
-const BindingVersion = "0.4.0"
+const BindingVersion = "0.5.0"
 
 func init() {
 	// The engine's thread is the one that starts it: the main thread, which

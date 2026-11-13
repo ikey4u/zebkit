@@ -1,5 +1,7 @@
 # zebkit and Electron 45.2.1 on macOS, measured the same way
 
+> History: measured 2026-11-02 on Chromium 155.0.8059.84; not measured again for 0.5.0, whose test Mac's screen is locked, so its windows count as hidden and paint timings there would not be valid.
+
 `tests/bench/equal/compare.py` on a Mac (Apple silicon, 10 cores, macOS 27, a person's desktop, not otherwise busy: load 2 to 2.7), 2026-11-02: zebkit `slim-macos` (Chromium 155.0.8059.84, without PGO) and Electron 45.2.1 for arm64, each in a window on the real display, taking turns. Medians, lowest and highest run in parentheses. Memory here is the sum of each process's phys_footprint (`footprint`), which leaves shared code out: it is not PSS and is not comparable with the Linux report. No cold start: macOS cannot drop a file from its cache without root. Size: zebkit's framework with its headers 157.0 MiB (47.5 `.tar.xz`, 66.5 `.zip`), Electron.app 257.4 MiB (81.0, 114.9).
 
 ## Engines

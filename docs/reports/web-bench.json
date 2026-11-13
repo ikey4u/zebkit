@@ -1,902 +1,186 @@
 {
- "local:static": {
-  "zebkit": {
-   "label": "zebkit|local:static",
-   "load_cpu_s": 0.25,
-   "rest_cpu_pct": 0.0,
-   "pss_mb": 172,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
+ "engine": "Engine: zebkit 0.5.0 (Chromium 157.0.8103.38), profile slim, measured 2026-11-13",
+ "electron": "45.2.1",
+ "pages": {
+  "local:static": {
+   "zebkit": {
+    "label": "zebkit|local:static",
+    "load_cpu_s": 0.25,
+    "rest_cpu_pct": 0.0,
+    "pss_mb": 169,
+    "processes": 7,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 2,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "browser": 0.11,
+     "gpu-process": 0.08,
+     "renderer": 0.03,
+     "utility:mojom": 0.02,
+     "zygote": 0.01
+    },
+    "url": "file://./tests/bench/web/local/static.html",
+    "title": "Static article",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     0.0,
+     0.0,
+     0.0
+    ]
    },
-   "cpu_by_kind": {
-    "browser": 0.11,
-    "gpu-process": 0.07,
-    "utility:mojom": 0.03,
-    "renderer": 0.03,
-    "zygote": 0.01
-   },
-   "url": "file://./tests/bench/web/local/static.html",
-   "title": "Static article",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.0,
-    0.0,
-    0.0
-   ]
+   "electron": {
+    "label": "electron|local:static",
+    "load_cpu_s": 0.52,
+    "rest_cpu_pct": 0.1,
+    "pss_mb": 235,
+    "processes": 6,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 1,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "browser": 0.29,
+     "gpu-process": 0.09,
+     "utility:mojom": 0.06,
+     "zygote": 0.06,
+     "renderer": 0.03
+    },
+    "url": "file://./tests/bench/web/local/static.html",
+    "title": "Static article",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     0.1,
+     0.0,
+     0.1
+    ]
+   }
   },
-  "electron": {
-   "label": "electron|local:static",
-   "load_cpu_s": 0.6,
-   "rest_cpu_pct": 0.0,
-   "pss_mb": 262,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
+  "local:animation": {
+   "zebkit": {
+    "label": "zebkit|local:animation",
+    "load_cpu_s": 0.85,
+    "rest_cpu_pct": 6.3,
+    "pss_mb": 179,
+    "processes": 7,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 2,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "gpu-process": 1.17,
+     "renderer": 0.78,
+     "browser": 0.11,
+     "utility:mojom": 0.02,
+     "zygote": 0.02
+    },
+    "url": "file://./tests/bench/web/local/animation.html",
+    "title": "Animation",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     6.3,
+     5.6,
+     6.4
+    ]
    },
-   "cpu_by_kind": {
-    "browser": 0.34,
-    "gpu-process": 0.11,
-    "utility:mojom": 0.06,
-    "renderer": 0.05,
-    "zygote": 0.04
-   },
-   "url": "file://./tests/bench/web/local/static.html",
-   "title": "Static article",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.0,
-    0.0,
-    0.0
-   ]
-  }
- },
- "local:animation": {
-  "zebkit": {
-   "label": "zebkit|local:animation",
-   "load_cpu_s": 0.74,
-   "rest_cpu_pct": 5.4,
-   "pss_mb": 179,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "gpu-process": 0.99,
-    "renderer": 0.69,
-    "browser": 0.1,
-    "utility:mojom": 0.02,
-    "zygote": 0.01
-   },
-   "url": "file://./tests/bench/web/local/animation.html",
-   "title": "Animation",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    5.4,
-    5.7,
-    5.1
-   ]
+   "electron": {
+    "label": "electron|local:animation",
+    "load_cpu_s": 1.01,
+    "rest_cpu_pct": 5.9,
+    "pss_mb": 241,
+    "processes": 6,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 1,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "gpu-process": 1.11,
+     "renderer": 0.74,
+     "browser": 0.29,
+     "utility:mojom": 0.05,
+     "zygote": 0.05
+    },
+    "url": "file://./tests/bench/web/local/animation.html",
+    "title": "Animation",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     5.9,
+     6.0,
+     5.1
+    ]
+   }
   },
-  "electron": {
-   "label": "electron|local:animation",
-   "load_cpu_s": 1.03,
-   "rest_cpu_pct": 4.5,
-   "pss_mb": 267,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
+  "local:heavy": {
+   "zebkit": {
+    "label": "zebkit|local:heavy",
+    "load_cpu_s": 0.96,
+    "rest_cpu_pct": 0.5,
+    "pss_mb": 323,
+    "processes": 7,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 2,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "renderer": 0.77,
+     "browser": 0.14,
+     "gpu-process": 0.11,
+     "utility:mojom": 0.03,
+     "zygote": 0.02
+    },
+    "url": "file://./tests/bench/web/local/heavy.html",
+    "title": "Heavy page (0)",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     0.5,
+     0.6,
+     0.5
+    ]
    },
-   "cpu_by_kind": {
-    "gpu-process": 0.93,
-    "renderer": 0.57,
-    "browser": 0.33,
-    "utility:mojom": 0.05,
-    "zygote": 0.05
-   },
-   "url": "file://./tests/bench/web/local/animation.html",
-   "title": "Animation",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    4.3,
-    4.5,
-    4.7
-   ]
-  }
- },
- "local:heavy": {
-  "zebkit": {
-   "label": "zebkit|local:heavy",
-   "load_cpu_s": 1.01,
-   "rest_cpu_pct": 0.6,
-   "pss_mb": 321,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.85,
-    "browser": 0.13,
-    "gpu-process": 0.12,
-    "utility:mojom": 0.03,
-    "zygote": 0.02
-   },
-   "url": "file://./tests/bench/web/local/heavy.html",
-   "title": "Heavy page (0)",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.6,
-    0.5,
-    0.6
-   ]
-  },
-  "electron": {
-   "label": "electron|local:heavy",
-   "load_cpu_s": 1.43,
-   "rest_cpu_pct": 0.6,
-   "pss_mb": 387,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.95,
-    "browser": 0.37,
-    "gpu-process": 0.13,
-    "utility:mojom": 0.05,
-    "zygote": 0.04
-   },
-   "url": "file://./tests/bench/web/local/heavy.html",
-   "title": "Heavy page (0)",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.5,
-    0.6,
-    0.6
-   ]
-  }
- },
- "en.wikipedia.org/wiki/Charles_Darwin": {
-  "zebkit": {
-   "label": "zebkit|en.wikipedia.org/wiki/Charles_Darwin",
-   "load_cpu_s": 1.04,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 279,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.65,
-    "browser": 0.19,
-    "utility:mojom": 0.1,
-    "gpu-process": 0.1,
-    "zygote": 0.0
-   },
-   "url": "https://en.wikipedia.org/wiki/Charles_Darwin",
-   "title": "Charles Darwin - Wikipedia",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.1,
-    0.0,
-    0.1
-   ]
-  },
-  "electron": {
-   "label": "electron|en.wikipedia.org/wiki/Charles_Darwin",
-   "load_cpu_s": 1.29,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 351,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.58,
-    "browser": 0.41,
-    "utility:mojom": 0.13,
-    "gpu-process": 0.12,
-    "zygote": 0.05
-   },
-   "url": "https://en.wikipedia.org/wiki/Charles_Darwin",
-   "title": "Charles Darwin - Wikipedia",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.0,
-    0.1,
-    0.1
-   ]
-  }
- },
- "www.google.com/": {
-  "zebkit": {
-   "label": "zebkit|www.google.com/",
-   "load_cpu_s": 1.16,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 246,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.69,
-    "browser": 0.18,
-    "gpu-process": 0.15,
-    "utility:mojom": 0.12,
-    "zygote": 0.0
-   },
-   "url": "https://www.google.com/",
-   "title": "Google",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.0,
-    0.1,
-    0.1
-   ]
-  },
-  "electron": {
-   "label": "electron|www.google.com/",
-   "load_cpu_s": 1.52,
-   "rest_cpu_pct": 0.3,
-   "pss_mb": 323,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.73,
-    "browser": 0.4,
-    "gpu-process": 0.21,
-    "utility:mojom": 0.17,
-    "zygote": 0.06
-   },
-   "url": "https://www.google.com/",
-   "title": "Google",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.3,
-    0.4,
-    0.2
-   ]
-  }
- },
- "www.youtube.com/": {
-  "zebkit": {
-   "label": "zebkit|www.youtube.com/",
-   "load_cpu_s": 3.32,
-   "rest_cpu_pct": 2.0,
-   "pss_mb": 479,
-   "processes": 9,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 3,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 2.75,
-    "browser": 0.41,
-    "utility:mojom": 0.28,
-    "gpu-process": 0.27,
-    "zygote": 0.02
-   },
-   "url": "https://www.youtube.com/",
-   "title": "YouTube",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    2.0,
-    3.5,
-    1.8
-   ]
-  },
-  "electron": {
-   "label": "electron|www.youtube.com/",
-   "load_cpu_s": 5.09,
-   "rest_cpu_pct": 1.9,
-   "pss_mb": 576,
-   "processes": 8,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 3.91,
-    "browser": 0.68,
-    "utility:mojom": 0.5,
-    "gpu-process": 0.33,
-    "zygote": 0.06
-   },
-   "url": "https://www.youtube.com/",
-   "title": "YouTube",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    1.9,
-    1.9,
-    4.8
-   ]
-  }
- },
- "github.com/torvalds/linux": {
-  "zebkit": {
-   "label": "zebkit|github.com/torvalds/linux",
-   "load_cpu_s": 2.66,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 326,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 1.78,
-    "browser": 0.36,
-    "gpu-process": 0.28,
-    "utility:mojom": 0.22,
-    "zygote": 0.0
-   },
-   "url": "https://github.com/torvalds/linux",
-   "title": "GitHub - torvalds/linux: Linux kernel source tree \u00b7 GitHub",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.2,
-    0.1,
-    0.1
-   ]
-  },
-  "electron": {
-   "label": "electron|github.com/torvalds/linux",
-   "load_cpu_s": 3.17,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 413,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 1.85,
-    "browser": 0.56,
-    "utility:mojom": 0.35,
-    "gpu-process": 0.34,
-    "zygote": 0.05
-   },
-   "url": "https://github.com/torvalds/linux",
-   "title": "GitHub - torvalds/linux: Linux kernel source tree \u00b7 GitHub",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.1,
-    0.1,
-    0.1
-   ]
-  }
- },
- "www.amazon.com/": {
-  "zebkit": {
-   "label": "zebkit|www.amazon.com/",
-   "load_cpu_s": 0.79,
-   "rest_cpu_pct": 39.6,
-   "pss_mb": 516,
-   "processes": 8,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 6.7,
-    "gpu-process": 1.67,
-    "utility:mojom": 0.32,
-    "browser": 0.31,
-    "zygote": 0.01
-   },
-   "url": "https://www.amazon.com/",
-   "title": "Amazon.com. Spend less. Smile more.",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    35.2,
-    41.2,
-    39.6
-   ]
-  },
-  "electron": {
-   "label": "electron|www.amazon.com/",
-   "load_cpu_s": 1.07,
-   "rest_cpu_pct": 49.3,
-   "pss_mb": 550,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 6.25,
-    "gpu-process": 3.3,
-    "browser": 0.69,
-    "utility:mojom": 0.64,
-    "zygote": 0.05
-   },
-   "url": "https://www.amazon.com/",
-   "title": "Amazon.com. Spend less. Smile more.",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    30.3,
-    53.2,
-    49.3
-   ]
-  }
- },
- "www.reddit.com/r/programming/": {
-  "zebkit": {
-   "label": "zebkit|www.reddit.com/r/programming/",
-   "load_cpu_s": 0.78,
-   "rest_cpu_pct": 4.0,
-   "pss_mb": 332,
-   "processes": 8,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 1.19,
-    "browser": 0.19,
-    "gpu-process": 0.1,
-    "utility:mojom": 0.08,
-    "zygote": 0.02
-   },
-   "url": "https://www.reddit.com/r/programming/",
-   "title": "Reddit - Prove your humanity",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    4.0,
-    5.5,
-    1.7
-   ]
-  },
-  "electron": {
-   "label": "electron|www.reddit.com/r/programming/",
-   "load_cpu_s": 2.96,
-   "rest_cpu_pct": 30.3,
-   "pss_mb": 617,
-   "processes": 8,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 2,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 6.71,
-    "gpu-process": 1.04,
-    "browser": 0.72,
-    "utility:mojom": 0.55,
-    "zygote": 0.05
-   },
-   "url": "https://www.reddit.com/r/programming/?solution=6bd68bf3fe1e810a6bd68bf3fe1e810a&js_challenge=1&jsc_token=2824be10929bdc604753c70a67a1c331b98c18ba1250ffed76fb2a86dc894812&jsc_orig_r=",
-   "title": "programming",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    33.4,
-    30.3,
-    28.1
-   ]
-  }
- },
- "www.nytimes.com/": {
-  "zebkit": {
-   "label": "zebkit|www.nytimes.com/",
-   "load_cpu_s": 0.27,
-   "rest_cpu_pct": 85.9,
-   "pss_mb": 842,
-   "processes": 21,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 3,
-    "zygote": 2,
-    "renderer": 14,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 13.62,
-    "gpu-process": 1.7,
-    "utility:mojom": 1.11,
-    "browser": 1.0,
-    "zygote": 0.01
-   },
-   "url": "https://www.nytimes.com/",
-   "title": "The New York Times - Breaking News, US News, World News and Videos",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    66.3,
-    86.1,
-    85.9
-   ]
-  },
-  "electron": {
-   "label": "electron|www.nytimes.com/",
-   "load_cpu_s": 6.55,
-   "rest_cpu_pct": 72.7,
-   "pss_mb": 955,
-   "processes": 22,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 16,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 17.29,
-    "gpu-process": 1.78,
-    "utility:mojom": 1.74,
-    "browser": 1.61,
-    "zygote": 0.07
-   },
-   "url": "https://www.nytimes.com/",
-   "title": "The New York Times - Breaking News, US News, World News and Videos",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    68.2,
-    80.7,
-    72.7
-   ]
-  }
- },
- "www.bbc.com/news": {
-  "zebkit": {
-   "label": "zebkit|www.bbc.com/news",
-   "load_cpu_s": 1.99,
-   "rest_cpu_pct": 20.6,
-   "pss_mb": 498,
-   "processes": 13,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 7,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 4.37,
-    "browser": 0.77,
-    "utility:mojom": 0.62,
-    "gpu-process": 0.35,
-    "zygote": 0.01
-   },
-   "url": "https://www.bbc.com/news",
-   "title": "BBC News - Breaking news, video and the latest top stories from the U.S. and aro",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    22.8,
-    20.6,
-    20.3
-   ]
-  },
-  "electron": {
-   "label": "electron|www.bbc.com/news",
-   "load_cpu_s": 2.17,
-   "rest_cpu_pct": 18.6,
-   "pss_mb": 542,
-   "processes": 10,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 8,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 3.83,
-    "browser": 0.97,
-    "utility:mojom": 0.64,
-    "gpu-process": 0.28,
-    "zygote": 0.06
-   },
-   "url": "https://www.bbc.com/news",
-   "title": "BBC News - Breaking news, video and the latest top stories from the U.S. and aro",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    15.4,
-    18.6,
-    19.5
-   ]
-  }
- },
- "www.theverge.com/": {
-  "zebkit": {
-   "label": "zebkit|www.theverge.com/",
-   "load_cpu_s": 0.21,
-   "rest_cpu_pct": 43.2,
-   "pss_mb": 750,
-   "processes": 14,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 3,
-    "zygote": 2,
-    "renderer": 9,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 9.29,
-    "browser": 1.25,
-    "utility:mojom": 1.0,
-    "gpu-process": 0.34,
-    "zygote": 0.02
-   },
-   "url": "https://www.theverge.com/",
-   "title": "The Verge",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    43.2,
-    44.9,
-    29.8
-   ]
-  },
-  "electron": {
-   "label": "electron|www.theverge.com/",
-   "load_cpu_s": 4.01,
-   "rest_cpu_pct": 35.8,
-   "pss_mb": 853,
-   "processes": 23,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 17,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 7.76,
-    "browser": 1.82,
-    "utility:mojom": 1.17,
-    "gpu-process": 0.33,
-    "zygote": 0.09
-   },
-   "url": "https://www.theverge.com/",
-   "title": "The Verge",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    22.7,
-    35.8,
-    37.9
-   ]
-  }
- },
- "stackoverflow.com/questions/11227809": {
-  "zebkit": {
-   "label": "zebkit|stackoverflow.com/questions/11227809",
-   "load_cpu_s": 0.57,
-   "rest_cpu_pct": 42.3,
-   "pss_mb": 697,
-   "processes": 18,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 12,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 6.64,
-    "browser": 1.19,
-    "utility:mojom": 0.79,
-    "gpu-process": 0.38,
-    "zygote": 0.03
-   },
-   "url": "https://stackoverflow.com/questions/11227809/why-is-conditional-processing-of-a-sorted-array-faster-than-of-an-unsorted-array",
-   "title": "java - Why is conditional processing of a sorted array faster than of an unsorte",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    41.5,
-    45.2,
-    42.3
-   ]
-  },
-  "electron": {
-   "label": "electron|stackoverflow.com/questions/11227809",
-   "load_cpu_s": 0.74,
-   "rest_cpu_pct": 41.2,
-   "pss_mb": 813,
-   "processes": 16,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 11,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 5.9,
-    "browser": 1.57,
-    "utility:mojom": 1.06,
-    "gpu-process": 0.37,
-    "zygote": 0.07
-   },
-   "url": "https://stackoverflow.com/questions/11227809/why-is-conditional-processing-of-a-sorted-array-faster-than-of-an-unsorted-array",
-   "title": "java - Why is conditional processing of a sorted array faster than of an unsorte",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    28.7,
-    43.8,
-    41.2
-   ]
-  }
- },
- "www.apple.com/": {
-  "zebkit": {
-   "label": "zebkit|www.apple.com/",
-   "load_cpu_s": 1.21,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 302,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.74,
-    "browser": 0.22,
-    "gpu-process": 0.15,
-    "utility:mojom": 0.1,
-    "zygote": 0.01
-   },
-   "url": "https://www.apple.com/",
-   "title": "Apple",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.1,
-    0.1,
-    0.0
-   ]
-  },
-  "electron": {
-   "label": "electron|www.apple.com/",
-   "load_cpu_s": 1.53,
-   "rest_cpu_pct": 0.1,
-   "pss_mb": 365,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.71,
-    "browser": 0.43,
-    "gpu-process": 0.17,
-    "utility:mojom": 0.16,
-    "zygote": 0.06
-   },
-   "url": "https://www.apple.com/",
-   "title": "Apple",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.1,
-    0.0,
-    0.1
-   ]
-  }
- },
- "developer.mozilla.org/en-US/docs/Web/JavaScript": {
-  "zebkit": {
-   "label": "zebkit|developer.mozilla.org/en-US/docs/Web/JavaScript",
-   "load_cpu_s": 0.78,
-   "rest_cpu_pct": 0.0,
-   "pss_mb": 224,
-   "processes": 7,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 2,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "renderer": 0.36,
-    "browser": 0.21,
-    "gpu-process": 0.12,
-    "utility:mojom": 0.1,
-    "zygote": 0.0
-   },
-   "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
-   "title": "JavaScript | MDN",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.0,
-    0.1,
-    0.0
-   ]
-  },
-  "electron": {
-   "label": "electron|developer.mozilla.org/en-US/docs/Web/JavaScript",
-   "load_cpu_s": 1.1,
-   "rest_cpu_pct": 0.0,
-   "pss_mb": 322,
-   "processes": 6,
-   "process_kinds": {
-    "browser": 1,
-    "utility:mojom": 1,
-    "zygote": 2,
-    "renderer": 1,
-    "gpu-process": 1
-   },
-   "cpu_by_kind": {
-    "browser": 0.45,
-    "renderer": 0.36,
-    "utility:mojom": 0.19,
-    "gpu-process": 0.14,
-    "zygote": 0.05
-   },
-   "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
-   "title": "JavaScript | MDN",
-   "runs": 3,
-   "rest_cpu_pct_runs": [
-    0.1,
-    0.0,
-    0.0
-   ]
+   "electron": {
+    "label": "electron|local:heavy",
+    "load_cpu_s": 1.31,
+    "rest_cpu_pct": 0.5,
+    "pss_mb": 382,
+    "processes": 6,
+    "process_kinds": {
+     "browser": 1,
+     "utility:mojom": 1,
+     "zygote": 2,
+     "renderer": 1,
+     "gpu-process": 1
+    },
+    "cpu_by_kind": {
+     "renderer": 0.83,
+     "browser": 0.37,
+     "gpu-process": 0.13,
+     "utility:mojom": 0.06,
+     "zygote": 0.06
+    },
+    "url": "file://./tests/bench/web/local/heavy.html",
+    "title": "Heavy page (0)",
+    "runs": 3,
+    "rest_cpu_pct_runs": [
+     0.5,
+     0.5,
+     0.6
+    ]
+   }
   }
  }
 }

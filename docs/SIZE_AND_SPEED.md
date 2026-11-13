@@ -4,10 +4,11 @@ What zebkit weighs, where the bytes go, what was taken out and what was
 kept, and how the compiler is set between size and speed. Numbers are for
 Linux x86-64, from `scripts/measure.sh` (the package), `scripts/mapsize.py`
 (the engine's linker map), `scripts/bench.sh` and
-`scripts/electron-compare.sh`. "Now" and the first table of "Against
-Electron" are of the current engine, Chromium 157.0.8103.38 (the engine of
-0.3.0 and 0.4.0), measured on 2026-11-08. Every other section and table is
-history, and its heading says its date and its engine: Chromium was pinned
+`scripts/electron-compare.sh`. "Now" is of 0.5.0's release build, zebkit
+0.5.0 on Chromium 157.0.8103.38, profile `slim`, measured on 2026-11-13. The
+first table of "Against Electron" is of the same Chromium as released in
+0.3.0 (0.4.0 and 0.5.0 left its hot paths as they were), measured on
+2026-11-08. Every other section and table is history, and its heading says its date and its engine: Chromium was pinned
 to 157 on 2026-11-07, and was 155.0.8059.84 before. Where the usual advice for
 slimming Chromium disagrees with what was measured, the measurement wins.
 
@@ -15,15 +16,25 @@ slimming Chromium disagrees with what was measured, the measurement wins.
 
 | | Uncompressed | `.tar.xz` | `.zip` |
 |---|---:|---:|---:|
-| zebkit `slim`, Chromium 157, 2026-11-08 | **174.1 MiB** | **60.5 MiB** | **81.0 MiB** |
+| zebkit 0.5.0 `slim`, Chromium 157.0.8103.38, 2026-11-13 | **185.2 MiB** | **62.2 MiB** | **83.4 MiB** |
 | Electron 45.2.1, trimmed (the baseline) | 260.5 MiB | 87.1 MiB | 114.8 MiB |
-| zebkit of Electron | 67% | 69% | 71% |
+| zebkit of Electron | 71% | 71% | 73% |
 
-As an application ships it (`scripts/electron-compare.sh`'s size series:
-the package without the headers, with the thin host;
-`docs/reports/electron-compare.md`). As published, with the headers, 182.6,
-61.9 and 83.0 MiB. 0.4.0's Linux archive, with the tools, is 184.1 MiB
-unpacked and 62.5 MiB as `.tar.xz` (`docs/releases/0.4.0.md`).
+zebkit is the package `scripts/package.sh` assembles, with the headers, as
+`scripts/measure.sh` measures it (`docs/reports/slim.md`). Electron is
+trimmed to one locale and no licence file (`docs/reports/electron-compare.md`,
+2026-11-08).
+
+0.5.0's archives, with the tools: Linux 186.4 MiB unpacked and 62.6 MiB as
+`.tar.xz`, macOS 155.5 and 42.0 MiB, Windows 255.0 and 75.6 MiB
+(`docs/releases/0.5.0.md`). 0.4.0's were 184.1 and 62.5, 153.3 and 41.8,
+252.6 and 75.7 MiB (`docs/releases/0.4.0.md`).
+
+History. 2026-11-08, Chromium 157.0.8103.38 as released in 0.3.0
+(`docs/reports/electron-compare.md`): 174.1, 60.5 and 81.0 MiB as an
+application ships it (the package without the headers, with the thin host),
+67%, 69% and 71% of Electron; as published, with the headers, 182.6, 61.9
+and 83.0 MiB.
 
 History. 2026-11-06, Chromium 155: 171.2, 59.4 and 79.5 MiB. 2026-11-02: 160.8,
 54.9 and 73.1 MiB; since then CFI on virtual calls (+1.8%), on indirect
@@ -35,10 +46,12 @@ to 146,791,048: 0.08% less. Almost nothing, as what the shell linked was mostly 
 Chrome's origin trial policy in place of the shell's costs a page (4 KiB) of it.
 
 Where the package's bytes go, as `scripts/measure.sh` last wrote it
-(`docs/reports/slim.md`, 2026-10-28, Chromium 155): the engine library
-138.9 MiB; ICU's data 6.5 MiB, SwiftShader 3.3 MiB with its Vulkan loader 0.6 MiB,
-the headers an application builds against 7.6 MiB, V8's snapshots, the
-resource pack and ANGLE the rest.
+(`docs/reports/slim.md`, 2026-11-13, zebkit 0.5.0 on Chromium
+157.0.8103.38): the engine library 162.2 MiB; ICU's data 6.5 MiB,
+SwiftShader 3.4 MiB with its Vulkan loader 0.6 MiB, the third-party notices
+2.0 MiB; the headers an application builds against, V8's snapshots
+(0.7 and 0.4 MiB), the resource pack (0.5 MiB) and ANGLE the rest. On
+2026-10-28, Chromium 155, the engine library was 138.9 MiB.
 
 There was a limit of 150 MiB (owner, 2026-10-19), under which the engine
 was 147.1 MiB with PDFium and FFmpeg's additions. On 2026-10-21 the owner
@@ -552,7 +565,8 @@ The current comparison of pages is the "Sites" part of
 `docs/reports/electron-compare.md` (summed in "Against Electron" above).
 What pages cost to load and to keep showing, against Electron 44.9.0 on
 the same display, with the same user agent, measured by
-`scripts/web-bench.sh --sites` (`docs/reports/web-bench.md` has every page).
+`scripts/web-bench.sh --sites` (`docs/reports/web-bench.md` had every page
+until 2026-11-13; the commits have it).
 Fifteen pages: three local ones and twelve popular sites (Wikipedia,
 Google, YouTube, GitHub, Amazon, Reddit, The New York Times, BBC News, The
 Verge, Stack Overflow, Apple, MDN). Each is loaded for 10 s and shown for
@@ -601,7 +615,10 @@ Electron, `slim` stays the release build (owner, 2026-10-24).
 
 `scripts/web-bench.sh --check` runs the local pages against the limits in
 `tests/bench/web/limits.json`, so that a change that makes pages cost
-more fails.
+more fails. Its last run (`docs/reports/web-bench.md`, 2026-11-13, zebkit
+0.5.0 on Chromium 157.0.8103.38 against Electron 45.2.1), the three local
+pages summed: CPU loading 2.1 against 2.8 s, at rest 6.8% against 6.5% of a
+core (the animated page, 6.3% against 5.9%), memory 671 against 858 MB.
 
 ## Advice checked against the measurements
 
