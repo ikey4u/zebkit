@@ -219,7 +219,6 @@ Not run, or not fully:
 - Real windows with a person at the Mac: files dropped on a view, the menu bar's items
   and keys, and what is under "Not run" above.
 - Signing for distribution (Developer ID) and notarization.
-- Intel Macs (x86-64), if they are wanted.
 
 ## History
 

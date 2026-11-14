@@ -45,8 +45,9 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 |---|---|
 | Engine | Chromium 157.0.8103.38 (`upstream.lock`): content layer, Blink, V8 with every JIT tier |
 | Linux | x86-64, glibc 2.17 or newer (CentOS 7 and later), X11, and Wayland with `--ozone-platform=wayland` (experimental: `docs/ROADMAP.md`): `libzebkit.so.1` and `zebkit-helper` |
-| macOS | Apple silicon: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
+| macOS | Apple silicon and Intel: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |
+| Android, iOS | libzebkit without the engine (PDF, canvas, text, the services) and the viewer, which gives pages in the system's web view the global `zebkit` (`docs/MOBILE.md`, `docs/VIEWER.md`): `zebkit.aar` (arm64, x86-64), `Zebkit.xcframework` with a Swift package |
 | Version | `VERSION`: 0.5.0 |
 
 ## Quick start
@@ -61,11 +62,16 @@ and `include/`. A release has one archive for each system, on
 |---|---|
 | Linux x86-64 | `zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz` |
 | macOS, Apple silicon | `zebkit-0.5.0-aarch64-apple-darwin.tar.xz` |
+| macOS, Intel | `zebkit-0.5.0-x86_64-apple-darwin.tar.xz` |
 | Windows x64 | `zebkit-0.5.0-x86_64-pc-windows-msvc.tar.xz` |
+| Android (arm64, x86-64) | `zebkit-0.5.0-android.tar.xz`: `zebkit.aar`, `jni/<abi>/libzebkit.so`, `include/` |
+| iOS (devices, simulator) | `zebkit-0.5.0-ios.tar.xz`: the Swift package (`Package.swift`) with `Zebkit.xcframework` |
 
-Each archive also holds the tools, built for its system beside the library
+Each desktop archive also holds the tools, built for its system beside the library
 and ready to run from where it is unpacked: `zebkit-run`, `zebkit-js` and
-`zebkit-mcp` (`.exe` on Windows, sandboxed there too).
+`zebkit-mcp` (`.exe` on Windows, sandboxed there too). An Android
+application adds `zebkit.aar` to its dependencies; an iOS application adds
+the unpacked directory as a local Swift package (`docs/MOBILE.md`).
 
 To build a package instead (`docs/BUILD.md`; about 120 GB of disk and
 hours the first time), on Linux:

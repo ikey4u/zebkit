@@ -18,11 +18,13 @@
 //! others to build.
 //!
 //! On Android and iOS libzebkit is built without the engine (docs/MOBILE.md):
-//! `libzebkit.so` or `Zebkit.framework`, from `ZEBKIT_DIR` or the
-//! repository's `out/blink/slim-android/package` or `slim-ios/package`. It
-//! has PDF, canvas, text and the services without HTTP; nothing is
-//! downloaded for it. The engine's functions are declared all the same: a
-//! program that calls one does not link.
+//! `libzebkit.so` or `Zebkit.framework`, from `ZEBKIT_DIR`, the repository's
+//! `out/blink/slim-android/package` or `slim-ios/package`, or else the
+//! release's `zebkit-<version>-android` or `-ios` archive, which has every
+//! ABI (`jni/<abi>/`, `Zebkit.xcframework`), downloaded and checked as above.
+//! It has PDF, canvas, text, the services without HTTP and the viewer. The
+//! engine's functions are declared all the same: a program that calls one
+//! does not link.
 //!
 //! Environment:
 //!
@@ -66,7 +68,10 @@ fn main() {
     } else {
         "libzebkit.so.1"
     };
-    let profile = if macos {
+    let intel = env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "x86_64");
+    let profile = if macos && intel {
+        "slim-macos-intel"
+    } else if macos {
         "slim-macos"
     } else if windows {
         "slim-windows"
@@ -94,7 +99,7 @@ fn main() {
     } else if let Some(local) = locals.into_iter().find(|path| path.join(engine_name).exists()) {
         local
     } else {
-        download(&manifest)
+        download(&manifest, &env::var("TARGET").unwrap())
     };
     let directory = directory
         .canonicalize()
@@ -141,41 +146,52 @@ fn main() {
 /// libzebkit without the engine, on Android and iOS: from `ZEBKIT_DIR` or
 /// the repository's package of it (scripts/package-mobile.sh).
 fn link_mobile(manifest: &Path, ios: bool) {
-    let name = if ios { "Zebkit.framework" } else { "libzebkit.so" };
     let profile = if ios { "slim-ios" } else { "slim-android" };
     let local = manifest.join("../../../out/blink").join(profile).join("package");
+    let marker = if ios { "Zebkit.framework" } else { "libzebkit.so" };
     let directory = match env::var_os("ZEBKIT_DIR") {
         Some(given) => PathBuf::from(given),
-        None if local.join(name).exists() => local,
-        None => fail(&format!(
-            "there is no prebuilt zebkit for this target; build it \
-             (docs/MOBILE.md: scripts/build.sh {profile} zebkit/engine, scripts/package-mobile.sh {profile}) \
-             and set ZEBKIT_DIR to its package directory"
-        )),
+        None if local.join(marker).exists() => local,
+        // The release's package for every ABI: zebkit-<version>-android or -ios.
+        None => download(manifest, if ios { "ios" } else { "android" }),
     };
     let directory = directory
         .canonicalize()
         .unwrap_or_else(|_| fail(&format!("there is no directory {}", directory.display())));
-    let library = directory.join(name);
+    // A package of one profile has the library at its top; the release's has
+    // every ABI: jni/<abi>/ on Android, Zebkit.xcframework's slices on iOS.
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let simulator = env::var("TARGET").is_ok_and(|t| t.ends_with("-sim") || (ios && t.starts_with("x86_64")));
+    let found = if directory.join(marker).exists() {
+        directory.clone()
+    } else if ios {
+        directory.join("Zebkit.xcframework").join(if simulator { "ios-arm64-simulator" } else { "ios-arm64" })
+    } else {
+        directory.join("jni").join(match arch.as_str() {
+            "aarch64" => "arm64-v8a",
+            "x86_64" => "x86_64",
+            other => fail(&format!("zebkit has no Android library for {other}: arm64 and x86-64")),
+        })
+    };
+    let library = found.join(marker);
     if !library.exists() {
-        fail(&format!("{} has no {name}; it is not a zebkit package for {profile}", directory.display()));
+        fail(&format!("{} has no {marker} for this target; it is not a zebkit package for {profile}", directory.display()));
     }
     println!("cargo:rerun-if-changed={}", library.display());
     if ios {
-        println!("cargo:rustc-link-search=framework={}", directory.display());
+        println!("cargo:rustc-link-search=framework={}", found.display());
         println!("cargo:rustc-link-lib=framework=Zebkit");
     } else {
-        println!("cargo:rustc-link-search=native={}", directory.display());
+        println!("cargo:rustc-link-search=native={}", found.display());
         println!("cargo:rustc-link-lib=dylib=zebkit");
     }
-    println!("cargo:lib_dir={}", directory.display());
+    println!("cargo:lib_dir={}", found.display());
 }
 
 /// The engine for this crate's version and the target, from the cache or
 /// from the release page. Returns the directory it is unpacked in.
-fn download(manifest: &Path) -> PathBuf {
+fn download(manifest: &Path, target: &str) -> PathBuf {
     let version = env::var("CARGO_PKG_VERSION").unwrap();
-    let target = env::var("TARGET").unwrap();
     let engines = fs::read_to_string(manifest.join("engines.txt")).unwrap_or_default();
     let checksum = engines
         .lines()

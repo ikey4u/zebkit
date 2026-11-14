@@ -5,7 +5,8 @@
 #   scripts/ffmpeg-config.sh [--no-build]
 #
 # --no-build takes FFmpeg's builds already in the tree, from a run before;
-# FFMPEG_ONLY=<os> builds that system's and takes the others from a run before.
+# FFMPEG_ONLY=<os> or <os>/<arch> (mac/x64) builds that system's and takes the
+# others from a run before.
 #
 # Chromium's FFmpeg has what a browser plays. Applications need more of it
 # (audio resampled for Whisper, frames scaled, files remuxed, VP8 and
@@ -17,7 +18,7 @@
 #
 # The work is Chromium's own tools for FFmpeg (media/ffmpeg/scripts): FFmpeg's
 # configure and make for each platform zebkit builds (Linux x86-64, macOS
-# arm64 and Windows x64 from Linux), then generate_gn.py, which finds the sources of the
+# arm64 and x86-64, and Windows x64 from Linux), then generate_gn.py, which finds the sources of the
 # objects built. That writes into the FFmpeg tree it reads, so it runs on a
 # copy. Run again when Chromium's FFmpeg changes (a new CHROMIUM_VERSION).
 #
@@ -38,7 +39,7 @@ FLAGS=(
     --enable-decoder=libvpx_vp8,libvpx_vp9
     "--extra-cflags=-I$SRC_DIR/third_party/libvpx/source/libvpx"
 )
-PLATFORMS=("linux x64" "mac arm64" "win x64")
+PLATFORMS=("linux x64" "mac arm64" "mac x64" "win x64")
 
 ffmpeg="$SRC_DIR/third_party/ffmpeg"
 scripts="$SRC_DIR/media/ffmpeg/scripts"
@@ -58,16 +59,20 @@ if (( ! windows_sdk )); then
         log "no Windows SDK: skipping FFmpeg's build for Windows, taking the one of a run before (scripts/windows-toolchain.sh sets the SDK up)"
     else
         log "no Windows SDK and no build of a run before: skipping Windows; src/ffmpeg/ffmpeg_generated.gni and its renamed files stay as they are, only the other systems' configurations are written (scripts/windows-toolchain.sh sets the SDK up)"
-        PLATFORMS=("linux x64" "mac arm64")
+        PLATFORMS=("linux x64" "mac arm64" "mac x64")
     fi
 fi
 
 # configure checks that libvpx links, which the engine's does in the end:
 # a library with the two entry points does for the check.
 stub_libvpx() {
-    local os="$1" dir="$CACHE_DIR/ffmpeg-vpx-stub/$1"
+    local os="$1" arch="$2" dir="$CACHE_DIR/ffmpeg-vpx-stub/$1"
+    # The systems' first processors keep the name they had (it is in each
+    # configuration's comment); macOS on Intel has one of its own.
+    [[ "$os" == mac && "$arch" == x64 ]] && dir="$CACHE_DIR/ffmpeg-vpx-stub/mac-x64"
     local target=x86_64-unknown-linux-gnu
-    [[ "$os" == mac ]] && target=arm64-apple-macos13
+    [[ "$os" == mac && "$arch" == arm64 ]] && target=arm64-apple-macos13
+    [[ "$os" == mac && "$arch" == x64 ]] && target=x86_64-apple-macos13
     [[ "$os" == win ]] && target=x86_64-pc-windows-msvc
     mkdir -p "$dir"
     printf 'void *vpx_codec_vp8_dx(void) { return 0; }\nvoid *vpx_codec_vp9_dx(void) { return 0; }\n' > "$dir/stub.c"
@@ -83,12 +88,13 @@ build=1
 [[ "${1:-}" == --no-build ]] && build=0
 for platform in "${PLATFORMS[@]}"; do
     (( build )) || break
-    [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" ]] && continue
+    [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" && "${platform/ //}" != "$FFMPEG_ONLY" ]] && continue
     [[ "${platform%% *}" == win ]] && (( ! windows_sdk )) && continue
     [[ "${platform%% *}" != mac || -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] \
         || die "no macOS SDK to build FFmpeg for macOS; run scripts/zsdk-create.sh first, or FFMPEG_ONLY=linux"
     log "configuring and building FFmpeg for $platform"
-    stub="$(stub_libvpx "${platform%% *}")"
+    # shellcheck disable=SC2086
+    stub="$(stub_libvpx $platform)"
     libpath="-L$stub"
     [[ "${platform%% *}" == win ]] && libpath="/LIBPATH:$stub"
     # shellcheck disable=SC2086

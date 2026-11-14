@@ -335,7 +335,7 @@ def gather(spec, src):
     files = {}
     for pattern in spec["ship"]:
         root_key, _, glob = pattern.rpartition(":")
-        root = src / spec["roots"][root_key].format(config=FFMPEG_CONFIGS.get(TARGET, TARGET))
+        root = src / spec["roots"][root_key].format(config=ffmpeg_config())
         matches = sorted(root.glob(glob))
         if not matches:
             raise SystemExit(f"error: no {glob} under {root}")
@@ -430,6 +430,14 @@ MACHO = {"mac", "ios"}
 FFMPEG_CONFIGS = {"linux": "linux/x64", "mac": "mac/arm64", "win": "win/x64"}
 TARGET = "linux"
 CPU = ""
+
+
+def ffmpeg_config():
+    """zebkit's FFmpeg configuration directory for the target: "mac/x64" for
+    macOS on Intel, else the system's first."""
+    if TARGET == "mac" and CPU == "x64":
+        return "mac/x64"
+    return FFMPEG_CONFIGS.get(TARGET, TARGET)
 
 
 def triple():

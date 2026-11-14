@@ -5,8 +5,9 @@
 #   scripts/package-mobile.sh <slim-android | slim-ios | mobile-linux>
 #
 #   libzebkit.so                 Android (an APK's lib/<abi>/); mobile-linux
-#   zebkit.aar                   Android: dev.zebkit.ZebkitViewer, libzebkit.so
-#                                and ICU's data (assets/zebkit/icudtl.dat)
+#   zebkit.aar                   Android: dev.zebkit.ZebkitViewer, libzebkit.so of
+#                                every slim-android* profile packaged (arm64,
+#                                x86-64) and ICU's data (assets/zebkit/icudtl.dat)
 #   Zebkit.xcframework/          iOS, on a Mac: also copied to bindings/swift
 #   Zebkit.framework/            iOS: the binary, Info.plist, Headers/,
 #                                Modules/ (Swift's `import Zebkit`) and
@@ -50,27 +51,34 @@ cp "$OUT_DIR/icu/icudtl.dat" "$package/icudtl.dat"
 # for the profile's processor and ICU's data, for an application's
 # dependencies (implementation(files("zebkit.aar"))).
 make_aar() {
-    local cpu abi jdk android_jar work
-    cpu="$(sed -n 's/^target_cpu = "\(.*\)"/\1/p' <<< "$args" | tail -1)"
-    case "$cpu" in
-        arm64) abi=arm64-v8a ;;
-        x64) abi=x86_64 ;;
-        *) die "no Android ABI for target_cpu $cpu" ;;
-    esac
+    local jdk android_jar work other other_cpu abi
     jdk="$SRC_DIR/third_party/jdk/current/bin"
     android_jar="$(ls -d "$SRC_DIR"/third_party/android_sdk/public/platforms/android-*/android.jar | sort -V | tail -1)"
     [[ -x "$jdk/javac" && -f "$android_jar" ]] || die "no JDK or android.jar in the checkout (ZEBKIT_TARGET_OS=android scripts/fetch-upstream.sh)"
     work="$(mktemp -d)"
-    mkdir -p "$work/classes" "$work/aar/jni/$abi" "$work/aar/assets/zebkit"
+    mkdir -p "$work/classes" "$work/aar/assets/zebkit"
     "$jdk/javac" --release 11 -cp "$android_jar" -d "$work/classes" \
         $(find "$ZEBKIT_ROOT/bindings/android/src/main/java" -name '*.java')
     "$jdk/jar" cf "$work/aar/classes.jar" -C "$work/classes" .
     cp "$ZEBKIT_ROOT/bindings/android/AndroidManifest.xml" "$work/aar/"
-    cp "$package/libzebkit.so" "$work/aar/jni/$abi/"
+    # This profile's library, and those of the other slim-android* profiles
+    # packaged already (arm64 for devices, x86-64 for the emulator).
+    for other in "$OUT_DIR"/slim-android*/package/libzebkit.so; do
+        [[ -f "$other" ]] || continue
+        other_cpu="$(profile_args "$(basename "$(dirname "$(dirname "$other")")")" | sed -n 's/^target_cpu = "\(.*\)"/\1/p' | tail -1)"
+        case "$other_cpu" in
+            arm64) abi=arm64-v8a ;;
+            x64) abi=x86_64 ;;
+            *) die "no Android ABI for target_cpu $other_cpu" ;;
+        esac
+        mkdir -p "$work/aar/jni/$abi"
+        cp "$other" "$work/aar/jni/$abi/"
+    done
     cp "$package/icudtl.dat" "$work/aar/assets/zebkit/icudtl.dat"
     : > "$work/aar/R.txt"
     rm -f "$package/zebkit.aar"
     (cd "$work/aar" && "$jdk/jar" cfM "$package/zebkit.aar" .)
+    log "zebkit.aar: $(cd "$work/aar" && ls jni | paste -sd' ' -)"
     rm -rf "$work"
 }
 

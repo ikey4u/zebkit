@@ -3,14 +3,21 @@
 # machine, make the archives of it that the Rust crates download, and
 # optionally publish them on GitHub.
 #
-#   scripts/release.sh                 # dist/release, dist/release-macos, dist/release-windows, dist/zebkit-<version>-<target>.tar.xz and checksums
+#   scripts/release.sh                 # dist/release, dist/release-macos, dist/release-macos-intel, dist/release-windows,
+#                                      # dist/release-android, dist/zebkit-<version>-<target>.tar.xz and checksums
 #   scripts/release.sh --publish       # also create the GitHub release v<version> and upload them
 #   scripts/release.sh --publish-only  # publish what an earlier run built, without building
 #
-# A release has one archive for each system, all built here on Linux: the
-# Linux engine, and the macOS and Windows ones cross-built (docs/MACOS.md,
-# docs/WINDOWS.md). Each archive also holds zebkit-run, zebkit-js and
-# zebkit-mcp, built here from its package (build_tools below). The
+# A release has one archive for each system. Built here on Linux: the Linux
+# engine, and the macOS (Apple silicon and Intel) and Windows ones cross-built
+# (docs/MACOS.md, docs/WINDOWS.md), each also holding zebkit-run, zebkit-js and
+# zebkit-mcp, built here from its package (build_tools below); and Android's,
+# libzebkit without the engine for arm64 and x86-64 with zebkit.aar
+# (docs/MOBILE.md: zebkit-<version>-android). iOS's (Zebkit.xcframework and
+# the Swift package: zebkit-<version>-ios) is built on a Mac, as Chromium builds
+# iOS only there: scripts/release-ios.sh makes dist/release-ios, which is copied
+# here and packed with the rest; without it the run stops
+# (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS). The
 # checksums all go into engines.txt, and --publish uploads every archive of
 # this version that engines.txt names. Once the tag v<version> exists (here or
 # on origin) and its release has archives, nothing is built or packed for that
@@ -96,7 +103,7 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 engines="$ZEBKIT_ROOT/bindings/rust/zebkit-rs/engines.txt"
-rust_targets=(x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc)
+rust_targets=(x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc)
 tag="v$version"
 
 # origin_git <ls-remote|push> <arguments...>: that git command at origin; when
@@ -214,8 +221,11 @@ pack() {
     for notice in LICENSE NOTICE THIRD_PARTY_NOTICES.txt; do
         [[ -s "$dist/$notice" ]] || die "no $notice in $dist"
     done
-    [[ "$(grep -c '^The Rust crates compiled into zebkit-mcp\.$' "$dist/THIRD_PARTY_NOTICES.txt")" == 1 ]] \
-        || die "$dist/THIRD_PARTY_NOTICES.txt does not list zebkit-mcp's crates exactly once"
+    # The tools are the desktop's: Android's and iOS's packages have none.
+    if [[ -e "$dist/zebkit-mcp" || -e "$dist/zebkit-mcp.exe" ]]; then
+        [[ "$(grep -c '^The Rust crates compiled into zebkit-mcp\.$' "$dist/THIRD_PARTY_NOTICES.txt")" == 1 ]] \
+            || die "$dist/THIRD_PARTY_NOTICES.txt does not list zebkit-mcp's crates exactly once"
+    fi
     log "packing $name"
     # The same input gives the same archive: fixed order, owner and times.
     # S: the links inside a framework keep where they point. What Finder
@@ -276,6 +286,12 @@ build_tools() {
             link=(-F"$dist" -framework Zebkit -Wl,-rpath,@loader_path -Wl,-S -Wl,-x)
             rust_target=aarch64-apple-darwin
             ;;
+        macos-intel)
+            set_target_for_profile slim-macos-intel
+            cc=("$llvm_bin/clang" --target=x86_64-apple-macos13 -isysroot "$macos_sdk" -fuse-ld=lld)
+            link=(-F"$dist" -framework Zebkit -Wl,-rpath,@loader_path -Wl,-S -Wl,-x)
+            rust_target=x86_64-apple-darwin
+            ;;
         windows)
             set_target_for_profile slim-windows
             cc=("$llvm_bin/clang" --target=x86_64-pc-windows-msvc -Xmicrosoft-windows-sys-root "$windows_sysroot"
@@ -311,7 +327,7 @@ build_tools() {
             local upper
             upper="$(tr 'a-z-' 'A-Z_' <<< "$rust_target")"
             rust_env+=("CARGO_TARGET_${upper}_LINKER=$rust_linker")
-            [[ "$system" == macos ]] && rust_env+=(SDKROOT="$macos_sdk" MACOSX_DEPLOYMENT_TARGET=13.0)
+            [[ "$system" == macos* ]] && rust_env+=(SDKROOT="$macos_sdk" MACOSX_DEPLOYMENT_TARGET=13.0)
             ;;
     esac
     (cd "$ZEBKIT_ROOT/tools/zebkit-mcp" && heavy env "${rust_env[@]}" RUSTFLAGS="$rust_flags" \
@@ -359,6 +375,21 @@ build_tools "$macos" macos
 log "release build of zebkit for macOS arm64: $macos ($(du -sm "$macos" | cut -f1) MiB)"
 pack "$macos" aarch64-apple-darwin
 
+# macOS on Intel, cross-built here against the same SDK (zsdk-create.sh
+# macos-intel): dist/release-macos-intel.
+[[ -e "$SDK_DIR/macos-intel" ]] \
+    || die "macOS for Intel needs its SDK: scripts/zsdk-create.sh macos-intel (docs/MACOS.md)"
+"$ZEBKIT_ROOT/scripts/build.sh" slim-macos-intel
+"$ZEBKIT_ROOT/scripts/package.sh" slim-macos-intel
+macos_intel="$ZEBKIT_ROOT/dist/release-macos-intel"
+[[ -e "$OUT_DIR/slim-macos-intel/package/Zebkit.framework/Versions/A/Zebkit" ]] || die "packaging left no Zebkit.framework for Intel"
+mkdir -p "$macos_intel"
+find "$macos_intel" -mindepth 1 -delete
+cp -a "$OUT_DIR/slim-macos-intel/package/." "$macos_intel/"
+build_tools "$macos_intel" macos-intel
+log "release build of zebkit for macOS x86-64: $macos_intel ($(du -sm "$macos_intel" | cut -f1) MiB)"
+pack "$macos_intel" x86_64-apple-darwin
+
 # Windows x64, cross-built here: dist/release-windows. zebkit_sandbox.lib is
 # in it, for the application's executable (docs/WINDOWS.md).
 "$ZEBKIT_ROOT/scripts/build.sh" slim-windows
@@ -372,6 +403,39 @@ cp -a "$OUT_DIR/slim-windows/package/." "$windows/"
 build_tools "$windows" windows
 log "release build of zebkit for Windows x64: $windows ($(du -sm "$windows" | cut -f1) MiB)"
 pack "$windows" x86_64-pc-windows-msvc
+
+# Android, libzebkit without the engine (docs/MOBILE.md): arm64 for devices and
+# x86-64 for the emulator, in one package whose zebkit.aar has both.
+"$ZEBKIT_ROOT/scripts/build.sh" slim-android-x64 zebkit/engine
+"$ZEBKIT_ROOT/scripts/package-mobile.sh" slim-android-x64
+"$ZEBKIT_ROOT/scripts/build.sh" slim-android zebkit/engine
+"$ZEBKIT_ROOT/scripts/package-mobile.sh" slim-android
+android="$ZEBKIT_ROOT/dist/release-android"
+mkdir -p "$android"
+find "$android" -mindepth 1 -delete
+from="$OUT_DIR/slim-android/package"
+[[ -f "$from/zebkit.aar" ]] || die "packaging left no zebkit.aar"
+cp -a "$from/include" "$from/icudtl.dat" "$from/zebkit.aar" "$from/LICENSE" "$from/NOTICE" "$from/THIRD_PARTY_NOTICES.txt" "$android/"
+mkdir -p "$android/jni/arm64-v8a" "$android/jni/x86_64"
+cp "$from/libzebkit.so" "$android/jni/arm64-v8a/"
+cp "$OUT_DIR/slim-android-x64/package/libzebkit.so" "$android/jni/x86_64/"
+log "release build of zebkit for Android: $android ($(du -sm "$android" | cut -f1) MiB)"
+pack "$android" android
+
+# iOS: what scripts/release-ios.sh made on a Mac, copied here.
+ios="$ZEBKIT_ROOT/dist/release-ios"
+if [[ -d "$ios" ]]; then
+    plist="$ios/Zebkit.xcframework/ios-arm64/Zebkit.framework/Info.plist"
+    [[ -f "$plist" ]] || die "$ios has no Zebkit.xcframework for devices: make it with scripts/release-ios.sh on a Mac"
+    ios_version="$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$plist")"
+    [[ "$ios_version" == "$version" ]] || die "$ios is zebkit $ios_version, not $version: make it again with scripts/release-ios.sh"
+    log "release build of zebkit for iOS (from a Mac): $ios ($(du -sm "$ios" | cut -f1) MiB)"
+    pack "$ios" ios
+elif [[ "${ZEBKIT_RELEASE_NO_IOS:-}" == 1 ]]; then
+    log "no iOS in this release (ZEBKIT_RELEASE_NO_IOS=1)"
+else
+    die "no dist/release-ios: make it on a Mac with scripts/release-ios.sh and copy it here (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS)"
+fi
 fi
 
 if (( ! publish )); then

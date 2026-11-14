@@ -1,0 +1,8 @@
+# zebkit-base: slim-android
+# libzebkit for Android's x86-64 emulator (docs/MOBILE.md): with
+# slim-android's arm64, the two ABIs of the release's zebkit.aar
+# (scripts/package-mobile.sh puts every slim-android* library in it).
+#
+#   scripts/build.sh slim-android-x64 zebkit/engine
+
+target_cpu = "x64"

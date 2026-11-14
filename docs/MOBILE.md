@@ -59,6 +59,22 @@ carries: `zebkit_icu_init()` finds it in the bundle's resources on iOS;
 the APK's assets copied to a file, which `ZebkitViewer.initIcu()` does:
 Chromium's own lookup there asks Java, which libzebkit does not have).
 
+## From a release
+
+Each release on GitHub has an archive for each:
+
+- **`zebkit-<version>-android.tar.xz`**: `zebkit.aar` (`dev.zebkit.ZebkitViewer`,
+  libzebkit for arm64 and x86-64, ICU's data), and `jni/<abi>/libzebkit.so`
+  with `include/` for native code. An application adds the AAR:
+  `implementation(files("libs/zebkit.aar"))`.
+- **`zebkit-<version>-ios.tar.xz`**: a Swift package: `Package.swift`,
+  `Sources/`, `Tests/` and `Zebkit.xcframework` (devices and the simulator).
+  An application adds the unpacked directory as a local package (Xcode:
+  File › Add Package Dependencies › Add Local), product `ZebkitViewer`.
+- The Rust crate `zebkit-rs` downloads them for `aarch64-linux-android`,
+  `x86_64-linux-android`, `aarch64-apple-ios` and `aarch64-apple-ios-sim`, as
+  it does the desktop's.
+
 ## Building
 
 | Profile | Output | Built on |
