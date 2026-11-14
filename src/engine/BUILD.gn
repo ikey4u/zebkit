@@ -432,11 +432,6 @@ _sources = [
   "window_platform.h",
   "host_loop.cc",
   "host_loop.h",
-  # Connection reuse (docs/CONNECTION_REUSE.md).
-  "http_cache.cc",
-  "http_cache.h",
-  "preconnect.cc",
-  "preconnect.h",
   "startup_settings.cc",
   "startup_settings.h",
   "engine.h",

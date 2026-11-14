@@ -86,17 +86,6 @@ class Server(http.server.BaseHTTPRequestHandler):
             body, kind = VIDEO, "text/html"
         elif self.path == "/automation":
             body, kind = AUTOMATION, "text/html"
-        elif self.path in ("/connections-set", "/connections-cookie"):
-            # Connection reuse (check_connections): a cookie set, and sent back.
-            body = (self.headers.get("Cookie") or "").encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            if self.path == "/connections-set":
-                self.send_header("Set-Cookie", "python=context; Path=/; Max-Age=3600")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
         elif self.path == "/cookies":
             # A header given twice (the engine keeps Set-Cookie to itself).
             self.send_response(200)
@@ -841,39 +830,6 @@ def check_new_api(url, base):
     view.close()
 
 
-def check_connections(base):
-    """Connection reuse (docs/CONNECTION_REUSE.md): preconnect, fetch_in with a
-    context's cookies, clear_http_cache. tests/engine/connection_reuse.py counts
-    the connections and what the cache keeps."""
-    check(zebkit.preconnect(base, 2) and not zebkit.preconnect("ftp://127.0.0.1/")
-          and not zebkit.preconnect(base, 0) and not zebkit.preconnect(base, 7), "preconnect()")
-    context = zebkit.Context()
-    check(zebkit.preconnect(base, context=context), "preconnect() in a context")
-    answers = []
-    zebkit.fetch_in(context, base + "/connections-set", answers.append)
-    wait(lambda: answers)
-    inside, outside = [], []
-    zebkit.fetch_in(context, base + "/connections-cookie", inside.append)
-    zebkit.fetch(base + "/connections-cookie", outside.append)
-    wait(lambda: inside and outside)
-    bodies = [answer["body"] for answer in answers + inside + outside]
-    check(len(bodies) == 3 and bodies[1] == b"python=context" and bodies[2] == b"",
-          "fetch_in() sends the context's cookies, fetch() the engine profile's", bodies)
-    cleared = []
-    check(zebkit.clear_http_cache(lambda: cleared.append("engine"))
-          and zebkit.clear_http_cache(lambda: cleared.append("context"), context=context)
-          and wait(lambda: len(cleared) == 2), "clear_http_cache(), of the engine profile and a context", cleared)
-    context.close()
-    refused = 0
-    for call in (lambda: zebkit.preconnect(base, context=context), lambda: zebkit.clear_http_cache(context=context),
-                 lambda: zebkit.fetch_in(context, base, lambda response: None)):
-        try:
-            call()
-        except zebkit.Error:
-            refused += 1
-    check(refused == 3, "a closed context refuses preconnect, clear_http_cache and fetch_in", refused)
-
-
 def check_library(base):
     """zebkit.library (<zebkit/library.h>): what Rust, Go and host JavaScript
     check too, through Futures, a coroutine, function= and another thread;
@@ -972,7 +928,6 @@ def main():
         check_review_fixes(url)
         check_automation(base)
         check_new_api(url, base)
-        check_connections(base)
         check_library(base)
     except Exception as error:  # noqa: BLE001
         import traceback

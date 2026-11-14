@@ -64,7 +64,6 @@
 #include "zebkit/engine/include/zebkit/media_tools.h"
 #include "zebkit/engine/include/zebkit/offscreen.h"
 #include "zebkit/engine/include/zebkit/page.h"
-#include "zebkit/engine/include/zebkit/services.h"
 #include "zebkit/engine/include/zebkit/window.h"
 #include "zebkit/engine/pdf_script.h"
 #include "zebkit/engine/ui.h"
@@ -666,13 +665,7 @@ constexpr char kBootstrap[] = R"js((function (native) {
     View,
     setEngineSettings: settings => native.setEngineSettings(JSON.stringify(settings)),
     get engineSettings() { return JSON.parse(native.engineSettings()); },
-    fetch: (url, options) => call('fetch', 'fetch', [String(url), options && options.context
-                                                       ? {...options, context: contextId(options.context)}
-                                                       : (options || {})]),
-    // Connection reuse (docs/CONNECTION_REUSE.md): {context} a Context's.
-    clearHttpCache: ({context = null} = {}) => native.more('clear-http-cache', context ? contextId(context) : 0),
-    preconnect: (url, {count = 1, context = null} = {}) =>
-      native.more('preconnect', context ? contextId(context) : 0, String(url), Number(count)),
+    fetch: (url, options) => call('fetch', 'fetch', [String(url), options || {}]),
     fs: api('fs', ['readFile', 'readText', 'writeFile', 'readDir', 'stat', 'mkdir', 'remove']),
     compress: (format, bytes, level) => call('compress', 'compress', [format, bytes, level ?? -1]),
     decompress: (format, bytes) => call('compress', 'decompress', [format, bytes]),
@@ -1544,19 +1537,6 @@ void zebkit_script::Call(const v8::FunctionCallbackInfo<v8::Value>& info) {
           script->Settle(id, ok, std::move(value));
       },
       self->weak_factory_.GetWeakPtr(), id);
-  // zebkit.fetch(url, {context}): that Context's network (zebkit_fetch_in).
-  if (call.module == "fetch" && call.args.size() > 1 && call.args[1].is_dict()) {
-    base::DictValue& options = call.args[1].GetDict();
-    if (std::optional<int> context_id = options.FindInt("context")) {
-      options.Remove("context");
-      auto it = self->contexts_.find(*context_id);
-      if (it == self->contexts_.end()) {
-        std::move(call.reply).Run(false, base::Value("the context is closed"));
-        return;
-      }
-      call.context = it->second;
-    }
-  }
   zebkit::HandlePageCall(std::move(call));
 }
 
@@ -2159,36 +2139,6 @@ void zebkit_script::More(const v8::FunctionCallbackInfo<v8::Value>& info) {
     if (it != self->contexts_.end()) {
       zebkit_context_close(it->second);
       self->contexts_.erase(it);
-    }
-  } else if (kind == "preconnect") {
-    // (context or 0, url, count): whether the connections were asked for.
-    zebkit_context* in = nullptr;
-    if (number(1)) {
-      auto it = self->contexts_.find(static_cast<int>(number(1)));
-      if (it == self->contexts_.end())
-        return fail("the context is closed");
-      in = it->second;
-    }
-    const std::string url = text(2);
-    const double count = number(3, 1);
-    info.GetReturnValue().Set(zebkit_preconnect(in, url.c_str(), count >= 1 && count <= 6 ? static_cast<int>(count) : 0));
-  } else if (kind == "clear-http-cache") {
-    // (context or 0): settled once the cache is empty (docs/CONNECTION_REUSE.md).
-    zebkit_context* in = nullptr;
-    if (number(1)) {
-      auto it = self->contexts_.find(static_cast<int>(number(1)));
-      if (it == self->contexts_.end())
-        return fail("the context is closed");
-      in = it->second;
-    }
-    PendingCall* pending = promise();
-    if (!zebkit_clear_http_cache(in, [](void* data) {
-          std::unique_ptr<PendingCall> cleared(static_cast<PendingCall*>(data));
-          if (cleared->script)
-            cleared->script->Settle(cleared->id, true, base::Value());
-        }, pending)) {
-      std::unique_ptr<PendingCall> refused(pending);
-      self->Settle(refused->id, false, base::Value("the engine is stopping"));
     }
   } else if (kind == "view-new-in" || kind == "offscreen-new") {
     // (context, url, width, height, options or scale)

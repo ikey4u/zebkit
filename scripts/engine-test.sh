@@ -1402,9 +1402,6 @@ fi
 run cookie-host "${python_run[@]}" "$tests/cookie_host.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file "${python_run[@]}" "$tests/cookie_file.py" "$bin/cookie-host" --no-sandbox --headless
 run cookie-file-options "${python_run[@]}" "$tests/cookie_file_options.py" "$bin/cookie-file-runner" --no-sandbox --headless
-# Connection reuse (docs/CONNECTION_REUSE.md): the HTTP cache on disk, kept,
-# in memory, off and cleared; preconnect, its startup setting; fetch_in.
-run connection-reuse env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/connection_reuse.py" --no-sandbox --headless
 
 run webauthn-plain-headless "${python_run[@]}" "$tests/webauthn.py" "$webauthn_host" \
     --no-sandbox --headless --test-normal-view
@@ -1648,8 +1645,6 @@ run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data
 finished system-javascript "the system services script"
 run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"
 finished window-open-javascript "the window-open script"
-run connections-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-connections-javascript" "$tests/script/connections.mjs" "http://127.0.0.1:$port"
-finished connections-javascript "the connection reuse script"
 # The forms that do not wait on the engine's thread (cdp.listenAsync, openExternalAsync,
 # showInFolderAsync), and why a hook's reply was refused (request.error).
 run async-forms-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-async-forms-javascript" "$tests/script/async_forms.mjs" "http://127.0.0.1:$port" "$work"

@@ -171,42 +171,6 @@ typedef void (*zebkit_response_func)(const zebkit_response *response, void *data
 ZEBKIT_API void zebkit_fetch(const char *method, const char *url, const char *headers, const void *body,
                              size_t body_size, zebkit_response_func func, void *data);
 
-/*
- * The HTTP cache (docs/CONNECTION_REUSE.md). A profile on disk keeps one in
- * <profile>/Cache, and what it learnt of servers (HTTP/2, alternative
- * services, HSTS) in <profile>/Network, as Chrome does; the startup setting
- * httpCache chooses disk, memory or off, and a size (zebkit_init_with_settings).
- * A zebkit_context keeps all of it in memory.
- *
- * Empties @context's cache (NULL: the engine's profile) and forgets what the
- * network learnt of servers, so that nothing of the sites visited stays there
- * (cookies and storage are not touched). @done(@data), when not NULL, is
- * called on the engine's thread once both are done. False, and @done never
- * called, off the engine's thread, for a closed context or while the engine
- * stops.
- */
-ZEBKIT_API bool zebkit_clear_http_cache(zebkit_context *context, zebkit_task_func done, void *data);
-
-/*
- * Opens @count (1 to 6) connections to @url's origin in @context's network
- * (NULL: the engine's profile), with their TLS handshakes, for a load or
- * request soon after: a page in that context, zebkit_fetch_in() or
- * zebkit_fetch(). No request is sent. A connection no request uses is closed
- * after about 60 s. http and https only. False off the engine's thread, for
- * a closed context, a URL that is not http(s), a count out of range, or
- * while the engine stops. The startup setting preconnect does this for the
- * engine's profile as it starts.
- */
-ZEBKIT_API bool zebkit_preconnect(zebkit_context *context, const char *url, int count);
-
-/*
- * zebkit_fetch() in @context's network (NULL: the engine's profile, as
- * zebkit_fetch()): its cookies, its cache and the connections its pages
- * opened. A closed context: @func is told so in the response's error.
- */
-ZEBKIT_API void zebkit_fetch_in(zebkit_context *context, const char *method, const char *url, const char *headers,
-                                const void *body, size_t body_size, zebkit_response_func func, void *data);
-
 #ifdef __cplusplus
 }
 #endif

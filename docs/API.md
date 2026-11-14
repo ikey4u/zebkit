@@ -126,8 +126,6 @@ Python accepts `init(argv, settings={...})`; Rust provides
 | `logging` | Object: `destination` (`stderr`, `file`, `none`), `path` (required absolute path for `file`), optional `level` (integer 0–3) |
 | `cookies` | Object: `storage` (`os`, `file`), optional absolute `keyDirectory` for file storage, `thirdParty` boolean |
 | `applicationIntegration` | Boolean: opt into zebkit's macOS delegate, menu and Dock policy |
-| `httpCache` | Object: `storage` (`disk`, the default for a profile on disk, as Chrome's: `<profile>/Cache`; `memory`; `off`), `maxSize` (bytes, 0 or absent: Chromium's choice from the free space). Contexts keep theirs in memory ([Connection reuse](#connection-reuse)) |
-| `preconnect` | List of `http(s)` URLs: a connection to each origin, for the engine's profile, as the engine starts |
 
 The embedded entry skips Chromium's process-wide signal-handler, locale,
 thread-name, process-title, crash-handler and environment setup. DBus session
@@ -845,56 +843,11 @@ is not one library's API.
 | `zebkit_icu_init` | ICU's data, for layer 1's ICU without the engine | `base/i18n` |
 | `zebkit_fetch` | An HTTP request through the engine's network stack: HTTP/1.1, 2 and 3, its cache, cookies and proxy settings, without CORS | The network service |
 
-| `zebkit_fetch_in`, `zebkit_preconnect`, `zebkit_clear_http_cache` | A request in a context's network; connections opened ahead; the HTTP cache emptied ([Connection reuse](#connection-reuse)) | The network service |
-
-All but `zebkit_fetch()` and the connection functions work without the engine running.
+All but `zebkit_fetch()` work without the engine running.
 For a process that also starts the engine, call ICU-backed URL services
 from the ready callback. Chromium registers and locks its URL schemes
 during startup; parsing URLs first prevents that initialization. Standalone
 service programs can use these functions without starting the engine.
-
-### Connection reuse
-
-What makes pages and requests load sooner by reusing what the network has
-already done; measured in [CONNECTION_REUSE.md](CONNECTION_REUSE.md).
-
-```c
-bool zebkit_clear_http_cache(zebkit_context *context, zebkit_task_func done, void *data);
-bool zebkit_preconnect(zebkit_context *context, const char *url, int count);
-void zebkit_fetch_in(zebkit_context *context, const char *method, const char *url, const char *headers,
-                     const void *body, size_t body_size, zebkit_response_func func, void *data);
-```
-
-- **What a profile keeps.** A profile on disk keeps its HTTP cache in
-  `<profile>/Cache`, and in `<profile>/Network` what the network learnt of
-  servers: HTTP/2 and alternative services (`Network Persistent State`) and
-  HSTS (`TransportSecurity`), as Chrome does. A restart then revalidates what
-  it cached instead of downloading it again. The startup setting `httpCache`
-  chooses `disk` (the default), `memory` or `off`, and `maxSize`. The cache
-  holds what the profile's pages loaded, so it says which sites they were:
-  an application that must not keep that chooses `memory` or clears it. A
-  `zebkit_context` keeps all of it in memory, whatever the setting.
-- **`zebkit_clear_http_cache()`** empties the cache of a context (NULL: the
-  engine's profile) and forgets what was learnt of servers; `done` is called
-  on the engine's thread when both are done. Cookies and storage are not
-  touched.
-- **`zebkit_preconnect()`** opens `count` (1 to 6) connections to an origin,
-  TLS included, in a context's network (NULL: the engine's profile), for a load
-  or request soon after; nothing is sent, and an unused connection is closed
-  after about 60 s. The startup setting `preconnect` does it for the engine's
-  profile as it starts. Pages' own `<link rel=preconnect>` works as in Chrome.
-- **`zebkit_fetch_in()`** is `zebkit_fetch()` in a context's network: its
-  cookies, its cache and the connections its pages opened. `zebkit_fetch()` is
-  always the engine's profile's.
-- **Contexts start cold.** Each context has its own connections and cache;
-  Chromium has no way to share them between profiles. Views that load the
-  same sites belong in one context.
-
-| | Rust | Python | Go | JavaScript (zebkit-js) |
-|---|---|---|---|---|
-| Clear the cache | `services::clear_http_cache(done)`, `Context::clear_http_cache(done)` | `clear_http_cache(function, context=None)` | `ClearHTTPCache(done)`, `Context.ClearHTTPCache(done)` | `zebkit.clearHttpCache({context})` (a promise) |
-| Preconnect | `services::preconnect(url, count)`, `Context::preconnect(url, count)` | `preconnect(url, count=1, context=None)` | `Preconnect(url, count)`, `Context.Preconnect(url, count)` | `zebkit.preconnect(url, {count, context})` |
-| Fetch in a context | `Context::fetch(method, url, headers, body, done)` | `fetch_in(context, url, function, ...)` | `Context.Fetch(method, url, headers, body, done)` | `zebkit.fetch(url, {context, ...})` |
 
 ### PDF
 

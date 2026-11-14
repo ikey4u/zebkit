@@ -324,75 +324,18 @@ pub fn fetch<F: FnOnce(Response<'_>) + 'static>(
     done: F,
 ) {
     require_engine_thread("services::fetch()");
-    fetch_in(std::ptr::null_mut(), method, url, headers, body, done);
-}
-
-pub(crate) fn fetch_in<F: FnOnce(Response<'_>) + 'static>(
-    context: *mut sys::zebkit_context,
-    method: &str,
-    url: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-    done: F,
-) {
     let headers: String = headers.iter().map(|(name, value)| format!("{name}: {value}\r\n")).collect();
     let data = Box::into_raw(Box::new(done));
-    let (method, url, headers) = (c_string(method), c_string(url), c_string(&headers));
     unsafe {
-        if context.is_null() {
-            sys::zebkit_fetch(method.as_ptr(), url.as_ptr(), headers.as_ptr(), body.as_ptr().cast(), body.len(), on_response::<F>, data.cast())
-        } else {
-            sys::zebkit_fetch_in(context, method.as_ptr(), url.as_ptr(), headers.as_ptr(), body.as_ptr().cast(), body.len(), on_response::<F>, data.cast())
-        }
-    }
-}
-
-// ---- connection reuse (docs/CONNECTION_REUSE.md) ----
-
-/// Empties the engine profile's HTTP cache (on disk under the profile unless
-/// the startup setting `httpCache` says otherwise) and forgets what the
-/// network learnt of servers (HTTP/2, alternative services, HSTS), so that
-/// nothing of the sites visited stays there; cookies and storage are not
-/// touched. `done` runs on the engine's thread once that is done. An error,
-/// and `done` dropped, while the engine stops. [`crate::Context::clear_http_cache`]
-/// for a context's.
-pub fn clear_http_cache<F: FnOnce() + 'static>(done: F) -> Result<(), Error> {
-    require_engine_thread("services::clear_http_cache()");
-    clear_http_cache_in(std::ptr::null_mut(), done)
-}
-
-pub(crate) fn clear_http_cache_in<F: FnOnce() + 'static>(context: *mut sys::zebkit_context, done: F) -> Result<(), Error> {
-    let data = Box::into_raw(Box::new(done));
-    if unsafe { sys::zebkit_clear_http_cache(context, Some(on_cleared::<F>), data.cast()) } {
-        Ok(())
-    } else {
-        drop(unsafe { Box::from_raw(data) });
-        Err(Error::new("the engine refused: it is stopping"))
-    }
-}
-
-unsafe extern "C" fn on_cleared<F: FnOnce()>(data: *mut c_void) {
-    let done = Box::from_raw(data.cast::<F>());
-    crate::guard(|| done());
-}
-
-/// Opens `count` (1 to 6) connections to `url`'s origin in the engine
-/// profile's network, TLS included, for a page load or [`fetch`] soon after;
-/// no request is sent, and one no request uses is closed after about 60 s.
-/// An error for a URL that is not http(s), a count out of range, or while
-/// the engine stops. [`crate::Context::preconnect`] for a context's; the
-/// startup setting `preconnect` does this as the engine starts.
-pub fn preconnect(url: &str, count: u32) -> Result<(), Error> {
-    require_engine_thread("services::preconnect()");
-    preconnect_in(std::ptr::null_mut(), url, count)
-}
-
-pub(crate) fn preconnect_in(context: *mut sys::zebkit_context, url: &str, count: u32) -> Result<(), Error> {
-    let count = c_int::try_from(count).unwrap_or(c_int::MAX);
-    if unsafe { sys::zebkit_preconnect(context, c_string(url).as_ptr(), count) } {
-        Ok(())
-    } else {
-        Err(Error::new("not preconnected: an http(s) URL and a count from 1 to 6, with the engine running"))
+        sys::zebkit_fetch(
+            c_string(method).as_ptr(),
+            c_string(url).as_ptr(),
+            c_string(&headers).as_ptr(),
+            body.as_ptr().cast(),
+            body.len(),
+            on_response::<F>,
+            data.cast(),
+        )
     }
 }
 

@@ -28,7 +28,6 @@ thread_local! {
     static FIND_DONE: Cell<bool> = const { Cell::new(false) };
     static NEW_API_DONE: Cell<bool> = const { Cell::new(false) };
     static LIBRARY_DONE: Cell<bool> = const { Cell::new(false) };
-    static CONNECTIONS_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -1118,7 +1117,6 @@ fn engine(page_port: u16) {
     find_and_downloads(serve_pages());
     new_api();
     libraries();
-    connections();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -1435,117 +1433,6 @@ fn handlers() {
             view.close();
         });
     });
-}
-
-// Connection reuse (docs/CONNECTION_REUSE.md): preconnect opens
-// connections and sends nothing, a context's fetch sends its own cookies, the
-// HTTP cache is cleared. A local server counts the connections it accepted.
-fn connections() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let (accepted, requests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    {
-        let (accepted, requests) = (accepted.clone(), requests.clone());
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                accepted.fetch_add(1, Ordering::SeqCst);
-                let requests = requests.clone();
-                std::thread::spawn(move || {
-                    let mut reader = BufReader::new(stream);
-                    let mut first = String::new();
-                    if reader.read_line(&mut first).unwrap_or(0) == 0 {
-                        return;
-                    }
-                    requests.fetch_add(1, Ordering::SeqCst);
-                    let (mut line, mut cookie) = (String::new(), String::new());
-                    while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
-                        if let Some(value) = line.strip_prefix("Cookie: ") {
-                            cookie = value.trim().to_string();
-                        }
-                        line.clear();
-                    }
-                    let set = if first.starts_with("GET /set ") { "Set-Cookie: rust=context; Path=/; Max-Age=3600\r\n" } else { "" };
-                    let _ = write!(
-                        reader.into_inner(),
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n{set}Content-Length: {}\r\nConnection: close\r\n\r\n{cookie}",
-                        cookie.len()
-                    );
-                });
-            }
-        });
-    }
-    let finish = || CONNECTIONS_DONE.with(|done| done.set(true));
-    check(services::preconnect("ftp://127.0.0.1/", 1).is_err(), "services::preconnect(): not http(s) is an error", ());
-    check(services::preconnect(&base, 0).is_err() && services::preconnect(&base, 7).is_err(),
-          "services::preconnect(): a count out of 1 to 6 is an error", ());
-    let preconnected = services::preconnect(&base, 2);
-    check(preconnected.is_ok(), "services::preconnect()", &preconnected);
-    let context = match zebkit::Context::new() {
-        Ok(context) => Rc::new(context),
-        Err(error) => {
-            check(false, "Context::new", error);
-            return finish();
-        }
-    };
-    let preconnected = context.preconnect(&base, 1);
-    check(preconnected.is_ok(), "Context::preconnect()", &preconnected);
-    fn until(condition: impl Fn() -> bool + 'static, then: impl FnOnce(bool) + 'static, left: u32) {
-        if condition() || left == 0 {
-            then(condition());
-        } else {
-            zebkit::after(Duration::from_millis(20), move || until(condition, then, left - 1));
-        }
-    }
-    let (counted, asked) = (accepted.clone(), requests.clone());
-    until(move || counted.load(Ordering::SeqCst) >= 3, move |opened| {
-        check(opened && asked.load(Ordering::SeqCst) == 0, "preconnect: three connections, no request",
-              (accepted.load(Ordering::SeqCst), asked.load(Ordering::SeqCst)));
-        let (inside, base2) = (context.clone(), base.clone());
-        let set = context.fetch("GET", &format!("{base}/set"), &[], b"", move |response| {
-            check(response.status == 200, "Context::fetch() sets a cookie", response.status);
-            let (outside, base3) = (inside.clone(), base2.clone());
-            let asked = inside.fetch("GET", &format!("{base2}/cookie"), &[], b"", move |response| {
-                check(response.body == b"rust=context", "Context::fetch() sends the context's cookie",
-                      String::from_utf8_lossy(response.body));
-                services::fetch("GET", &format!("{base3}/cookie"), &[], b"", move |response| {
-                    check(response.body.is_empty(), "services::fetch() does not send the context's",
-                          String::from_utf8_lossy(response.body));
-                    let context = outside.clone();
-                    let cleared = services::clear_http_cache(move || {
-                        check(true, "services::clear_http_cache() is done", ());
-                        let closing = context.clone();
-                        let cleared = context.clear_http_cache(move || {
-                            check(true, "Context::clear_http_cache() is done", ());
-                            closing.close();
-                            check(closing.preconnect("http://127.0.0.1/", 1).is_err()
-                                  && closing.clear_http_cache(|| {}).is_err()
-                                  && closing.fetch("GET", "http://127.0.0.1/", &[], b"", |_| {}).is_err(),
-                                  "a closed context refuses preconnect, clear_http_cache and fetch", ());
-                            CONNECTIONS_DONE.with(|done| done.set(true));
-                        });
-                        if let Err(error) = cleared {
-                            check(false, "Context::clear_http_cache()", error);
-                            CONNECTIONS_DONE.with(|done| done.set(true));
-                        }
-                    });
-                    if let Err(error) = cleared {
-                        check(false, "services::clear_http_cache()", error);
-                        CONNECTIONS_DONE.with(|done| done.set(true));
-                    }
-                });
-            });
-            if let Err(error) = asked {
-                check(false, "Context::fetch()", error);
-                CONNECTIONS_DONE.with(|done| done.set(true));
-            }
-        });
-        if let Err(error) = set {
-            check(false, "Context::fetch()", error);
-            CONNECTIONS_DONE.with(|done| done.set(true));
-        }
-    }, 250);
 }
 
 // A context's storage is its own: what a page stores there, a page of the
@@ -1867,8 +1754,7 @@ fn script_and_cdp(view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
             || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get)
             || !HANDLERS_DONE.with(Cell::get) || !AUTOMATION_DONE.with(Cell::get) || !FIND_DONE.with(Cell::get) || !NEW_API_DONE.with(Cell::get)
-            || !LIBRARY_DONE.with(Cell::get)
-            || !CONNECTIONS_DONE.with(Cell::get) {
+            || !LIBRARY_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

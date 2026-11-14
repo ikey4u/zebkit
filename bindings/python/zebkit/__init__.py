@@ -51,8 +51,6 @@ __all__ = [
     "environment", "on_environment_changed", "capabilities", "displays", "on_displays_changed",
     "on_notification", "notification_clicked", "notification_closed", "on_power_event",
     "prevent_sleep", "allow_sleep", "open_external", "show_in_folder", "open_external_async", "show_in_folder_async",
-    # Connection reuse (docs/CONNECTION_REUSE.md).
-    "clear_http_cache", "preconnect", "fetch_in",
 ]
 
 LOAD_STARTED, LOAD_COMMITTED, LOAD_FINISHED, LOAD_FAILED = 0, 1, 2, 3
@@ -771,10 +769,6 @@ _image_decode = _declare("zebkit_image_decode", _P, _P, _Z, _IP, _IP, _EP)
 _image_encode = _declare("zebkit_image_encode", _P, _I, _P, _I, _I, _I, _ZP, _EP)
 _icu_init = _declare("zebkit_icu_init", _B)
 _fetch = _declare("zebkit_fetch", None, _S, _S, _S, _P, _Z, _RESPONSE, _P)
-# Connection reuse (docs/CONNECTION_REUSE.md).
-_clear_http_cache = _declare("zebkit_clear_http_cache", _B, _P, _TASK, _P)
-_preconnect = _declare("zebkit_preconnect", _B, _P, _S, _I)
-_fetch_in = _declare("zebkit_fetch_in", None, _P, _S, _S, _S, _P, _Z, _RESPONSE, _P)
 
 # Callbacks and views that C still holds, by id: kept here so that Python
 # does not free them. ctypes' function objects cannot be hashed.
@@ -1220,17 +1214,6 @@ def fetch(url, function, method="GET", headers=None, body=None):
     Set-Cookie, the last), header_list (every header, as (name, value)
     pairs in order), body (bytes), error."""
     _require_thread("fetch()")
-    _fetch_with(None, url, function, method, headers, body)
-
-
-def fetch_in(context, url, function, method="GET", headers=None, body=None):
-    """fetch() in context's network (None: the engine's profile): its cookies,
-    its cache and the connections its pages opened."""
-    _require_thread("fetch_in()")
-    _fetch_with(_context_handle(context), url, function, method, headers, body)
-
-
-def _fetch_with(context, url, function, method, headers, body):
     def done(response, data):
         _alive.discard(callback)
         r = response.contents
@@ -1251,55 +1234,7 @@ def _fetch_with(context, url, function, method, headers, body):
     _alive.add(callback)
     lines = "\r\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
     data = _bytes(body) if body is not None else b""
-    request = (method.encode(), url.encode(), lines.encode() if lines else None, data or None, len(data), callback, None)
-    if context is None:
-        _fetch(*request)
-    else:
-        _fetch_in(context, *request)
-
-
-# ---- connection reuse (docs/CONNECTION_REUSE.md) ----
-
-def _context_handle(context):
-    return None if context is None else context._check()
-
-
-def clear_http_cache(function=None, *, context=None):
-    """Empty the HTTP cache of context (None: the engine's profile) and forget
-    what the network learnt of servers (HTTP/2, alternative services, HSTS);
-    function(), when given, once that is done. False when the engine refused:
-    while it stops."""
-    _require_thread("clear_http_cache()")
-    if function is not None and not callable(function):
-        raise TypeError("function must be callable or None")
-    handle = _context_handle(context)
-
-    def done(data):
-        _alive.discard(callback)
-        if function is not None:
-            function()
-    callback = _TASK(_guard(done))
-    _alive.add(callback)
-    if not _clear_http_cache(handle, callback, None):
-        _alive.discard(callback)
-        return False
-    return True
-
-
-def preconnect(url, count=1, *, context=None):
-    """Open count (1 to 6) connections to url's origin in context's network
-    (None: the engine's profile), TLS included, for a load or request soon
-    after; no request is sent, and an unused one closes after about 60 s.
-    False when refused: not http(s), a count out of range, the engine
-    stopping."""
-    _require_thread("preconnect()")
-    if isinstance(count, bool) or not isinstance(count, int):
-        raise TypeError("count must be an integer")
-    handle = _context_handle(context)
-    if "\0" in url:
-        return False
-    # The engine refuses a count out of range, also one an int cannot hold.
-    return bool(_preconnect(handle, url.encode(), max(-1, min(count, 7))))
+    _fetch(method.encode(), url.encode(), lines.encode() if lines else None, data or None, len(data), callback, None)
 
 
 # ---- the services ----

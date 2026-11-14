@@ -81,9 +81,6 @@ struct PageCall {
   // zebkit.app's arguments as the page sent them, a JSON array that
   // IsPlainJson() passed, in place of args.
   std::optional<std::string> args_json;
-  // The application's script's Context for zebkit.fetch's {context}
-  // (zebkit_fetch_in); null for a page's call and for the engine's profile.
-  zebkit_context* context = nullptr;
 };
 
 // Answers a call (bridge.cc), now or later, on the UI thread.
