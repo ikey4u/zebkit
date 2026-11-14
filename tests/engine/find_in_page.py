@@ -146,21 +146,36 @@ def main():
     # focused window paints a selection in the system's accent colour, orange
     # on some Windows machines: so this is checked here, not after KEEP.)
     base = before or (0, 0)
-    seen = []
-    def cleared():
-        seen.append(highlight_colours(view))
-        return seen[-1] is None or (seen[-1][0] <= base[0] and seen[-1][1] <= base[1])
-    wait(cleared, 5)
-    colours = seen[-1] if seen else None
+
+    def cleared_colours(seconds):
+        """The capture once the highlights are gone, or the last one in
+        seconds; None without a capture."""
+        seen = []
+
+        def cleared():
+            seen.append(highlight_colours(view))
+            return seen[-1] is None or (seen[-1][0] <= base[0] and seen[-1][1] <= base[1])
+        wait(cleared, seconds)
+        return seen[-1] if seen else None
+    colours = cleared_colours(5)
     if colours is not None:
-        stale = not (colours[0] <= base[0] and colours[1] <= base[1])
-        if stale and sys.platform == "win32":
-            # Known on Windows, sometimes: after a search with no match and a
-            # stop, the earlier search's active match stays painted (Chrome's
-            # find path, FindTabHelper); docs/notes/find-in-page-windows.md.
-            skip("stopping clears every highlight", "a stale active match on Windows, a known issue: %r" % (colours,))
-        else:
-            check(not stale, "stopping clears every highlight", (colours, base))
+        check(colours[0] <= base[0] and colours[1] <= base[1], "stopping clears every highlight", (colours, base))
+    # A stop that comes before the next frame: Blink scrolls to the active
+    # match in that frame, which put the match's highlight back, active, after
+    # the stop had removed it (patches/1089). Searches and stops sent
+    # together, with no wait between them, as on a slow machine; the main
+    # document is focused (its "Apple" was the last active match), so the
+    # search makes its match active at once.
+    stale = []
+    for i in range(12):
+        view.find("Apple", zebkit.FIND_MATCH_CASE)
+        if i % 2:
+            view.find("pear")
+        view.stop_finding(zebkit.FIND_STOP_CLEAR)
+        colours = cleared_colours(2)
+        if colours is not None and not (colours[0] <= base[0] and colours[1] <= base[1]):
+            stale.append((i, colours))
+    check(not stale, "a stop before the next frame clears every highlight", (stale, base))
     first = find(view, results, "apple")
     check(first.get("activeMatch") == 1, "a new search starts at the first again", first)
     view.stop_finding(zebkit.FIND_STOP_KEEP)

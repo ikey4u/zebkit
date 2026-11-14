@@ -1,0 +1,44 @@
+Blink: stopping a find, or starting a new one, cancels the pending scroll.
+
+TextFinder::FindInternal() scrolls to the match it makes active in a task
+for the next animation frame (scroll_task_), and TextFinder::Scroll() adds
+the match's marker back, active, when no text-match marker covers it. Only
+the next match found cancelled that task: neither StopFindingAndClearSelection()
+nor a new session did. A stop (or a new search that finds nothing in the
+frame) before the next frame removed every marker, and then the scroll put
+the old active match back, painted orange, with nothing to clear it again
+(Chrome's own find path, so its find bar would show it as well). Seen with
+zebkit_view_stop_finding(CLEAR) after a search with no match, mostly on a
+slow Windows machine, where no frame came between the searches and the
+stop; on Linux by stopping right after a search. Both now cancel the
+task (a forced redo of a session, which reuses the active match, keeps it).
+Chromium 157's code and the scroll task's comment ("another Find ... would
+have been canceled") show no upstream fix.
+
+diff --git a/third_party/blink/renderer/core/editing/finder/text_finder.cc b/third_party/blink/renderer/core/editing/finder/text_finder.cc
+--- a/third_party/blink/renderer/core/editing/finder/text_finder.cc
++++ b/third_party/blink/renderer/core/editing/finder/text_finder.cc
+@@ -177,6 +177,12 @@
+ void TextFinder::InitNewSession(const mojom::blink::FindOptions& options) {
+   should_locate_active_rect_ = false;
+   CancelPendingScopingEffort();
++  // zebkit: the previous session's scroll to its active match, still waiting
++  // for an animation frame, would mark that match active again in a session
++  // that may have no match at all. A forced redo keeps it (FindInternal
++  // reuses the active match then).
++  if (!options.force)
++    scroll_task_.Cancel();
+   if (!options.find_match) {
+     // This gets called in FindInternal if a match is found, but FindInternal
+     // doesn't run when find_match is false, so we need to do it here in case
+@@ -463,6 +469,10 @@
+ 
+ void TextFinder::StopFindingAndClearSelection() {
+   CancelPendingScopingEffort();
++  // zebkit: a scroll to the active match still waiting for an animation
++  // frame would add its marker back, active, after every marker is removed
++  // below: a highlight that stays after the search has stopped.
++  scroll_task_.Cancel();
+ 
+   // Remove all markers for matches found and turn off the highlighting.
+   OwnerFrame().GetFrame()->GetDocument()->Markers().RemoveMarkersOfTypes(

@@ -67,3 +67,4 @@
 1086-content-whose-a-frameless-websocket-is.patch
 1087-content-hang-monitor-and-the-embedder-own-devtools.patch
 1088-pdfium-apple-platform-on-ios.patch
+1089-blink-find-stop-cancels-the-pending-scroll.patch
