@@ -12,10 +12,10 @@ history. The rules, on each docs/reports/*.md:
 - A report with a line beginning "> History:" is history, kept on purpose, and
   is not checked (the line says what it records).
 - "Engine: zebkit <version> (Chromium <version>), ..." is the line
-  scripts/measure.sh, web-bench.sh and automation-bench.sh write into each of
-  their reports: its Chromium is the engine's that was measured. The reports
-  those scripts write (<profile>.md, web-bench.md, automation-bench.md) must
-  have it.
+  scripts/measure.sh, web-bench.sh, automation-bench.sh and library-bench.sh
+  write into each of their reports: its Chromium is the engine's that was
+  measured. The reports those scripts write (<profile>.md, web-bench.md,
+  automation-bench.md, library-bench.md) must have it.
 - Every other "Chromium <a.b.c.d>" must be the pinned one too, except
   Electron's own, written "Electron <version> (Chromium <a.b.c.d>" as
   scripts/electron-baseline.sh writes it, for the pinned Electron.
@@ -57,9 +57,9 @@ def problems(path, text, chromium, electron, needs_engine_line):
 def main():
     reports, profiles = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     chromium, electron = sys.argv[3], sys.argv[4]
-    # What scripts/measure.sh, web-bench.sh and automation-bench.sh write.
+    # What scripts/measure.sh, web-bench.sh, automation-bench.sh and library-bench.sh write.
     written = {p.stem + ".md" for p in profiles.glob("*.gn") if not p.name.startswith("_")}
-    written |= {"web-bench.md", "automation-bench.md"}
+    written |= {"web-bench.md", "automation-bench.md", "library-bench.md"}
     stale = 0
     for path in sorted(reports.glob("*.md")):
         found = problems(path, path.read_text(encoding="utf-8"), chromium, electron, path.name in written)

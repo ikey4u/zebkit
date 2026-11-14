@@ -681,6 +681,13 @@ _sources += [
   "library_bootstrap.h",
   "library_web.cc",
 ]
+# ... and the backend "page" (library_page.cc).
+_sources += [
+  "library_page.cc",
+  "library_page.h",
+  "library_page_renderer.cc",
+  "library_page_runner.h",
+]
 
 declare_args() {
   # Optimize the engine across its object files as it is linked (ThinLTO

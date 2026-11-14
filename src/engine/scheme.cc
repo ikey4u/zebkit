@@ -52,6 +52,7 @@
 #include "third_party/blink/public/web/web_security_policy.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/include/zebkit/zebkit.h"
+#include "zebkit/engine/library_page.h"
 
 struct zebkit_request {
   std::string url;
@@ -101,8 +102,8 @@ bool IsReservedScheme(const std::string& name) {
       "blob",  "about",      "javascript",  "chrome", "chrome-untrusted",
       "devtools", "filesystem", "ftp",      "mailto", "content", "view-source",
       "chrome-error", "chrome-extension",
-      // The engine's own.
-      "zebkit",
+      // The engine's own; a JavaScript library's page (library_page.h).
+      "zebkit", "zebkit-library",
   };
   for (const char* reserved : kReserved) {
     if (name == reserved)
@@ -377,9 +378,12 @@ void AddSchemes(content::ContentClient::Schemes* schemes) {
       schemes->csp_bypassing_schemes.push_back(scheme.name);
     schemes->savable_schemes.push_back(scheme.name);
   }
+  // The engine's own for JavaScript libraries' pages (library_page.cc).
+  AddLibraryPageScheme(schemes);
 }
 
 void RegisterSchemesInRenderer() {
+  RegisterLibraryPageSchemeInRenderer();  // library_page.cc
   for (const Scheme& scheme : Schemes()) {
     // What bypasses a page's Content-Security-Policy, Blink takes from
     // content's list of schemes (AddSchemes()).
@@ -406,6 +410,8 @@ void AppendSchemeSwitch(base::CommandLine* command_line) {
 }
 
 void AllowSchemes() {
+  // A library's page (library_page.cc); only such pages' loaders serve it.
+  content::ChildProcessSecurityPolicy::GetInstance()->RegisterWebSafeScheme(kLibraryScheme);
   for (const Scheme& scheme : Schemes()) {
     content::ChildProcessSecurityPolicy::GetInstance()->RegisterWebSafeScheme(
         scheme.name);

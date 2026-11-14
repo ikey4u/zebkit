@@ -37,6 +37,8 @@
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
+#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "v8/include/v8-array-buffer.h"
 #include "v8/include/v8-context.h"
@@ -358,6 +360,12 @@ class Agent : public content::RenderFrameObserver {
     v8::Local<v8::Context> context = web_frame->MainWorldScriptContext();
     if (context.IsEmpty())
       return;
+    // A JavaScript library's page (library_page.h's "zebkit-library"): its
+    // runner, the engine's first script there, takes the function itself.
+    if (web_frame->IsOutermostMainFrame() &&
+        web_frame->GetSecurityOrigin().Protocol().Utf8() == "zebkit-library") {
+      return;
+    }
     v8::MicrotasksScope microtasks(isolate, context->GetMicrotaskQueue(),
                                    v8::MicrotasksScope::kDoNotRunMicrotasks);
     v8::Context::Scope scope(context);

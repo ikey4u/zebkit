@@ -36,6 +36,7 @@
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "zebkit/engine/call.h"
+#include "zebkit/engine/library_page.h"
 #include "zebkit/engine/page_call.mojom.h"
 #include "zebkit/engine/view.h"
 
@@ -448,9 +449,12 @@ class PageCallHost : public mojom::PageCallHost {
             mojo_base::BigBuffer parts,
             CallCallback callback) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    auto answer = base::MakeRefCounted<Answer>(std::move(callback));
     content::RenderFrameHost* frame =
         content::RenderFrameHost::FromID(receivers_.current_context());
+    // The runner of a JavaScript library's page (library_page.cc).
+    if (TakeLibraryPageCall(frame, module, method, json, parts, callback))
+      return;
+    auto answer = base::MakeRefCounted<Answer>(std::move(callback));
     zebkit_view* view =
         frame ? ViewOf(content::WebContents::FromRenderFrameHost(frame))
               : nullptr;

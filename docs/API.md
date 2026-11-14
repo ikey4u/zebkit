@@ -1195,7 +1195,9 @@ network but the origins given at load, imports only inside its folder; it has
 `atob`/`btoa`, `URL`/`URLSearchParams`, `structuredClone`,
 `crypto.getRandomValues`/`randomUUID`, `performance.now`, `Event`,
 `EventTarget`, `AbortController`, `DOMException`, `WebAssembly`, `Intl`, and
-`fetch()` with `Headers` and `Response`, without cookies.
+`fetch()` with `Headers` and `Response`, without cookies. It calls the
+application's functions given at load as `await host.call(name, ...args)`
+(`import host from 'zebkit:host'`).
 
 ```c
 static void told(zebkit_library *library, zebkit_library_code code, const char *json,
@@ -1213,19 +1215,37 @@ zebkit_library_close(md);
 
 | Function | What |
 |---|---|
-| `zebkit_library_load(path, options_json, ready, data, &error)` | A folder with `index.mjs`, or one `.mjs` file; returns at once, `ready` told once (`{"functions": [...]}`, LOAD_FAILED, or GONE if closed first). Options: `timeoutMs` (30000), `queue` (64), `heapLimitMB` (128), `maxBytes` (64 MiB), `network` (origins for `fetch()`), `backend` (`"isolate"`). NULL and `error` for bad options or path. The engine's thread |
+| `zebkit_library_load(path, options_json, ready, data, &error)` | A folder with `index.mjs`, or one `.mjs` file; returns at once, `ready` told once (`{"functions": [...]}`, LOAD_FAILED, or GONE if closed first). Options: `timeoutMs` (30000), `queue` (64), `heapLimitMB` (128), `maxBytes` (64 MiB), `network` (origins for `fetch()`), `instances` (1: isolates on threads of their own sharing the calls), `codeCache` (true: V8's code cache in memory and in the profile's `Library Code Cache`), `host` (names of the application's functions), `backend` (`"isolate"`, or `"page"` with `width`, `height`: below). NULL and `error` for bad options or path. The engine's thread |
 | `zebkit_library_call(library, function, args_json, parts, part_count, timeout_ms, func, data)` | A JSON array of arguments (NULL is `[]`) and parts (`{"$part": n}` is `parts[n]`), copied before it returns; `timeout_ms` 0 the library's, < 0 none. The call's number, and `func` told exactly once after it returns; 0 when refused (NULL library or function, closed), never told. Any thread |
 | `zebkit_library_cancel(library, call)` | The call told CANCELLED unless told already. Any thread |
-| `zebkit_library_close(library)` | Calls not told yet told GONE after it returns; the handle freed after the last. The engine's thread |
+| `zebkit_library_set_host(library, func, data)` | What answers the library's `host.call(name, ...args)`: `func(library, request, name, args_json, parts, part_count, data)` on the engine's thread, for each request (those made before it is set, once it is). The engine's thread |
+| `zebkit_library_answer(library, request, code, json, parts, part_count)` | Answers a request once: OK resolves `host.call()` with `json` and parts, another code rejects it with an Error of `json`'s `message` and `name`. 1 when taken, 0 when answered already, past its deadline (`timeoutMs`; a TimeoutError in the library) or its instance ended. Any thread, until close |
+| `zebkit_library_close(library)` | Calls not told yet told GONE after it returns, requests dropped; the handle freed after the last. The engine's thread |
 
 Codes: OK, THROWN (with the library's `name`, `message`, `stack`),
 LOAD_FAILED, NO_FUNCTION, BAD_ARGUMENTS, BAD_RESULT, TIMEOUT, CANCELLED,
-QUEUE_FULL, OUT_OF_MEMORY, GONE. Calls run one at a time per library, in
-order. At its deadline a running script is stopped (TIMEOUT; the library
-ends, the other calls are GONE); a call waiting on a timer or `fetch()` is
-TIMEOUT and the next call runs. A library whose heap passes `heapLimitMB` ends
-with OUT_OF_MEMORY rather than ending the process.
+QUEUE_FULL, OUT_OF_MEMORY, GONE. Calls run one at a time per instance, in
+order, each on the first instance free; state is each instance's own. At its
+deadline a running script is stopped (TIMEOUT; its instance ends, the others
+take the calls, and with the last the library ends, the other calls GONE); a
+call waiting on a timer, `fetch()` or the application is TIMEOUT and the next
+call runs. An instance whose heap passes `heapLimitMB` ends with
+OUT_OF_MEMORY rather than ending the process. An idle instance (2 s without a
+call) lets V8 give its memory back.
 
+With `"backend": "page"` the library runs in a hidden page of its own (its own
+renderer and in-memory profile, at `zebkit-library://<random id>/`) for what
+needs a DOM, a canvas, fonts or layout; `width` and `height` (800 by 600) are
+its size. The same functions, values and codes, through every binding
+unchanged; no user gesture, popups, downloads, workers or WebSockets; every
+request other than its own files and `network`'s origins fails in the
+browser. A page running script past a call's deadline has its renderer
+stopped (TIMEOUT, then GONE); its V8 heap past `heapLimitMB` is OUT_OF_MEMORY;
+a renderer gone is GONE. `instances` and `host` are the isolate's.
+`examples/js-libraries/diagram` (Mermaid) is one.
+
+| Binding | Load | Call | Values |
+|---|---|---|---|
 | Binding | Load | Call | Values |
 |---|---|---|---|
 | Rust | `zebkit::js::Library::load(path, &Value)` (`ready()` a `Call`) | `call(name, args)`, `call_with(name, &args, parts, timeout)`: a `Call`, a `Future` of `Reply {value, parts}` or `LibraryError {code, message, name, stack}`; `.then(f)`, `.cancel()` | `json::Value` + `Vec<Vec<u8>>` |
@@ -1233,9 +1253,22 @@ with OUT_OF_MEMORY rather than ending the process.
 | Go | `zebkit.LoadLibrary(path, options, ready)` | `Call(name, args, parts, timeout, done)` (a callback), `CallChan(...)` (a channel); `Cancel(id)` | `json.RawMessage` + `[][]byte`; `*LibraryError` |
 | Host JavaScript | `zebkit.Library.load(path, options)` (`.ready` a promise) | `call(name, ...args)`, `callWith(name, args, {timeoutMs})`: a promise; `cancel(promise)` | values with `Uint8Array` in place; errors with `.code` |
 
-`node tools/js-bundle.mjs <entry.mjs | package[@version]> <folder> [--install pkg@ver] [--empty module] [--minify]`
-makes the folder (`index.mjs`, `LICENSES.txt`) at build time;
-`examples/js-libraries` bundles markdown-it and ECharts with it.
+The application's functions, which the library calls as `host.call(name, ...args)`:
+
+| Binding | Given at load | A function |
+|---|---|---|
+| Rust | `Library::load_with_host(path, &Value, Host::new().function(name, f).function_async(name, g))` | `f(Reply) -> Result<Reply, String>`; `g(Reply)` returns a `Future` of one, polled on the engine's thread, woken from any |
+| Python | `zebkit.library.load(path, options, host={name: f})` | `f(*args)` returns the value, a coroutine (run with `zebkit.automation.run()`) or a Future (set from any thread); what it raises rejects |
+| Go | `zebkit.LoadLibraryWithHost(path, options, map[string]zebkit.LibraryHostFunc{...}, ready)` | `func(args json.RawMessage, parts [][]byte) (json.RawMessage, [][]byte, error)`, on a goroutine of its own |
+| Host JavaScript | `zebkit.Library.load(path, {host: {name: f}})` | `f(...args)` returns the value or a promise; what it throws rejects |
+
+`node tools/js-bundle.mjs <entry.mjs | package[@version] | package folder> <folder> [--install pkg@ver] [--empty module] [--minify]`
+makes the folder (`index.mjs`, `LICENSES.txt`, `exports.json`) at build time;
+a CommonJS package needs no entry. `--list <folder>` prints its functions;
+`--wrapper <rust|python|go|ts> <folder> [--name Name]` prints a typed facade
+of it (a method per function, with its doc comment and types from JSDoc or the
+package's TypeScript declarations). `examples/js-libraries` bundles markdown-it
+and ECharts with it, and has markdown-it's Rust and Python facades.
 
 ## Native interface: `zebkit.ui`
 

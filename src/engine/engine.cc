@@ -148,6 +148,7 @@
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation_network.h"
 #include "zebkit/engine/cookies.h"
+#include "zebkit/engine/library_page.h"
 #include "zebkit/engine/media_capture.h"
 #include "zebkit/engine/scheme.h"
 #include "zebkit/engine/view.h"
@@ -770,7 +771,17 @@ bool BrowserClient::IsHandledURL(const GURL& url) {
       url::kDataScheme,
       url::kFileScheme,
   });
-  return IsApplicationScheme(url.scheme()) || kSchemes.contains(url.scheme());
+  // ... and a JavaScript library's page's (library_page.cc).
+  return IsApplicationScheme(url.scheme()) || kSchemes.contains(url.scheme()) || url.scheme() == kLibraryScheme;
+}
+
+// A JavaScript library's page reaches what its fence lets through, the granted
+// origins on this machine too, with no Local Network Access permission to ask
+// (library_page.cc): as a page of the loopback.
+network::mojom::IPAddressSpace BrowserClient::DetermineAddressSpaceFromURL(const GURL& url) {
+  if (url.SchemeIs(kLibraryScheme))
+    return network::mojom::IPAddressSpace::kLoopback;
+  return content::ContentBrowserClient::DetermineAddressSpaceFromURL(url);
 }
 
 std::unique_ptr<content::WebContentsViewDelegate>
@@ -796,6 +807,8 @@ void BrowserClient::AppendExtraCommandLineSwitches(
   }
   AppendSchemeSwitch(command_line);
   AppendMediaSwitch(command_line);
+  // A library's renderer: its heap limit (library_page.cc).
+  AppendLibraryPageSwitches(command_line, child_process_id);
 }
 
 std::string AcceptLanguages() {
@@ -857,6 +870,7 @@ std::string BrowserClient::GetUserAgent() {
 // rule this is). --disable-popup-blocking lets every one open, as in Chrome.
 void BrowserClient::CreateThrottlesForNavigation(content::NavigationThrottleRegistry& registry) {
   AddNavigationPolicyThrottle(registry);
+  AddLibraryPageThrottle(registry);
 }
 void BrowserClient::CreateThrottlesForCommitWithoutUrlLoader(content::NavigationThrottleRegistry& registry) {
   AddNavigationPolicyThrottle(registry);
@@ -921,6 +935,9 @@ bool BrowserClient::CanCreateWindow(
     bool user_gesture,
     bool opener_suppressed,
     bool* no_javascript_access) {
+  // A library's page opens nothing (library_page.cc).
+  if (IsLibraryPageFrame(opener))
+    return false;
   bool opens_window = false;
   switch (disposition) {
     case WindowOpenDisposition::NEW_POPUP:
@@ -1115,6 +1132,9 @@ BrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
     content::FrameTreeNodeId frame_tree_node_id) {
   if (IsApplicationScheme(scheme))
     return CreateSchemeLoaderFactory(scheme);
+  // JavaScript libraries' pages (library_page.cc): their own files.
+  if (scheme == kLibraryScheme)
+    return CreateLibraryPageNavigationFactory(frame_tree_node_id);
   return content::ContentBrowserClient::CreateNonNetworkNavigationURLLoaderFactory(
       scheme, frame_tree_node_id);
 }
@@ -1247,6 +1267,9 @@ void BrowserClient::WillCreateURLLoaderFactory(
     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
     bool is_for_network_service) {
+  // A library's page reaches only the origins granted it (library_page.cc),
+  // whatever asks: first, so that nothing else sees what it refuses.
+  FenceLibraryPageNetwork(browser_context, factory_builder);
   // Dedicated workers have their ancestor frame; shared and service workers
   // have no view. Ahead of automation's, as ahead of CDP's.
   if (type == URLLoaderFactoryType::kNavigation ||
@@ -1276,7 +1299,8 @@ void BrowserClient::WillCreateURLLoaderFactory(
 }
 
 bool BrowserClient::WillInterceptWebSocket(content::RenderFrameHost* frame) {
-  return WillInterceptNetworkHookWebSocket(frame);
+  // A library's page has no WebSockets (library_page.cc): refused below.
+  return IsLibraryPageFrame(frame) || WillInterceptNetworkHookWebSocket(frame);
 }
 
 void BrowserClient::CreateWebSocket(
@@ -1287,6 +1311,8 @@ void BrowserClient::CreateWebSocket(
     const std::optional<std::string>& user_agent,
     mojo::PendingRemote<network::mojom::WebSocketHandshakeClient> handshake_client,
     WebSocketOptions options) {
+  if (IsLibraryPageFrame(frame))
+    return;  // a library's page: the handshake fails
   CreateNetworkHookWebSocket(frame, std::move(factory), url, user_agent, std::move(handshake_client),
                              std::move(options.header_client));
 }
@@ -1297,6 +1323,8 @@ void BrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
     const std::optional<url::Origin>& request_initiator_origin,
     NonNetworkURLLoaderFactoryMap* factories) {
   AddSchemeLoaderFactories(factories);
+  // A library's page's own files (library_page.cc); its workers have none.
+  AddLibraryPageSubresourceFactory(render_process_id, render_frame_id, factories);
 }
 
 void BrowserClient::RegisterNonNetworkWorkerMainResourceURLLoaderFactories(

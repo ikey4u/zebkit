@@ -655,8 +655,52 @@ inline constexpr char kLibraryBootstrap[] = R"js((function (native) {
   };
   const thrown = (id) => (error) => native.settle(id, CODE.THROWN, JSON.stringify(describe(error)), NO_PARTS);
 
+  // ---- the application's functions: import host from 'zebkit:host' ----
+  const HOST_FUNCTIONS = Object.freeze([...native.hostFunctions]);
+  const hostError = (code, json) => {
+    let info = {};
+    try { info = JSON.parse(json) || {}; } catch (e) {}
+    const message = String(info.message ?? 'the application failed');
+    if (code === CODE.TIMEOUT) return new DOMException(message, 'TimeoutError');
+    const error = new Error(message);
+    if (info.name) error.name = String(info.name);
+    return error;
+  };
+  const host = Object.freeze({
+    // The names the application gives (the load's "host").
+    functions: HOST_FUNCTIONS,
+    // host.call(name, ...args): a promise of the application's answer.
+    call: (name, ...args) => new Promise((resolve, reject) => {
+      name = String(name);
+      if (!HOST_FUNCTIONS.includes(name)) {
+        throw new TypeError(`the application gives no function "${name}" (the load's "host": ${JSON.stringify(HOST_FUNCTIONS)})`);
+      }
+      let json, parts = NO_PARTS;
+      try {
+        if (check(args, 0, [])) {
+          parts = [];
+          json = JSON.stringify(replaceParts(args, parts));
+        } else {
+          json = JSON.stringify(args);
+        }
+      } catch (error) {
+        throw error instanceof Refused ? new TypeError(error.message.replace('the value', 'the arguments')) : error;
+      }
+      const refused = native.hostCall(name, json, parts, (code, json, parts) => {
+        if (code !== CODE.OK) return reject(hostError(code, json));
+        try {
+          resolve(revive(JSON.parse(json), parts, 0));
+        } catch (error) {
+          reject(error instanceof Refused ? new TypeError(error.message) : error);
+        }
+      });
+      if (refused !== null) throw new RangeError(refused);
+    }),
+  });
+
   let exports = null;
   return Object.freeze({
+    host,
     // After the module's evaluation, which @evaluated is a promise of.
     loaded(evaluated, namespace) {
       Promise.resolve(evaluated).then(() => {

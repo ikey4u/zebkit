@@ -1,7 +1,8 @@
 // zebkit.Library for the host script (script.cc): <zebkit/library.h> in
 // JavaScript. Values carry Uint8Arrays in place, as {"$part": n} and parts
 // between the two isolates; a call is a promise, cancelled with
-// library.cancel(promise).
+// library.cancel(promise); the library's host.call() reaches the functions of
+// the load's "host".
 
 #ifndef ZEBKIT_ENGINE_LIBRARY_SCRIPT_H_
 #define ZEBKIT_ENGINE_LIBRARY_SCRIPT_H_
@@ -23,9 +24,9 @@ inline constexpr char kLibraryScript[] = R"js((function (native) {
     if (info.stack) error.stack = info.stack;
     return error;
   };
-  const toWire = (args) => {
+  const toWire = (value) => {
     const parts = [];
-    const json = JSON.stringify(args, function (key, value) {
+    const json = JSON.stringify(value === undefined ? null : value, function (key, value) {
       if (ArrayBuffer.isView(value)) {
         parts.push(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
         return {$part: parts.length - 1};
@@ -47,20 +48,50 @@ inline constexpr char kLibraryScript[] = R"js((function (native) {
   } : undefined);
   const CALLS = new WeakMap();
 
+  // What a host function threw, as the library sees it.
+  const thrownJson = (error) => JSON.stringify({
+    message: String(error instanceof Error ? error.message : error),
+    name: error instanceof Error ? String(error.name) : 'Error',
+  });
+
   class Library {
     #id; #ready;
     // A library: a folder with index.mjs, or one .mjs file; options as
-    // zebkit_library_load() has them. Throws for bad options or path.
+    // zebkit_library_load() has them, but "host": an object of the
+    // application's functions (a value, or a promise of one) the library
+    // calls as host.call(name, ...args). Throws for bad options or path.
     static load(path, options = {}) { return new Library(path, options); }
     constructor(path, options = {}) {
+      const {host, ...rest} = options ?? {};
+      let functions = null;
+      if (host !== undefined) {
+        if (host === null || typeof host !== 'object') throw new TypeError('host is an object of functions');
+        functions = new Map(Object.entries(host));
+        for (const [name, fn] of functions) {
+          if (typeof fn !== 'function') throw new TypeError(`host.${name} is not a function`);
+        }
+        rest.host = [...functions.keys()];
+      }
       let settle;
       this.#ready = new Promise((resolve, reject) => { settle = {resolve, reject}; });
       // Not an uncaught rejection if nothing awaits it: the calls fail too.
       this.#ready.catch(() => {});
-      this.#id = native.library('load', String(path), JSON.stringify(options ?? {}), (code, json) => {
+      const answer = (request, code, value) => {
+        try {
+          const [json, parts] = code === 0 ? toWire(value) : [value, []];
+          native.library('answer', this.#id, request, code, json, parts);
+        } catch (error) {
+          native.library('answer', this.#id, request, 1, thrownJson(error), []);
+        }
+      };
+      this.#id = native.library('load', String(path), JSON.stringify(rest), (code, json) => {
         if (code === 0) settle.resolve(JSON.parse(json));
         else settle.reject(failure(code, json));
-      });
+      }, functions && ((request, name, json, parts) => {
+        // Answered once, when the function's value (or promise) settles.
+        new Promise((resolve) => resolve(functions.get(name)(...fromWire(json, parts)))).then(
+          (value) => answer(request, 0, value), (error) => answer(request, 1, thrownJson(error)));
+      }));
     }
     // A promise of {functions: [...]}, the library's exported functions.
     get ready() { return this.#ready; }

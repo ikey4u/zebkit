@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	zebkit "github.com/ikey4u/zebkit/bindings/golang"
@@ -15,8 +16,9 @@ import (
 // libraries checks JavaScript libraries (<zebkit/library.h>, library.go):
 // the fixture tests/engine/library_fixture, found beside ZEBKIT_MEDIA_DIR
 // (tests/engine/pages/media). Callbacks and channels; each code; fetch()
-// refused, and allowed to a local server. tests/engine/library.py has the C
-// API's every case.
+// refused, and allowed to a local server; host functions (progress, data and
+// bytes asked, an error, one never answered); instances in parallel.
+// tests/engine/library.py has the C API's every case.
 func libraries() {
 	media := os.Getenv("ZEBKIT_MEDIA_DIR")
 	if media == "" {
@@ -115,7 +117,7 @@ func libraries() {
 	check(r.Err == nil && string(r.Value) == `{"status":200,"body":"hello"}`, "library: fetch() to a granted origin", string(r.Value), r.Err)
 	net.Close()
 	small, _ := zebkit.LoadLibrary(fixture, `{"queue": 1}`, nil)
-	_, running, _ := small.CallChan("later", json.RawMessage(`[0, 300]`), nil, 0)
+	_, running, _ := small.CallChan("later", json.RawMessage(`[0, 1000]`), nil, 0)
 	wait(func() bool { return false }, 0.3)
 	_, waiting, _ := small.CallChan("double", json.RawMessage(`[1]`), nil, 0)
 	_, full, _ := small.CallChan("double", json.RawMessage(`[1]`), nil, 0)
@@ -137,6 +139,71 @@ func libraries() {
 	check(wait(func() bool { return loadDone }, 10) && loadErr != nil && loadErr.(*zebkit.LibraryError).Code == zebkit.LibraryLoadFailed,
 		"library: an import outside the folder fails the load", loadErr)
 	forbidden.Close()
+	// Host functions: each on a goroutine of its own, answered from there.
+	var progressMu sync.Mutex
+	var progress []string
+	host := map[string]zebkit.LibraryHostFunc{
+		"progress": func(args json.RawMessage, _ [][]byte) (json.RawMessage, [][]byte, error) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			progress = append(progress, string(args))
+			return nil, nil, nil
+		},
+		"lookup": func(args json.RawMessage, parts [][]byte) (json.RawMessage, [][]byte, error) {
+			var question []any
+			json.Unmarshal(args, &question)
+			data := []byte{}
+			if len(parts) > 0 {
+				for i := len(parts[0]) - 1; i >= 0; i-- {
+					data = append(data, parts[0][i])
+				}
+			}
+			value, _ := json.Marshal(map[string]any{"text": fmt.Sprint("answer to ", question[0]), "data": map[string]int{"$part": 0}})
+			return value, [][]byte{data}, nil
+		},
+		"fails": func(json.RawMessage, [][]byte) (json.RawMessage, [][]byte, error) {
+			return nil, nil, fmt.Errorf("no such key: x")
+		},
+		"never": func(json.RawMessage, [][]byte) (json.RawMessage, [][]byte, error) {
+			select {} // never answers
+		},
+	}
+	hosted, err := zebkit.LoadLibraryWithHost(fixture, `{"timeoutMs": 1500}`, host, nil)
+	check(err == nil, "LoadLibraryWithHost", err)
+	if err == nil {
+		r = call(hosted, "work", `[3]`, nil, 0)
+		progressMu.Lock()
+		got := fmt.Sprint(progress)
+		progressMu.Unlock()
+		check(r.Err == nil && string(r.Value) == `"done"` && got == "[[1,3] [2,3] [3,3]]",
+			"library: host: progress told during a call, in order", string(r.Value), got)
+		r = call(hosted, "ask", `["why", {"$part": 0}]`, [][]byte{{1, 2, 3}}, 0)
+		check(r.Err == nil && string(r.Value) == `{"text":"answer to why","bytes":[3,2,1]}`,
+			"library: host: data and bytes asked of the application", string(r.Value), r.Err)
+		r = call(hosted, "failing", "", nil, 0)
+		check(r.Err == nil && string(r.Value) == `"no such key: x"`, "library: host: the application's error rejects host.call()",
+			string(r.Value))
+		started := time.Now()
+		r = call(hosted, "unanswered", "", nil, -1)
+		check(r.Err == nil && string(r.Value) == `"TimeoutError"` && time.Since(started) >= 1400*time.Millisecond,
+			"library: host: never answered: a TimeoutError at the library's timeoutMs", string(r.Value), time.Since(started))
+		hosted.Close()
+	}
+	pool, _ := zebkit.LoadLibrary(fixture, map[string]any{"instances": 4, "codeCache": false}, nil)
+	call(pool, "double", `[1]`, nil, 0)
+	started := time.Now()
+	var busy []<-chan zebkit.LibraryResult
+	for i := 0; i < 4; i++ {
+		_, results, _ := pool.CallChan("busy", json.RawMessage(`[300]`), nil, 0)
+		busy = append(busy, results)
+	}
+	allBusy := true
+	for _, results := range busy {
+		allBusy = allBusy && string(result(results).Value) == "300"
+	}
+	check(allBusy && time.Since(started) < 900*time.Millisecond, "library: instances: 4 calls of 300 ms in parallel on 4",
+		time.Since(started))
+	pool.Close()
 	closing, _ := zebkit.LoadLibrary(fixture, nil, nil)
 	_, pendingA, _ := closing.CallChan("later", json.RawMessage(`[1, 1000]`), nil, 0)
 	_, pendingB, _ := closing.CallChan("double", json.RawMessage(`[1]`), nil, 0)

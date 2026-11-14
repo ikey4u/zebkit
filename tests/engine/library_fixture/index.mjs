@@ -16,3 +16,23 @@ export const later = (value, ms) => new Promise((resolve) => setTimeout(() => re
 export const spin = () => { for (;;) {} };
 export function grow() { const keep = []; for (;;) keep.push(new Array(100000).fill(Math.random())); }
 export async function get(url) { const r = await fetch(url); return {status: r.status, body: await r.text()}; }
+
+// The application's functions (the load's "host"), each binding's own.
+import host from 'zebkit:host';
+export async function work(steps) {
+  for (let i = 1; i <= steps; ++i) await host.call('progress', i, steps);
+  return 'done';
+}
+export async function ask(question, bytes) {
+  const answer = await host.call('lookup', question, bytes);
+  return {text: answer.text, bytes: answer.data instanceof Uint8Array ? [...answer.data] : null};
+}
+export async function failing() {
+  try { await host.call('fails', 'x'); return 'resolved'; } catch (error) { return error.message; }
+}
+export const threaded = (n) => host.call('threaded', n);
+export async function unanswered() {
+  try { await host.call('never'); return 'resolved'; } catch (error) { return error.name; }
+}
+// Busy for ms milliseconds, as a long computation is: instances run these in parallel.
+export function busy(ms) { const end = Date.now() + ms; while (Date.now() < end) {} return ms; }

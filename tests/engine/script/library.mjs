@@ -1,6 +1,7 @@
 // zebkit.Library: <zebkit/library.h> from host JavaScript (tests/engine/library.py
 // has the C API's every case; this is the binding's). Uint8Arrays in place,
-// a promise per call, library.cancel(promise), each code.
+// a promise per call, library.cancel(promise), each code; host functions,
+// instances.
 //
 //   zebkit-js library.mjs <page server base URL> <tests/engine dir>
 import {check, finish, verify, sleep} from './helpers.mjs';
@@ -108,6 +109,37 @@ await check('close with calls pending: GONE; a call after close is rejected', as
   closing.close();
   const codes = await Promise.all(pending.map(codeOf));
   return codes.join() === 'GONE,GONE' && (await codeOf(closing.call('double', 1))) === 'GONE' || codes;
+});
+await check('host: progress told during a call, in order (a function)', async () => {
+  const progress = [];
+  const hosted = zebkit.Library.load(fixture, {host: {progress: (i) => { progress.push(i); }}});
+  const value = await hosted.call('work', 3);
+  hosted.close();
+  return value === 'done' && progress.join() === '1,2,3' || [value, progress];
+});
+await check('host: data and bytes asked (an async function), an error, one never answered', async () => {
+  const hosted = zebkit.Library.load(fixture, {timeoutMs: 1500, host: {
+    async lookup(question, data) { await sleep(20); return {text: `answer to ${question}`, data: data.slice().reverse()}; },
+    fails(key) { throw new RangeError(`no such key: ${key}`); },
+    never: () => new Promise(() => {}),
+  }});
+  const asked = await hosted.call('ask', 'why', new Uint8Array([1, 2, 3]));
+  const failed = await hosted.call('failing');
+  const started = Date.now();
+  const never = await hosted.callWith('unanswered', [], {timeoutMs: -1});
+  const waited = Date.now() - started;
+  hosted.close();
+  return asked.text === 'answer to why' && asked.bytes.join() === '3,2,1' && failed === 'no such key: x' &&
+      never === 'TimeoutError' && waited >= 1400 || [asked, failed, never, waited];
+});
+await check('instances: 4 calls of 300 ms in parallel on 4', async () => {
+  const pool = zebkit.Library.load(fixture, {instances: 4, codeCache: false});
+  await pool.ready;
+  const started = Date.now();
+  const values = await Promise.all([0, 1, 2, 3].map(() => pool.call('busy', 300)));
+  const took = Date.now() - started;
+  pool.close();
+  return values.join() === '300,300,300,300' && took < 900 || [values, took];
 });
 let threw = false;
 try {

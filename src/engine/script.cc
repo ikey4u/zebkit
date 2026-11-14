@@ -1080,7 +1080,12 @@ struct zebkit_script {
   };
   static void LibraryToldFunc(zebkit_library* library, zebkit_library_code code, const char* json,
                               const zebkit_part* parts, size_t part_count, void* data);
+  // A library's host.call() to the script's function for it.
+  static void LibraryHostFunc(zebkit_library* library, uint64_t request, const char* name, const char* args_json,
+                              const zebkit_part* parts, size_t part_count, void* data);
   std::map<int, zebkit_library*> libraries_;
+  // The script's function answering each library's host.call(), by library.
+  std::map<int, std::unique_ptr<LibraryTold>> library_hosts_;
   int next_library_ = 1;
   std::set<LibraryTold*> library_told_;
   zebkit::UiTree* Ui();
@@ -1276,6 +1281,7 @@ zebkit_script::~zebkit_script() {
     // Its libraries closed: their outcomes come later, to nothing.
     for (const auto& [id, library] : libraries_) zebkit_library_close(library);
     libraries_.clear();
+    library_hosts_.clear();
     for (LibraryTold* told : library_told_) told->function.Reset();
     library_told_.clear();
     context_.Reset();
@@ -4280,10 +4286,12 @@ void zebkit_script::UiCapture(
 
 // ---- zebkit.Library ----
 
-// library('load', path, options, ready): its number, or throws why not;
+// library('load', path, options, ready, host): its number, or throws why not;
 // ('call', library, name, json, parts, timeoutMs, done): the call's number, 0
-// when refused; ('cancel', library, call); ('close', library). ready and done
-// get (code, json, parts).
+// when refused; ('cancel', library, call); ('answer', library, request, code,
+// json, parts): 1 when taken; ('close', library). ready and done get (code,
+// json, parts); host, if a function, (request, name, json, parts) for each
+// host.call() of the library's.
 void zebkit_script::Library(const v8::FunctionCallbackInfo<v8::Value>& info) {
   zebkit_script* self = From(info);
   v8::Isolate* isolate = info.GetIsolate();
@@ -4315,6 +4323,12 @@ void zebkit_script::Library(const v8::FunctionCallbackInfo<v8::Value>& info) {
     }
     const int id = self->next_library_++;
     self->libraries_[id] = library;
+    if (info[4]->IsFunction()) {
+      auto host = std::make_unique<LibraryTold>(
+          LibraryTold{self->weak_factory_.GetWeakPtr(), v8::Global<v8::Function>(isolate, info[4].As<v8::Function>())});
+      zebkit_library_set_host(library, &LibraryHostFunc, host.get());
+      self->library_hosts_[id] = std::move(host);
+    }
     info.GetReturnValue().Set(id);
     return;
   }
@@ -4348,11 +4362,49 @@ void zebkit_script::Library(const v8::FunctionCallbackInfo<v8::Value>& info) {
     info.GetReturnValue().Set(static_cast<double>(id));
   } else if (kind == "cancel") {
     zebkit_library_cancel(it->second, static_cast<uint64_t>(number(2)));
+  } else if (kind == "answer") {
+    const std::string json = Utf8(isolate, info[4]);
+    std::vector<zebkit_part> parts;
+    if (info[5]->IsArray()) {
+      v8::Local<v8::Array> list = info[5].As<v8::Array>();
+      for (uint32_t i = 0; i < list->Length(); ++i) {
+        v8::Local<v8::Value> item;
+        if (!list->Get(isolate->GetCurrentContext(), i).ToLocal(&item) || !item->IsArrayBufferView())
+          continue;
+        v8::Local<v8::ArrayBufferView> view = item.As<v8::ArrayBufferView>();
+        const uint8_t* bytes = static_cast<const uint8_t*>(view->Buffer()->Data());
+        parts.push_back({bytes ? bytes + view->ByteOffset() : nullptr, view->ByteLength()});
+      }
+    }
+    info.GetReturnValue().Set(zebkit_library_answer(it->second, static_cast<uint64_t>(number(2)),
+                                                    static_cast<zebkit_library_code>(number(3)), json.c_str(),
+                                                    parts.data(), parts.size()));
   } else if (kind == "close") {
     zebkit_library* library = it->second;
+    self->library_hosts_.erase(it->first);
     self->libraries_.erase(it);
     zebkit_library_close(library);
   }
+}
+
+void zebkit_script::LibraryHostFunc(zebkit_library* library, uint64_t request, const char* name,
+                                    const char* args_json, const zebkit_part* parts, size_t part_count, void* data) {
+  auto* host = static_cast<LibraryTold*>(data);
+  zebkit_script* self = host->script.get();
+  if (!self || host->function.IsEmpty()) {
+    zebkit_library_answer(library, request, ZEBKIT_LIBRARY_THROWN,
+                          "{\"message\": \"the script has ended\", \"name\": \"Error\"}", nullptr, 0);
+    return;
+  }
+  Scope scope(self);
+  v8::Isolate* isolate = self->isolate();
+  v8::Local<v8::Array> list = v8::Array::New(isolate, static_cast<int>(part_count));
+  for (size_t i = 0; i < part_count; ++i) {
+    std::ignore = list->Set(self->context(), static_cast<uint32_t>(i),
+                            BytesValue(isolate, parts[i].data, parts[i].size));
+  }
+  self->CallFunction(host->function.Get(isolate), {v8::Number::New(isolate, static_cast<double>(request)),
+                                                   String8(isolate, name), String8(isolate, args_json), list});
 }
 
 void zebkit_script::LibraryToldFunc(zebkit_library* library, zebkit_library_code code, const char* json,

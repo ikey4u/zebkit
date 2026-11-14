@@ -1,11 +1,14 @@
 // JavaScript libraries as normal libraries: <zebkit/library.h>, the
 // backend "isolate" (docs/JS_LIBRARIES.md).
 //
-// Each library has a thread of its own, with one V8 isolate made and used
-// there, and a queue of calls that run on it one at a time. The application's
-// thread queues; the engine's thread tells (every callback runs there),
-// closes, and watches deadlines: a call whose script is still running at its
-// deadline is stopped with TerminateExecution(), which any thread may call.
+// Each library has its instances: threads of their own, each with one V8
+// isolate made and used there, and a queue of calls, each taken by the first
+// instance free and run there, one at a time on each. The application's
+// threads queue and answer the library's requests (host.call()); the engine's
+// thread tells (every callback runs there), closes, and watches deadlines: a
+// call whose script is still running at its deadline is stopped with
+// TerminateExecution(), which any thread may call. An idle instance makes the
+// modules' code cache (kept in memory and in the profile) and gives memory back.
 
 #ifdef UNSAFE_BUFFERS_BUILD
 // The C API takes and gives C arrays.
@@ -18,14 +21,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
+#include <deque>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
+#include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/no_destructor.h"
+#include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
@@ -33,6 +42,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "crypto/hash.h"
 #include "gin/array_buffer.h"
 #include "gin/public/isolate_holder.h"
 #include "url/gurl.h"
@@ -51,7 +61,9 @@
 #include "v8/include/v8-typed-array.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/library_bootstrap.h"
+#include "zebkit/engine/library_page.h"
 #include "zebkit/engine/path_utf8.h"
+#include "zebkit/engine/profile.h"
 
 namespace zebkit {
 
@@ -158,7 +170,7 @@ class CountingAllocator : public v8::ArrayBuffer::Allocator {
 
 namespace {
 
-// The library's thread for V8's own tasks, run with the isolate entered (as
+// An instance's thread for V8's own tasks, run with the isolate entered (as
 // script.cc's); those still queued when the isolate goes are dropped.
 class EnteringTaskRunner : public base::SingleThreadTaskRunner {
  public:
@@ -209,10 +221,8 @@ bool ParseOptions(const char* json, LibraryOptions* options, std::string* error)
         *error = "backend is \"isolate\" or \"page\"";
         return false;
       }
-      if (value.GetString() == "page") {
-        *error = "the backend \"page\" is not built yet; \"isolate\" is";
-        return false;
-      }
+      // The backend "page" (library_page.cc).
+      options->page = value.GetString() == "page";
     } else if (key == "timeoutMs") {
       if (!number || n < 1 || n > 86400000) {
         *error = "timeoutMs is a number of milliseconds, 1 to 86400000";
@@ -253,13 +263,55 @@ bool ParseOptions(const char* json, LibraryOptions* options, std::string* error)
         }
         options->network.push_back(origin);
       }
+    } else if (key == "instances") {
+      if (!number || n < 1 || n > 64 || n != static_cast<int>(n)) {
+        *error = "instances is a number of isolates, 1 to 64";
+        return false;
+      }
+      options->instances = static_cast<int>(n);
+    } else if (key == "codeCache") {
+      if (!value.is_bool()) {
+        *error = "codeCache is true or false";
+        return false;
+      }
+      options->code_cache = value.GetBool();
+    } else if (key == "host") {
+      if (!value.is_list()) {
+        *error = "host is a list of the names of the application's functions";
+        return false;
+      }
+      for (const base::Value& item : value.GetList()) {
+        if (!item.is_string() || item.GetString().empty() || item.GetString().size() > 256) {
+          *error = "host: a name is a string of 1 to 256 characters";
+          return false;
+        }
+        if (std::find(options->host.begin(), options->host.end(), item.GetString()) == options->host.end())
+          options->host.push_back(item.GetString());
+      }
     } else if (key == "width" || key == "height") {
-      *error = std::string(key) + " is the backend \"page\"'s, which is not built yet";
-      return false;
+      // The backend "page"'s (library_page.cc); checked against it below.
+      if (!number || n < 1 || n > 16384 || n != static_cast<int>(n)) {
+        *error = std::string(key) + " is a number of CSS pixels, 1 to 16384";
+        return false;
+      }
+      (key == "width" ? options->width : options->height) = static_cast<int>(n);
     } else {
       *error = "unknown option \"" + std::string(key) + "\"";
       return false;
     }
+  }
+  if (!options->page && (options->width || options->height)) {
+    *error = "width and height are the backend \"page\"'s";
+    return false;
+  }
+  // Not built for pages yet: refused rather than ignored (docs/JS_LIBRARIES.md).
+  if (options->page && options->instances != 1) {
+    *error = "instances is the backend \"isolate\"'s";
+    return false;
+  }
+  if (options->page && !options->host.empty()) {
+    *error = "host is the backend \"isolate\"'s";
+    return false;
   }
   return true;
 }
@@ -273,7 +325,126 @@ void Deliver(scoped_refptr<zebkit_library> library, zebkit_library_func func, vo
   func(library.get(), code, json.c_str(), list.empty() ? nullptr : list.data(), list.size(), data);
 }
 
+// V8's code cache of libraries' modules (docs/JS_LIBRARIES.md, "Load"): the
+// bytecode V8 made of a module, kept by the module's content (SHA-256) and
+// V8's tag (its version and flags), so that a load of the same module
+// compiles nothing V8 compiled before. In memory for the process, at most
+// kMemoryBytes, the oldest dropped first; and in the profile, a file per
+// module path in "Library Code Cache", which holds the content's key: a
+// changed module replaces its file, so the folder never grows past the
+// modules loaded. Never in the library's folder.
+class CodeCaches {
+ public:
+  static constexpr size_t kMemoryBytes = size_t{64} << 20;
+  static constexpr size_t kMaxFile = size_t{64} << 20;
+
+  static CodeCaches& Get() {
+    static base::NoDestructor<CodeCaches> caches;
+    return *caches;
+  }
+
+  // The key of @text's cache.
+  static std::string Key(std::string_view text) {
+    return base::HexEncode(crypto::hash::Sha256(text)) + "-" +
+           base::NumberToString(v8::ScriptCompiler::CachedDataVersionTag());
+  }
+
+  // The cache of @key: in memory, else in the profile's file for @path.
+  std::shared_ptr<const std::string> Find(const std::string& key, const base::FilePath& path) {
+    {
+      base::AutoLock lock(lock_);
+      auto it = memory_.find(key);
+      if (it != memory_.end())
+        return it->second;
+    }
+    const base::FilePath file = File(path);
+    std::string text;
+    if (file.empty() || !base::ReadFileToStringWithMaxSize(file, &text, kMaxFile + 4096))
+      return nullptr;
+    const std::string head = Head(key);
+    if (!text.starts_with(head))
+      return nullptr;
+    auto data = std::make_shared<const std::string>(text.substr(head.size()));
+    Remember(key, data);
+    return data;
+  }
+
+  bool Has(const std::string& key) {
+    base::AutoLock lock(lock_);
+    return memory_.contains(key);
+  }
+
+  void Put(const std::string& key, const base::FilePath& path, std::string data) {
+    if (data.empty() || data.size() > kMaxFile)
+      return;
+    const base::FilePath file = File(path);
+    if (!file.empty() && base::CreateDirectory(file.DirName()))
+      base::ImportantFileWriter::WriteFileAtomically(file, Head(key) + data);
+    Remember(key, std::make_shared<const std::string>(std::move(data)));
+  }
+
+  // V8 refused it: gone from memory and the profile.
+  void Drop(const std::string& key, const base::FilePath& path) {
+    {
+      base::AutoLock lock(lock_);
+      auto it = memory_.find(key);
+      if (it != memory_.end()) {
+        bytes_ -= it->second->size();
+        memory_.erase(it);
+        std::erase(order_, key);
+      }
+    }
+    const base::FilePath file = File(path);
+    if (!file.empty())
+      base::DeleteFile(file);
+  }
+
+ private:
+  static std::string Head(const std::string& key) { return "zebkit library code cache 1 " + key + "\n"; }
+
+  // The profile's file for the module at @path; empty when the engine has no
+  // profile folder.
+  static base::FilePath File(const base::FilePath& path) {
+    base::FilePath profile;
+    if (!base::PathService::Get(kUserDataPath, &profile) || profile.empty())
+      return base::FilePath();
+    const std::string name = base::HexEncode(crypto::hash::Sha256(PathToUTF8(path))).substr(0, 32);
+    return profile.AppendASCII("Library Code Cache").AppendASCII(name + ".v8");
+  }
+
+  void Remember(const std::string& key, std::shared_ptr<const std::string> data) {
+    base::AutoLock lock(lock_);
+    if (memory_.contains(key) || data->size() > kMemoryBytes)
+      return;
+    bytes_ += data->size();
+    memory_[key] = std::move(data);
+    order_.push_back(key);
+    while (bytes_ > kMemoryBytes && !order_.empty()) {
+      auto it = memory_.find(order_.front());
+      bytes_ -= it->second->size();
+      memory_.erase(it);
+      order_.pop_front();
+    }
+  }
+
+  base::Lock lock_;
+  std::map<std::string, std::shared_ptr<const std::string>> memory_ GUARDED_BY(lock_);
+  std::deque<std::string> order_ GUARDED_BY(lock_);
+  size_t bytes_ GUARDED_BY(lock_) = 0;
+};
+
+// How long an instance is idle (no call started since its last ended)
+// before it makes its code cache and V8 gives memory back
+// (docs/JS_LIBRARIES.md, "Memory": what it gains and costs). After each call
+// it costs too much: a full collection is most of a millisecond.
+constexpr base::TimeDelta kIdle = base::Seconds(2);
+
 }  // namespace
+
+// The backend "page" checks its files as imports are checked here.
+base::FilePath LibraryRealPath(const base::FilePath& path) {
+  return RealPath(path);
+}
 
 std::string LibraryErrorJson(const std::string& message, const std::string& name, const std::string& stack) {
   base::DictValue dict;
@@ -283,12 +454,12 @@ std::string LibraryErrorJson(const std::string& message, const std::string& name
   return base::WriteJson(dict).value_or("{}");
 }
 
-// ---- LibraryIsolate: the library's thread ----
+// ---- LibraryIsolate: an instance's thread ----
 
 LibraryIsolate::Scope::Scope(LibraryIsolate* host)
     : host(host), isolate_scope(host->isolate()), handles(host->isolate()), context_scope(host->context()) {
   if (host->depth_++ == 0)
-    host->library_->Entered();
+    host->library_->Entered(host->index_);
 }
 
 LibraryIsolate::Scope::~Scope() {
@@ -301,21 +472,22 @@ LibraryIsolate::Scope::~Scope() {
     --host->depth_;
   }
   host->ReportRejections();
-  const zebkit_library_code ending = host->library_->Left();
+  const zebkit_library_code ending = host->library_->Left(host->index_);
   if (ending != ZEBKIT_LIBRARY_OK && !host->ended_) {
     host->ended_ = true;
-    host->library_->End(ending);
+    host->library_->End(host->index_, ending);
   }
 }
 
-LibraryIsolate::LibraryIsolate(scoped_refptr<zebkit_library> library) : library_(std::move(library)) {}
+LibraryIsolate::LibraryIsolate(scoped_refptr<zebkit_library> library, int index)
+    : library_(std::move(library)), index_(index) {}
 
 LibraryIsolate::~LibraryIsolate() {
   if (!isolate_)
     return;
   {
     base::AutoLock lock(library_->lock_);
-    library_->isolate_ = nullptr;
+    library_->instances[index_]->isolate = nullptr;
   }
   {
     v8::Isolate::Scope isolate_scope(isolate_);
@@ -323,7 +495,9 @@ LibraryIsolate::~LibraryIsolate() {
     isolate_->RemoveNearHeapLimitCallback(&NearHeapLimit, 0);
     timers_.clear();
     fetches_.clear();
+    requests_.clear();
     modules_.clear();
+    host_module_.Reset();
     unhandled_.clear();
     run_.Reset();
     runner_.Reset();
@@ -399,7 +573,7 @@ bool LibraryIsolate::Create(std::string* error) {
   static_cast<EnteringTaskRunner*>(tasks_.get())->set_isolate(isolate_);
   {
     base::AutoLock lock(library_->lock_);
-    library_->isolate_ = isolate_.get();
+    library_->instances[index_]->isolate = isolate_.get();
   }
   v8::Isolate::Scope isolate_scope(isolate_);
   v8::HandleScope handles(isolate_);
@@ -434,6 +608,7 @@ bool LibraryIsolate::Create(std::string* error) {
   SetMethod(native, "settle", &SettleCall);
   SetMethod(native, "loaded", &LoadedCall);
   SetMethod(native, "fetch", &Fetch);
+  SetMethod(native, "hostCall", &HostCall);
   InstallWeb(native);
   v8::Local<v8::Object> codes = v8::Object::New(isolate_);
   for (int code = ZEBKIT_LIBRARY_OK; code <= ZEBKIT_LIBRARY_GONE; ++code) {
@@ -441,6 +616,11 @@ bool LibraryIsolate::Create(std::string* error) {
                              v8::Integer::New(isolate_, code));
   }
   std::ignore = native->Set(context, String8(isolate_, "codes"), codes);
+  const std::vector<std::string>& names = library_->options.host;
+  v8::Local<v8::Array> host = v8::Array::New(isolate_, static_cast<int>(names.size()));
+  for (size_t i = 0; i < names.size(); ++i)
+    std::ignore = host->Set(context, static_cast<uint32_t>(i), String8(isolate_, names[i]));
+  std::ignore = native->Set(context, String8(isolate_, "hostFunctions"), host);
 
   v8::TryCatch try_catch(isolate_);
   v8::Local<v8::Script> script;
@@ -466,7 +646,7 @@ bool LibraryIsolate::Create(std::string* error) {
 void LibraryIsolate::Load() {
   std::string error;
   if (!Create(&error)) {
-    library_->Loaded(ZEBKIT_LIBRARY_LOAD_FAILED, error);
+    library_->Loaded(index_, ZEBKIT_LIBRARY_LOAD_FAILED, error);
     return;
   }
   if (ended_)
@@ -479,7 +659,7 @@ void LibraryIsolate::Load() {
   if (!LoadModule(library_->entry).ToLocal(&module) || !module->InstantiateModule(context, &Resolve).FromMaybe(false) ||
       !module->Evaluate(context).ToLocal(&evaluated)) {
     if (!isolate_->IsExecutionTerminating())
-      library_->Loaded(ZEBKIT_LIBRARY_LOAD_FAILED, Describe(try_catch.Exception()));
+      library_->Loaded(index_, ZEBKIT_LIBRARY_LOAD_FAILED, Describe(try_catch.Exception()));
     return;
   }
   v8::Local<v8::Value> loaded;
@@ -487,7 +667,7 @@ void LibraryIsolate::Load() {
   if (!runner_.Get(isolate_)->Get(context, String8(isolate_, "loaded")).ToLocal(&loaded) || !loaded->IsFunction() ||
       loaded.As<v8::Function>()->Call(context, v8::Undefined(isolate_), 2, argv).IsEmpty()) {
     if (!isolate_->IsExecutionTerminating())
-      library_->Loaded(ZEBKIT_LIBRARY_LOAD_FAILED, Describe(try_catch.Exception()));
+      library_->Loaded(index_, ZEBKIT_LIBRARY_LOAD_FAILED, Describe(try_catch.Exception()));
   }
 }
 
@@ -495,7 +675,7 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::LoadModule(const base::FilePath& path
   const std::string key = PathToUTF8(path);
   auto it = modules_.find(key);
   if (it != modules_.end())
-    return it->second.Get(isolate_);
+    return it->second.module.Get(isolate_);
   if (modules_.size() >= kMaxModules) {
     isolate_->ThrowException(v8::Exception::Error(String8(isolate_, "more than 4096 modules")));
     return {};
@@ -507,13 +687,97 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::LoadModule(const base::FilePath& path
   }
   v8::ScriptOrigin origin(String8(isolate_, "file://" + key), 0, 0, false, -1, v8::Local<v8::Value>(), false, false,
                           /*is_module=*/true);
-  v8::ScriptCompiler::Source source(String8(isolate_, text), origin);
+  // With the code cache V8 made of the same text before, when there is one.
+  std::string cache_key;
+  std::shared_ptr<const std::string> cached;
+  if (library_->options.code_cache) {
+    cache_key = CodeCaches::Key(text);
+    cached = CodeCaches::Get().Find(cache_key, path);
+  }
+  v8::ScriptCompiler::Source source(
+      String8(isolate_, text), origin,
+      cached ? new v8::ScriptCompiler::CachedData(reinterpret_cast<const uint8_t*>(cached->data()),
+                                                  static_cast<int>(cached->size()))
+             : nullptr);
   v8::Local<v8::Module> module;
-  if (!v8::ScriptCompiler::CompileModule(isolate_, &source).ToLocal(&module))
+  if (!v8::ScriptCompiler::CompileModule(isolate_, &source,
+                                         cached ? v8::ScriptCompiler::kConsumeCodeCache
+                                                : v8::ScriptCompiler::kNoCompileOptions)
+           .ToLocal(&module)) {
     return {};
-  modules_[key].Reset(isolate_, module);
+  }
+  const bool taken = cached && !source.GetCachedData()->rejected;
+  if (cached && !taken)
+    CodeCaches::Get().Drop(cache_key, path);
+  Module& entry = modules_[key];
+  entry.module.Reset(isolate_, module);
+  entry.cache_key = cache_key;
+  entry.cached = taken;
   module_paths_.emplace(module->GetIdentityHash(), key);
   return module;
+}
+
+void LibraryIsolate::MakeCodeCache() {
+  if (cache_made_ || ended_ || !isolate_)
+    return;
+  cache_made_ = true;
+  v8::Isolate::Scope isolate_scope(isolate_);
+  v8::HandleScope handles(isolate_);
+  for (auto& [path, module] : modules_) {
+    if (module.cache_key.empty() || module.cached || CodeCaches::Get().Has(module.cache_key))
+      continue;
+    std::unique_ptr<v8::ScriptCompiler::CachedData> data(
+        v8::ScriptCompiler::CreateCodeCache(module.module.Get(isolate_)->GetUnboundModuleScript()));
+    if (data && data->length > 0) {
+      CodeCaches::Get().Put(module.cache_key, PathFromUTF8(path),
+                            std::string(reinterpret_cast<const char*>(data->data), data->length));
+    }
+  }
+}
+
+void LibraryIsolate::Shrink() {
+  if (ended_ || !isolate_)
+    return;
+  v8::Isolate::Scope isolate_scope(isolate_);
+  // Full collections, compacting, until nothing more is freed; the free pages
+  // go back. MemoryPressureNotification() gave back a quarter as much.
+  isolate_->LowMemoryNotification();
+}
+
+// "zebkit:host": host (its default export), host.call() and host.functions.
+v8::Local<v8::Module> LibraryIsolate::HostModule() {
+  if (host_module_.IsEmpty()) {
+    v8::Local<v8::String> names[] = {String8(isolate_, "default"), String8(isolate_, "call"),
+                                     String8(isolate_, "functions")};
+    host_module_.Reset(isolate_, v8::Module::CreateSyntheticModule(isolate_, String8(isolate_, "zebkit:host"),
+                                                                   std::span<const v8::Local<v8::String>>(names),
+                                                                   &EvaluateHost));
+  }
+  return host_module_.Get(isolate_);
+}
+
+v8::MaybeLocal<v8::Promise> LibraryIsolate::EvaluateHost(v8::Local<v8::Context> context,
+                                                         v8::Local<v8::Module> module) {
+  auto* self = static_cast<LibraryIsolate*>(
+      context->GetAlignedPointerFromEmbedderData(1, v8::kEmbedderDataTypeTagDefault));
+  v8::Isolate* isolate = self->isolate_;
+  v8::Local<v8::Value> host;
+  if (!self->runner_.Get(isolate)->Get(context, String8(isolate, "host")).ToLocal(&host) || !host->IsObject())
+    return {};
+  v8::Local<v8::Value> call, functions;
+  if (!host.As<v8::Object>()->Get(context, String8(isolate, "call")).ToLocal(&call) ||
+      !host.As<v8::Object>()->Get(context, String8(isolate, "functions")).ToLocal(&functions) ||
+      module->SetSyntheticModuleExport(isolate, String8(isolate, "default"), host).IsNothing() ||
+      module->SetSyntheticModuleExport(isolate, String8(isolate, "call"), call).IsNothing() ||
+      module->SetSyntheticModuleExport(isolate, String8(isolate, "functions"), functions).IsNothing()) {
+    return {};
+  }
+  v8::Local<v8::Promise::Resolver> resolver;
+  if (!v8::Promise::Resolver::New(context).ToLocal(&resolver) ||
+      resolver->Resolve(context, v8::Undefined(isolate)).IsNothing()) {
+    return {};
+  }
+  return resolver->GetPromise();
 }
 
 v8::MaybeLocal<v8::Module> LibraryIsolate::Resolve(v8::Local<v8::Context> context, v8::Local<v8::String> specifier,
@@ -527,6 +791,9 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::Resolve(v8::Local<v8::Context> contex
     isolate->ThrowException(v8::Exception::Error(String8(isolate, "cannot import \"" + name + "\": " + why)));
     return v8::MaybeLocal<v8::Module>();
   };
+  // The application's functions, for every library.
+  if (name == "zebkit:host")
+    return self->HostModule();
   if (self->library_->single_file)
     return refuse("a library of one file imports nothing; make it a folder with index.mjs");
   if (!(name.starts_with("./") || name.starts_with("../")))
@@ -535,7 +802,7 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::Resolve(v8::Local<v8::Context> contex
   auto [first, last] = self->module_paths_.equal_range(referrer->GetIdentityHash());
   for (auto it = first; it != last && !from; ++it) {
     auto module = self->modules_.find(it->second);
-    if (module != self->modules_.end() && module->second == referrer)
+    if (module != self->modules_.end() && module->second.module == referrer)
       from = &it->second;
   }
   if (!from)
@@ -552,8 +819,8 @@ v8::MaybeLocal<v8::Module> LibraryIsolate::Resolve(v8::Local<v8::Context> contex
 
 size_t LibraryIsolate::NearHeapLimit(void* data, size_t current, size_t initial) {
   auto* self = static_cast<LibraryIsolate*>(data);
-  self->library_->OutOfMemory();
-  // Room for the script to unwind once stopped; the library ends after.
+  self->library_->OutOfMemory(self->index_);
+  // Room for the script to unwind once stopped; the instance ends after.
   return current + std::max(current / 2, size_t{32} << 20);
 }
 
@@ -568,7 +835,7 @@ void LibraryIsolate::Run(uint64_t id, const std::string& function, const std::st
   for (size_t i = 0; i < parts.size(); ++i) {
     v8::Local<v8::ArrayBuffer> buffer;
     if (!v8::ArrayBuffer::MaybeNew(isolate_, parts[i].size()).ToLocal(&buffer)) {
-      library_->Settled(id, ZEBKIT_LIBRARY_BAD_ARGUMENTS,
+      library_->Settled(index_, id, ZEBKIT_LIBRARY_BAD_ARGUMENTS,
                         LibraryErrorJson("no memory for the parts within the library's heap limit", "RangeError"),
                         {});
       return;
@@ -580,16 +847,50 @@ void LibraryIsolate::Run(uint64_t id, const std::string& function, const std::st
   v8::Local<v8::String> json;
   if (!v8::String::NewFromUtf8(isolate_, args.data(), v8::NewStringType::kNormal, static_cast<int>(args.size()))
            .ToLocal(&json)) {
-    library_->Settled(id, ZEBKIT_LIBRARY_BAD_ARGUMENTS, LibraryErrorJson("the arguments are too long", "RangeError"),
-                      {});
+    library_->Settled(index_, id, ZEBKIT_LIBRARY_BAD_ARGUMENTS,
+                      LibraryErrorJson("the arguments are too long", "RangeError"), {});
     return;
   }
   v8::Local<v8::Value> argv[] = {v8::Number::New(isolate_, static_cast<double>(id)), String8(isolate_, function), json,
                                  list};
   if (run_.Get(isolate_)->Call(context, v8::Undefined(isolate_), 4, argv).IsEmpty() &&
       !isolate_->IsExecutionTerminating()) {
-    library_->Settled(id, ZEBKIT_LIBRARY_THROWN, Describe(try_catch.Exception()), {});
+    library_->Settled(index_, id, ZEBKIT_LIBRARY_THROWN, Describe(try_catch.Exception()), {});
   }
+}
+
+void LibraryIsolate::Answered(int local, zebkit_library_code code, const std::string& json,
+                              const std::vector<std::string>& parts) {
+  auto it = requests_.find(local);
+  if (it == requests_.end() || ended_)
+    return;
+  Scope scope(this);
+  v8::Local<v8::Context> context = this->context();
+  v8::Local<v8::Function> done = it->second.Get(isolate_);
+  requests_.erase(it);
+  v8::TryCatch try_catch(isolate_);
+  v8::Local<v8::Array> list = v8::Array::New(isolate_, static_cast<int>(parts.size()));
+  for (size_t i = 0; i < parts.size(); ++i) {
+    v8::Local<v8::ArrayBuffer> buffer;
+    if (!v8::ArrayBuffer::MaybeNew(isolate_, parts[i].size()).ToLocal(&buffer)) {
+      code = ZEBKIT_LIBRARY_BAD_ARGUMENTS;
+      list = v8::Array::New(isolate_, 0);
+      break;
+    }
+    if (!parts[i].empty())
+      memcpy(buffer->Data(), parts[i].data(), parts[i].size());
+    std::ignore = list->Set(context, static_cast<uint32_t>(i), v8::Uint8Array::New(buffer, 0, parts[i].size()));
+  }
+  v8::Local<v8::String> text;
+  if (code == ZEBKIT_LIBRARY_BAD_ARGUMENTS ||
+      !v8::String::NewFromUtf8(isolate_, json.data(), v8::NewStringType::kNormal, static_cast<int>(json.size()))
+           .ToLocal(&text)) {
+    code = ZEBKIT_LIBRARY_BAD_ARGUMENTS;
+    text = String8(isolate_, LibraryErrorJson("the answer does not fit the library's heap limit", "RangeError"));
+  }
+  v8::Local<v8::Value> argv[] = {v8::Integer::New(isolate_, code), text, list};
+  if (done->Call(context, v8::Undefined(isolate_), 3, argv).IsEmpty() && !isolate_->IsExecutionTerminating())
+    Uncaught("Uncaught " + Utf8(isolate_, try_catch.Exception()));
 }
 
 // ---- Native functions ----
@@ -642,45 +943,83 @@ void LibraryIsolate::ClearTimer(const v8::FunctionCallbackInfo<v8::Value>& info)
     From(info)->timers_.erase(static_cast<int>(info[0].As<v8::Number>()->Value()));
 }
 
+namespace {
+
+// The bytes of a list of typed arrays; false past @max_bytes (with @total).
+bool PartsOf(v8::Local<v8::Context> context, v8::Local<v8::Value> value, size_t max_bytes, size_t* total,
+             std::vector<std::string>* parts) {
+  if (!value->IsArray())
+    return true;
+  v8::Local<v8::Array> list = value.As<v8::Array>();
+  for (uint32_t i = 0; i < list->Length(); ++i) {
+    v8::Local<v8::Value> item;
+    if (!list->Get(context, i).ToLocal(&item) || !item->IsArrayBufferView())
+      continue;
+    v8::Local<v8::ArrayBufferView> view = item.As<v8::ArrayBufferView>();
+    *total += view->ByteLength();
+    if (*total > max_bytes)
+      return false;
+    std::string bytes(view->ByteLength(), '\0');
+    view->CopyContents(bytes.data(), bytes.size());
+    parts->push_back(std::move(bytes));
+  }
+  return true;
+}
+
+}  // namespace
+
 // settle(id, code, json, parts): a call's end, from the runner.
 void LibraryIsolate::SettleCall(const v8::FunctionCallbackInfo<v8::Value>& info) {
   LibraryIsolate* self = From(info);
   v8::Isolate* isolate = info.GetIsolate();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
   const uint64_t id = static_cast<uint64_t>(info[0]->IsNumber() ? info[0].As<v8::Number>()->Value() : 0);
   auto code = static_cast<zebkit_library_code>(info[1]->IsInt32() ? info[1].As<v8::Int32>()->Value() : 1);
   std::string json = Utf8(isolate, info[2]);
   std::vector<std::string> parts;
   size_t total = json.size();
-  if (info[3]->IsArray()) {
-    v8::Local<v8::Array> list = info[3].As<v8::Array>();
-    for (uint32_t i = 0; i < list->Length(); ++i) {
-      v8::Local<v8::Value> item;
-      if (!list->Get(context, i).ToLocal(&item) || !item->IsArrayBufferView())
-        continue;
-      v8::Local<v8::ArrayBufferView> view = item.As<v8::ArrayBufferView>();
-      total += view->ByteLength();
-      if (total > self->library_->options.max_bytes)
-        break;
-      std::string bytes(view->ByteLength(), '\0');
-      view->CopyContents(bytes.data(), bytes.size());
-      parts.push_back(std::move(bytes));
-    }
-  }
-  if (total > self->library_->options.max_bytes) {
+  if (total > self->library_->options.max_bytes ||
+      !PartsOf(isolate->GetCurrentContext(), info[3], self->library_->options.max_bytes, &total, &parts)) {
     code = ZEBKIT_LIBRARY_BAD_RESULT;
     json = LibraryErrorJson("the value is larger than maxBytes (" +
                                 base::NumberToString(self->library_->options.max_bytes) + " bytes)",
                             "RangeError");
     parts.clear();
   }
-  self->library_->Settled(id, code, std::move(json), std::move(parts));
+  self->library_->Settled(self->index_, id, code, std::move(json), std::move(parts));
 }
 
 void LibraryIsolate::LoadedCall(const v8::FunctionCallbackInfo<v8::Value>& info) {
   LibraryIsolate* self = From(info);
   auto code = static_cast<zebkit_library_code>(info[0]->IsInt32() ? info[0].As<v8::Int32>()->Value() : 2);
-  self->library_->Loaded(code, Utf8(info.GetIsolate(), info[1]));
+  self->library_->Loaded(self->index_, code, Utf8(info.GetIsolate(), info[1]));
+}
+
+// hostCall(name, json, parts, done): a request to the application; null, or
+// why it was refused at once. done(code, json, parts) is its answer.
+void LibraryIsolate::HostCall(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  LibraryIsolate* self = From(info);
+  v8::Isolate* isolate = info.GetIsolate();
+  if (!info[3]->IsFunction())
+    return;
+  std::string json = Utf8(isolate, info[1]);
+  std::vector<std::string> parts;
+  size_t total = json.size();
+  if (total > self->library_->options.max_bytes ||
+      !PartsOf(isolate->GetCurrentContext(), info[2], self->library_->options.max_bytes, &total, &parts)) {
+    info.GetReturnValue().Set(String8(isolate, "the arguments are larger than maxBytes (" +
+                                                   base::NumberToString(self->library_->options.max_bytes) +
+                                                   " bytes)"));
+    return;
+  }
+  const int local = self->next_request_++;
+  std::string why;
+  if (!self->library_->Request(self->index_, local, Utf8(isolate, info[0]), std::move(json), std::move(parts),
+                               &why)) {
+    info.GetReturnValue().Set(String8(isolate, why));
+    return;
+  }
+  self->requests_[local].Reset(isolate, info[3].As<v8::Function>());
+  info.GetReturnValue().SetNull();
 }
 
 }  // namespace zebkit
@@ -724,14 +1063,48 @@ void zebkit_library::FailAllLocked(zebkit_library_code code, const std::string& 
     TellLocked(call.get(), code, json, {}, posts);
   calls_.clear();
   queue_.clear();
-  current_ = 0;
+  requests_.clear();
+  for (auto& instance : instances)
+    instance->current = 0;
 }
 
-void zebkit_library::ScheduleNextLocked() {
-  if (state_ != State::kReady || current_ || queue_.empty() || next_posted_)
+void zebkit_library::FailLoadLocked(const std::string& json, LibraryPosts* posts) {
+  state_ = State::kFailed;
+  TellReadyLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, posts);
+  FailAllLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, posts);
+  // Instances still running script (a top level that never ends) stopped.
+  for (auto& instance : instances) {
+    if (instance->isolate && instance->depth > 0) {
+      if (instance->ending == ZEBKIT_LIBRARY_OK)
+        instance->ending = ZEBKIT_LIBRARY_GONE;
+      instance->isolate->TerminateExecution();
+    }
+  }
+}
+
+void zebkit_library::DestroyAll() {
+  for (auto& instance : instances) {
+    instance->runner->PostTask(FROM_HERE,
+                               base::BindOnce(&zebkit_library::DestroyRuntime, base::WrapRefCounted(this),
+                                              instance->index));
+  }
+}
+
+void zebkit_library::ScheduleLocked() {
+  if (state_ != State::kReady)
     return;
-  next_posted_ = true;
-  runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::StartNext, base::WrapRefCounted(this)));
+  for (auto& instance : instances) {
+    if (queue_.empty())
+      return;
+    if (!instance->loaded || instance->ended || instance->current)
+      continue;
+    const uint64_t id = queue_.front();
+    queue_.pop_front();
+    instance->current = id;
+    ++instance->runs;
+    instance->runner->PostTask(
+        FROM_HERE, base::BindOnce(&zebkit_library::StartCall, base::WrapRefCounted(this), instance->index, id));
+  }
 }
 
 uint64_t zebkit_library::Call(const char* function, const char* args_json, const zebkit_part* parts,
@@ -783,7 +1156,7 @@ uint64_t zebkit_library::Call(const char* function, const char* args_json, const
     } else {
       calls_[id] = std::move(call);
       queue_.push_back(id);
-      ScheduleNextLocked();
+      ScheduleLocked();
     }
   }
   Post(std::move(posts));
@@ -799,7 +1172,10 @@ void zebkit_library::Cancel(uint64_t id) {
       return;
     TellLocked(it->second.get(), ZEBKIT_LIBRARY_CANCELLED,
                zebkit::CodeJson(ZEBKIT_LIBRARY_CANCELLED, "the call was cancelled"), {}, &posts);
-    if (current_ != id) {
+    // One an instance took runs on (or is skipped as it starts); one waiting goes.
+    const bool taken = std::any_of(instances.begin(), instances.end(),
+                                   [&](const auto& instance) { return instance->current == id; });
+    if (!taken) {
       std::erase(queue_, id);
       calls_.erase(it);
     }
@@ -816,19 +1192,23 @@ void zebkit_library::Close() {
     state_ = State::kClosed;
     TellReadyLocked(ZEBKIT_LIBRARY_GONE, zebkit::CodeJson(ZEBKIT_LIBRARY_GONE, "the library was closed"), &posts);
     FailAllLocked(ZEBKIT_LIBRARY_GONE, zebkit::CodeJson(ZEBKIT_LIBRARY_GONE, "the library was closed"), &posts);
-    if (isolate_ && depth_ > 0) {
-      ending_ = ZEBKIT_LIBRARY_GONE;
-      isolate_->TerminateExecution();
+    for (auto& instance : instances) {
+      if (instance->isolate && instance->depth > 0) {
+        instance->ending = ZEBKIT_LIBRARY_GONE;
+        instance->isolate->TerminateExecution();
+      }
     }
   }
   Post(std::move(posts));
-  runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::DestroyHost, base::WrapRefCounted(this)));
-  // Joined off the engine's thread, once the isolate is gone.
-  if (thread) {
-    thread->DetachFromSequence();
+  DestroyAll();
+  // Joined off the engine's thread, once the isolates are gone.
+  for (auto& instance : instances) {
+    if (!instance->thread)
+      continue;
+    instance->thread->DetachFromSequence();
     base::ThreadPool::PostTask(
         FROM_HERE, {base::MayBlock(), base::WithBaseSyncPrimitives(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-        base::BindOnce([](std::unique_ptr<base::Thread> thread) { thread->Stop(); }, std::move(thread)));
+        base::BindOnce([](std::unique_ptr<base::Thread> thread) { thread->Stop(); }, std::move(instance->thread)));
   }
   // The application's reference: the last callback frees it.
   Release();
@@ -836,32 +1216,41 @@ void zebkit_library::Close() {
 
 void zebkit_library::Deadline(uint64_t id) {
   LibraryPosts posts;
+  bool destroy = false;
   {
     base::AutoLock lock(lock_);
     if (id == 0) {
       if (state_ != State::kLoading)
         return;
-      if (isolate_ && depth_ > 0) {
-        ending_ = ZEBKIT_LIBRARY_TIMEOUT;
-        isolate_->TerminateExecution();
-        return;
+      bool running = false;
+      for (auto& instance : instances) {
+        if (!instance->loaded && instance->isolate && instance->depth > 0) {
+          instance->ending = ZEBKIT_LIBRARY_TIMEOUT;
+          instance->isolate->TerminateExecution();
+          running = true;
+        }
       }
-      // Waiting (a top-level await): the load fails, and the isolate goes.
-      state_ = State::kFailed;
-      const std::string json = zebkit::CodeJson(ZEBKIT_LIBRARY_LOAD_FAILED, "the load passed its deadline (timeoutMs)");
-      TellReadyLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-      FailAllLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-      runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::DestroyHost, base::WrapRefCounted(this)));
+      // A script running is stopped, and End() fails the load; otherwise it
+      // waits (a top-level await): it fails now, and the isolates go.
+      if (running)
+        return;
+      FailLoadLocked(zebkit::CodeJson(ZEBKIT_LIBRARY_LOAD_FAILED, "the load passed its deadline (timeoutMs)"),
+                     &posts);
+      destroy = true;
     } else {
-      if (current_ != id || state_ != State::kReady)
+      if (state_ != State::kReady)
         return;
-      if (isolate_ && depth_ > 0) {
-        // Running: stopped, and the library ends (End()).
-        ending_ = ZEBKIT_LIBRARY_TIMEOUT;
-        isolate_->TerminateExecution();
+      auto instance = std::find_if(instances.begin(), instances.end(),
+                                   [&](const auto& instance) { return instance->current == id; });
+      if (instance == instances.end())
+        return;
+      if ((*instance)->isolate && (*instance)->depth > 0) {
+        // Running: stopped, and the instance ends (End()).
+        (*instance)->ending = ZEBKIT_LIBRARY_TIMEOUT;
+        (*instance)->isolate->TerminateExecution();
         return;
       }
-      // Waiting: TIMEOUT, and the queue moves on; what it does later is dropped.
+      // Waiting: TIMEOUT, and the instance takes the next; what it does later is dropped.
       auto it = calls_.find(id);
       if (it != calls_.end()) {
         TellLocked(it->second.get(), ZEBKIT_LIBRARY_TIMEOUT,
@@ -869,39 +1258,133 @@ void zebkit_library::Deadline(uint64_t id) {
                    &posts);
         calls_.erase(it);
       }
-      current_ = 0;
-      ScheduleNextLocked();
+      (*instance)->current = 0;
+      ScheduleLocked();
     }
   }
   Post(std::move(posts));
+  if (destroy)
+    DestroyAll();
 }
 
-void zebkit_library::StartLoad() {
+void zebkit_library::SetHost(zebkit_library_host_func func, void* data) {
+  std::vector<uint64_t> waiting;
+  {
+    base::AutoLock lock(lock_);
+    host_func_ = func;
+    host_data_ = data;
+    if (!func)
+      return;
+    for (const auto& [id, request] : requests_) {
+      if (!request.delivered)
+        waiting.push_back(id);
+    }
+  }
+  for (uint64_t id : waiting) {
+    zebkit::PostEngineTask(base::BindOnce(&zebkit_library::DeliverRequest, base::WrapRefCounted(this), id),
+                           base::TimeDelta());
+  }
+}
+
+void zebkit_library::DeliverRequest(uint64_t request) {
+  zebkit_library_host_func func;
+  void* data;
+  std::string name, args;
+  std::vector<std::string> parts;
+  {
+    base::AutoLock lock(lock_);
+    auto it = requests_.find(request);
+    if (it == requests_.end() || it->second.delivered || !host_func_)
+      return;
+    it->second.delivered = true;
+    func = host_func_;
+    data = host_data_.get();
+    name = it->second.name;
+    args = std::move(it->second.args);
+    parts = std::move(it->second.parts);
+  }
+  std::vector<zebkit_part> list;
+  list.reserve(parts.size());
+  for (const std::string& part : parts)
+    list.push_back({reinterpret_cast<const uint8_t*>(part.data()), part.size()});
+  func(this, request, name.c_str(), args.c_str(), list.empty() ? nullptr : list.data(), list.size(), data);
+}
+
+void zebkit_library::RequestDeadline(uint64_t request) {
+  base::AutoLock lock(lock_);
+  auto it = requests_.find(request);
+  if (it == requests_.end())
+    return;
+  const int i = it->second.instance, local = it->second.local;
+  const std::string json = zebkit::CodeJson(
+      ZEBKIT_LIBRARY_TIMEOUT, "the application did not answer host.call(\"" + it->second.name + "\") in timeoutMs");
+  requests_.erase(it);
+  instances[i]->runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::Answered, base::WrapRefCounted(this), i,
+                                                           local, ZEBKIT_LIBRARY_TIMEOUT, json,
+                                                           std::vector<std::string>()));
+}
+
+int zebkit_library::Answer(uint64_t request, zebkit_library_code code, const char* json, const zebkit_part* parts,
+                           size_t part_count) {
+  if (part_count && !parts)
+    return 0;
+  std::string text = json && *json ? json : (code == ZEBKIT_LIBRARY_OK ? "null" : "{}");
+  std::vector<std::string> list;
+  size_t total = text.size();
+  for (size_t i = 0; i < part_count; ++i)
+    total += parts[i].size;
+  if (code != ZEBKIT_LIBRARY_OK)
+    code = ZEBKIT_LIBRARY_THROWN;
+  if (total > options.max_bytes) {
+    code = ZEBKIT_LIBRARY_BAD_ARGUMENTS;
+    text = zebkit::LibraryErrorJson(
+        "the application's answer is larger than maxBytes (" + base::NumberToString(options.max_bytes) + " bytes)",
+        "RangeError");
+  } else {
+    list.reserve(part_count);
+    for (size_t i = 0; i < part_count; ++i)
+      list.emplace_back(reinterpret_cast<const char*>(parts[i].data), parts[i].data ? parts[i].size : 0);
+  }
+  base::AutoLock lock(lock_);
+  auto it = requests_.find(request);
+  if (it == requests_.end())
+    return 0;
+  const int i = it->second.instance, local = it->second.local;
+  requests_.erase(it);
+  instances[i]->runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::Answered, base::WrapRefCounted(this), i,
+                                                           local, code, std::move(text), std::move(list)));
+  return 1;
+}
+
+void zebkit_library::StartLoad(int i) {
   {
     base::AutoLock lock(lock_);
     if (state_ != State::kLoading)
       return;
   }
-  host = new zebkit::LibraryIsolate(base::WrapRefCounted(this));
-  zebkit::PostEngineTask(base::BindOnce(&zebkit_library::Deadline, base::WrapRefCounted(this), 0),
-                         base::Milliseconds(options.timeout_ms));
-  host->Load();
+  instances[i]->runtime = new zebkit::LibraryIsolate(base::WrapRefCounted(this), i);
+  instances[i]->runtime->Load();
 }
 
-void zebkit_library::StartNext() {
-  uint64_t id;
+void zebkit_library::StartCall(int i, uint64_t id) {
   std::string function, args;
   std::vector<std::string> parts;
   int64_t timeout_ms;
+  Instance* instance = instances[i].get();
   {
     base::AutoLock lock(lock_);
-    next_posted_ = false;
-    if (state_ != State::kReady || current_ || queue_.empty() || !host)
+    if (instance->current != id || !instance->runtime)
       return;
-    id = queue_.front();
-    queue_.pop_front();
-    LibraryCall* call = calls_[id].get();
-    current_ = id;
+    auto it = calls_.find(id);
+    if (it == calls_.end() || it->second->told) {
+      // Cancelled before it started: it never runs.
+      if (it != calls_.end())
+        calls_.erase(it);
+      instance->current = 0;
+      ScheduleLocked();
+      return;
+    }
+    LibraryCall* call = it->second.get();
     function = std::move(call->function);
     args = std::move(call->args);
     parts = std::move(call->parts);
@@ -911,97 +1394,193 @@ void zebkit_library::StartNext() {
     zebkit::PostEngineTask(base::BindOnce(&zebkit_library::Deadline, base::WrapRefCounted(this), id),
                            base::Milliseconds(timeout_ms));
   }
-  host->Run(id, function, args, parts);
+  instance->runtime->Run(id, function, args, parts);
 }
 
-void zebkit_library::DestroyHost() {
-  zebkit::LibraryIsolate* gone = host;
-  host = nullptr;
+void zebkit_library::DestroyRuntime(int i) {
+  zebkit::LibraryIsolate* gone = instances[i]->runtime;
+  instances[i]->runtime = nullptr;
+  if (gone)
+    gone->MakeCodeCache();
   delete gone;
 }
 
-void zebkit_library::Loaded(zebkit_library_code code, std::string json) {
+void zebkit_library::Loaded(int i, zebkit_library_code code, std::string json) {
   LibraryPosts posts;
+  bool destroy = false;
   {
     base::AutoLock lock(lock_);
     if (state_ != State::kLoading)
       return;
     if (code == ZEBKIT_LIBRARY_OK) {
-      state_ = State::kReady;
-      TellReadyLocked(code, std::move(json), &posts);
-      ScheduleNextLocked();
+      instances[i]->loaded = true;
+      if (ready_json_.empty())
+        ready_json_ = std::move(json);
+      // Ready once every instance is.
+      if (++loaded_ == instances.size()) {
+        state_ = State::kReady;
+        TellReadyLocked(code, std::move(ready_json_), &posts);
+        ScheduleLocked();
+      }
     } else {
-      state_ = State::kFailed;
-      TellReadyLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-      FailAllLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-      runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::DestroyHost, base::WrapRefCounted(this)));
+      FailLoadLocked(json, &posts);
+      destroy = true;
     }
   }
   Post(std::move(posts));
+  if (destroy)
+    DestroyAll();
 }
 
-void zebkit_library::Settled(uint64_t id, zebkit_library_code code, std::string json,
+void zebkit_library::Settled(int i, uint64_t id, zebkit_library_code code, std::string json,
                              std::vector<std::string> parts) {
   LibraryPosts posts;
+  Instance* instance = instances[i].get();
   {
     base::AutoLock lock(lock_);
-    if (current_ != id || id == 0)
+    if (instance->current != id || id == 0)
       return;  // past its deadline, or the library ended: dropped
-    current_ = 0;
+    instance->current = 0;
     auto it = calls_.find(id);
     if (it != calls_.end()) {
       TellLocked(it->second.get(), code, std::move(json), std::move(parts), &posts);
       calls_.erase(it);
     }
-    ScheduleNextLocked();
-  }
-  Post(std::move(posts));
-}
-
-void zebkit_library::Entered() {
-  base::AutoLock lock(lock_);
-  ++depth_;
-}
-
-zebkit_library_code zebkit_library::Left() {
-  base::AutoLock lock(lock_);
-  --depth_;
-  return depth_ == 0 ? ending_ : ZEBKIT_LIBRARY_OK;
-}
-
-void zebkit_library::OutOfMemory() {
-  base::AutoLock lock(lock_);
-  if (ending_ == ZEBKIT_LIBRARY_OK)
-    ending_ = ZEBKIT_LIBRARY_OUT_OF_MEMORY;
-  if (isolate_)
-    isolate_->TerminateExecution();
-}
-
-void zebkit_library::End(zebkit_library_code code) {
-  LibraryPosts posts;
-  {
-    base::AutoLock lock(lock_);
-    const std::string why = code == ZEBKIT_LIBRARY_OUT_OF_MEMORY
-                                ? "the library's heap reached heapLimitMB; the library has ended"
-                                : "the script ran past the call's deadline and was stopped; the library has ended";
-    if (state_ == State::kLoading) {
-      state_ = State::kFailed;
-      const std::string json = zebkit::LibraryErrorJson(
-          code == ZEBKIT_LIBRARY_OUT_OF_MEMORY ? "the library's heap reached heapLimitMB while it loaded"
-                                               : "the load passed its deadline (timeoutMs) and was stopped",
-          "Error");
-      TellReadyLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-      FailAllLocked(ZEBKIT_LIBRARY_LOAD_FAILED, json, &posts);
-    } else if (state_ == State::kReady) {
-      state_ = State::kEnded;
-      auto it = calls_.find(current_);
-      if (it != calls_.end())
-        TellLocked(it->second.get(), code, zebkit::CodeJson(code, why), {}, &posts);
-      FailAllLocked(ZEBKIT_LIBRARY_GONE, zebkit::CodeJson(ZEBKIT_LIBRARY_GONE, why), &posts);
+    ScheduleLocked();
+    // Idle a while from now, unless it starts another call.
+    if (!instance->current) {
+      instance->runner->PostDelayedTask(
+          FROM_HERE, base::BindOnce(&zebkit_library::Idle, base::WrapRefCounted(this), i, instance->runs),
+          zebkit::kIdle);
     }
   }
   Post(std::move(posts));
-  runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::DestroyHost, base::WrapRefCounted(this)));
+}
+
+void zebkit_library::Idle(int i, uint64_t runs) {
+  Instance* instance = instances[i].get();
+  {
+    base::AutoLock lock(lock_);
+    if (instance->current || instance->runs != runs || !instance->runtime)
+      return;
+  }
+  // The code cache first, with what the calls compiled, and then memory back.
+  instance->runtime->MakeCodeCache();
+  instance->runtime->Shrink();
+}
+
+void zebkit_library::Entered(int i) {
+  base::AutoLock lock(lock_);
+  Instance* instance = instances[i].get();
+  ++instance->depth;
+  // An instance whose library failed or closed while it was not in script.
+  if ((state_ == State::kFailed || state_ == State::kClosed) && instance->isolate) {
+    if (instance->ending == ZEBKIT_LIBRARY_OK)
+      instance->ending = ZEBKIT_LIBRARY_GONE;
+    instance->isolate->TerminateExecution();
+  }
+}
+
+zebkit_library_code zebkit_library::Left(int i) {
+  base::AutoLock lock(lock_);
+  Instance* instance = instances[i].get();
+  --instance->depth;
+  return instance->depth == 0 ? instance->ending : ZEBKIT_LIBRARY_OK;
+}
+
+void zebkit_library::OutOfMemory(int i) {
+  base::AutoLock lock(lock_);
+  Instance* instance = instances[i].get();
+  if (instance->ending == ZEBKIT_LIBRARY_OK)
+    instance->ending = ZEBKIT_LIBRARY_OUT_OF_MEMORY;
+  if (instance->isolate)
+    instance->isolate->TerminateExecution();
+}
+
+void zebkit_library::End(int i, zebkit_library_code code) {
+  LibraryPosts posts;
+  bool destroy_all = false;
+  Instance* instance = instances[i].get();
+  {
+    base::AutoLock lock(lock_);
+    instance->ended = true;
+    const std::string what = code == ZEBKIT_LIBRARY_OUT_OF_MEMORY
+                                 ? "the library's heap reached heapLimitMB"
+                                 : "the script ran past the call's deadline and was stopped";
+    if (state_ == State::kLoading) {
+      FailLoadLocked(zebkit::LibraryErrorJson(
+                         code == ZEBKIT_LIBRARY_OUT_OF_MEMORY
+                             ? "the library's heap reached heapLimitMB while it loaded"
+                             : "the load passed its deadline (timeoutMs) and was stopped",
+                         "Error"),
+                     &posts);
+      destroy_all = true;
+    } else if (state_ == State::kReady) {
+      // The library goes on with its other instances; with the last, it ends.
+      const bool live = std::any_of(instances.begin(), instances.end(),
+                                    [](const auto& other) { return !other->ended; });
+      const std::string why = what + (live ? "; its instance has ended, the others go on" : "; the library has ended");
+      auto it = calls_.find(instance->current);
+      if (it != calls_.end()) {
+        TellLocked(it->second.get(), code, zebkit::CodeJson(code, why), {}, &posts);
+        calls_.erase(it);
+      }
+      instance->current = 0;
+      std::erase_if(requests_, [&](const auto& entry) { return entry.second.instance == i; });
+      if (live) {
+        ScheduleLocked();
+      } else {
+        state_ = State::kEnded;
+        FailAllLocked(ZEBKIT_LIBRARY_GONE, zebkit::CodeJson(ZEBKIT_LIBRARY_GONE, why), &posts);
+      }
+    }
+  }
+  Post(std::move(posts));
+  if (destroy_all) {
+    DestroyAll();
+  } else {
+    instance->runner->PostTask(FROM_HERE,
+                               base::BindOnce(&zebkit_library::DestroyRuntime, base::WrapRefCounted(this), i));
+  }
+}
+
+uint64_t zebkit_library::Request(int i, int local, std::string name, std::string args, std::vector<std::string> parts,
+                                 std::string* why) {
+  uint64_t id;
+  bool deliver;
+  {
+    base::AutoLock lock(lock_);
+    if (state_ == State::kClosed || state_ == State::kFailed || state_ == State::kEnded) {
+      *why = "the library is ending";
+      return 0;
+    }
+    if (requests_.size() >= options.queue) {
+      *why = base::NumberToString(options.queue) + " requests to the application wait already (queue)";
+      return 0;
+    }
+    id = next_request_++;
+    zebkit::LibraryRequest& request = requests_[id];
+    request.instance = i;
+    request.local = local;
+    request.name = std::move(name);
+    request.args = std::move(args);
+    request.parts = std::move(parts);
+    deliver = host_func_ != nullptr;
+  }
+  if (deliver) {
+    zebkit::PostEngineTask(base::BindOnce(&zebkit_library::DeliverRequest, base::WrapRefCounted(this), id),
+                           base::TimeDelta());
+  }
+  zebkit::PostEngineTask(base::BindOnce(&zebkit_library::RequestDeadline, base::WrapRefCounted(this), id),
+                         base::Milliseconds(options.timeout_ms));
+  return id;
+}
+
+void zebkit_library::Answered(int i, int local, zebkit_library_code code, std::string json,
+                              std::vector<std::string> parts) {
+  zebkit::LibraryIsolate* runtime = instances[i]->runtime;
+  if (runtime)
+    runtime->Answered(local, code, json, parts);
 }
 
 // ---- The C API ----
@@ -1050,29 +1629,55 @@ zebkit_library* zebkit_library_load(const char* path, const char* options_json, 
       return fail(std::string(path) + " is neither a folder with index.mjs nor a .mjs file");
     }
   }
+  // ---- The backend "page" (library_page.cc): a page, not a thread ----
+  if (options.page) {
+    scoped_refptr<zebkit_library> library = base::MakeRefCounted<zebkit_library>();
+    library->options = std::move(options);
+    library->root = root;
+    library->entry = entry;
+    library->single_file = single_file;
+    library->ready_func = ready;
+    library->ready_data = data;
+    library->page = zebkit::LibraryPage::Start(library.get(), &message);
+    if (!library->page)
+      return fail(message);
+    library->AddRef();
+    return library.get();
+  }
   // V8 as the host script has it (script.cc), its flags the same.
   if (!gin::IsolateHolder::Initialized()) {
     gin::IsolateHolder::Initialize(gin::IsolateHolder::kStrictMode, gin::ArrayBufferAllocator::SharedInstance(),
                                    nullptr,
                                    base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("js-flags"));
   }
-  auto thread = std::make_unique<base::Thread>("zebkit-library");
-  base::Thread::Options thread_options;
-  // Room under V8's own limit (about 1 MiB) on every system: macOS gives
-  // other threads 512 KiB unless asked.
-  thread_options.stack_size = size_t{8} << 20;
-  if (!thread->StartWithOptions(std::move(thread_options)))
-    return fail("the library's thread did not start");
   scoped_refptr<zebkit_library> library = base::MakeRefCounted<zebkit_library>();
+  for (int i = 0; i < options.instances; ++i) {
+    auto instance = std::make_unique<zebkit_library::Instance>();
+    instance->index = i;
+    instance->thread = std::make_unique<base::Thread>("zebkit-library");
+    base::Thread::Options thread_options;
+    // Room under V8's own limit (about 1 MiB) on every system: macOS gives
+    // other threads 512 KiB unless asked.
+    thread_options.stack_size = size_t{8} << 20;
+    if (!instance->thread->StartWithOptions(std::move(thread_options))) {
+      for (auto& started : library->instances)
+        started->thread->Stop();
+      return fail("the library's thread did not start");
+    }
+    instance->runner = instance->thread->task_runner();
+    library->instances.push_back(std::move(instance));
+  }
   library->options = std::move(options);
   library->root = root;
   library->entry = entry;
   library->single_file = single_file;
   library->ready_func = ready;
   library->ready_data = data;
-  library->runner = thread->task_runner();
-  library->thread = std::move(thread);
-  library->runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::StartLoad, library));
+  for (auto& instance : library->instances) {
+    instance->runner->PostTask(FROM_HERE, base::BindOnce(&zebkit_library::StartLoad, library, instance->index));
+  }
+  zebkit::PostEngineTask(base::BindOnce(&zebkit_library::Deadline, library, 0),
+                         base::Milliseconds(library->options.timeout_ms));
   // The application's reference, let go by zebkit_library_close().
   library->AddRef();
   return library.get();
@@ -1083,17 +1688,39 @@ uint64_t zebkit_library_call(zebkit_library* library, const char* function, cons
                              zebkit_library_func func, void* data) {
   if (!library)
     return 0;
+  if (library->page)  // the backend "page"
+    return library->page->Call(function, args_json, parts, part_count, timeout_ms, func, data);
   return library->Call(function, args_json, parts, part_count, timeout_ms, func, data);
 }
 
 void zebkit_library_cancel(zebkit_library* library, uint64_t call) {
-  if (library && call)
+  if (library && call && library->page)  // the backend "page"
+    library->page->Cancel(call);
+  else if (library && call)
     library->Cancel(call);
+}
+
+void zebkit_library_set_host(zebkit_library* library, zebkit_library_host_func func, void* data) {
+  if (!library || !zebkit::CurrentlyOnEngineThread() || library->page)
+    return;
+  library->SetHost(func, data);
+}
+
+int zebkit_library_answer(zebkit_library* library, uint64_t request, zebkit_library_code code, const char* json,
+                          const zebkit_part* parts, size_t part_count) {
+  if (!library || !request || library->page)
+    return 0;
+  return library->Answer(request, code, json, parts, part_count);
 }
 
 void zebkit_library_close(zebkit_library* library) {
   if (!library || !zebkit::CurrentlyOnEngineThread())
     return;
+  if (library->page) {  // the backend "page"; then the application's reference
+    if (library->page->Close())
+      library->Release();
+    return;
+  }
   library->Close();
 }
 

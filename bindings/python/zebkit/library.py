@@ -16,9 +16,26 @@ load() and close() are for the engine's thread; call() and cancel() for any
 thread. A call's outcome is a zebkit.automation.Future (awaitable in
 zebkit.automation.run()), or function(value, error) when given, on the
 engine's thread; error is a LibraryError.
+
+The library calls the application's functions, given at load as host=, with
+`await host.call(name, ...args)` (import host from 'zebkit:host'):
+
+    def progress(done):
+        print("progress", done)
+
+    async def ask(question):            # or a function returning a Future
+        return await something(question)
+
+    lib = zebkit.library.load("libs/report", host={"progress": progress, "ask": ask})
+
+Each runs on the engine's thread with the library's arguments; its value (a
+coroutine's, run with zebkit.automation.run(), or a Future's, settled from any
+thread) answers the library once; what it raises rejects host.call() with an
+Error of the exception's class name and message.
 """
 
 import ctypes
+import inspect
 import itertools
 import json
 import threading
@@ -49,6 +66,11 @@ _library_call = _declare("zebkit_library_call", ctypes.c_uint64, _P, _S, _S, cty
                          ctypes.c_int64, _TOLD, _P)
 _library_cancel = _declare("zebkit_library_cancel", None, _P, ctypes.c_uint64)
 _library_close = _declare("zebkit_library_close", None, _P)
+_HOST = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_char_p,
+                         ctypes.POINTER(_Part), ctypes.c_size_t, ctypes.c_void_p)
+_library_set_host = _declare("zebkit_library_set_host", None, _P, _HOST, _P)
+_library_answer = _declare("zebkit_library_answer", ctypes.c_int, _P, ctypes.c_uint64, ctypes.c_int, _S,
+                           ctypes.POINTER(_Part), _Z)
 
 
 class LibraryError(Error):
@@ -75,6 +97,11 @@ _keys = itertools.count(1)
 
 def _to_wire(args):
     """The arguments as JSON (bytes) and parts."""
+    return _value_to_wire(list(args))
+
+
+def _value_to_wire(value):
+    """A value as JSON (bytes) and parts."""
     parts = []
 
     def walk(value):
@@ -86,8 +113,20 @@ def _to_wire(args):
         if isinstance(value, (list, tuple)):
             return [walk(item) for item in value]
         return value
-    text = json.dumps(walk(list(args)), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    text = json.dumps(walk(value), ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     return text.encode("utf-8", "surrogatepass"), parts
+
+
+def _parts_array(parts):
+    """A ctypes array of parts, and the buffers to keep while it is used."""
+    array = (_Part * len(parts))()
+    keep = []
+    for i, part in enumerate(parts):
+        buffer = ctypes.create_string_buffer(part, len(part)) if part else None
+        keep.append(buffer)
+        array[i].data = ctypes.cast(buffer, ctypes.c_void_p).value if buffer is not None else None
+        array[i].size = len(part)
+    return array, keep
 
 
 def _from_wire(text, parts):
@@ -123,6 +162,48 @@ def _told(library, code, text, parts, count, data):
 
 _told_callback = _TOLD(_guard(_told))
 
+# The libraries with host functions, by the key given as their data.
+_hosts = {}
+
+
+def _host_called(library, request, name, text, parts, count, data):
+    entry = _hosts.get(data or 0)
+    if entry is None:
+        return
+    owner, functions = entry
+    values = [ctypes.string_at(parts[i].data, parts[i].size) if parts[i].size else b"" for i in range(count)]
+    name = name.decode("utf-8", "replace") if name else ""
+
+    def done(value=None, error=None):
+        owner._answer(request, value, error)
+
+    function = functions.get(name)
+    if function is None:
+        done(error=Error('the application has no function "%s"' % name))
+        return
+    try:
+        result = function(*_from_wire(text.decode("utf-8", "replace") if text else "[]", values))
+        if inspect.iscoroutine(result):
+            from .automation import run
+            result = run(result)
+    except BaseException as error:  # noqa: BLE001: the library is told
+        done(error=error)
+        return
+    if callable(getattr(result, "add_done_callback", None)):
+        def settled(future):
+            try:
+                value = future.result()
+            except BaseException as error:  # noqa: BLE001
+                done(error=error)
+                return
+            done(value)
+        result.add_done_callback(settled)
+    else:
+        done(result)
+
+
+_host_callback = _HOST(_guard(_host_called))
+
 
 def _expect(function):
     """A key for the outcome, and the Future (or None) it settles."""
@@ -149,15 +230,22 @@ def _forget(key):
 class Library:
     """A loaded JavaScript library (load())."""
 
-    def __init__(self, path, options=None, ready=None):
+    def __init__(self, path, options=None, ready=None, host=None):
         """Loads the library at path and returns at once; calls wait for the
         load. options: zebkit_library_load()'s ("timeoutMs", "queue",
-        "heapLimitMB", "maxBytes", "network"). ready(value, error), if given,
-        is told once: {"functions": [...]}, or a LibraryError. Raises Error
-        for bad options or a path that is no library. The engine's thread."""
+        "heapLimitMB", "maxBytes", "network", "instances", "codeCache").
+        ready(value, error), if given, is told once: {"functions": [...]},
+        or a LibraryError. host: {name: function} the library calls as
+        host.call(name, ...args). Raises Error for bad options or a path that
+        is no library. The engine's thread."""
         _require_thread("zebkit.library.load()")
         self._lock = threading.RLock()
         self._closed = False
+        self._host_key = None
+        if host:
+            if not all(callable(function) for function in host.values()):
+                raise Error("host is a dict of functions")
+            options = dict(options or {}, host=list(host))
         key, self.ready = _expect(ready)
         error = ctypes.c_void_p()
         raw = _library_load(str(path).encode(), json.dumps(options).encode() if options else None, _told_callback,
@@ -166,10 +254,32 @@ class Library:
             _forget(key)
             raise Error(_string(error.value) or "the library was not loaded")
         self._raw = raw
+        if host:
+            self._host_key = next(_keys)
+            _hosts[self._host_key] = (self, dict(host))
+            _library_set_host(raw, _host_callback, ctypes.c_void_p(self._host_key))
 
     @classmethod
-    def load(cls, path, options=None, ready=None):
-        return cls(path, options, ready)
+    def load(cls, path, options=None, ready=None, host=None):
+        return cls(path, options, ready, host)
+
+    def _answer(self, request, value, error):
+        """Answers the library's host.call() @request, once; nothing once closed."""
+        code = OK
+        try:
+            text, parts = _value_to_wire(value) if error is None else (None, [])
+        except (TypeError, ValueError) as e:
+            error = e
+        if error is not None:
+            code = THROWN
+            message = error.args[0] if len(error.args) == 1 and isinstance(error.args[0], str) else str(error)
+            text = json.dumps({"message": message, "name": type(error).__name__}).encode()
+            parts = []
+        array, keep = _parts_array(parts)
+        with self._lock:
+            if not self._closed:
+                _library_answer(self._raw, int(request), code, text, array, len(parts))
+        del keep
 
     def call(self, name, *args, timeout_ms=0, function=None):
         """Calls the exported function name with args (JSON values, bytes
@@ -177,13 +287,7 @@ class Library:
         value; with function, function(value, error) is called instead, and
         the call's number returned. Any thread; Error once closed."""
         text, parts = _to_wire(args)
-        array = (_Part * len(parts))()
-        keep = []
-        for i, part in enumerate(parts):
-            buffer = ctypes.create_string_buffer(part, len(part)) if part else None
-            keep.append(buffer)
-            array[i].data = ctypes.cast(buffer, ctypes.c_void_p).value if buffer is not None else None
-            array[i].size = len(part)
+        array, keep = _parts_array(parts)
         key, future = _expect(function)
         with self._lock:
             number = 0 if self._closed else _library_call(self._raw, str(name).encode(), text, array, len(parts),
@@ -213,12 +317,13 @@ class Library:
             if not self._closed:
                 self._closed = True
                 _library_close(self._raw)
+                _hosts.pop(self._host_key, None)
 
     @property
     def closed(self):
         return self._closed
 
 
-def load(path, options=None, ready=None):
-    """Library(path, options, ready)."""
-    return Library(path, options, ready)
+def load(path, options=None, ready=None, host=None):
+    """Library(path, options, ready, host)."""
+    return Library(path, options, ready, host)

@@ -42,6 +42,18 @@ pub type zebkit_library_func = unsafe extern "C" fn(
     data: *mut c_void,
 );
 
+/// The library's `host.call(name, ...args)`: answer `request` exactly once
+/// with `zebkit_library_answer()`, from any thread.
+pub type zebkit_library_host_func = unsafe extern "C" fn(
+    library: *mut zebkit_library,
+    request: u64,
+    name: *const c_char,
+    args_json: *const c_char,
+    parts: *const zebkit_part,
+    part_count: usize,
+    data: *mut c_void,
+);
+
 extern "C" {
     pub fn zebkit_library_load(
         path: *const c_char,
@@ -61,5 +73,14 @@ extern "C" {
         data: *mut c_void,
     ) -> u64;
     pub fn zebkit_library_cancel(library: *mut zebkit_library, call: u64);
+    pub fn zebkit_library_set_host(library: *mut zebkit_library, func: Option<zebkit_library_host_func>, data: *mut c_void);
+    pub fn zebkit_library_answer(
+        library: *mut zebkit_library,
+        request: u64,
+        code: zebkit_library_code,
+        json: *const c_char,
+        parts: *const zebkit_part,
+        part_count: usize,
+    ) -> c_int;
     pub fn zebkit_library_close(library: *mut zebkit_library);
 }

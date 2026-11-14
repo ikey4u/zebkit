@@ -150,6 +150,11 @@
 #   libraries (<zebkit/library.h>, docs/JS_LIBRARIES.md), every code, imports
 #   kept in the folder, fetch() granted and refused; with examples/js-libraries'
 #   markdown-it and ECharts bundles, which --fetch makes (tools/js-bundle.mjs).
+# - tests/engine/library_page.py, script/library_page.mjs: the backend "page",
+#   a library in a hidden page of its own: canvas, layout, timers not throttled,
+#   no user gesture, every way out of the page refused, both deadlines, the
+#   heap, a renderer killed; Mermaid's bundle from --fetch. Without a window,
+#   and in an X11 window (library-page-x11).
 # - tools/zebkit-run with --remote-debugging-port=0: CDP as Chrome serves
 #   it, read back over HTTP the way a client finds it.
 #
@@ -706,7 +711,7 @@ if [[ -n "$build_only" ]]; then
     # The examples' library bundles (--fetch) are plain JavaScript, the same on
     # every system: library.py tests them there too. Not work/ (node_modules,
     # esbuild of this system): js-bundle.mjs is checked only where node runs it.
-    for js_library in markdown charts; do
+    for js_library in markdown charts diagram; do
         if [[ -f "$CACHE_DIR/js-libraries/$js_library/index.mjs" ]]; then
             mkdir -p "$build_only/.cache/js-libraries"
             rm -rf "$build_only/.cache/js-libraries/$js_library"
@@ -818,7 +823,7 @@ for log_mode in none file; do
         ZEBKIT_TEST_LOG_MODE="$log_mode" python3 "$tests/startup_settings_python.py"
 done
 # The tests in a window of a private X server.
-x11_tests=(responsiveness-x11 native-parent mixed-views mixed-views-scaled native-window-x11 native-window-javascript sign-in-x11 input-method-x11 js-dialogs-x11 context-menu-x11 menu-state-x11 window-frame-x11 system-holes-window native-parent-python native-parent-rust)
+x11_tests=(library-page-x11 responsiveness-x11 native-parent mixed-views mixed-views-scaled native-window-x11 native-window-javascript sign-in-x11 input-method-x11 js-dialogs-x11 context-menu-x11 menu-state-x11 window-frame-x11 system-holes-window native-parent-python native-parent-rust)
 if have_program "$bin/native-window"; then
     run native-window "$bin/native-window" --no-sandbox --headless --user-data-dir="$work/profile-native-window"
 fi
@@ -836,6 +841,9 @@ if have_program "$bin/native-parent"; then
         pids+=("$xvfb")
         read -r -t 15 -u 9 xvfb_display || xvfb_display=
         if [[ -n "$xvfb_display" ]]; then
+            # A JavaScript library's page in a hidden X11 window: not throttled all the same.
+            run library-page-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" "${python_run[@]}" \
+                "$tests/library_page.py" "$CACHE_DIR/js-libraries" --no-sandbox --user-data-dir="$work/profile-library-page-x11"
             # The same of a window and of a view attached to one.
             run responsiveness-x11 env -u WAYLAND_DISPLAY DISPLAY=":$xvfb_display" ZEBKIT_DIR="$package" "${python_run[@]}" \
                 "$tests/responsiveness.py" --no-sandbox --user-data-dir="$work/profile-responsiveness-x11"
@@ -1156,6 +1164,9 @@ run sw-open-window env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/sw_open_
 run python-declarations "${python_run[@]}" "$tests/python_declarations.py"
 # JavaScript libraries (<zebkit/library.h>); the examples' bundles from --fetch.
 run library env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/library.py" "$CACHE_DIR/js-libraries" "${engine_switches[@]}"
+# ... in pages of their own (the backend "page"); Mermaid's bundle from --fetch.
+run library-page env ZEBKIT_DIR="$package" "${python_run[@]}" "$tests/library_page.py" "$CACHE_DIR/js-libraries" \
+    "${engine_switches[@]}"
 run python-parity env ZEBKIT_DIR="$package" ZEBKIT_PDF_RESOURCES="$pdf_resources" "${python_run[@]}" "$tests/python_parity.py" \
     "${engine_switches[@]}"
 # WebUSB, WebHID, Web Serial choosers through zebkit_view_on_device_chooser (10).
@@ -1641,6 +1652,9 @@ finished automation-media-javascript "the automation and media script"
 run library-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-library-javascript" \
     "$tests/script/library.mjs" "http://127.0.0.1:$port" "$tests"
 finished library-javascript "the libraries script"
+run library-page-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-library-page-javascript" \
+    "$tests/script/library_page.mjs" "$tests"
+finished library-page-javascript "the library page script"
 run system-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-system-javascript" "$tests/script/system.mjs" "http://127.0.0.1:$port"
 finished system-javascript "the system services script"
 run window-open-javascript "$bin/tools/zebkit-js" --no-sandbox --headless --user-data-dir="$work/profile-window-open-javascript" "$tests/script/window_open.mjs" "http://127.0.0.1:$port"

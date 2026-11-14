@@ -904,7 +904,37 @@ def check_library(base):
     pending = [closing.call("later", 1, 1000), closing.call("double", 1)]
     closing.close()
     check([code(f) for f in pending] == ["GONE", "GONE"], "library: close with calls pending: GONE")
-    for library in (lib, net, small, doomed, hungry, forbidden):
+    # Host functions: a function, a coroutine, a Future set from another thread, one never set.
+    progress = []
+
+    async def lookup(question, data):
+        return {"text": "answer to " + question, "data": bytes(reversed(data))}
+
+    def fails(key):
+        raise KeyError("no such key: " + key)
+
+    hosted = L.load(fixture, {"timeoutMs": 1500}, host={
+        "progress": lambda i, n: progress.append(i), "lookup": lookup, "fails": fails,
+        "never": lambda: zebkit.automation.Future()})
+    worked = hosted.call("work", 3)
+    check(code(worked) == "OK" and worked.result() == "done" and progress == [1, 2, 3],
+          "library: host: progress told during a call, in order", progress)
+    asked = hosted.call("ask", "why", b"\x01\x02\x03")
+    check(code(asked) == "OK" and asked.result() == {"text": "answer to why", "bytes": [3, 2, 1]},
+          "library: host: data and bytes asked of the application (a coroutine)", asked.done() and asked.result())
+    failed = hosted.call("failing")
+    check(code(failed) == "OK" and failed.result() == "no such key: x", "library: host: the application's error")
+    started = time.monotonic()
+    never = hosted.call("unanswered", timeout_ms=-1)
+    check(code(never) == "OK" and never.result() == "TimeoutError" and time.monotonic() - started >= 1.4,
+          "library: host: never answered: a TimeoutError at the library's timeoutMs")
+    pool = L.load(fixture, {"instances": 4, "codeCache": False})
+    done(pool.ready)
+    started = time.monotonic()
+    busy = [pool.call("busy", 300) for _ in range(4)]
+    check(all(code(f) == "OK" for f in busy) and time.monotonic() - started < 0.9,
+          "library: instances: 4 calls of 300 ms in parallel on 4", time.monotonic() - started)
+    for library in (lib, net, small, doomed, hungry, forbidden, hosted, pool):
         library.close()
 
 

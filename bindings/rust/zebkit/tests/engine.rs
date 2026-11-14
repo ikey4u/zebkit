@@ -28,6 +28,7 @@ thread_local! {
     static FIND_DONE: Cell<bool> = const { Cell::new(false) };
     static NEW_API_DONE: Cell<bool> = const { Cell::new(false) };
     static LIBRARY_DONE: Cell<bool> = const { Cell::new(false) };
+    static LIBRARY_PAGE_DONE: Cell<bool> = const { Cell::new(false) };
     // The file a capture wrote, served to a page that plays it back.
     static CAPTURED: RefCell<std::path::PathBuf> = RefCell::new(std::path::PathBuf::new());
     static FAILED: Cell<u32> = const { Cell::new(0) };
@@ -953,11 +954,47 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     }
 }
 
+/// The facade `tools/js-bundle.mjs --wrapper rust` made of the markdown-it
+/// example (examples/js-libraries/build.sh).
+#[path = "../../../../examples/js-libraries/markdown/markdown.rs"]
+mod markdown;
+
+/// A value a thread of its own gives 50 ms from now: a future woken from
+/// another thread, as an async host function's may be.
+fn from_thread(value: zebkit::json::Value) -> impl std::future::Future<Output = zebkit::js::HostResult> + Send {
+    use std::sync::{Arc, Mutex};
+    use std::task::{Poll, Waker};
+    let slot: Arc<Mutex<(Option<zebkit::json::Value>, Option<Waker>)>> = Arc::new(Mutex::new((None, None)));
+    let giver = slot.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let mut state = giver.lock().unwrap();
+        state.0 = Some(value);
+        if let Some(waker) = state.1.take() {
+            waker.wake();
+        }
+    });
+    std::future::poll_fn(move |context| {
+        let mut state = slot.lock().unwrap();
+        match state.0.take() {
+            Some(value) => Poll::Ready(Ok(zebkit::js::Reply::from(value))),
+            None => {
+                state.1 = Some(context.waker().clone());
+                Poll::Pending
+            }
+        }
+    })
+}
+
 /// JavaScript libraries (zebkit::js, <zebkit/library.h>): loaded here, on
 /// the engine's thread, and called from another thread, whose futures the
-/// engine wakes; each code; fetch() refused, and allowed to a local server.
+/// engine wakes; each code; fetch() refused, and allowed to a local server;
+/// host functions (progress, data and bytes asked, an error, an answer from
+/// another thread, one never given); instances in parallel; codeCache off;
+/// the generated markdown-it facade.
 fn libraries() {
-    use zebkit::js::{Code, Library};
+    use std::sync::{Arc, Mutex};
+    use zebkit::js::{Code, Host, Library, Reply};
     use zebkit::json::Value;
     let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/engine");
     let fixture = here.join("library_fixture");
@@ -983,6 +1020,31 @@ fn libraries() {
     let hungry = Library::load(&fixture, &options(r#"{"heapLimitMB": 32}"#)).unwrap();
     let forbidden = Library::load(here.join("library_forbidden"), &Value::Null).unwrap();
     let closing = Library::load(&fixture, &Value::Null).unwrap();
+    let progress: Arc<Mutex<Vec<f64>>> = Arc::default();
+    let seen = progress.clone();
+    let host = Host::new()
+        .function("progress", move |args: Reply| {
+            seen.lock().unwrap().push(args.value[0].as_f64().unwrap_or(-1.0));
+            Ok(Value::Null.into())
+        })
+        .function("lookup", |args: Reply| {
+            let question = args.value[0].as_str().unwrap_or_default().to_string();
+            let data: Vec<u8> = args.parts.first().map(|bytes| bytes.iter().rev().copied().collect()).unwrap_or_default();
+            Ok(Reply {
+                value: Value::object([("text", Value::from(format!("answer to {question}"))), ("data", Value::object([("$part", Value::from(0))]))]),
+                parts: vec![data],
+            })
+        })
+        .function("fails", |_| Err("no such key: x".into()))
+        .function_async("threaded", |args: Reply| from_thread(Value::from(args.value[0].as_f64().unwrap_or(0.0) * 3.0)))
+        .function_async("never", |_| std::future::pending());
+    let hosted = Library::load_with_host(&fixture, &options(r#"{"timeoutMs": 1500}"#), host).unwrap();
+    let pool = Library::load(&fixture, &options(r#"{"instances": 4, "codeCache": false}"#)).unwrap();
+    let markdown_dir = here.join("../../.cache/js-libraries/markdown");
+    let markdown = markdown_dir.join("index.mjs").is_file().then(|| markdown::Markdown::load(&markdown_dir, &Value::Null).unwrap());
+    if markdown.is_none() {
+        println!("skip js: the markdown-it facade: no bundle in .cache/js-libraries (engine-test.sh --fetch)");
+    }
     // .then on the engine's thread.
     lib.call("double", Value::Array(vec![21.into()])).then(|reply| {
         let ok = reply.as_ref().is_ok_and(|reply| reply.value.as_i64() == Some(42));
@@ -1047,7 +1109,32 @@ fn libraries() {
         drop(closing);
         let gone = pending.into_iter().map(block_on).all(|outcome| outcome.is_err_and(|e| e.code == Code::Gone));
         note(gone, "js: a library dropped with calls pending: GONE", String::new());
-        drop((lib, net, small, doomed, hungry, forbidden));
+        let worked = block_on(hosted.call("work", Value::parse("[3]").unwrap()));
+        note(worked.as_ref().is_ok_and(|r| r.value.as_str() == Some("done")) && *progress.lock().unwrap() == vec![1.0, 2.0, 3.0],
+             "js: host: progress told during a call, in order", format!("{worked:?} {:?}", progress.lock().unwrap()));
+        let asked = block_on(hosted.call_with("ask", &Value::parse(r#"["why", {"$part": 0}]"#).unwrap(), &[&[1, 2, 3]], None));
+        note(asked.as_ref().is_ok_and(|r| r.value["text"].as_str() == Some("answer to why") && r.value["bytes"] == Value::parse("[3, 2, 1]").unwrap()),
+             "js: host: data and bytes asked of the application", format!("{asked:?}"));
+        let failed = block_on(hosted.call("failing", Value::Null));
+        note(failed.as_ref().is_ok_and(|r| r.value.as_str() == Some("no such key: x")), "js: host: the application's error rejects host.call()", format!("{failed:?}"));
+        let threaded = block_on(hosted.call("threaded", Value::parse("[7]").unwrap()));
+        note(threaded.as_ref().is_ok_and(|r| r.value.as_f64() == Some(21.0)), "js: host: an async function answered from another thread", format!("{threaded:?}"));
+        let started = std::time::Instant::now();
+        let unanswered = block_on(hosted.call_with("unanswered", &Value::Null, &[], Some(Duration::MAX)));
+        note(unanswered.as_ref().is_ok_and(|r| r.value.as_str() == Some("TimeoutError")) && started.elapsed() >= Duration::from_millis(1400),
+             "js: host: never answered: a TimeoutError at the library's timeoutMs", format!("{unanswered:?} {:?}", started.elapsed()));
+        block_on(pool.ready()).ok();
+        let started = std::time::Instant::now();
+        let busy: Vec<_> = (0..4).map(|_| pool.call("busy", Value::parse("[300]").unwrap())).collect();
+        let all = busy.into_iter().map(block_on).all(|r| r.is_ok_and(|r| r.value.as_f64() == Some(300.0)));
+        note(all && started.elapsed() < Duration::from_millis(900), "js: instances: 4 calls of 300 ms in parallel on 4", format!("{:?}", started.elapsed()));
+        if let Some(markdown) = &markdown {
+            let html = block_on(markdown.render("# Title", None));
+            let many = block_on(markdown.render_many(&["a".to_string(), "b".to_string()]));
+            note(html.as_deref() == Ok("<h1>Title</h1>\n") && many.as_ref().is_ok_and(|m| m == &["<p>a</p>\n", "<p>b</p>\n"]),
+                 "js: the generated markdown-it facade (render, render_many)", format!("{html:?} {many:?}"));
+        }
+        drop((lib, net, small, doomed, hungry, forbidden, hosted, pool, markdown));
         results
     });
     fn finish(worker: std::thread::JoinHandle<Vec<(bool, String, String)>>, tries: u32) {
@@ -1064,6 +1151,62 @@ fn libraries() {
             _ => check(false, "js: the libraries' thread finished", ()),
         }
         LIBRARY_DONE.with(|done| done.set(true));
+    }
+    finish(worker, 1200);
+}
+
+/// A JavaScript library in a page of its own (the backend "page",
+/// docs/JS_LIBRARIES.md): the same Library, loaded with {"backend": "page"}
+/// and called from another thread; a canvas measures text, the page's size,
+/// JSON and a part echoed, THROWN. tests/engine/library_page.py has every case.
+fn library_page() {
+    use zebkit::js::{Code, Library};
+    use zebkit::json::Value;
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/engine/library_page_fixture");
+    let options = Value::parse(r#"{"backend": "page", "width": 500, "height": 400}"#).unwrap();
+    let lib = match Library::load(&fixture, &options) {
+        Ok(lib) => lib,
+        Err(error) => {
+            check(false, "js page: Library::load with the backend page", error);
+            LIBRARY_PAGE_DONE.with(|done| done.set(true));
+            return;
+        }
+    };
+    let worker = std::thread::spawn(move || {
+        let mut results: Vec<(bool, String, String)> = Vec::new();
+        let mut note = |ok: bool, what: &str, detail: String| results.push((ok, what.to_string(), detail));
+        let ready = block_on(lib.ready());
+        note(ready.as_ref().is_ok_and(|r| r.value["functions"].as_array().is_some_and(|f| f.iter().any(|n| n.as_str() == Some("measure")))),
+             "js page: ready, the exported functions", format!("{ready:?}"));
+        let measured = block_on(lib.call("measure", Value::parse(r#"["Hello, world", "16px sans-serif"]"#).unwrap()));
+        note(measured.as_ref().is_ok_and(|r| r.value["width"].as_f64().is_some_and(|width| width > 20.0)),
+             "js page: a canvas measures text", format!("{measured:?}"));
+        let info = block_on(lib.call("page", Value::Null));
+        note(info.as_ref().is_ok_and(|r| r.value["width"].as_i64() == Some(500) && r.value["height"].as_i64() == Some(400)),
+             "js page: width and height", format!("{info:?}"));
+        let args = Value::parse(r#"[{"b": {"$part": 0}}, "日本語 🦓"]"#).unwrap();
+        let echoed = block_on(lib.call_with("echo", &args, &[&[1, 2, 255]], None));
+        note(echoed.as_ref().is_ok_and(|r| r.value == args && r.parts == vec![vec![1u8, 2, 255]]),
+             "js page: JSON, non-ASCII text and a part echoed", format!("{echoed:?}"));
+        let thrown = block_on(lib.call("thrower", Value::Null));
+        note(thrown.as_ref().is_err_and(|e| e.code == Code::Thrown && e.name == "RangeError"), "js page: THROWN", format!("{thrown:?}"));
+        drop(lib);
+        results
+    });
+    fn finish(worker: std::thread::JoinHandle<Vec<(bool, String, String)>>, tries: u32) {
+        if !worker.is_finished() && tries > 0 {
+            zebkit::after(Duration::from_millis(50), move || finish(worker, tries - 1));
+            return;
+        }
+        match worker.is_finished().then(|| worker.join()) {
+            Some(Ok(results)) => {
+                for (ok, what, detail) in results {
+                    check(ok, &what, detail);
+                }
+            }
+            _ => check(false, "js page: the thread finished", ()),
+        }
+        LIBRARY_PAGE_DONE.with(|done| done.set(true));
     }
     finish(worker, 1200);
 }
@@ -1117,6 +1260,7 @@ fn engine(page_port: u16) {
     find_and_downloads(serve_pages());
     new_api();
     libraries();
+    library_page();
     let scheme_view = View::new(Some("rs://test/index.html"), 320, 240);
     {
         let closing = scheme_view.clone();
@@ -1754,7 +1898,7 @@ fn script_and_cdp(view: View) {
         if !client.is_finished() || !OFFSCREEN_DONE.with(Cell::get) || !CONTEXTS_DONE.with(Cell::get) || !MEDIA_DONE.with(Cell::get)
             || !AUTHENTICATION_DONE.with(Cell::get) || !PERMISSION_DONE.with(Cell::get) || !NAVIGATION_DONE.with(Cell::get) || !CONSOLE_DONE.with(Cell::get) || !WINDOW_DONE.with(Cell::get)
             || !HANDLERS_DONE.with(Cell::get) || !AUTOMATION_DONE.with(Cell::get) || !FIND_DONE.with(Cell::get) || !NEW_API_DONE.with(Cell::get)
-            || !LIBRARY_DONE.with(Cell::get) {
+            || !LIBRARY_DONE.with(Cell::get) || !LIBRARY_PAGE_DONE.with(Cell::get) {
             zebkit::after(Duration::from_millis(20), move || wait(client, view));
             return;
         }

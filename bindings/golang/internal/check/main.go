@@ -280,8 +280,9 @@ func main() {
 	check(wait(func() bool { return nestedDone }, 10) && nestedErr != nil && zebkit.Post(func() {}) == nil &&
 		evaluate(view, "1 + 1") == "2", "Shutdown inside a callback is refused, and the engine runs on", nestedErr)
 
-	// JavaScript libraries (library.go).
+	// JavaScript libraries (library.go), and in pages of their own (library_page.go).
 	libraries()
+	libraryPage()
 
 	view.Close()
 	check(zebkit.Shutdown() == nil, "Shutdown")

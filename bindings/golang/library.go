@@ -7,6 +7,8 @@ package zebkit
 
 void zk_library_told(zebkit_library *library, zebkit_library_code code, const char *json, const zebkit_part *parts,
                      size_t count, void *data);
+void zk_library_host(zebkit_library *library, uint64_t request, const char *name, const char *args,
+                     const zebkit_part *parts, size_t count, void *data);
 */
 import "C"
 
@@ -14,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 	"unsafe"
@@ -32,6 +35,17 @@ import (
 // a Uint8Array in the library. LoadLibrary and Close are for the engine's
 // thread; Call, CallChan and Cancel for any goroutine. Results come on the
 // engine's thread.
+//
+// The library calls the application's functions, given to
+// LoadLibraryWithHost, as `await host.call(name, ...args)` (import host from
+// 'zebkit:host'):
+//
+//	lib, err := zebkit.LoadLibraryWithHost("libs/report", nil, map[string]zebkit.LibraryHostFunc{
+//		"progress": func(args json.RawMessage, parts [][]byte) (json.RawMessage, [][]byte, error) {
+//			fmt.Println("progress", string(args))
+//			return nil, nil, nil
+//		},
+//	}, nil)
 
 // LibraryCode says how a library's call or load ended.
 type LibraryCode int
@@ -88,6 +102,34 @@ type Library struct {
 	mu     sync.RWMutex
 	raw    *C.zebkit_library
 	closed bool
+	host   C.uintptr_t // its host functions' handle, or 0
+}
+
+// LibraryHostFunc is an application function a library calls as
+// host.call(name, ...args): args is the JSON array of the arguments, parts
+// their bytes ({"$part": n}). It runs on a goroutine of its own; what it
+// returns answers the library once: the value (JSON; nil is null) and its
+// parts, or an error, which rejects host.call() with an Error of its message.
+type LibraryHostFunc func(args json.RawMessage, parts [][]byte) (json.RawMessage, [][]byte, error)
+
+type libraryHost struct {
+	library   *Library
+	functions map[string]LibraryHostFunc
+}
+
+func copyParts(parts *C.zebkit_part, count C.size_t) [][]byte {
+	if count == 0 {
+		return nil
+	}
+	list := unsafe.Slice(parts, int(count))
+	copied := make([][]byte, len(list))
+	for i, part := range list {
+		copied[i] = goBytes(unsafe.Pointer(part.data), part.size)
+		if copied[i] == nil {
+			copied[i] = []byte{}
+		}
+	}
+	return copied
 }
 
 func libraryResult(code C.int, text *C.char, parts *C.zebkit_part, count C.size_t) LibraryResult {
@@ -98,18 +140,7 @@ func libraryResult(code C.int, text *C.char, parts *C.zebkit_part, count C.size_
 		return LibraryResult{Err: &LibraryError{Code: LibraryCode(code), Message: info.Message, Name: info.Name,
 			Stack: info.Stack}}
 	}
-	result := LibraryResult{Value: json.RawMessage(value)}
-	if count > 0 {
-		list := unsafe.Slice(parts, int(count))
-		result.Parts = make([][]byte, len(list))
-		for i, part := range list {
-			result.Parts[i] = goBytes(unsafe.Pointer(part.data), part.size)
-			if result.Parts[i] == nil {
-				result.Parts[i] = []byte{}
-			}
-		}
-	}
-	return result
+	return LibraryResult{Value: json.RawMessage(value), Parts: copyParts(parts, count)}
 }
 
 //export goZkLibraryTold
@@ -119,16 +150,117 @@ func goZkLibraryTold(code C.int, text *C.char, parts *C.zebkit_part, count C.siz
 	}
 }
 
+//export goZkLibraryHost
+func goZkLibraryHost(request C.uint64_t, name *C.char, args *C.char, parts *C.zebkit_part, count C.size_t,
+	h C.uintptr_t) {
+	host, ok := lookup[*libraryHost](h)
+	if !ok {
+		return
+	}
+	function, known := host.functions[goString(name)]
+	argsCopy, partsCopy := json.RawMessage(goString(args)), copyParts(parts, count)
+	go func() {
+		if !known {
+			host.library.answer(uint64(request), nil, nil, fmt.Errorf("the application has no function %q", goString(name)))
+			return
+		}
+		value, valueParts, err := function(argsCopy, partsCopy)
+		host.library.answer(uint64(request), value, valueParts, err)
+	}()
+}
+
+// optionalJSONText is options as JSON text, by jsonArg's rule.
+func optionalJSONText(value any) ([]byte, error) {
+	switch v := value.(type) {
+	case string:
+		return []byte(v), nil
+	case []byte:
+		return v, nil
+	case json.RawMessage:
+		return v, nil
+	}
+	return json.Marshal(value)
+}
+
+// answer answers the library's host.call() request, once; nothing once closed.
+func (l *Library) answer(request uint64, value json.RawMessage, parts [][]byte, failure error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		return
+	}
+	code := C.zebkit_library_code(LibraryOK)
+	if failure != nil {
+		code = C.zebkit_library_code(LibraryThrown)
+		value, _ = json.Marshal(map[string]string{"message": failure.Error(), "name": "Error"})
+		parts = nil
+	}
+	var text *C.char
+	if len(value) > 0 {
+		text = C.CString(string(value))
+		defer free(text)
+	}
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+	first, n := pinParts(&pinner, parts)
+	C.zebkit_library_answer(l.raw, C.uint64_t(request), code, text, first, n)
+}
+
+// pinParts is parts as the C API takes them, pinned while it reads them.
+func pinParts(pinner *runtime.Pinner, parts [][]byte) (*C.zebkit_part, C.size_t) {
+	list := make([]C.zebkit_part, len(parts))
+	for i, part := range parts {
+		if len(part) > 0 {
+			pinner.Pin(unsafe.SliceData(part))
+			list[i].data = (*C.uint8_t)(unsafe.Pointer(unsafe.SliceData(part)))
+		}
+		list[i].size = C.size_t(len(part))
+	}
+	if len(list) == 0 {
+		return nil, 0
+	}
+	pinner.Pin(&list[0])
+	return &list[0], C.size_t(len(list))
+}
+
 // LoadLibrary loads the library at path (a folder with index.mjs, or one
 // .mjs file) and returns at once; calls wait for the load. options is
 // zebkit_library_load()'s JSON ("timeoutMs", "queue", "heapLimitMB",
-// "maxBytes", "network"): nil, a string, []byte, json.RawMessage, or a value
-// to encode. ready, if not nil, is told once, on the engine's thread: the
-// exported functions' names, or why the load failed (a *LibraryError).
+// "maxBytes", "network", "instances", "codeCache"): nil, a string, []byte,
+// json.RawMessage, or a value to encode. ready, if not nil, is told once, on
+// the engine's thread: the exported functions' names, or why the load
+// failed (a *LibraryError).
 func LoadLibrary(path string, options any, ready func(functions []string, err error)) (*Library, error) {
+	return LoadLibraryWithHost(path, options, nil, ready)
+}
+
+// LoadLibraryWithHost is LoadLibrary with the application's functions the
+// library calls as host.call(name, ...args) (options' "host" is their names).
+// One not answered in the library's "timeoutMs" is a TimeoutError there.
+func LoadLibraryWithHost(path string, options any, host map[string]LibraryHostFunc,
+	ready func(functions []string, err error)) (*Library, error) {
 	onEngineThread()
 	if !started.Load() {
 		return nil, ErrNotStarted
+	}
+	if len(host) > 0 {
+		merged := map[string]any{}
+		if options != nil {
+			text, err := optionalJSONText(options)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(text, &merged); err != nil {
+				return nil, &Error{"the options are not a JSON object"}
+			}
+		}
+		names := make([]string, 0, len(host))
+		for name := range host {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		merged["host"] = names
+		options = merged
 	}
 	coptions, err := optionalJSON(options)
 	if err != nil {
@@ -158,7 +290,16 @@ func LoadLibrary(path string, options any, ready func(functions []string, err er
 		release(h)
 		return nil, takeError(message, "the library was not loaded")
 	}
-	return &Library{raw: raw}, nil
+	library := &Library{raw: raw}
+	if len(host) > 0 {
+		functions := make(map[string]LibraryHostFunc, len(host))
+		for name, function := range host {
+			functions[name] = function
+		}
+		library.host = handle(&libraryHost{library: library, functions: functions})
+		C.zebkit_library_set_host(raw, C.zebkit_library_host_func(C.zk_library_host), data(library.host))
+	}
+	return library, nil
 }
 
 // ErrLibraryClosed is what a call of a closed library returns.
@@ -184,19 +325,7 @@ func (l *Library) Call(function string, args json.RawMessage, parts [][]byte, ti
 	}
 	var pinner runtime.Pinner
 	defer pinner.Unpin()
-	list := make([]C.zebkit_part, len(parts))
-	for i, part := range parts {
-		if len(part) > 0 {
-			pinner.Pin(unsafe.SliceData(part))
-			list[i].data = (*C.uint8_t)(unsafe.Pointer(unsafe.SliceData(part)))
-		}
-		list[i].size = C.size_t(len(part))
-	}
-	var first *C.zebkit_part
-	if len(list) > 0 {
-		pinner.Pin(&list[0])
-		first = &list[0]
-	}
+	first, n := pinParts(&pinner, parts)
 	ms := int64(0)
 	if timeout < 0 {
 		ms = -1
@@ -208,7 +337,7 @@ func (l *Library) Call(function string, args json.RawMessage, parts [][]byte, ti
 			done(result)
 		}
 	})
-	id := C.zebkit_library_call(l.raw, cfunction, cargs, first, C.size_t(len(list)), C.int64_t(ms),
+	id := C.zebkit_library_call(l.raw, cfunction, cargs, first, n, C.int64_t(ms),
 		C.zebkit_library_func(C.zk_library_told), data(h))
 	if id == 0 {
 		release(h)
@@ -247,5 +376,6 @@ func (l *Library) Close() {
 	if !l.closed {
 		l.closed = true
 		C.zebkit_library_close(l.raw)
+		release(l.host)
 	}
 }

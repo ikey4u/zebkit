@@ -18,6 +18,22 @@
 //! [`Library::close`] are for the engine's thread; calls and cancels for
 //! any thread. A [`Call`] is a `Future`, woken from the engine's thread, or
 //! told to a closure with [`Call::then`].
+//!
+//! The library calls the application's functions, given at load as a
+//! [`Host`], with `await host.call(name, ...args)` (`import host from
+//! 'zebkit:host'`):
+//!
+//! ```no_run
+//! use zebkit::js::{Host, Library, Reply};
+//! use zebkit::json::Value;
+//!
+//! # fn load() -> Result<(), zebkit::Error> {
+//! let host = Host::new()
+//!     .function("progress", |args: Reply| { println!("{}", args.value[0]); Ok(Value::Null.into()) })
+//!     .function_async("ask", |args: Reply| async move { Ok(Reply::from(args.value[0].clone())) });
+//! let lib = Library::load_with_host("resources/libs/report", &Value::Null, host)?;
+//! # Ok(()) }
+//! ```
 
 use crate::engine::{on_engine_thread, require_engine_thread};
 use crate::json::Value;
@@ -113,11 +129,152 @@ impl fmt::Display for LibraryError {
 
 impl std::error::Error for LibraryError {}
 
-/// What a call gave: its value, with `{"$part": n}` for `parts[n]`.
+/// What a call gave: its value, with `{"$part": n}` for `parts[n]`. Also
+/// what a host function gets (the arguments, a JSON array) and answers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Reply {
     pub value: Value,
     pub parts: Vec<Vec<u8>>,
+}
+
+impl From<Value> for Reply {
+    fn from(value: Value) -> Reply {
+        Reply { value, parts: Vec::new() }
+    }
+}
+
+/// A host function's outcome: the answer, or an error message the library's
+/// `host.call()` is rejected with (an `Error`).
+pub type HostResult = Result<Reply, String>;
+type HostFuture = Pin<Box<dyn Future<Output = HostResult> + Send>>;
+
+enum HostFunction {
+    Now(Box<dyn Fn(Reply) -> HostResult + Send + Sync>),
+    Later(Box<dyn Fn(Reply) -> HostFuture + Send + Sync>),
+}
+
+/// The application's functions a library may call, by name: what
+/// `host.call(name, ...args)` in the library reaches. Each runs on the
+/// engine's thread with the arguments (a JSON array, and parts); an async
+/// one's future is polled there, and may be woken from any thread.
+#[derive(Default)]
+pub struct Host {
+    functions: Vec<(String, HostFunction)>,
+}
+
+impl Host {
+    pub fn new() -> Host {
+        Host::default()
+    }
+
+    /// A function answered with its value as it returns.
+    pub fn function<F: Fn(Reply) -> HostResult + Send + Sync + 'static>(mut self, name: &str, function: F) -> Host {
+        self.functions.push((name.to_string(), HostFunction::Now(Box::new(function))));
+        self
+    }
+
+    /// A function answered when its future is ready.
+    pub fn function_async<F, R>(mut self, name: &str, function: F) -> Host
+    where
+        F: Fn(Reply) -> R + Send + Sync + 'static,
+        R: Future<Output = HostResult> + Send + 'static,
+    {
+        self.functions.push((name.to_string(), HostFunction::Later(Box::new(move |args| Box::pin(function(args))))));
+        self
+    }
+}
+
+/// A library's host functions, the engine's `data` for them until close.
+struct HostState {
+    handle: Arc<Handle>,
+    functions: Vec<(String, HostFunction)>,
+}
+
+fn answer(handle: &Handle, request: u64, outcome: HostResult) {
+    let raw = handle.raw.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if raw.is_null() {
+        return;
+    }
+    let (code, json, parts) = match outcome {
+        Ok(reply) => (sys::ZEBKIT_LIBRARY_OK, reply.value.to_json(), reply.parts),
+        Err(message) => {
+            let error = Value::object([("message", Value::from(message)), ("name", Value::from("Error"))]);
+            (sys::ZEBKIT_LIBRARY_THROWN, error.to_json(), Vec::new())
+        }
+    };
+    let json = c_string(&json);
+    let list: Vec<sys::zebkit_part> = parts.iter().map(|part| sys::zebkit_part { data: part.as_ptr(), size: part.len() }).collect();
+    unsafe {
+        sys::zebkit_library_answer(*raw, request, code, json.as_ptr(), if list.is_empty() { ptr::null() } else { list.as_ptr() }, list.len());
+    }
+}
+
+/// An async host function's future, polled on the engine's thread.
+struct HostTask {
+    future: Mutex<Option<HostFuture>>,
+    handle: Arc<Handle>,
+    request: u64,
+}
+
+impl HostTask {
+    fn poll(self: &Arc<Self>) {
+        let waker = Waker::from(self.clone());
+        let mut slot = self.future.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(future) = slot.as_mut() else { return };
+        let outcome = match crate::guard(|| future.as_mut().poll(&mut Context::from_waker(&waker))) {
+            Some(Poll::Pending) => return,
+            Some(Poll::Ready(outcome)) => outcome,
+            None => Err("the application's function panicked".into()),
+        };
+        *slot = None;
+        drop(slot);
+        answer(&self.handle, self.request, outcome);
+    }
+}
+
+impl std::task::Wake for HostTask {
+    fn wake(self: Arc<Self>) {
+        crate::post(move || self.poll());
+    }
+}
+
+unsafe extern "C" fn host_called(
+    _library: *mut sys::zebkit_library,
+    request: u64,
+    name: *const c_char,
+    args_json: *const c_char,
+    parts: *const sys::zebkit_part,
+    part_count: usize,
+    data: *mut c_void,
+) {
+    let state = &*data.cast::<HostState>();
+    let name = if name.is_null() { String::new() } else { CStr::from_ptr(name).to_string_lossy().into_owned() };
+    let text = if args_json.is_null() { "[]".into() } else { CStr::from_ptr(args_json).to_string_lossy() };
+    let args = Reply { value: Value::parse(&text).unwrap_or_default(), parts: copy_parts(parts, part_count) };
+    let Some((_, function)) = state.functions.iter().find(|(known, _)| *known == name) else {
+        answer(&state.handle, request, Err(format!("the application has no function \"{name}\"")));
+        return;
+    };
+    match function {
+        HostFunction::Now(function) => {
+            let outcome = crate::guard(|| function(args)).unwrap_or_else(|| Err("the application's function panicked".into()));
+            answer(&state.handle, request, outcome);
+        }
+        HostFunction::Later(function) => match crate::guard(|| function(args)) {
+            Some(future) => Arc::new(HostTask { future: Mutex::new(Some(future)), handle: state.handle.clone(), request }).poll(),
+            None => answer(&state.handle, request, Err("the application's function panicked".into())),
+        },
+    }
+}
+
+unsafe fn copy_parts(parts: *const sys::zebkit_part, part_count: usize) -> Vec<Vec<u8>> {
+    if parts.is_null() {
+        return Vec::new();
+    }
+    std::slice::from_raw_parts(parts, part_count)
+        .iter()
+        .map(|part| if part.data.is_null() { Vec::new() } else { std::slice::from_raw_parts(part.data, part.size).to_vec() })
+        .collect()
 }
 
 /// The handle, shared with the calls so that a cancel after close does
@@ -242,14 +399,7 @@ unsafe extern "C" fn told(
     let shared = Arc::from_raw(data.cast::<Shared>());
     let text = if json.is_null() { "null".into() } else { CStr::from_ptr(json).to_string_lossy() };
     let outcome = if code == sys::ZEBKIT_LIBRARY_OK {
-        let parts = if parts.is_null() {
-            Vec::new()
-        } else {
-            std::slice::from_raw_parts(parts, part_count)
-                .iter()
-                .map(|part| if part.data.is_null() { Vec::new() } else { std::slice::from_raw_parts(part.data, part.size).to_vec() })
-                .collect()
-        };
+        let parts = copy_parts(parts, part_count);
         match Value::parse(&text) {
             Ok(value) => Ok(Reply { value, parts }),
             Err(error) => Err(LibraryError { code: Code::BadResult, message: error.message().to_string(), name: String::new(), stack: String::new() }),
@@ -267,7 +417,13 @@ unsafe extern "C" fn told(
 pub struct Library {
     handle: Arc<Handle>,
     ready: Arc<Shared>,
+    host: *mut HostState,
 }
+
+// SAFETY: `host` is used on the engine's thread only: made at load, freed at
+// close (Drop, which posts itself there).
+unsafe impl Send for Library {}
+unsafe impl Sync for Library {}
 
 impl Library {
     /// Loads the library at `path` (a folder with `index.mjs`, or one `.mjs`
@@ -277,8 +433,20 @@ impl Library {
     /// none. An error for bad options or a path that is no library. The
     /// engine's thread.
     pub fn load(path: impl AsRef<Path>, options: &Value) -> Result<Library, Error> {
+        Library::load_with_host(path, options, Host::new())
+    }
+
+    /// [`Library::load`] with the application's functions the library
+    /// calls as `host.call(name, ...args)` (`options`' `"host"` is their
+    /// names). A function's answer goes back once; one not answered in the
+    /// library's `timeoutMs` is a `TimeoutError` in the library.
+    pub fn load_with_host(path: impl AsRef<Path>, options: &Value, host: Host) -> Result<Library, Error> {
         require_engine_thread("Library::load()");
         let path = c_string(&path.as_ref().to_string_lossy());
+        let mut options = options.clone();
+        if !host.functions.is_empty() {
+            options.set("host", Value::Array(host.functions.iter().map(|(name, _)| Value::from(name.as_str())).collect()));
+        }
         let options = if options.is_null() { None } else { Some(c_string(&options.to_json())) };
         let ready = Arc::new(Shared::default());
         let data = Arc::into_raw(ready.clone()).cast_mut().cast::<c_void>();
@@ -290,7 +458,13 @@ impl Library {
             drop(unsafe { Arc::from_raw(data.cast::<Shared>()) });
             return Err(unsafe { take_error(error, "the library was not loaded") });
         }
-        Ok(Library { handle: Arc::new(Handle { raw: RwLock::new(raw) }), ready })
+        let handle = Arc::new(Handle { raw: RwLock::new(raw) });
+        let mut state = ptr::null_mut();
+        if !host.functions.is_empty() {
+            state = Box::into_raw(Box::new(HostState { handle: handle.clone(), functions: host.functions }));
+            unsafe { sys::zebkit_library_set_host(raw, Some(host_called), state.cast()) }
+        }
+        Ok(Library { handle, ready, host: state })
     }
 
     /// The load's outcome: `{"functions": [...]}`, the exported functions'
@@ -361,11 +535,18 @@ impl Library {
 impl Drop for Library {
     fn drop(&mut self) {
         let handle = self.handle.clone();
+        // The address only: Send, and freed on the engine's thread.
+        let host = self.host as usize;
         let close = move || {
             let mut raw = handle.raw.write().unwrap_or_else(|poisoned| poisoned.into_inner());
             if !raw.is_null() {
                 unsafe { sys::zebkit_library_close(*raw) }
                 *raw = ptr::null_mut();
+            }
+            drop(raw);
+            // No request reaches it after close.
+            if host != 0 {
+                drop(unsafe { Box::from_raw(host as *mut HostState) });
             }
         };
         if on_engine_thread() {

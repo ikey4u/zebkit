@@ -60,6 +60,7 @@
 #include "url/origin.h"
 #include "v8/include/v8-initialization.h"
 #include "v8/include/v8.h"
+#include "zebkit/engine/library_page.h"
 #include "zebkit/engine/automation.h"
 #include "zebkit/engine/automation.mojom.h"
 #include "zebkit/engine/call.h"
@@ -99,6 +100,9 @@ BrowserClient* g_browser_client = nullptr;
 void BindNetworkHintsHandler(
     content::RenderFrameHost* frame,
     mojo::PendingReceiver<network_hints::mojom::NetworkHintsHandler> receiver) {
+  // A library's page resolves and connects to nothing ahead (library_page.cc).
+  if (IsLibraryPageFrame(frame))
+    return;
   network_hints::SimpleNetworkHintsHandlerImpl::Create(frame, std::move(receiver));
 }
 
@@ -449,6 +453,7 @@ void RendererClient::RenderFrameCreated(content::RenderFrame* render_frame) {
   InstallMediaCaptureAgent(render_frame);
   InstallAutomationAgent(render_frame);
   InstallPageCallAgent(render_frame);
+  InstallLibraryPageAgent(render_frame);  // a JavaScript library's page's heap
 }
 
 void BrowserClient::RegisterAssociatedInterfaceBindersForRenderFrameHost(

@@ -11,9 +11,17 @@ a timer is TIMEOUT and the next runs), cancel of a waiting and of a running
 call, a full queue, heap exhaustion; imports that leave the folder; fetch()
 refused without a grant and allowed with one (a local server), no cookies, a
 redirect to another origin refused; close with calls pending; many libraries
-at once; calls from another thread; exactly one outcome each. With the bundles
-of examples/js-libraries (build.sh, engine-test.sh --fetch): markdown-it and
-ECharts. Exit 0 when every check passes.
+at once; calls from another thread; exactly one outcome each. The code cache
+(its file in the profile, a changed module never served a stale one, a
+damaged file refused, codeCache false); state kept across an idle shrink;
+instances (calls in parallel, state per instance, deadlines, cancel, close,
+an instance out of memory while the others go on); host functions (progress
+during a call, data and bytes asked of the application, its error, an answer
+from another thread, one never given, exactly one answer, a call at load).
+With the bundles of examples/js-libraries (build.sh, engine-test.sh --fetch):
+markdown-it and ECharts, the facades js-bundle.mjs --wrapper generates for
+markdown-it (the generated Python one used), --list, and a CommonJS package
+bundled without an entry. Exit 0 when every check passes.
 """
 
 import ctypes
@@ -37,10 +45,14 @@ import zebkit.library as L  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 args = sys.argv[1:]
 bundles = args.pop(0) if args and not args[0].startswith("-") else os.path.join(ROOT, ".cache", "js-libraries")
-assert zebkit.init([sys.argv[0]] + (args or ["--headless", "--no-sandbox"]),
-                   settings={"logging": {"destination": "none"}}) == 0
-
 work = tempfile.mkdtemp(prefix="zebkit-library-")
+args = args or ["--headless", "--no-sandbox"]
+# The profile, which the code cache is kept in.
+profile = next((a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir=")), None)
+if profile is None:
+    profile = os.path.join(work, "profile")
+    args.append("--user-data-dir=" + profile)
+assert zebkit.init([sys.argv[0]] + args, settings={"logging": {"destination": "none"}}) == 0
 
 
 def library(name, files):
@@ -133,7 +145,12 @@ with part("load errors: bad path, folder without index.mjs, bad options"):
             (MAIN, {"network": ["not a url"]}, "network"),
             (MAIN, {"network": ["https://example.com/path"]}, "network"),
             (MAIN, {"heapLimitMB": 1}, "heapLimitMB"),
-            (MAIN, {"backend": "page"}, "page")]:
+            (MAIN, {"instances": 0}, "instances"),
+            (MAIN, {"instances": 1.5}, "instances"),
+            (MAIN, {"codeCache": "yes"}, "codeCache"),
+            (MAIN, {"host": "progress"}, "host"),
+            (MAIN, {"host": [""]}, "host"),
+            (MAIN, {"width": 300}, "page")]:
         try:
             L.load(path, options)
             raise AssertionError("loaded: %r %r" % (path, options))
@@ -531,6 +548,252 @@ with part("32 libraries at once, each with its own state"):
         m.close()
 lib.close()
 
+# ---- the code cache ---------------------------------------------------------------
+
+import hashlib  # noqa: E402
+
+
+def cache_file(module):
+    """The profile's code cache file of the module at @module."""
+    name = hashlib.sha256(os.path.realpath(module).encode()).hexdigest()[:32].upper()
+    return os.path.join(profile, "Library Code Cache", name + ".v8")
+
+
+# Enough code that V8 caches something, and a value that tells versions apart.
+BODY = "".join("export function f%d(x) { return x * %d + %d; }\n" % (i, i, i) for i in range(200))
+with part("the code cache: kept in the profile after close, used by the next load, keyed by content"):
+    folder = library("cached", {"index.mjs": BODY + "export const version = () => 'one';\n"})
+    module = os.path.join(folder, "index.mjs")
+    first = L.load(folder)
+    assert outcome(first.call("version")) == ("ok", "one")
+    assert outcome(first.call("f7", 3)) == ("ok", 28)
+    first.close()
+    assert wait(lambda: os.path.isfile(cache_file(module)), 10), cache_file(module)
+    with open(cache_file(module), "rb") as f:
+        head = f.read(64)
+    assert head.startswith(b"zebkit library code cache 1 "), head
+    again = L.load(folder)
+    assert outcome(again.call("version")) == ("ok", "one") and outcome(again.call("f9", 1)) == ("ok", 18)
+    again.close()
+    # The same length, other content: never the old code.
+    with open(module, "w", encoding="utf-8") as f:
+        f.write(BODY + "export const version = () => 'two';\n")
+    changed = L.load(folder)
+    assert outcome(changed.call("version")) == ("ok", "two")
+    changed.close()
+with part("the code cache: a damaged file is refused and the module compiles"):
+    assert wait(lambda: os.path.isfile(cache_file(module)), 10)
+    with open(cache_file(module), "rb") as f:
+        text = f.read()
+    at = text.index(b"\n") + 1
+    with open(cache_file(module), "wb") as f:
+        f.write(text[:at] + bytes(len(text) - at))
+    # Not in this process's memory: a module of its own text.
+    with open(module, "w", encoding="utf-8") as f:
+        f.write(BODY + "export const version = () => 'six';\n")
+    damaged = L.load(folder)
+    assert outcome(damaged.call("version")) == ("ok", "six")
+    damaged.close()
+with part("codeCache false: nothing kept in the profile"):
+    plain = library("uncached", {"index.mjs": BODY + "export const v = () => 3;\n"})
+    off = L.load(plain, {"codeCache": False})
+    assert outcome(off.call("v")) == ("ok", 3)
+    off.close()
+    wait(lambda: False, 0.5)
+    assert not os.path.exists(cache_file(os.path.join(plain, "index.mjs")))
+with part("an idle library gives memory back and keeps its state"):
+    idle = L.load(MAIN)
+    assert outcome(idle.call("count")) == ("ok", 1)
+    wait(lambda: False, 2.6)  # past the idle shrink
+    assert outcome(idle.call("count")) == ("ok", 2)
+    idle.close()
+
+# ---- instances ----------------------------------------------------------------------
+
+POOL = library("pool", {"index.mjs": r"""
+let counter = 0;
+export const count = () => ++counter;
+// Busy for ms milliseconds: the thread is taken, as a long computation's is.
+export function busy(ms) { const end = Date.now() + ms; while (Date.now() < end) {} return ms; }
+export const countAfter = (ms) => { busy(ms); return ++counter; };
+export const spin = () => { for (;;) {} };
+export const later = (value, ms) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+export function grow() { const keep = []; for (;;) keep.push(new Array(100000).fill(Math.random())); }
+"""})
+
+
+def wall(lib_, calls, seconds=30):
+    started = time.monotonic()
+    futures = [lib_.call(*c) for c in calls]
+    assert settle(*futures, seconds=seconds)
+    return time.monotonic() - started, futures
+
+
+with part("instances: 4 calls of 400 ms of work run in parallel on 4 instances, one after another on 1"):
+    one, four = L.load(POOL), L.load(POOL, {"instances": 4})
+    assert settle(one.ready, four.ready)
+    assert four.ready.result()["functions"] == one.ready.result()["functions"]
+    took_one, _ = wall(one, [("busy", 400)] * 4)
+    took_four, futures = wall(four, [("busy", 400)] * 4)
+    assert [f.result() for f in futures] == [400] * 4
+    assert took_one >= 1.55 and took_four < 1.2, (took_one, took_four)
+with part("instances: state is each instance's own"):
+    # Each instance counts its own calls: 8 of 100 ms on 4 instances count to 2 or so each.
+    _, futures = wall(four, [("countAfter", 100)] * 8)
+    counts = sorted(f.result() for f in futures)
+    assert counts[-1] < 8 and counts.count(1) >= 2, counts
+with part("instances: cancel of a waiting call; the others run"):
+    running = [four.call("busy", 200) for _ in range(4)]
+    queued = four.call("count", function=counted("pool-queued"))
+    four.cancel(queued)
+    assert settle(*running) and wait(lambda: told["pool-queued"])
+    assert told["pool-queued"][0][1].code == L.CANCELLED
+with part("instances: a script past its deadline ends its instance; the others take the calls"):
+    doomed = L.load(POOL, {"instances": 2})
+    spinning = doomed.call("spin", timeout_ms=300)
+    after = [doomed.call("later", i, 20) for i in range(6)]
+    assert outcome(spinning)[0] == "TIMEOUT"
+    assert [outcome(f) for f in after] == [("ok", i) for i in range(6)]
+    # The last instance ended: the library has ended.
+    assert outcome(doomed.call("spin", timeout_ms=300))[0] == "TIMEOUT"
+    assert outcome(doomed.call("count"))[0] == "GONE"
+    doomed.close()
+with part("instances: one out of memory ends alone; the other goes on"):
+    hungry = L.load(POOL, {"instances": 2, "heapLimitMB": 32})
+    assert settle(hungry.ready)
+    grown = hungry.call("grow", timeout_ms=-1)
+    waiting = hungry.call("later", "still", 300)
+    assert outcome(grown, seconds=60)[0] == "OUT_OF_MEMORY"
+    assert outcome(waiting) == ("ok", "still")
+    assert outcome(hungry.call("count")) == ("ok", 1)
+    hungry.close()
+with part("instances: close with calls running on each: all GONE, once"):
+    closing = L.load(POOL, {"instances": 3})
+    assert settle(closing.ready)
+    keys = ["pool-close-%d" % i for i in range(5)]
+    for i, key in enumerate(keys):
+        closing.call("busy" if i % 2 else "later", 5000 if i % 2 else 1, *([] if i % 2 else [5000]),
+                     function=counted(key))
+    wait(lambda: False, 0.2)
+    closing.close()
+    assert wait(lambda: all(told[k] for k in keys))
+    wait(lambda: False, 0.3)
+    assert all(len(told[k]) == 1 and told[k][0][1].code == L.GONE for k in keys), {k: told[k] for k in keys}
+one.close()
+four.close()
+
+# ---- host functions -------------------------------------------------------------------
+
+HOST = library("host", {"index.mjs": r"""
+import host from 'zebkit:host';
+import {call, functions} from 'zebkit:host';
+// At load: the application is asked already.
+const config = await host.call('config');
+export const loadedWith = () => config;
+export const names = () => functions;
+export async function work(steps) {
+  for (let i = 1; i <= steps; ++i) await host.call('progress', i, steps);
+  return 'done';
+}
+export async function ask(question, bytes) {
+  const answer = await call('lookup', question, bytes);
+  return {answer, isBytes: answer.data instanceof Uint8Array, length: answer.data.length};
+}
+export async function failing() {
+  try { await host.call('fails', 'x'); return 'resolved'; }
+  catch (error) { return {name: error.name, message: error.message}; }
+}
+export async function unanswered() {
+  try { await host.call('never'); return 'resolved'; }
+  catch (error) { return {name: error.name}; }
+}
+export async function unknown() {
+  try { await host.call('nothing'); return 'resolved'; }
+  catch (error) { return {name: error.name, message: error.message}; }
+}
+export const threaded = (n) => host.call('threaded', n);
+export const raw = () => host.call('raw');
+"""})
+
+progress = []
+pending_never = []
+raw_requests = []
+
+
+def lookup(question, data):
+    return {"question": question, "data": bytes(reversed(data))}
+
+
+def threaded(n):
+    future = zebkit.automation.Future()
+    threading.Thread(target=lambda: (time.sleep(0.05), future.set_result(n * 3))).start()
+    return future
+
+
+def never():
+    future = zebkit.automation.Future()
+    pending_never.append(future)
+    return future
+
+
+def fails(value):
+    raise KeyError("no such key: " + value)
+
+
+hosted = L.load(HOST, {"timeoutMs": 2000}, host={
+    "config": lambda: {"theme": "dark"},
+    "progress": lambda i, n: progress.append((i, n)),
+    "lookup": lookup,
+    "fails": fails,
+    "never": never,
+    "threaded": threaded,
+})
+with part("host: asked at load (a top-level await), and the names the library sees"):
+    assert outcome(hosted.ready)[0] == "ok", outcome(hosted.ready)
+    assert outcome(hosted.call("loadedWith")) == ("ok", {"theme": "dark"})
+    kind, value = outcome(hosted.call("names"))
+    assert kind == "ok" and sorted(value) == ["config", "fails", "lookup", "never", "progress", "threaded"], value
+with part("host: progress told during a long call, in order"):
+    assert outcome(hosted.call("work", 5)) == ("ok", "done")
+    assert progress == [(i, 5) for i in range(1, 6)], progress
+with part("host: data and bytes asked of the application"):
+    kind, value = outcome(hosted.call("ask", "why", b"\x01\x02\x03"))
+    assert kind == "ok" and value["answer"]["question"] == "why" and value["isBytes"] and value["length"] == 3, value
+with part("host: the application's error is a rejected promise in the library"):
+    kind, value = outcome(hosted.call("failing"))
+    assert kind == "ok" and value == {"name": "KeyError", "message": "no such key: x"}, value
+with part("host: an answer from another thread"):
+    assert outcome(hosted.call("threaded", 7)) == ("ok", 21)
+with part("host: a name the load did not give is a TypeError at once"):
+    kind, value = outcome(hosted.call("unknown"))
+    assert kind == "ok" and value["name"] == "TypeError" and "nothing" in value["message"], value
+with part("host: never answered: a TimeoutError at the library's timeoutMs; a late answer is refused"):
+    started = time.monotonic()
+    kind, value = outcome(hosted.call("unanswered", timeout_ms=-1))
+    assert kind == "ok" and value == {"name": "TimeoutError"} and 1.8 < time.monotonic() - started < 6, \
+        (kind, value, time.monotonic() - started)
+    pending_never[0].set_result("too late")  # answered after its deadline: nothing happens
+with part("host: C: an answer is taken once (1), then refused (0)"):
+    def raw_host(library_, request, name, text, parts_, count, data):
+        raw_requests.append(request)
+        first_ = L._library_answer(library_, request, L.OK, b'"first"', None, 0)
+        second = L._library_answer(library_, request, L.OK, b'"second"', None, 0)
+        raw_requests.append((first_, second))
+    raw_callback = L._HOST(raw_host)
+    direct = L.load(HOST, {"host": ["config", "raw"]})
+    L._library_set_host(direct._raw, raw_callback, None)
+    assert outcome(direct.call("raw")) == ("ok", "first")
+    assert raw_requests[1] == (1, 0), raw_requests
+    direct.close()
+with part("host: closed with a request unanswered: the call is GONE, a late answer does nothing"):
+    closing = L.load(HOST, host={"config": lambda: 1, "never": never})
+    waiting = closing.call("unanswered")
+    wait(lambda: len(pending_never) > 1, 5)
+    closing.close()
+    assert outcome(waiting)[0] == "GONE"
+    pending_never[-1].set_result(1)
+hosted.close()
+
 # ---- the examples' bundles -------------------------------------------------------
 
 markdown, charts = os.path.join(bundles, "markdown"), os.path.join(bundles, "charts")
@@ -580,8 +843,65 @@ if node and os.path.isdir(os.path.join(esbuild_dir, "esbuild")):
         bundled = L.load(out)
         assert outcome(bundled.call("f")) == ("ok", "object")
         bundled.close()
+    with part("js-bundle.mjs: a CommonJS package bundled without an entry, its names read without running it"):
+        package = library("cjs-package", {
+            "package.json": json.dumps({"name": "cjs-sample", "version": "1.0.0", "main": "index.js",
+                                        "types": "index.d.ts"}),
+            "index.js": "'use strict';\nmodule.exports = require('./lib.js');\n",
+            "lib.js": "exports.add = (a, b) => a + b;\nmodule.exports.greet = function (name) { return 'hi ' + name; };\n"
+                      "exports.version = '1.0';\n",
+            "index.d.ts": "/** Their sum. */\nexport declare function add(a: number, b: number): number;\n"})
+        out = os.path.join(work, "cjs-out")
+        run = subprocess.run([node, os.path.join(ROOT, "tools", "js-bundle.mjs"), package, out, "--esbuild", esbuild_dir,
+                              "--work", os.path.join(work, "cjs-work"), "--offline"],
+                             capture_output=True, text=True, timeout=120)
+        assert run.returncode == 0 and "cjs-sample is CommonJS: add, greet, version" in run.stderr, run.stderr
+        cjs = L.load(out)
+        kind, value = outcome(cjs.ready)
+        assert kind == "ok" and sorted(value["functions"]) == ["add", "greet"], value
+        assert outcome(cjs.call("add", 2, 3)) == ("ok", 5) and outcome(cjs.call("greet", "zebkit")) == ("ok", "hi zebkit")
+        cjs.close()
+        listed = subprocess.run([node, os.path.join(ROOT, "tools", "js-bundle.mjs"), "--list", out],
+                                capture_output=True, text=True, timeout=60)
+        assert listed.returncode == 0 and listed.stdout.splitlines() == [
+            "add(a: number, b: number): number  // Their sum.", "greet(...args)"], listed.stdout
 else:
     skip("js-bundle.mjs", "no node or no esbuild in %s (engine-test.sh --fetch)" % esbuild_dir)
+if node and os.path.isfile(os.path.join(markdown, "exports.json")):
+    with part("js-bundle.mjs --list and --wrapper: markdown-it's functions, the facades in examples/js-libraries"):
+        def bundler(*arguments):
+            run = subprocess.run([node, os.path.join(ROOT, "tools", "js-bundle.mjs"), *arguments],
+                                 capture_output=True, text=True, timeout=60)
+            assert run.returncode == 0, run.stderr
+            return run.stdout
+        assert bundler("--list", markdown).splitlines()[0] == \
+            "render(text: string, options?: {rich?: boolean}): string  // The HTML of a Markdown document.", \
+            bundler("--list", markdown)
+        here = os.path.join(ROOT, "examples", "js-libraries", "markdown")
+        for language, name in (("rust", "markdown.rs"), ("python", "markdown.py")):
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                assert bundler("--wrapper", language, markdown, "--name", "Markdown") == f.read(), \
+                    "%s is not what --wrapper %s makes: build.sh says how to make it again" % (name, language)
+        go_facade = bundler("--wrapper", "go", markdown, "--name", "Markdown", "--package", "markdown")
+        assert "func (m *Markdown) RenderMany(texts []string, done func([]string, error)) error {" in go_facade
+        gofmt = shutil.which("gofmt")
+        if gofmt:
+            checked = subprocess.run([gofmt, "-l"], input=go_facade, capture_output=True, text=True, timeout=60)
+            assert checked.returncode == 0 and not checked.stdout.strip(), checked.stdout + checked.stderr
+        assert "call(name: 'render', text: string, options?: {rich?: boolean}): Promise<string>;" in \
+            bundler("--wrapper", "ts", markdown, "--name", "Markdown")
+    with part("the generated Python facade of markdown-it (examples/js-libraries/markdown/markdown.py)"):
+        sys.path.insert(0, os.path.join(ROOT, "examples", "js-libraries", "markdown"))
+        from markdown import Markdown  # noqa: E402
+        md = Markdown(markdown)
+        assert outcome(md.render("# Title")) == ("ok", "<h1>Title</h1>\n")
+        kind, html = outcome(md.render("a -- b https://example.com", {"rich": True}))
+        assert kind == "ok" and "\u2013" in html and 'href="https://example.com"' in html, html
+        assert outcome(md.render_inline("*x*")) == ("ok", "<em>x</em>")
+        assert outcome(md.render_many(["a", "b"])) == ("ok", ["<p>a</p>\n", "<p>b</p>\n"])
+        md.close()
+else:
+    skip("js-bundle.mjs --wrapper", "no node, or no markdown bundle with exports.json (engine-test.sh --fetch)")
 
 server.close()
 shutil.rmtree(work, ignore_errors=True)

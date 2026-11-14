@@ -235,6 +235,8 @@ class BrowserClient : public content::ContentBrowserClient {
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
       bool is_integration_test) override;
   bool IsHandledURL(const GURL& url) override;
+  // A JavaScript library's page (library_page.cc): loopback, its fence decides.
+  network::mojom::IPAddressSpace DetermineAddressSpaceFromURL(const GURL& url) override;
   void CreateThrottlesForNavigation(content::NavigationThrottleRegistry& registry) override;
   void CreateThrottlesForCommitWithoutUrlLoader(content::NavigationThrottleRegistry& registry) override;
   std::vector<std::unique_ptr<content::CommitDeferringCondition>>
