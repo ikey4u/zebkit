@@ -702,7 +702,8 @@ if [[ -n "$build_only" ]]; then
     sandbox_helper=()
     [[ "$ZEBKIT_TARGET" == linux ]] && sandbox_helper=(scripts/sandbox-helper-test.sh tools/zebkit-run/zebkit-run.c)
     tar -C "$ZEBKIT_ROOT" --exclude=__pycache__ -cf - scripts/engine-test.sh scripts/lib.sh upstream.lock profiles tests/serve.py \
-        tests/engine bindings/python examples/pdf-plugin examples/native-host/sample.pdf examples/ui/todo.mjs "$ahem_relative" \
+        tests/engine bindings/python examples/pdf-plugin examples/native-host/sample.pdf examples/ui/todo.mjs \
+        tools/js-bundle.mjs examples/js-libraries "$ahem_relative" \
         ${nss_headers[@]+"${nss_headers[@]}"} ${sandbox_helper[@]+"${sandbox_helper[@]}"} | tar -C "$build_only" -xf -
     if [[ -f "$real_pdf" ]]; then
         mkdir -p "$build_only/.cache/pdf"
