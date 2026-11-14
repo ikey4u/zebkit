@@ -18,6 +18,7 @@
 #include "zebkit/engine/ime_ibus_linux.h"
 #include "zebkit/engine/device_choosers.h"
 #include "zebkit/engine/engine.h"
+#include "zebkit/engine/services_internal.h"
 #include "zebkit/engine/appearance.h"
 #include "zebkit/engine/sign_in_dialog.h"
 #include "zebkit/engine/share.h"
@@ -66,6 +67,7 @@
 #include "base/json/json_writer.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
+#include "base/i18n/icu_util.h"
 #include "base/path_service.h"
 #include "base/process/current_process.h"
 #include "base/run_loop.h"
@@ -1570,6 +1572,21 @@ namespace zebkit {
 
 void NoteUncaughtScriptError() {
   g_script_error = true;
+}
+
+bool LoadICUData() {
+  // ICU's data is beside the engine, which is not beside the application.
+  const base::FilePath library = LibraryDirectory();
+  if (!library.empty()) {
+    base::PathService::OverrideAndCreateIfNeeded(
+        base::DIR_MODULE, library, /*is_absolute=*/true, /*create=*/false);
+#if BUILDFLAG(IS_MAC)
+    // On macOS ICU's data is in the framework's resources, which base
+    // finds through the bundle zebkit_main() would have set.
+    SetUpBundle(library);
+#endif
+  }
+  return base::i18n::InitializeICU();
 }
 
 }  // namespace zebkit

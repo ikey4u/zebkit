@@ -17,6 +17,13 @@
 //! `certutil` on Windows), `tar` and `xz`, so that this crate needs no
 //! others to build.
 //!
+//! On Android and iOS libzebkit is built without the engine (docs/MOBILE.md):
+//! `libzebkit.so` or `Zebkit.framework`, from `ZEBKIT_DIR` or the
+//! repository's `out/blink/slim-android/package` or `slim-ios/package`. It
+//! has PDF, canvas, text and the services without HTTP; nothing is
+//! downloaded for it. The engine's functions are declared all the same: a
+//! program that calls one does not link.
+//!
 //! Environment:
 //!
 //! - `ZEBKIT_DIR`: see above.
@@ -46,6 +53,11 @@ fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "macos");
     let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "windows");
+    let android = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "android");
+    let ios = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|system| system == "ios");
+    if android || ios {
+        return link_mobile(&manifest, ios);
+    }
     // What a package directory is known by.
     let engine_name = if macos {
         "Zebkit.framework"
@@ -123,6 +135,39 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib:+verbatim=libzebkit.so.1");
     }
     // For dependents' build scripts, as DEP_ZEBKIT_LIB_DIR.
+    println!("cargo:lib_dir={}", directory.display());
+}
+
+/// libzebkit without the engine, on Android and iOS: from `ZEBKIT_DIR` or
+/// the repository's package of it (scripts/package-mobile.sh).
+fn link_mobile(manifest: &Path, ios: bool) {
+    let name = if ios { "Zebkit.framework" } else { "libzebkit.so" };
+    let profile = if ios { "slim-ios" } else { "slim-android" };
+    let local = manifest.join("../../../out/blink").join(profile).join("package");
+    let directory = match env::var_os("ZEBKIT_DIR") {
+        Some(given) => PathBuf::from(given),
+        None if local.join(name).exists() => local,
+        None => fail(&format!(
+            "there is no prebuilt zebkit for this target; build it \
+             (docs/MOBILE.md: scripts/build.sh {profile} zebkit/engine, scripts/package-mobile.sh {profile}) \
+             and set ZEBKIT_DIR to its package directory"
+        )),
+    };
+    let directory = directory
+        .canonicalize()
+        .unwrap_or_else(|_| fail(&format!("there is no directory {}", directory.display())));
+    let library = directory.join(name);
+    if !library.exists() {
+        fail(&format!("{} has no {name}; it is not a zebkit package for {profile}", directory.display()));
+    }
+    println!("cargo:rerun-if-changed={}", library.display());
+    if ios {
+        println!("cargo:rustc-link-search=framework={}", directory.display());
+        println!("cargo:rustc-link-lib=framework=Zebkit");
+    } else {
+        println!("cargo:rustc-link-search=native={}", directory.display());
+        println!("cargo:rustc-link-lib=dylib=zebkit");
+    }
     println!("cargo:lib_dir={}", directory.display());
 }
 

@@ -1,0 +1,34 @@
+PDFium: its Apple platform code on iOS too.
+
+PDFium's code for Apple's systems (core/fxge/apple: fonts and the device
+on CoreGraphics; CoreFoundation for fonts' names) is under
+BUILDFLAG(IS_APPLE), but its BUILD.gn files add it for macOS only, as
+Chromium builds PDFium on macOS and not on iOS. libzebkit without the
+engine (docs/MOBILE.md) has PDFium on iOS: without these sources it does
+not link (CFX_GEModule::PlatformIface::Create() and the rest undefined).
+AppKit stays macOS's.
+
+diff --git a/third_party/pdfium/core/fxge/BUILD.gn b/third_party/pdfium/core/fxge/BUILD.gn
+--- a/third_party/pdfium/core/fxge/BUILD.gn
++++ b/third_party/pdfium/core/fxge/BUILD.gn
+@@ -185,7 +185,7 @@
+     sources += [ "linux/fx_linux_impl.cpp" ]
+   }
+ 
+-  if (is_mac) {
++  if (is_apple) {
+     sources += [
+       "apple/capple_platform.cpp",
+       "apple/capple_platform.h",
+diff --git a/third_party/pdfium/core/fpdfapi/font/BUILD.gn b/third_party/pdfium/core/fpdfapi/font/BUILD.gn
+--- a/third_party/pdfium/core/fpdfapi/font/BUILD.gn
++++ b/third_party/pdfium/core/fpdfapi/font/BUILD.gn
+@@ -50,7 +50,7 @@
+   ]
+   deps = [ "../../../constants" ]
+   visibility = [ "../../../*" ]
+-  if (is_mac) {
++  if (is_apple) {
+     frameworks = [ "CoreFoundation.framework" ]
+   }
+ }

@@ -66,3 +66,4 @@
 1085-serial-ports-without-a-platform-bluetooth.patch
 1086-content-whose-a-frameless-websocket-is.patch
 1087-content-hang-monitor-and-the-embedder-own-devtools.patch
+1088-pdfium-apple-platform-on-ios.patch

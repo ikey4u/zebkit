@@ -30,6 +30,7 @@ macro_rules! opaque {
 }
 
 opaque!(zebkit_view);
+opaque!(zebkit_viewer);
 opaque!(zebkit_context);
 opaque!(zebkit_call);
 opaque!(zebkit_script);
@@ -455,6 +456,21 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut u8;
     pub fn zebkit_icu_init() -> bool;
+    pub fn zebkit_icu_init_from_file(path: *const c_char) -> bool;
+
+    // <zebkit/viewer.h>: the page's zebkit in the system's web view (docs/VIEWER.md).
+    pub fn zebkit_viewer_new() -> *mut zebkit_viewer;
+    pub fn zebkit_viewer_free(viewer: *mut zebkit_viewer);
+    pub fn zebkit_viewer_grant(viewer: *mut zebkit_viewer, origin: *const c_char, allow: c_uint, files_root: *const c_char);
+    pub fn zebkit_viewer_reset(viewer: *mut zebkit_viewer);
+    pub fn zebkit_viewer_script(post: *const c_char) -> *mut c_char;
+    pub fn zebkit_viewer_handle(
+        viewer: *mut zebkit_viewer,
+        origin: *const c_char,
+        message: *const c_char,
+        app_call: *mut *mut c_char,
+    ) -> *mut c_char;
+    pub fn zebkit_viewer_answer(id: i64, ok: bool, result_json: *const c_char) -> *mut c_char;
     pub fn zebkit_fetch(
         method: *const c_char,
         url: *const c_char,

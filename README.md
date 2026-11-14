@@ -719,6 +719,8 @@ zebkit 0.5.0 on Chromium 157.0.8103.38, Chrome 156.0.8078.4, playwright-core
 | **Build** | |
 | [docs/BUILD.md](docs/BUILD.md) | Fetching Chromium, building, packaging, testing, measuring and releasing; profiles and patches |
 | [docs/MACOS.md](docs/MACOS.md) | The macOS framework, native and cross builds, testing on a Mac |
+| [docs/MOBILE.md](docs/MOBILE.md) | Android and iOS: libzebkit built without the engine, beside the system's web view |
+| [docs/VIEWER.md](docs/VIEWER.md) | One page on every system: the page's `zebkit` in the system's web view on Android and iOS (Swift, Java) |
 | [docs/WINDOWS.md](docs/WINDOWS.md) | The Windows DLL, its sandbox, cross-building on Linux, the state of the port |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing and the rules a change is checked against |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability; which versions get fixes |

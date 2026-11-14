@@ -2,6 +2,8 @@
 {
   global:
     zebkit_*;
+    /* bindings/android's dev.zebkit.Native (android_jni.cc). */
+    Java_dev_zebkit_*;
   local:
     *;
 };

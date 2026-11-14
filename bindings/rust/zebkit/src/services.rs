@@ -296,6 +296,16 @@ pub fn icu_init() -> bool {
     unsafe { sys::zebkit_icu_init() }
 }
 
+/// Loads ICU's data from `path`, an icudtl.dat the application carries: for
+/// libzebkit without the engine, where the data is not beside it, as on Android.
+/// The first of this and [`icu_init`] that succeeds loads it.
+pub fn icu_init_from_file(path: impl AsRef<std::path::Path>) -> bool {
+    let Some(path) = path.as_ref().to_str().and_then(|p| std::ffi::CString::new(p).ok()) else {
+        return false;
+    };
+    unsafe { sys::zebkit_icu_init_from_file(path.as_ptr()) }
+}
+
 /// An answer to [`fetch`]; its body is the engine's for as long as the
 /// function it is given to runs.
 #[derive(Debug, Clone, PartialEq, Eq)]

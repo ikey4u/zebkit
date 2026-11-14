@@ -1,0 +1,22 @@
+# zebkit-base: mobile-linux
+# libzebkit for Android arm64 (docs/MOBILE.md): libzebkit.so for an APK's
+# lib/arm64-v8a, without the engine; applications show the web with
+# Android's System WebView. Needs Android's NDK and SDK in the checkout:
+#
+#   ZEBKIT_TARGET_OS=android scripts/fetch-upstream.sh
+#   scripts/build.sh slim-android zebkit/engine zebkit/engine:zebkit_mobile_test
+#
+# target_cpu = "x64" builds it for the emulator.
+
+target_os = "android"
+target_cpu = "arm64"
+
+# zebkit's configuration of FFmpeg has no Android one yet
+# (scripts/ffmpeg-config.sh); Chromium's has, without libswresample and
+# libswscale, so <zebkit/media_tools.h> and <zebkit/vendor/ffmpeg.h> are
+# left out.
+zebkit_ffmpeg = false
+
+# PDFium draws its text with FreeType, which Chromium builds on desktop only
+# (it has no PDF viewer here); zebkit has PDFium, and exports FreeType.
+enable_freetype = true

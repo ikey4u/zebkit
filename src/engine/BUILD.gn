@@ -21,6 +21,17 @@ if (is_mac) {
 if (is_win) {
   import("//build/config/win/visual_studio_version.gni")
 }
+if (is_ios) {
+  import("//build/config/ios/ios_sdk.gni")
+}
+import("//third_party/ffmpeg/ffmpeg_options.gni")
+
+declare_args() {
+  # The engine: Chromium's content layer, Blink and V8, in libzebkit. Without
+  # it libzebkit has only what needs no engine (docs/MOBILE.md): on Android
+  # and iOS, where applications show the web with the system's web view.
+  zebkit_build_engine = !is_android && !is_ios
+}
 
 _version = read_file("//zebkit/VERSION", "trim string")
 
@@ -82,6 +93,12 @@ _vendored = [
   "ffmpeg",
   "pdfium",
 ]
+if (!zebkit_ffmpeg) {
+  # Chromium's own FFmpeg (Android's and iOS's, which zebkit's configuration
+  # does not have yet) lacks libswresample and libswscale, which the
+  # vendored headers include.
+  _vendored -= [ "ffmpeg" ]
+}
 
 _vendored_libraries = [
   "//third_party/boringssl",
@@ -105,9 +122,21 @@ _vendored_libraries = [
   "//third_party/zstd:compress",
   "//third_party/zstd:decompress",
 ]
+if (!zebkit_ffmpeg) {
+  _vendored_libraries -= [ "//third_party/ffmpeg" ]
+}
+if (!zebkit_build_engine) {
+  # Chromium's LevelDB keeps its files through Chromium's storage services,
+  # which bring Mojo and //net with them: the engine has those anyway, the
+  # core alone does not, so there it goes without LevelDB.
+  _vendored -= [ "leveldb" ]
+  _vendored_libraries -= [ "//third_party/leveldatabase" ]
+}
 
 if (is_mac) {
   _sysroot = mac_sdk_path
+} else if (is_ios) {
+  _sysroot = ios_sdk_path
 } else if (is_win) {
   _sysroot = visual_studio_path
 } else {
@@ -135,6 +164,8 @@ action("vendor_sources") {
   args = [
            "--target",
            current_os,
+           "--cpu",
+           current_cpu,
            "--src",
            rebase_path("//", root_build_dir),
            "--clang",
@@ -215,784 +246,939 @@ source_set("pdf") {
   ]
 }
 
-# What a page's players demux, between the renderer and the browser
-# (media_capture*.cc).
-mojom("media_capture_mojom") {
-  sources = [ "media_capture.mojom" ]
-  public_deps = [
-    "//media/mojo/mojom",
-    "//mojo/public/mojom/base",
-    "//ui/gfx/geometry/mojom",
-  ]
-}
-
-# zebkit's automation (automation*.cc, docs/AUTOMATION.md): the browser's
-# calls to each frame's agent.
-mojom("automation_mojom") {
-  sources = [ "automation.mojom" ]
-}
-
-# A page's calls to zebkit.* (call.cc, page_call_renderer.cc): to the
-# browser over the frame's channel.
-mojom("page_call_mojom") {
-  sources = [ "page_call.mojom" ]
-  public_deps = [ "//mojo/public/mojom/base" ]
-}
-
-# The script of the agent's isolated world: Playwright's injected script and
-# zebkit's steps over it, as an array.
-action("automation_scripts") {
-  script = "automation_scripts.py"
-  inputs = [
-    "automation_steps.js",
-    "playwright/clock_script.js",
-    "playwright/injected_script.js",
-    "playwright/websocket_mock_script.js",
-    "playwright/snapshotter_script.js",
-    "playwright/storage_script.js",
-    "playwright/webmcp_script.js",
-    "playwright/coverage_script.js",
-    "playwright/webauthn_script.js",
-  ]
-  outputs = [ "$target_gen_dir/automation_scripts.h" ]
-  args = [
-    rebase_path("playwright/injected_script.js", root_build_dir),
-    rebase_path("automation_steps.js", root_build_dir),
-    rebase_path("playwright/clock_script.js", root_build_dir),
-    rebase_path("playwright/websocket_mock_script.js", root_build_dir),
-    rebase_path("playwright/snapshotter_script.js", root_build_dir),
-    rebase_path("playwright/storage_script.js", root_build_dir),
-    rebase_path("playwright/webmcp_script.js", root_build_dir),
-    rebase_path("playwright/coverage_script.js", root_build_dir),
-    rebase_path("playwright/webauthn_script.js", root_build_dir),
-    rebase_path("$target_gen_dir/automation_scripts.h", root_build_dir),
-  ]
-}
-
-# The viewer of a PDF in a page, as an array.
-action("pdf_viewer_script") {
-  script = "pdf_viewer_script.py"
-  inputs = [ "pdf_viewer.js" ]
-  outputs = [ "$target_gen_dir/pdf_viewer_script.h" ]
-  args = [
-    rebase_path("pdf_viewer.js", root_build_dir),
-    rebase_path("$target_gen_dir/pdf_viewer_script.h", root_build_dir),
-  ]
-}
-
-# The engine's resources: everything Chromium's content layer may ask for, cut
-# down at packaging (scripts/trim-pak.py).
-repack("pak") {
+# The services that need no engine (services_core.cc): compression,
+# cryptography, URLs, images, ICU's data. HTTP is the engine's (services.cc).
+source_set("services_core") {
   sources = [
-    "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
-    "$root_gen_dir/components/ukm_resources.pak",
-    "$root_gen_dir/content/browser/devtools/devtools_resources.pak",
-    "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
-    "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
-    "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
-    "$root_gen_dir/content/content_resources.pak",
-    "$root_gen_dir/content/gpu_resources.pak",
-    "$root_gen_dir/content/histograms_resources.pak",
-    "$root_gen_dir/content/process_resources.pak",
-    "$root_gen_dir/content/quota_internals_resources.pak",
-    "$root_gen_dir/content/service_worker_resources.pak",
-    "$root_gen_dir/content/traces_internals_resources.pak",
-    "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
-    "$root_gen_dir/net/net_resources.pak",
-    "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
-    "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
-    "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
-    "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
-    "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
-    "$root_gen_dir/third_party/blink/public/strings/permission_element_strings_en-US.pak",
-    "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
-    "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
-    "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
-    "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
-    "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
-    "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
-    "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak",
-    "$root_gen_dir/ui/webui/resources/webui_resources.pak",
+    "include/zebkit/services.h",
+    "services_core.cc",
+    "services_internal.h",
   ]
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
   deps = [
-    "//base/tracing/protos:chrome_track_event_resources",
-    "//components/ukm/debug:resources",
-    "//content:content_resources",
-    "//content/browser/devtools:devtools_resources",
-    "//content/browser/resources",
-    "//content/browser/resources/media:resources",
-    "//content/browser/tracing:resources",
-    "//content/browser/webrtc/resources",
-    "//mojo/public/js:resources",
-    "//net:net_resources",
-    "//third_party/blink/public:devtools_inspector_resources",
-    "//third_party/blink/public:resources",
-    "//third_party/blink/public:scaled_resources_100_percent",
-    "//third_party/blink/public/strings",
-    "//third_party/blink/public/strings:permission_element_generated_strings",
-    "//third_party/blink/public/strings:permission_element_strings",
-    "//ui/resources",
-    "//ui/strings",
-    "//ui/views/resources",
-    "//ui/webui/resources",
+    "//base",
+    "//base:i18n",
+    "//skia",
+    "//third_party/boringssl",
+    "//third_party/brotli:dec",
+    "//third_party/brotli:enc",
+    "//third_party/libwebp",
+    "//third_party/zlib",
+    "//third_party/zstd:compress",
+    "//third_party/zstd:decompress",
+    "//ui/gfx/codec",
+    "//ui/gfx/geometry",
+    "//url",
   ]
-  output = "$root_out_dir/zebkit.pak"
 }
 
-_sources = [
-  "pdf_viewer_renderer.cc",
-  "app.cc",
-  "app.h",
-  "automation.cc",
-  "automation.h",
-  "automation_compare.cc",
-  "automation_compare.h",
-  "automation_context.cc",
-  "automation_context.h",
-  "automation_network.cc",
-  "automation_network.h",
-  "automation_trace.cc",
-  "automation_trace.h",
-  "automation_webauthn.cc",
-  "automation_webauthn.h",
-  "automation_renderer.cc",
-  "automation_server.cc",
-  "include/zebkit/automation.h",
-  "playwright/us_keyboard_layout.h",
-  "bridge.cc",
-  "call.cc",
-  "call.h",
-  "page_call_renderer.cc",
-  "cdp.cc",
-  "chrome_object.cc",
-  "client_hints.cc",
-  "cookie_key_file.cc",
-  "cookie_key_file.h",
-  "cookies.cc",
-  "cookies.h",
-  # window.chrome, by Chrome's own code (chrome_object.cc).
-  "//chrome/renderer/loadtimes_bindings.cc",
-  "//chrome/renderer/loadtimes_bindings.h",
-  "devtools.cc",
-  "dialog.cc",
-  "drag.cc",
-  "find.cc",
-  "accept_language_delegate.cc",
-  "accept_language_delegate.h",
-  "background_sync_controller.cc",
-  "background_sync_controller.h",
-  "client_defaults.cc",
-  "content_index_provider.cc",
-  "content_index_provider.h",
-  "content_names.h",
-  "download_manager.cc",
-  "download_manager.h",
-  "engine.cc",
-  "file_select.cc",
-  "file_select.h",
-  "file_system_access.cc",
-  "file_system_access.h",
-  "js_dialog_manager.cc",
-  "js_dialog_manager.h",
-  "permission_manager.cc",
-  "permission_manager.h",
-  "profile.cc",
-  "profile.h",
-  "protocol_handler_delegate.cc",
-  "protocol_handler_delegate.h",
-  "protocol_handlers.cc",
-  "protocol_handlers.h",
-  "speech_delegate.cc",
-  "speech_delegate.h",
-  "window.cc",
-  "context_menu.cc",
-  "sign_in_dialog.cc",
-  "notifications.cc",
-  "system_events.cc",
-  "desktop_actions.cc",
-  "tray.cc",
-  "share.cc",
-  "device_choosers.cc",
-  "device_choosers.h",
-  "dock.cc",
-  "dock.h",
-  "share.h",
-  "tray.h",
-  "desktop_actions.h",
-  "notifications.h",
-  "certificate_picker.h",
-  "sign_in_dialog.h",
-  "context_menu.h",
-  "appearance.cc",
-  "appearance.h",
-  "window_api.cc",
-  "window_options.cc",
-  "window_options.h",
-  "window.h",
-  "window_platform.h",
-  "host_loop.cc",
-  "host_loop.h",
-  "startup_settings.cc",
-  "startup_settings.h",
-  "engine.h",
-  "include/zebkit/media.h",
-  "include/zebkit/offscreen.h",
-  "include/zebkit/page.h",
-  "include/zebkit/services.h",
-  "include/zebkit/zebkit.h",
-  "include/zebkit/hooks.h",
-  "include/zebkit/window.h",
-  "media_capture.cc",
-  "media_capture.h",
-  "media_capture_renderer.cc",
-  "media_capture_writer.cc",
-  "media_capture_writer.h",
-  "media_tools.cc",
-  "include/zebkit/media_tools.h",
-  "media_tap.cc",
-  "media_tap_renderer.cc",
-  "media_tap_renderer.h",
-  "include/zebkit/media_tap.h",
-  "offscreen.cc",
-  "page_internal.h",
-  "path_utf8.h",
-  "pdf_bridge.cc",
-  "pdf_script.h",
-  "print.cc",
-  "popup_metadata.cc",
-  "popup_metadata.h",
-  "certificate_hooks.cc",
-  "client_certificate.cc",
-  "download_hooks.cc",
-  "hook_requests.h",
-  "network_hooks.cc",
-  "network_hooks.h",
-  "page_hooks.cc",
-  "page_hooks.h",
-  "certificate_hooks.h",
-  "http_auth.cc",
-  "http_auth.h",
-  "navigation_hooks.cc",
-  "navigation_hooks.h",
-  "permissions.cc",
-  "permissions.h",
-  "permission_types.cc",
-  "permission_types.h",
-  "runtime_settings.cc",
-  "settings.cc",
-  "settings.h",
-  "scheme.cc",
-  "scheme.h",
-  "script.cc",
-  "services.cc",
-  "ui.cc",
-  "ui.h",
-  "ui_script.h",
-  "attached_views.h",
-  "c_api_util.h",
-  "view.cc",
-  "view.h",
-  "webauthn.cc",
-  "webauthn.h",
-  "webauthn_ui.h",
-]
+# <zebkit/media_tools.h>: FFmpeg's demuxers, decoders, resampler and scaler,
+# which zebkit's configuration of it has (zebkit_ffmpeg).
+source_set("media_tools") {
+  sources = [
+    "include/zebkit/media_tools.h",
+    "media_tools.cc",
+  ]
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
+  deps = [ "//third_party/ffmpeg" ]
+}
 
-_deps = [
-  ":automation_mojom",
-  "//components/find_in_page",
-  ":page_call_mojom",
-  "//components/download/public/common:public",
-  "//third_party/libyuv",
-  "//third_party/leveldatabase",
-  "//components/services/storage/public/cpp/filesystem",
-  "//third_party/zlib/google:zip",
-  "//third_party/re2",
-  ":automation_scripts",
-  ":pdf_viewer_script",
-  "//components/pdf/renderer",
-  "//pdf:pdf_view_web_plugin",
-  "//pdf/mojom",
-  "//gin",
-  ":media_capture_mojom",
-  ":canvas",
-  ":pdf",
-  ":vendor",
-  "//base",
-  "//base/version_info",
-  "//components/embedder_support",
-  "//components/input",
-  "//components/os_crypt/async/browser",
-  "//components/os_crypt/async/browser:key_provider_interface",
-  "//crypto",
-  "//components/version_info:version_info_with_user_agent",
-  # Printing to PDF, as headless Chrome prints (print.cc).
-  "//components/printing/browser",
-  "//components/printing/browser/print_to_pdf",
-  "//components/printing/common:mojo_interfaces",
-  "//components/printing/renderer",
-  "//components/resources",
-  "//printing",
-  "//printing/buildflags",
-  "//printing/mojom",
-  "//third_party/inspector_protocol:crdtp",
-  "//components/viz/common",
-  "//components/viz/host",
-  "//media",
-  "//media/capture/mojom:video_capture_buffer",
-  "//mojo/public/cpp/bindings",
-  "//services/viz/privileged/mojom/compositing",
-  "//content/public/app",
-  "//content/public/browser",
-  "//content/public/common",
-  "//content/public/renderer",
-  ":pak",
-  "//components/crash/core/common:crash_key",
-  "//components/custom_handlers",
-  "//components/embedder_support",
-  "//components/embedder_support:user_agent",
-  "//components/embedder_support/origin_trials",
-  "//components/input",
-  "//components/keyed_service/content",
-  "//components/memory_system",
-  "//components/network_hints/browser",
-  "//components/network_hints/renderer",
-  "//components/network_session_configurator/common",
-  "//components/origin_trials:browser",
-  "//components/origin_trials:common",
-  "//components/performance_manager",
-  "//components/url_formatter",
-  "//content/public/child",
-  "//content/public/gpu",
-  "//content/public/utility",
-  "//device/bluetooth",
-  "//services/network:network_service",
-  "//ui/color:color_headers",
-  "//ui/resources",
-  "//ui/shell_dialogs",
-  "//gin",
-  "//net",
-  "//net:net_resources",
-  "//services/network/public/cpp",
-  "//services/network/public/mojom",
-  "//third_party/blink/public:blink",
-  "//skia",
-  "//ui/base",
-  "//ui/compositor",
-  "//ui/display",
-  "//ui/events",
-  "//ui/events:events_base",
-  "//ui/gfx/codec",
-  "//ui/views",
-  "//ui/views/controls/webview",
-  "//ui/gfx",
-  "//url",
-  "//v8",
-  "//device/fido",
-]
-if (use_aura) {
-  _deps += [
-    "//ui/aura",
-    "//ui/platform_window",
-    "//ui/platform_window/stub",
-    "//ui/wm",
+# The calls of a page's global zebkit that need no engine (page_api.h):
+# what the engine's bridge and the system web view's viewer answer with.
+source_set("page_api") {
+  sources = [
+    "page_api.cc",
+    "page_api.h",
+    "page_api_pdf.cc",
+    "path_utf8.h",
+  ]
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
+  deps = [
+    ":canvas",
+    ":pdf",
+    ":services_core",
+    "//base",
   ]
 }
-# WebUSB's filters (device_choosers.cc); the session's lock (system_events.cc).
-_deps += [ "//services/device/public/cpp:device_features", "//services/device/public/cpp/hid", "//services/device/public/cpp/usb", "//ui/base/idle" ]
-if (is_mac) {
-  # The system's location permission (client_defaults.cc).
-  _deps += [ "//services/device/public/cpp/geolocation" ]
-}
-if (is_linux) {
-  # The refusal to start without a sandbox (engine.cc).
-  _deps += [
-    # A window's handle for the system's portals (attach.cc).
-    "//ui/linux:linux_ui",
-    "//ui/linux:linux_ui_factory",
-    "//sandbox/linux:sandbox_services",
-    "//sandbox/policy",
+
+# <zebkit/viewer.h>: the page's global zebkit in the system's web view
+# (docs/VIEWER.md), for Android and iOS; in every libzebkit, as the rest of
+# the API.
+source_set("viewer") {
+  sources = [
+    "include/zebkit/viewer.h",
+    "pdf_script.h",
+    "viewer.cc",
+  ]
+  configs += [ ":implementation" ]
+  public_configs = [ ":public" ]
+  deps = [
+    ":page_api",
+    ":pdf",
+    "//base",
   ]
 }
-if (is_win) {
-  # The sandbox's and the system's parts of the engine (engine_win.cc).
-  _deps += [
-    "//sandbox/policy",
-    "//sandbox/win:sandbox",
+
+# What needs no engine (docs/MOBILE.md): PDF, canvas, text, media tools, the
+# services without HTTP and the C libraries inside, under zebkit's names.
+# libzebkit has it on every system; on Android and iOS
+# (zebkit_build_engine = false) it is all libzebkit has.
+group("engine_free") {
+  public_deps = [
+    ":canvas",
+    ":page_api",
+    ":pdf",
+    ":services_core",
+    ":vendor",
+    ":viewer",
   ]
-  _sources += [
-    "cookies_win.cc",
-    "engine_win.cc",
-  ]
-}
-if (!is_mac) {
-  _sources += [ "webauthn_views.cc" ]
-  _deps += [ "//components/qr_code_generator:qr_code_generator" ]
-}
-if (is_mac) {
-  _sources += [
-    "cookies_mac.mm",
-    "webauthn_mac.mm",
-  ]
-} else if (is_linux && use_dbus) {
-  _deps += [
-    "//dbus",
-    "//components/dbus",
-    "//components/dbus/menu",
-    "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
-  ]
-  if (ozone_platform_x11) {
-    # A key's X11 keysym, for the input method (ime_ibus_linux.cc).
-    _deps += [ "//ui/events/keycodes:x11" ]
+  public_deps += _vendored_libraries
+  if (zebkit_ffmpeg) {
+    public_deps += [ ":media_tools" ]
   }
-  # The desktop's notifications (org.freedesktop.Notifications).
-  _sources += [
-    "notifications_linux.cc",
-    "tray_linux.cc",
-    "dock_linux.cc",
-    "ime_ibus_linux.cc",
-    "ime_ibus_linux.h",
-    "tray_linux_dbus.cc",
-    "tray_linux_dbus.h",
-  ]
-}
-# Frames on demand for pages without a display (automation.cc).
-if (use_aura) {
-  _deps += [
-    "//ui/aura",
-    "//ui/compositor",
-  ]
-}
-# Windows of the application's as parents (attach.cc).
-if (ozone_platform_x11) {
-  _deps += [
-    "//ui/gfx/x",
-    "//ui/platform_window",
-  "//ui/platform_window/stub",
-  ]
-}
-_deps += _vendored_libraries
-
-# JavaScript libraries as normal libraries (<zebkit/library.h>,
-# docs/JS_LIBRARIES.md): the backend "isolate".
-_sources += [
-  "include/zebkit/library.h",
-  "library.cc",
-  "library.h",
-  "library_bootstrap.h",
-  "library_web.cc",
-]
-# ... and the backend "page" (library_page.cc).
-_sources += [
-  "library_page.cc",
-  "library_page.h",
-  "library_page_renderer.cc",
-  "library_page_runner.h",
-]
-
-declare_args() {
-  # Optimize the engine across its object files as it is linked (ThinLTO
-  # at -O2), as Chrome's own binary is: Blink's small functions are inlined
-  # from file to file. Costs link time and some size.
-  zebkit_lto_optimize = false
 }
 
-if (is_win) {
-  _sources += [
-    "attach.cc",
-    "desktop_actions_win.cc",
-    "tray_win.cc",
-    "notifications_win.cc",
-    "dock_win.cc",
-    "window_views.cc",
-    "context_menu_views.cc",
-    "js_dialog_views.cc",
-    "sign_in_dialog_views.cc",
-    "certificate_picker_views.cc",
-    "js_dialog_views.h",
-  ]
-
-  # zebkit.dll and its import library zebkit.dll.lib. What it exports is what
-  # the headers mark ZEBKIT_API, and the libraries' functions under zebkit's
-  # names (vendor/gen_vendor.py).
+if (!zebkit_build_engine) {
+  # libzebkit without the engine: libzebkit.so on Android (an APK's
+  # lib/<abi>/), Zebkit, the binary of Zebkit.framework, on iOS.
+  # engine_free.cc gives it what engine.cc gives libzebkit otherwise (the
+  # version, zebkit_free, where ICU's data is).
   shared_library("zebkit") {
     output_name = "zebkit"
-    sources = _sources
-    configs += [ ":implementation" ]
-    if (zebkit_lto_optimize) {
-      configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
-      configs += [ "//build/config/compiler:thinlto_optimize_max" ]
-    }
-    # Fewer modules loaded ahead of the sandbox, as chrome.dll's.
-    configs += [ "//build/config/win:delayloads" ]
-    public_configs = [ ":public" ]
-    deps = _deps
-    data_deps = [ ":pak" ]
-  }
-
-  executable("zebkit-helper") {
-    sources = [ "helper.c" ]
-    deps = [
-      ":zebkit",
-      "//build/win:default_exe_manifest",
-    ]
-    # No console for child processes, with C's main() all the same.
-    configs -= [ "//build/config/win:console" ]
-    configs += [ "//build/config/win:windowed" ]
-    # 8 MiB as chrome.exe's: a renderer's main thread runs V8 and Blink here.
-    ldflags = [
-      "/ENTRY:mainCRTStartup",
-      "/STACK:0x800000",
-    ]
-  }
-
-  # The sandbox, for the application's executable (<zebkit/win_sandbox.h>). An
-  # application's linker need not read LLVM's bitcode: this is built in a profile
-  # of its own without link-time optimization (profiles/slim-windows-sandbox.gn,
-  # docs/WINDOWS.md).
-  static_library("zebkit_sandbox_objects") {
-    complete_static_lib = true
     sources = [
-      "include/zebkit/win_sandbox.h",
-      "win/sandbox_startup.cc",
+      "engine_free.cc",
+      "include/zebkit/zebkit.h",
     ]
-    deps = [
-      # Chromium's C++ library, which GN gives only to what it links.
-      "//build/config:executable_deps",
-      "//sandbox/win:sandbox",
-    ]
-  }
-
-  action("zebkit_sandbox") {
-    script = "win/flatten_lib.py"
-    deps = [ ":zebkit_sandbox_objects" ]
-    _objects = "$target_out_dir/zebkit_sandbox_objects.lib"
-    inputs = [ _objects ]
-    outputs = [ "$root_out_dir/zebkit_sandbox.lib" ]
-    args = [
-      "--ar",
-      rebase_path("$clang_base_path/bin/llvm-ar", root_build_dir),
-      "--lld-link",
-      rebase_path("$clang_base_path/bin/lld-link", root_build_dir),
-      "--in",
-      rebase_path(_objects, root_build_dir),
-      "--out",
-      rebase_path("$root_out_dir/zebkit_sandbox.lib", root_build_dir),
-    ]
-  }
-
-  group("engine") {
-    deps = [
-      ":zebkit",
-      ":zebkit-helper",
-    ]
-  }
-} else if (!is_mac) {
-  _sources += [
-    "attach.cc",
-    "desktop_actions_linux.cc",
-    "glibc_compat.cc",
-    "window_views.cc",
-    "context_menu_views.cc",
-    "js_dialog_views.cc",
-    "sign_in_dialog_views.cc",
-    "certificate_picker_views.cc",
-    "js_dialog_views.h",
-  ]
-
-  shared_library("zebkit") {
-
-    output_name = "zebkit"
-    output_extension = "so.1"
-
-    sources = _sources
-    configs += [ ":implementation" ]
-    if (zebkit_lto_optimize) {
-      configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
-      configs += [ "//build/config/compiler:thinlto_optimize_max" ]
+    if (is_android) {
+      # dev.zebkit.Native's functions, for bindings/android.
+      sources += [ "android_jni.cc" ]
     }
+    configs += [ ":implementation" ]
     public_configs = [ ":public" ]
-    deps = _deps + [ "//ui/ozone" ]
-
-    data_deps = [
-      ":pak",
-      "//tools/v8_context_snapshot",
+    deps = [
+      ":engine_free",
+      "//base",
+      "//base:i18n",
+      "//base/version_info",
     ]
-
-    inputs = [ "zebkit.ver" ]
-    ldflags = [
-      "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
-      "-Wl,-soname,libzebkit.so.1",
-    ]
-
-    if (zebkit_pack_relocations) {
-      deps += [ "//zebkit/relr:relr_shared" ]
-      configs += [
-        "//zebkit/relr:link",
-        "//zebkit/relr:link_shared",
+    if (is_apple) {
+      output_name = "Zebkit"
+      output_extension = ""
+      output_prefix_override = true
+      ldflags = [
+        # Inside Zebkit.framework (scripts/package-mobile.sh), embedded in
+        # the application's Frameworks.
+        "-Wl,-install_name,@rpath/Zebkit.framework/Zebkit",
+        # zebkit's API and nothing of what is inside it, as zebkit.ver.
+        "-Wl,-exported_symbol,_zebkit_*",
+      ]
+    } else {
+      inputs = [ "zebkit.ver" ]
+      ldflags = [
+        "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
+        "-Wl,-soname,libzebkit.so",
       ]
     }
   }
 
-  executable("zebkit-helper") {
-    sources = [ "helper.c" ]
-    deps = [ ":zebkit" ]
-    configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
-  }
-
+  # //zebkit/engine, which Chromium's root BUILD.gn names (patches/1012).
   group("engine") {
-    deps = [
-      ":zebkit",
-      ":zebkit-helper",
-      # The optional set-user-ID helper (docs/SANDBOX.md), for machines without
-      # unprivileged user namespaces.
-      "//sandbox/linux:chrome_sandbox",
-    ]
+    deps = [ ":zebkit" ]
   }
-} else {
-  # Zebkit.framework/Versions/A:
-  #   Zebkit                  the engine
-  #   Resources/              its data files, found through the framework
-  #   Helpers/Zebkit Helper.app   its renderer, GPU and utility processes
-  #   Libraries/              ANGLE's and SwiftShader's libraries, where
-  #                           Chromium looks for them in a framework
-  # An application links the framework and finds the rest through it,
-  # wherever the framework is.
-  _framework_name = "Zebkit"
-  _helper_name = "Zebkit Helper"
 
-  bundle_data("zebkit_resources") {
-    sources = [
-      "$root_out_dir/zebkit.pak",
-      "$root_out_dir/icudtl.dat",
-      "//ui/gl/resources/angle-metal/gpu_shader_cache.bin",
-    ]
+  # The library at work without the engine, run by scripts/mobile-test.sh on
+  # an Android device (adb), or here for the profile mobile-linux.
+  if (!is_apple) {
+    executable("zebkit_mobile_test") {
+      testonly = true
+      sources = [ "mobile_test.c" ]
+      configs += [ ":public" ]
+      deps = [ ":zebkit" ]
+    }
+  }
+}
+
+# Everything else is the engine, libzebkit.
+if (zebkit_build_engine) {
+  # What a page's players demux, between the renderer and the browser
+  # (media_capture*.cc).
+  mojom("media_capture_mojom") {
+    sources = [ "media_capture.mojom" ]
     public_deps = [
-      ":pak",
-      "//third_party/icu:icudata",
+      "//media/mojo/mojom",
+      "//mojo/public/mojom/base",
+      "//ui/gfx/geometry/mojom",
     ]
-    if (v8_use_external_startup_data) {
-      public_deps += [ "//v8" ]
-      if (use_v8_context_snapshot) {
-        sources += [ "$root_out_dir/$v8_context_snapshot_filename" ]
-        public_deps += [ "//tools/v8_context_snapshot" ]
+  }
+
+  # zebkit's automation (automation*.cc, docs/AUTOMATION.md): the browser's
+  # calls to each frame's agent.
+  mojom("automation_mojom") {
+    sources = [ "automation.mojom" ]
+  }
+
+  # A page's calls to zebkit.* (call.cc, page_call_renderer.cc): to the
+  # browser over the frame's channel.
+  mojom("page_call_mojom") {
+    sources = [ "page_call.mojom" ]
+    public_deps = [ "//mojo/public/mojom/base" ]
+  }
+
+  # The script of the agent's isolated world: Playwright's injected script and
+  # zebkit's steps over it, as an array.
+  action("automation_scripts") {
+    script = "automation_scripts.py"
+    inputs = [
+      "automation_steps.js",
+      "playwright/clock_script.js",
+      "playwright/injected_script.js",
+      "playwright/websocket_mock_script.js",
+      "playwright/snapshotter_script.js",
+      "playwright/storage_script.js",
+      "playwright/webmcp_script.js",
+      "playwright/coverage_script.js",
+      "playwright/webauthn_script.js",
+    ]
+    outputs = [ "$target_gen_dir/automation_scripts.h" ]
+    args = [
+      rebase_path("playwright/injected_script.js", root_build_dir),
+      rebase_path("automation_steps.js", root_build_dir),
+      rebase_path("playwright/clock_script.js", root_build_dir),
+      rebase_path("playwright/websocket_mock_script.js", root_build_dir),
+      rebase_path("playwright/snapshotter_script.js", root_build_dir),
+      rebase_path("playwright/storage_script.js", root_build_dir),
+      rebase_path("playwright/webmcp_script.js", root_build_dir),
+      rebase_path("playwright/coverage_script.js", root_build_dir),
+      rebase_path("playwright/webauthn_script.js", root_build_dir),
+      rebase_path("$target_gen_dir/automation_scripts.h", root_build_dir),
+    ]
+  }
+
+  # The viewer of a PDF in a page, as an array.
+  action("pdf_viewer_script") {
+    script = "pdf_viewer_script.py"
+    inputs = [ "pdf_viewer.js" ]
+    outputs = [ "$target_gen_dir/pdf_viewer_script.h" ]
+    args = [
+      rebase_path("pdf_viewer.js", root_build_dir),
+      rebase_path("$target_gen_dir/pdf_viewer_script.h", root_build_dir),
+    ]
+  }
+
+  # The engine's resources: everything Chromium's content layer may ask for, cut
+  # down at packaging (scripts/trim-pak.py).
+  repack("pak") {
+    sources = [
+      "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
+      "$root_gen_dir/components/ukm_resources.pak",
+      "$root_gen_dir/content/browser/devtools/devtools_resources.pak",
+      "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
+      "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
+      "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
+      "$root_gen_dir/content/content_resources.pak",
+      "$root_gen_dir/content/gpu_resources.pak",
+      "$root_gen_dir/content/histograms_resources.pak",
+      "$root_gen_dir/content/process_resources.pak",
+      "$root_gen_dir/content/quota_internals_resources.pak",
+      "$root_gen_dir/content/service_worker_resources.pak",
+      "$root_gen_dir/content/traces_internals_resources.pak",
+      "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
+      "$root_gen_dir/net/net_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
+      "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
+      "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
+      "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
+      "$root_gen_dir/third_party/blink/public/strings/permission_element_strings_en-US.pak",
+      "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
+      "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
+      "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
+      "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
+      "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
+      "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
+      "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak",
+      "$root_gen_dir/ui/webui/resources/webui_resources.pak",
+    ]
+    deps = [
+      "//base/tracing/protos:chrome_track_event_resources",
+      "//components/ukm/debug:resources",
+      "//content:content_resources",
+      "//content/browser/devtools:devtools_resources",
+      "//content/browser/resources",
+      "//content/browser/resources/media:resources",
+      "//content/browser/tracing:resources",
+      "//content/browser/webrtc/resources",
+      "//mojo/public/js:resources",
+      "//net:net_resources",
+      "//third_party/blink/public:devtools_inspector_resources",
+      "//third_party/blink/public:resources",
+      "//third_party/blink/public:scaled_resources_100_percent",
+      "//third_party/blink/public/strings",
+      "//third_party/blink/public/strings:permission_element_generated_strings",
+      "//third_party/blink/public/strings:permission_element_strings",
+      "//ui/resources",
+      "//ui/strings",
+      "//ui/views/resources",
+      "//ui/webui/resources",
+    ]
+    output = "$root_out_dir/zebkit.pak"
+  }
+
+  _sources = [
+    "pdf_viewer_renderer.cc",
+    "app.cc",
+    "app.h",
+    "automation.cc",
+    "automation.h",
+    "automation_compare.cc",
+    "automation_compare.h",
+    "automation_context.cc",
+    "automation_context.h",
+    "automation_network.cc",
+    "automation_network.h",
+    "automation_trace.cc",
+    "automation_trace.h",
+    "automation_webauthn.cc",
+    "automation_webauthn.h",
+    "automation_renderer.cc",
+    "automation_server.cc",
+    "include/zebkit/automation.h",
+    "playwright/us_keyboard_layout.h",
+    "bridge.cc",
+    "call.cc",
+    "call.h",
+    "page_call_renderer.cc",
+    "cdp.cc",
+    "chrome_object.cc",
+    "client_hints.cc",
+    "cookie_key_file.cc",
+    "cookie_key_file.h",
+    "cookies.cc",
+    "cookies.h",
+    # window.chrome, by Chrome's own code (chrome_object.cc).
+    "//chrome/renderer/loadtimes_bindings.cc",
+    "//chrome/renderer/loadtimes_bindings.h",
+    "devtools.cc",
+    "dialog.cc",
+    "drag.cc",
+    "find.cc",
+    "accept_language_delegate.cc",
+    "accept_language_delegate.h",
+    "background_sync_controller.cc",
+    "background_sync_controller.h",
+    "client_defaults.cc",
+    "content_index_provider.cc",
+    "content_index_provider.h",
+    "content_names.h",
+    "download_manager.cc",
+    "download_manager.h",
+    "engine.cc",
+    "file_select.cc",
+    "file_select.h",
+    "file_system_access.cc",
+    "file_system_access.h",
+    "js_dialog_manager.cc",
+    "js_dialog_manager.h",
+    "permission_manager.cc",
+    "permission_manager.h",
+    "profile.cc",
+    "profile.h",
+    "protocol_handler_delegate.cc",
+    "protocol_handler_delegate.h",
+    "protocol_handlers.cc",
+    "protocol_handlers.h",
+    "speech_delegate.cc",
+    "speech_delegate.h",
+    "window.cc",
+    "context_menu.cc",
+    "sign_in_dialog.cc",
+    "notifications.cc",
+    "system_events.cc",
+    "desktop_actions.cc",
+    "tray.cc",
+    "share.cc",
+    "device_choosers.cc",
+    "device_choosers.h",
+    "dock.cc",
+    "dock.h",
+    "share.h",
+    "tray.h",
+    "desktop_actions.h",
+    "notifications.h",
+    "certificate_picker.h",
+    "sign_in_dialog.h",
+    "context_menu.h",
+    "appearance.cc",
+    "appearance.h",
+    "window_api.cc",
+    "window_options.cc",
+    "window_options.h",
+    "window.h",
+    "window_platform.h",
+    "host_loop.cc",
+    "host_loop.h",
+    "startup_settings.cc",
+    "startup_settings.h",
+    "engine.h",
+    "include/zebkit/media.h",
+    "include/zebkit/offscreen.h",
+    "include/zebkit/page.h",
+    "include/zebkit/services.h",
+    "include/zebkit/zebkit.h",
+    "include/zebkit/hooks.h",
+    "include/zebkit/window.h",
+    "media_capture.cc",
+    "media_capture.h",
+    "media_capture_renderer.cc",
+    "media_capture_writer.cc",
+    "media_capture_writer.h",
+    "media_tap.cc",
+    "media_tap_renderer.cc",
+    "media_tap_renderer.h",
+    "include/zebkit/media_tap.h",
+    "offscreen.cc",
+    "page_internal.h",
+    "path_utf8.h",
+    "pdf_bridge.cc",
+    "pdf_script.h",
+    "print.cc",
+    "popup_metadata.cc",
+    "popup_metadata.h",
+    "certificate_hooks.cc",
+    "client_certificate.cc",
+    "download_hooks.cc",
+    "hook_requests.h",
+    "network_hooks.cc",
+    "network_hooks.h",
+    "page_hooks.cc",
+    "page_hooks.h",
+    "certificate_hooks.h",
+    "http_auth.cc",
+    "http_auth.h",
+    "navigation_hooks.cc",
+    "navigation_hooks.h",
+    "permissions.cc",
+    "permissions.h",
+    "permission_types.cc",
+    "permission_types.h",
+    "runtime_settings.cc",
+    "settings.cc",
+    "settings.h",
+    "scheme.cc",
+    "scheme.h",
+    "script.cc",
+    "services.cc",
+    "ui.cc",
+    "ui.h",
+    "ui_script.h",
+    "attached_views.h",
+    "c_api_util.h",
+    "view.cc",
+    "view.h",
+    "webauthn.cc",
+    "webauthn.h",
+    "webauthn_ui.h",
+  ]
+
+  _deps = [
+    ":automation_mojom",
+    "//components/find_in_page",
+    ":page_call_mojom",
+    "//components/download/public/common:public",
+    "//third_party/libyuv",
+    "//third_party/leveldatabase",
+    "//components/services/storage/public/cpp/filesystem",
+    "//third_party/zlib/google:zip",
+    "//third_party/re2",
+    ":automation_scripts",
+    ":pdf_viewer_script",
+    "//components/pdf/renderer",
+    "//pdf:pdf_view_web_plugin",
+    "//pdf/mojom",
+    "//gin",
+    ":media_capture_mojom",
+    # What needs no engine, as on Android and iOS.
+    ":engine_free",
+    "//base",
+    "//base/version_info",
+    "//components/embedder_support",
+    "//components/input",
+    "//components/os_crypt/async/browser",
+    "//components/os_crypt/async/browser:key_provider_interface",
+    "//crypto",
+    "//components/version_info:version_info_with_user_agent",
+    # Printing to PDF, as headless Chrome prints (print.cc).
+    "//components/printing/browser",
+    "//components/printing/browser/print_to_pdf",
+    "//components/printing/common:mojo_interfaces",
+    "//components/printing/renderer",
+    "//components/resources",
+    "//printing",
+    "//printing/buildflags",
+    "//printing/mojom",
+    "//third_party/inspector_protocol:crdtp",
+    "//components/viz/common",
+    "//components/viz/host",
+    "//media",
+    "//media/capture/mojom:video_capture_buffer",
+    "//mojo/public/cpp/bindings",
+    "//services/viz/privileged/mojom/compositing",
+    "//content/public/app",
+    "//content/public/browser",
+    "//content/public/common",
+    "//content/public/renderer",
+    ":pak",
+    "//components/crash/core/common:crash_key",
+    "//components/custom_handlers",
+    "//components/embedder_support",
+    "//components/embedder_support:user_agent",
+    "//components/embedder_support/origin_trials",
+    "//components/input",
+    "//components/keyed_service/content",
+    "//components/memory_system",
+    "//components/network_hints/browser",
+    "//components/network_hints/renderer",
+    "//components/network_session_configurator/common",
+    "//components/origin_trials:browser",
+    "//components/origin_trials:common",
+    "//components/performance_manager",
+    "//components/url_formatter",
+    "//content/public/child",
+    "//content/public/gpu",
+    "//content/public/utility",
+    "//device/bluetooth",
+    "//services/network:network_service",
+    "//ui/color:color_headers",
+    "//ui/resources",
+    "//ui/shell_dialogs",
+    "//gin",
+    "//net",
+    "//net:net_resources",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+    "//third_party/blink/public:blink",
+    "//skia",
+    "//ui/base",
+    "//ui/compositor",
+    "//ui/display",
+    "//ui/events",
+    "//ui/events:events_base",
+    "//ui/gfx/codec",
+    "//ui/views",
+    "//ui/views/controls/webview",
+    "//ui/gfx",
+    "//url",
+    "//v8",
+    "//device/fido",
+  ]
+  if (use_aura) {
+    _deps += [
+      "//ui/aura",
+      "//ui/platform_window",
+      "//ui/platform_window/stub",
+      "//ui/wm",
+    ]
+  }
+  # WebUSB's filters (device_choosers.cc); the session's lock (system_events.cc).
+  _deps += [ "//services/device/public/cpp:device_features", "//services/device/public/cpp/hid", "//services/device/public/cpp/usb", "//ui/base/idle" ]
+  if (is_mac) {
+    # The system's location permission (client_defaults.cc).
+    _deps += [ "//services/device/public/cpp/geolocation" ]
+  }
+  if (is_linux) {
+    # The refusal to start without a sandbox (engine.cc).
+    _deps += [
+      # A window's handle for the system's portals (attach.cc).
+      "//ui/linux:linux_ui",
+      "//ui/linux:linux_ui_factory",
+      "//sandbox/linux:sandbox_services",
+      "//sandbox/policy",
+    ]
+  }
+  if (is_win) {
+    # The sandbox's and the system's parts of the engine (engine_win.cc).
+    _deps += [
+      "//sandbox/policy",
+      "//sandbox/win:sandbox",
+    ]
+    _sources += [
+      "cookies_win.cc",
+      "engine_win.cc",
+    ]
+  }
+  if (!is_mac) {
+    _sources += [ "webauthn_views.cc" ]
+    _deps += [ "//components/qr_code_generator:qr_code_generator" ]
+  }
+  if (is_mac) {
+    _sources += [
+      "cookies_mac.mm",
+      "webauthn_mac.mm",
+    ]
+  } else if (is_linux && use_dbus) {
+    _deps += [
+      "//dbus",
+      "//components/dbus",
+      "//components/dbus/menu",
+      "//components/os_crypt/async/browser:freedesktop_secret_key_provider",
+    ]
+    if (ozone_platform_x11) {
+      # A key's X11 keysym, for the input method (ime_ibus_linux.cc).
+      _deps += [ "//ui/events/keycodes:x11" ]
+    }
+    # The desktop's notifications (org.freedesktop.Notifications).
+    _sources += [
+      "notifications_linux.cc",
+      "tray_linux.cc",
+      "dock_linux.cc",
+      "ime_ibus_linux.cc",
+      "ime_ibus_linux.h",
+      "tray_linux_dbus.cc",
+      "tray_linux_dbus.h",
+    ]
+  }
+  # Frames on demand for pages without a display (automation.cc).
+  if (use_aura) {
+    _deps += [
+      "//ui/aura",
+      "//ui/compositor",
+    ]
+  }
+  # Windows of the application's as parents (attach.cc).
+  if (ozone_platform_x11) {
+    _deps += [
+      "//ui/gfx/x",
+      "//ui/platform_window",
+    "//ui/platform_window/stub",
+    ]
+  }
+  _deps += _vendored_libraries
+
+  # JavaScript libraries as normal libraries (<zebkit/library.h>,
+  # docs/JS_LIBRARIES.md): the backend "isolate".
+  _sources += [
+    "include/zebkit/library.h",
+    "library.cc",
+    "library.h",
+    "library_bootstrap.h",
+    "library_web.cc",
+  ]
+  # ... and the backend "page" (library_page.cc).
+  _sources += [
+    "library_page.cc",
+    "library_page.h",
+    "library_page_renderer.cc",
+    "library_page_runner.h",
+  ]
+
+  declare_args() {
+    # Optimize the engine across its object files as it is linked (ThinLTO
+    # at -O2), as Chrome's own binary is: Blink's small functions are inlined
+    # from file to file. Costs link time and some size.
+    zebkit_lto_optimize = false
+  }
+
+  if (is_win) {
+    _sources += [
+      "attach.cc",
+      "desktop_actions_win.cc",
+      "tray_win.cc",
+      "notifications_win.cc",
+      "dock_win.cc",
+      "window_views.cc",
+      "context_menu_views.cc",
+      "js_dialog_views.cc",
+      "sign_in_dialog_views.cc",
+      "certificate_picker_views.cc",
+      "js_dialog_views.h",
+    ]
+
+    # zebkit.dll and its import library zebkit.dll.lib. What it exports is what
+    # the headers mark ZEBKIT_API, and the libraries' functions under zebkit's
+    # names (vendor/gen_vendor.py).
+    shared_library("zebkit") {
+      output_name = "zebkit"
+      sources = _sources
+      configs += [ ":implementation" ]
+      if (zebkit_lto_optimize) {
+        configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
+        configs += [ "//build/config/compiler:thinlto_optimize_max" ]
       }
-      if (!use_v8_context_snapshot || include_both_v8_snapshots) {
-        sources += [ "$root_out_dir/snapshot_blob.bin" ]
-        public_deps += [ "//v8:run_mksnapshot_default" ]
+      # Fewer modules loaded ahead of the sandbox, as chrome.dll's.
+      configs += [ "//build/config/win:delayloads" ]
+      public_configs = [ ":public" ]
+      deps = _deps
+      data_deps = [ ":pak" ]
+    }
+
+    executable("zebkit-helper") {
+      sources = [ "helper.c" ]
+      deps = [
+        ":zebkit",
+        "//build/win:default_exe_manifest",
+      ]
+      # No console for child processes, with C's main() all the same.
+      configs -= [ "//build/config/win:console" ]
+      configs += [ "//build/config/win:windowed" ]
+      # 8 MiB as chrome.exe's: a renderer's main thread runs V8 and Blink here.
+      ldflags = [
+        "/ENTRY:mainCRTStartup",
+        "/STACK:0x800000",
+      ]
+    }
+
+    # The sandbox, for the application's executable (<zebkit/win_sandbox.h>). An
+    # application's linker need not read LLVM's bitcode: this is built in a profile
+    # of its own without link-time optimization (profiles/slim-windows-sandbox.gn,
+    # docs/WINDOWS.md).
+    static_library("zebkit_sandbox_objects") {
+      complete_static_lib = true
+      sources = [
+        "include/zebkit/win_sandbox.h",
+        "win/sandbox_startup.cc",
+      ]
+      deps = [
+        # Chromium's C++ library, which GN gives only to what it links.
+        "//build/config:executable_deps",
+        "//sandbox/win:sandbox",
+      ]
+    }
+
+    action("zebkit_sandbox") {
+      script = "win/flatten_lib.py"
+      deps = [ ":zebkit_sandbox_objects" ]
+      _objects = "$target_out_dir/zebkit_sandbox_objects.lib"
+      inputs = [ _objects ]
+      outputs = [ "$root_out_dir/zebkit_sandbox.lib" ]
+      args = [
+        "--ar",
+        rebase_path("$clang_base_path/bin/llvm-ar", root_build_dir),
+        "--lld-link",
+        rebase_path("$clang_base_path/bin/lld-link", root_build_dir),
+        "--in",
+        rebase_path(_objects, root_build_dir),
+        "--out",
+        rebase_path("$root_out_dir/zebkit_sandbox.lib", root_build_dir),
+      ]
+    }
+
+    group("engine") {
+      deps = [
+        ":zebkit",
+        ":zebkit-helper",
+      ]
+    }
+  } else if (!is_mac) {
+    _sources += [
+      "attach.cc",
+      "desktop_actions_linux.cc",
+      "glibc_compat.cc",
+      "window_views.cc",
+      "context_menu_views.cc",
+      "js_dialog_views.cc",
+      "sign_in_dialog_views.cc",
+      "certificate_picker_views.cc",
+      "js_dialog_views.h",
+    ]
+
+    shared_library("zebkit") {
+
+      output_name = "zebkit"
+      output_extension = "so.1"
+
+      sources = _sources
+      configs += [ ":implementation" ]
+      if (zebkit_lto_optimize) {
+        configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
+        configs += [ "//build/config/compiler:thinlto_optimize_max" ]
+      }
+      public_configs = [ ":public" ]
+      deps = _deps + [ "//ui/ozone" ]
+
+      data_deps = [
+        ":pak",
+        "//tools/v8_context_snapshot",
+      ]
+
+      inputs = [ "zebkit.ver" ]
+      ldflags = [
+        "-Wl,--version-script=" + rebase_path("zebkit.ver", root_build_dir),
+        "-Wl,-soname,libzebkit.so.1",
+      ]
+
+      if (zebkit_pack_relocations) {
+        deps += [ "//zebkit/relr:relr_shared" ]
+        configs += [
+          "//zebkit/relr:link",
+          "//zebkit/relr:link_shared",
+        ]
       }
     }
-    outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
-  }
 
-  # Libraries beside the engine: SwiftShader, and the Vulkan loader that
-  # runs it, when the profile has it (slim-macos does not: every Mac has a
-  # Metal GPU); ANGLE when it is not linked in.
-  _libraries = []
-  _library_deps = []
-  if (enable_swiftshader) {
-    _libraries += [
-      "$root_out_dir/vk_intermediates/libvk_swiftshader.dylib",
-      "$root_out_dir/vk_intermediates/vk_swiftshader_icd.json",
-      "$root_out_dir/vulkan_intermediates/libvulkan.dylib",
-    ]
-    _library_deps += [
-      "//ui/gl:swiftshader_vk_library_copy",
-      "//ui/gl:vulkan_loader_library_copy",
-    ]
-  }
-  if (!use_static_angle) {
-    _libraries += [
-      "$root_out_dir/egl_intermediates/libEGL.dylib",
-      "$root_out_dir/egl_intermediates/libGLESv2.dylib",
-    ]
-    _library_deps += [ "//ui/gl:angle_library_copy" ]
-  }
-  not_needed([ "_library_deps" ])
-  if (_libraries != []) {
-    bundle_data("zebkit_libraries") {
-      sources = _libraries
-      public_deps = _library_deps
-      outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+    executable("zebkit-helper") {
+      sources = [ "helper.c" ]
+      deps = [ ":zebkit" ]
+      configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
     }
-  }
 
-  bundle_data("zebkit_helpers") {
-    sources = [ "$root_out_dir/$_helper_name.app" ]
-    public_deps = [ ":zebkit_helper" ]
-    outputs = [ "{{bundle_contents_dir}}/Helpers/{{source_file_part}}" ]
-  }
+    group("engine") {
+      deps = [
+        ":zebkit",
+        ":zebkit-helper",
+        # The optional set-user-ID helper (docs/SANDBOX.md), for machines without
+        # unprivileged user namespaces.
+        "//sandbox/linux:chrome_sandbox",
+      ]
+    }
+  } else {
+    # Zebkit.framework/Versions/A:
+    #   Zebkit                  the engine
+    #   Resources/              its data files, found through the framework
+    #   Helpers/Zebkit Helper.app   its renderer, GPU and utility processes
+    #   Libraries/              ANGLE's and SwiftShader's libraries, where
+    #                           Chromium looks for them in a framework
+    # An application links the framework and finds the rest through it,
+    # wherever the framework is.
+    _framework_name = "Zebkit"
+    _helper_name = "Zebkit Helper"
 
-  mac_framework_bundle("zebkit") {
-    output_name = _framework_name
-    framework_version = "A"
-    framework_contents = [
-      "Helpers",
-      "Libraries",
-      "Resources",
-    ]
-    info_plist = "mac/framework-Info.plist"
+    bundle_data("zebkit_resources") {
+      sources = [
+        "$root_out_dir/zebkit.pak",
+        "$root_out_dir/icudtl.dat",
+        "//ui/gl/resources/angle-metal/gpu_shader_cache.bin",
+      ]
+      public_deps = [
+        ":pak",
+        "//third_party/icu:icudata",
+      ]
+      if (v8_use_external_startup_data) {
+        public_deps += [ "//v8" ]
+        if (use_v8_context_snapshot) {
+          sources += [ "$root_out_dir/$v8_context_snapshot_filename" ]
+          public_deps += [ "//tools/v8_context_snapshot" ]
+        }
+        if (!use_v8_context_snapshot || include_both_v8_snapshots) {
+          sources += [ "$root_out_dir/snapshot_blob.bin" ]
+          public_deps += [ "//v8:run_mksnapshot_default" ]
+        }
+      }
+      outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
+    }
 
-    sources = _sources + [
-      "application_mac.h",
-      "application_mac.mm",
-      "engine_mac.mm",
-      "js_dialog.h",
-      "js_dialog_mac.mm",
-      "window_mac.mm",
-      "context_menu_mac.mm",
-      "sign_in_dialog_mac.mm",
-      "certificate_picker_mac.mm",
-      "notifications_mac.mm",
-      "desktop_actions_mac.mm",
-      "tray_mac.mm",
-      "share_mac.mm",
-      "dock_mac.mm",
-      "offscreen_mac.h",
-      "offscreen_mac.mm",
-    ]
-    configs += [ ":implementation" ]
-    public_configs = [ ":public" ]
-    deps = _deps + [
-             "//sandbox/mac:seatbelt",
-             "//services/device/public/cpp/geolocation",
-           ]
-    frameworks = [
-      "AppKit.framework",
-      "CoreImage.framework",
-      "Foundation.framework",
-      "IOSurface.framework",
-      "UserNotifications.framework",
-    ]
-    bundle_deps = [
-      ":zebkit_helpers",
-      ":zebkit_resources",
-    ]
+    # Libraries beside the engine: SwiftShader, and the Vulkan loader that
+    # runs it, when the profile has it (slim-macos does not: every Mac has a
+    # Metal GPU); ANGLE when it is not linked in.
+    _libraries = []
+    _library_deps = []
+    if (enable_swiftshader) {
+      _libraries += [
+        "$root_out_dir/vk_intermediates/libvk_swiftshader.dylib",
+        "$root_out_dir/vk_intermediates/vk_swiftshader_icd.json",
+        "$root_out_dir/vulkan_intermediates/libvulkan.dylib",
+      ]
+      _library_deps += [
+        "//ui/gl:swiftshader_vk_library_copy",
+        "//ui/gl:vulkan_loader_library_copy",
+      ]
+    }
+    if (!use_static_angle) {
+      _libraries += [
+        "$root_out_dir/egl_intermediates/libEGL.dylib",
+        "$root_out_dir/egl_intermediates/libGLESv2.dylib",
+      ]
+      _library_deps += [ "//ui/gl:angle_library_copy" ]
+    }
+    not_needed([ "_library_deps" ])
     if (_libraries != []) {
-      bundle_deps += [ ":zebkit_libraries" ]
+      bundle_data("zebkit_libraries") {
+        sources = _libraries
+        public_deps = _library_deps
+        outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+      }
     }
 
-    inputs = [ "mac/exports.txt" ]
-    ldflags = [
-      "-Wl,-install_name,@rpath/$_framework_name.framework/Versions/A/$_framework_name",
-      "-Wl,-exported_symbols_list," + rebase_path("mac/exports.txt", root_build_dir),
-    ]
-  }
+    bundle_data("zebkit_helpers") {
+      sources = [ "$root_out_dir/$_helper_name.app" ]
+      public_deps = [ ":zebkit_helper" ]
+      outputs = [ "{{bundle_contents_dir}}/Helpers/{{source_file_part}}" ]
+    }
 
-  # One helper for every kind of child process: the engine names it with
-  # --browser-subprocess-path, so the variants a signed Chrome has for its
-  # entitlements (Renderer, GPU) are not looked for.
-  mac_app_bundle("zebkit_helper") {
-    output_name = _helper_name
-    info_plist = "mac/helper-Info.plist"
-    sources = [ "helper.c" ]
-    deps = [ ":zebkit+link_nested" ]
+    mac_framework_bundle("zebkit") {
+      output_name = _framework_name
+      framework_version = "A"
+      framework_contents = [
+        "Helpers",
+        "Libraries",
+        "Resources",
+      ]
+      info_plist = "mac/framework-Info.plist"
 
-    # Zebkit.framework/Versions/A/Helpers/Zebkit Helper.app/Contents/MacOS:
-    # seven steps up is the directory the framework is in.
-    ldflags = [ "-Wl,-rpath,@executable_path/../../../../../../.." ]
-  }
+      sources = _sources + [
+        "application_mac.h",
+        "application_mac.mm",
+        "engine_mac.mm",
+        "js_dialog.h",
+        "js_dialog_mac.mm",
+        "window_mac.mm",
+        "context_menu_mac.mm",
+        "sign_in_dialog_mac.mm",
+        "certificate_picker_mac.mm",
+        "notifications_mac.mm",
+        "desktop_actions_mac.mm",
+        "tray_mac.mm",
+        "share_mac.mm",
+        "dock_mac.mm",
+        "offscreen_mac.h",
+        "offscreen_mac.mm",
+      ]
+      configs += [ ":implementation" ]
+      public_configs = [ ":public" ]
+      deps = _deps + [
+               "//sandbox/mac:seatbelt",
+               "//services/device/public/cpp/geolocation",
+             ]
+      frameworks = [
+        "AppKit.framework",
+        "CoreImage.framework",
+        "Foundation.framework",
+        "IOSurface.framework",
+        "UserNotifications.framework",
+      ]
+      bundle_deps = [
+        ":zebkit_helpers",
+        ":zebkit_resources",
+      ]
+      if (_libraries != []) {
+        bundle_deps += [ ":zebkit_libraries" ]
+      }
 
-  group("engine") {
-    deps = [ ":zebkit" ]
+      inputs = [ "mac/exports.txt" ]
+      ldflags = [
+        "-Wl,-install_name,@rpath/$_framework_name.framework/Versions/A/$_framework_name",
+        "-Wl,-exported_symbols_list," + rebase_path("mac/exports.txt", root_build_dir),
+      ]
+    }
+
+    # One helper for every kind of child process: the engine names it with
+    # --browser-subprocess-path, so the variants a signed Chrome has for its
+    # entitlements (Renderer, GPU) are not looked for.
+    mac_app_bundle("zebkit_helper") {
+      output_name = _helper_name
+      info_plist = "mac/helper-Info.plist"
+      sources = [ "helper.c" ]
+      deps = [ ":zebkit+link_nested" ]
+
+      # Zebkit.framework/Versions/A/Helpers/Zebkit Helper.app/Contents/MacOS:
+      # seven steps up is the directory the framework is in.
+      ldflags = [ "-Wl,-rpath,@executable_path/../../../../../../.." ]
+    }
+
+    group("engine") {
+      deps = [ ":zebkit" ]
+    }
   }
 }

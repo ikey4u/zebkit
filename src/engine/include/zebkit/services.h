@@ -147,6 +147,13 @@ ZEBKIT_API uint8_t *zebkit_image_encode(zebkit_image_format format, const uint8_
  */
 ZEBKIT_API bool zebkit_icu_init(void);
 
+/* ICU's data from the file at `path` (UTF-8), an icudtl.dat the application
+ * carries: for libzebkit without the engine (Android, iOS), where the data cannot be beside it,
+ * as on Android (an APK's assets copied out, or an extracted file) and in an
+ * iOS app whose bundle keeps it elsewhere. The first call of this or of
+ * zebkit_icu_init() that succeeds loads it; later ones return true. */
+ZEBKIT_API bool zebkit_icu_init_from_file(const char *path);
+
 /* ---- HTTP: the engine's network stack (engine) ----------------------- */
 
 typedef struct {

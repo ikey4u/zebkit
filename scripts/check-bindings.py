@@ -32,6 +32,13 @@ HEADERS = ROOT / "src/engine/include/zebkit"
 EXEMPT = {"zebkit_win_set_sandbox", "zebkit_helper_main"}
 # Older forms a newer one does all of: a binding that reaches the newer one (which
 # also says why it failed) has the older ones too.
+# Headers for some bindings only, with why: the others leave them out.
+ONLY_FOR = {
+    # The system's web view (docs/VIEWER.md): Android and iOS, whose
+    # bindings are Swift (bindings/swift) and Java (bindings/android), and
+    # Rust, which builds for both; Python, Go and host JavaScript have none.
+    "viewer.h": ("rust",),
+}
 SUPERSEDED_BY = {
     "zebkit_view_new_offscreen": "zebkit_view_new_offscreen_ex",
     "zebkit_view_new_offscreen_in": "zebkit_view_new_offscreen_ex",
@@ -51,9 +58,11 @@ BINDINGS = {
     "python": (text("bindings/python/zebkit/*.py"), r"\b{}\b"),
     "go": (text("bindings/golang/*.go", "bindings/golang/*.c"), r"\b{}\b"),
     # zebkit-js: script.cc and its scripts, and the bridge its native.call()
-    # reaches (zebkit.pdf, canvas, text and the services: bridge.cc, pdf_bridge.cc).
+    # reaches (zebkit.pdf, canvas, text and the services: bridge.cc,
+    # pdf_bridge.cc, and page_api*.cc, which they answer with).
     "javascript": (text("src/engine/script*.cc", "src/engine/*_script.h", "src/engine/bridge.cc",
-                        "src/engine/pdf_bridge.cc", "tools/zebkit-js/zebkit-js.c"), r"\b{}\b"),
+                        "src/engine/pdf_bridge.cc", "src/engine/page_api*.cc",
+                        "tools/zebkit-js/zebkit-js.c"), r"\b{}\b"),
 }
 
 
@@ -75,6 +84,7 @@ JAVASCRIPT_REACHED = {
     **{"zebkit_pdf_hook_" + hook: "zebkit.pdf plugins (pdf_script.h), on the script's own thread; "
        "tests/engine/script/pdf_plugin.mjs" for hook in ("before", "appearance", "ocr", "font", "trust", "action", "input")},
     "zebkit_icu_init": "ICU for the services before an engine runs; zebkit-js runs inside one",
+    "zebkit_icu_init_from_file": "ICU for the services on Android and iOS, without the engine (docs/MOBILE.md); zebkit-js runs inside one",
     "zebkit_init": "the host's own loop: zebkit-js is the host, on zebkit_main()",
     "zebkit_pump": "the host's own loop: zebkit-js is the host, on zebkit_main()",
     "zebkit_shutdown": "the host's own loop: zebkit-js is the host, on zebkit_main()",
@@ -106,6 +116,10 @@ def main():
             continue
         row = []
         for binding, (source, pattern) in BINDINGS.items():
+            if header.name in ONLY_FOR and binding not in ONLY_FOR[header.name]:
+                row.append("%10s" % "-")
+                continue
+
             def reached(name):
                 return re.search(pattern.format(name), source) or (binding == "javascript" and name in JAVASCRIPT_REACHED)
             absent = [n for n in names if not reached(n) and not (n in SUPERSEDED_BY and reached(SUPERSEDED_BY[n]))]

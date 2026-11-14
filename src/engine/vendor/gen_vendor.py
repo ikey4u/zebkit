@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expose the C libraries inside the engine to applications.
 
-    gen_vendor.py [--target linux|mac|win] --src <chromium src> --clang <clang> --sysroot <dir>
+    gen_vendor.py [--target linux|mac|win|android|ios] [--cpu x64|arm64] --src <chromium src> --clang <clang> --sysroot <dir>
                   --nm <llvm-nm> --out <gen dir> --stamp <file> [--depfile <file>] <library>...
 
 Run by //zebkit/engine:vendor from the build directory, once the libraries
@@ -335,7 +335,7 @@ def gather(spec, src):
     files = {}
     for pattern in spec["ship"]:
         root_key, _, glob = pattern.rpartition(":")
-        root = src / spec["roots"][root_key].format(config=FFMPEG_CONFIGS[TARGET])
+        root = src / spec["roots"][root_key].format(config=FFMPEG_CONFIGS.get(TARGET, TARGET))
         matches = sorted(root.glob(glob))
         if not matches:
             raise SystemExit(f"error: no {glob} under {root}")
@@ -416,21 +416,35 @@ def defined_functions(nm, objects_dirs, underscore):
 
 
 TRIPLES = {"linux": "x86_64-unknown-linux-gnu", "mac": "arm64-apple-macos13",
-           "win": "x86_64-pc-windows-msvc"}
+           "win": "x86_64-pc-windows-msvc",
+           # libzebkit without the engine (docs/MOBILE.md).
+           "android": "aarch64-linux-android29", "ios": "arm64-apple-ios15.0"}
+# Other processors than each system's first, by --cpu (GN's target_cpu).
+CPU_TRIPLES = {("linux", "arm64"): "aarch64-unknown-linux-gnu",
+               ("mac", "x64"): "x86_64-apple-macos13",
+               ("android", "x64"): "x86_64-linux-android29",
+               ("ios", "x64"): "x86_64-apple-ios15.0-simulator"}
+# Systems whose objects are Mach-O: an underscore before every C name.
+MACHO = {"mac", "ios"}
 # The configuration directories of zebkit's FFmpeg, by system.
 FFMPEG_CONFIGS = {"linux": "linux/x64", "mac": "mac/arm64", "win": "win/x64"}
 TARGET = "linux"
+CPU = ""
+
+
+def triple():
+    return CPU_TRIPLES.get((TARGET, CPU), TRIPLES[TARGET])
 
 
 def sysroot_args(sysroot):
     """How the compiler is told where the system's headers are."""
     if TARGET == "win":
         return ["-Xmicrosoft-windows-sys-root", sysroot]
-    return ["-isysroot" if TARGET == "mac" else "--sysroot", sysroot]
+    return ["-isysroot" if TARGET in MACHO else "--sysroot", sysroot]
 
 
 def preprocess(clang, sysroot, include_dir, defines, text, extra=()):
-    args = [clang, "-x", "c", "-std=c11", "-E", "--target=" + TRIPLES[TARGET],
+    args = [clang, "-x", "c", "-std=c11", "-E", "--target=" + triple(),
             *sysroot_args(sysroot), "-I", str(include_dir),
             "-I", str(include_dir.parents[2])]
     args += [f"-D{k}={v}" for k, v in defines.items()]
@@ -448,7 +462,7 @@ def external_declarations(clang, sysroot, text):
     the C header declares them static inline. They belong to the caller;
     redefine_extname cannot be applied to their internal C declarations.
     """
-    args = [clang, "-x", "c", "-std=c11", "--target=" + TRIPLES[TARGET],
+    args = [clang, "-x", "c", "-std=c11", "--target=" + triple(),
             *sysroot_args(sysroot),
             "-fsyntax-only", "-Xclang", "-ast-dump=json", "-"]
     result = subprocess.run(args, input=text, capture_output=True, text=True)
@@ -519,7 +533,7 @@ def generate(name, spec, args):
             (include_root / relative).unlink(missing_ok=True)
             del files[relative]
 
-    defined = defined_functions(args.nm, spec["objects"], TARGET == "mac")
+    defined = defined_functions(args.nm, spec["objects"], TARGET in MACHO)
     functions = []
     for symbol in sorted(defined):
         if symbol in declared:
@@ -556,7 +570,7 @@ def generate(name, spec, args):
     lines += [""]
     # The pragma's name is the symbol as it is written, which on macOS has
     # the underscore Mach-O puts before every C name.
-    mangle = "_" if TARGET == "mac" else ""
+    mangle = "_" if TARGET in MACHO else ""
     if TARGET == "win":
         # MSVC's cl has no such pragma; a macro does for any compiler there.
         lines += [f"#define {symbol} {prefix}{function}" for function, symbol in functions]
@@ -602,14 +616,15 @@ def generate(name, spec, args):
         "",
         ".text",
     ]
+    x64 = (CPU or ("arm64" if TARGET in MACHO | {"android"} else "x64")) == "x64"
     for function, symbol in functions:
         entry = prefix + function
-        if TARGET == "mac":
+        if TARGET in MACHO:
             asm += [
                 f".globl _{entry}",
                 ".p2align 2",
                 f"_{entry}:",
-                f"\tb _{symbol}",
+                f"\tjmp _{symbol}" if x64 else f"\tb _{symbol}",
             ]
             continue
         asm += [
@@ -617,12 +632,32 @@ def generate(name, spec, args):
             f".type {entry},@function",
             ".p2align 4",
             f"{entry}:",
-            "\tendbr64",
-            f"\tjmp {symbol}",
-            f".size {entry},.-{entry}",
         ]
-    if TARGET != "mac":
+        if x64:
+            asm += ["\tendbr64", f"\tjmp {symbol}"]
+        else:
+            # A landing pad for indirect branches, then the jump.
+            asm += ["\thint #34", f"\tb {symbol}"]
+        asm += [f".size {entry},.-{entry}"]
+    if TARGET not in MACHO:
         asm += ['.section .note.GNU-stack,"",@progbits']
+        if not x64:
+            # Each entry starts with a landing pad (BTI) and returns through
+            # the function it jumps to (nothing to sign, PAC): said in the
+            # property note, which Android's -z force-bti asks of every object.
+            asm += [
+                '.pushsection .note.gnu.property,"a"',
+                ".balign 8",
+                ".long 4",            # the name's size, "GNU\0"
+                ".long 16",           # the description's size
+                ".long 5",            # NT_GNU_PROPERTY_TYPE_0
+                '.asciz "GNU"',
+                ".long 0xc0000000",   # GNU_PROPERTY_AARCH64_FEATURE_1_AND
+                ".long 4",
+                ".long 3",            # BTI | PAC
+                ".long 0",
+                ".popsection",
+            ]
     asm += [""]
     write_if_changed(out / "vendor" / f"{name}.S", "\n".join(asm))
     return len(functions)
@@ -638,6 +673,7 @@ def write_if_changed(path, text):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", choices=sorted(TRIPLES), default="linux")
+    parser.add_argument("--cpu", default="", help="GN's target_cpu, when not the system's first")
     parser.add_argument("--src", required=True)
     parser.add_argument("--clang", required=True)
     parser.add_argument("--sysroot", required=True)
@@ -647,8 +683,9 @@ def main():
     parser.add_argument("--depfile")
     parser.add_argument("libraries", nargs="+")
     args = parser.parse_args()
-    global TARGET
+    global TARGET, CPU
     TARGET = args.target
+    CPU = args.cpu
     if TARGET == "win":
         # Chromium's configuration of libxml2 for Windows.
         LIBRARIES["libxml"]["roots"]["linux"] = "third_party/libxml/win32/include"

@@ -27,6 +27,11 @@ pub enum LoadEvent {
 pub struct Allow(u32);
 
 impl Allow {
+    /// The zebkit_allow bits.
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+
     /// Nothing: takes a grant back.
     pub const NONE: Allow = Allow(0);
     /// `zebkit.app.<name>()`: the functions [`View::bind`] gives.

@@ -5,7 +5,10 @@ package zebkit
 */
 import "C"
 
-import "strings"
+import (
+	"strings"
+	"unsafe"
+)
 
 // What the engine has for applications besides views (<zebkit/services.h>):
 // compression, digests and encryption, URLs, images, ICU and HTTP. None of
@@ -209,6 +212,14 @@ func EncodeImage(format ImageFormat, image *Pixels, quality int) ([]byte, error)
 // ICUInit loads ICU's data so that ICU can be used without the engine
 // running; calling it again, or with the engine running, does no harm.
 func ICUInit() error { return check(C.zebkit_icu_init(), "ICU's data was not found") }
+
+// ICUInitFromFile loads ICU's data from path, an icudtl.dat the application
+// carries, where it is not beside the library (Android, docs/MOBILE.md).
+func ICUInitFromFile(path string) error {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	return check(C.zebkit_icu_init_from_file(cpath), "ICU's data could not be loaded from "+path)
+}
 
 // FetchResponse is what Fetch got: Err is set when the request or its body
 // failed, and Status is 0 when there was no response.

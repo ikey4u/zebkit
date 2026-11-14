@@ -21,6 +21,15 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
         export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
     fi
 fi
+# Platforms built here besides the host's, for libzebkit without the engine
+# (docs/MOBILE.md): ZEBKIT_TARGET_OS="android" (or "android ios" on a Mac)
+# adds them to .gclient's target_os, whose dependencies (Android's NDK and
+# SDK) gclient then fetches.
+extra_os="$(printf '%s\n' ${ZEBKIT_TARGET_OS:-} | grep -vx "$checkout_os" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [[ -n "$extra_os" ]]; then
+    checkout_os="$checkout_os+${extra_os// /+}"
+fi
+gclient_os="${checkout_os//+/ }"
 
 stamp="$GCLIENT_DIR/.zebkit-stamp"
 synced="$GCLIENT_DIR/.zebkit-synced"
@@ -145,7 +154,7 @@ solutions = [{
         "checkout_pgo_profiles": $checkout_pgo,
     },
 }]
-target_os = ["$checkout_os"]
+target_os = [$(printf '"%s", ' $gclient_os | sed 's/, $//')]
 EOF
 
 # Undo the previous series: files it created are removed, files it changed

@@ -1,0 +1,28 @@
+# zebkit-base: mobile-linux
+# libzebkit for iOS arm64 devices (docs/MOBILE.md): Zebkit.framework, without
+# the engine; applications show the web with WKWebView, as the App Store asks
+# (guideline 2.5.6). Built on a Mac with Xcode (ZEBKIT_TARGET_OS=ios
+# scripts/fetch-upstream.sh there): Chromium builds iOS only on macOS.
+#
+#   scripts/build.sh slim-ios zebkit/engine
+#
+# target_environment = "simulator" builds it for the simulator.
+
+target_os = "ios"
+target_cpu = "arm64"
+target_environment = "device"
+ios_enable_code_signing = false
+# The application's own minimum, not Chrome's.
+ios_deployment_target = "15.0"
+
+# As on Android: zebkit's configuration of FFmpeg has no iOS one yet.
+zebkit_ffmpeg = false
+
+# PDFium draws its text with FreeType, which Chromium builds on desktop only.
+enable_freetype = true
+
+# Chromium's own iOS build has no Blink (Chrome for iOS uses WebKit), and
+# some of the libraries zebkit has (libjpeg-turbo) are built only with it.
+# The flag says which libraries may be built; with zebkit_build_engine off
+# no Blink is: GN finds no path from //zebkit/engine to it (docs/MOBILE.md).
+use_blink = true

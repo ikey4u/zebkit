@@ -1,0 +1,8 @@
+# zebkit-base: slim-ios
+# libzebkit for the iOS simulator on Apple silicon (docs/MOBILE.md): with
+# slim-ios's, the two halves of Zebkit.xcframework (scripts/package-mobile.sh
+# puts every slim-ios* framework in it).
+#
+#   scripts/build.sh slim-ios-simulator zebkit/engine
+
+target_environment = "simulator"

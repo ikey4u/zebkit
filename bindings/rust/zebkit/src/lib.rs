@@ -80,6 +80,7 @@ pub mod services;
 pub mod system;
 mod tray;
 pub mod vendor;
+pub mod viewer;
 mod view;
 
 pub use engine::{

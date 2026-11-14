@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- zebkit for Android (docs/VIEWER.md): libzebkit without the engine, and
+     dev.zebkit.ZebkitViewer over the system's WebView. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.zebkit">
+    <uses-sdk android:minSdkVersion="29" />
+</manifest>

@@ -768,6 +768,7 @@ _url_registrable_domain = _declare("zebkit_url_registrable_domain", _P, _S)
 _image_decode = _declare("zebkit_image_decode", _P, _P, _Z, _IP, _IP, _EP)
 _image_encode = _declare("zebkit_image_encode", _P, _I, _P, _I, _I, _I, _ZP, _EP)
 _icu_init = _declare("zebkit_icu_init", _B)
+_icu_init_from_file = _declare("zebkit_icu_init_from_file", _B, _S)
 _fetch = _declare("zebkit_fetch", None, _S, _S, _S, _P, _Z, _RESPONSE, _P)
 
 # Callbacks and views that C still holds, by id: kept here so that Python
@@ -1335,6 +1336,11 @@ def image_encode(rgba, width, height, format="png", quality=-1):
 
 def icu_init():
     return bool(_icu_init())
+
+
+def icu_init_from_file(path):
+    """ICU's data from an icudtl.dat at path, as Android needs (docs/MOBILE.md)."""
+    return bool(_icu_init_from_file(os.fsencode(path)))
 
 
 # ---- PDF: <zebkit/pdf.h> ----
