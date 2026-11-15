@@ -80,6 +80,8 @@ if [[ -f "$stamp" && -d "$package" ]] && [[ "$(cat "$stamp")" == "$(inputs_key) 
     exit 0
 fi
 rm -f "$stamp"
+# A profile packaged for the first time has no directory here yet.
+mkdir -p "$(dirname "$info")" "$(dirname "$stamp")"
 : > "$info"
 # done: record the package as made from these inputs.
 done_package() {
