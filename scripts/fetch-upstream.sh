@@ -22,10 +22,15 @@ if [[ "$ZEBKIT_HOST" == macos ]]; then
     fi
 fi
 # Platforms built here besides the host's, for libzebkit without the engine
-# (docs/MOBILE.md): ZEBKIT_TARGET_OS="android" (or "android ios" on a Mac)
+# (docs/MOBILE.md): ZEBKIT_TARGET_OS="android" (or "android ios" on a Mac),
+# and those the checkout was synced with before
 # adds them to .gclient's target_os, whose dependencies (Android's NDK and
 # SDK) gclient then fetches.
-extra_os="$(printf '%s\n' ${ZEBKIT_TARGET_OS:-} | grep -vx "$checkout_os" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+# Systems added once stay: a later run without ZEBKIT_TARGET_OS (dist.sh,
+# build.sh) keeps what the checkout was synced with, instead of syncing it
+# again without them.
+synced_os="$(cut -s -d' ' -f2 "$GCLIENT_DIR/.zebkit-synced" 2>/dev/null | tr '+' ' ' || true)"
+extra_os="$(printf '%s\n' ${ZEBKIT_TARGET_OS:-} $synced_os | grep . | grep -vx "$checkout_os" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ -n "$extra_os" ]]; then
     checkout_os="$checkout_os+${extra_os// /+}"
 fi

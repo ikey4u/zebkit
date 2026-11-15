@@ -90,7 +90,7 @@ must_change bindings/golang/zebkit.go
 
 # README.md's instructions: the version line, the archives' names and links,
 # Cargo.toml's lines, go get's tag; its prose about releases is left alone.
-replace README.md 's/^(\| Version \| `VERSION`: )\Q$ENV{OLD}\E( \|)/$1$ENV{NEW}$2/mg; s/\bzebkit-\Q$ENV{OLD}\E-(x86_64|aarch64)/zebkit-$ENV{NEW}-$1/g; s{/releases/download/v\Q$ENV{OLD}\E/}{/releases/download/v$ENV{NEW}/}g; s/^(zebkit(?:-build)? = )"\Q$ENV{OLD}\E"/$1"$ENV{NEW}"/mg; s/(bindings\/golang\@v)\Q$ENV{OLD}\E\b/$1$ENV{NEW}/g'
+replace README.md 's/^(\| Version \| `VERSION`: )\Q$ENV{OLD}\E( \|)/$1$ENV{NEW}$2/mg; s/\bzebkit-\Q$ENV{OLD}\E-(x86_64|aarch64|android|ios)/zebkit-$ENV{NEW}-$1/g; s{/releases/download/v\Q$ENV{OLD}\E/}{/releases/download/v$ENV{NEW}/}g; s/^(zebkit(?:-build)? = )"\Q$ENV{OLD}\E"/$1"$ENV{NEW}"/mg; s/(bindings\/golang\@v)\Q$ENV{OLD}\E\b/$1$ENV{NEW}/g'
 
 # What users are told to write in Cargo.toml, and the latest engine.
 replace bindings/rust/README.md 's/^((?:\/\/! )?zebkit(?:-build)? = )"\Q$ENV{OLD}\E"/$1"$ENV{NEW}"/mg; s/(latest engine is\s+)\Q$ENV{OLD}\E\b/$1$ENV{NEW}/g'
