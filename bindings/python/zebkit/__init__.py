@@ -37,7 +37,7 @@ __all__ = [
     "View", "PermissionRequest", "NavigationRequest", "CertificateRequest", "HttpAuthRequest", "DownloadRequest", "ClientCertificateRequest", "FileChooserRequest", "MediaAccessRequest", "NetworkRequest", "NetworkStream", "main", "init", "pump", "shutdown", "set_wakeup", "quit", "post", "version", "engine_version", "is_headless", "set_engine_settings", "engine_settings",
     "set_cookie_storage", "set_cookie_encryption_key", "cdp_listen", "cdp_listen_async", "cdp_port", "cdp_url", "cdp_stop", "fetch", "Call", "FindResult",
     "compress", "decompress", "digest", "hmac", "random_bytes", "aes_gcm_seal", "aes_gcm_open",
-    "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "Error",
+    "url_part", "registrable_domain", "image_decode", "image_encode", "icu_init", "icu_init_from_file", "Error",
     "LOAD_STARTED", "LOAD_COMMITTED", "LOAD_FINISHED", "LOAD_FAILED",
     "ALLOW_APP", "ALLOW_FETCH", "ALLOW_FILES", "ALLOW_COMPRESS", "ALLOW_CRYPTO", "ALLOW_IMAGE",
     "ALLOW_URL", "ALLOW_PDF", "ALLOW_ALL",
