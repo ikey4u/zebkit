@@ -229,8 +229,11 @@ pack() {
     log "packing $name"
     # The same input gives the same archive: fixed order, owner and times.
     # S: the links inside a framework keep where they point. What Finder
-    # leaves in a directory it has shown is never shipped.
+    # leaves in a directory it has shown is never shipped. The modes are the
+    # archive's own, not the umask's of the machine that packs it: everyone
+    # reads, the owner writes (a umask of 077 made every file owner-only).
     tar -C "$dist" --exclude=.DS_Store --exclude='._*' --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00:00Z' \
+        --mode='u+rwX,go+rX,go-w' \
         --transform "s,^\.,$name,S" -cf - . | xz -6 -T0 > "$archive"
     local sum
     sum="$(sha256 "$archive" | cut -d' ' -f1)"
