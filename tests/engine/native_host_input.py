@@ -97,8 +97,8 @@ def main():
                         raise RuntimeError(result['exceptionDetails'])
                     return result['result'].get('value')
 
-                def wait(expression, expected):
-                    end = time.monotonic() + 5
+                def wait(expression, expected, seconds=5):
+                    end = time.monotonic() + seconds
                     value = None
                     while time.monotonic() < end:
                         value = evaluate(expression)
@@ -158,8 +158,18 @@ def main():
 
                 x.XSetInputFocus(display, window, 2, 0)
                 x.XFlush(display)
-                click('input')
-                wait('document.activeElement.tagName', 'INPUT')
+                # The first click can come before the host's view takes input
+                # (winit lays it out after its first frame): click again until
+                # it is focused, a click still being what focuses it.
+                end = time.monotonic() + 15
+                while True:
+                    click('input')
+                    try:
+                        wait('document.activeElement.tagName', 'INPUT', seconds=1)
+                        break
+                    except AssertionError:
+                        if time.monotonic() > end:
+                            raise
                 for character in 'zebkit':
                     key(ord(character))
                 wait('document.querySelector("input").value', 'zebkit')
