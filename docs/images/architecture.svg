@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" width="960" height="640" role="img" aria-label="zebkit's architecture: the application links one library, which runs Chromium's content layer, Blink and V8 in the application's process, with sandboxed helper processes, on Linux and macOS">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 924" width="960" height="924" role="img" aria-label="zebkit's architecture: the application links one library, which runs Chromium's content layer, Blink and V8 in the application's process, with sandboxed helper processes, on Linux, macOS and Windows; on Android and iOS the same library without the engine, beside the system's web view">
 <style>
   .card { fill: #FFFFFF; stroke: #D0D7DE; }
   .box { fill: #F6F8FA; stroke: #D0D7DE; }
@@ -27,7 +27,7 @@
     .head { fill: #8B949E; }
   }
 </style>
-<rect x="0.5" y="0.5" width="959" height="639" rx="16" class="card" />
+<rect x="0.5" y="0.5" width="959" height="923" rx="16" class="card" />
 <rect x="24" y="24" width="600" height="100" rx="10" class="box" />
 <text x="44" y="52" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="start">Your application</text>
 <text x="604" y="52" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">native code or JavaScript, no Node</text>
@@ -132,8 +132,53 @@
 <text x="302" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">x86-64 · X11 · Wayland</text>
 <rect x="332" y="560" width="296" height="56" rx="10" class="os" />
 <text x="350" y="594" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">macOS</text>
-<text x="610" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">Apple silicon · AppKit · Metal</text>
+<text x="610" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">Apple silicon, Intel · AppKit</text>
 <rect x="640" y="560" width="296" height="56" rx="10" class="os" />
 <text x="658" y="594" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Windows</text>
 <text x="918" y="594" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">x64 · Win32 · sandboxed</text>
+<line x1="24" y1="644" x2="936" y2="644" class="plan"/>
+<text x="24" y="676" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="start">Android and iOS: the same library, built without the engine</text>
+<text x="936" y="676" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">no Blink or V8 of its own: pages are the system's</text>
+<rect x="24" y="692" width="420" height="140" rx="14" class="zeb" />
+<text x="44" y="718" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="800" text-anchor="start">zebkit</text>
+<text x="100" y="718" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="start">libzebkit.so in zebkit.aar · Zebkit.xcframework</text>
+<rect x="44" y="730" width="120" height="44" rx="8" class="chip" />
+<text x="54" y="749" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">pdf.h</text>
+<text x="54" y="766" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">PDFium, no scripts</text>
+<rect x="174" y="730" width="120" height="44" rx="8" class="chip" />
+<text x="184" y="749" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">canvas · text</text>
+<text x="184" y="766" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">Skia and HarfBuzz</text>
+<rect x="304" y="730" width="120" height="44" rx="8" class="chip" />
+<text x="314" y="749" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">services.h</text>
+<text x="314" y="766" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">crypto, images, ICU</text>
+<rect x="44" y="780" width="120" height="44" rx="8" class="chip" />
+<text x="54" y="799" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">vendor/*.h</text>
+<text x="54" y="816" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">15 of the libraries</text>
+<rect x="174" y="780" width="120" height="44" rx="8" class="chip" />
+<text x="184" y="799" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">viewer.h</text>
+<text x="184" y="816" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">zebkit.* in pages</text>
+<rect x="304" y="780" width="120" height="44" rx="8" class="chip" />
+<text x="314" y="799" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">bindings</text>
+<text x="314" y="816" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">Swift, Java, Rust</text>
+<line x1="450" y1="762" x2="494" y2="762" class="wire"/>
+<path d="M493 757l8 5-8 5z" class="head"/>
+<path d="M451 757l-8 5 8 5z" class="head"/>
+<rect x="500" y="692" width="436" height="140" rx="14" class="box" />
+<text x="520" y="718" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" text-anchor="start">The system's web view</text>
+<text x="916" y="718" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">draws the pages</text>
+<rect x="520" y="730" width="194" height="44" rx="8" class="chip" />
+<text x="530" y="749" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">System WebView</text>
+<text x="530" y="766" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">Android: Chromium</text>
+<rect x="722" y="730" width="194" height="44" rx="8" class="chip" />
+<text x="732" y="749" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">WKWebView</text>
+<text x="732" y="766" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">iOS: WebKit</text>
+<rect x="520" y="780" width="396" height="44" rx="8" class="chip" />
+<text x="530" y="799" class="ink" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="700" text-anchor="start">ZebkitViewer</text>
+<text x="530" y="816" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" text-anchor="start">Java and Swift: the page's zebkit, as in zebkit's own views</text>
+<rect x="24" y="848" width="450" height="56" rx="10" class="os" />
+<text x="42" y="882" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">Android</text>
+<text x="456" y="882" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">arm64 · x86-64 · Android 10 or newer</text>
+<rect x="486" y="848" width="450" height="56" rx="10" class="os" />
+<text x="504" y="882" class="ink" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" text-anchor="start">iOS</text>
+<text x="918" y="882" class="muted" font-family="Inter, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">devices · simulator · iOS 15 or newer</text>
 </svg>

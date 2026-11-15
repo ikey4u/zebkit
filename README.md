@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/logo.svg" width="360" alt="zebkit"></h1>
 
-<p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux, macOS and Windows. Add it in a few lines.</p>
+<p align="center"><b>Chrome as a library — light, fast, everywhere, and easy.</b><br>One API on Linux, macOS and Windows, and its engine-free part on Android and iOS. Add it in a few lines.</p>
 
 <p align="center">
 <a href="https://crates.io/crates/zebkit"><img src="https://img.shields.io/crates/v/zebkit.svg?label=crates.io" alt="crates.io"></a>
@@ -19,7 +19,17 @@ it adds a zebkit view; where it needs a PDF, media, compression or crypto,
 it calls zebkit's API: in C, or through the bindings for Rust, Python, Go
 and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 
-<p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; on Linux, macOS and Windows"></p>
+On Android and iOS zebkit is the same library built without its engine:
+PDF, 2D drawing, text shaping, the services and the vendored libraries, in
+`zebkit.aar` and a Swift package. Pages are drawn by the system's web view
+(Android's System WebView, iOS's WKWebView, as the App Store requires), and
+zebkit's viewer gives them the same global `zebkit` they have in zebkit's
+own views on the desktop, so one set of pages runs everywhere
+(`docs/MOBILE.md`, `docs/VIEWER.md`). The mobile packages are new in 0.6.0:
+the viewer's tests run on the iOS simulator; Android's package is built but
+not yet run on a device or an emulator, nor iOS's on a physical device.
+
+<p align="center"><img src="docs/images/architecture.svg" width="900" alt="The application links one library, zebkit, which runs Chromium's content layer, Blink and V8 inside the application's process; pages run in sandboxed helper processes; on Linux, macOS and Windows. On Android and iOS the same library is built without the engine: PDF, canvas, text, services, the vendored libraries and the viewer, which gives pages in the system's web view (System WebView, WKWebView) the global zebkit"></p>
 
 - **Integrate it, don't build on it.** An application adds zebkit as it
   adds SQLite, and keeps its process, its event loop, its toolkit and its
@@ -81,9 +91,11 @@ scripts/fetch-upstream.sh && scripts/build.sh slim && scripts/package.sh slim   
 ```
 
 On an Apple silicon Mac with full Xcode, `scripts/dist.sh release` builds
-`dist/release`. `mise run r` is the release of all three systems, built on
-Linux: it needs Apple's SDK (`scripts/macos-toolchain.sh`) and the Windows
-toolchain (`scripts/windows-toolchain.sh`) laid out first.
+`dist/release`. `mise run r` is the release of every system, built on
+Linux: it needs Apple's SDK (`scripts/macos-toolchain.sh`), the Windows
+toolchain (`scripts/windows-toolchain.sh`) and Android's NDK laid out first,
+and the iOS package built on a Mac by `scripts/release-ios.sh`
+(`docs/MOBILE.md`).
 
 Below, `$PKG` is the package directory.
 
@@ -338,7 +350,9 @@ each system and why; `docs/API.md` has the calls in C and every binding;
 [`zebkit`](https://crates.io/crates/zebkit) on crates.io, with
 [`zebkit-build`](https://crates.io/crates/zebkit-build) to put the engine
 beside your program; the build downloads the engine for your system once and
-checks its SHA-256. `ZEBKIT_DIR` points it at a package instead
+checks its SHA-256, the Android (`aarch64-linux-android`,
+`x86_64-linux-android`) and iOS (`aarch64-apple-ios`, `aarch64-apple-ios-sim`)
+packages included. `ZEBKIT_DIR` points it at a package instead
 (`bindings/rust/README.md`).
 
 ```toml
@@ -616,6 +630,13 @@ mise example:ffmpeg         # examples/ffmpeg.cpp: a library inside the engine
   application grants it, per view, per origin and per capability; the
   origin is the browser's, never the page's word; the renderer stays
   sandboxed; permissions a browser would ask about are not granted.
+- **Android and iOS, from the same sources.** The same library built without
+  its engine (`zebkit_build_engine = false`): PDF, canvas, text, the services
+  (without HTTP, which is the system's) and 15 of the vendored libraries (all
+  but LevelDB and FFmpeg). Its viewer (`<zebkit/viewer.h>`, `ZebkitViewer` in
+  Java and Swift) gives pages in the system's web view the global `zebkit`
+  they have on the desktop. Views, windows, hooks, automation and media tools
+  stay desktop-only (`docs/MOBILE.md` has the table).
 
 ## Benchmark
 

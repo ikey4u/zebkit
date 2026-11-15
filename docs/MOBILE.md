@@ -126,7 +126,8 @@ Swift package with `ZebkitViewer`, over `Zebkit.xcframework`.
 - **Java** (`bindings/android`): `dev.zebkit.ZebkitViewer`, and
   `dev.zebkit.Native` for what it is built on.
 - **Rust**: `zebkit-rs` links `libzebkit.so` on Android and
-  `Zebkit.framework` on iOS, from `ZEBKIT_DIR` or the repository's
-  `out/blink/slim-android/package` and `slim-ios/package`; nothing is
-  downloaded for them. The engine's functions are declared all the same: a
-  program that calls one does not link.
+  `Zebkit.framework` on iOS, from `ZEBKIT_DIR`, the repository's
+  `out/blink/slim-android/package` and `slim-ios/package`, or else the
+  release's Android or iOS archive, downloaded and checked against
+  `engines.txt` as the desktop's are. The engine's functions are declared all
+  the same: a program that calls one does not link.
