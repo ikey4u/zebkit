@@ -48,7 +48,7 @@ and JavaScript (`zebkit-js`, and `zebkit.*` in the application's own pages).
 | macOS | Apple silicon and Intel: `Zebkit.framework`, built natively or cross-built on Linux (`docs/MACOS.md`) |
 | Windows | x64, Windows 10 or newer: `zebkit.dll` and `zebkit-helper.exe`, cross-built on Linux (`docs/WINDOWS.md`) |
 | Android, iOS | libzebkit without the engine (PDF, canvas, text, the services) and the viewer, which gives pages in the system's web view the global `zebkit` (`docs/MOBILE.md`, `docs/VIEWER.md`): `zebkit.aar` (arm64, x86-64), `Zebkit.xcframework` with a Swift package |
-| Version | `VERSION`: 0.5.0 |
+| Version | `VERSION`: 0.6.0 |
 
 ## Quick start
 
@@ -60,12 +60,12 @@ and `include/`. A release has one archive for each system, on
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz` |
-| macOS, Apple silicon | `zebkit-0.5.0-aarch64-apple-darwin.tar.xz` |
-| macOS, Intel | `zebkit-0.5.0-x86_64-apple-darwin.tar.xz` |
-| Windows x64 | `zebkit-0.5.0-x86_64-pc-windows-msvc.tar.xz` |
-| Android (arm64, x86-64) | `zebkit-0.5.0-android.tar.xz`: `zebkit.aar`, `jni/<abi>/libzebkit.so`, `include/` |
-| iOS (devices, simulator) | `zebkit-0.5.0-ios.tar.xz`: the Swift package (`Package.swift`) with `Zebkit.xcframework` |
+| Linux x86-64 | `zebkit-0.6.0-x86_64-unknown-linux-gnu.tar.xz` |
+| macOS, Apple silicon | `zebkit-0.6.0-aarch64-apple-darwin.tar.xz` |
+| macOS, Intel | `zebkit-0.6.0-x86_64-apple-darwin.tar.xz` |
+| Windows x64 | `zebkit-0.6.0-x86_64-pc-windows-msvc.tar.xz` |
+| Android (arm64, x86-64) | `zebkit-0.6.0-android.tar.xz`: `zebkit.aar`, `jni/<abi>/libzebkit.so`, `include/` |
+| iOS (devices, simulator) | `zebkit-0.6.0-ios.tar.xz`: the Swift package (`Package.swift`) with `Zebkit.xcframework` |
 
 Each desktop archive also holds the tools, built for its system beside the library
 and ready to run from where it is unpacked: `zebkit-run`, `zebkit-js` and
@@ -175,9 +175,9 @@ On Windows the executable takes part in Chromium's sandbox: it links
 ### Linux
 
 ```sh
-curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.5.0/zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz
-tar -xJf zebkit-0.5.0-x86_64-unknown-linux-gnu.tar.xz
-PKG=$PWD/zebkit-0.5.0-x86_64-unknown-linux-gnu
+curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.6.0/zebkit-0.6.0-x86_64-unknown-linux-gnu.tar.xz
+tar -xJf zebkit-0.6.0-x86_64-unknown-linux-gnu.tar.xz
+PKG=$PWD/zebkit-0.6.0-x86_64-unknown-linux-gnu
 
 cc thumb.c -I$PKG/include -L$PKG -l:libzebkit.so.1 -Wl,-rpath,$PKG -o thumb
 ./thumb report.pdf                      # 2 pages; page 1 says: Quarterly report ...
@@ -194,9 +194,9 @@ of its own, add `--no-sandbox` (`docs/SANDBOX.md`).
 ### macOS
 
 ```sh
-curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.5.0/zebkit-0.5.0-aarch64-apple-darwin.tar.xz
-tar -xJf zebkit-0.5.0-aarch64-apple-darwin.tar.xz
-PKG=$PWD/zebkit-0.5.0-aarch64-apple-darwin
+curl -LO https://github.com/ikey4u/zebkit/releases/download/v0.6.0/zebkit-0.6.0-aarch64-apple-darwin.tar.xz
+tar -xJf zebkit-0.6.0-aarch64-apple-darwin.tar.xz
+PKG=$PWD/zebkit-0.6.0-aarch64-apple-darwin
 
 cc thumb.c -I$PKG/include -F$PKG -framework Zebkit -Wl,-rpath,$PKG -o thumb
 ./thumb report.pdf
@@ -215,7 +215,7 @@ Unpack the archive (7-Zip, or `tar -xJf` in Git Bash), then, in a command
 prompt with LLVM's `clang-cl` on the path:
 
 ```bat
-set PKG=%CD%\zebkit-0.5.0-x86_64-pc-windows-msvc
+set PKG=%CD%\zebkit-0.6.0-x86_64-pc-windows-msvc
 clang-cl /MT thumb.c /I%PKG%\include %PKG%\zebkit.dll.lib /Fe%PKG%\thumb.exe
 %PKG%\thumb.exe report.pdf
 clang-cl /MT app.c /I%PKG%\include %PKG%\zebkit.dll.lib %PKG%\zebkit_sandbox.lib /Fe%PKG%\app.exe
@@ -343,11 +343,11 @@ checks its SHA-256. `ZEBKIT_DIR` points it at a package instead
 
 ```toml
 [dependencies]
-zebkit = "0.5.0"
+zebkit = "0.6.0"
 serde_json = "1"   # for the example's JSON
 
 [build-dependencies]
-zebkit-build = "0.5.0"
+zebkit-build = "0.6.0"
 ```
 
 ```rust
@@ -379,7 +379,7 @@ with `ZEBKIT_DIR` pointing at it (`bindings/python/README.md`):
 
 ```sh
 pip install zebkit
-export ZEBKIT_DIR=/path/to/zebkit-0.5.0-x86_64-unknown-linux-gnu
+export ZEBKIT_DIR=/path/to/zebkit-0.6.0-x86_64-unknown-linux-gnu
 ```
 
 ```python
@@ -403,7 +403,7 @@ the same version (`zebkit.BindingVersion`); 0.4.0 had no Go binding. Build
 with the engine's headers and library:
 
 ```sh
-go get github.com/ikey4u/zebkit/bindings/golang@v0.5.0
+go get github.com/ikey4u/zebkit/bindings/golang@v0.6.0
 export CGO_CFLAGS="-I$ZEBKIT_DIR/include" CGO_LDFLAGS="-L$ZEBKIT_DIR -Wl,-rpath,$ZEBKIT_DIR"   # Linux
 ```
 
