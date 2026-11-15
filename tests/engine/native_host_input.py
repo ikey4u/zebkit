@@ -34,7 +34,11 @@ def main():
     x.XDefaultRootWindow.restype = C.c_ulong
     x.XQueryTree.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong),
                             C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)]
-    x.XFetchName.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_char_p)]
+    x.XInternAtom.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+    x.XInternAtom.restype = C.c_ulong
+    x.XGetWindowProperty.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_long, C.c_long, C.c_int, C.c_ulong,
+                                     C.POINTER(C.c_ulong), C.POINTER(C.c_int), C.POINTER(C.c_ulong),
+                                     C.POINTER(C.c_ulong), C.POINTER(C.POINTER(C.c_ubyte))]
     x.XFree.argtypes = [C.c_void_p]
     x.XTranslateCoordinates.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int,
                                        C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_ulong)]
@@ -111,12 +115,25 @@ def main():
                 count = C.c_uint()
                 x.XQueryTree(display, root, C.byref(ancestor), C.byref(parent), C.byref(children), C.byref(count))
                 window = None
+                def title(child):
+                    # Whatever the title's encoding: XFetchName gives STRING only,
+                    # and a title past Latin-1 (the hosts' em dash) is
+                    # COMPOUND_TEXT from GTK and UTF8_STRING from Qt.
+                    for atom in (b'_NET_WM_NAME', b'WM_NAME'):
+                        kind, size, items, left = C.c_ulong(), C.c_int(), C.c_ulong(), C.c_ulong()
+                        data = C.POINTER(C.c_ubyte)()
+                        if x.XGetWindowProperty(display, child, x.XInternAtom(display, atom, 0), 0, 1024, 0, 0,
+                                                C.byref(kind), C.byref(size), C.byref(items), C.byref(left),
+                                                C.byref(data)) == 0 and data:
+                            value = C.string_at(data, items.value) if size.value == 8 else b''
+                            x.XFree(data)
+                            if value:
+                                return value
+                    return b''
+
                 for child in children[:count.value]:
-                    name = C.c_char_p()
-                    if x.XFetchName(display, child, C.byref(name)) and name.value:
-                        if name.value.startswith(b'zebkit'):
-                            window = child
-                        x.XFree(name)
+                    if title(child).startswith(b'zebkit'):
+                        window = child
                 x.XFree(children)
                 if window is None:
                     raise RuntimeError('No toolkit-owned X11 window')

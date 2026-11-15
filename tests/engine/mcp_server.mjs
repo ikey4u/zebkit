@@ -1064,10 +1064,13 @@ async function defaults() {
   startFails(['--', '--host-resolver-rules=x'], /refused/, 'its own resolver rules');
   startFails(['--', '--user-data-dir=/tmp/x'], /refused/, 'a profile through the engine');
   const wide = path.join(work, 'wide-token');
-  fs.writeFileSync(wide, 'x'.repeat(32), { mode: 0o644 });
+  // chmod, not the mode alone: a umask of 077 would make them owner-only.
+  fs.writeFileSync(wide, 'x'.repeat(32));
+  fs.chmodSync(wide, 0o644);
   startFails(['--http', '0', '--http-token-file', wide, ...engine], /readable by others/, 'a token file others can read');
   const wideOauth = path.join(work, 'wide-oauth.json');
-  fs.writeFileSync(wideOauth, '{}', { mode: 0o644 });
+  fs.writeFileSync(wideOauth, '{}');
+  fs.chmodSync(wideOauth, 0o644);
   startFails(['--oauth-config', wideOauth], /readable by others/, 'an OAuth file others can read');
   const plainOauth = path.join(work, 'plain-oauth.json');
   fs.writeFileSync(plainOauth, JSON.stringify({ x: { clientId: 'a', deviceEndpoint: 'http://auth.example/d', tokenEndpoint: 'https://auth.example/t' } }), { mode: 0o600 });
