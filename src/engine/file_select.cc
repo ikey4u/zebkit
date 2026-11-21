@@ -4,7 +4,10 @@
 
 #include "zebkit/engine/file_select.h"
 
+#include "build/build_config.h"
+
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,6 +19,13 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
+
+#if defined(ZEBKIT_USE_DBUS)
+#include "components/dbus/thread_linux/dbus_thread_linux.h"
+#include "components/dbus/xdg/portal.h"
+#include "components/dbus/xdg/portal_constants.h"
+#include "dbus/bus.h"
+#endif
 
 namespace zebkit {
 
@@ -70,6 +80,44 @@ std::unique_ptr<ui::SelectFileDialog::FileTypeInfo> GetFileTypesFromAcceptType(
 
   return file_type;
 }
+
+#if BUILDFLAG(IS_LINUX)
+// Why a page's file chooser was cancelled without a dialog, said to the
+// application's stderr: on Linux Chromium's dialog is the desktop's file
+// chooser portal, with GTK or Qt behind it only where the build has them,
+// which zebkit's does not. Chrome falls back to GTK; zebkit cannot, so it
+// says so instead of a silent cancel.
+void WarnNoDialog(const char* detail) {
+  LOG(WARNING) << "zebkit: a page's file chooser was cancelled: there is no "
+                  "file dialog. On Linux it is the desktop's "
+                  "xdg-desktop-portal FileChooser (version 3 or later, with a "
+                  "backend such as xdg-desktop-portal-gtk, -kde, -gnome or "
+                  "-wlr) on the session bus"
+               << detail
+               << "; or the application answers it with "
+                  "zebkit_view_on_file_chooser.";
+}
+
+#if defined(ZEBKIT_USE_DBUS)
+// The portal's minimum, as Chromium's dialog asks (kXdgPortalRequiredVersion
+// in select_file_dialog_linux_portal.cc). Below it that dialog falls back to
+// the LinuxUi's, and zebkit's is Chromium's FallbackLinuxUi (no profile builds
+// GTK or Qt), which has none: the chooser is cancelled without a word.
+constexpr uint32_t kFileChooserPortalVersion = 3;
+
+void WarnWithoutPortal() {
+  // The answer is cached by Chromium after the first ask.
+  dbus_xdg::RequestXdgDesktopPortal(
+      dbus_thread_linux::GetSharedSessionBus().get(),
+      dbus_xdg::kFileChooserInterfaceName, base::BindOnce([](uint32_t version) {
+        if (version >= kFileChooserPortalVersion)
+          return;
+        WarnNoDialog(version ? " (it has an older version)"
+                             : " (none answers there)");
+      }));
+}
+#endif
+#endif
 
 }  // namespace
 
@@ -138,9 +186,15 @@ void FileSelectHelper::RunFileChooser(
 
   select_file_dialog_ = ui::SelectFileDialog::Create(this, nullptr);
   if (!select_file_dialog_) {
+#if BUILDFLAG(IS_LINUX)
+    WarnNoDialog(" (this build has no D-Bus, nor GTK or Qt)");
+#endif
     listener->FileSelectionCanceled();
     return;
   }
+#if defined(ZEBKIT_USE_DBUS)
+  WarnWithoutPortal();
+#endif
 
   listener_ = std::move(listener);
   web_contents_ = content::WebContents::FromRenderFrameHost(render_frame_host)
