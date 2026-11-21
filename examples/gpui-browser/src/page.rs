@@ -98,6 +98,9 @@ pub fn connect(view: &View, tab: TabId, events: &UnboundedSender<(TabId, PageEve
     view.on_http_auth(send!(PageEvent::Auth));
     view.on_certificate(send!(PageEvent::Certificate));
     view.on_file_chooser(send!(PageEvent::FileChooser));
+    // A person picks the file, in a dialog: the engine's longest wait (5
+    // minutes) rather than its 30 seconds, after which the choice is cancelled.
+    let _ = view.set_file_chooser_timeout(300_000);
     let keys = serde_json::to_string(RESERVED_KEYS).unwrap();
     let _ = view.set_reserved_keys(&keys);
     view.on_reserved_key(send!(|json: &str| PageEvent::Key(json.to_string())));

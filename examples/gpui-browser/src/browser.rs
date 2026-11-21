@@ -420,9 +420,32 @@ impl Browser {
                 );
             }
             PageEvent::FileChooser(request) => {
-                let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
-                cx.spawn(async move |_, _| {
-                    let chosen = paths.await.ok().and_then(|r| r.ok()).flatten().unwrap_or_default();
+                // The dialog the page asked for: several files, a folder to upload
+                // (<input webkitdirectory>), a directory or a place to save
+                // (File System Access's pickers).
+                let info: serde_json::Value = serde_json::from_str(request.metadata()).unwrap_or_default();
+                let mode = info["mode"].as_str().unwrap_or("open").to_string();
+                let paths = if mode == "save" {
+                    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+                    let name = info["defaultFileName"].as_str().filter(|name| !name.is_empty());
+                    let path = cx.prompt_for_new_path(&home, name);
+                    async move { path.await.map(|r| r.map(|p| p.map(|p| vec![p]))) }.boxed_local()
+                } else {
+                    let folder = mode == "upload-folder" || mode == "directory";
+                    let options = PathPromptOptions { files: !folder, directories: folder, multiple: mode == "open-multiple", prompt: None };
+                    cx.prompt_for_paths(options).boxed_local()
+                };
+                cx.spawn(async move |this, cx| {
+                    let chosen = match paths.await {
+                        Ok(Ok(paths)) => paths.unwrap_or_default(),
+                        // No dialog at all (on Linux, no file chooser portal):
+                        // said, not a silent cancel.
+                        Ok(Err(error)) => {
+                            let _ = this.update(cx, |browser, cx| browser.tell(false, format!("No file dialog: {error}"), cx));
+                            Vec::new()
+                        }
+                        Err(_) => Vec::new(),
+                    };
                     let chosen: Vec<String> = chosen.iter().map(|p| p.to_string_lossy().into_owned()).collect();
                     let chosen: Vec<&str> = chosen.iter().map(String::as_str).collect();
                     let _ = request.respond(&chosen);
