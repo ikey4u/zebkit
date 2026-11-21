@@ -30,7 +30,8 @@ fi
 # build.sh) keeps what the checkout was synced with, instead of syncing it
 # again without them.
 synced_os="$(cut -s -d' ' -f2 "$GCLIENT_DIR/.zebkit-synced" 2>/dev/null | tr '+' ' ' || true)"
-extra_os="$(printf '%s\n' ${ZEBKIT_TARGET_OS:-} $synced_os | grep . | grep -vx "$checkout_os" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+# No other system is no line, which grep reports as a failure.
+extra_os="$(printf '%s\n' ${ZEBKIT_TARGET_OS:-} $synced_os | { grep . | grep -vx "$checkout_os" || true; } | sort -u | tr '\n' ' ' | sed 's/ $//')"
 if [[ -n "$extra_os" ]]; then
     checkout_os="$checkout_os+${extra_os// /+}"
 fi
