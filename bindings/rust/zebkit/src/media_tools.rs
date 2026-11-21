@@ -1,8 +1,10 @@
-//! Synchronous local media tools, with the FFmpeg built into zebkit.
+//! Synchronous media tools for local files and RTMP/RTSP streams, with the
+//! FFmpeg built into zebkit.
 //!
 //! No engine loop or external executable is needed. Run long jobs on worker
 //! threads. argv excludes the program name; no shell parsing takes place.
-//! See docs/MEDIA_TOOLS.md for the supported subset (no encoders/filters).
+//! See docs/MEDIA_TOOLS.md for the supported subset (H.264 and AAC encoders,
+//! no filters).
 use crate::{sys, take_string, Error};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};

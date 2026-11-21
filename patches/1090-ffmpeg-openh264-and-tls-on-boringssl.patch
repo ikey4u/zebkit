@@ -1,0 +1,86 @@
+FFmpeg: H.264 by the engine's OpenH264, and TLS on its BoringSSL.
+
+zebkit's FFmpeg encodes (AAC, and H.264 through FFmpeg's OpenH264 wrapper),
+writes and reads FLV, and streams over RTMP, RTMPS, RTSP and RTSPS
+(scripts/ffmpeg-config.sh). The wrapper and FFmpeg's OpenSSL TLS are linked
+against the engine's own //third_party/openh264 encoder and BoringSSL rather
+than libraries of the system's, which an application of zebkit's cannot be
+assumed to have. BoringSSL has OpenSSL's API but for BIO_read_ex() and two
+functions of DTLS (a protocol zebkit does not build), which tls_openssl.c is
+given here. On Windows, FFmpeg's network uses ws2_32.
+
+FFmpeg's wrapper calls the OpenH264 encoder through its C interface, the
+C++ vtable read as a table of pointers; zebkit's Linux build has Clang's
+relative vtables, whose slots are offsets. The wrapper creates and destroys
+its encoder through //zebkit/ffmpeg/openh264_c_api.cc instead: an object of
+the C layout that calls the C++ one.
+
+--- a/third_party/ffmpeg/BUILD.gn
++++ b/third_party/ffmpeg/BUILD.gn
+@@ -286,6 +286,24 @@
+     # zebkit: VP8 and VP9 decoded by the engine's libvpx, through FFmpeg's
+     # wrapper, rather than by a second decoder of FFmpeg's own.
+     deps += [ "//third_party/libvpx" ]
++
++    # zebkit: H.264 encoded by the engine's OpenH264 through FFmpeg's
++    # wrapper (libopenh264enc.c includes <wels/codec_api.h>), and TLS for
++    # RTMPS and RTSPS on the engine's BoringSSL (tls_openssl.c), rather than
++    # libraries of the system's.
++    deps += [
++      "//third_party/boringssl",
++      "//third_party/openh264:encoder",
++    ]
++    include_dirs += [ "//third_party/openh264/src/codec/api" ]
++    # The encoder for FFmpeg's C wrapper with the C interface's layout,
++    # whatever the C++ vtable ABI (relative on Linux).
++    sources += [ "//zebkit/ffmpeg/openh264_c_api.cc" ]
++
++    # FFmpeg's network (RTMP, RTSP) on Windows' sockets.
++    if (is_win) {
++      libs += [ "ws2_32.lib" ]
++    }
+   }
+ 
+   configs -= [ "//build/config/compiler:chromium_code" ]
+--- a/third_party/ffmpeg/libavcodec/libopenh264enc.c
++++ b/third_party/ffmpeg/libavcodec/libopenh264enc.c
+@@ -19,6 +19,11 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
++/* zebkit: the encoder through an object of OpenH264's C layout
++ * (//zebkit/ffmpeg/openh264_c_api.cc), which C can call under any C++ vtable
++ * ABI; zebkit's Linux build has Clang's relative vtables. */
++#define WelsCreateSVCEncoder zebkit_openh264_create_encoder
++#define WelsDestroySVCEncoder zebkit_openh264_destroy_encoder
+ #include <wels/codec_api.h>
+ #include <wels/codec_ver.h>
+ 
+--- a/third_party/ffmpeg/libavformat/tls_openssl.c
++++ b/third_party/ffmpeg/libavformat/tls_openssl.c
+@@ -34,6 +34,25 @@
+ #include <openssl/ssl.h>
+ #include <openssl/err.h>
+ #include <openssl/x509v3.h>
++
++#ifdef OPENSSL_IS_BORINGSSL
++/* zebkit: FFmpeg's TLS on BoringSSL, which has OpenSSL's API but for three
++ * functions. BIO_read_ex() is BIO_read() with its count apart; the two of
++ * DTLS serve only the dtls protocol (WHIP), which zebkit does not build: the
++ * link MTU is BoringSSL's SSL_set_mtu(), and the data MTU unknown (0). */
++static int BIO_read_ex(BIO *bio, void *data, size_t length, size_t *read_bytes)
++{
++    int n = BIO_read(bio, data, length > INT_MAX ? INT_MAX : (int)length);
++    *read_bytes = n > 0 ? (size_t)n : 0;
++    return n > 0;
++}
++#define DTLS_set_link_mtu(ssl, mtu) SSL_set_mtu((ssl), (mtu))
++static size_t zebkit_dtls_get_data_mtu(const SSL *ssl)
++{
++    return 0;
++}
++#define DTLS_get_data_mtu(ssl) zebkit_dtls_get_data_mtu(ssl)
++#endif
+ #if HAVE_SYS_TIME_H
+ #include <sys/time.h>
+ #endif

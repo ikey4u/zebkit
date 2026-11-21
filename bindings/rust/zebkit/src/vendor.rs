@@ -10,7 +10,9 @@
 ///
 /// It is Chromium's, with what playing media in a web page needs from it:
 /// demuxers for MP4, WebM, Ogg, MP3, AAC, FLAC and WAV, and decoders for H.264,
-/// AAC, MP3, Vorbis, FLAC, PCM and Opus (as `libopus`). It has no encoders.
+/// AAC, MP3, Vorbis, FLAC, PCM and Opus (as `libopus`); and, for
+/// applications, encoders for H.264 (the engine's OpenH264) and AAC, FLV in
+/// and out, and RTMP(S) and RTSP(S) for live streams (`docs/MEDIA_TOOLS.md`).
 /// VP8, VP9 and AV1 are decoded by libvpx and dav1d, which are inside the
 /// engine too, with C headers of their own (`<zebkit/vendor/libvpx.h>`,
 /// `<zebkit/vendor/dav1d.h>`).

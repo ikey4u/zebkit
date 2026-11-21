@@ -1,5 +1,6 @@
 """zebkit.media_tools, the engine's FFmpeg as a library, without the engine
-started: probe, remux, extraction, options, cancellation, concurrency.
+started: probe, remux, extraction, H.264/AAC encoding, FLV, RTMP, RTMPS and
+RTSP over loopback, options, cancellation, concurrency.
 
     ZEBKIT_DIR=<package> ZEBKIT_MEDIA_PROBE=<media-probe> python3 tests/engine/media_tools.py
 """
@@ -8,9 +9,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import socket
+import ssl
 import struct
 import subprocess
 import tempfile
+import threading
+import time
 import wave
 
 import sys
@@ -120,7 +125,10 @@ def main():
                 ['-i', source, '-c:a', 'pcm_s16le', '-ac', '0', fresh],
                 ['-i', source, '-c:v', 'rawvideo', '-s', '99999x2', fresh],
                 ['-i', source, '-c', 'copy', '-f', 'webm', fresh],  # incompatible codecs
-                ['-i', source, '-c:a', 'copy', fresh],
+                ['-i', source, '-c:a', 'mp3', fresh],
+                ['-i', source, '-c:v', 'h264', '-s', '81x45', fresh],  # odd width
+                ['-i', source, '-c', 'copy', '-b:v', '1M', fresh],  # bit rate without an encoder
+                ['-i', source, '-c', 'copy', 'rtmp://127.0.0.1:1/live/x.mp4', '-f', 'mp4'],
                 ['-i'],
             ]:
                 fails(lambda args=args: ffmpeg(args))
@@ -151,6 +159,139 @@ def main():
                 fails(lambda bad=bad: ffmpeg(['-i', str(source), *bad, '-c', 'copy', str(root / 'never.mp4')]))
             fails(lambda: ffmpeg(['-i', str(source), '-ss', '%.3f' % (whole * 100), '-t', '1', '-c', 'copy', str(root / 'none.mp4')]))
             assert not (root / 'none.mp4').exists()
+
+        with part('H.264 and AAC encoding, FLV and ADTS'):
+            encoded = root / 'encoded.mp4'
+            ffmpeg(['-i', str(FIXTURES / 'clip.webm'), '-c:v', 'h264', '-b:v', '500k', '-g', '24', '-c:a', 'aac', str(encoded)])
+            streams = {s['codec_type']: s for s in probe(encoded)['streams']}
+            assert streams['video']['codec_name'] == 'h264' and streams['audio']['codec_name'] == 'aac', streams
+            frames = root / 'encoded.rgba'
+            extract_video(encoded, frames, size=(16, 9))
+            source_frames = root / 'source.rgba'
+            extract_video(FIXTURES / 'clip.webm', source_frames, size=(16, 9))
+            assert frames.stat().st_size == source_frames.stat().st_size, (frames.stat().st_size, source_frames.stat().st_size)
+            # One kind encoded, the other copied; a size of its own.
+            small = root / 'small.mkv'
+            ffmpeg(['-i', str(source), '-c:v', 'h264', '-s', '160x90', str(small)])
+            video = next(s for s in probe(small)['streams'] if s['codec_type'] == 'video')
+            assert (video['width'], video['height'], video['codec_name']) == (160, 90, 'h264'), video
+            flv = root / 'copy.flv'
+            ffmpeg(['-i', str(source), '-c', 'copy', str(flv)])
+            info = probe(flv)
+            assert info['format']['format_name'] == 'flv' and {s['codec_name'] for s in info['streams']} == {'h264', 'aac'}
+            adts = root / 'speech.aac'
+            ffmpeg(['-i', str(FIXTURES / 'clip.webm'), '-vn', '-c:a', 'aac', '-ar', '16000', '-ac', '1', str(adts)])
+            audio = probe(adts)['streams'][0]
+            assert (audio['codec_name'], audio['sample_rate'], audio['channels']) == ('aac', '16000', 1), audio
+
+        with part('RTMP, RTMPS and RTSP: a stream published and received over loopback'):
+            def port():
+                with socket.socket() as s:
+                    s.bind(('127.0.0.1', 0))
+                    return s.getsockname()[1]
+
+            def relay(listen, publish, received):
+                """Receives with -listen 1 on one thread while another publishes."""
+                outcome = {}
+                def receive():
+                    try:
+                        ffmpeg(['-listen', '1', '-rw_timeout', '30000000', *listen, '-c', 'copy', str(received)])
+                        outcome['ok'] = True
+                    except Exception as e:  # noqa: BLE001
+                        outcome['error'] = e
+                thread = threading.Thread(target=receive)
+                thread.start()
+                # The listener binds after its thread starts; a publisher before
+                # it is refused, and tries again.
+                for attempt in range(50):
+                    try:
+                        ffmpeg(['-re', '-t', '3', '-i', str(source), '-c', 'copy', *publish])
+                        break
+                    except Error:
+                        if attempt == 49 or not thread.is_alive():
+                            raise
+                        time.sleep(0.2)
+                thread.join(60)
+                assert not thread.is_alive() and outcome.get('ok'), outcome
+                info = probe(received)
+                assert {s['codec_name'] for s in info['streams']} == {'h264', 'aac'}, info
+                assert 1.5 < float(info['format']['duration']) < 4.5, info['format']
+
+            rtmp = port()
+            relay(['-i', f'rtmp://127.0.0.1:{rtmp}/live/test'], [f'rtmp://127.0.0.1:{rtmp}/live/test'], root / 'rtmp.flv')
+            # RTMPS: FFmpeg serves plain RTMP only, so a TLS proxy of Python's
+            # in front of it; the publisher speaks TLS on BoringSSL and
+            # verifies the proxy's certificate.
+            key, cert = root / 'key.pem', root / 'cert.pem'
+            stranger_key, stranger = root / 'stranger-key.pem', root / 'stranger.pem'
+            for k, c in ((key, cert), (stranger_key, stranger)):
+                subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=127.0.0.1',
+                                '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', str(k), '-out', str(c)],
+                               check=True, capture_output=True)
+
+            def tls_proxy(backend):
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.load_cert_chain(str(cert), str(key))
+                server = socket.socket()
+                server.bind(('127.0.0.1', 0))
+                server.listen()
+
+                def pump(a, b):
+                    try:
+                        while data := a.recv(65536):
+                            b.sendall(data)
+                    except OSError:
+                        pass
+                    for s in (a, b):
+                        try:
+                            s.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+
+                def serve():
+                    while True:
+                        try:
+                            raw, _ = server.accept()
+                        except OSError:
+                            return
+                        try:
+                            client = context.wrap_socket(raw, server_side=True)
+                        except (ssl.SSLError, OSError):
+                            raw.close()  # a client that refused the certificate
+                            continue
+                        try:
+                            upstream = socket.create_connection(('127.0.0.1', backend))
+                        except OSError:
+                            client.close()
+                            continue
+                        for x, y in ((client, upstream), (upstream, client)):
+                            threading.Thread(target=pump, args=(x, y), daemon=True).start()
+                threading.Thread(target=serve, daemon=True).start()
+                return server
+
+            backend = port()
+            proxy = tls_proxy(backend)
+            front = proxy.getsockname()[1]
+            relay(['-i', f'rtmp://127.0.0.1:{backend}/live/test'],
+                  ['-tls_verify', '1', '-ca_file', str(cert), f'rtmps://127.0.0.1:{front}/live/test'], root / 'rtmps.flv')
+            # A certificate it cannot verify: refused before any RTMP.
+            fails(lambda: ffmpeg(['-tls_verify', '1', '-ca_file', str(stranger), '-rw_timeout', '5000000', '-t', '1',
+                                  '-i', str(source), '-c', 'copy', f'rtmps://127.0.0.1:{front}/live/test']))
+            proxy.close()
+            # FFmpeg has no RTMPS or RTSPS server.
+            fails(lambda: ffmpeg(['-listen', '1', '-i', f'rtmps://127.0.0.1:{port()}/live/x', '-c', 'copy', str(root / 'never.flv')]))
+            rtsp = port()
+            relay(['-rtsp_transport', 'tcp', '-i', f'rtsp://127.0.0.1:{rtsp}/live'],
+                  ['-rtsp_transport', 'tcp', f'rtsp://127.0.0.1:{rtsp}/live'], root / 'rtsp.mkv')
+            # A listener waiting for a publisher who never comes is cancelled
+            # through FFmpeg's interrupt callback, inside its wait.
+            started = time.monotonic()
+            fails(lambda: ffmpeg(['-listen', '1', '-i', f'rtmp://127.0.0.1:{port()}/live/none', '-c', 'copy', str(root / 'never.flv')],
+                                 progress=lambda n, t: time.monotonic() - started < 1), Cancelled)
+            assert time.monotonic() - started < 10
+            assert not (root / 'never.flv').exists()
+            # Nobody listening: a publisher fails rather than waits.
+            fails(lambda: ffmpeg(['-rw_timeout', '2000000', '-i', str(source), '-c', 'copy', f'rtmp://127.0.0.1:{port()}/live/x']))
 
         with part('concurrent independent processing without engine initialization'):
             def parallel(i):

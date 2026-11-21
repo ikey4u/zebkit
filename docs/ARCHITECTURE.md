@@ -46,7 +46,8 @@ application process                          child processes (zebkit-helper)
   Views on Linux and Windows, Cocoa on macOS, with titles, sizes and limits, and
   views attached inside another view's window, as a browser inside an
   application. Without a display, or with `--headless`, a view has no
-  window and its page still loads, runs and draws (`zebkit_view_capture`). An
+  window and its page still loads, runs and draws (`zebkit_view_capture`, the
+  DOM and WebGL together; WebGL without a GPU is opt-in, SwiftShader). An
   off-screen view has none in any process: on Linux and macOS, windows and
   off-screen views live in one process (`tests/engine/mixed_views.c`).
 - **Input methods in windows.** Chromium gets a Linux input method from its

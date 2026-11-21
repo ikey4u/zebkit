@@ -58,7 +58,7 @@ def probe(path):
 
 
 def ffmpeg(argv, *, progress=None):
-    """Process a local file. progress(packets, time_us_or_None) returns bool.
+    """Process a local file or an RTMP/RTSP stream (docs/MEDIA_TOOLS.md). progress(packets, time_us_or_None) returns bool.
 
     Return False to cancel; callback exceptions are re-raised after native
     cleanup. A callback runs synchronously on the calling thread.

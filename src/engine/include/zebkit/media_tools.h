@@ -9,19 +9,26 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Called on the calling thread, initially and while processing packets.
+/* Called on the calling thread, initially and while processing packets, and
+ * about ten times a second while FFmpeg waits on the network.
  * Return nonzero to continue, zero to cancel. time_us can be INT64_MIN when
  * unknown. Do not throw/unwind through the callback. */
 typedef int (*zebkit_media_progress_func)(int64_t packets, int64_t time_us, void *data);
-/* argv excludes the executable name. All paths are local regular files.
+/* argv excludes the executable name. A path is a local regular file, or a
+ * live stream's rtmp://, rtmps://, rtmpt://, rtmpts://, rtsp:// or rtsps://
+ * address (input, or output).
  * ffprobe: [-show_format] [-show_streams] [-of json|-print_format json]
  *          [-i] INPUT
  * With neither show switch, both format and streams are returned.
- * ffmpeg: [-y|-n] [-ss SECONDS] [-t SECONDS] -i INPUT [-map 0:INDEX]...
- *   [-vn] [-an] (-c|-codec copy | -c:a pcm_s16le | -c:v rawvideo) [-f FORMAT]
- *   [-ar RATE] [-ac CHANNELS] [-s WIDTHxHEIGHT] [-frames:v COUNT]
+ * ffmpeg: [-y|-n] [-re] [-rtsp_transport tcp|udp] [-rw_timeout MICROSECONDS]
+ *   [-listen 0|1] [-tls_verify 0|1] [-ca_file F] [-cert_file F] [-key_file F]
+ *   [-ss SECONDS] [-t SECONDS] -i INPUT [-map 0:INDEX]... [-vn] [-an]
+ *   (-c|-codec copy | [-c:v copy|h264|libopenh264] [-c:a copy|aac]
+ *    | -c:a pcm_s16le | -c:v rawvideo) [-f FORMAT] [-b:v BITS] [-b:a BITS]
+ *   [-g FRAMES] [-ar RATE] [-ac CHANNELS] [-s WIDTHxHEIGHT] [-frames:v COUNT]
  *   [-pix_fmt rgba] OUTPUT
- * copy supports MP4/MOV/Matroska/WebM; PCM supports WAV/s16le; video RGBA.
+ * copy and encoding write MP4/MOV/Matroska/WebM/FLV/ADTS, RTMP (FLV) and
+ * RTSP; H.264 is OpenH264's, AAC FFmpeg's; PCM supports WAV/s16le; video RGBA.
  * Unsupported switches/codecs fail explicitly. See docs/MEDIA_TOOLS.md.
  * Existing outputs are preserved unless -y; output is staged in a sibling
  * temporary file and published only on success. No partial output on cancel.

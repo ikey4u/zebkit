@@ -17,7 +17,8 @@
 // which the codec's parser splits into frames. The engine's FFmpeg also
 // opens container files (MP4, WebM, Matroska) with libavformat, writes them
 // with its muxers, scales video with libswscale and resamples audio with
-// libswresample; it has no encoders.
+// libswresample, encodes H.264 (OpenH264) and AAC, and streams over RTMP
+// and RTSP (docs/MEDIA_TOOLS.md).
 
 #include <zebkit/vendor/ffmpeg.h>
 

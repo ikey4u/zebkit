@@ -807,7 +807,7 @@ size_t size = ZSTD_compress(out, capacity, data, length, 19);
 | libxml2 | `libxml.h` | 1,008 | XML and HTML parsing, the tree, XPath, the reader and writer |
 | libwebp | `libwebp.h` | 105 | Decoding, encoding, demuxing, muxing |
 | libjpeg-turbo | `libjpeg.h` | 63 | The libjpeg API |
-| FFmpeg | `ffmpeg.h` | 611 | zebkit's configuration (`src/ffmpeg`, `scripts/ffmpeg-config.sh`): Chrome's demuxers and decoders, and for applications libswresample, libswscale, the file protocol, the MP4, MOV, Matroska and WebM muxers, VP8 and VP9 through the engine's libvpx; no encoders |
+| FFmpeg | `ffmpeg.h` | 611 | zebkit's configuration (`src/ffmpeg`, `scripts/ffmpeg-config.sh`): Chrome's demuxers and decoders, and for applications libswresample, libswscale, the file protocol, the MP4, MOV, Matroska and WebM muxers, VP8 and VP9 through the engine's libvpx; encoders for H.264 (the engine's OpenH264) and AAC; FLV in and out; RTMP, RTMPT, RTSP and, on the engine's BoringSSL, RTMPS, RTMPTS and RTSPS (`patches/1090`) |
 | dav1d | `dav1d.h` | 19 | AV1 decoding |
 | Opus | `opus.h` | 71 | Encoding and decoding |
 | libvpx | `libvpx.h` | 37 | VP8 and VP9, decoding and encoding |

@@ -1,9 +1,17 @@
 static const FFInputFormat * const demuxer_list[] = {
     &ff_aac_demuxer,
+    &ff_asf_demuxer,
     &ff_flac_demuxer,
+    &ff_flv_demuxer,
+    &ff_live_flv_demuxer,
     &ff_matroska_demuxer,
     &ff_mov_demuxer,
     &ff_mp3_demuxer,
+    &ff_mpegts_demuxer,
     &ff_ogg_demuxer,
+    &ff_rm_demuxer,
+    &ff_rtp_demuxer,
+    &ff_rtsp_demuxer,
+    &ff_sdp_demuxer,
     &ff_wav_demuxer,
     NULL };

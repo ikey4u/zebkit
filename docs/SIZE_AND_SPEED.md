@@ -626,7 +626,9 @@ core (the animated page, 6.3% against 5.9%), memory 671 against 858 MB.
 - **Unwind tables.** Official builds leave them out on Linux already.
 - **SwiftShader.** Kept on Linux: agents run on servers without a GPU, where
   it is the only way to composite and run WebGL. Left out on macOS, where
-  every machine has a Metal GPU.
+  every machine has a Metal GPU. WebGL on it is opt-in, as in Chrome:
+  `--use-angle=swiftshader --enable-unsafe-swiftshader` (`zebkit_view_capture`
+  in `<zebkit/zebkit.h>`).
 - **Open codecs only.** Ruled out: H.264 and AAC are required.
 - **Compressing the executable.** Ruled out: every renderer process would
   unpack it again.

@@ -16,6 +16,12 @@
 #   and WebM muxers, and VP8 and VP9 decoding through the engine's libvpx
 #   (FFmpeg's wrapper is 1.1 MiB smaller than its own VP9 decoder)
 #
+#   encoding, for applications that record or stream: AAC by FFmpeg's own
+#   encoder, H.264 by the engine's OpenH264 (BSD; x264 would make the engine
+#   GPL) through FFmpeg's wrapper; FLV in and out; and the network for live
+#   streams: RTMP, RTMPT and, over TLS on the engine's BoringSSL, RTMPS and
+#   RTMPTS; RTSP and RTSPS in and out over RTP, UDP and TCP (patches/1090)
+#
 # The work is Chromium's own tools for FFmpeg (media/ffmpeg/scripts): FFmpeg's
 # configure and make for each platform zebkit builds (Linux x86-64, macOS
 # arm64 and x86-64, and Windows x64 from Linux), then generate_gn.py, which finds the sources of the
@@ -38,6 +44,17 @@ FLAGS=(
     --enable-libvpx
     --enable-decoder=libvpx_vp8,libvpx_vp9
     "--extra-cflags=-I$SRC_DIR/third_party/libvpx/source/libvpx"
+    # Encoding and live streams.
+    --enable-encoder=aac,libopenh264
+    --enable-libopenh264
+    --enable-muxer=flv,rtsp,rtp,adts
+    --enable-demuxer=flv,live_flv,rtsp,sdp,rtp
+    --enable-bsf=h264_mp4toannexb,aac_adtstoasc,extract_extradata
+    --enable-network
+    --enable-openssl
+    --enable-protocol=tcp,udp,rtp,tls,rtmp,rtmps,rtmpt,rtmpts
+    "--extra-cflags=-I$SRC_DIR/third_party/openh264/src/codec/api"
+    "--extra-cflags=-I$SRC_DIR/third_party/boringssl/src/include"
 )
 PLATFORMS=("linux x64" "mac arm64" "mac x64" "win x64")
 
@@ -63,9 +80,15 @@ if (( ! windows_sdk )); then
     fi
 fi
 
-# configure checks that libvpx links, which the engine's does in the end:
-# a library with the two entry points does for the check.
-stub_libvpx() {
+# configure checks that libvpx, OpenH264 and OpenSSL link, which the engine's
+# libvpx, OpenH264 and BoringSSL do in the end: a library with the entry
+# points it looks for does for each check, and for OpenH264, which configure
+# finds with pkg-config only, a pkg-config file. BoringSSL lacks the one
+# function configure checks OpenSSL with (DTLS_get_data_mtu, of DTLS, which
+# zebkit does not build): a header of the stand-ins' declares it for the check,
+# and patches/1090 gives FFmpeg's TLS what BoringSSL does not have. The
+# header comes before BoringSSL's, which it includes next.
+stub_libs() {
     local os="$1" arch="$2" dir="$CACHE_DIR/ffmpeg-vpx-stub/$1"
     # The systems' first processors keep the name they had (it is in each
     # configuration's comment); macOS on Intel has one of its own.
@@ -74,13 +97,25 @@ stub_libvpx() {
     [[ "$os" == mac && "$arch" == arm64 ]] && target=arm64-apple-macos13
     [[ "$os" == mac && "$arch" == x64 ]] && target=x86_64-apple-macos13
     [[ "$os" == win ]] && target=x86_64-pc-windows-msvc
-    mkdir -p "$dir"
-    printf 'void *vpx_codec_vp8_dx(void) { return 0; }\nvoid *vpx_codec_vp9_dx(void) { return 0; }\n' > "$dir/stub.c"
-    clang --target="$target" -c "$dir/stub.c" -o "$dir/stub.o"
-    rm -f "$dir/libvpx.a" "$dir/vpx.lib"
-    llvm-ar rcs "$dir/libvpx.a" "$dir/stub.o"
-    # MSVC's naming, for link.exe's -lvpx.
-    [[ "$os" == win ]] && cp "$dir/libvpx.a" "$dir/vpx.lib"
+    mkdir -p "$dir/include/openssl" "$dir/pkgconfig"
+    printf 'void *vpx_codec_vp8_dx(void) { return 0; }\nvoid *vpx_codec_vp9_dx(void) { return 0; }\n' > "$dir/vpx.c"
+    printf 'void WelsGetCodecVersion(void) {}\n' > "$dir/openh264.c"
+    printf 'unsigned long DTLS_get_data_mtu(const void *ssl) { return 0; }\n' > "$dir/ssl.c"
+    printf 'void OPENSSL_init_crypto(void) {}\n' > "$dir/crypto.c"
+    printf '#include_next <openssl/ssl.h>\n#ifdef OPENSSL_IS_BORINGSSL\nsize_t DTLS_get_data_mtu(const SSL *ssl);\n#endif\n' \
+        > "$dir/include/openssl/ssl.h"
+    # No Cflags: the headers are in FLAGS, and configure hands a pkg-config
+    # file's Cflags to the linker too, which macOS's ld64.lld refuses.
+    printf 'Name: openh264\nDescription: the engine'"'"'s OpenH264\nVersion: 2.6.0\nCflags:\nLibs: -L%s -lopenh264\n' \
+        "$dir" > "$dir/pkgconfig/openh264.pc"
+    local name
+    for name in vpx openh264 ssl crypto; do
+        clang --target="$target" -c "$dir/$name.c" -o "$dir/$name.o"
+        rm -f "$dir/lib$name.a" "$dir/$name.lib"
+        llvm-ar rcs "$dir/lib$name.a" "$dir/$name.o"
+        # MSVC's naming, for link.exe's -l<name>.
+        [[ "$os" == win ]] && cp "$dir/lib$name.a" "$dir/$name.lib"
+    done
     echo "$dir"
 }
 
@@ -94,12 +129,13 @@ for platform in "${PLATFORMS[@]}"; do
         || die "no macOS SDK to build FFmpeg for macOS; run scripts/zsdk-create.sh first, or FFMPEG_ONLY=linux"
     log "configuring and building FFmpeg for $platform"
     # shellcheck disable=SC2086
-    stub="$(stub_libvpx $platform)"
+    stub="$(stub_libs $platform)"
     libpath="-L$stub"
     [[ "${platform%% *}" == win ]] && libpath="/LIBPATH:$stub"
     # shellcheck disable=SC2086
-    (cd "$ffmpeg" && python3 "$scripts/build_ffmpeg.py" $platform --branding Chrome -- "${FLAGS[@]}" \
-        "--extra-ldflags=$libpath")
+    (cd "$ffmpeg" && PKG_CONFIG_PATH="$stub/pkgconfig" PKG_CONFIG_LIBDIR="$stub/pkgconfig" \
+        python3 "$scripts/build_ffmpeg.py" $platform --branding Chrome -- \
+        "--extra-cflags=-I$stub/include" "${FLAGS[@]}" "--extra-ldflags=$libpath")
 done
 
 # Only over every system's builds: a list of two would leave Windows without sources.
@@ -122,7 +158,36 @@ for platform in "${PLATFORMS[@]}"; do
     ln -s "$ffmpeg/build.$arch.$os" "$work/builds/build.$arch.$os"
 done
 # It writes the files it renames relative to where it runs: in the copy.
-(( regenerate )) && (cd "$copy" && python3 -W ignore "$scripts/generate_gn.py" -s "$copy" -b "$work/builds")
+# Chromium's generate_gn.py, with two changes for zebkit's components. udp.c,
+# of the network for RTSP, includes Apple's "TargetConditionals.h" in quotes,
+# which the script follows as one of FFmpeg's files and does not find: a
+# system header, in the list it skips for not being there. And some of what
+# it leaves out for size is called now (KEEP).
+(( regenerate )) && (cd "$copy" && python3 -W ignore - -s "$copy" -b "$work/builds" <<PY)
+import sys
+sys.path.insert(0, "$scripts")
+sys.argv[0] = "$scripts/generate_gn.py"
+import os
+import generate_gn
+generate_gn.IGNORED_INCLUDE_FILES += ["TargetConditionals.h", "udplite.h"]
+# Objects the script leaves out for size which zebkit's FFmpeg calls: SDP for
+# RTSP, HMAC (with the SHA-512 it offers), DES and RC4 for RTMP's and RTSP's
+# handshakes and sign-ins, least
+# squares for the AAC encoder, and the audio FIFO, which the media tools and
+# applications (<zebkit/vendor/ffmpeg.h>) frame audio for encoders with.
+KEEP = {"libavformat/sdp.o", "libavutil/hmac.o", "libavutil/sha512.o", "libavutil/des.o",
+        "libavutil/rc4.o", "libavutil/lls.o", "libavutil/audio_fifo.o"}
+clean = generate_gn.CleanObjectFiles
+def keep_what_zebkit_calls(object_files):
+    before = list(object_files)
+    clean(object_files)
+    for name in before:
+        if name.replace(os.sep, "/") in KEEP and name not in object_files:
+            object_files.append(name)
+    return object_files
+generate_gn.CleanObjectFiles = keep_what_zebkit_calls
+generate_gn.main()
+PY
 
 # Into a copy, and over $out by content: a file that did not change keeps its
 # time, and a build going on elsewhere does not see it change.
@@ -168,7 +233,9 @@ for path in sorted((out / "autorename").rglob("autorename_*")):
 text = text.replace('import("ffmpeg_options.gni")', 'import("//third_party/ffmpeg/ffmpeg_options.gni")')
 # generate_gn.py leaves out sdp.c for size, which nothing of Chromium's
 # FFmpeg calls; the MOV and MP4 muxers do (its stubs, without RTP).
-text += """
+# With RTSP, which needs it whole, the script has it already.
+if '"libavformat/sdp.c"' not in text:
+    text += """
 # zebkit: sdp.c, which the MOV and MP4 muxers call; Chromium's script leaves
 # it out (scripts/ffmpeg-config.sh).
 ffmpeg_c_sources += [ "libavformat/sdp.c" ]

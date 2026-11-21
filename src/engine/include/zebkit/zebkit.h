@@ -632,7 +632,20 @@ typedef void (*zebkit_capture_func)(zebkit_view *view, const uint8_t *png, size_
 
 /*
  * A picture of what the view shows, as PNG bytes, valid during @func; or
- * @error. Chrome's Page.captureScreenshot: with or without a window.
+ * @error. Chrome's Page.captureScreenshot: with or without a window. It is the
+ * page as composited, its DOM and its WebGL and 2D canvases together.
+ *
+ * WebGL needs a GPU Chromium accepts. Where there is none (a server, a
+ * virtual machine, Mesa's llvmpipe, which Chromium blocklists) a page has no
+ * WebGL, as in Chrome, and its canvas is blank. Software WebGL is opt-in,
+ * with Chromium's switches given to zebkit_init():
+ *
+ *     --use-angle=swiftshader --enable-unsafe-swiftshader
+ *
+ * (SwiftShader, on Linux and Windows; on macOS every machine has a Metal
+ * GPU). Chrome calls it unsafe for untrusted pages: shaders are compiled to
+ * code on the CPU. --enable-unsafe-swiftshader alone falls back only after a
+ * GPU process has failed, which loses a page's first WebGL context.
  */
 ZEBKIT_API void zebkit_view_capture(zebkit_view *view, zebkit_capture_func func, void *data);
 
