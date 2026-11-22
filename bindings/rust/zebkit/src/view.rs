@@ -612,7 +612,8 @@ impl View {
     }
 
     /// What zebkit decides for this view, while it runs (`<zebkit/hooks.h>`):
-    /// thirdPartyCookies, dialogs, downloads, newWindows. All of it applies or none.
+    /// thirdPartyCookies, dialogs, downloads, newWindows, webrtcIpHandlingPolicy.
+    /// All of it applies or none.
     pub fn set_runtime_settings(&self, json: &str) -> Result<(), Error> {
         let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
         if json.contains('\0') { return Err(Error::new("runtime settings contain NUL")); }

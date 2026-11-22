@@ -1282,6 +1282,10 @@ void HandlePopup(content::WebContents* opener,
   made->inherits_policy_ = true;
   made->popup_policy_ = view->popup_policy_;
   made->deny_downloads_ = view->deny_downloads_;
+  // The opener's WebRTC policy if it has one of its own, else the engine's,
+  // which the popup's contents already have (Window::CreateForContents).
+  made->webrtc_ip_policy_ = view->webrtc_ip_policy_;
+  ApplyWebRtcIpPolicy(popup->web_contents(), made);
   made->navigation_fail_closed_ = view->navigation_fail_closed_;
   made->permission_timeout_ms_ = view->permission_timeout_ms_;
   made->navigation_timeout_ms_ = view->navigation_timeout_ms_;

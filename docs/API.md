@@ -484,12 +484,19 @@ The getters give `{"explicit": ..., "effective": ...}`.
 | `newWindows` | `block-without-gesture`, `allow`, `block` | engine, view | `block-without-gesture` |
 | `spareRenderer` | boolean | engine | `false` |
 | `clientCertificateStores` | boolean | engine | `false` |
+| `webrtcIpHandlingPolicy` | `default`, `default_public_and_private_interfaces`, `default_public_interface_only`, `disable_non_proxied_udp` (Chromium's names) | engine, view | `--force-webrtc-ip-handling-policy`, else `default` |
 
 A view's value goes before the engine's, except `thirdPartyCookies`. `--zebkit-allow-third-party-cookies`
 and `--zebkit-spare-renderer` stay the startup defaults, as does `--zebkit-client-certificate-stores`
 for `clientCertificateStores`: whether a TLS server's request for a client certificate is offered the
 operating system's identities (see the client certificate hook). Cookies change asynchronously, and a document
-may keep those it has read.
+may keep those it has read. `webrtcIpHandlingPolicy` goes to open pages without a reload, for the
+connections they make next, and stays across navigations; a popup starts with its opener's. With
+`disable_non_proxied_udp` a page gets no local address and nothing is announced over mDNS, the multicast
+that makes macOS ask whether the application may find devices on the local network. Names a page made
+under a looser policy before the change are still announced for a few seconds (Chromium announces a
+name for each local address, one every two seconds): set the policy before pages gather, at startup for
+the engine. The library's own pages keep `disable_non_proxied_udp` whatever is set.
 
 ## Runtime document permissions
 

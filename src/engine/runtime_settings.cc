@@ -26,6 +26,8 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "zebkit/engine/engine.h"
 #include "zebkit/engine/page_hooks.h"
 #include "zebkit/engine/page_internal.h"
@@ -52,6 +54,23 @@ constexpr Name<zebkit_popup_policy> kWindows[] = {
     {"allow", ZEBKIT_POPUP_POLICY_ALLOW},
     {"block", ZEBKIT_POPUP_POLICY_BLOCK},
 };
+
+// WebRTC's IP handling policies, by Chromium's own names.
+const char* const kWebRtcPolicies[] = {
+    blink::kWebRTCIPHandlingDefault,
+    blink::kWebRTCIPHandlingDefaultPublicAndPrivateInterfaces,
+    blink::kWebRTCIPHandlingDefaultPublicInterfaceOnly,
+    blink::kWebRTCIPHandlingDisableNonProxiedUdp,
+};
+std::optional<std::string> WebRtcPolicyOf(const base::Value& value) {
+  if (value.is_string()) {
+    for (const char* name : kWebRtcPolicies) {
+      if (value.GetString() == name)
+        return std::string(name);
+    }
+  }
+  return std::nullopt;
+}
 
 template <typename T, size_t N>
 std::optional<T> ValueOf(const Name<T> (&names)[N], const base::Value& value) {
@@ -84,10 +103,11 @@ struct EngineSettings {
   std::optional<bool> deny_downloads;
   std::optional<zebkit_popup_policy> new_windows;
   std::optional<bool> client_certificate_stores;
+  std::optional<std::string> webrtc_ip_policy;
 };
 EngineSettings& Engine() {
-  static EngineSettings settings;
-  return settings;
+  static base::NoDestructor<EngineSettings> settings;
+  return *settings;
 }
 // Between StartRuntimeSettings() and StopRuntimeSettings(); the contexts known are
 // alive only then.
@@ -144,6 +164,7 @@ bool Validate(const base::DictValue& settings, bool engine, std::string* error) 
     else if (key == "dialogs") valid |= ValueOf(kDialogs, value).has_value();
     else if (key == "downloads") valid |= ValueOf(kDownloads, value).has_value();
     else if (key == "newWindows") valid |= ValueOf(kWindows, value).has_value();
+    else if (key == "webrtcIpHandlingPolicy") valid |= WebRtcPolicyOf(value).has_value();
     else if (key == "clientCertificateStores") {
       if (!engine) {
         *error = "clientCertificateStores is the whole engine's: zebkit_set_engine_settings";
@@ -224,6 +245,30 @@ void SpareAfterLoad(content::BrowserContext* context) {
 std::optional<zebkit_dialog_policy> EngineDialogPolicy() { return Engine().dialogs; }
 std::optional<zebkit_popup_policy> EnginePopupPolicy() { return Engine().new_windows; }
 bool EngineDeniesDownloads() { return Engine().deny_downloads.value_or(false); }
+std::string EffectiveWebRtcIpPolicy(const zebkit_view* view) {
+  if (view && view->webrtc_ip_policy_)
+    return *view->webrtc_ip_policy_;
+  if (Engine().webrtc_ip_policy)
+    return *Engine().webrtc_ip_policy;
+  // As before the setting: the switch, for every page, in Chromium's terms
+  // (a name it does not know is its default).
+  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch("force-webrtc-ip-handling-policy")) {
+    return blink::ToString(blink::ToWebRTCIPHandlingPolicy(
+        command_line->GetSwitchValueASCII("force-webrtc-ip-handling-policy")));
+  }
+  return blink::kWebRTCIPHandlingDefault;
+}
+void ApplyWebRtcIpPolicy(content::WebContents* contents, const zebkit_view* view) {
+  if (!contents)
+    return;
+  const auto policy = blink::ToWebRTCIPHandlingPolicy(EffectiveWebRtcIpPolicy(view));
+  blink::RendererPreferences* prefs = contents->GetMutableRendererPrefs();
+  if (prefs->webrtc_ip_handling_policy == policy)
+    return;
+  prefs->webrtc_ip_handling_policy = policy;
+  contents->SyncRendererPrefs();
+}
 bool UsesClientCertificateStores() {
   return Engine().client_certificate_stores.value_or(
       base::CommandLine::ForCurrentProcess()->HasSwitch("zebkit-client-certificate-stores"));
@@ -253,6 +298,13 @@ bool zebkit_set_engine_settings(const char* json, char** error) {
   }
   if (const base::Value* value = settings.Find("clientCertificateStores"))
     engine.client_certificate_stores = value->is_bool() ? std::optional<bool>(value->GetBool()) : std::nullopt;
+  if (const base::Value* value = settings.Find("webrtcIpHandlingPolicy")) {
+    engine.webrtc_ip_policy = WebRtcPolicyOf(*value);
+    // Every view's pages, those with a value of their own unchanged. The
+    // library's pages are no views: they keep theirs (library_page.cc).
+    for (zebkit_view* view : zebkit_view::Views())
+      zebkit::ApplyWebRtcIpPolicy(view->web_contents(), view);
+  }
   if (const base::Value* value = settings.Find("spareRenderer")) {
     engine.spare_renderer = value->is_bool() ? std::optional<bool>(value->GetBool()) : std::nullopt;
     ApplySpare(zebkit::UsesSpareRenderer(), zebkit::GetBrowserContext());
@@ -272,6 +324,8 @@ char* zebkit_get_engine_settings(void) {
   PutName(chosen, "dialogs", kDialogs, engine.dialogs);
   PutName(chosen, "downloads", kDownloads, engine.deny_downloads);
   PutName(chosen, "newWindows", kWindows, engine.new_windows);
+  if (engine.webrtc_ip_policy) chosen.Set("webrtcIpHandlingPolicy", *engine.webrtc_ip_policy);
+  effective.Set("webrtcIpHandlingPolicy", zebkit::EffectiveWebRtcIpPolicy(nullptr));
   effective.Set("thirdPartyCookies", NameOf(kCookies, engine.block_third_party_cookies.value_or(
       !base::CommandLine::ForCurrentProcess()->HasSwitch("zebkit-allow-third-party-cookies"))));
   effective.Set("spareRenderer", zebkit::UsesSpareRenderer());
@@ -300,6 +354,10 @@ bool zebkit_view_set_runtime_settings(zebkit_view* view, const char* json, char*
   }
   if (const base::Value* value = settings.Find("downloads")) zebkit::SetDownloadPolicy(view, ValueOf(kDownloads, *value));
   if (const base::Value* value = settings.Find("newWindows")) view->popup_policy_ = ValueOf(kWindows, *value);
+  if (const base::Value* value = settings.Find("webrtcIpHandlingPolicy")) {
+    view->webrtc_ip_policy_ = WebRtcPolicyOf(*value);
+    zebkit::ApplyWebRtcIpPolicy(view->web_contents(), view);
+  }
   if (const base::Value* value = settings.Find("thirdPartyCookies")) {
     content::BrowserContext* context = view->web_contents()->GetBrowserContext();
     if (auto block = ValueOf(kCookies, *value)) ContextCookies()[context] = *block;
@@ -320,6 +378,8 @@ char* zebkit_view_get_runtime_settings(zebkit_view* view) {
   PutName(chosen, "dialogs", kDialogs, zebkit::ExplicitDialogPolicy(view));
   PutName(chosen, "downloads", kDownloads, view->deny_downloads_);
   PutName(chosen, "newWindows", kWindows, view->popup_policy_);
+  if (view->webrtc_ip_policy_) chosen.Set("webrtcIpHandlingPolicy", *view->webrtc_ip_policy_);
+  effective.Set("webrtcIpHandlingPolicy", zebkit::EffectiveWebRtcIpPolicy(view));
   effective.Set("thirdPartyCookies", NameOf(kCookies, zebkit::BlocksThirdPartyCookies(context)));
   effective.Set("dialogs", NameOf(kDialogs, zebkit_view_get_dialog_policy(view)));
   effective.Set("downloads", zebkit::EffectiveDownloads(view));

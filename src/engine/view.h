@@ -321,6 +321,9 @@ struct zebkit_view : public content::WebContentsObserver,
   std::optional<zebkit_popup_policy> popup_policy_;
   // "downloads" of the runtime settings: true denies when no function decides.
   std::optional<bool> deny_downloads_;
+  // "webrtcIpHandlingPolicy" of the runtime settings: one of Chromium's names
+  // (blink::kWebRTCIPHandling*), before the engine's and the startup switch.
+  std::optional<std::string> webrtc_ip_policy_;
   base::DictValue window_open_info_;
   zebkit_window_open_event_func on_window_open_event_ = nullptr;
   void* on_window_open_event_data_ = nullptr;

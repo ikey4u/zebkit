@@ -97,6 +97,42 @@ static void refused(zebkit_view *view, const char *json) {
     zebkit_free(engine_before); zebkit_free(view_before); zebkit_free(engine_after); zebkit_free(view_after);
 }
 
+/* For runtime_settings.py, which listens to the local network: when a part began
+ * and ended, in milliseconds since the epoch. */
+static void mark(const char *what) {
+    const char *path = getenv("RUNTIME_MARKS");
+    if (!path) return;
+    FILE *file = fopen(path, "a");
+    if (!file) FAIL("cannot write %s", path);
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    fprintf(file, "%s %lld\n", what, (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+    fclose(file);
+}
+/* Whether @text is in the "explicit" or the "effective" part of a getter's JSON,
+ * {"effective":{...},"explicit":{...}} in whichever order. */
+static int in_part(char *json, const char *part, const char *text) {
+    if (!json) FAIL("no settings");
+    char *effective = strstr(json, "\"effective\":"), *explicit_ = strstr(json, "\"explicit\":");
+    CHECK(effective && explicit_);
+    char *begin = strcmp(part, "explicit") ? effective : explicit_;
+    char *other = begin == effective ? explicit_ : effective;
+    if (other > begin) *other = 0; /* the part ends where the other begins */
+    int found = strstr(begin, text) != NULL;
+    zebkit_free(json);
+    return found;
+}
+static void navigate(zebkit_view *view) {
+    static int done;
+    done = 0;
+    char url[1024];
+    snprintf(url, sizeof url, "%s/top?again", BASE);
+    zebkit_view_on_load(view, loaded, &done);
+    zebkit_view_load_url(view, url);
+    WAIT(done);
+}
+static const char *POLICY = "\"webrtcIpHandlingPolicy\":";
+
 static int complete, cancelled;
 static void progress(zebkit_view *view, const char *json, void *data) {
     (void)view; (void)data;
@@ -232,6 +268,56 @@ int main(int argc, char **argv) {
     CHECK(!strcmp(ev(other, "opens()"), "true"));
     set_engine("{\"newWindows\":null}");
     CHECK(!strcmp(ev(view, "opens()"), "true"));
+
+    /* WebRTC's IP handling policy. Unset: the startup default, Chromium's here. The
+     * quiet part comes first: a page that has gathered under "default" goes on
+     * announcing its names for seconds after (one each two seconds, a name an
+     * address), which no setting takes back. */
+    char text[128];
+    snprintf(text, sizeof text, "%s\"default\"", POLICY);
+    CHECK(in_part(zebkit_get_engine_settings(), "effective", text));
+    CHECK(!in_part(zebkit_get_engine_settings(), "explicit", POLICY));
+    /* The engine's: both pages, opened before it, have no local address, and nothing
+     * goes out on the local network. */
+    mark("quiet-begin");
+    set_engine("{\"webrtcIpHandlingPolicy\":\"disable_non_proxied_udp\"}");
+    CHECK(!strcmp(ev(view, "rtc()"), "\"none\""));
+    CHECK(!strcmp(ev(other, "rtc()"), "\"none\""));
+    pump_for(3000);
+    mark("quiet-end");
+    snprintf(text, sizeof text, "%s\"disable_non_proxied_udp\"", POLICY);
+    CHECK(in_part(zebkit_get_engine_settings(), "explicit", text));
+    CHECK(in_part(zebkit_view_get_runtime_settings(other), "effective", text));
+    CHECK(!in_part(zebkit_view_get_runtime_settings(other), "explicit", POLICY));
+    /* One view's own: it has its address again, the other has not. */
+    mark("loud-begin");
+    set_view(view, "{\"webrtcIpHandlingPolicy\":\"default\"}");
+    CHECK(!strcmp(ev(view, "rtc()"), "\"host\""));
+    pump_for(1500);
+    mark("loud-end");
+    CHECK(!strcmp(ev(other, "rtc()"), "\"none\""));
+    snprintf(text, sizeof text, "%s\"default\"", POLICY);
+    CHECK(in_part(zebkit_view_get_runtime_settings(view), "explicit", text));
+    CHECK(in_part(zebkit_view_get_runtime_settings(view), "effective", text));
+    /* A navigation keeps it. */
+    navigate(view);
+    CHECK(!strcmp(ev(view, "rtc()"), "\"host\""));
+    /* A bad value changes nothing, in a batch with a good one. */
+    refused(view, "{\"webrtcIpHandlingPolicy\":\"public\"}");
+    refused(view, "{\"dialogs\":\"accept\",\"webrtcIpHandlingPolicy\":5}");
+    CHECK(!strcmp(ev(view, "rtc()"), "\"host\""));
+    /* null: the view goes back to the engine's, the engine to the default. */
+    set_view(view, "{\"webrtcIpHandlingPolicy\":null}");
+    CHECK(!strcmp(ev(view, "rtc()"), "\"none\""));
+    CHECK(!in_part(zebkit_view_get_runtime_settings(view), "explicit", POLICY));
+    snprintf(text, sizeof text, "%s\"disable_non_proxied_udp\"", POLICY);
+    CHECK(in_part(zebkit_view_get_runtime_settings(view), "effective", text));
+    set_engine("{\"webrtcIpHandlingPolicy\":null}");
+    CHECK(!strcmp(ev(view, "rtc()"), "\"host\""));
+    CHECK(!strcmp(ev(other, "rtc()"), "\"host\""));
+    snprintf(text, sizeof text, "%s\"default\"", POLICY);
+    CHECK(in_part(zebkit_get_engine_settings(), "effective", text));
+    CHECK(!in_part(zebkit_get_engine_settings(), "explicit", POLICY));
 
     /* The spare: told, the processes are for runtime_settings_python.py. */
     set_engine("{\"spareRenderer\":true}");

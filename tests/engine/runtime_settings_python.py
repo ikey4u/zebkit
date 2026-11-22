@@ -95,7 +95,8 @@ with part("What holds before anything is set: today's behaviour"):
     assert zebkit.engine_settings() == {'explicit': {}, 'effective': {
         'thirdPartyCookies': 'block', 'spareRenderer': False, 'spareRendererRunning': False,
         'clientCertificateStores': False,
-        'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, zebkit.engine_settings()
+        'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture',
+        'webrtcIpHandlingPolicy': 'default'}}, zebkit.engine_settings()
     # The system's client certificate stores: the engine's, off by default.
     assert rejected(view.set_runtime_settings, {'clientCertificateStores': True}), 'stores of a view'
     zebkit.set_engine_settings({'clientCertificateStores': True})
@@ -104,7 +105,8 @@ with part("What holds before anything is set: today's behaviour"):
     zebkit.set_engine_settings({'clientCertificateStores': None})
     assert zebkit.engine_settings()['explicit'] == {}
     assert view.runtime_settings == {'explicit': {}, 'effective': {
-        'thirdPartyCookies': 'block', 'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture'}}, view.runtime_settings
+        'thirdPartyCookies': 'block', 'dialogs': 'default', 'downloads': 'save', 'newWindows': 'block-without-gesture',
+        'webrtcIpHandlingPolicy': 'default'}}, view.runtime_settings
 
 with part('Nothing of a bad batch changes'):
     zebkit.set_engine_settings({'downloads': 'save'})
@@ -212,6 +214,64 @@ with part("New windows. A script of the application counts as a person's act"):
     zebkit.set_engine_settings({'newWindows': None})
     other.set_runtime_settings({'newWindows': None})
     assert ev(view, 'opens()') is True, 'back to today: a gesture, which an application script has'
+
+def mark(what):
+    """For runtime_settings.py, which listens to the local network."""
+    if os.environ.get('RUNTIME_MARKS'):
+        with open(os.environ['RUNTIME_MARKS'], 'a') as marks:
+            marks.write(f'{what} {time.time() * 1000:.0f}\n')
+
+
+with part("WebRTC's IP handling policy: the engine's, a view's, navigations, null, bad values"):
+    policy = 'webrtcIpHandlingPolicy'
+    # Unset: Chromium's default. The quiet part first: a page that has gathered under
+    # "default" goes on announcing its names for seconds after, which no setting takes back.
+    assert zebkit.engine_settings()['effective'][policy] == 'default'
+    mark('quiet-begin')
+    zebkit.set_engine_settings({policy: 'disable_non_proxied_udp'})
+    assert ev(view, 'rtc()') == 'none' and ev(other, 'rtc()') == 'none', 'pages opened before the write'
+    pump(3)
+    mark('quiet-end')
+    assert zebkit.engine_settings()['explicit'][policy] == 'disable_non_proxied_udp'
+    assert other.runtime_settings['effective'][policy] == 'disable_non_proxied_udp'
+    assert policy not in other.runtime_settings['explicit']
+    mark('loud-begin')
+    view.set_runtime_settings({policy: 'default'})
+    assert ev(view, 'rtc()') == 'host', "a view's own goes first"
+    pump(1.5)
+    mark('loud-end')
+    assert ev(other, 'rtc()') == 'none', 'the other view keeps the engine\'s'
+    assert view.runtime_settings['explicit'][policy] == 'default' == view.runtime_settings['effective'][policy]
+    navigated = []
+    view.on_load(lambda event, at: navigated.append(at) if event == zebkit.LOAD_FINISHED else None)
+    view.load(BASE + '/top?again')
+    wait(lambda: BASE + '/top?again' in navigated, 'the navigation')
+    assert ev(view, 'rtc()') == 'host', 'a navigation keeps it'
+    before = (zebkit.engine_settings(), view.runtime_settings)
+    for bad in ({policy: 'public'}, {policy: 5}, {'dialogs': 'accept', policy: 'nope'}):
+        assert rejected(zebkit.set_engine_settings, bad) and rejected(view.set_runtime_settings, bad), bad
+    assert (zebkit.engine_settings(), view.runtime_settings) == before, 'a bad batch changed something'
+    # A popup starts with its opener's own value, else the engine's.
+    def popup_of(opener):
+        made = []
+        opener.on_window_open(lambda child, url: made.append(child))
+        ev(opener, f"window.open({json.dumps(BASE + '/top')}) !== null")
+        wait(lambda: made, 'the popup')
+        child = made[0]
+        wait(lambda: ev(child, "typeof rtc") == 'function', "the popup's page")
+        opener.on_window_open(None)
+        return child
+    for opener, expected in ((view, 'host'), (other, 'none')):
+        child = popup_of(opener)
+        assert ev(child, 'rtc()') == expected, f'a popup of a view with {expected}'
+        assert child.runtime_settings['effective'][policy] == opener.runtime_settings['effective'][policy]
+        child.close()
+    view.set_runtime_settings({policy: None})
+    assert ev(view, 'rtc()') == 'none', "null: the engine's again"
+    assert policy not in view.runtime_settings['explicit']
+    zebkit.set_engine_settings({policy: None})
+    assert ev(view, 'rtc()') == 'host' and ev(other, 'rtc()') == 'host', 'null: the default again'
+    assert policy not in zebkit.engine_settings()['explicit']
 
 with part('The spare renderer: a process, there or not, and taken by a navigation'):
     before = renderers()

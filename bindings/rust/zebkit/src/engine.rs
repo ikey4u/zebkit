@@ -314,8 +314,8 @@ pub fn is_headless() -> bool {
 }
 
 /// What zebkit decides for the whole engine, while it runs (`<zebkit/hooks.h>`):
-/// thirdPartyCookies, spareRenderer, dialogs, downloads, newWindows. All of it
-/// applies or none. On the engine's thread.
+/// thirdPartyCookies, spareRenderer, dialogs, downloads, newWindows,
+/// webrtcIpHandlingPolicy. All of it applies or none. On the engine's thread.
 pub fn set_engine_settings(json: &str) -> Result<(), Error> {
     if json.contains('\0') {
         return Err(Error::new("runtime settings contain NUL"));

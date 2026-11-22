@@ -30,6 +30,7 @@
 #include "components/custom_handlers/protocol_handler.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "zebkit/engine/protocol_handlers.h"
+#include "zebkit/engine/settings.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/color_chooser.h"
 #include "content/public/browser/devtools_agent_host.h"
@@ -262,12 +263,11 @@ Window* Window::CreateForContents(std::unique_ptr<WebContents> web_contents,
   // Note: Do not make RenderFrameHost or RenderViewHost specific state changes
   // here, because they will be forgotten after a cross-process navigation. Use
   // RenderFrameCreated or RenderViewCreated instead.
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kForceWebRtcIPHandlingPolicy)) {
-    contents->GetMutableRendererPrefs()->webrtc_ip_handling_policy =
-        blink::ToWebRTCIPHandlingPolicy(command_line->GetSwitchValueASCII(
-            switches::kForceWebRtcIPHandlingPolicy));
-  }
+  // WebRTC's IP handling policy: the engine's runtime setting, else the
+  // startup switch (settings.h). A view's own value, a popup's from its
+  // opener, goes on once the view is made; ApplyLanguages() sends them.
+  contents->GetMutableRendererPrefs()->webrtc_ip_handling_policy =
+      blink::ToWebRTCIPHandlingPolicy(EffectiveWebRtcIpPolicy(nullptr));
   window->platform_->SetContents(window);
   ApplyLanguages(contents);
   // If the RenderFrame was created during WebContents construction (as happens

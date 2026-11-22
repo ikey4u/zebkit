@@ -29,6 +29,22 @@ fn opened(url: &str) -> View {
     wait(url, || done.get());
     view
 }
+/// For runtime_settings.py, which listens to the local network: when a part began
+/// and ended, in milliseconds since the epoch.
+fn mark(what: &str) {
+    use std::io::Write;
+    let Ok(path) = std::env::var("RUNTIME_MARKS") else { return };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).expect("marks");
+    writeln!(file, "{what} {now}").expect("marks");
+}
+fn pump_for(ms: u64) {
+    let end = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < end {
+        assert!(zebkit::pump());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 fn cookies_become(view: &View, expected: &str, name: &mut u32) {
     for _ in 0..60 {
         *name += 1;
@@ -99,6 +115,39 @@ fn main() {
     assert_eq!(ev(&view, "opens()"), "false");
     zebkit::set_engine_settings(r#"{"newWindows":null}"#).expect("reset");
     assert_eq!(ev(&view, "opens()"), "true");
+
+    // WebRTC's IP handling policy: what a page's scripts can learn of the machine's
+    // addresses, the engine's for every view, one view's own before it.
+    let policy = r#""webrtcIpHandlingPolicy":"#;
+    // Unset: Chromium's default. The quiet part first: a page that has gathered under
+    // "default" goes on announcing its names for seconds after, which no setting takes back.
+    assert!(zebkit::engine_settings().unwrap().contains(&format!(r#"{policy}"default""#)));
+    mark("quiet-begin");
+    zebkit::set_engine_settings(r#"{"webrtcIpHandlingPolicy":"disable_non_proxied_udp"}"#).expect("engine");
+    assert_eq!(ev(&view, "rtc()"), "\"none\"", "a page opened before the write");
+    assert_eq!(ev(&other, "rtc()"), "\"none\"");
+    pump_for(3000);
+    mark("quiet-end");
+    mark("loud-begin");
+    view.set_runtime_settings(r#"{"webrtcIpHandlingPolicy":"default"}"#).expect("view");
+    assert_eq!(ev(&view, "rtc()"), "\"host\"", "a view's own goes first");
+    pump_for(1500);
+    mark("loud-end");
+    assert_eq!(ev(&other, "rtc()"), "\"none\"", "the other keeps the engine's");
+    assert!(view.runtime_settings().unwrap().contains(&format!(r#"{policy}"default""#)));
+    view.load_url(&format!("{base}/top?again"));
+    wait("the navigation", || ev(&view, "location.search") == "\"?again\"");
+    assert_eq!(ev(&view, "rtc()"), "\"host\"", "a navigation keeps it");
+    let (engine_at, view_at) = (zebkit::engine_settings(), view.runtime_settings());
+    for bad in [r#"{"webrtcIpHandlingPolicy":"public"}"#, r#"{"dialogs":"accept","webrtcIpHandlingPolicy":5}"#] {
+        assert!(zebkit::set_engine_settings(bad).is_err() && view.set_runtime_settings(bad).is_err(), "{bad}");
+    }
+    assert_eq!((zebkit::engine_settings(), view.runtime_settings()), (engine_at, view_at));
+    view.set_runtime_settings(r#"{"webrtcIpHandlingPolicy":null}"#).expect("view null");
+    assert_eq!(ev(&view, "rtc()"), "\"none\"", "null: the engine's");
+    zebkit::set_engine_settings(r#"{"webrtcIpHandlingPolicy":null}"#).expect("engine null");
+    assert_eq!(ev(&view, "rtc()"), "\"host\"", "null: the default");
+    assert_eq!(ev(&other, "rtc()"), "\"host\"");
 
     zebkit::set_engine_settings(r#"{"spareRenderer":true}"#).expect("spare");
     assert!(zebkit::engine_settings().unwrap().contains(r#""spareRendererRunning":true"#));

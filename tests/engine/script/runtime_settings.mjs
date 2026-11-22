@@ -3,7 +3,14 @@
 // first that fails ends the run, the rest depending on it.
 import {finish, sleep, until as poll, verify} from './helpers.mjs';
 
-const { RUNTIME_BASE: base } = JSON.parse(zebkit.args[0]);
+const { RUNTIME_BASE: base, RUNTIME_MARKS: marksFile } = JSON.parse(zebkit.args[0]);
+// For runtime_settings.py, which listens to the local network: when each part began
+// and ended. zebkit.fs writes whole files, so all of them each time.
+const marks = [];
+async function mark(what) {
+  marks.push(`${what} ${Date.now()}`);
+  if (marksFile) await zebkit.fs.writeFile(marksFile, new TextEncoder().encode(marks.join('\n') + '\n'));
+}
 const must = (ok, what) => { if (!verify(ok, what)) throw new Error(what); };
 async function until(test, what, ms = 15000) {
   if (!await poll(test, ms, 5)) throw new Error(`timed out: ${what}`);
@@ -83,6 +90,44 @@ async function test() {
   must(await view.evaluate('opens()') === false, 'engine block');
   zebkit.setEngineSettings({ newWindows: null });
   must(await view.evaluate('opens()') === true, 'gone');
+
+  // WebRTC's IP handling policy.
+  const policy = 'webrtcIpHandlingPolicy';
+  // Unset: Chromium's default. The quiet part first: a page that has gathered under
+  // "default" goes on announcing its names for seconds after, which no setting takes back.
+  must(zebkit.engineSettings.effective[policy] === 'default', 'unset: default');
+  await mark('quiet-begin');
+  zebkit.setEngineSettings({ [policy]: 'disable_non_proxied_udp' });
+  must(await view.evaluate('rtc()') === 'none' && await other.evaluate('rtc()') === 'none', "the engine's: no local address");
+  await sleep(3000);
+  await mark('quiet-end');
+  must(zebkit.engineSettings.explicit[policy] === 'disable_non_proxied_udp', 'engine explicit');
+  must(other.runtimeSettings.effective[policy] === 'disable_non_proxied_udp' && !(policy in other.runtimeSettings.explicit),
+       "the other view: the engine's");
+  await mark('loud-begin');
+  view.setRuntimeSettings({ [policy]: 'default' });
+  must(await view.evaluate('rtc()') === 'host', "a view's own goes first");
+  await sleep(1500);
+  await mark('loud-end');
+  must(await other.evaluate('rtc()') === 'none', 'the other view keeps none');
+  must(view.runtimeSettings.explicit[policy] === 'default' && view.runtimeSettings.effective[policy] === 'default', 'view getters');
+  await new Promise(resolve => {
+    const url = base + '/top?again';
+    view.on('load', (phase, actual) => { if (phase === 'finished' && actual === url) resolve(); });
+    view.load(url);
+  });
+  must(await view.evaluate('rtc()') === 'host', 'a navigation keeps it');
+  const [engineAt, viewAt] = [JSON.stringify(zebkit.engineSettings), JSON.stringify(view.runtimeSettings)];
+  for (const bad of [{ [policy]: 'public' }, { [policy]: 5 }, { dialogs: 'accept', [policy]: 'nope' }]) {
+    refused(() => zebkit.setEngineSettings(bad), JSON.stringify(bad));
+    refused(() => view.setRuntimeSettings(bad), JSON.stringify(bad));
+  }
+  must(JSON.stringify(zebkit.engineSettings) === engineAt && JSON.stringify(view.runtimeSettings) === viewAt, 'a bad batch changed nothing');
+  view.setRuntimeSettings({ [policy]: null });
+  must(await view.evaluate('rtc()') === 'none' && !(policy in view.runtimeSettings.explicit), "null: the engine's");
+  zebkit.setEngineSettings({ [policy]: null });
+  must(await view.evaluate('rtc()') === 'host' && await other.evaluate('rtc()') === 'host', 'null: the default');
+  must(!(policy in zebkit.engineSettings.explicit), 'engine null');
 
   zebkit.setEngineSettings({ spareRenderer: true });
   must(zebkit.engineSettings.effective.spareRendererRunning === true, 'spare');

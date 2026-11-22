@@ -69,8 +69,16 @@ ZEBKIT_API char *zebkit_view_get_settings(zebkit_view *view);
  *     the next navigation to another site takes; a frame committing before then drops
  *     it. False takes it away, within a load when the engine started with the switch.
  *     Content's own keeping of one is fixed at startup: only the switch gives that.
+ *   "webrtcIpHandlingPolicy": "default" | "default_public_and_private_interfaces" |
+ *     "default_public_interface_only" | "disable_non_proxied_udp", Chromium's names.
+ *     --force-webrtc-ip-handling-policy is the default, else "default". Goes to the
+ *     pages open now, without a reload, for the connections they make next, and to
+ *     those made later; navigations keep it. "disable_non_proxied_udp" gives a page no
+ *     local address and sends no mDNS (multicast) announcement of one; names made under
+ *     a looser policy before are still announced for a few seconds. The library's
+ *     own pages keep theirs (disable_non_proxied_udp) whatever is set.
  * A view's value goes before the engine's, which goes before the default; a popup
- * starts with its opener's newWindows and downloads.
+ * starts with its opener's newWindows, downloads and webrtcIpHandlingPolicy.
  * Getters: {"explicit": what was set, "effective": what holds}, JSON the caller frees;
  * the view's "downloads" is also "ask" when a function decides, "deny" for a popup
  * whose opener has closed, and the engine's has "spareRendererRunning". NULL outside

@@ -352,6 +352,15 @@ they are, as hooks already.
     cross-site iframe media queries, runtime changes and reset. C/host JS pass,
     Rust passes 61 integration checks, and the complete engine suite passes.
   Engine-wide settings: `zebkit_set_engine_settings`, `zebkit_view_set_runtime_settings` (2026-10-31, `docs/API.md`).
+- **Implemented: WebRTC's IP handling policy** (runtime setting `webrtcIpHandlingPolicy`,
+  engine and view, `runtime_settings.cc`): Chromium's four policies in the renderer
+  preferences of the pages it governs, sent to open pages (no reload) and kept across
+  navigations; a view's value, else the engine's, else `--force-webrtc-ip-handling-policy`,
+  else `default`; a popup starts with its opener's. The library's pages stay at
+  `disable_non_proxied_udp`. Tested by `tests/engine/runtime_settings.c` and its Python and
+  JavaScript twins: host candidates, mDNS names and multicast to 224.0.0.251:5353 under
+  each value, two views, a page open before the write, a navigation, popups (Python),
+  `null` and an invalid batch.
 - **Implemented: file choosers, camera and microphone, keys, context menu,
   fullscreen** (`page_hooks.cc`, `file_select.cc`), as `<zebkit/hooks.h>` says. Asked
   ones end when their document goes. Permissions Policy still refuses a frame before

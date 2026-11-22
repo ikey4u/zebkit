@@ -1092,7 +1092,8 @@ def init(argv=None, *, settings=None):
 
 def set_engine_settings(settings):
     """What zebkit decides for the whole engine (<zebkit/hooks.h>): thirdPartyCookies,
-    spareRenderer, dialogs, downloads, newWindows. All of it applies or none."""
+    spareRenderer, dialogs, downloads, newWindows, webrtcIpHandlingPolicy. All of it
+    applies or none."""
     _require_thread("set_engine_settings()")
     source = settings if isinstance(settings, str) else json.dumps(settings)
     if '\0' in source:
@@ -3457,7 +3458,7 @@ class View(_ViewCore, _ViewOffscreen, _ViewPage, _ViewMedia):
 
     def set_runtime_settings(self, settings):
         """What zebkit decides for this view (<zebkit/hooks.h>): thirdPartyCookies,
-        dialogs, downloads, newWindows. All of it applies or none."""
+        dialogs, downloads, newWindows, webrtcIpHandlingPolicy. All of it applies or none."""
         source = settings if isinstance(settings, str) else json.dumps(settings)
         if '\0' in source:
             raise Error("runtime settings contain NUL")

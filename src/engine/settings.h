@@ -1,6 +1,7 @@
 #ifndef ZEBKIT_ENGINE_SETTINGS_H_
 #define ZEBKIT_ENGINE_SETTINGS_H_
 #include <optional>
+#include <string>
 #include "zebkit/engine/include/zebkit/hooks.h"
 #include "zebkit/engine/include/zebkit/page.h"
 namespace content { class BrowserContext; class WebContents; }
@@ -19,6 +20,13 @@ void SpareAfterLoad(content::BrowserContext* context);
 std::optional<zebkit_dialog_policy> EngineDialogPolicy();
 std::optional<zebkit_popup_policy> EnginePopupPolicy();
 bool EngineDeniesDownloads();
+// "webrtcIpHandlingPolicy": @view's, else the engine's, else the startup switch
+// (--force-webrtc-ip-handling-policy), else Chromium's "default". @view may be
+// nullptr, for a page that has no view yet.
+std::string EffectiveWebRtcIpPolicy(const zebkit_view* view);
+// That policy into @contents's renderer preferences, sent to its renderers
+// when it changed: pages already open take it without a reload.
+void ApplyWebRtcIpPolicy(content::WebContents* contents, const zebkit_view* view);
 // Whether a TLS server's request for a client certificate is offered the
 // operating system's identities (NSS, Keychain, the Windows store): off unless
 // the application sets "clientCertificateStores".
