@@ -76,6 +76,12 @@
 @implementation ZebkitWindowDelegate {
   raw_ptr<zebkit::Window> _owner;
   NSWindow* __strong _window;
+  // The unified toolbar that makes an "overlay" title bar taller, put aside
+  // in fullscreen: there the system shows a toolbar as an opaque band above
+  // the content and pushes the page down by its height, a blank strip at the
+  // top of the screen. Without it the page fills the screen and the title
+  // bar, with its buttons, slides in with the menu bar.
+  NSToolbar* __strong _fullscreenToolbar;
 }
 
 @synthesize window = _window;
@@ -88,7 +94,22 @@
 - (void)windowDidMove:(NSNotification*)notification { [self changed]; }
 - (void)windowDidMiniaturize:(NSNotification*)notification { [self changed]; }
 - (void)windowDidDeminiaturize:(NSNotification*)notification { [self changed]; }
+- (void)windowWillEnterFullScreen:(NSNotification*)notification {
+  if (_window.toolbar && (_window.styleMask & NSWindowStyleMaskFullSizeContentView)) {
+    _fullscreenToolbar = _window.toolbar;
+    _window.toolbar = nil;
+  }
+}
 - (void)windowDidEnterFullScreen:(NSNotification*)notification { [self changed]; }
+- (void)windowWillExitFullScreen:(NSNotification*)notification {
+  if (_fullscreenToolbar) {
+    _window.toolbar = _fullscreenToolbar;
+    _fullscreenToolbar = nil;
+  }
+}
+- (void)windowDidFailToEnterFullScreen:(NSWindow*)window {
+  [self windowWillExitFullScreen:nil];
+}
 - (void)windowDidExitFullScreen:(NSNotification*)notification { [self changed]; }
 - (void)windowDidBecomeKey:(NSNotification*)notification { [self changed]; }
 - (void)windowDidResignKey:(NSNotification*)notification { [self changed]; }
