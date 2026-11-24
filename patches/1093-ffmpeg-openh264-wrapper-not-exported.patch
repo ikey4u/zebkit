@@ -1,0 +1,23 @@
+FFmpeg: the OpenH264 wrapper's functions named outside zebkit's exports.
+
+patches/1090 renames OpenH264's WelsCreateSVCEncoder() and
+WelsDestroySVCEncoder() to the C wrapper's (//zebkit/ffmpeg/openh264_c_api.cc),
+which are hidden, as the rest of the engine but its API. Named zebkit_*, they
+matched macOS's -exported_symbol _zebkit_*, and ld64.lld refuses to export a
+hidden symbol: the macOS engine did not link. openh264_zebkit_*, outside the
+pattern, on every system.
+
+diff --git a/third_party/ffmpeg/libavcodec/libopenh264enc.c b/third_party/ffmpeg/libavcodec/libopenh264enc.c
+--- a/third_party/ffmpeg/libavcodec/libopenh264enc.c
++++ b/third_party/ffmpeg/libavcodec/libopenh264enc.c
+@@ -22,8 +22,8 @@
+ /* zebkit: the encoder through an object of OpenH264's C layout
+  * (//zebkit/ffmpeg/openh264_c_api.cc), which C can call under any C++ vtable
+  * ABI; zebkit's Linux build has Clang's relative vtables. */
+-#define WelsCreateSVCEncoder zebkit_openh264_create_encoder
+-#define WelsDestroySVCEncoder zebkit_openh264_destroy_encoder
++#define WelsCreateSVCEncoder openh264_zebkit_create_encoder
++#define WelsDestroySVCEncoder openh264_zebkit_destroy_encoder
+ #include <wels/codec_api.h>
+ #include <wels/codec_ver.h>
+ 

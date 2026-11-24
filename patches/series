@@ -71,3 +71,4 @@
 1090-ffmpeg-openh264-and-tls-on-boringssl.patch
 1091-ios-sdk-given-in-the-arguments.patch
 1092-ios-unstripped-output-without-dsyms.patch
+1093-ffmpeg-openh264-wrapper-not-exported.patch

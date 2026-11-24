@@ -56,8 +56,8 @@ const Table kTable = {
 }  // namespace
 
 // WelsCreateSVCEncoder() and WelsDestroySVCEncoder() for the C wrapper, which
-// patches/1090 renames to these.
-extern "C" int zebkit_openh264_create_encoder(Object** out) {
+// patches/1090 renames to these (patches/1093: outside the exports' zebkit_*).
+extern "C" int openh264_zebkit_create_encoder(Object** out) {
   *out = nullptr;
   ISVCEncoder* encoder = nullptr;
   if (WelsCreateSVCEncoder(&encoder) || !encoder)
@@ -71,7 +71,7 @@ extern "C" int zebkit_openh264_create_encoder(Object** out) {
   return 0;
 }
 
-extern "C" void zebkit_openh264_destroy_encoder(Object* object) {
+extern "C" void openh264_zebkit_destroy_encoder(Object* object) {
   if (!object)
     return;
   Encoder* encoder = reinterpret_cast<Encoder*>(object);
