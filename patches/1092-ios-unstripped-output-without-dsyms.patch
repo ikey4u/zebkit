@@ -1,0 +1,24 @@
+iOS: keep the unstripped output when there are no dSYMs, as macOS does.
+
+With enable_stripping and without enable_dsyms (save_unstripped_output,
+build/config/apple/symbols.gni), the Apple toolchain lists
+<library>.unstripped among a link's outputs, but only macOS's config asks the
+linker driver for it (-Wcrl,unstripped). An iOS build without dSYMs, as
+zebkit's on Linux (no dsymutil there), then fails on the missing output.
+
+diff --git a/build/config/ios/BUILD.gn b/build/config/ios/BUILD.gn
+--- a/build/config/ios/BUILD.gn
++++ b/build/config/ios/BUILD.gn
+@@ -93,6 +93,12 @@
+     ldflags += [ "-Wl,-fixup_chains" ]
+   }
+ 
++  # As for macOS (//build/config/mac:compiler): the linker driver keeps the
++  # unstripped output that the toolchain then lists among the link's outputs.
++  if (save_unstripped_output) {
++    ldflags += [ "-Wcrl,unstripped," + rebase_path(root_out_dir) ]
++  }
++
+   if (ios_is_app_extension) {
+     ldflags += [ "-fapplication-extension" ]
+     cflags += [ "-fapplication-extension" ]

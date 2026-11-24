@@ -70,6 +70,14 @@ scripts/package.sh slim-macos                                 # out/blink/slim-m
 `scripts/engine-test.sh slim-macos` runs on the Mac, against the package
 copied there.
 
+iOS is built on Linux the same way, with the iPhone SDKs from a Mac
+(`docs/MOBILE.md`):
+
+```sh
+scripts/ios-toolchain.sh <directory of the SDK archives>       # once
+scripts/release-ios.sh                                        # dist/release-ios
+```
+
 ## Windows
 
 Built on Linux, the same API: [docs/WINDOWS.md](WINDOWS.md).
@@ -200,7 +208,7 @@ deflate level 9), both computed by `compressed_size` in `scripts/lib.sh`.
 
 | Task | What it does |
 |---|---|
-| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release`, macOS in `dist/release-macos` and `dist/release-macos-intel` and Windows in `dist/release-windows` (cross-built, with the tools, `docs/MACOS.md`, `docs/WINDOWS.md`), Android in `dist/release-android` and iOS from `dist/release-ios` (made on a Mac by `scripts/release-ios.sh`, `docs/MOBILE.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
+| `mise run r` | `scripts/release.sh`: the release packages, Linux in `dist/release`, macOS in `dist/release-macos` and `dist/release-macos-intel` and Windows in `dist/release-windows` (cross-built, with the tools, `docs/MACOS.md`, `docs/WINDOWS.md`), Android in `dist/release-android` and iOS from `dist/release-ios` (made by `scripts/release-ios.sh`, `docs/MOBILE.md`), their archives `dist/zebkit-<version>-<target>.tar.xz`, and the archives' SHA-256 in `bindings/rust/zebkit-rs/engines.txt` |
 | `mise run r:github:publish` | `scripts/release.sh --publish-only`: publishes what `mise run r` built into `dist/`, building nothing: the two tags, then what the release lacks is uploaded; what it has must be the same bytes (`gh`, logged in; the tree committed and pushed; `mise run check` passed, strict, on the same sources and package) |
 | `mise run r:github` | `scripts/release.sh --publish`: `r` and `r:github:publish` in one run, for sources already built, measured, committed, checked and pushed (its build then does nothing); it checks for the pass before building |
 | `mise run check` | `scripts/check.sh`: the checks a release needs (above); records the pass `r:github:publish` looks for |
@@ -223,8 +231,9 @@ release is `mise r r` or `mise run r`.
 
 A release is one archive per system: `x86_64-unknown-linux-gnu`,
 `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` and
-`android`, all built on Linux, and `ios`, built on a Mac
-(`scripts/release-ios.sh`, copied into `dist/release-ios` before the build;
+`android` and `ios`, all built on Linux (`ios` by `scripts/release-ios.sh`
+into `dist/release-ios` before the build, with the iPhone SDK copied from a
+Mac, `docs/MOBILE.md`; or on a Mac and copied there;
 `ZEBKIT_RELEASE_NO_IOS=1` releases without it); each one's SHA-256 goes
 into `bindings/rust/zebkit-rs/engines.txt`, where the Rust crate checks what it
 downloads; the crates and the engine share the version in `VERSION`.
@@ -248,7 +257,7 @@ package as its stamp is: so the checks come after the reports. The order:
    release` builds the `slim` profile and packages it into
    `out/blink/slim/package`, the package `mise run check` tests, and copies
    it to `dist/release`; then macOS (Apple silicon and Intel), Windows and
-   Android, and packs the iOS package made on a Mac; the archives in
+   Android, and packs the iOS package `scripts/release-ios.sh` made; the archives in
    `dist/`, their SHA-256 in `bindings/rust/zebkit-rs/engines.txt`. It ends
    by naming the next steps.
 3. **Measure, on that build.** The reports `scripts/check-reports.py` names

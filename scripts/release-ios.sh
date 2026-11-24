@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# The release's iOS package, made on a Mac (Chromium builds iOS only on macOS):
-# dist/release-ios, which scripts/release.sh on the Linux machine packs as
-# zebkit-<version>-ios.tar.xz beside the other systems' archives. Copy it
-# there (dist/release-ios) before running mise run r.
+# The release's iOS package: dist/release-ios, which scripts/release.sh packs
+# as zebkit-<version>-ios.tar.xz beside the other systems' archives. Made on
+# the Linux machine with the iPhone SDK copied from a Mac
+# (scripts/ios-toolchain.sh), or on a Mac with Xcode, then copied to the
+# Linux machine's dist/release-ios before mise run r.
 #
 #   scripts/release-ios.sh
 #
@@ -21,10 +22,20 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-[[ "$ZEBKIT_HOST" == macos ]] || die "iOS is built on a Mac: run this there, then copy dist/release-ios to the Linux machine"
-command -v xcodebuild > /dev/null || die "no xcodebuild: install Xcode"
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    command -v xcodebuild > /dev/null || die "no xcodebuild: install Xcode"
+else
+    # On Linux, with the iPhone SDK copied from a Mac (scripts/ios-toolchain.sh).
+    [[ -f "$SDK_DIR/ios/xcode/versions" ]] || die "no iOS SDK on this machine: see scripts/ios-toolchain.sh (or run this on a Mac)"
+fi
 
-ZEBKIT_TARGET_OS=ios "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
+if [[ "$ZEBKIT_HOST" == macos ]]; then
+    ZEBKIT_TARGET_OS=ios "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
+else
+    # The Linux checkout as it is: the engine-less iOS library needs none of
+    # what a checkout for iOS adds (iOS's tests and tools, Mac-only packages).
+    "$ZEBKIT_ROOT/scripts/fetch-upstream.sh"
+fi
 for profile in slim-ios-simulator slim-ios; do
     "$ZEBKIT_ROOT/scripts/build.sh" "$profile" zebkit/engine
     # slim-ios last: its package gathers every slim-ios* framework into
@@ -45,6 +56,6 @@ cp -R "$ZEBKIT_ROOT/bindings/swift/Sources" "$ZEBKIT_ROOT/bindings/swift/Tests" 
 # The version the release checks against VERSION.
 version="$(tr -d '[:space:]' < "$ZEBKIT_ROOT/VERSION")"
 plist="$ios/Zebkit.xcframework/ios-arm64/Zebkit.framework/Info.plist"
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$version" ]] \
+[[ "$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$plist")" == "$version" ]] \
     || die "$plist is not zebkit $version"
-log "iOS package of zebkit $version: $ios ($(du -sm "$ios" | cut -f1) MiB); copy it to dist/release-ios on the Linux machine"
+log "iOS package of zebkit $version: $ios ($(du -sm "$ios" | cut -f1) MiB)"

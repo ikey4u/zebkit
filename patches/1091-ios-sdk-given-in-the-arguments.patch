@@ -1,0 +1,43 @@
+iOS: the SDK given in the arguments, for building iOS on Linux.
+
+Chromium asks Xcode for the iOS SDK (build/config/apple/sdk_info.py) unless
+ios_sdk_path and the rest are set, which is how zebkit builds iOS on Linux
+with the SDK copied from a Mac (docs/MOBILE.md). ios_platform_build was only
+set on Xcode's path, and the SDK's build number was not an argument: an
+argument now, and ios_platform_build set on both paths.
+
+diff --git a/build/config/ios/ios_sdk.gni b/build/config/ios/ios_sdk.gni
+--- a/build/config/ios/ios_sdk.gni
++++ b/build/config/ios/ios_sdk.gni
+@@ -19,6 +19,7 @@
+   ios_sdk_path = ""
+   ios_sdk_name = ""
+   ios_sdk_version = ""
++  ios_sdk_build = ""
+   ios_sdk_platform = ""
+   ios_sdk_platform_path = ""
+   ios_toolchains_path = ""
+@@ -131,13 +132,16 @@
+   xcode_version_verbatim = _ios_sdk_result.xcode_version_verbatim
+   xcode_build = _ios_sdk_result.xcode_build
+   machine_os_build = _ios_sdk_result.machine_os_build
+-  if (target_environment == "simulator") {
+-    # This is weird, but Xcode sets DTPlatformBuild to an empty field for
+-    # simulator builds.
+-    ios_platform_build = ""
+-  } else {
+-    ios_platform_build = ios_sdk_build
+-  }
++}
++
++# zebkit: also when the SDK is given in the arguments (ios_sdk_path and the
++# rest), as for building iOS on Linux with an SDK copied from a Mac.
++if (target_environment == "simulator") {
++  # This is weird, but Xcode sets DTPlatformBuild to an empty field for
++  # simulator builds.
++  ios_platform_build = ""
++} else {
++  ios_platform_build = ios_sdk_build
+ }
+ 
+ _sdk_root = rebase_path(ios_sdk_path, root_build_dir)

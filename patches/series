@@ -69,3 +69,5 @@
 1088-pdfium-apple-platform-on-ios.patch
 1089-blink-find-stop-cancels-the-pending-scroll.patch
 1090-ffmpeg-openh264-and-tls-on-boringssl.patch
+1091-ios-sdk-given-in-the-arguments.patch
+1092-ios-unstripped-output-without-dsyms.patch

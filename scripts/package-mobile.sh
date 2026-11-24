@@ -82,6 +82,60 @@ make_aar() {
     rm -rf "$work"
 }
 
+# make_xcframework <output>: Zebkit.xcframework from every slim-ios* package's
+# Zebkit.framework, without Xcode (building iOS on Linux): what
+# `xcodebuild -create-xcframework` makes of them, ios-arm64 for devices and
+# ios-arm64-simulator for the simulator.
+make_xcframework() {
+    local output="$1" other other_profile id variant libraries=""
+    mkdir -p "$output"
+    for other in "$OUT_DIR"/slim-ios*/package/Zebkit.framework; do
+        other_profile="$(basename "$(dirname "$(dirname "$other")")")"
+        if profile_args "$other_profile" | grep -q '^target_environment = "simulator"'; then
+            id=ios-arm64-simulator
+            variant="
+            <key>SupportedPlatformVariant</key>
+            <string>simulator</string>"
+        else
+            id=ios-arm64
+            variant=""
+        fi
+        mkdir -p "$output/$id"
+        cp -R "$other" "$output/$id/"
+        libraries+="
+        <dict>
+            <key>BinaryPath</key>
+            <string>Zebkit.framework/Zebkit</string>
+            <key>LibraryIdentifier</key>
+            <string>$id</string>
+            <key>LibraryPath</key>
+            <string>Zebkit.framework</string>
+            <key>SupportedArchitectures</key>
+            <array>
+                <string>arm64</string>
+            </array>
+            <key>SupportedPlatform</key>
+            <string>ios</string>$variant
+        </dict>"
+    done
+    cat > "$output/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>AvailableLibraries</key>
+    <array>$libraries
+    </array>
+    <key>CFBundlePackageType</key>
+    <string>XFWK</string>
+    <key>XCFrameworkFormatVersion</key>
+    <string>1.0</string>
+</dict>
+</plist>
+PLIST
+    log "Zebkit.xcframework (without Xcode): $(ls "$output" | grep -v Info.plist | paste -sd' ' -)"
+}
+
 case "$target_os" in
     ios)
         binary="$build_dir/Zebkit"
@@ -100,6 +154,8 @@ case "$target_os" in
             echo "}"
         } > "$framework/Modules/module.modulemap"
         cp "$package/icudtl.dat" "$framework/icudtl.dat"
+        supported_platform=iPhoneOS
+        grep -q '^target_environment = "simulator"' <<< "$args" && supported_platform=iPhoneSimulator
         cat > "$framework/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -113,26 +169,27 @@ case "$target_os" in
     <key>CFBundlePackageType</key><string>FMWK</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
-    <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+    <key>CFBundleSupportedPlatforms</key><array><string>$supported_platform</string></array>
     <key>MinimumOSVersion</key><string>15.0</string>
 </dict>
 </plist>
 PLIST
-        # Zebkit.xcframework for Swift packages (bindings/swift): on a Mac,
-        # from this framework and any other slim-ios* package's (the
-        # simulator's) already made.
+        # Zebkit.xcframework for Swift packages (bindings/swift), from this
+        # framework and any other slim-ios* package's (the simulator's)
+        # already made: by Xcode on a Mac, else written here as Xcode writes
+        # it (a directory per platform, and an Info.plist listing them).
+        rm -rf "$package/Zebkit.xcframework"
         if command -v xcodebuild > /dev/null; then
             frameworks=()
             for other in "$OUT_DIR"/slim-ios*/package/Zebkit.framework; do
                 frameworks+=(-framework "$other")
             done
-            rm -rf "$package/Zebkit.xcframework"
             xcodebuild -create-xcframework "${frameworks[@]}" -output "$package/Zebkit.xcframework" >&2
-            rm -rf "$ZEBKIT_ROOT/bindings/swift/Zebkit.xcframework"
-            cp -R "$package/Zebkit.xcframework" "$ZEBKIT_ROOT/bindings/swift/"
         else
-            log "no xcodebuild: Zebkit.framework only (Zebkit.xcframework is made on a Mac)"
+            make_xcframework "$package/Zebkit.xcframework"
         fi
+        rm -rf "$ZEBKIT_ROOT/bindings/swift/Zebkit.xcframework"
+        cp -R "$package/Zebkit.xcframework" "$ZEBKIT_ROOT/bindings/swift/"
         ;;
     *)
         library="$build_dir/libzebkit.so"

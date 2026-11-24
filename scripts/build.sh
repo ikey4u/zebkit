@@ -46,12 +46,42 @@ fi
 # How many links run at once is not set here: with ThinLTO Chromium works
 # it out from the machine's memory (build/toolchain/concurrent_links.gni).
 args="$(profile_args "$profile")"
+# iOS on Linux: the SDK copied from a Mac (scripts/ios-toolchain.sh), given
+# here, since Chromium would ask Xcode for it; and no dSYMs (no dsymutil).
+if [[ "$ZEBKIT_HOST" == linux ]] && grep -q '^target_os = "ios"' <<< "$args"; then
+    developer="$SDK_DIR/ios/xcode/Contents/Developer"
+    [[ -f "$SDK_DIR/ios/xcode/versions" ]] || die "no iOS SDK: see scripts/ios-toolchain.sh"
+    ios_version() { sed -n "s/^$1 //p" "$SDK_DIR/ios/xcode/versions"; }
+    if grep -q '^target_environment = "simulator"' <<< "$args"; then
+        platform=iPhoneSimulator sdk_name=iphonesimulator
+    else
+        platform=iPhoneOS sdk_name=iphoneos
+    fi
+    platform_dir="$developer/Platforms/$platform.platform"
+    toolchain="$developer/Toolchains/XcodeDefault.xctoolchain"
+    args+="
+# The iOS SDK from scripts/ios-toolchain.sh (scripts/build.sh)
+use_system_xcode = true
+enable_dsyms = false
+ios_sdk_name = \"$sdk_name\"
+ios_sdk_platform = \"$platform\"
+ios_sdk_platform_path = \"$platform_dir\"
+ios_sdk_path = \"$platform_dir/Developer/SDKs/$platform$(ios_version sdk_version).sdk\"
+ios_sdk_version = \"$(ios_version sdk_version)\"
+ios_sdk_build = \"$(ios_version sdk_build)\"
+ios_toolchains_path = \"$toolchain\"
+ios_bin_path = \"$toolchain/usr/bin/\"
+xcode_version = \"$(ios_version xcode_version_int)\"
+xcode_version_int = $(ios_version xcode_version_int)
+xcode_version_verbatim = \"$(ios_version xcode_version_verbatim)\"
+xcode_build = \"$(ios_version xcode_build)\""
+fi
 if [[ ! -f "$build_dir/build.ninja" || ! -f "$build_dir/args.gn" || "$(cat "$build_dir/args.gn")" != "$args" ]]; then
     printf '%s\n' "$args" > "$build_dir/args.gn"
     log "configuring $profile"
-    # On macOS configure only the engine and its dependencies.
+    # For macOS and iOS configure only the engine and its dependencies.
     roots=()
-    if grep -q '^target_os = "mac"' <<< "$args"; then roots=(--root-pattern=//:zebkit); fi
+    if grep -q '^target_os = "\(mac\|ios\)"' <<< "$args"; then roots=(--root-pattern=//:zebkit); fi
     (cd "$SRC_DIR" && gn gen "${roots[@]}" "out/$profile")
 fi
 (( configure_only )) && exit 0

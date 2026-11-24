@@ -80,8 +80,8 @@ Each release on GitHub has an archive for each:
 | Profile | Output | Built on |
 |---|---|---|
 | `slim-android` | `libzebkit.so` (arm64; `target_cpu = "x64"` for the emulator), `zebkit.aar`, `zebkit_mobile_test` | Linux, with Android's NDK and SDK |
-| `slim-ios` | `Zebkit.framework` for arm64 devices, and on a Mac `Zebkit.xcframework` | a Mac with Xcode: Chromium builds iOS only on macOS |
-| `slim-ios-simulator` | `Zebkit.framework` for the simulator on Apple silicon: the xcframework's other half | a Mac with Xcode |
+| `slim-ios` | `Zebkit.framework` for arm64 devices, and `Zebkit.xcframework` | Linux, with the iPhone SDK copied from a Mac (`scripts/ios-toolchain.sh`); or a Mac with Xcode |
+| `slim-ios-simulator` | `Zebkit.framework` for the simulator on Apple silicon: the xcframework's other half | the same |
 | `mobile-linux` | `libzebkit.so` without the engine for Linux, `zebkit_mobile_test` | Linux: to test that configuration here, not to ship |
 
 ```sh
@@ -91,8 +91,17 @@ scripts/package-mobile.sh slim-android               # out/blink/slim-android/pa
 scripts/mobile-test.sh slim-android                  # on the device adb sees
 ```
 
-`ZEBKIT_TARGET_OS` adds systems to the checkout's `target_os`; on a Mac,
-`ZEBKIT_TARGET_OS=ios`, then:
+`ZEBKIT_TARGET_OS` adds systems to the checkout's `target_os`. iOS is built
+on Linux like macOS (`docs/MACOS.md`): Chromium's clang and `ld64.lld` compile
+and link it on any host, and what only a Mac has is Apple's SDKs. Once, make
+their archives on a Mac (about 40 MB, the commands are in
+`scripts/ios-toolchain.sh`), copy them over and run
+`scripts/ios-toolchain.sh <directory>`. `scripts/build.sh` then gives an iOS
+profile's build the SDK's paths and versions, which Chromium otherwise asks
+Xcode for (patches/1091), and builds it without dSYMs, as there is no
+`dsymutil` on Linux (patches/1092). `scripts/package-mobile.sh` writes
+`Zebkit.xcframework` itself where there is no Xcode. Only testing needs a Mac
+(the simulator). On a Mac instead, `ZEBKIT_TARGET_OS=ios`. Either way:
 
 ```sh
 scripts/build.sh slim-ios-simulator zebkit/engine

@@ -14,9 +14,10 @@
 # zebkit-mcp, built here from its package (build_tools below); and Android's,
 # libzebkit without the engine for arm64 and x86-64 with zebkit.aar
 # (docs/MOBILE.md: zebkit-<version>-android). iOS's (Zebkit.xcframework and
-# the Swift package: zebkit-<version>-ios) is built on a Mac, as Chromium builds
-# iOS only there: scripts/release-ios.sh makes dist/release-ios, which is copied
-# here and packed with the rest; without it the run stops
+# the Swift package: zebkit-<version>-ios) is scripts/release-ios.sh's
+# dist/release-ios, made here with the iPhone SDK copied from a Mac
+# (scripts/ios-toolchain.sh) or on a Mac and copied here, and packed with the
+# rest; without it the run stops
 # (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS). The
 # checksums all go into engines.txt, and --publish uploads every archive of
 # this version that engines.txt names. Once the tag v<version> exists (here or
@@ -425,19 +426,19 @@ cp "$OUT_DIR/slim-android-x64/package/libzebkit.so" "$android/jni/x86_64/"
 log "release build of zebkit for Android: $android ($(du -sm "$android" | cut -f1) MiB)"
 pack "$android" android
 
-# iOS: what scripts/release-ios.sh made on a Mac, copied here.
+# iOS: what scripts/release-ios.sh made (here, or on a Mac and copied here).
 ios="$ZEBKIT_ROOT/dist/release-ios"
 if [[ -d "$ios" ]]; then
     plist="$ios/Zebkit.xcframework/ios-arm64/Zebkit.framework/Info.plist"
-    [[ -f "$plist" ]] || die "$ios has no Zebkit.xcframework for devices: make it with scripts/release-ios.sh on a Mac"
+    [[ -f "$plist" ]] || die "$ios has no Zebkit.xcframework for devices: make it with scripts/release-ios.sh"
     ios_version="$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$plist")"
     [[ "$ios_version" == "$version" ]] || die "$ios is zebkit $ios_version, not $version: make it again with scripts/release-ios.sh"
-    log "release build of zebkit for iOS (from a Mac): $ios ($(du -sm "$ios" | cut -f1) MiB)"
+    log "release build of zebkit for iOS: $ios ($(du -sm "$ios" | cut -f1) MiB)"
     pack "$ios" ios
 elif [[ "${ZEBKIT_RELEASE_NO_IOS:-}" == 1 ]]; then
     log "no iOS in this release (ZEBKIT_RELEASE_NO_IOS=1)"
 else
-    die "no dist/release-ios: make it on a Mac with scripts/release-ios.sh and copy it here (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS)"
+    die "no dist/release-ios: make it with scripts/release-ios.sh (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS)"
 fi
 fi
 
