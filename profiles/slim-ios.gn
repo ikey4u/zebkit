@@ -21,6 +21,15 @@ zebkit_ffmpeg = false
 # PDFium draws its text with FreeType, which Chromium builds on desktop only.
 enable_freetype = true
 
+# PDFium allocates with the system's malloc here, not in PartitionAlloc's
+# partitions (Chromium's default follows use_partition_alloc). On iOS,
+# PartitionAlloc reserves its pools as one block of tens of GB of address
+# space, which an application without the
+# com.apple.developer.kernel.extended-virtual-addressing entitlement can't
+# get: PDFium's first allocation then ended the application
+# (HandlePoolAllocFailure; a Lirra crash report, every PDF, iOS 26.6.2).
+pdf_use_partition_alloc = false
+
 # Chromium's own iOS build has no Blink (Chrome for iOS uses WebKit), and
 # some of the libraries zebkit has (libjpeg-turbo) are built only with it.
 # The flag says which libraries may be built; with zebkit_build_engine off
