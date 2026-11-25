@@ -17,7 +17,7 @@ DEPOT_TOOLS_COMMIT=889099791deff38466d471fa6590951c91a1d8ab
 # scripts/zsdk.sh checks out this commit's directories for these versions
 # into .cache/zsdk, or uses ZSDK_DIR, a checkout of one's own.
 ZSDK_URL=https://github.com/ikey4u/zsdk.git
-ZSDK_COMMIT=65020c12bb39dbd6184a5481c26a1d60938e11f0
+ZSDK_COMMIT=104dedb586564e5e82385fd18f89872bb83b00fc
 ZSDK_MACOS_VERSION=27.0
 ZSDK_IOS_VERSION=27.0
 ZSDK_WINDOWS_VERSION=10.0.28000
