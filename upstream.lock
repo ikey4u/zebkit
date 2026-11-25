@@ -12,6 +12,16 @@ CHROMIUM_URL=https://chromium.googlesource.com/chromium/src.git
 DEPOT_TOOLS_URL=https://chromium.googlesource.com/chromium/tools/depot_tools.git
 DEPOT_TOOLS_COMMIT=889099791deff38466d471fa6590951c91a1d8ab
 
+# zsdk: Apple's and Microsoft's SDKs, laid out to cross-compile from Linux,
+# one directory per platform and SDK version (github.com/ikey4u/zsdk).
+# scripts/zsdk.sh checks out this commit's directories for these versions
+# into .cache/zsdk, or uses ZSDK_DIR, a checkout of one's own.
+ZSDK_URL=https://github.com/ikey4u/zsdk.git
+ZSDK_COMMIT=65020c12bb39dbd6184a5481c26a1d60938e11f0
+ZSDK_MACOS_VERSION=27.0
+ZSDK_IOS_VERSION=27.0
+ZSDK_WINDOWS_VERSION=10.0.28000
+
 # Electron, the size baseline (scripts/electron-baseline.sh): its prebuilt
 # runtime for Linux x86-64, at the stable release, checked by its SHA-256.
 ELECTRON_VERSION=45.2.1

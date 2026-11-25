@@ -126,7 +126,7 @@ for platform in "${PLATFORMS[@]}"; do
     [[ -n "${FFMPEG_ONLY:-}" && "${platform%% *}" != "$FFMPEG_ONLY" && "${platform/ //}" != "$FFMPEG_ONLY" ]] && continue
     [[ "${platform%% *}" == win ]] && (( ! windows_sdk )) && continue
     [[ "${platform%% *}" != mac || -d "$SRC_DIR/build/mac_files/xcode_binaries" ]] \
-        || die "no macOS SDK to build FFmpeg for macOS; run scripts/zsdk-create.sh first, or FFMPEG_ONLY=linux"
+        || die "no macOS SDK to build FFmpeg for macOS; run scripts/macos-toolchain.sh first, or FFMPEG_ONLY=linux"
     log "configuring and building FFmpeg for $platform"
     # shellcheck disable=SC2086
     stub="$(stub_libs $platform)"

@@ -17,10 +17,9 @@
 # and checks again instead. The tags are pushed with gh's credentials when git
 # cannot reach origin here (no ssh client in the image; release.sh).
 #
-# Limits: the SDKs are laid out by scripts/zsdk-create.sh into .cache/sdk
-# (or ZEBKIT_SDK_DIR): Windows' is downloaded, which accepts Microsoft's
-# licence terms; Apple's needs MacOSX.sdk.tar.xz and version.plist mounted at
-# /macos the first time. The checks are scripts/check.sh's, in strict mode: a
+# Limits: Apple's and Microsoft's SDKs come from zsdk (upstream.lock), checked
+# out into .cache/zsdk the first time, and what Chromium's DEPS fetches beside
+# them into .cache/sdk (scripts/macos-toolchain.sh, windows-toolchain.sh). The checks are scripts/check.sh's, in strict mode: a
 # test this image cannot run (no GPU, no person at a screen) fails it rather
 # than being skipped unseen; ENGINE_TEST_STRICT=0 accepts the skips, which
 # are listed. A Mac or Windows machine is not here: their engines are built
@@ -36,18 +35,13 @@ publish=1
 mise trust -q mise.toml
 mise install -q
 
-# The SDKs, once: Apple's from /macos, Microsoft's downloaded.
+# The toolchains for macOS and Windows, once: the SDKs from zsdk, and what
+# DEPS fetches beside them.
 sdk="${ZEBKIT_SDK_DIR:-.cache/sdk}"
-if [[ ! -d "$sdk/macos/xcode" || ! -f "$sdk/windows/win_toolchain.json" ]]; then
+if [[ ! -d "$sdk/macos/cipd" || ! -f "$sdk/windows/win_toolchain.json" ]]; then
     scripts/fetch-upstream.sh
-    if [[ ! -f "$sdk/macos/sdk.tar.xz" ]]; then
-        [[ -f /macos/MacOSX.sdk.tar.xz && -f /macos/version.plist ]] \
-            || die "mount MacOSX.sdk.tar.xz and version.plist at /macos (scripts/macos-toolchain.sh says how to make them)"
-        mkdir -p "$sdk/macos"
-        cp /macos/MacOSX.sdk.tar.xz "$sdk/macos/sdk.tar.xz"
-        cp /macos/version.plist "$sdk/macos/version.plist"
-    fi
-    ZSDK_LINK=1 scripts/zsdk-create.sh all
+    scripts/macos-toolchain.sh
+    scripts/windows-toolchain.sh
 fi
 
 # A run after the commit of what a first run built and checked: publish it,

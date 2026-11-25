@@ -69,12 +69,12 @@ link_engine() {
     # zebkit's configuration of FFmpeg (scripts/ffmpeg-config.sh).
     ln -sfn "$ZEBKIT_ROOT/src/ffmpeg" "$SRC_DIR/zebkit/ffmpeg"
     # What scripts/macos-toolchain.sh set up for building macOS on Linux:
-    # Apple's SDK in a copy of Xcode, and what DEPS fetches for a macOS
-    # checkout.
+    # Apple's SDK in a copy of Xcode (zsdk), and what DEPS fetches for a
+    # macOS checkout.
     local macos="$SDK_DIR/macos"
-    if [[ "$ZEBKIT_HOST" == linux && -d "$macos/xcode" ]]; then
+    if [[ "$ZEBKIT_HOST" == linux && -d "$MACOS_SDK/xcode" && -d "$macos/cipd" ]]; then
         mkdir -p "$SRC_DIR/build/mac_files"
-        ln -sfn "$macos/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
+        ln -sfn "$MACOS_SDK/xcode" "$SRC_DIR/build/mac_files/xcode_binaries"
         ln -sfn "$macos/cipd/mig" "$SRC_DIR/third_party/mig/bin"
         # ui/gl/resources holds nothing else since Chromium 157.
         mkdir -p "$SRC_DIR/ui/gl/resources"

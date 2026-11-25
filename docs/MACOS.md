@@ -24,7 +24,7 @@ one job per two GiB of RAM and at most the number of logical CPUs.
 Native builds use the installed Xcode through `DEVELOPER_DIR`, leaving
 the system's `xcode-select` setting alone. They disable the Linux-only ML
 inliner and ThinLTO for local iteration, keep Chromium's process sandbox,
-and do not need the SDK archive or `macos-toolchain.sh` below. Allow about
+and do not need zsdk or `macos-toolchain.sh` below. Allow about
 120 GB for the checkout and build; the first build can take hours.
 
 ## The package
@@ -58,29 +58,24 @@ link-time optimization, but not PGO, whose profile for macOS is not fetched yet
 
 The macOS engine is cross-compiled on the Linux machine, as Chromium's own
 builders compile for macOS on Linux: Chromium's clang and `ld64.lld`
-target macOS; what only a Mac has is Apple's SDK.
+target macOS; what only a Mac has is Apple's SDK. It comes from zsdk,
+laid out as a copy of Xcode, at the commit and SDK version `upstream.lock`
+pins (`ZSDK_COMMIT`, `ZSDK_MACOS_VERSION`).
 
-1. On a Mac, pack the SDK and Xcode's version file:
-
-   ```sh
-   cd "$(xcrun --show-sdk-path)/.." &&
-       tar -cf - --exclude 'MacOSX.sdk/usr/share/man' MacOSX.sdk | xz -T0 > MacOSX.sdk.tar.xz
-   cp "$(xcode-select -p)/../version.plist" .
-   ```
-
-2. On Linux, `scripts/macos-toolchain.sh MacOSX.sdk.tar.xz version.plist`
-   lays them out as a copy of Xcode under `.cache/sdk/macos/xcode` (`ZEBKIT_SDK_DIR` to put it elsewhere, `scripts/zsdk-create.sh`), linked in
-   as `build/mac_files/xcode_binaries` (Chromium's hermetic Xcode), and
-   fetches what DEPS pins for macOS: `mig` for Linux, clang's macOS
-   runtime, ANGLE's Metal shader tools.
-3. `scripts/build.sh slim-macos`, then `scripts/package.sh slim-macos`.
+1. `scripts/macos-toolchain.sh` checks out zsdk's `macos/<version>` into
+   `.cache/zsdk` (`scripts/zsdk.sh`; `ZSDK_DIR` for a checkout of one's own),
+   links its Xcode in as `build/mac_files/xcode_binaries` (Chromium's
+   hermetic Xcode), and fetches what DEPS pins for macOS into
+   `.cache/sdk/macos`: `mig` for Linux, clang's macOS runtime, ANGLE's
+   Metal shader tools.
+2. `scripts/build.sh slim-macos`, then `scripts/package.sh slim-macos`.
 
 `profiles/slim-macos.gn` is `slim` with:
 
 | Argument | Why |
 |---|---|
 | `target_os = "mac"`, `target_cpu = "arm64"` | Apple silicon |
-| `use_system_xcode = false`, `mac_sdk_official_version` | the SDK from step 2 |
+| `use_system_xcode = false`, `mac_sdk_official_version` | zsdk's SDK, from step 1 |
 | `enable_dsyms = false` | no debug information to put in a dSYM |
 | `v8_use_metagen_instance_types = false` | metagen reads the build graph without zebkit's root pattern |
 | `use_relative_vtables_abi = false` | relative vtables need COMDATs, which Mach-O has not |

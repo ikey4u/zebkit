@@ -58,11 +58,11 @@ scripts/example.sh macos-basic    # C embedding demo with Zebkit.framework
 `slim-macos-native` uses the Mac's Xcode and disables the Linux-only ML
 inliner and ThinLTO. `scripts/dist.sh debug` uses `slim-macos-native-dev`.
 
-Release archives can still be cross-built on Linux; only Apple's SDK has
-to come from a Mac. `docs/MACOS.md` has the steps:
+Release archives can still be cross-built on Linux, against Apple's SDK
+from zsdk (`upstream.lock`, `scripts/zsdk.sh`). `docs/MACOS.md` has the steps:
 
 ```sh
-scripts/macos-toolchain.sh MacOSX.sdk.tar.xz version.plist    # once
+scripts/macos-toolchain.sh                                    # once
 scripts/build.sh slim-macos
 scripts/package.sh slim-macos                                 # out/blink/slim-macos/package/Zebkit.framework
 ```
@@ -70,11 +70,10 @@ scripts/package.sh slim-macos                                 # out/blink/slim-m
 `scripts/engine-test.sh slim-macos` runs on the Mac, against the package
 copied there.
 
-iOS is built on Linux the same way, with the iPhone SDKs from a Mac
+iOS is built on Linux the same way, with the iPhone SDKs from zsdk
 (`docs/MOBILE.md`):
 
 ```sh
-scripts/ios-toolchain.sh <directory of the SDK archives>       # once
 scripts/release-ios.sh                                        # dist/release-ios
 ```
 
@@ -342,14 +341,11 @@ what Chromium's tools call from the system, what the tests drive the engine
 with (Xvfb, labwc, a session bus, xdotool, `x11-utils`), Rust with the
 macOS and Windows targets, and mise. Its entry, `docker/publish.sh`:
 
-1. lays out both SDKs once, when `.cache/sdk` (or `ZEBKIT_SDK_DIR`) has
-   neither: `scripts/fetch-upstream.sh`, Apple's SDK copied from the `/macos`
-   mount, then `scripts/zsdk-create.sh all`, which also downloads MSVC and the
-   Windows SDK from Microsoft (that accepts Microsoft's licence terms;
-   `docs/WINDOWS.md`). Two of the pinned MSVC packages are no longer served:
-   give the container a `.cache/sdk/windows/downloads` copied from a machine
-   that has it, and keep that directory backed up (`docs/WINDOWS.md`,
-   "Build");
+1. sets up the macOS and Windows toolchains once, when `.cache/sdk` (or
+   `ZEBKIT_SDK_DIR`) has neither: `scripts/fetch-upstream.sh`,
+   `scripts/macos-toolchain.sh` and `scripts/windows-toolchain.sh`, which
+   check out Apple's and Microsoft's SDKs from zsdk (`upstream.lock`) into
+   `.cache/zsdk` and fetch what Chromium's DEPS pins beside them;
 2. runs `mise run r` (all three systems built and packed, their checksums
    written into `engines.txt`); while `docs/reports` has reports measured
    before (`check-reports.py`), it stops there: measure them on this build
@@ -366,8 +362,7 @@ macOS and Windows targets, and mise. Its entry, `docker/publish.sh`:
 
 ```sh
 docker build -t zebkit-release --build-arg UID="$(id -u)" docker
-run=(docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise
-     -v ~/MacOSX:/macos:ro)
+run=(docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise)
 "${run[@]}" -e GH_TOKEN zebkit-release   # build, check; stops for the commit
 git commit -am "<version>: ..." && git push   # engines.txt has the new checksums
 "${run[@]}" -e GH_TOKEN zebkit-release   # publishes what was built and checked
@@ -375,9 +370,7 @@ git commit -am "<version>: ..." && git push   # engines.txt has the new checksum
 
 The repository is mounted at the same path as outside, so the Chromium
 tree, the build and the caches stay in it between runs and a second build
-compiles only what changed; the `zebkit-mise` volume keeps mise's tools. `~/MacOSX` holds `MacOSX.sdk.tar.xz` and
-`version.plist` from a Mac (`scripts/macos-toolchain.sh`), needed on the
-first run only. The image is not a glibc 2.17 system and need not be:
+compiles only what changed; the `zebkit-mise` volume keeps mise's tools. The image is not a glibc 2.17 system and need not be:
 the engine is compiled against Chromium's own sysroot, `package.sh`
 refuses one that needs a newer glibc than 2.17, and `glibc-test.sh` runs
 it on CentOS 7's before anything is published.

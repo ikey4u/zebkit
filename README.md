@@ -92,8 +92,8 @@ scripts/fetch-upstream.sh && scripts/build.sh slim && scripts/package.sh slim   
 
 On an Apple silicon Mac with full Xcode, `scripts/dist.sh release` builds
 `dist/release`. `mise run r` is the release of every system, built on
-Linux: it needs Apple's SDK (`scripts/macos-toolchain.sh`), the Windows
-toolchain (`scripts/windows-toolchain.sh`) and Android's NDK laid out first,
+Linux: it needs the macOS toolchain (`scripts/macos-toolchain.sh`), the Windows
+toolchain (`scripts/windows-toolchain.sh`), both with their SDKs from zsdk, and Android's NDK laid out first,
 and the iOS package built on a Mac by `scripts/release-ios.sh`
 (`docs/MOBILE.md`).
 

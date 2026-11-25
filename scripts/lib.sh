@@ -44,8 +44,16 @@ caller_path() {
 }
 
 CACHE_DIR="$ZEBKIT_ROOT/.cache"
-# Apple's and Microsoft's SDKs for building on Linux (scripts/zsdk-create.sh):
-# never deleted by a clean. ZEBKIT_SDK_DIR, or a link here, shares them between
+# Apple's and Microsoft's SDKs for building on Linux: zsdk, pinned in
+# upstream.lock and checked out by scripts/zsdk.sh. ZSDK_DIR is a checkout of
+# one's own instead, used as it is.
+ZSDK_DIR="${ZSDK_DIR:-$CACHE_DIR/zsdk}"
+MACOS_SDK="$ZSDK_DIR/macos/$ZSDK_MACOS_VERSION"
+IOS_SDK="$ZSDK_DIR/ios/$ZSDK_IOS_VERSION"
+WINDOWS_SDK="$ZSDK_DIR/windows/$ZSDK_WINDOWS_VERSION"
+# What a build for macOS or Windows on Linux takes from where Chromium's DEPS
+# says, beside the SDKs (scripts/macos-toolchain.sh, windows-toolchain.sh):
+# never deleted by a clean. ZEBKIT_SDK_DIR, or a link here, shares it between
 # checkouts.
 SDK_DIR="${ZEBKIT_SDK_DIR:-$CACHE_DIR/sdk}"
 UPSTREAM_DIR="$ZEBKIT_ROOT/upstream"
@@ -323,9 +331,9 @@ set_target_for_profile() {
         *) ZEBKIT_TARGET=linux ;;
     esac
     if [[ "$ZEBKIT_TARGET" == macos && "$ZEBKIT_HOST" != macos ]]; then
-        macos_sdk="$SDK_DIR/macos/xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        macos_sdk="$MACOS_SDK/xcode/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
         llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"
-        [[ -d "$macos_sdk" && -x "$llvm_bin/clang" ]] || die "no macOS SDK or clang; see scripts/macos-toolchain.sh"
+        [[ -d "$macos_sdk" && -x "$llvm_bin/clang" ]] || die "no macOS SDK or clang; run scripts/macos-toolchain.sh"
     fi
     if [[ "$ZEBKIT_TARGET" == windows && "$ZEBKIT_HOST" != windows ]]; then
         llvm_bin="$SRC_DIR/third_party/llvm-build/Release+Asserts/bin"

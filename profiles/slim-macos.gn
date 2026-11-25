@@ -1,8 +1,8 @@
 # zebkit-base: slim
 #
 # The slim profile on macOS, for Apple silicon: Zebkit.framework, with the
-# same functions as on Linux. Built on Linux against the macOS SDK copied
-# from a Mac (scripts/zsdk-create.sh, scripts/macos-toolchain.sh), as Chromium's own builders
+# same functions as on Linux. Built on Linux against the macOS SDK from
+# zsdk (scripts/macos-toolchain.sh), as Chromium's own builders
 # compile for macOS on Linux machines.
 
 target_os = "mac"

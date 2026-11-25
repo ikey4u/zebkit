@@ -2,8 +2,7 @@
 #
 # The slim profile on macOS for Intel Macs: Zebkit.framework for x86-64, the
 # same as slim-macos's for Apple silicon. Built on Linux against the same
-# macOS SDK (it has both processors' libraries; scripts/zsdk-create.sh
-# macos-intel checks it and links it as macos-intel), with zebkit's FFmpeg
+# macOS SDK (zsdk's has both processors' libraries), with zebkit's FFmpeg
 # configuration for mac/x64 (scripts/ffmpeg-config.sh).
 
 target_cpu = "x64"

@@ -4,7 +4,7 @@
 #
 #   docker build -t zebkit-release --build-arg UID="$(id -u)" docker
 #   docker run --rm -it -v "$PWD:$PWD" -w "$PWD" -v zebkit-mise:/home/builder/.local/share/mise \
-#       -v "$HOME/MacOSX:/macos:ro" -e GH_TOKEN zebkit-release   # build, test, publish
+#       -e GH_TOKEN zebkit-release   # build, test, publish
 #   docker run ... zebkit-release --no-publish            # build and test only
 #
 # The repository is mounted, not copied, and at the same path as outside:
@@ -21,9 +21,8 @@
 # a glibc newer than 2.17, and scripts/glibc-test.sh runs the engine on
 # CentOS 7's glibc 2.17 and libraries before anything is published.
 #
-# /macos holds Apple's SDK for the macOS build, made once on a Mac
-# (scripts/macos-toolchain.sh says how): MacOSX.sdk.tar.xz and version.plist,
-# copied into .cache/sdk/macos by the first run (scripts/zsdk-create.sh).
+# Apple's and Microsoft's SDKs come from zsdk, pinned in upstream.lock, and
+# are checked out into .cache/zsdk by the first run (scripts/zsdk.sh).
 
 FROM debian:13
 

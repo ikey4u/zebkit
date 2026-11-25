@@ -9,22 +9,19 @@
 #   scripts/windows-toolchain.sh --no-link   fetch and lay out, leaving the tree alone
 #   scripts/windows-toolchain.sh --verify    only check that what is laid out is what is pinned
 #
-# Running it means accepting Microsoft's licence terms for Visual Studio and
-# the Windows SDK. Those files stay on this machine, in $SDK_DIR/windows
-# (scripts/lib.sh), which nothing cleans: never in the repository, nor in a package.
-#
-# From Microsoft, pinned by version and SHA-256 (scripts/windows-toolchain.py):
-# MSVC and the DIA SDK from Visual Studio's servers, the SDK and the debuggers
-# from NuGet. Every mode first checks, from the disk alone, that what is laid
-# out is the pinned toolchain, and stops if it is not; a laid-out toolchain is
-# never deleted or replaced here (a new one is a change of the pins).
+# MSVC, the DIA SDK and the Windows SDK come from zsdk (scripts/zsdk.sh), at
+# the version upstream.lock pins; zsdk's scripts/windows.py pins each package
+# by version and SHA-256. Every mode first checks, from the disk alone, that
+# what is there is that pinned toolchain, and stops if it is not. Never in the
+# repository, nor in a package.
 # The rest comes from where Chromium's DEPS says, at the versions it pins, for
 # a checkout that builds Windows on Linux: clang's runtime library for Windows,
 # the resource compiler for Linux, Windows' PGO profile, and the libraries only
 # Windows builds use. .gclient keeps target_os = ["linux"]: a sync for Windows
 # would fetch Chrome's updaters and more, and hooks that reset nothing here are
-# all that is needed. All of it is linked into the tree;
-# scripts/fetch-upstream.sh links it again after a sync.
+# all that is needed. It goes under $SDK_DIR/windows (scripts/lib.sh), with
+# build/win_toolchain.json's description of the toolchain. All of it is linked
+# into the tree; scripts/fetch-upstream.sh links it again after a sync.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -150,10 +147,19 @@ link_in() {
     cp -a -u "$windows/runtime/." "$SRC_DIR/third_party/llvm-build/Release+Asserts/"
 }
 
-# verify_pins: what $windows holds is what windows-toolchain.py pins (no network).
+# verify_pins: zsdk's toolchain is the one its scripts/windows.py pins (no
+# network), and $windows describes it to the build.
 verify_pins() {
-    python3 -I "$ZEBKIT_ROOT/scripts/windows-toolchain.py" --verify "$windows" \
-        || die "the Windows toolchain in $windows is not the pinned one (above)"
+    python3 -I "$ZSDK_DIR/scripts/windows.py" verify "$WINDOWS_SDK" \
+        || die "the Windows toolchain in $WINDOWS_SDK is not the pinned one (above)"
+    mkdir -p "$windows"
+    python3 -I "$ZSDK_DIR/scripts/windows.py" json "$WINDOWS_SDK" > "$windows/win_toolchain.json.new"
+    # Only a new description is written: the build reads its time too.
+    if cmp -s "$windows/win_toolchain.json.new" "$windows/win_toolchain.json"; then
+        rm "$windows/win_toolchain.json.new"
+    else
+        mv "$windows/win_toolchain.json.new" "$windows/win_toolchain.json"
+    fi
 }
 
 case "${1:-}" in
@@ -162,11 +168,12 @@ case "${1:-}" in
     ""|--no-link) ;;
     *) die "usage: $(basename "$0") [--link|--no-link|--verify]" ;;
 esac
-[[ -f "$windows/win_toolchain.json" ]] && verify_pins
-
-mkdir -p "$windows"
-python3 -I "$ZEBKIT_ROOT/scripts/windows-toolchain.py" "$windows" "$SRC_DIR"
+"$ZEBKIT_ROOT/scripts/zsdk.sh" windows
+verify_pins
+# Links for the names Chromium's sources give headers and libraries in
+# another case than the SDK's (zsdk's windows.py case-links).
+python3 -I "$ZSDK_DIR/scripts/windows.py" case-links "$WINDOWS_SDK" "$SRC_DIR"
 fetch_pinned
 [[ "${1:-}" == --no-link ]] || link_in
-log "$(tr '\n' ';' < "$windows/VERSIONS")"
+log "$(tr '\n' ';' < "$WINDOWS_SDK/VERSIONS")"
 log "ready to build profiles/slim-windows.gn"

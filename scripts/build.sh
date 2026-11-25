@@ -46,12 +46,12 @@ fi
 # How many links run at once is not set here: with ThinLTO Chromium works
 # it out from the machine's memory (build/toolchain/concurrent_links.gni).
 args="$(profile_args "$profile")"
-# iOS on Linux: the SDK copied from a Mac (scripts/ios-toolchain.sh), given
+# iOS on Linux: the SDK from zsdk (scripts/zsdk.sh), given
 # here, since Chromium would ask Xcode for it; and no dSYMs (no dsymutil).
 if [[ "$ZEBKIT_HOST" == linux ]] && grep -q '^target_os = "ios"' <<< "$args"; then
-    developer="$SDK_DIR/ios/xcode/Contents/Developer"
-    [[ -f "$SDK_DIR/ios/xcode/versions" ]] || die "no iOS SDK: see scripts/ios-toolchain.sh"
-    ios_version() { sed -n "s/^$1 //p" "$SDK_DIR/ios/xcode/versions"; }
+    "$ZEBKIT_ROOT/scripts/zsdk.sh" ios
+    developer="$IOS_SDK/xcode/Contents/Developer"
+    ios_version() { sed -n "s/^$1 //p" "$IOS_SDK/xcode/versions"; }
     if grep -q '^target_environment = "simulator"' <<< "$args"; then
         platform=iPhoneSimulator sdk_name=iphonesimulator
     else
@@ -60,7 +60,7 @@ if [[ "$ZEBKIT_HOST" == linux ]] && grep -q '^target_os = "ios"' <<< "$args"; th
     platform_dir="$developer/Platforms/$platform.platform"
     toolchain="$developer/Toolchains/XcodeDefault.xctoolchain"
     args+="
-# The iOS SDK from scripts/ios-toolchain.sh (scripts/build.sh)
+# The iOS SDK from zsdk (scripts/build.sh)
 use_system_xcode = true
 enable_dsyms = false
 ios_sdk_name = \"$sdk_name\"

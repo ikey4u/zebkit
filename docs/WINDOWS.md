@@ -2,28 +2,26 @@
 
 zebkit for Windows x64: `zebkit.dll`, with the same functions as on Linux and
 macOS. It is cross-built on Linux with Chromium's `clang-cl` and `lld-link`,
-against MSVC's C++ library and the Windows SDK (`scripts/windows-toolchain.sh`).
+against MSVC's C++ library and the Windows SDK, from zsdk (`scripts/windows-toolchain.sh`).
 
 ## Build
 
 ```sh
-scripts/windows-toolchain.sh       # once: lays out MSVC and the SDK ($SDK_DIR/windows)
+scripts/windows-toolchain.sh       # once: zsdk's MSVC and SDK, and what DEPS pins ($SDK_DIR/windows)
 scripts/build.sh slim-windows
 scripts/build.sh slim-windows-sandbox zebkit/engine:zebkit_sandbox
 scripts/package.sh slim-windows
 ```
 
-**Keep `.cache/sdk/windows/downloads`** (about 343 MB; `$SDK_DIR/windows/downloads`),
-and keep a copy of it somewhere durable. `scripts/windows-toolchain.py` pins
-every package of MSVC by version and SHA-256, and two of them,
-`Tools.HostX64.TargetX64` 14.50.35739 and the DIA SDK 14.51.36257, are no
-longer served by any channel of Visual Studio's (on 2026-11-11 the channels
-had 14.50.35740 and 14.52.37029). Without that directory a new machine, or a
-container whose cache lost it, cannot lay out the Windows toolchain: the run
-stops with "not in Visual Studio's channel any more". Copied back into place,
-the run takes the packages from there by their checksums. A toolset that can
-be downloaded again is a change of the pins, decided apart, not a fix of the
-cache.
+MSVC and the Windows SDK come from zsdk, laid out already, at the commit
+and version `upstream.lock` pins (`ZSDK_COMMIT`, `ZSDK_WINDOWS_VERSION`):
+`scripts/zsdk.sh` checks out its `windows/<version>` into `.cache/zsdk`
+(`ZSDK_DIR` for a checkout of one's own). zsdk's `scripts/windows.py` pins
+every package by version and SHA-256, and `windows-toolchain.sh` checks that
+what is checked out is that toolchain, writes `build/win_toolchain.json`'s
+description of it into `$SDK_DIR/windows`, and adds links for the names
+Chromium's sources give headers and libraries in another case. A new
+toolset is a new version in zsdk and a change of `upstream.lock`.
 
 ## The package
 

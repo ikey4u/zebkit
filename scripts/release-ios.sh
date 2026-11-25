@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The release's iOS package: dist/release-ios, which scripts/release.sh packs
 # as zebkit-<version>-ios.tar.xz beside the other systems' archives. Made on
-# the Linux machine with the iPhone SDK copied from a Mac
-# (scripts/ios-toolchain.sh), or on a Mac with Xcode, then copied to the
+# the Linux machine with the iPhone SDK from zsdk
+# (scripts/zsdk.sh), or on a Mac with Xcode, then copied to the
 # Linux machine's dist/release-ios before mise run r.
 #
 #   scripts/release-ios.sh
@@ -25,8 +25,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 if [[ "$ZEBKIT_HOST" == macos ]]; then
     command -v xcodebuild > /dev/null || die "no xcodebuild: install Xcode"
 else
-    # On Linux, with the iPhone SDK copied from a Mac (scripts/ios-toolchain.sh).
-    [[ -f "$SDK_DIR/ios/xcode/versions" ]] || die "no iOS SDK on this machine: see scripts/ios-toolchain.sh (or run this on a Mac)"
+    # On Linux, with the iPhone SDK from zsdk.
+    "$ZEBKIT_ROOT/scripts/zsdk.sh" ios
 fi
 
 if [[ "$ZEBKIT_HOST" == macos ]]; then

@@ -16,7 +16,7 @@
 # (docs/MOBILE.md: zebkit-<version>-android). iOS's (Zebkit.xcframework and
 # the Swift package: zebkit-<version>-ios) is scripts/release-ios.sh's
 # dist/release-ios, made here with the iPhone SDK copied from a Mac
-# (scripts/ios-toolchain.sh) or on a Mac and copied here, and packed with the
+# (zsdk, scripts/zsdk.sh) or on a Mac and copied here, and packed with the
 # rest; without it the run stops
 # (ZEBKIT_RELEASE_NO_IOS=1 releases without iOS). The
 # checksums all go into engines.txt, and --publish uploads every archive of
@@ -163,10 +163,11 @@ unchecked=
 # All of it asked for before the build, which is long, and not after it.
 if (( ! publish_only )); then
     command -v xz > /dev/null || die "xz is missing; \"mise run r\" brings it (mise.toml), or install it"
-    [[ -d "$SDK_DIR/macos/xcode" ]] \
-        || die "the macOS engine needs Apple's SDK laid out first: scripts/zsdk-create.sh (docs/MACOS.md)"
-    [[ -d "$SDK_DIR/windows" ]] \
-        || die "the Windows engine needs MSVC and the Windows SDK laid out first: scripts/zsdk-create.sh (docs/WINDOWS.md)"
+    [[ -d "$SDK_DIR/macos/cipd" ]] \
+        || die "the macOS engine needs its toolchain set up first: scripts/macos-toolchain.sh (docs/MACOS.md)"
+    [[ -f "$SDK_DIR/windows/win_toolchain.json" ]] \
+        || die "the Windows engine needs its toolchain set up first: scripts/windows-toolchain.sh (docs/WINDOWS.md)"
+    "$ZEBKIT_ROOT/scripts/zsdk.sh" macos windows
     # The pinned MSVC and Windows SDK, read from the disk.
     "$ZEBKIT_ROOT/scripts/windows-toolchain.sh" --verify
     command -v cargo > /dev/null || die "zebkit-mcp needs cargo (Rust)"
@@ -379,10 +380,8 @@ build_tools "$macos" macos
 log "release build of zebkit for macOS arm64: $macos ($(du -sm "$macos" | cut -f1) MiB)"
 pack "$macos" aarch64-apple-darwin
 
-# macOS on Intel, cross-built here against the same SDK (zsdk-create.sh
-# macos-intel): dist/release-macos-intel.
-[[ -e "$SDK_DIR/macos-intel" ]] \
-    || die "macOS for Intel needs its SDK: scripts/zsdk-create.sh macos-intel (docs/MACOS.md)"
+# macOS on Intel, cross-built here against the same SDK, which has both
+# processors' libraries (zsdk): dist/release-macos-intel.
 "$ZEBKIT_ROOT/scripts/build.sh" slim-macos-intel
 "$ZEBKIT_ROOT/scripts/package.sh" slim-macos-intel
 macos_intel="$ZEBKIT_ROOT/dist/release-macos-intel"
