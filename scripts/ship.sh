@@ -20,7 +20,8 @@
 #   7. The release check (mise run check, under a session bus); a pass for
 #      these sources is recorded and not run again.
 #   8. Push, publish the GitHub release (release.sh --publish-only), then the
-#      crates and the Python package with the tokens in ~/.env.
+#      crates and the Python package (tokens from the environment, else
+#      ZEBKIT_ENV_FILE when set).
 #
 # Build only through these scripts: plain ninja in a siso output directory
 # makes siso rebuild much of Chromium (docs/BUILD.md).
@@ -127,13 +128,21 @@ PY
     scripts/release.sh --publish-only
 fi
 
-# The crates and the Python package, with the tokens in ~/.env (not printed).
+# The crates and the Python package. Their tokens come from the environment;
+# one not set there is read from the file ZEBKIT_ENV_FILE names, when set (NAME=value
+# lines). Nothing is printed.
 step "crates.io and PyPI"
-if [[ -f "$HOME/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source <(grep -E '^(export )?(CARGO_REGISTRY_TOKEN|PYPI_TOKEN|UV_PUBLISH_TOKEN)=' "$HOME/.env")
-    set +a
+env_file="${ZEBKIT_ENV_FILE:-}"
+if [[ -n "$env_file" ]]; then
+    [[ -f "$env_file" ]] || die "ZEBKIT_ENV_FILE: no file $env_file"
+    for name in CARGO_REGISTRY_TOKEN PYPI_TOKEN UV_PUBLISH_TOKEN; do
+        [[ -n "${!name:-}" ]] && continue
+        line="$(grep -E "^(export )?$name=" "$env_file" | tail -n 1 || true)"
+        [[ -n "$line" ]] || continue
+        value="${line#*=}"
+        value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+        export "$name=$value"
+    done
 fi
 crate_published() {
     curl -fsS -H "User-Agent: zebkit-ship" "https://crates.io/api/v1/crates/zebkit/$version" > /dev/null 2>&1
