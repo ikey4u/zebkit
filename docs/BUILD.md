@@ -33,7 +33,13 @@ scripts/engine-test.sh slim     # every layer of the API, from programs built ag
   with `profiles/_common.gn`, the profile it is based on (a line
   `# zebkit-base: <profile>`) and the profile, into
   `upstream/chromium/src/out/<profile>`, and builds with autoninja. The
-  default targets are the engine and its helper.
+  default targets are the engine and its helper; others, single object files
+  included (`scripts/build.sh slim-windows obj/zebkit/engine/zebkit/window.obj`),
+  are named after the profile. Never run `third_party/ninja/ninja` in an output
+  directory siso builds: its `.ninja_deps` makes autoninja refuse, and what
+  ninja rebuilt makes siso rebuild much of Chromium (build.sh removes a stray
+  `.ninja_deps`). The compiler's occasional crashes under load are retried,
+  up to eight runs while each fails on other files.
 - **`package.sh <profile>`** assembles `out/blink/<profile>/package`: the
   library, the helper, ICU's data, V8's snapshots, the resource pack
   trimmed to what the engine uses (`scripts/trim-pak.py`), SwiftShader

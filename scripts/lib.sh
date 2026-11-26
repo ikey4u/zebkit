@@ -44,9 +44,13 @@ caller_path() {
 }
 
 CACHE_DIR="$ZEBKIT_ROOT/.cache"
-# Apple's and Microsoft's SDKs for building on Linux: zsdk, pinned in
-# upstream.lock and checked out by scripts/zsdk.sh. ZSDK_DIR is a checkout of
-# one's own instead, used as it is.
+# Apple's and Microsoft's SDKs for building on Linux: zsdk
+# (github.com/ikey4u/zsdk), pinned in upstream.lock. Its checkout beside this
+# one (../zsdk, /data/zsdk here) is the one used, as it is; ZSDK_DIR names
+# another; without either, scripts/zsdk.sh keeps a partial clone in .cache/zsdk.
+if [[ -z "${ZSDK_DIR:-}" && -d "$ZEBKIT_ROOT/../zsdk/scripts" ]]; then
+    ZSDK_DIR="$(cd "$ZEBKIT_ROOT/../zsdk" && pwd)"
+fi
 ZSDK_DIR="${ZSDK_DIR:-$CACHE_DIR/zsdk}"
 MACOS_SDK="$ZSDK_DIR/macos/$ZSDK_MACOS_VERSION"
 IOS_SDK="$ZSDK_DIR/ios/$ZSDK_IOS_VERSION"

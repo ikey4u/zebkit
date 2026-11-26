@@ -86,11 +86,24 @@ if [[ ! -f "$build_dir/build.ninja" || ! -f "$build_dir/args.gn" || "$(cat "$bui
 fi
 (( configure_only )) && exit 0
 
-# Under load the compiler now and then crashes, or reports nonsense errors,
-# on a file it compiles fine the next time. A failure is retried; one that
-# repeats on the same step is a real error.
+# A siso output directory that plain ninja has built in (third_party/ninja,
+# not autoninja) has its .ninja_deps: autoninja then takes ninja, refuses
+# ("Run gn clean before switching from siso to ninja"), and what ninja
+# rebuilt makes siso rebuild much of Chromium after it. Single files are
+# built here too (scripts/build.sh <profile> obj/.../file.o), with siso;
+# ninja's records go, siso's stay.
+if [[ -f "$build_dir/.siso_deps" && -f "$build_dir/.ninja_deps" ]]; then
+    log "warning: out/$profile was built with plain ninja over siso: its .ninja_deps goes (build single files with scripts/build.sh <profile> <target>)"
+    rm -f "$build_dir/.ninja_deps"
+fi
+
+# Under load the compiler now and then crashes (clang's "frontend command
+# failed due to signal"), or reports nonsense errors, on a file it compiles
+# fine the next time; each run keeps what it compiled. A failure is retried;
+# one that repeats on the same step is a real error. Crashes on ever other
+# files are retried longer: a full rebuild of Chromium meets several.
 failed_before=
-for attempt in 1 2 3; do
+for attempt in 1 2 3 4 5 6 7 8; do
     log "building ${targets[*]} for $profile"
     if (cd "$SRC_DIR" && heavy autoninja -C "out/$profile" -j "$jobs" "${targets[@]}" 2>&1 \
             | tee "$build_dir/zebkit-build.log"); then
@@ -98,6 +111,10 @@ for attempt in 1 2 3; do
     fi
     failed="$(grep -ao '^FAILED: [^ ]* "[^"]*"' "$build_dir/siso_output" 2>/dev/null | cut -d' ' -f3 | sort)"
     [[ -n "$failed" && "$failed" != "$failed_before" ]] || exit 1
+    # Past three, only the compiler's crashes are tried again.
+    if (( attempt >= 3 )) && ! grep -q "frontend command failed due to signal" "$build_dir/zebkit-build.log"; then
+        exit 1
+    fi
     failed_before="$failed"
     log "failed on $(echo $failed) (attempt $attempt); building again"
 done
