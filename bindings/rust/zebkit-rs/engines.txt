@@ -5,8 +5,8 @@
 # Written by scripts/release.sh. The build script refuses an archive whose
 # checksum is not the one here.
 0.7.0 aarch64-apple-darwin 9c543b82ce8511f67fa77da50d93d74ea005cf9e144de1539c91f82669d29357
-0.7.0 android b8e87e79aecb52fd9a8465f765ebc779a43d74ecb9373adeb91f1809aa6f8df6
+0.7.0 android ff8db78053de41a48f2366e817f2895a861fb6acacff425e742761678bc26a52
 0.7.0 ios 42f155a3292d8d200973b73caa49c901a43664e3b4da50bf1d43564f76579474
 0.7.0 x86_64-apple-darwin 63c46d6f2f2131e93cf9aa0beabf40aa6f592015b934e42c1dd792a8da8297f8
-0.7.0 x86_64-pc-windows-msvc bd09a35298a62eedf4e34730c66e6c7f829c2d28653a84be2f967319080ea19f
+0.7.0 x86_64-pc-windows-msvc 5c29ca44b0e98785cab48b1bc63d5d8844f5704f0c56d50ed2910d7381f80b42
 0.7.0 x86_64-unknown-linux-gnu 9c4489007538083bd1977b78ab63fe1525f545f820bd9d50b9cd8d9a95ecc99f
