@@ -114,12 +114,11 @@ def net_wm_state(window):
 def on_top(base):
     """alwaysOnTop: made above the others, and changed at runtime; refused
     with "unsupported" where the system cannot (Wayland)."""
-    view = zebkit.View(base + "/page", 400, 300, options={"title": "OnTop", "alwaysOnTop": True})
-    loaded(view, base + "/page")
-    pump(0.5)
-    caps = view.window.get("capabilities") or {}
-    if not caps.get("alwaysOnTop"):
-        view.close()
+    # Where the system cannot (Wayland), even making the window so is refused.
+    if not zebkit.capabilities()["window"].get("alwaysOnTop"):
+        message = refused(lambda: zebkit.View(base + "/page", 400, 300, options={"alwaysOnTop": True}))
+        check(message and message.startswith("unsupported: alwaysOnTop"),
+              "a window cannot be made alwaysOnTop where the system cannot keep it on top", message)
         view = zebkit.View(base + "/page", 400, 300, options={"title": "OnTop"})
         loaded(view, base + "/page")
         message = refused(lambda: view.set_window({"alwaysOnTop": True}))
@@ -128,6 +127,9 @@ def on_top(base):
         check(refused(lambda: view.set_window({"alwaysOnTop": False})) is None, "and false is always taken")
         view.close()
         return
+    view = zebkit.View(base + "/page", 400, 300, options={"title": "OnTop", "alwaysOnTop": True})
+    loaded(view, base + "/page")
+    pump(0.5)
     check(view.window["alwaysOnTop"] is True, "a window made alwaysOnTop is above the others", view.window)
     if os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY") and shutil.which("xprop") \
             and shutil.which("xdotool"):
