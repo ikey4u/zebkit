@@ -49,6 +49,16 @@ base::DictValue CapabilitiesValue(const WindowCapabilities& capabilities) {
   value.Set("controlsDrawnByEngine", capabilities.controls_drawn_by_engine);
   value.Set("controlsHeight", capabilities.controls_height);
   value.Set("appearance", capabilities.appearance);
+  value.Set("alwaysOnTop", capabilities.always_on_top);
+  value.Set("opacity", capabilities.opacity);
+  value.Set("onTopLevels", capabilities.on_top_levels);
+  value.Set("aspectRatio", capabilities.aspect_ratio);
+  value.Set("contentProtection", capabilities.content_protection);
+  value.Set("buttons", capabilities.buttons);
+  value.Set("movable", capabilities.movable);
+  value.Set("skipTaskbar", capabilities.skip_taskbar);
+  value.Set("visibleOnAllWorkspaces", capabilities.visible_on_all_workspaces);
+  value.Set("shadow", capabilities.shadow);
   return value;
 }
 
@@ -83,6 +93,7 @@ std::string StateJson(zebkit_view* view) {
   state.Set("pageFullscreen", window->page_fullscreen());
   state.Set("visible", geometry.visible);
   state.Set("focused", geometry.focused);
+  state.Set("alwaysOnTop", geometry.always_on_top);
   state.Set("bounds", RectValue(geometry.bounds));
   base::DictValue content;
   content.Set("width", geometry.content.width());
@@ -152,6 +163,11 @@ zebkit_view* zebkit_view_new_with_options(zebkit_context* context, const char* u
     SetError(error, "unsupported: x and y; this system's windows are placed by its compositor");
     return nullptr;
   }
+  if (std::string unsupported = UnsupportedOption(capabilities, options);
+      !unsupported.empty() && !zebkit_is_headless()) {
+    SetError(error, unsupported);
+    return nullptr;
+  }
   std::string why;
   zebkit_view* view = NewView(context, url, options.size.width(), options.size.height(),
                               Window::Kind::kNative, &options, &why);
@@ -181,6 +197,9 @@ bool zebkit_view_set_window(zebkit_view* view, const char* options_json, char** 
   if (options.position != window->options().position && options.position &&
       !window->Capabilities().position && !zebkit_is_headless())
     return SetError(error, "unsupported: x and y; this system's windows are placed by its compositor");
+  if (std::string unsupported = UnsupportedOption(window->Capabilities(), options);
+      !unsupported.empty() && !zebkit_is_headless())
+    return SetError(error, unsupported);
   // What was given before and now, as given.
   base::DictValue given = window->options().given.Clone();
   for (auto [key, value] : options.given)
@@ -251,6 +270,9 @@ bool zebkit_view_set_popup_window_options(zebkit_view* view, const char* options
   std::string message;
   if (!ParsePopupWindowOptions(options_json, &options, &message))
     return SetError(error, message);
+  if (std::string unsupported = UnsupportedOption(PlatformFor(Window::Kind::kNative)->Capabilities(nullptr), options);
+      !unsupported.empty() && !zebkit_is_headless())
+    return SetError(error, unsupported);
   view->window()->SetPopupOptions(std::move(options));
   return true;
 }

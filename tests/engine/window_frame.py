@@ -57,7 +57,16 @@ def options(base):
     for bad, word in (({"frame": "round"}, "frame"), ({"width": -1}, "width"), ({"colour": "#fff"}, "colour"),
                       ({"background": "red"}, "background"), ({"x": 1}, "x and y"),
                       ({"dragRegions": {"source": "css"}}, "origins"),
-                      ({"dragRegions": {"source": "css", "origins": ["not an origin"]}}, "origins")):
+                      ({"dragRegions": {"source": "css", "origins": ["not an origin"]}}, "origins"),
+                      ({"alwaysOnTop": "yes"}, "alwaysOnTop"), ({"opacity": 2}, "opacity"),
+                      ({"opacity": "half"}, "opacity"), ({"maxWidth": -5}, "maxWidth"),
+                      ({"minWidth": 400, "maxWidth": 300}, "maxWidth"), ({"closable": 0}, "closable"),
+                      ({"movable": None}, "movable"), ({"skipTaskbar": "no"}, "skipTaskbar"),
+                      ({"visibleOnAllWorkspaces": 1}, "visibleOnAllWorkspaces"), ({"shadow": "off"}, "shadow"),
+                      ({"minimizable": []}, "minimizable"), ({"maximizable": {}}, "maximizable"),
+                      ({"fullscreenable": "x"}, "fullscreenable"),
+                      ({"alwaysOnTopLevel": "sky"}, "alwaysOnTopLevel"), ({"aspectRatio": -1}, "aspectRatio"),
+                      ({"aspectRatio": "wide"}, "aspectRatio"), ({"contentProtection": 1}, "contentProtection")):
         message = refused(lambda: zebkit.View(base + "/page", options=bad))
         check(message is not None and word in message, "invalid options are refused before a window: %s" % word,
               message)
@@ -72,6 +81,16 @@ def options(base):
     check(refused(lambda: view.set_window({"title": "Changed"})) is None, "a runtime option changes")
     check(view.window["options"]["explicit"].get("title") == "Changed", "and the state says so")
     check(refused(lambda: view.window_action("wiggle")) is not None, "an unknown action is refused")
+    # Every system takes the defaults; the state lists what it honours.
+    check(refused(lambda: view.set_window({"alwaysOnTop": False, "opacity": 1, "closable": True,
+                                           "maxWidth": 0, "maxHeight": 0})) is None,
+          "the new options' defaults are every system's")
+    caps = view.window.get("capabilities") or {}
+    check(all(isinstance(caps.get(name), bool) for name in
+              ("alwaysOnTop", "onTopLevels", "opacity", "aspectRatio", "contentProtection", "buttons", "movable",
+               "skipTaskbar", "visibleOnAllWorkspaces", "shadow")),
+          "the capabilities say which window options this system honours", caps)
+    check(isinstance(view.window.get("alwaysOnTop"), bool), "and the state has alwaysOnTop", view.window)
     return view
 
 
@@ -83,6 +102,60 @@ def headless(base):
     check(message and "unsupported" in message, "and window actions are unsupported", message)
     check(zebkit.capabilities()["window"]["frames"] == ["system"], "capabilities say only the system's frame",
           zebkit.capabilities())
+    view.close()
+
+
+def net_wm_state(window):
+    """The X11 window's _NET_WM_STATE atoms, as xprop reads them."""
+    out = subprocess.run(["xprop", "-id", str(window), "_NET_WM_STATE"], capture_output=True, text=True).stdout
+    return set(re.findall(r"_NET_WM_STATE_[A-Z_]+", out))
+
+
+def on_top(base):
+    """alwaysOnTop: made above the others, and changed at runtime; refused
+    with "unsupported" where the system cannot (Wayland)."""
+    view = zebkit.View(base + "/page", 400, 300, options={"title": "OnTop", "alwaysOnTop": True})
+    loaded(view, base + "/page")
+    pump(0.5)
+    caps = view.window.get("capabilities") or {}
+    if not caps.get("alwaysOnTop"):
+        view.close()
+        view = zebkit.View(base + "/page", 400, 300, options={"title": "OnTop"})
+        loaded(view, base + "/page")
+        message = refused(lambda: view.set_window({"alwaysOnTop": True}))
+        check(message and message.startswith("unsupported: alwaysOnTop"),
+              "alwaysOnTop is refused where the system cannot keep a window on top", message)
+        check(refused(lambda: view.set_window({"alwaysOnTop": False})) is None, "and false is always taken")
+        view.close()
+        return
+    check(view.window["alwaysOnTop"] is True, "a window made alwaysOnTop is above the others", view.window)
+    if os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY") and shutil.which("xprop") \
+            and shutil.which("xdotool"):
+        window = x11_window("OnTop")
+        check(window and "_NET_WM_STATE_ABOVE" in net_wm_state(window),
+              "X11: the window is mapped with _NET_WM_STATE_ABOVE", window and net_wm_state(window))
+    else:
+        note("X11 _NET_WM_STATE: not checked here (no X11, xprop or xdotool)")
+    check(refused(lambda: view.set_window({"alwaysOnTop": False})) is None, "alwaysOnTop changes at runtime")
+    wait(lambda: view.window["alwaysOnTop"] is False, 3)
+    check(view.window["alwaysOnTop"] is False, "and the window is no longer above the others", view.window)
+    check(refused(lambda: view.set_window({"alwaysOnTop": True})) is None, "and back")
+    wait(lambda: view.window["alwaysOnTop"] is True, 3)
+    check(view.window["alwaysOnTop"] is True, "pinned again", view.window)
+    # The window's own actions beside the options: centre, attention.
+    for action in ("center", "request-attention", "cancel-attention"):
+        check(refused(lambda: view.window_action(action)) is None, "the action %s is asked of the system" % action)
+    # A level, a ratio: taken where the capabilities say so, refused elsewhere.
+    caps = view.window.get("capabilities") or {}
+    for option, value, capability in (("alwaysOnTopLevel", "status", "onTopLevels"),
+                                      ("aspectRatio", 1.5, "aspectRatio"),
+                                      ("contentProtection", True, "contentProtection")):
+        message = refused(lambda: view.set_window({option: value}))
+        if caps.get(capability):
+            check(message is None, "%s is taken here" % option, message)
+        else:
+            check(message and message.startswith("unsupported: " + option),
+                  "%s is refused where the system cannot do it" % option, message)
     view.close()
 
 
@@ -149,6 +222,7 @@ def windowed(base, other):
     view = options(base)
     check(view.window["owner"] == "engine", "the engine's window: owner engine", view.window["owner"])
     view.close()
+    on_top(base)
 
     states = []
     overlay = zebkit.View(base + "/page", 800, 500, options={

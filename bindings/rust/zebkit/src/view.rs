@@ -251,7 +251,8 @@ impl View {
     }
 
     /// `show`, `hide`, `minimize`, `maximize`, `restore`, `fullscreen`,
-    /// `exit-fullscreen`, `close`: asked of the system; the state tells.
+    /// `exit-fullscreen`, `close`, `center`, `request-attention`,
+    /// `cancel-attention`: asked of the system; the state tells.
     pub fn window_action(&self, action: &str) -> Result<(), Error> {
         let raw = self.raw().ok_or_else(|| Error::new("the view is closed"))?;
         let mut error = std::ptr::null_mut();

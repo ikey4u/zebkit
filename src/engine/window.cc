@@ -549,8 +549,9 @@ void Window::ToggleFullscreenModeForTab(WebContents* web_contents,
         ->GetWidget()
         ->SynchronizeVisualProperties();
   }
-  // pageFullscreen "window": the window with the page, as Chrome's.
-  if (options_.page_fullscreen == WindowOptions::PageFullscreen::kWindow)
+  // pageFullscreen "window": the window with the page, as Chrome's; a window
+  // not fullscreenable keeps it to the content area.
+  if (options_.page_fullscreen == WindowOptions::PageFullscreen::kWindow && options_.fullscreenable)
     platform_->SetFullscreen(this, enter_fullscreen);
 }
 
@@ -898,6 +899,16 @@ WindowGeometry Window::Geometry() {
 }
 
 bool Window::PerformAction(WindowAction action, std::string* error) {
+  // What the options take from the person, the program's actions do not do
+  // either, as a window not resizable is not maximized.
+  const char* refused = action == WindowAction::kMinimize && !options_.minimizable     ? "minimizable"
+                        : action == WindowAction::kMaximize && !options_.maximizable   ? "maximizable"
+                        : action == WindowAction::kFullscreen && !options_.fullscreenable ? "fullscreenable"
+                                                                                       : nullptr;
+  if (refused) {
+    *error = std::string("unsupported: the window is not ") + refused;
+    return false;
+  }
   return platform_->PerformAction(this, action, error);
 }
 

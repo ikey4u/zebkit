@@ -225,7 +225,10 @@ class NativePlatform : public WindowPlatform {
     return gfx::NativeWindow(windows_[window].window);
   }
 
-  void CleanUp(Window* window) override { windows_.erase(window); }
+  void CleanUp(Window* window) override {
+    windows_.erase(window);
+    attention_.erase(window);
+  }
 
   bool Destroy(Window* window) override {
     auto it = windows_.find(window);
@@ -274,6 +277,9 @@ class NativePlatform : public WindowPlatform {
       ns_window.styleMask |= NSWindowStyleMaskResizable;
     else
       ns_window.styleMask &= ~NSWindowStyleMaskResizable;
+    // The zoom button follows resizable and maximizable together.
+    [ns_window standardWindowButton:NSWindowZoomButton].enabled =
+        resizable && window->options().maximizable;
   }
 
   WindowCapabilities Capabilities(Window* window) override {
@@ -285,6 +291,17 @@ class NativePlatform : public WindowPlatform {
     capabilities.controls_drawn_by_engine = false;
     capabilities.controls_height = true;
     capabilities.appearance = true;
+    capabilities.always_on_top = true;
+    capabilities.opacity = true;
+    capabilities.buttons = true;
+    capabilities.movable = true;
+    // A window has no Dock tile of its own to take away.
+    capabilities.skip_taskbar = false;
+    capabilities.visible_on_all_workspaces = true;
+    capabilities.shadow = true;
+    capabilities.on_top_levels = true;
+    capabilities.aspect_ratio = true;
+    capabilities.content_protection = true;
     return capabilities;
   }
 
@@ -300,6 +317,7 @@ class NativePlatform : public WindowPlatform {
                                               : WindowGeometry::State::kNormal;
     geometry.visible = ns_window.visible;
     geometry.focused = ns_window.keyWindow;
+    geometry.always_on_top = ns_window.level > NSNormalWindowLevel;
     const NSRect frame = ns_window.frame;
     const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
     geometry.bounds = gfx::Rect(NSMinX(frame), top - NSMaxY(frame), NSWidth(frame), NSHeight(frame));
@@ -363,6 +381,18 @@ class NativePlatform : public WindowPlatform {
           [ns_window toggleFullScreen:nil];
         break;
       case WindowAction::kClose: break;  // zebkit_view_request_close(), in window_api.cc.
+      case WindowAction::kCenter: [ns_window center]; break;
+      case WindowAction::kRequestAttention:
+        // The Dock's icon bounces once (until the application is active).
+        if (!NSApp.active)
+          attention_[window] = [NSApp requestUserAttention:NSInformationalRequest];
+        break;
+      case WindowAction::kCancelAttention:
+        if (auto found = attention_.find(window); found != attention_.end()) {
+          [NSApp cancelUserAttentionRequest:found->second];
+          attention_.erase(found);
+        }
+        break;
     }
     // The outcome comes as the delegate's notifications; miniaturize: and the
     // like may tell nothing when nothing changes.
@@ -413,9 +443,55 @@ class NativePlatform : public WindowPlatform {
         ns_window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         break;
     }
+    // Above the other windows (every application's) while pinned: a floating
+    // panel's level, as Electron's alwaysOnTop.
+    NSWindowLevel level = NSNormalWindowLevel;
+    if (options.always_on_top) {
+      switch (options.on_top_level) {
+        case WindowOptions::OnTopLevel::kFloating: level = NSFloatingWindowLevel; break;
+        case WindowOptions::OnTopLevel::kStatus: level = NSStatusWindowLevel; break;
+        case WindowOptions::OnTopLevel::kScreenSaver: level = NSScreenSaverWindowLevel; break;
+      }
+    }
+    if (ns_window.level != level)
+      ns_window.level = level;
+    ns_window.alphaValue = options.opacity;
+    // The content's proportions while resizing; none: any size again.
+    if (options.aspect_ratio > 0)
+      ns_window.contentAspectRatio = NSMakeSize(options.aspect_ratio, 1);
+    else
+      ns_window.contentResizeIncrements = NSMakeSize(1, 1);
+    // Out of screenshots, screen recording and sharing.
+    ns_window.sharingType = options.content_protection ? NSWindowSharingNone : NSWindowSharingReadOnly;
+    ns_window.hasShadow = options.shadow;
+    ns_window.movable = options.movable;
+    // 0 in a dimension: no limit in it.
+    ns_window.contentMaxSize =
+        NSMakeSize(options.maximum.width() ? options.maximum.width() : CGFLOAT_MAX,
+                   options.maximum.height() ? options.maximum.height() : CGFLOAT_MAX);
+    // The buttons: close and minimize are the style's (Cmd-W and Cmd-M then
+    // refuse too); zoom is a button's state, as it also means resizable.
+    NSWindowStyleMask mask = ns_window.styleMask;
+    mask = options.closable ? mask | NSWindowStyleMaskClosable : mask & ~NSWindowStyleMaskClosable;
+    mask = options.minimizable ? mask | NSWindowStyleMaskMiniaturizable
+                               : mask & ~NSWindowStyleMaskMiniaturizable;
+    if (!(mask & NSWindowStyleMaskFullScreen) && mask != ns_window.styleMask)
+      ns_window.styleMask = mask;
+    [ns_window standardWindowButton:NSWindowZoomButton].enabled =
+        options.resizable && options.maximizable;
+    NSWindowCollectionBehavior behavior = ns_window.collectionBehavior;
+    behavior &= ~(NSWindowCollectionBehaviorFullScreenPrimary | NSWindowCollectionBehaviorFullScreenNone |
+                  NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorMoveToActiveSpace);
+    behavior |= options.fullscreenable ? NSWindowCollectionBehaviorFullScreenPrimary
+                                       : NSWindowCollectionBehaviorFullScreenNone;
+    if (options.visible_on_all_workspaces)
+      behavior |= NSWindowCollectionBehaviorCanJoinAllSpaces;
+    ns_window.collectionBehavior = behavior;
   }
 
   base::flat_map<Window*, ZebkitWindowDelegate*> windows_;
+  // Attention asked of the Dock, by window, until cancelled.
+  base::flat_map<Window*, NSInteger> attention_;
 };
 
 class NoWindowPlatform : public WindowPlatform {

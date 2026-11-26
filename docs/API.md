@@ -323,6 +323,18 @@ is made, and changing them later fails with `requires-recreate`:
 | `fallback` *creation* | `"error"` | `"system"`: where the system cannot give the frame, its own frame; the state says which |
 | `show` *creation* | `true` | `false`: made hidden and not activated, until the `show` action |
 | `minWidth`, `minHeight`, `resizable` | none, `true` | as `zebkit_view_set_size_limits()` |
+| `maxWidth`, `maxHeight` | `0`, `0` | the content area's largest size in DIPs; `0` in one: no limit in it; less than the minimum is an error |
+| `alwaysOnTop` | `false` | above other windows, every application's (a floating window's level on macOS, `_NET_WM_STATE_ABOVE` on X11, `HWND_TOPMOST` on Windows) |
+| `alwaysOnTopLevel` | `"floating"` | how far above, with `alwaysOnTop`: `"floating"`, `"status"` (above the menu bar and docks), `"screen-saver"` (above everything); macOS distinguishes them, elsewhere they are the one above-others state (`capabilities.onTopLevels`) |
+| `aspectRatio` | `0` | the content area's width over its height kept while resizing; `0` for none |
+| `contentProtection` | `false` | left out of screenshots, screen recording and sharing (macOS, Windows) |
+| `opacity` | `1` | the whole window's, `0` to `1` (the compositor's on X11) |
+| `minimizable`, `maximizable`, `closable` | `true` | the window's buttons and the system's ways to do it (its menu, Alt+F4, Cmd-W, Cmd-M); the application's own actions and `zebkit_view_close()` are not stopped by `closable`, but `minimize` and `maximize` are refused |
+| `fullscreenable` | `true` | `false`: no fullscreen button or action, and a page's `requestFullscreen()` with `pageFullscreen: "window"` stays in the content |
+| `movable` | `true` | `false`: the person cannot drag the window, by its title bar or drag regions |
+| `skipTaskbar` | `false` | no taskbar button (Windows, X11) |
+| `visibleOnAllWorkspaces` | `false` | on every workspace or Space (macOS, X11) |
+| `shadow` | `true` | the window's shadow (macOS) |
 | `x`, `y` | the system's place | the window's top left on the screen; refused on Wayland, where the compositor places windows |
 | `title` | the page's | the window's title; `null` for the page's again |
 | `controls` | the system's | `{height, color, symbolColor}`: the title bar area's height in an overlay, and the colours of the buttons the engine draws on Windows and Linux (macOS draws its own; its taller title bars are the system's unified toolbar styles) |
@@ -330,6 +342,22 @@ is made, and changing them later fails with `requires-recreate`:
 | `appearance` | `"system"` | `"light"`, `"dark"`: the frame's look, not the page's `prefers-color-scheme` |
 | `pageFullscreen` | `"content"` | `"window"`: a page's `requestFullscreen()` makes the window fullscreen, as in Chrome |
 | `dragRegions` | none | `{source: "css", origins: [...]}`: the page's `app-region: drag` and `no-drag`, while its main frame is of one of those origins (iframes never count, a document of another origin has none); `{source: "host"}`: `zebkit_view_set_drag_regions()` |
+
+A system that cannot honour one of the options from `maxWidth` down says so
+in the capabilities (`alwaysOnTop`, `onTopLevels`, `opacity`, `aspectRatio`,
+`contentProtection`, `buttons`, `movable`, `skipTaskbar`,
+`visibleOnAllWorkspaces`, `shadow`); a value other than the
+option's default there fails with `unsupported: <option> for this window on
+this system (capabilities.<name> is false)`, and nothing changes. The default
+is every system's, so `{"alwaysOnTop": false}` always succeeds. Wayland has
+none of these but the buttons; Windows has all but `visibleOnAllWorkspaces`,
+`shadow` and `onTopLevels`; macOS all but `skipTaskbar`; X11 all but
+`shadow`, `onTopLevels` and `contentProtection`. The state
+has `alwaysOnTop` as the system has it. The actions add `center`,
+`request-attention` and `cancel-attention` to those of the window.
+What no option covers stays the application's to do: the system's window
+itself is `zebkit_view_get_native_window()` (`View::native_window()` in
+Rust), an NSWindow, HWND or X11 window to customize directly.
 
 The state, from `zebkit_view_get_window()` and with every event: `revision`,
 `owner` (`engine`; `view` or `application` for a view in another's window,

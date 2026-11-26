@@ -3308,7 +3308,8 @@ class View(_ViewCore, _ViewOffscreen, _ViewPage, _ViewMedia):
 
     def window_action(self, action):
         """show, hide, minimize, maximize, restore, fullscreen,
-        exit-fullscreen, close: asked of the system; the state tells."""
+        exit-fullscreen, close, center, request-attention, cancel-attention:
+        asked of the system; the state tells."""
         error = _P()
         if not _view_window_action(self._check(), action.encode(), ctypes.byref(error)):
             _raise(error, "window action refused")

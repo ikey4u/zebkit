@@ -29,6 +29,22 @@ extern "C" {
  *   width, height          the content area (default: the engine's size)
  *   minWidth, minHeight,   as zebkit_view_set_size_limits()
  *   resizable
+ *   maxWidth, maxHeight    the content area's largest size; 0: no limit
+ *   alwaysOnTop            above other windows, every application's
+ *   alwaysOnTopLevel       "floating", "status", "screen-saver" (macOS)
+ *   opacity                0 to 1, the whole window's
+ *   aspectRatio            width over height kept while resizing; 0: none
+ *   contentProtection      out of screenshots and sharing (macOS, Windows)
+ *   minimizable,           false: the person cannot do it (the window's
+ *   maximizable, closable, buttons, the system's menu and keys); the
+ *   fullscreenable,        application's minimize, maximize and fullscreen
+ *   movable                are refused too, its close is not
+ *   skipTaskbar            no taskbar button (Windows, X11)
+ *   visibleOnAllWorkspaces on every workspace (macOS, X11)
+ *   shadow                 the window's shadow (macOS)
+ *                          What a system cannot do is in the state's
+ *                          capabilities; a value but the default there is
+ *                          an "unsupported: <option>" error.
  *   x, y                   the window's place on the screen; Wayland's
  *                          compositor places windows itself
  *   title                  the window's title; null for the page's
@@ -82,7 +98,9 @@ ZEBKIT_API bool zebkit_view_set_window(zebkit_view *view, const char *options_js
 /*
  * Asks the system: "show", "hide", "minimize", "maximize", "restore",
  * "fullscreen", "exit-fullscreen", "close" (beforeunload first, as
- * zebkit_view_request_close()). True: asked; what happened comes as a state
+ * zebkit_view_request_close()), "center" (on its screen),
+ * "request-attention" (the taskbar button flashes, the Dock's icon bounces,
+ * until the window is focused) and "cancel-attention". True: asked; what happened comes as a state
  * event. False with @error: unsupported here, not the engine's window, a
  * closed view.
  */

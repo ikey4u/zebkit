@@ -49,6 +49,21 @@
 #include "ui/views/window/vector_icons/vector_icons.h"
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
+#include "ui/platform_window/platform_window.h"
+#endif
+#if defined(ZEBKIT_X11)
+#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
+#include "ui/platform_window/extensions/x11_extension.h"
+#endif
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include <shobjidl.h>
+#include <wrl/client.h>
+
+#include "base/no_destructor.h"
+#include "ui/base/win/hwnd_subclass.h"
 #endif
 #include "zebkit/engine/include/zebkit/zebkit.h"
 #include "zebkit/engine/window.h"
@@ -94,6 +109,7 @@ class WindowView : public views::View {
   }
 
   void set_minimum_size(const gfx::Size& size) { minimum_size_ = size; }
+  void set_maximum_size(const gfx::Size& size) { maximum_size_ = size; }
 
   void SetWebContents(content::WebContents* contents, const gfx::Size& size) {
     auto web_view =
@@ -109,17 +125,112 @@ class WindowView : public views::View {
     GetWidget()->SetBounds(bounds);
   }
 
-  // views::View: smaller than its first size, unless the application says.
+  // views::View: smaller than its first size, unless the application says;
+  // as large as the system lets it be, unless maxWidth and maxHeight say (0
+  // in one: no limit in it, as views has it).
   gfx::Size GetMinimumSize() const override { return minimum_size_; }
+  gfx::Size GetMaximumSize() const override { return maximum_size_; }
 
  private:
   // Destroyed with the widget, which closes the window.
   std::unique_ptr<Window> window_;
   gfx::Size minimum_size_;
+  gfx::Size maximum_size_;
 };
 
 BEGIN_METADATA(WindowView)
 END_METADATA
+
+// A window the person may close or not (closable): the close button, the
+// window manager's close, Alt+F4 come here; the program's close
+// (zebkit_view_close(), Destroy()) does not.
+class ZebkitWidgetDelegate : public views::WidgetDelegate {
+ public:
+  void set_closable(bool closable) { closable_ = closable; }
+  bool OnCloseRequested(views::Widget::ClosedReason reason) override { return closable_; }
+
+ private:
+  bool closable_ = true;
+};
+
+#if defined(ZEBKIT_X11)
+// What the window manager offers for the window (_MOTIF_WM_HINTS'
+// functions, which GNOME's, KDE's, Xfce's and most others honour): its
+// buttons and its menu's items, moving and resizing. The decorations the
+// frame set (ui::SetUseOSWindowFrame()) are kept.
+void SetMotifFunctions(x11::Window window, const WindowOptions& options) {
+  constexpr uint32_t kFunctions = 1u << 0, kDecorations = 1u << 1;
+  constexpr uint32_t kResize = 1u << 1, kMove = 1u << 2, kMinimize = 1u << 3, kMaximize = 1u << 4,
+                     kClose = 1u << 5;
+  x11::Connection* connection = x11::Connection::Get();
+  const x11::Atom atom = x11::GetAtom("_MOTIF_WM_HINTS");
+  std::vector<uint32_t> hints;
+  if (!connection->GetArrayProperty(window, atom, &hints) || hints.size() != 5)
+    hints = {kDecorations, 0, 1, 0, 0};
+  const bool all = options.resizable && options.movable && options.minimizable && options.maximizable &&
+                   options.closable;
+  if (all) {
+    hints[0] &= ~kFunctions;
+    hints[1] = 0;
+  } else {
+    hints[0] |= kFunctions;
+    hints[1] = (options.resizable ? kResize : 0) | (options.movable ? kMove : 0) |
+               (options.minimizable ? kMinimize : 0) |
+               (options.maximizable && options.resizable ? kMaximize : 0) | (options.closable ? kClose : 0);
+  }
+  connection->SetArrayProperty(window, atom, atom, hints);
+}
+
+// _NET_WM_STATE's @state, asked of the window manager as EWMH says, for a
+// mapped window: X11Window keeps what the window manager then sets.
+void SetNetWmState(x11::Window window, bool enabled, const char* state) {
+  x11::Connection* connection = x11::Connection::Get();
+  x11::ClientMessageEvent event{.format = 32, .window = window, .type = x11::GetAtom("_NET_WM_STATE")};
+  // _NET_WM_STATE_ADD (1) or _REMOVE (0), the state, none, a normal
+  // application as the source.
+  event.data.data32 = {enabled ? 1u : 0u, static_cast<uint32_t>(x11::GetAtom(state)), 0, 1, 0};
+  // SubstructureNotify | SubstructureRedirect (xproto.h's operator| is
+  // global, out of reach from here).
+  const auto mask = static_cast<x11::EventMask>(static_cast<uint32_t>(x11::EventMask::SubstructureNotify) |
+                                                static_cast<uint32_t>(x11::EventMask::SubstructureRedirect));
+  connection->SendEvent(event, connection->default_root(), mask);
+}
+#endif
+
+#if BUILDFLAG(IS_WIN)
+// The taskbar's buttons, which skipTaskbar takes a window's from.
+Microsoft::WRL::ComPtr<ITaskbarList> TaskbarList() {
+  static base::NoDestructor<Microsoft::WRL::ComPtr<ITaskbarList>> taskbar;
+  if (!*taskbar && SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                              IID_PPV_ARGS(&*taskbar))))
+    (*taskbar)->HrInit();
+  return *taskbar;
+}
+
+// A window the person cannot move (movable false), as Electron's: its moves
+// held where it is, and the system menu's Move refused.
+class MoveFilter : public ui::HWNDMessageFilter {
+ public:
+  void set_movable(bool movable) { movable_ = movable; }
+  bool FilterMessage(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param, LRESULT* result) override {
+    if (movable_)
+      return false;
+    if (message == WM_MOVING) {
+      ::GetWindowRect(hwnd, reinterpret_cast<RECT*>(l_param));
+      *result = TRUE;
+      return true;
+    }
+    if (message == WM_SYSCOMMAND && (w_param & 0xfff0) == SC_MOVE) {
+      *result = 0;
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  bool movable_ = true;
+};
+#endif
 
 // While it lives, the widgets made have no window of the system's: an off-screen
 // view's, in a process with a display. What Chromium's headless platform gives
@@ -253,7 +364,7 @@ class ZebkitFrameView : public views::FrameView {
     maximize_->SetVisible(shown && !maximized && widget_->widget_delegate()->CanMaximize());
     restore_->SetVisible(shown && maximized);
     minimize_->SetVisible(shown && widget_->widget_delegate()->CanMinimize());
-    close_->SetVisible(shown);
+    close_->SetVisible(shown && window_->options().closable);
     InvalidateLayout();
     SchedulePaint();
   }
@@ -276,8 +387,9 @@ class ZebkitFrameView : public views::FrameView {
       if (button && button->GetVisible() && button->GetMirroredBounds().Contains(point))
         return button == close_ ? HTCLOSE : button == minimize_ ? HTMINBUTTON : HTMAXBUTTON;
     }
-    // Where the page's app-region or the application says: the title bar's.
-    if (window_->InDragRegion(point))
+    // Where the page's app-region or the application says: the title bar's,
+    // unless the window is not to be moved.
+    if (window_->options().movable && window_->InDragRegion(point))
       return HTCAPTION;
     return HTCLIENT;
   }
@@ -339,10 +451,16 @@ class StateObserver : public views::WidgetObserver {
  public:
   explicit StateObserver(Window* window) : window_(window) {}
   void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override {
-    if (visible)
+    if (visible) {
       Shown(widget);
+      if (on_shown_)
+        on_shown_.Run();
+    }
     Changed(widget);
   }
+  // What a window's system has only of a window shown: its taskbar button,
+  // and on X11 the window manager's states.
+  void set_on_shown(base::RepeatingClosure on_shown) { on_shown_ = std::move(on_shown); }
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override {
     if (active)
       Shown(widget);
@@ -376,6 +494,7 @@ class StateObserver : public views::WidgetObserver {
     window_->PlatformChanged();
   }
   raw_ptr<Window> window_;
+  base::RepeatingClosure on_shown_;
 };
 
 class NativePlatform : public WindowPlatform {
@@ -398,9 +517,13 @@ class NativePlatform : public WindowPlatform {
     const bool custom = options.frame != WindowOptions::Frame::kSystem && !no_window;
     if (custom)
       params.remove_standard_frame = true;
+    // Above other windows from the start: X11's window is mapped with it, as
+    // a state set before then is not kept.
+    if (options.always_on_top && !no_window)
+      params.z_order = OnTopLevelOf(options);
     // The contents own the window; the delegate outlives the widget's use of
     // it as it closes (CleanUp()).
-    data.delegate = std::make_unique<views::WidgetDelegate>();
+    data.delegate = std::make_unique<ZebkitWidgetDelegate>();
     data.delegate->SetContentsView(
         std::make_unique<WindowView>(base::WrapUnique(window)));
     data.delegate->SetHasWindowSizeControls(true);
@@ -431,6 +554,15 @@ class NativePlatform : public WindowPlatform {
     }
     data.observer = std::make_unique<StateObserver>(window);
     data.widget->AddObserver(data.observer.get());
+    if (!no_window && HasSystemWindow(window)) {
+      data.observer->set_on_shown(base::BindRepeating(&NativePlatform::ApplyShownOptions,
+                                                      base::Unretained(this), window));
+#if BUILDFLAG(IS_WIN)
+      data.move_filter = std::make_unique<MoveFilter>();
+      ui::HWNDSubclass::AddFilterToTarget(HwndOf(data.widget), data.move_filter.get());
+#endif
+    }
+    ApplyWindowOptions(window, data);
     // Shown in SetContents(), so that the platform window need not change its
     // size again for the layout.
   }
@@ -475,6 +607,10 @@ class NativePlatform : public WindowPlatform {
     auto found = windows_.find(window);
     if (found->second.widget && found->second.observer)
       found->second.widget->RemoveObserver(found->second.observer.get());
+#if BUILDFLAG(IS_WIN)
+    if (found->second.move_filter)
+      ui::HWNDSubclass::RemoveFilterFromAllTargets(found->second.move_filter.get());
+#endif
     base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
         FROM_HERE, std::move(found->second.delegate));
     windows_.erase(found);
@@ -505,8 +641,16 @@ class NativePlatform : public WindowPlatform {
       return;
     ViewOf(widget)->set_minimum_size(minimum);
     widget->widget_delegate()->SetCanResize(resizable);
-    widget->widget_delegate()->SetCanMaximize(resizable);
+    widget->widget_delegate()->SetCanMaximize(resizable && window->options().maximizable);
     widget->OnSizeConstraintsChanged();
+#if defined(ZEBKIT_X11)
+    if (OnX11() && HasSystemWindow(window)) {
+      WindowOptions options = window->options();
+      options.resizable = resizable;
+      SetMotifFunctions(static_cast<x11::Window>(widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget()),
+                        options);
+    }
+#endif
   }
 
   WindowCapabilities Capabilities(Window* window) override {
@@ -522,9 +666,32 @@ class NativePlatform : public WindowPlatform {
     // Wayland's compositor places windows; X11's window manager takes a place.
     capabilities.position =
         ui::OzonePlatform::GetInstance()->GetPlatformProperties().supports_global_screen_coordinates;
+    // X11's window manager is asked through EWMH and Motif's hints; Wayland's
+    // xdg-shell has no stacking, opacity, workspaces, taskbar or moves of the
+    // client's (crbug.com/374244479). The buttons there are the engine's or
+    // views': hidden as the options say.
+    const bool x11 = OnX11();
+    capabilities.always_on_top = x11;
+    capabilities.opacity = x11;
+    capabilities.buttons = true;
+    capabilities.movable = x11;
+    capabilities.skip_taskbar = x11;
+    capabilities.visible_on_all_workspaces = x11;
+    capabilities.aspect_ratio = x11;
 #else
+    capabilities.aspect_ratio = true;
+    capabilities.content_protection = true;
     capabilities.position = true;
+    capabilities.always_on_top = true;
+    capabilities.opacity = true;
+    capabilities.buttons = true;
+    capabilities.movable = true;
+    capabilities.skip_taskbar = true;
+    // Windows' virtual desktops have no API to show a window on all of them.
+    capabilities.visible_on_all_workspaces = false;
 #endif
+    // The system's (DWM's) or the compositor's shadow.
+    capabilities.shadow = false;
     return capabilities;
   }
 
@@ -540,6 +707,7 @@ class NativePlatform : public WindowPlatform {
                                              : WindowGeometry::State::kNormal;
     geometry.visible = widget->IsVisible();
     geometry.focused = widget->IsActive();
+    geometry.always_on_top = HasSystemWindow(window) && widget->GetZOrderLevel() != ui::ZOrderLevel::kNormal;
     geometry.bounds = widget->GetWindowBoundsInScreen();
     geometry.content = widget->GetClientAreaBoundsInScreen().size();
     if (auto* compositor = widget->GetCompositor())
@@ -575,6 +743,9 @@ class NativePlatform : public WindowPlatform {
       case WindowAction::kFullscreen: widget->SetFullscreen(true); break;
       case WindowAction::kExitFullscreen: widget->SetFullscreen(false); break;
       case WindowAction::kClose: break;  // zebkit_view_request_close(), in window_api.cc.
+      case WindowAction::kCenter: widget->CenterWindow(widget->GetWindowBoundsInScreen().size()); break;
+      case WindowAction::kRequestAttention: widget->FlashFrame(true); break;
+      case WindowAction::kCancelAttention: widget->FlashFrame(false); break;
     }
     return true;
   }
@@ -591,6 +762,7 @@ class NativePlatform : public WindowPlatform {
       widget->SetBounds(bounds);
     }
     ApplyBackground(window, *data);
+    ApplyWindowOptions(window, *data);
     if (auto* frame = FrameOf(window)) {
       frame->UpdateColors();
       frame->UpdateState();
@@ -610,6 +782,11 @@ class NativePlatform : public WindowPlatform {
     raw_ptr<views::Widget> widget = nullptr;
     std::unique_ptr<views::WidgetDelegate> delegate;
     std::unique_ptr<NoSystemWindowParenting> parenting;
+#if BUILDFLAG(IS_WIN)
+    std::unique_ptr<MoveFilter> move_filter;
+    bool layered = false;
+    bool taskbar_removed = false;
+#endif
   };
 
   // The window's, while it has a widget; never inserts one.
@@ -621,6 +798,127 @@ class NativePlatform : public WindowPlatform {
   // A window the system shows: not headless and not off-screen.
   static bool HasSystemWindow(Window* window) {
     return !zebkit_is_headless() && window->kind() != Window::Kind::kOffscreen;
+  }
+
+#if BUILDFLAG(IS_OZONE)
+  static bool OnX11() {
+    return ui::OzonePlatform::GetPlatformNameForTest() == "x11";
+  }
+#endif
+#if BUILDFLAG(IS_WIN)
+  static HWND HwndOf(views::Widget* widget) {
+    return widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget();
+  }
+#endif
+
+  // The options a views widget has a setting for, and those of the system's
+  // window under it; again for those a system keeps only of a shown window
+  // (ApplyShownOptions()).
+  void ApplyWindowOptions(Window* window, Data& data) {
+    views::Widget* widget = data.widget;
+    const WindowOptions& options = window->options();
+    auto* delegate = static_cast<ZebkitWidgetDelegate*>(data.delegate.get());
+    ViewOf(widget)->set_maximum_size(options.maximum);
+    delegate->SetCanMinimize(options.minimizable);
+    delegate->SetCanMaximize(delegate->CanResize() && options.maximizable);
+    delegate->SetCanFullscreen(options.fullscreenable);
+    delegate->set_closable(options.closable);
+    delegate->SetShowCloseButton(options.closable);
+    widget->OnSizeConstraintsChanged();
+    if (!HasSystemWindow(window))
+      return;
+    const ui::ZOrderLevel level = OnTopLevelOf(options);
+    if (widget->GetZOrderLevel() != level)
+      widget->SetZOrderLevel(level);
+    // The content area's proportions while resizing (views keeps them).
+    if (options.aspect_ratio > 0)
+      widget->SetAspectRatio(gfx::SizeF(options.aspect_ratio, 1));
+    else
+      widget->SetAspectRatio(gfx::SizeF());
+#if BUILDFLAG(IS_WIN)
+    // Out of screenshots and capture (SetWindowDisplayAffinity).
+    if (widget->AreScreenshotsAllowed() == options.content_protection)
+      widget->SetAllowScreenshots(!options.content_protection);
+#endif
+#if BUILDFLAG(IS_OZONE)
+    if (OnX11()) {
+      // The window manager's opacity (_NET_WM_WINDOW_OPACITY, a compositing
+      // one's), not the layer's, which would darken the page over black.
+      auto* host = aura::WindowTreeHostPlatform::GetHostForWindow(widget->GetNativeWindow());
+      if (host && host->platform_window())
+        host->platform_window()->SetOpacity(options.opacity);
+      if (widget->IsVisibleOnAllWorkspaces() != options.visible_on_all_workspaces)
+        widget->SetVisibleOnAllWorkspaces(options.visible_on_all_workspaces);
+#if defined(ZEBKIT_X11)
+      if (host)
+        SetMotifFunctions(static_cast<x11::Window>(host->GetAcceleratedWidget()), options);
+#endif
+    }
+#endif
+#if BUILDFLAG(IS_WIN)
+    const HWND hwnd = HwndOf(widget);
+    data.move_filter->set_movable(options.movable);
+    // The title bar's close button and the system menu's Close, greyed.
+    if (HMENU menu = ::GetSystemMenu(hwnd, FALSE))
+      ::EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | (options.closable ? MF_ENABLED : MF_GRAYED));
+    // A layered window's alpha, as Electron's: DWM composites it.
+    const bool layered = options.opacity < 1;
+    if (layered != data.layered) {
+      const LONG style = ::GetWindowLong(hwnd, GWL_EXSTYLE);
+      ::SetWindowLong(hwnd, GWL_EXSTYLE, layered ? style | WS_EX_LAYERED : style & ~WS_EX_LAYERED);
+      data.layered = layered;
+    }
+    if (layered)
+      ::SetLayeredWindowAttributes(hwnd, 0, static_cast<BYTE>(options.opacity * 255 + 0.5f), LWA_ALPHA);
+#endif
+    if (widget->IsVisible())
+      ApplyShownOptions(window);
+  }
+
+  // What the system has only of a shown window: Windows' taskbar button, the
+  // window manager's states on X11 (a state asked before the window is mapped
+  // is lost there).
+  void ApplyShownOptions(Window* window) {
+    Data* data = Find(window);
+    if (!data || !HasSystemWindow(window))
+      return;
+    const WindowOptions& options = window->options();
+#if defined(ZEBKIT_X11)
+    if (OnX11()) {
+      const auto xwindow =
+          static_cast<x11::Window>(data->widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+      SetNetWmState(xwindow, options.skip_taskbar, "_NET_WM_STATE_SKIP_TASKBAR");
+      if (options.always_on_top)
+        data->widget->SetZOrderLevel(OnTopLevelOf(options));
+    }
+#endif
+#if BUILDFLAG(IS_WIN)
+    if (options.skip_taskbar != data->taskbar_removed) {
+      if (auto taskbar = TaskbarList()) {
+        const HWND hwnd = HwndOf(data->widget);
+        if (SUCCEEDED(options.skip_taskbar ? taskbar->DeleteTab(hwnd) : taskbar->AddTab(hwnd)))
+          data->taskbar_removed = options.skip_taskbar;
+      }
+    } else if (options.skip_taskbar) {
+      // A shown window gets its button again: taken each time.
+      if (auto taskbar = TaskbarList())
+        taskbar->DeleteTab(HwndOf(data->widget));
+    }
+#endif
+  }
+
+  // alwaysOnTop's level: views has the floating one and, above it, the UI
+  // elements' and the security surfaces' (topmost all three on Windows; the
+  // window manager's "above" on X11).
+  static ui::ZOrderLevel OnTopLevelOf(const WindowOptions& options) {
+    if (!options.always_on_top)
+      return ui::ZOrderLevel::kNormal;
+    switch (options.on_top_level) {
+      case WindowOptions::OnTopLevel::kFloating: return ui::ZOrderLevel::kFloatingWindow;
+      case WindowOptions::OnTopLevel::kStatus: return ui::ZOrderLevel::kFloatingUIElement;
+      case WindowOptions::OnTopLevel::kScreenSaver: return ui::ZOrderLevel::kSecuritySurface;
+    }
+    return ui::ZOrderLevel::kFloatingWindow;
   }
 
   static WindowView* ViewOf(views::Widget* widget) {

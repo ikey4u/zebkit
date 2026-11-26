@@ -40,7 +40,24 @@ struct WindowOptions {
 
   // Runtime too.
   gfx::Size minimum;
+  gfx::Size maximum;  // 0 in a dimension: no limit in it.
   bool resizable = true;
+  // What the person can do to the window (the program's actions honour them
+  // too): its buttons, its fullscreen, dragging it.
+  bool minimizable = true, maximizable = true, closable = true, fullscreenable = true, movable = true;
+  bool always_on_top = false;
+  // How far above: a floating window's level, a status item's (above the
+  // menu bar and docks), or the screen saver's (above everything).
+  enum class OnTopLevel { kFloating, kStatus, kScreenSaver };
+  OnTopLevel on_top_level = OnTopLevel::kFloating;
+  float opacity = 1;
+  // The content area's width over its height kept while resizing; 0 for none.
+  double aspect_ratio = 0;
+  // Left out of screenshots and screen sharing.
+  bool content_protection = false;
+  bool skip_taskbar = false;
+  bool visible_on_all_workspaces = false;
+  bool shadow = true;
   std::optional<gfx::Point> position;  // Screen DIPs.
   std::optional<std::u16string> title;
   int controls_height = 0;  // 0: the system's.
@@ -68,6 +85,9 @@ bool ParsePopupWindowOptions(std::string_view json, WindowOptions* out, std::str
 
 enum class WindowAction {
   kShow, kHide, kMinimize, kMaximize, kRestore, kFullscreen, kExitFullscreen, kClose,
+  // Centred on its screen; asks for the person's attention (the Dock's icon
+  // bounces, the taskbar button flashes) until it is focused, or no longer.
+  kCenter, kRequestAttention, kCancelAttention,
 };
 std::optional<WindowAction> WindowActionNamed(std::string_view name);
 const char* WindowActionName(WindowAction action);
@@ -92,13 +112,32 @@ struct WindowCapabilities {
   bool controls_drawn_by_engine = false;  // Windows, Linux; macOS draws its own.
   bool controls_height = false;           // A title bar taller than the system's.
   bool appearance = false;  // The "appearance" option's light or dark frame (macOS).
+  // Options honoured; where false, a value but the default fails "unsupported:
+  // <option>" (UnsupportedOption()).
+  bool always_on_top = false;  // Not on Wayland: no protocol for it.
+  bool opacity = false;        // Not on Wayland.
+  bool buttons = false;        // minimizable, maximizable, closable.
+  bool movable = false;        // Not on Wayland, whose compositor moves windows.
+  bool skip_taskbar = false;   // Windows, X11; macOS has no window in its Dock.
+  bool visible_on_all_workspaces = false;  // macOS, X11.
+  bool shadow = false;         // macOS; elsewhere the system's or compositor's.
+  bool on_top_levels = false;  // alwaysOnTopLevel other than floating (macOS, Windows).
+  bool aspect_ratio = false;   // Not on Wayland.
+  bool content_protection = false;  // macOS, Windows: none on Linux.
 };
+
+// The first option of @options that @capabilities cannot honour with a value
+// other than its default (alwaysOnTop false is every system's), as the C API
+// reports it: "unsupported: <option> ... (capabilities.<name> is false)";
+// empty when there is none.
+std::string UnsupportedOption(const WindowCapabilities& capabilities, const WindowOptions& options);
 
 struct WindowGeometry {
   enum class State { kNormal, kMinimized, kMaximized, kFullscreen };
   State state = State::kNormal;
   bool visible = false;
   bool focused = false;
+  bool always_on_top = false;  // Above the other applications' windows, as the system has it.
   gfx::Rect bounds;    // Screen DIPs, with the frame.
   gfx::Size content;   // DIPs.
   float scale = 1;

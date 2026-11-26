@@ -21,7 +21,10 @@ constexpr int kMaxDimension = 1 << 15;
 
 constexpr const char* kCreationFields[] = {"width", "height", "frame", "fallback", "show"};
 constexpr const char* kRuntimeFields[] = {
-    "minWidth", "minHeight", "resizable", "x", "y", "title", "controls", "background",
+    "minWidth", "minHeight", "maxWidth", "maxHeight", "resizable", "minimizable", "maximizable",
+    "closable", "fullscreenable", "movable", "alwaysOnTop", "alwaysOnTopLevel", "opacity", "aspectRatio",
+    "contentProtection", "skipTaskbar",
+    "visibleOnAllWorkspaces", "shadow", "x", "y", "title", "controls", "background",
     "appearance", "pageFullscreen", "dragRegions",
 };
 
@@ -137,8 +140,38 @@ bool Apply(const base::DictValue& dict, bool popup, WindowOptions* options, std:
   if (!integer("minWidth", 0, kMaxDimension, &min_width) || !integer("minHeight", 0, kMaxDimension, &min_height))
     return false;
   options->minimum = gfx::Size(min_width, min_height);
-  if (!boolean("resizable", &options->resizable))
+  int max_width = options->maximum.width(), max_height = options->maximum.height();
+  if (!integer("maxWidth", 0, kMaxDimension, &max_width) || !integer("maxHeight", 0, kMaxDimension, &max_height))
     return false;
+  // 0 is no limit; one under the minimum is no window at all.
+  if (max_width && max_width < options->minimum.width())
+    return SetError(error, "maxWidth: less than minWidth");
+  if (max_height && max_height < options->minimum.height())
+    return SetError(error, "maxHeight: less than minHeight");
+  options->maximum = gfx::Size(max_width, max_height);
+  if (!boolean("resizable", &options->resizable) || !boolean("minimizable", &options->minimizable) ||
+      !boolean("maximizable", &options->maximizable) || !boolean("closable", &options->closable) ||
+      !boolean("fullscreenable", &options->fullscreenable) || !boolean("movable", &options->movable) ||
+      !boolean("alwaysOnTop", &options->always_on_top) || !boolean("skipTaskbar", &options->skip_taskbar) ||
+      !boolean("visibleOnAllWorkspaces", &options->visible_on_all_workspaces) ||
+      !boolean("shadow", &options->shadow) || !boolean("contentProtection", &options->content_protection))
+    return false;
+  int level = static_cast<int>(options->on_top_level);
+  if (!choice("alwaysOnTopLevel", {"floating", "status", "screen-saver"}, &level))
+    return false;
+  options->on_top_level = static_cast<WindowOptions::OnTopLevel>(level);
+  if (const base::Value* value = dict.Find("aspectRatio")) {
+    const double ratio = value->is_int() || value->is_double() ? value->GetDouble() : -1;
+    if (!std::isfinite(ratio) || ratio < 0 || ratio > 100)
+      return SetError(error, "aspectRatio: expected a number from 0 (none) to 100, width over height");
+    options->aspect_ratio = ratio;
+  }
+  if (const base::Value* value = dict.Find("opacity")) {
+    const double opacity = value->is_int() || value->is_double() ? value->GetDouble() : -1;
+    if (!std::isfinite(opacity) || opacity < 0 || opacity > 1)
+      return SetError(error, "opacity: expected a number from 0 to 1");
+    options->opacity = static_cast<float>(opacity);
+  }
   const bool has_x = dict.Find("x"), has_y = dict.Find("y");
   if (has_x != has_y)
     return SetError(error, "x and y: both or neither");
@@ -250,7 +283,21 @@ WindowOptions& WindowOptions::operator=(const WindowOptions& other) {
   fallback_to_system = other.fallback_to_system;
   show = other.show;
   minimum = other.minimum;
+  maximum = other.maximum;
   resizable = other.resizable;
+  minimizable = other.minimizable;
+  maximizable = other.maximizable;
+  closable = other.closable;
+  fullscreenable = other.fullscreenable;
+  movable = other.movable;
+  always_on_top = other.always_on_top;
+  opacity = other.opacity;
+  on_top_level = other.on_top_level;
+  aspect_ratio = other.aspect_ratio;
+  content_protection = other.content_protection;
+  skip_taskbar = other.skip_taskbar;
+  visible_on_all_workspaces = other.visible_on_all_workspaces;
+  shadow = other.shadow;
   position = other.position;
   title = other.title;
   controls_height = other.controls_height;
@@ -301,10 +348,39 @@ bool ParsePopupWindowOptions(std::string_view json, WindowOptions* out, std::str
   return true;
 }
 
+std::string UnsupportedOption(const WindowCapabilities& capabilities, const WindowOptions& options) {
+  struct {
+    const char* name;
+    bool asked;
+    bool honoured;
+    const char* capability;
+  } const checks[] = {
+      {"alwaysOnTop", options.always_on_top, capabilities.always_on_top, "alwaysOnTop"},
+      {"alwaysOnTopLevel", options.on_top_level != WindowOptions::OnTopLevel::kFloating, capabilities.on_top_levels,
+       "onTopLevels"},
+      {"opacity", options.opacity != 1, capabilities.opacity, "opacity"},
+      {"aspectRatio", options.aspect_ratio != 0, capabilities.aspect_ratio, "aspectRatio"},
+      {"contentProtection", options.content_protection, capabilities.content_protection, "contentProtection"},
+      {"minimizable", !options.minimizable, capabilities.buttons, "buttons"},
+      {"maximizable", !options.maximizable, capabilities.buttons, "buttons"},
+      {"closable", !options.closable, capabilities.buttons, "buttons"},
+      {"movable", !options.movable, capabilities.movable, "movable"},
+      {"skipTaskbar", options.skip_taskbar, capabilities.skip_taskbar, "skipTaskbar"},
+      {"visibleOnAllWorkspaces", options.visible_on_all_workspaces, capabilities.visible_on_all_workspaces,
+       "visibleOnAllWorkspaces"},
+      {"shadow", !options.shadow, capabilities.shadow, "shadow"},
+  };
+  for (const auto& check : checks)
+    if (check.asked && !check.honoured)
+      return std::string("unsupported: ") + check.name + " for this window on this system (capabilities." +
+             check.capability + " is false)";
+  return std::string();
+}
+
 std::optional<WindowAction> WindowActionNamed(std::string_view name) {
   using A = WindowAction;
   for (A action : {A::kShow, A::kHide, A::kMinimize, A::kMaximize, A::kRestore, A::kFullscreen,
-                   A::kExitFullscreen, A::kClose})
+                   A::kExitFullscreen, A::kClose, A::kCenter, A::kRequestAttention, A::kCancelAttention})
     if (name == WindowActionName(action))
       return action;
   return std::nullopt;
@@ -320,6 +396,9 @@ const char* WindowActionName(WindowAction action) {
     case WindowAction::kFullscreen: return "fullscreen";
     case WindowAction::kExitFullscreen: return "exit-fullscreen";
     case WindowAction::kClose: return "close";
+    case WindowAction::kCenter: return "center";
+    case WindowAction::kRequestAttention: return "request-attention";
+    case WindowAction::kCancelAttention: return "cancel-attention";
   }
   return "";
 }

@@ -539,7 +539,8 @@ char *zebkit_view_get_window(zebkit_view *view);
 bool zebkit_view_set_window(zebkit_view *view, const char *json, char **error);
 
 /* "show", "hide", "minimize", "maximize", "restore", "fullscreen",
- * "exit-fullscreen", "close". True: asked of the system; the result
+ * "exit-fullscreen", "close", "center", "request-attention",
+ * "cancel-attention". True: asked of the system; the result
  * comes as a state event. False with @error: unsupported here, not the
  * engine's window, or a closed view. "close" runs beforeunload first, as
  * zebkit_view_request_close() does. */
